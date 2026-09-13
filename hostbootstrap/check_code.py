@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from collections.abc import Sequence
 from typing import Final
 
-_PACKAGES: Final[tuple[str, ...]] = ("hostbootstrap", "stubs")
+from . import process
+
+_PACKAGES: Final[tuple[str, ...]] = ("hostbootstrap",)
+
+
+# A tool that cannot be launched is reported the way a shell reports it, so a
+# missing dev dependency reads as a failed step rather than as a traceback.
+_NOT_EXECUTABLE: Final[int] = 127
 
 
 def _run(cmd: Sequence[str]) -> int:
     print(f"$ {' '.join(cmd)}", flush=True)
-    return subprocess.run(cmd, check=False).returncode
+    outcome = process.probe(cmd, stdio=process.Stdio.INHERIT)
+    if isinstance(outcome, process.CommandUnavailable):
+        print(outcome.reason, flush=True)
+        return _NOT_EXECUTABLE
+    return outcome.returncode
 
 
 def main() -> int:
     for step in (
         ("ruff", "check", *_PACKAGES),
         ("black", "--check", *_PACKAGES),
-        # `stubs/` is on mypy_path for resolution, not a check target; mypy
-        # errors on an empty directory, so only the package is type-checked.
-        ("mypy", "hostbootstrap"),
+        ("mypy", *_PACKAGES),
     ):
         rc = _run(step)
         if rc != 0:

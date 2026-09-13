@@ -16,6 +16,8 @@ import qualified Fixture
 import HostBootstrap.Cluster.Backend
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Cordon (
+    QuantityError,
+    renderQuantityError,
     budgetCpu,
     budgetMemoryBytes,
     budgetStorageBytes,
@@ -1076,9 +1078,9 @@ prepareExactFixtureWithDriver ::
 prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate plan provider cluster consume =
     withRunningProviderDependencyFixture providerReprobe providerGate plan provider $ \runningProvider -> do
         workload <- requireBudget (mkWorkload cluster 1 1 gib gib)
-        overhead <- requireString (mkResourceBudget 1 gib gib)
-        sliceBudget <- requireString (mkResourceBudget 6 (10 * gib) (80 * gib))
-        minimumBudget <- requireString (mkResourceBudget 1 gib gib)
+        overhead <- requireQuantity (mkResourceBudget 1 gib gib)
+        sliceBudget <- requireQuantity (mkResourceBudget 6 (10 * gib) (80 * gib))
+        minimumBudget <- requireQuantity (mkResourceBudget 1 gib gib)
         request <- requireBudget (mkSliceRequest cluster sliceBudget minimumBudget)
         let budgetAction =
                 joinBudget $
@@ -1284,8 +1286,8 @@ requirePlanProjection = either (fail . show) pure
 requireBudget :: Either BudgetError value -> IO value
 requireBudget = either (fail . show) pure
 
-requireString :: Either String value -> IO value
-requireString = either fail pure
+requireQuantity :: Either QuantityError value -> IO value
+requireQuantity = either (fail . renderQuantityError) pure
 
 joinBudget :: Either BudgetError (Either BudgetError value) -> Either BudgetError value
 joinBudget = either Left id

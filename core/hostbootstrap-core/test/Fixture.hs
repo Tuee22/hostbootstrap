@@ -69,6 +69,7 @@ import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Config.Class (
+    ExistingOutputPolicy (..),
     InitArgs (..),
     ProjectCfg (..),
     TestCfg (..),
@@ -718,8 +719,7 @@ initArgsFor kind =
         , storage = Nothing
         , dockerfile = Nothing
         , haReplicas = Nothing
-        , force = False
-        , ifMissing = False
+        , existingOutput = RefuseExistingOutput
         }
 
 {- | Admit a throwaway 'CanonicalProjectRoot' for tests that need the root the

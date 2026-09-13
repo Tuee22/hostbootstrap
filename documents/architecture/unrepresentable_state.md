@@ -194,6 +194,14 @@ Two rules make a fixture worth having:
    the same source line can satisfy each token independently. Keep the expectation one contiguous
    phrase; the matcher collapses whitespace so compiler line-wrapping does not break it.
 
+Both rules are held by the registered fixtures rather than assumed of them: every fixture in the
+public boundary suite states the phrase it expects, read from the diagnostic the fixture actually
+produces. Four whose diagnostic named an arity or kind error rather than the boundary they are
+registered under are named for repair by
+[the installed-identity-and-authority-kernels phase](../../DEVELOPMENT_PLAN/phase-5-installed-identity-and-authority-kernels.md)
+rather than pinned to what they happened to say, because a fixture pinned to the wrong reason is a
+fixture that will keep passing after the boundary it names is gone.
+
 ## Tests that pin a defect
 
 This is the failure mode the method is meant to remove, and the one that hides longest.
@@ -241,7 +249,8 @@ Stating the limits is part of the contract, not a caveat appended to it.
 | Owned-object vocabulary (§ EE) | `ObjectIdentity`, `PayloadDigest`, `OriginRecord` — the kernel answers the identity, the digest is computed from the payload a run intends to install, and the record has no updatable field, so its binding cannot be replaced | `ForgeObjectIdentity.hs`, `ForgeOwnershipPayloadDigest.hs`, `ForgeOwnershipOriginRecord.hs`, `RebindOwnershipOriginRecord.hs` |
 | The four clause tokens (§ EE) | `Entered`, `Recorded`, `Bound`, `Releasable` — each minted by a clause actually being held, each indexed nominally by the protected entry that authorized it and by the object it names, with the entry index the protected session's own rank-2 variable so a token cannot outlive its entry | `ForgeOwnershipEntered.hs`, `ForgeOwnershipRecorded.hs`, `ForgeOwnershipBound.hs`, `ForgeOwnershipReleasable.hs`, `CoerceOwnershipClauseSession.hs`, `CoerceOwnershipClauseObject.hs`, `EscapeOwnershipClauseEntry.hs`, `ImportOwnershipInternal.hs` |
 | Readiness (§ CC) | `Ready`, `Probe`, `PollPolicy` | `RawReadiness.hs` |
-| Capabilities and lifecycle state (§ EE) | `PreparedGate`, ownership receipts, `RunLease` | `ForgePreparedGate.hs`, `ForgeRunLease.hs` |
+| Capabilities and lifecycle state (§ EE) | `PreparedGate`, ownership receipts, `RunLease`. Its coordinates are typed one role each — plan digest, operation key, session, fence, attempt, journal version, and for a rooted package the catalog identity, frame, and supersession generation — so two adjacent coordinates of the same underlying type cannot be transposed between the producer and the canonical renderer | `ForgePreparedGate.hs`, `ForgeRunLease.hs` |
+| The interrupted-transaction seam (§ NN) | The vocabulary a recovery fixture writes durable coordinator state in lives in the Cabal-private `lifecycle-transaction-internal` sublibrary. Its types mint no authority, but the bytes they render are the coordinator's own | `ForgeTransactionPermitFromDescriptor.hs` |
 | Provider-wall admission and settlement (§ EE) | journal-derived `ProviderWallReservation`; nominal backend-produced `ProviderWallSettlementPermit`; journal-bound provider start completed only by a hidden owning adapter | `CallerFenceProviderWallReservation.hs`, `CrossPartitionProviderWallReservation.hs`, `ForgeProviderWallSettlementPermit.hs`, `RawObservationProviderWallSettlement.hs`, `ImportBudgetInternal.hs`, `ImportColimaSettlementInternal.hs`, `ForgePreparedProviderStart.hs`, `ImportProviderStartInternal.hs`, `CoerceProviderWallSettlementPermitRoles.hs`, `CoercePreparedProviderStartRoles.hs` |
 | Exact direct-Colima ownership (§ EE/§ HH) | opaque `PreparedColimaWallCall`, backend-minted `ColimaWallObservation`, `LiveColimaWall`, `ColimaCleanupAuthority`, and journal-bound `PreparedColimaCleanupCall`; private resolver/backend/settlement constructors and mutation arguments | `CrossPlanColimaConsumer.hs`, `ForgeColimaAuthorities.hs`, `CoerceColimaAuthorityRoles.hs`, `ImportColimaBackendRunner.hs`, `ImportColimaResolverOverride.hs`, `ImportColimaResolverTesting.hs`, `ImportColimaResolverInstall.hs`, `ImportColimaSettlementInternal.hs`, `OpenColimaOwnershipBackend.hs`, `OpenPreparedColimaMutationArgs.hs`, `ColimaAcquireCallAsCleanupGate.hs`, `WrongColimaCleanupPhase.hs` |
 | Installed and broker identity (§ X) | `InstalledProjectIdentity`, `BrokerEpoch` | `EscapeInstalledProjectIdentity.hs`, `ForgeInstalledProjectIdentity.hs`, `CoerceInstalledProjectIdentity.hs`, `CoerceBrokerEpoch.hs` |

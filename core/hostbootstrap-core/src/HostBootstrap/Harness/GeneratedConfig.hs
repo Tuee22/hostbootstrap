@@ -65,7 +65,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Ownership.Clause (enteredEvidence)
 import HostBootstrap.Ownership.Object (
-    storeFault,
     ConflictReport (conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
@@ -78,10 +77,8 @@ import HostBootstrap.Ownership.Object (
     originRecordBinding,
     originRecordKind,
     ownershipFault,
-    parseOriginRecord,
     payloadDigest,
     payloadDigestText,
-    renderOriginRecord,
  )
 import HostBootstrap.Ownership.Primitive (
     OwnershipPrimitive (rowCloseHandle, rowOpenExclusive, rowReadObject, rowRemoveObject),
@@ -95,14 +92,22 @@ import HostBootstrap.Ownership.Primitive (
     reobserveOwnedIdentity,
     withOwnershipRow,
  )
+import HostBootstrap.Ownership.Tape (
+    OwnershipCarrier (fromClauseFault, fromStoreFault),
+    RecordSubject (..),
+    RecordTape,
+    carryStore,
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    readRecordUnder,
+    recordTape,
+ )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
+    ProtectedRecord,
     ProtectedSession,
     RecordKey,
-    compareAndDeleteProtectedRecord,
-    compareAndSwapProtectedRecord,
     protectedErrorMessage,
     readProtectedRecord,
     recordKeyText,
@@ -278,50 +283,9 @@ acquireGeneratedConfig row session key path bytes = do
                         bound <- bindOwnedIdentity row token identity publishBinding
                         pure (fmap (const (AcquiredOwnership (receipt identity))) bound)
 
-    publishOrigin record = do
-        written <-
-            compareAndSwapProtectedRecord
-                session
-                key
-                ExpectAbsent
-                (renderOriginRecord record)
-        pure
-            ( either
-                (Left . storeFault "publish the generated-config origin record")
-                (const (Right ()))
-                written
-            )
+    publishOrigin = publishFreshRecord (generatedConfigTape session) key
 
-    -- The binding is published against the exact version the origin publication
-    -- left, read back inside the same exclusive entry. Reading it rather than
-    -- carrying it out of the seam's continuation is what keeps the store the one
-    -- place a version lives.
-    publishBinding record = do
-        current <- readProtectedRecord session key
-        case current of
-            Left failure ->
-                pure (Left (storeFault "read the generated-config origin record" failure))
-            Right Nothing ->
-                pure
-                    ( Left
-                        ( OwnershipProbeFailed
-                            "bind the generated-config identity"
-                            "the origin record vanished inside the exclusive entry"
-                        )
-                    )
-            Right (Just stored) -> do
-                written <-
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        (ExpectVersion (protectedRecordVersion stored))
-                        (renderOriginRecord record)
-                pure
-                    ( either
-                        (Left . storeFault "bind the generated-config identity")
-                        (const (Right ()))
-                        written
-                    )
+    publishBinding = publishBoundRecord (generatedConfigTape session) key
 
     receipt = GeneratedConfigOwnership path (recordKeyText key) digest
 
@@ -365,7 +329,7 @@ releaseGeneratedConfig row session key owned
                 )
             )
     | otherwise = do
-        stored <- readBoundRecord session key
+        stored <- readRecordUnder (generatedConfigTape session) key
         case stored of
             Left failure -> pure (Left failure)
             Right Nothing ->
@@ -404,7 +368,7 @@ releaseGeneratedConfig row session key owned
   where
     path = ownershipPath owned
     forget _record = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
         pure (either (Left . forgetFailure) Right deleted)
 
 {- | What recovery restored for an abandoned run's generated config.  Recovery
@@ -454,7 +418,7 @@ recoverGeneratedConfig ::
     FilePath ->
     IO (Either GeneratedConfigError RecoveredGeneratedConfig)
 recoverGeneratedConfig row session key path = do
-    stored <- readBoundRecord session key
+    stored <- readRecordUnder (generatedConfigTape session) key
     case stored of
         Left failure -> pure (Left failure)
         Right Nothing -> pure (Right GeneratedConfigAlreadyAbsent)
@@ -513,11 +477,11 @@ recoverGeneratedConfig row session key path = do
         Right RecoveredAbsence -> pure (Right GeneratedConfigAbsenceRestored)
 
     forget _record = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
         pure (either (Left . forgetFailure) Right deleted)
 
     settle outcome = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
         pure (fmap (const outcome) deleted)
 
 -- The payload half of clause 4 -------------------------------------------------------
@@ -615,6 +579,25 @@ stagingPath key path =
 
 -- Shared plumbing --------------------------------------------------------------------
 
+{- | What this owner calls its records, for the shared tape's refusals.
+
+The publish, bind, forget and read-back steps are the ones every owner behind
+the seam performs; the subject is the only part that is this owner's.
+-}
+generatedConfigSubject :: RecordSubject
+generatedConfigSubject =
+    RecordSubject
+        { subjectRecord = "the generated-config origin record"
+        , subjectBinding = "bind the generated-config identity"
+        }
+
+generatedConfigTape :: ProtectedSession session -> RecordTape session
+generatedConfigTape session = recordTape session generatedConfigSubject
+
+instance OwnershipCarrier GeneratedConfigError where
+    fromClauseFault = ownershipError
+    fromStoreFault = GeneratedConfigStoreFailure
+
 readRecord ::
     ProtectedSession session ->
     RecordKey ->
@@ -623,42 +606,6 @@ readRecord session key = do
     observed <- readProtectedRecord session key
     pure (either (Left . GeneratedConfigStoreFailure) Right observed)
 
--- | The durable record, decoded through the one canonical codec, when one is there.
-readBoundRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either GeneratedConfigError (Maybe OriginRecord))
-readBoundRecord session key = do
-    stored <- readRecord session key
-    pure $ case stored of
-        Left failure -> Left failure
-        Right Nothing -> Right Nothing
-        Right (Just stamped) ->
-            either
-                (Left . ownershipError)
-                (Right . Just)
-                (parseOriginRecord (protectedRecordBytes stamped))
-
-{- | Delete the ownership record against the exact version just observed, so a
-concurrent writer cannot have its record removed by this settlement.
--}
-deleteRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either GeneratedConfigError ())
-deleteRecord session key = do
-    observed <- readRecord session key
-    case observed of
-        Left failure -> pure (Left failure)
-        Right Nothing -> pure (Right ())
-        Right (Just record) -> do
-            deleted <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion record))
-            pure (either (Left . GeneratedConfigStoreFailure) Right deleted)
-
 {- | Carry a store failure into the seam's fault vocabulary.
 
 The seam's publication is a continuation, so a caller's own failure has to be
@@ -666,7 +613,6 @@ reported in the seam's terms while it is inside one. The store's exact message
 survives; what does not is the structured 'ProtectedError', which no caller of
 this module matches on for a publication.
 -}
-
 forgetFailure :: GeneratedConfigError -> OwnershipFault
 forgetFailure failure =
     OwnershipProbeFailed

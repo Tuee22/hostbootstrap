@@ -303,7 +303,7 @@ contract/type, or one call-site adoption**, and stays within:
 
 - ≤ 8 deliverable bullets;
 - ≤ ~400 lines of production Haskell across ≤ 3 source modules, plus their specs;
-- closable by the **host static gate** alone (§ II) — `cabal test all --ghc-options=-Werror` from
+- closable by the **host static gate** alone (§ II) — `cabal test all` from
   `core/`, `poetry run python -m hostbootstrap.check_code`, and
   `poetry run python -m hostbootstrap.test_all`.
 
@@ -415,7 +415,7 @@ project binary inside the Linux environment, and runs the baseline gate there.
 
 The plan therefore distinguishes two gates, and a phase says which one closes it:
 
-- the **host static gate** — `cabal test all --ghc-options=-Werror` from `core/`,
+- the **host static gate** — `cabal test all` from `core/`,
   `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all`,
   each run as an ordinary process of the **outer host**. It proves the pure, typed, and lexical
   contracts: type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections,
@@ -984,9 +984,12 @@ rolling base was last republished, so a base rebuild can change what passes with
 which makes the gate's verdict a property of the calendar rather than of the source.
 
 **`-Werror` belongs in the build description.** It is declared in the `common warnings` stanza of
-`hostbootstrap-core.cabal`, not supplied as a flag each caller remembers. A gate that depends on a
-remembered flag is a gate that is weaker exactly when someone is in a hurry, and it is why the same gate
-came to be written three different ways in three different documents.
+`hostbootstrap-core.cabal` and of `hostbootstrap-demo.cabal`, not supplied as a flag each caller
+remembers. A gate that depends on a remembered flag is a gate that is weaker exactly when someone is in
+a hurry, and it is why the same gate came to be written three different ways in three different
+documents. `-Wpartial-fields` is declared beside it: a record selector on a multi-constructor type
+throws at the call site rather than failing to compile, so the build refuses the shape instead of
+leaving it to a test to find.
 
 ### S. Imported Practices and Explicit Non-Adoption
 
@@ -2940,17 +2943,18 @@ host-native everywhere.
 **This is the gate, spelled once.** Every other document cites this list rather than paraphrasing it:
 
 ```
-cd core && cabal test all --ghc-options=-Werror
-cd demo && cabal test all --ghc-options=-Werror
+cd core && cabal test all
+cd demo && cabal test all
 poetry run python -m hostbootstrap.check_code
 poetry run python -m hostbootstrap.test_all
 ```
 
-All four legs, in the spelling above. Dropping `-Werror` accepts warnings the gate refuses; dropping the
-`demo/` leg leaves the only real consumer ungated; dropping `check_code` leaves the Python layer's types
-and formatting unchecked. A paraphrase that omits any of them is a weaker gate wearing this one's name,
-and the omission does not announce itself — which is how three documents came to describe this gate three
-different ways.
+All four legs, in the spelling above. There is no `-Werror` flag to remember: both Cabal packages carry
+the warning policy in their `common warnings` stanza, so it is a property of the source tree rather than
+of whoever typed the command. Dropping the `demo/` leg leaves the only real consumer ungated; dropping
+`check_code` leaves the Python layer's types and formatting unchecked. A paraphrase that omits either is
+a weaker gate wearing this one's name, and the omission does not announce itself — which is how three
+documents came to describe this gate three different ways.
 
 The harness therefore holds five rules. Each is a property of the test harness, never a weakening of the
 contract a guard asserts: a host-portable guard proves the same thing on every host, which is exactly why

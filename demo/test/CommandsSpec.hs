@@ -4,13 +4,15 @@
 
 module CommandsSpec (hostCfg, tests) where
 
+import qualified Data.List.NonEmpty as NonEmpty
 import Control.Exception (SomeException, bracket, try)
+import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Function ((&))
 import Data.List (findIndex, isInfixOf, isPrefixOf, isSuffixOf, tails)
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), AcceleratorIngressPlan (ingressKindListenAddress), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ingressKindListenAddress, ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
 import HostBootstrap.Cluster.Reconcile (ClusterReadinessResultView (..))
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
@@ -436,10 +438,10 @@ tests =
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
             assertBool
                 "the VM topology does not contain exactly one copy-source action"
-                (length (filter ((== "copy-source") . stepKindName . stepKind) (stepPlanSteps vmPlan)) == 1)
+                (length (filter ((== "copy-source") . stepKindName . stepKind) (NonEmpty.toList (stepPlanSteps vmPlan))) == 1)
             assertBool
                 "the Direct topology acquired a VM-only copy-source action"
-                (all ((/= "copy-source") . stepKindName . stepKind) (stepPlanSteps directPlan))
+                (all ((/= "copy-source") . stepKindName . stepKind) (NonEmpty.toList (stepPlanSteps directPlan)))
             assertBool
                 "the managed share was written into a cross-node carrier"
                 (not ("carryManagedResource" `isInfixOf` adopterSource))
@@ -473,7 +475,7 @@ tests =
             mapM_
                 ( \substrate -> do
                     plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor substrate root hostCfg)))
-                    case [reverseAction | step <- stepPlanSteps plan, stepKindName (stepKind step) == "copy-source", Just reverseAction <- [Step.stepReverse step]] of
+                    case [reverseAction | step <- NonEmpty.toList (stepPlanSteps plan), stepKindName (stepKind step) == "copy-source", Just reverseAction <- [Step.stepReverse step]] of
                         [reverseAction] -> do
                             outcome <- reverseAction (error "alias retention must not inspect a host configuration or perform guest effects") Step.RetainResource
                             outcome @?= Step.TeardownForeignRetained "the owned guest alias persists across provider stop/restart"
@@ -564,8 +566,8 @@ tests =
             uploadSessionUrl "localhost:30500" "HTTP/1.1 202 Accepted\n" @?= Nothing
         , testCase "linux-gpu selects the direct host-to-container nvkind chain" $ do
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
-            let steps = stepPlanSteps plan
-            map frameId (chainFrames plan) @?= ["host-orchestrator-0", "vm-project-container-1"]
+            let steps = NonEmpty.toList (stepPlanSteps plan)
+            map frameId (NonEmpty.toList (chainFrames plan)) @?= ["host-orchestrator-0", "vm-project-container-1"]
             map (stepKindName . stepKind) steps
                 @?= [ "deploy-vm"
                     , "build-image"
@@ -587,12 +589,29 @@ tests =
             clusterConfigFile (containerPlan Production directCtx) @?= Just "nvkind-in-cluster.yaml"
             clusterDriver (containerPlan Production ordinaryCtx) @?= KindDriver
             clusterConfigFile (containerPlan Production ordinaryCtx) @?= Just "kind-in-cluster.yaml"
+        , testCase "every cluster template this project can select is one it ships" $ do
+            -- The project owns the choice, so the project owes the proof that
+            -- each answer resolves. Core resolves no template at all, which is
+            -- why a missing file here can no longer hide behind a default.
+            let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
+                vmCtx = Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo"
+                inClusterCtx = Context.deriveContainerContext vmCtx "/workspace/demo"
+                wslVmCtx = Context.deriveVMContextWithProvider Context.Wsl2VMProvider (context hostCfg) "/vm/demo"
+                hostResidentCtx = Context.deriveContainerContext wslVmCtx "/workspace/demo"
+                selected ctx = clusterConfigFile (containerPlan Production ctx)
+            selected hostResidentCtx @?= Just "kind.yaml"
+            forM_ [directCtx, inClusterCtx, hostResidentCtx] $ \ctx ->
+                case selected ctx of
+                    Nothing -> assertFailure "the project selected no cluster template"
+                    Just template -> do
+                        present <- doesFileExist template
+                        assertBool ("the selected template " <> template <> " is not shipped") present
         , testCase "VM and Direct topologies author distinct provider resources at their exact target frames" $ do
             vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
             let declarations plan =
                     [ (frameId (stepFrame step), providerResourceDeclarationTargetsChild declaration)
-                    | step <- stepPlanSteps plan
+                    | step <- NonEmpty.toList (stepPlanSteps plan)
                     , declaration <- stepProviderResourceDeclarations step
                     ]
             declarations vmPlan @?= [("host-orchestrator-0", True)]
@@ -646,7 +665,7 @@ tests =
             vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
             let roles :: StepPlan -> [String]
-                roles = map (roleOf . stepIdentity) . stepPlanSteps
+                roles = map (roleOf . stepIdentity) . NonEmpty.toList . stepPlanSteps
                 roleOf :: StepIdentity -> String
                 roleOf identity =
                     either error id (foldDemoOperationRole identity "provider" "cluster" "workload" "service" "assertion")
@@ -1053,8 +1072,8 @@ tests =
                     Right _ -> False
         , testCase "linux-cpu runs the accelerator daemon as an in-cluster pod (no host hook)" $ do
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
-            let steps = stepPlanSteps plan
-            map frameId (chainFrames plan) @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
+            let steps = NonEmpty.toList (stepPlanSteps plan)
+            map frameId (NonEmpty.toList (chainFrames plan)) @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
             -- Incus does not forward the guest NodePort to the host, so the Linux CPU
             -- accelerator daemon is an in-cluster pod (dialing the web ClusterIP), NOT a
             -- host-resident post-handoff process as on Apple/Windows.
@@ -1078,7 +1097,7 @@ tests =
         , testCase "windows-cpu has no accelerator worker or host-daemon hook" $ do
             plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate WindowsCpu Amd64) root hostCfg)))
             map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
-            concatMap stepServiceActivationDeclarations (stepPlanSteps plan) @?= []
+            concatMap stepServiceActivationDeclarations (NonEmpty.toList (stepPlanSteps plan)) @?= []
             hostAcceleratorSubstrate (Substrate WindowsCpu Amd64) @?= False
         , -- The POSIX daemon's invocation *shape* is not asserted here. It is
           -- not this module's to assert: the shape is sealed in

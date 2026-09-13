@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
-import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
-from hostbootstrap import prereqs
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap import prereqs, process
+from hostbootstrap.substrate import Arch, Substrate, SubstrateName
 
 
-def _completed(
-    args: list[str],
+def _ran(
+    args: Sequence[str],
     *,
     returncode: int = 0,
     stdout: str = "",
     stderr: str = "",
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(
-        args=args, returncode=returncode, stdout=stdout, stderr=stderr
-    )
+) -> process.CommandResult:
+    return process.CommandResult(tuple(args), returncode, stdout, stderr)
+
+
+def _never_ran(args: Sequence[str], reason: str = "noexec") -> process.CommandUnavailable:
+    return process.CommandUnavailable(tuple(args), reason)
 
 
 def _patch_os_release(
@@ -62,22 +64,15 @@ def test_passwordless_sudo_checks(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
 
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("noexec")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _never_ran(cmd))
     with pytest.raises(prereqs.PrereqError, match="could not exec sudo"):
         prereqs._check_passwordless_sudo()
 
-    monkeypatch.setattr(
-        prereqs.subprocess,
-        "run",
-        lambda cmd, **kwargs: _completed(cmd, returncode=1),
-    )
+    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd, returncode=1))
     with pytest.raises(prereqs.PrereqError, match="passwordless sudo"):
         prereqs._check_passwordless_sudo()
 
-    monkeypatch.setattr(prereqs.subprocess, "run", lambda cmd, **kwargs: _completed(cmd))
+    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd))
     prereqs._check_passwordless_sudo()
 
 
@@ -110,24 +105,17 @@ def test_macos_checks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_xcode_clt_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        prereqs.subprocess,
-        "run",
-        lambda cmd, **kwargs: _completed(cmd, stdout="/Library/Developer/CommandLineTools\n"),
+        prereqs.process,
+        "probe",
+        lambda cmd, **_k: _ran(cmd, stdout="/Library/Developer/CommandLineTools\n"),
     )
     prereqs._check_xcode_clt()
 
-    monkeypatch.setattr(
-        prereqs.subprocess,
-        "run",
-        lambda cmd, **kwargs: _completed(cmd, returncode=1),
-    )
+    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd, returncode=1))
     with pytest.raises(prereqs.PrereqError, match="Xcode"):
         prereqs._check_xcode_clt()
 
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("noexec")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _never_ran(cmd))
     with pytest.raises(prereqs.PrereqError, match="xcode-select failed"):
         prereqs._check_xcode_clt()
 
@@ -171,15 +159,15 @@ def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_git_long_paths_enabled_reads_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "git")
 
-    def _run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert args == ["git", "config", "--get", "core.longpaths"]
-        return _completed(args, stdout="true\n")
+    def _probe(args: Sequence[str], **_kwargs: object) -> process.CommandOutcome:
+        assert list(args) == ["git", "config", "--get", "core.longpaths"]
+        return _ran(args, stdout="true\n")
 
-    monkeypatch.setattr(prereqs.subprocess, "run", _run)
+    monkeypatch.setattr(prereqs.process, "probe", _probe)
     assert prereqs._git_long_paths_enabled() is True
 
     monkeypatch.setattr(
-        prereqs.subprocess, "run", lambda args, **_k: _completed(args, returncode=1, stdout="")
+        prereqs.process, "probe", lambda args, **_k: _ran(args, returncode=1, stdout="")
     )
     assert prereqs._git_long_paths_enabled() is False
 
@@ -190,28 +178,21 @@ def test_git_long_paths_enabled_none_when_unusable(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "git")
 
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("no git")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    monkeypatch.setattr(prereqs.process, "probe", lambda args, **_k: _never_ran(args, "no git"))
     assert prereqs._git_long_paths_enabled() is None
 
 
 def test_windows_long_paths_policy_reads_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     enabled = f"{prereqs._LONG_PATHS_KEY}\n    LongPathsEnabled    REG_DWORD    0x1\n"
-    monkeypatch.setattr(
-        prereqs.subprocess, "run", lambda args, **_k: _completed(args, stdout=enabled)
-    )
+    monkeypatch.setattr(prereqs.process, "probe", lambda args, **_k: _ran(args, stdout=enabled))
     assert prereqs._windows_long_paths_policy_enabled()
 
     disabled = enabled.replace("0x1", "0x0")
-    monkeypatch.setattr(
-        prereqs.subprocess, "run", lambda args, **_k: _completed(args, stdout=disabled)
-    )
+    monkeypatch.setattr(prereqs.process, "probe", lambda args, **_k: _ran(args, stdout=disabled))
     assert not prereqs._windows_long_paths_policy_enabled()
 
     monkeypatch.setattr(
-        prereqs.subprocess, "run", lambda args, **_k: _completed(args, returncode=1, stdout="")
+        prereqs.process, "probe", lambda args, **_k: _ran(args, returncode=1, stdout="")
     )
     assert not prereqs._windows_long_paths_policy_enabled()
 
@@ -219,10 +200,7 @@ def test_windows_long_paths_policy_reads_registry(monkeypatch: pytest.MonkeyPatc
 def test_windows_long_paths_policy_false_when_reg_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise OSError("no reg.exe")
-
-    monkeypatch.setattr(prereqs.subprocess, "run", _raise)
+    monkeypatch.setattr(prereqs.process, "probe", lambda args, **_k: _never_ran(args, "no reg.exe"))
     assert not prereqs._windows_long_paths_policy_enabled()
 
 
@@ -263,7 +241,7 @@ async def test_run_linux_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
 
     for name in (SubstrateName.LINUX_CPU, SubstrateName.LINUX_GPU):
         calls.clear()
-        result = await prereqs._run_linux(Substrate(name, "amd64"))
+        result = await prereqs._run_linux(Substrate(name, Arch.AMD64))
         assert calls == ["ubuntu", "sudo", "curl"]
         assert result.messages == (
             "Ubuntu 24.04: OK",
@@ -279,7 +257,7 @@ async def test_run_apple_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs, "_check_passwordless_sudo", lambda: calls.append("sudo"))
     monkeypatch.setattr(prereqs, "_check_homebrew", lambda: calls.append("brew"))
 
-    result = await prereqs._run_apple(Substrate(SubstrateName.APPLE_SILICON, "arm64"))
+    result = await prereqs._run_apple(Substrate(SubstrateName.APPLE_SILICON, Arch.ARM64))
 
     assert calls == ["mac", "xcode", "sudo", "brew"]
     assert result.messages == (
@@ -296,7 +274,7 @@ async def test_run_windows_minimums(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(prereqs, "_check_powershell", lambda: calls.append("powershell"))
     monkeypatch.setattr(prereqs, "_long_paths_status", lambda: "long paths: OK")
 
-    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
+    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, Arch.AMD64))
 
     assert calls == ["winget", "powershell"]
     assert result.messages == ("winget: OK", "PowerShell: OK", "long paths: OK")
@@ -312,16 +290,16 @@ async def test_run_windows_long_path_advisory_never_aborts(
     monkeypatch.setattr(prereqs, "_git_long_paths_enabled", lambda: False)
     monkeypatch.setattr(prereqs, "_windows_long_paths_policy_enabled", lambda: False)
 
-    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, "amd64"))
+    result = await prereqs._run_windows(Substrate(SubstrateName.WINDOWS_CPU, Arch.AMD64))
 
     assert result.messages[-1].startswith("long paths: not fully enabled")
     assert not result.reboot_required
 
 
 async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatch) -> None:
-    linux = Substrate(SubstrateName.LINUX_CPU, "amd64")
-    apple = Substrate(SubstrateName.APPLE_SILICON, "arm64")
-    windows = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
+    linux = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
+    apple = Substrate(SubstrateName.APPLE_SILICON, Arch.ARM64)
+    windows = Substrate(SubstrateName.WINDOWS_CPU, Arch.AMD64)
     calls: list[str] = []
 
     async def _linux(_sub: Substrate) -> prereqs.DoctorResult:
@@ -347,7 +325,7 @@ async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatc
 
 
 def test_run_doctor_sync_wraps_async(monkeypatch: pytest.MonkeyPatch) -> None:
-    linux = Substrate(SubstrateName.LINUX_CPU, "amd64")
+    linux = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
 
     async def _linux(_sub: Substrate) -> prereqs.DoctorResult:
         return prereqs.DoctorResult(linux, ("ok",))

@@ -10,6 +10,9 @@ cluster lifecycle code.  "HostBootstrap.Cluster.Cordon" supplies the later
 configuration adapters while retaining the public facade.
 -}
 module HostBootstrap.Cluster.Cordon.Foundation (
+    BudgetDimension (..),
+    QuantityError (..),
+    renderQuantityError,
     ResourceBudget,
     mkResourceBudget,
     budgetCpu,
@@ -72,16 +75,65 @@ data ResourceBudget = ResourceBudget
     }
     deriving (Eq, Show)
 
+{- | Which dimension of a canonical budget an answer is about.
+
+The three dimensions are the budget's own fields, so a refusal names one of them
+rather than spelling it as a word inside a sentence.
+-}
+data BudgetDimension = BudgetCpu | BudgetMemory | BudgetStorage
+    deriving (Eq, Show)
+
+{- | Why a canonical quantity or budget could not be constructed.
+
+A caller that needs to know /which/ dimension was refused, or /which/ bound it
+broke, reads it off the value. 'renderQuantityError' is the one place that turns
+one into the operator-facing sentence, so the diagnostic and the machine-readable
+answer cannot drift apart.
+-}
+data QuantityError
+    = -- | the dimension is zero or negative
+      DimensionNotPositive BudgetDimension
+    | -- | the dimension is above the supported bound
+      DimensionAboveBound BudgetDimension
+    | -- | the text does not begin with a number
+      QuantityNotANumber T.Text
+    | -- | the numeric part is not a decimal number
+      QuantityMalformedNumber String
+    | -- | the unit suffix is not one of the accepted ones
+      QuantityUnknownUnit String T.Text
+    | -- | the value scales to a fraction of a byte
+      QuantityNotWholeBytes T.Text
+    deriving (Eq, Show)
+
+-- | The operator-facing sentence one refusal carries.
+renderQuantityError :: QuantityError -> String
+renderQuantityError err = case err of
+    DimensionNotPositive dimension ->
+        "resource budget: " ++ renderDimension dimension ++ " must be positive"
+    DimensionAboveBound dimension ->
+        "resource budget: " ++ renderDimension dimension ++ " exceeds the supported bound"
+    QuantityNotANumber raw -> "not a quantity: " ++ T.unpack raw
+    QuantityMalformedNumber text -> "not a number: " ++ text
+    QuantityUnknownUnit unit raw ->
+        "unknown unit: " ++ unit ++ " in quantity: " ++ T.unpack raw
+    QuantityNotWholeBytes raw ->
+        "quantity is not an exact whole-byte value: " ++ T.unpack raw
+
+renderDimension :: BudgetDimension -> String
+renderDimension BudgetCpu = "cpu"
+renderDimension BudgetMemory = "memory"
+renderDimension BudgetStorage = "storage"
+
 -- | Construct a positive, bounded canonical budget. Raw record construction is
 -- private so zero/negative/overflowed values cannot reach provider builders.
-mkResourceBudget :: Natural -> Integer -> Integer -> Either String ResourceBudget
+mkResourceBudget :: Natural -> Integer -> Integer -> Either QuantityError ResourceBudget
 mkResourceBudget cores memoryBytes storageBytes
-    | cores == 0 = Left "resource budget: cpu must be positive"
-    | cores > fromIntegral (maxBound :: Int) = Left "resource budget: cpu exceeds the supported bound"
-    | memoryBytes <= 0 = Left "resource budget: memory must be positive"
-    | storageBytes <= 0 = Left "resource budget: storage must be positive"
-    | memoryBytes > maxResourceBytes = Left "resource budget: memory exceeds the supported bound"
-    | storageBytes > maxResourceBytes = Left "resource budget: storage exceeds the supported bound"
+    | cores == 0 = Left (DimensionNotPositive BudgetCpu)
+    | cores > fromIntegral (maxBound :: Int) = Left (DimensionAboveBound BudgetCpu)
+    | memoryBytes <= 0 = Left (DimensionNotPositive BudgetMemory)
+    | storageBytes <= 0 = Left (DimensionNotPositive BudgetStorage)
+    | memoryBytes > maxResourceBytes = Left (DimensionAboveBound BudgetMemory)
+    | storageBytes > maxResourceBytes = Left (DimensionAboveBound BudgetStorage)
     | otherwise = Right (ResourceBudget cores memoryBytes storageBytes)
   where
     maxResourceBytes = toInteger (maxBound :: Int64)
@@ -168,24 +220,24 @@ storageCordonPolicy target = case target of
 (@K@, @M@, @G@, @T@); a bare number is bytes. The one canonical quantity
 grammar. Pure.
 -}
-parseQuantity :: T.Text -> Either String Integer
+parseQuantity :: T.Text -> Either QuantityError Integer
 parseQuantity raw =
     let t = T.strip raw
         (numText, unitText) = T.span (\c -> isDigit c || c == '.') t
         unit = T.unpack (T.strip unitText)
      in if T.null numText
-            then Left ("not a quantity: " ++ T.unpack raw)
+            then Left (QuantityNotANumber raw)
             else case readDecimal (T.unpack numText) of
                 Left err -> Left err
                 Right (numerator, denominator) -> case multiplier unit of
-                    Nothing -> Left ("unknown unit: " ++ unit ++ " in quantity: " ++ T.unpack raw)
+                    Nothing -> Left (QuantityUnknownUnit unit raw)
                     Just m ->
                         let scaled = numerator * m
                          in if scaled `mod` denominator == 0
                                 then Right (scaled `div` denominator)
-                                else Left ("quantity is not an exact whole-byte value: " ++ T.unpack raw)
+                                else Left (QuantityNotWholeBytes raw)
 
-readDecimal :: String -> Either String (Integer, Integer)
+readDecimal :: String -> Either QuantityError (Integer, Integer)
 readDecimal text =
     case break (== '.') text of
         (whole, "")
@@ -194,7 +246,7 @@ readDecimal text =
             | validDigits whole && validDigits fractional ->
                 let denominator = 10 ^ length fractional
                  in Right (digits whole * denominator + digits fractional, denominator)
-        _ -> Left ("not a number: " ++ text)
+        _ -> Left (QuantityMalformedNumber text)
   where
     validDigits value = not (null value) && all isDigit value
     digits = foldl' (\total digit -> total * 10 + toInteger (digitToInt digit)) 0

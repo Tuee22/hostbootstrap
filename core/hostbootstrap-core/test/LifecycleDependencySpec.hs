@@ -11,6 +11,7 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lifecycle.Dependency.Internal
+import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -155,6 +156,25 @@ tests =
             assertBool
                 "oversized route was accepted"
                 (isLeft (mkProvider 7 ("runtime://provider/" <> Text.replicate 600 "x") 100))
+        , testCase "each domain's coordinate check is an application of one implementation" $ do
+            cwd <- getCurrentDirectory
+            root <- findRepoRoot cwd >>= maybe (assertFailure "repository root not found") pure
+            dependencySource <-
+                readFile
+                    ( root
+                        </> "core"
+                        </> "hostbootstrap-core"
+                        </> "src"
+                        </> "HostBootstrap"
+                        </> "Lifecycle"
+                        </> "Dependency"
+                        </> "Internal.hs"
+                    )
+            -- Each implementation is named at its signature, its definition, and
+            -- once per domain that opens through it. A requirement added to one
+            -- of them therefore reaches every domain rather than one of a pair.
+            SourceGuard.countHaskellIdentifier "openCoordinates" dependencySource @?= 4
+            SourceGuard.countHaskellIdentifier "openCarriedCoordinates" dependencySource @?= 4
         , testCase "the leaf is acyclic and execution owns distinct canonical and live registry fields" $ do
             cwd <- getCurrentDirectory
             root <- findRepoRoot cwd >>= maybe (assertFailure "repository root not found") pure

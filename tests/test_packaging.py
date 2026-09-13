@@ -15,6 +15,13 @@ def test_public_console_scripts_are_runtime_only() -> None:
     assert pyproject["tool"]["poetry"]["scripts"] == {"hostbootstrap": "hostbootstrap.cli:main"}
 
 
+def test_no_empty_stub_directory_is_carried_as_a_check_target() -> None:
+    """An empty directory named by three tool configurations contributes nothing."""
+    root = Path(__file__).resolve().parents[1]
+    assert not (root / "stubs").exists()
+    assert "stubs" not in (root / "pyproject.toml").read_text(encoding="utf-8")
+
+
 def test_haskell_host_processes_do_not_launch_bare_literal_commands() -> None:
     """A literal process target bypasses HostTool/AbsExe and is never allowed."""
     root = Path(__file__).resolve().parents[1]

@@ -190,8 +190,8 @@ tests =
             liftContextFrame (inContainer container (inLimaVM (LimaVM "demo-vm") localContext))
                 @?= CrossedInto (CrossLimaVM "demo-vm") [CrossContainer "demo:latest"]
         , testCase "a crossed command names a tool, and a local one names the binary" $ do
-            let crossed = foldLeafCommand (inLimaVM (LimaVM "demo-vm") localContext) (RawCmd ["true"])
-                local = foldLeafCommand localContext (RawCmd ["/bin/true"])
+            let crossed = foldLeafCommand (inLimaVM (LimaVM "demo-vm") localContext) (RawCmd "true" [])
+                local = foldLeafCommand localContext (RawCmd "/bin/true" [])
             commandTarget crossed @?= ToolTarget Lima
             commandFrame crossed @?= CrossedInto (CrossLimaVM "demo-vm") []
             commandTarget local @?= SelfTarget "/bin/true"

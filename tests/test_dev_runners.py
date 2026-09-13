@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hostbootstrap import check_code, cli, test_all
+from hostbootstrap import check_code, cli, process, test_all
 
 
 def _exec_file_as_main(path: Path, package: str) -> None:
@@ -28,15 +28,28 @@ def _exec_file_as_main(path: Path, package: str) -> None:
         loader.exec_module(module)
 
 
-def test_check_code_run_returns_subprocess_code(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _fake_run(cmd: tuple[str, ...], *, check: bool) -> subprocess.CompletedProcess[str]:
+def test_check_code_run_returns_the_tool_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _probe(cmd: tuple[str, ...], *, stdio: process.Stdio) -> process.CommandOutcome:
         assert cmd == ("ruff", "check")
-        assert check is False
-        return subprocess.CompletedProcess(cmd, 7)
+        assert stdio is process.Stdio.INHERIT
+        return process.CommandResult(cmd, 7, "", "")
 
-    monkeypatch.setattr(check_code.subprocess, "run", _fake_run)
+    monkeypatch.setattr(check_code.process, "probe", _probe)
 
     assert check_code._run(("ruff", "check")) == 7
+
+
+def test_check_code_run_reports_a_tool_that_cannot_be_launched(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        check_code.process,
+        "probe",
+        lambda cmd, **_k: process.CommandUnavailable(tuple(cmd), "No such file: ruff"),
+    )
+
+    assert check_code._run(("ruff", "check")) == check_code._NOT_EXECUTABLE
+    assert "No such file: ruff" in capsys.readouterr().out
 
 
 def test_check_code_main_success_and_fail_fast(monkeypatch: pytest.MonkeyPatch) -> None:

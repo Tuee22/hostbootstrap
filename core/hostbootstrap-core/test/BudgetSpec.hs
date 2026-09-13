@@ -49,6 +49,7 @@ import HostBootstrap.Step (
     mkStepPlan,
  )
 import Numeric.Natural (Natural)
+import HostBootstrap.Lifecycle.Prepared (preparedGateCommitment)
 import PrepareFixture (gateFor, gateForValues)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -81,6 +82,43 @@ tests =
             result <- admissionSummary exactEnvelope BareLinuxBackend
             result
                 @?= Left (UnsupportedBudgetWall BareLinuxBackend "bare Linux has no quota/image-GC storage wall")
+        , testCase "every backend states its own answer to an inexact budget" $ do
+            -- Admission names each constructor, so what a backend does with a
+            -- budget that is not whole gibibytes is a decision rather than an
+            -- inheritance. A wildcard is what made three of these unstated.
+            -- The exact envelope every other case admits, made inexact in one
+            -- dimension, so what differs between the backends is the exactness
+            -- answer and nothing downstream of it.
+            let inexact = ResourceEnvelope 8 "17179869185" "100GiB"
+                inexactMemory backend = Left (InexactProviderQuantity backend "memory" (16 * gib + 1))
+            lima <- admissionSummary inexact LimaBackend
+            incus <- admissionSummary inexact IncusBackend
+            wsl <- admissionSummary inexact Wsl2Backend
+            colima <- admissionSummary inexact ColimaBackend
+            [lima, incus, wsl, colima]
+                @?= map inexactMemory [LimaBackend, IncusBackend, Wsl2Backend, ColimaBackend]
+            -- A kind node is cordoned in bytes, so an inexact budget is admitted.
+            node <- admissionSummary inexact DockerNodeBackend
+            isLeft node @?= False
+            -- Bare Linux has no wall to size against at all.
+            bare <- admissionSummary inexact BareLinuxBackend
+            bare
+                @?= Left
+                    (UnsupportedBudgetWall BareLinuxBackend "bare Linux has no quota/image-GC storage wall")
+        , testCase "one gate has one commitment, and a separator cannot forge it" $ do
+            -- Two backends projected the same six gate fields and hashed them
+            -- differently. They now commit through the one projection, so the
+            -- same gate cannot produce two answers.
+            gate <- gateForValues "plan-digest" "operation-key" "session-1" 3 4
+            preparedGateCommitment gate @?= preparedGateCommitment gate
+            -- The construction is length-framed rather than separator-joined:
+            -- these two gates are identical once the fields are run together
+            -- with a colon between them, and must still commit differently.
+            left <- gateForValues "plan:digest" "operation" "session-1" 3 4
+            right <- gateForValues "plan" "digest:operation" "session-1" 3 4
+            assertBool
+                "a separator moved between two fields produced the same commitment"
+                (preparedGateCommitment left /= preparedGateCommitment right)
         , testCase "workload set must be non-empty" $ do
             result <-
                 withBudgetProjectPlan $ \plan _providerResource _clusterResource ->
@@ -501,8 +539,8 @@ exactProviderGate plan providerResource =
         (stablePlanSnapshotDigest (renderSnapshot plan))
         (plannedResourceKey providerResource)
 
-mapBudgetError :: Either String a -> Either BudgetError a
-mapBudgetError = either (Left . InvalidBudget) Right
+mapBudgetError :: Either QuantityError a -> Either BudgetError a
+mapBudgetError = either (Left . InvalidQuantity) Right
 
 joinBudget :: Either BudgetError (Either BudgetError a) -> Either BudgetError a
 joinBudget = either Left id

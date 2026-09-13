@@ -66,19 +66,15 @@ import qualified Data.Text as Text
 import HostBootstrap.Harness (selfCreatedTestDataRemoval)
 import HostBootstrap.Ownership.Clause (boundEvidence, recordedEvidence)
 import HostBootstrap.Ownership.Object (
-    storeFault,
     ConflictReport (conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (OwnedDirectory),
     Origin (..),
-    OriginRecord,
     OwnershipFault (OwnershipProbeFailed),
     objectIdentityText,
     originRecordBinding,
     originRecordOrigin,
     ownershipFault,
-    parseOriginRecord,
-    renderOriginRecord,
  )
 import HostBootstrap.Ownership.Primitive (
     OwnershipRow,
@@ -90,14 +86,22 @@ import HostBootstrap.Ownership.Primitive (
     releaseOwnedObject,
     reobserveOwnedIdentity,
  )
+import HostBootstrap.Ownership.Tape (
+    OwnershipCarrier (fromClauseFault, fromStoreFault),
+    RecordSubject (..),
+    RecordTape,
+    carryStore,
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    readRecordUnder,
+    recordTape,
+ )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
+    ProtectedRecord,
     ProtectedSession,
     RecordKey,
-    compareAndDeleteProtectedRecord,
-    compareAndSwapProtectedRecord,
     protectedErrorMessage,
     readProtectedRecord,
     recordKeyText,
@@ -255,44 +259,9 @@ acquireDataRoot row session key path = do
                 bound <- bindOwnedIdentity row token identity publishBinding
                 pure (fmap (const (receipt OriginAbsent (Just identity))) bound)
 
-    publishOrigin record = do
-        written <-
-            compareAndSwapProtectedRecord
-                session
-                key
-                ExpectAbsent
-                (renderOriginRecord record)
-        pure (either (Left . storeFault "publish the data-root origin record") (const (Right ())) written)
+    publishOrigin = publishFreshRecord (dataRootTape session) key
 
-    -- The binding is published against the exact version the origin publication
-    -- left, read back inside the same exclusive entry. Reading it rather than
-    -- carrying it out of the seam's continuation is what keeps the store the one
-    -- place a version lives.
-    publishBinding record = do
-        current <- readProtectedRecord session key
-        case current of
-            Left failure -> pure (Left (storeFault "read the data-root origin record" failure))
-            Right Nothing ->
-                pure
-                    ( Left
-                        ( OwnershipProbeFailed
-                            "bind the data-root identity"
-                            "the origin record vanished inside the exclusive entry"
-                        )
-                    )
-            Right (Just stored) -> do
-                written <-
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        (ExpectVersion (protectedRecordVersion stored))
-                        (renderOriginRecord record)
-                pure
-                    ( either
-                        (Left . storeFault "bind the data-root identity")
-                        (const (Right ()))
-                        written
-                    )
+    publishBinding = publishBoundRecord (dataRootTape session) key
 
     receipt origin managed = DataRootOwnership path (recordKeyText key) origin managed
 
@@ -337,7 +306,7 @@ releaseDataRoot row session key owned
         ([], _) -> dropRecord DataRootPreserved
         (_, Nothing) -> dropRecord DataRootPreserved
         (target : _, Just _) -> do
-            stored <- readBoundRecord session key
+            stored <- readRecordUnder (dataRootTape session) key
             case stored of
                 Left failure -> pure (Left failure)
                 Right Nothing -> dropRecord DataRootPreserved
@@ -363,10 +332,10 @@ releaseDataRoot row session key owned
         OriginPresent _ -> True
         OriginAbsent -> False
     dropRecord outcome = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
         pure (fmap (const outcome) deleted)
     forget _record = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
         pure (either (Left . forgetFailure) Right deleted)
 
 {- | What recovery restored for an abandoned run's data root. Recovery never
@@ -405,17 +374,15 @@ recoverDataRoot ::
     FilePath ->
     IO (Either DataRootError RecoveredDataRoot)
 recoverDataRoot row session key path = do
-    stored <- readRecord session key
+    stored <- readRecordUnder (dataRootTape session) key
     case stored of
         Left failure -> pure (Left failure)
         Right Nothing -> pure (Right DataRootAlreadyAbsent)
-        Right (Just stamped) -> case parseOriginRecord (protectedRecordBytes stamped) of
-            Left fault -> pure (Left (ownershipError fault))
-            Right record -> case originRecordOrigin record of
-                OriginPresent _ -> settle DataRootFoundStatePreserved
-                OriginAbsent -> case originRecordBinding record of
-                    Just _ -> reclaimBoundGeneration record
-                    Nothing -> restoreRecordedAbsence
+        Right (Just record) -> case originRecordOrigin record of
+            OriginPresent _ -> settle DataRootFoundStatePreserved
+            OriginAbsent -> case originRecordBinding record of
+                Just _ -> reclaimBoundGeneration record
+                Nothing -> restoreRecordedAbsence
   where
     reclaimBoundGeneration record = do
         outcome <-
@@ -444,14 +411,33 @@ recoverDataRoot row session key path = do
             Right () -> settle DataRootAbsenceRestored
 
     forget _record = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
         pure (either (Left . forgetFailure) Right deleted)
 
     settle outcome = do
-        deleted <- deleteRecord session key
+        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
         pure (fmap (const outcome) deleted)
 
 -- Shared plumbing -----------------------------------------------------------------
+
+{- | What this owner calls its records, for the shared tape's refusals.
+
+The publish, bind, forget and read-back steps are the ones every owner behind
+the seam performs; the subject is the only part that is this owner's.
+-}
+dataRootSubject :: RecordSubject
+dataRootSubject =
+    RecordSubject
+        { subjectRecord = "the data-root origin record"
+        , subjectBinding = "bind the data-root identity"
+        }
+
+dataRootTape :: ProtectedSession session -> RecordTape session
+dataRootTape session = recordTape session dataRootSubject
+
+instance OwnershipCarrier DataRootError where
+    fromClauseFault = ownershipError
+    fromStoreFault = DataRootStoreFailure
 
 readRecord ::
     ProtectedSession session ->
@@ -460,39 +446,6 @@ readRecord ::
 readRecord session key = do
     observed <- readProtectedRecord session key
     pure (either (Left . DataRootStoreFailure) Right observed)
-
-{- | The durable record, decoded, when one is there. -}
-readBoundRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either DataRootError (Maybe OriginRecord))
-readBoundRecord session key = do
-    stored <- readRecord session key
-    pure $ case stored of
-        Left failure -> Left failure
-        Right Nothing -> Right Nothing
-        Right (Just stamped) ->
-            either (Left . ownershipError) (Right . Just) (parseOriginRecord (protectedRecordBytes stamped))
-
-{- | Delete the ownership record against the exact version just observed, so a
-concurrent writer cannot have its record removed by this settlement.
--}
-deleteRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either DataRootError ())
-deleteRecord session key = do
-    observed <- readRecord session key
-    case observed of
-        Left failure -> pure (Left failure)
-        Right Nothing -> pure (Right ())
-        Right (Just record) -> do
-            deleted <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion record))
-            pure (either (Left . DataRootStoreFailure) Right deleted)
 
 {- | Clear a confirmed generation's own content.
 
@@ -523,7 +476,6 @@ reported in the seam's terms while it is inside one. The store's exact message
 survives; what does not is the structured 'ProtectedError', which no caller of
 this module matches on for a publication.
 -}
-
 forgetFailure :: DataRootError -> OwnershipFault
 forgetFailure failure =
     OwnershipProbeFailed "forget the data-root ownership record" (dataRootErrorMessage failure)

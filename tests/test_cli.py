@@ -10,9 +10,9 @@ import pytest
 from click.testing import CliRunner
 
 from hostbootstrap import bootstrap, cli, docker_ops, process, self_update
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap.substrate import Arch, Substrate, SubstrateName
 
-LINUX = Substrate(SubstrateName.LINUX_CPU, "amd64")
+LINUX = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
 
 
 def _project() -> bootstrap.ProjectBuildSpec:
@@ -373,7 +373,7 @@ def test_load_and_detect_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_arch_default_uses_detection(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.substrate, "detect", lambda: LINUX)
-    assert cli._arch_default() == "amd64"
+    assert cli._arch_default() is Arch.AMD64
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +397,9 @@ def test_format_helpers_cover_fallbacks() -> None:
         process.CommandResult(args=(), returncode=2, stdout="", stderr="boom")
     )
     assert "command" in cli._format_command_error(empty)
+
+    never_ran = process.CommandError(process.CommandUnavailable(("cabal", "build"), "No such file"))
+    assert "could not be run" in cli._format_command_error(never_ran)
 
     assert "`sudo` not found" in cli._format_file_not_found(
         FileNotFoundError(2, "missing", b"/usr/bin/sudo")
@@ -640,8 +643,8 @@ def test_base_build_and_push_forces_no_cache(monkeypatch: pytest.MonkeyPatch) ->
     result = CliRunner().invoke(cli.main, ["base", "build-and-push", "--arch", "arm64"])
     assert result.exit_code == 0, result.output
     assert [(args[0], args[1]) for args, _kwargs in captured] == [
-        (cli.Flavor.CPU, "arm64"),
-        (cli.Flavor.CUDA, "arm64"),
+        (cli.Flavor.CPU, Arch.ARM64),
+        (cli.Flavor.CUDA, Arch.ARM64),
     ]
     assert all(kwargs.get("no_cache") is True for _args, kwargs in captured)
     assert all(kwargs.get("pull") is True for _args, kwargs in captured)
@@ -673,7 +676,7 @@ def test_base_build_no_push(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu", "--arch", "arm64"])
     assert result.exit_code == 0, result.output
-    assert captured == [(cli.Flavor.CPU, "arm64")]
+    assert captured == [(cli.Flavor.CPU, Arch.ARM64)]
     assert pushed == []
     assert "built docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64" in result.output
     assert "inspection only" in result.output
@@ -756,15 +759,14 @@ def test_quality_gates_run_all_python_core_and_demo_commands(
     captured: list[tuple[list[str], Path]] = []
     authority = cli.MaintainerCommandAuthority(tmp_path.resolve(), cli._MAINTAINER_TOKEN)
 
-    class _CompletedOK:
-        returncode = 0
+    def _probe(
+        cmd: tuple[str, ...], *, cwd: Path, stdio: process.Stdio, **_kw: object
+    ) -> process.CommandOutcome:
+        assert stdio is process.Stdio.INHERIT
+        captured.append((list(cmd), cwd))
+        return process.CommandResult(tuple(cmd), 0, "", "")
 
-    def _fake_run(cmd: list[str], *, cwd: Path, check: bool = False) -> object:
-        _ = check
-        captured.append((cmd, cwd))
-        return _CompletedOK()
-
-    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(cli.process, "probe", _probe)
     cli._run_quality_gates_or_abort(tmp_path, authority)
 
     assert captured == [
@@ -778,18 +780,28 @@ def test_quality_gate_nonzero_raises_before_docker(
     authority = cli.MaintainerCommandAuthority(tmp_path.resolve(), cli._MAINTAINER_TOKEN)
     calls = 0
 
-    class _Completed:
-        returncode = 7
-
-    def _fake_run(*_a: object, **_kw: object) -> object:
+    def _probe(cmd: tuple[str, ...], **_kw: object) -> process.CommandOutcome:
         nonlocal calls
         calls += 1
-        return _Completed()
+        return process.CommandResult(tuple(cmd), 7, "", "")
 
-    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(cli.process, "probe", _probe)
     with pytest.raises(cli.click.ClickException, match="Python code check failed"):
         cli._run_quality_gates_or_abort(tmp_path, authority)
     assert calls == 1
+
+
+def test_quality_gate_that_cannot_be_launched_raises_before_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    authority = cli.MaintainerCommandAuthority(tmp_path.resolve(), cli._MAINTAINER_TOKEN)
+    monkeypatch.setattr(
+        cli.process,
+        "probe",
+        lambda cmd, **_k: process.CommandUnavailable(tuple(cmd), "No such file"),
+    )
+    with pytest.raises(cli.click.ClickException, match="could not be run"):
+        cli._run_quality_gates_or_abort(tmp_path, authority)
 
 
 def test_quality_gates_reject_non_authorized_repo_root(
@@ -799,10 +811,10 @@ def test_quality_gates_reject_non_authorized_repo_root(
         tmp_path.resolve() / "canonical", cli._MAINTAINER_TOKEN
     )
 
-    def _fake_run(*_a: object, **_kw: object) -> object:
-        raise AssertionError("subprocess.run must not be reached for another checkout")
+    def _probe(*_a: object, **_kw: object) -> object:
+        raise AssertionError("no command runs for another checkout")
 
-    monkeypatch.setattr(cli.subprocess, "run", _fake_run)
+    monkeypatch.setattr(cli.process, "probe", _probe)
     with pytest.raises(cli.click.ClickException, match="not the canonical checkout"):
         cli._run_quality_gates_or_abort(tmp_path, authority)
 
@@ -810,13 +822,13 @@ def test_quality_gates_reject_non_authorized_repo_root(
 def test_native_architecture_requires_request_host_and_engine_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _arm64() -> str:
-        return "arm64"
+    async def _arm64() -> Arch:
+        return Arch.ARM64
 
     monkeypatch.setattr(cli.docker_ops, "engine_arch", _arm64)
-    asyncio.run(cli._validate_native_architecture("arm64", "arm64"))
+    asyncio.run(cli._validate_native_architecture(Arch.ARM64, Arch.ARM64))
     with pytest.raises(cli.click.ClickException, match="must be native"):
-        asyncio.run(cli._validate_native_architecture("amd64", "arm64"))
+        asyncio.run(cli._validate_native_architecture(Arch.AMD64, Arch.ARM64))
 
 
 def test_build_then_publish_smokes_before_and_after_registry_mutation(
@@ -875,13 +887,13 @@ def test_build_then_publish_smokes_before_and_after_registry_mutation(
 
     def _validation(
         flavor: cli.Flavor,
-        arch: str,
+        arch: Arch,
         *,
         context: Path,
         base_reference: str,
         pull: bool,
     ) -> docker_ops.BuildSpec:
-        assert (flavor, arch, context) == (cli.Flavor.CPU, "arm64", tmp_path)
+        assert (flavor, arch, context) == (cli.Flavor.CPU, Arch.ARM64, tmp_path)
         if pull:
             assert base_reference == digest
             order.append("published-compatibility-spec")
@@ -902,7 +914,7 @@ def test_build_then_publish_smokes_before_and_after_registry_mutation(
             base_spec,
             tag,
             cli.Flavor.CPU,
-            "arm64",
+            Arch.ARM64,
             tmp_path,
         )
     )

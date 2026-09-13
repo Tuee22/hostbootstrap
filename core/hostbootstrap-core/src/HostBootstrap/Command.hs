@@ -81,6 +81,7 @@ import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
     ConfigInput,
+    ExistingOutputPolicy (..),
     InitArgs (..),
     ProjectCfg (..),
     ProjectCodec,
@@ -97,6 +98,7 @@ import HostBootstrap.Config.Schema (
     installTestConfig,
     parseConfigRole,
     projectConfigFileName,
+    renderConfigRole,
     renderScopedProjectConfigBytes,
     siblingProjectConfigPath,
     siblingTestConfigPath,
@@ -214,6 +216,7 @@ import HostBootstrap.Lifecycle.Mode (
  )
 import HostBootstrap.Lifecycle.Session (sessionErrorMessage, verifyAllSessionsClosed)
 import HostBootstrap.Lift (
+    InVMSelfPath (InVMSelfPath),
     SelfRef,
     currentSelfRef,
     liftStdin,
@@ -577,7 +580,7 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                                                                                                                         (validatedConfigValue validated)
                                                                                                                                                     )
                                                                                                                                         cfg <- hostConfig
-                                                                                                                                        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                                                                                                                                        self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
                                                                                                                                         rollbackAcquired <- newIORef False
                                                                                                                                         let forwardAction = do
                                                                                                                                                 ran <-
@@ -887,8 +890,7 @@ defaultInitArgs =
         , storage = Nothing
         , dockerfile = Nothing
         , haReplicas = Nothing
-        , force = False
-        , ifMissing = False
+        , existingOutput = RefuseExistingOutput
         }
 
 {- | The @check-code@ verb: the fail-fast image-build quality gate. Its body is
@@ -1054,8 +1056,12 @@ contextCommand codec progName projectArtifacts _initBuilder =
 {- | The @init@ parser shared by @project init@ (§ Y) and @service init@ (§ AA):
 write a project-local @<project>.dhall@ without requiring an existing config (a
 bootstrap entrypoint). @defaultRole@ selects the role the generated config
-declares when @--role@ is not given (@host-orchestrator@ for @project init@,
-@cluster-service@ for @service init@). The flags carry **no** core default values
+declares when @--role@ is not given ('Context.HostOrchestrator' for @project init@,
+'Context.ClusterService' for @service init@). It is the parsed role kind, not its
+rendered text, because @--role@ accepts aliases and normalises case and
+separators: an operator who writes @--role host@ asks for the same role as one
+who writes @--role host-orchestrator@, and the identity decision below is about
+the role, not about the spelling it arrived in. The flags carry **no** core default values
 (the project's Production assembly supplies every omitted default), so the
 parser yields a defaultless 'InitArgs' which the single assembler interprets.
 Python does not trigger this
@@ -1070,7 +1076,7 @@ initParserInfo ::
     ProjectCodec configScope specDigest cfg ->
     String ->
     String ->
-    String ->
+    Context.ContextKind ->
     Bool ->
     (InitArgs -> IO (cfg configScope)) ->
     ParserInfo (IO ())
@@ -1085,13 +1091,12 @@ initParserInfo codec progName commandLabel defaultRole installRootIdentity initB
             <*> optional memoryOpt
             <*> optional storageOpt
             <*> optional haReplicasOpt
-            <*> switch (long "force" <> help "overwrite OUTPUT when it already exists")
-            <*> switch (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
+            <*> existingOutputOpt
             <*> many alsoRoleOpt
         )
         (progDesc "Write a project-local <project>.dhall without requiring an existing config")
   where
-    initAction moutput roleName mroot mDockerfile mcpu mMemory mStorage mha forceFlag ifMissingFlag alsoRolesRaw = do
+    initAction moutput roleName mroot mDockerfile mcpu mMemory mStorage mha existingPolicy alsoRolesRaw = do
         roleKind <- either die pure (parseConfigRole roleName)
         -- A config may declare more than one role (§ X): the primary --role plus
         -- any --also-role grants (e.g. a project authority that is also a service
@@ -1109,19 +1114,18 @@ initParserInfo codec progName commandLabel defaultRole installRootIdentity initB
                     , storage = T.pack <$> mStorage
                     , dockerfile = T.pack <$> mDockerfile
                     , haReplicas = mha
-                    , force = forceFlag
-                    , ifMissing = ifMissingFlag
+                    , existingOutput = existingPolicy
                     }
         cfg <- initBuilder args
         outPath <- maybe defaultProjectConfigPath pure moutput
         exists <- doesFileExist outPath
-        if exists && ifMissingFlag && not forceFlag
-            then putStrLn (commandLabel ++ ": " ++ outPath ++ " already present")
-            else do
-                when (exists && not forceFlag) $
-                    die (commandLabel ++ ": " ++ outPath ++ " already exists (pass --force to overwrite)")
-                writeScopedProjectConfigFile codec outPath cfg
-        when (installRootIdentity && roleName == defaultRole) $ do
+        case (exists, existingPolicy) of
+            (True, KeepExistingOutput) ->
+                putStrLn (commandLabel ++ ": " ++ outPath ++ " already present")
+            (True, RefuseExistingOutput) ->
+                die (commandLabel ++ ": " ++ outPath ++ " already exists (pass --force to overwrite)")
+            _ -> writeScopedProjectConfigFile codec outPath cfg
+        when (installRootIdentity && roleKind == defaultRole) $ do
             executable <- getExecutablePath
             installedConfig <- normalise <$> makeAbsolute outPath
             expectedConfig <- normalise <$> makeAbsolute (takeDirectory executable </> progName ++ ".dhall")
@@ -1142,10 +1146,18 @@ initParserInfo codec progName commandLabel defaultRole installRootIdentity initB
         strOption
             ( long "role"
                 <> metavar "ROLE"
-                <> value defaultRole
+                <> value (T.unpack (renderConfigRole defaultRole))
                 <> showDefault
                 <> help ("local role (" ++ T.unpack (T.intercalate (T.pack ", ") configRoleNames) ++ ")")
             )
+    {- The two behaviours are mutually exclusive options over one value, so
+    "overwrite it" and "leave it alone" cannot both be asked for. -}
+    existingOutputOpt =
+        flag' OverwriteExistingOutput (long "force" <> help "overwrite OUTPUT when it already exists")
+            <|> flag'
+                KeepExistingOutput
+                (long "if-missing" <> help "no-op when OUTPUT already exists (idempotent ensure)")
+            <|> pure RefuseExistingOutput
     alsoRoleOpt =
         strOption
             ( long "also-role"
@@ -1209,7 +1221,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         )
   where
     codec = finalizedProjectCodec finalizedSpec
-    pInit = command "init" (initParserInfo codec progName "project init" "host-orchestrator" True initBuilder)
+    pInit = command "init" (initParserInfo codec progName "project init" Context.HostOrchestrator True initBuilder)
     pUp =
         command
             "up"
@@ -1259,7 +1271,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                                     (validatedContextValue admittedContext)
                                     ( \validatedLifecycle -> do
                                         cfg <- hostConfig
-                                        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                                        self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
                                         runBoundProjectUp
                                             root
                                             cfg
@@ -1297,7 +1309,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                                             (validatedContextValue admittedContext)
                                             ( \validatedLifecycle -> do
                                                 cfg <- hostConfig
-                                                self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+                                                self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
                                                 persisted <-
                                                     withPersistedPlanSnapshot
                                                         rootAuthority
@@ -1706,7 +1718,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         IO ()
     runProductionTeardown root validated ctx cfg verb = do
         store <- openAuthorityStore root
-        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
         ran <-
             withRootProjectReverseLifecycleEntry
                 store
@@ -1814,7 +1826,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         IO ()
     _reverseProjection plan currentFrame root ctx cfg verb = do
         let projection = Teardown.teardownPlan plan currentFrame verb
-        self <- currentSelfRef ("/usr/local/bin/" ++ progName)
+        self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
         descended <- newIORef Nothing
         let current = currentFrameId currentFrame
         case Teardown.openTeardownForest projection of
@@ -2537,7 +2549,7 @@ serviceCommandGroup codec progName registry initBuilder =
             (progDesc "Service lifecycle: init the service config, print the schema, run a long-running role")
         )
   where
-    sInit = command "init" (initParserInfo codec progName "service init" "cluster-service" False initBuilder)
+    sInit = command "init" (initParserInfo codec progName "service init" Context.ClusterService False initBuilder)
     sSchema =
         command
             "schema"

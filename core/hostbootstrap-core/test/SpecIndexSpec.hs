@@ -15,19 +15,15 @@ the recovered finalized specification the next sprint threads into both root
 -}
 module SpecIndexSpec (tests) where
 
-import Data.Char (isSpace)
-import Data.List (isInfixOf, isPrefixOf, sort, stripPrefix)
-import HostBootstrap.DocValidator (findRepoRoot)
+import Data.List (isInfixOf, isPrefixOf, sort)
+import SourceGuard
+    ( fieldModules
+    , listHaskellSources
+    , mainLibraryStanza
+    , normalizeWhitespace
+    )
 import qualified SourceGuard
-import System.Directory (
-    doesDirectoryExist,
-    getCurrentDirectory,
-    listDirectory,
- )
-import System.FilePath (
-    takeExtension,
-    (</>),
- )
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -35,7 +31,46 @@ tests :: TestTree
 tests =
     testGroup
         "specification-index carriers"
-        [ testCase "the installed project codec keeps one hidden owner and one relabelling authority" $
+        [ testCase "one reader enumerates the main library, and the package declares every module" $ do
+            -- Every guard below asks the shared reader which modules the main
+            -- library declares. The answer is checkable without a frozen
+            -- number: each module it names has a file, and each file under its
+            -- source roots is named by some component of the package — the
+            -- main library, or one of the private sublibraries that expose a
+            -- module out of the same tree. A reader that under-reads a field
+            -- reports the difference as a named set rather than as an absence.
+            (declared, present, description) <- SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+                librarySource <- requiredMainLibraryStanza cabalSource
+                let named =
+                        sort
+                            ( fieldModules "exposed-modules:" librarySource
+                                <> fieldModules "other-modules:" librarySource
+                            )
+                modules <-
+                    traverse
+                        ( \sourceDirectory -> do
+                            let root = packageRoot </> sourceDirectory
+                            paths <- listHaskellSources root
+                            pure (map (moduleNameFromPath root) paths)
+                        )
+                        librarySourceDirectories
+                pure (named, sort (concat modules), cabalSource)
+            assertBool
+                ( "the main library declares "
+                    <> show (length declared)
+                    <> " modules, and "
+                    <> show (filter (`notElem` present) declared)
+                    <> " of them have no file under its source roots"
+                )
+                (all (`elem` present) declared)
+            assertBool
+                ( "the package description names no component for "
+                    <> show (filter (\name -> not (name `isInfixOf` description)) present)
+                )
+                (all (`isInfixOf` description) present)
+
+        , testCase "the installed project codec keeps one hidden owner and one relabelling authority" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 let ownerPath =
                         sourceRoot </> "HostBootstrap" </> "Config" </> "Class" </> "Internal.hs"
@@ -251,6 +286,7 @@ tests =
                 exportedNames classExports
                     @?= [ "ProjectCfg"
                         , "TestCfg"
+                        , "ExistingOutputPolicy"
                         , "InitArgs"
                         , "AssemblyRequest"
                         , "ConfigAssembly"
@@ -374,15 +410,7 @@ importersOf moduleName sources =
         ]
 
 withPackageSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
-withPackageSourceRoot use = do
-    cwd <- getCurrentDirectory
-    repoRoot <-
-        findRepoRoot cwd
-            >>= maybe
-                (assertFailure ("could not locate repo root from " <> cwd))
-                pure
-    let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
-    use packageRoot (packageRoot </> "src")
+withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
 readProductionSources sourceRoot = do
@@ -416,6 +444,14 @@ readPublicModuleExports packageRoot sourceRoot = do
         )
         exposed
 
+{- | The directories the main library's @hs-source-dirs@ names.
+
+Spelled here rather than parsed, because a guard that derived them from the same
+field it is checking would agree with itself.
+-}
+librarySourceDirectories :: [FilePath]
+librarySourceDirectories = ["src", "internal" </> "cluster-backend"]
+
 requiredMainLibraryStanza :: String -> IO String
 requiredMainLibraryStanza cabalSource =
     maybe
@@ -436,61 +472,8 @@ modulesExporting exported =
         . map fst
         . filter (elem exported . snd)
 
-listHaskellSources :: FilePath -> IO [FilePath]
-listHaskellSources directory = do
-    entries <- sort <$> listDirectory directory
-    fmap concat $
-        traverse
-            ( \entry -> do
-                let path = directory </> entry
-                isDirectory <- doesDirectoryExist path
-                if isDirectory
-                    then listHaskellSources path
-                    else pure [path | takeExtension path == ".hs"]
-            )
-            entries
-
 moduleNameFromPath :: FilePath -> FilePath -> String
 moduleNameFromPath = SourceGuard.repoRelativeModuleName
-
-mainLibraryStanza :: String -> Maybe String
-mainLibraryStanza source =
-    case dropWhile ((/= "library") . trim) (lines source) of
-        [] -> Nothing
-        _library : rest -> Just (unlines (takeWhile isLibraryContinuation rest))
-  where
-    isLibraryContinuation [] = True
-    isLibraryContinuation line@(firstCharacter : _) =
-        null (trim line) || isSpace firstCharacter
-
-fieldModules :: String -> String -> [String]
-fieldModules field = go . lines
-  where
-    go [] = []
-    go (line : rest)
-        | Just inline <- stripPrefix field (trim line) =
-            let fieldIndent = indentation line
-                (continuation, remaining) =
-                    span
-                        (\next -> null (trim next) || indentation next > fieldIndent)
-                        rest
-             in moduleTokens (inline : continuation) <> go remaining
-        | otherwise = go rest
-
-    moduleTokens =
-        filter ("HostBootstrap." `isPrefixOf`)
-            . map (filter (/= ','))
-            . words
-            . unlines
-
-indentation :: String -> Int
-indentation = length . takeWhile isSpace
-
-trim :: String -> String
-trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
-
-normalizeWhitespace :: String -> String
-normalizeWhitespace = unwords . words
 
 assertContains :: String -> String -> String -> IO ()
 assertContains label expected source =

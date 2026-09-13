@@ -1,12 +1,19 @@
--- | Outer-host realization detection.
+-- | The outer-host realization this binary is running on.
 --
--- These tags describe the host detected at runtime so provider code can realize
--- the universal linux-cpu project substrate. They are provider-dispatch facts,
--- not competing project-visible execution contracts; projects do not declare a
--- host matrix in Python-owned config.
--- The classification core ('classify', 'parseDockerArch') is pure; 'detect'
--- wraps it with the platform reads and NVIDIA probe. Ported from the Python
--- @hostbootstrap/substrate.py@.
+-- These tags describe the host so provider code can realize the universal
+-- linux-cpu project substrate. They are provider-dispatch facts, not competing
+-- project-visible execution contracts; projects do not declare a host matrix in
+-- Python-owned config.
+--
+-- § M gives pre-binary detection to the Python bootstrapper, which runs before
+-- this binary exists and states what it found through the documented
+-- invocation-context seam ('substrateEnvVar' and 'archEnvVar'). 'detect' reads
+-- that statement. 'detectHere' is the fallback for a binary invoked directly,
+-- with no bootstrapper in front of it — the one path on which this host is
+-- classified a second time, taken only when nobody classified it once.
+--
+-- The classification core ('classify', 'parseDockerArch', 'parseStatedHost') is
+-- pure; 'detectHere' wraps it with the platform reads and the NVIDIA probe.
 module HostBootstrap.Substrate
   ( SubstrateName (..),
     Arch (..),
@@ -22,8 +29,15 @@ module HostBootstrap.Substrate
     isWindows,
     hasGpu,
     parseDockerArch,
+    parseSubstrateName,
     classify,
     detect,
+    detectHere,
+    substrateEnvVar,
+    archEnvVar,
+    parseStatedHost,
+    nvidiaMarkerPaths,
+    nvidiaDeviceMarker,
     hasNvidiaGpu,
   )
 where
@@ -32,6 +46,7 @@ import Data.Char (toLower)
 import Data.List (isInfixOf)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
 import System.Directory (doesPathExist, findExecutable)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import qualified System.Info as Info
 
@@ -108,8 +123,27 @@ isLinux = (== LinuxFrame) . substrateFrame
 isWindows :: Substrate -> Bool
 isWindows = (== WindowsFrame) . substrateFrame
 
+-- | Whether this host carries an accelerator.
+--
+-- A total case rather than membership in a literal list: a substrate added to
+-- the closed sum is a compile error here instead of a silent "no accelerator".
 hasGpu :: Substrate -> Bool
-hasGpu s = substrateName s `elem` [LinuxGpu, WindowsGpu]
+hasGpu s = case substrateName s of
+  AppleSilicon -> False
+  LinuxCpu -> False
+  LinuxGpu -> True
+  WindowsCpu -> False
+  WindowsGpu -> True
+
+-- | Read one rendered substrate tag back.
+parseSubstrateName :: String -> Either String SubstrateName
+parseSubstrateName raw = case raw of
+  "apple-silicon" -> Right AppleSilicon
+  "linux-cpu" -> Right LinuxCpu
+  "linux-gpu" -> Right LinuxGpu
+  "windows-cpu" -> Right WindowsCpu
+  "windows-gpu" -> Right WindowsGpu
+  other -> Left ("unsupported host substrate: " ++ other)
 
 -- | Map a host machine string (e.g. from @uname -m@ / 'System.Info.arch') to a
 -- Docker-style architecture. Pure.
@@ -142,17 +176,68 @@ classify osName rawArch gpu = do
       Right (Substrate (if gpu then WindowsGpu else WindowsCpu) arch)
     other -> Left ("unsupported host platform: " ++ other)
 
--- | Detect the outer-host realization by reading the platform and probing for
--- an NVIDIA GPU.
+-- | The seam field naming the outer-host realization the bootstrapper detected.
+substrateEnvVar :: String
+substrateEnvVar = "HOSTBOOTSTRAP_HOST_SUBSTRATE"
+
+-- | The seam field naming that host's architecture.
+archEnvVar :: String
+archEnvVar = "HOSTBOOTSTRAP_HOST_ARCH"
+
+{- | Read the bootstrapper's statement of the host, when it made one.
+
+Pure, over the two field values as they were found. 'Nothing' means no statement
+was made and the caller classifies the host itself. A statement missing half of
+itself is a refusal rather than a fallback: the sender claimed the seam, so
+quietly re-deriving what it meant to say is how the two sides come to disagree.
+-}
+parseStatedHost :: Maybe String -> Maybe String -> Maybe (Either String Substrate)
+parseStatedHost Nothing Nothing = Nothing
+parseStatedHost statedName statedArch =
+  Just $ do
+    name <- required substrateEnvVar statedName >>= parseSubstrateName
+    arch <- required archEnvVar statedArch >>= parseDockerArch
+    pure (Substrate name arch)
+  where
+    required field = maybe (Left ("incomplete invocation context: " ++ field ++ " is unset")) Right
+
+{- | The outer-host realization, as stated by the bootstrapper or classified here.
+
+The stated answer wins, because § M gives the classification to the side that
+runs first and one host classified twice agrees only until it does not.
+-}
 detect :: IO (Either String Substrate)
 detect = do
+  statedName <- lookupEnv substrateEnvVar
+  statedArch <- lookupEnv archEnvVar
+  case parseStatedHost statedName statedArch of
+    Just stated -> pure stated
+    Nothing -> detectHere
+
+-- | Classify this host directly, for a binary invoked with no bootstrapper in
+-- front of it. This is the fallback, not the ordinary path.
+detectHere :: IO (Either String Substrate)
+detectHere = do
   gpu <- hasNvidiaGpu
   pure (classify Info.os Info.arch gpu)
+
+-- | The kernel markers whose presence is an NVIDIA driver.
+nvidiaMarkerPaths :: [FilePath]
+nvidiaMarkerPaths = ["/proc/driver/nvidia/version", "/dev/nvidiactl"]
+
+{- | The token an accelerator listing prints once per device.
+
+Detection asks this question and so does every reconciler that gates on a GPU.
+It is one string here rather than a literal at each of those sites, so
+"@nvidia-smi@ reported a device" means the same thing in all of them.
+-}
+nvidiaDeviceMarker :: String
+nvidiaDeviceMarker = "GPU"
 
 -- | Whether the host has an NVIDIA GPU: the kernel markers, then @nvidia-smi -L@.
 hasNvidiaGpu :: IO Bool
 hasNvidiaGpu = do
-  markers <- mapM doesPathExist ["/proc/driver/nvidia/version", "/dev/nvidiactl"]
+  markers <- mapM doesPathExist nvidiaMarkerPaths
   if or markers
     then pure True
     else do
@@ -162,5 +247,7 @@ hasNvidiaGpu = do
         Just smi -> do
           outcome <- runCaptured smi ["-L"] ""
           pure $ case outcome of
-            Right run | capturedExit run == ExitSuccess -> "GPU" `isInfixOf` capturedStdout run
+            Right run
+              | capturedExit run == ExitSuccess ->
+                  nvidiaDeviceMarker `isInfixOf` capturedStdout run
             _ -> False

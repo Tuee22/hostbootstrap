@@ -59,7 +59,7 @@ container =
     }
 
 self :: SelfRef
-self = mkSelfRef "/proc/self/exe" "/usr/local/bin/hostbootstrap-demo"
+self = mkSelfRef (LocalSelfPath "/proc/self/exe") (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
 
 sub :: [String]
 sub = ["cluster", "up"]
@@ -149,7 +149,7 @@ foldCases =
 foldLeafCases :: [TestTree]
 foldLeafCases =
   [ testCase "a raw bash -lc leaf folds into the VM frame verbatim" $
-      foldLeaf (inVM vm localContext) (RawCmd ["bash", "-lc", "echo hi"])
+      foldLeaf (inVM vm localContext) (RawCmd "bash" ["-lc", "echo hi"])
         @?= DispatchTool Incus ["exec", "demo-vm", "--", "bash", "-lc", "echo hi"],
     testCase "foldLift is the SelfSub special case of foldLeaf" $
       foldLeaf (inVM vm localContext) (SelfSub self sub)
@@ -332,20 +332,20 @@ effectCases :: [TestTree]
 #ifdef mingw32_HOST_OS
 effectCases =
   [ testCase "outer provider dispatch still uses the resolved-tool seam" $ do
-      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd ["true"])
+      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd "true" [])
         >>= (@?= Left "incus not found on this host")
   ]
 #else
 effectCases =
   [ testCase "local raw leaf captures successful stdout through liftLeaf" $ do
-      liftLeaf emptyHostConfig localContext (RawCmd ["/bin/sh", "-c", "printf effect-ok"])
+      liftLeaf emptyHostConfig localContext (RawCmd "/bin/sh" ["-c", "printf effect-ok"])
         >>= (@?= Right (ExitSuccess, "effect-ok", ""))
   , testCase "local self subcommand captures successful stdout through liftSubcommand" $ do
-      let shellSelf = mkSelfRef "/bin/sh" "/bin/sh"
+      let shellSelf = mkSelfRef (LocalSelfPath "/bin/sh") (InVMSelfPath "/bin/sh")
       liftSubcommand emptyHostConfig shellSelf localContext ["-c", "printf self-ok"]
         >>= (@?= Right (ExitSuccess, "self-ok", ""))
   , testCase "with-stdin forwards bytes and its empty input is identical to the ordinary seam" $ do
-      let leaf = RawCmd ["/bin/cat"]
+      let leaf = RawCmd "/bin/cat" []
       ordinary <- liftLeaf emptyHostConfig localContext leaf
       emptyInput <- liftLeafWithStdin emptyHostConfig localContext leaf ""
       payload <- liftLeafWithStdin emptyHostConfig localContext leaf "line one\nline two\n"
@@ -357,7 +357,7 @@ effectCases =
         Left message -> assertBool message ("could not exec /hostbootstrap/definitely/missing/executable" `isInfixOf` message)
         Right success -> assertBool ("expected exec failure, got " ++ show success) False
   , testCase "outer provider dispatch uses the resolved-tool seam" $ do
-      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd ["true"])
+      liftLeaf emptyHostConfig (inVM vm localContext) (RawCmd "true" [])
         >>= (@?= Left "incus not found on this host")
   ]
 #endif

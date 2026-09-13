@@ -37,6 +37,7 @@ import HostBootstrap.Cluster.Lifecycle (
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
+    ExistingOutputPolicy (..),
     InitArgs (..),
     ProjectCfg (..),
     TestCfg (..),
@@ -158,8 +159,7 @@ defaultBareArgs root =
         , storage = Nothing
         , dockerfile = Nothing
         , haReplicas = Nothing
-        , force = False
-        , ifMissing = False
+        , existingOutput = RefuseExistingOutput
         }
 
 bareCaseId :: CaseId

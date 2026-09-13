@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import subprocess
 import sys
 import tomllib
 from collections.abc import Sequence
@@ -43,7 +42,7 @@ from . import (
     test_all,
 )
 from .base_image import Flavor
-from .substrate import Substrate
+from .substrate import Arch, Substrate
 
 _DEFAULT_PROJECT_ROOT: Final[Path] = Path(".")
 
@@ -96,6 +95,8 @@ _DOCKER_STDERR_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
 
 def _format_command_error(exc: process.CommandError) -> str:
     result = exc.result
+    if result is None:
+        return process.describe(exc.outcome)
     stderr_lower = result.stderr.lower()
     argv0 = result.args[0] if result.args else "command"
     for needle, message in _DOCKER_STDERR_PATTERNS:
@@ -384,7 +385,7 @@ def base() -> None:
     """Produce/publish the four ``basecontainer-<flavor>-<arch>`` tags."""
 
 
-def _arch_default() -> str:
+def _arch_default() -> Arch:
     return substrate.detect().arch
 
 
@@ -392,7 +393,7 @@ async def _build_then_publish(
     build_spec: docker_ops.BuildSpec,
     tag: str,
     flavor: Flavor,
-    arch: str,
+    arch: Arch,
     context: Path,
     *,
     prefix: str = "",
@@ -473,20 +474,21 @@ def _run_quality_gates_or_abort(context: Path, authority: MaintainerCommandAutho
             f"({authority.repository_root})"
         )
     for gate in _quality_gates(resolved):
-        completed = subprocess.run(list(gate.command), cwd=gate.cwd, check=False)
-        if completed.returncode != 0:
+        try:
+            process.run_checked_sync(gate.command, cwd=gate.cwd, stdio=process.Stdio.INHERIT)
+        except process.CommandError as exc:
             raise click.ClickException(
-                f"{gate.label} failed (exit {completed.returncode}); "
-                "no base image was built or pushed."
-            )
+                f"{gate.label} failed; no base image was built or pushed. {exc}"
+            ) from exc
 
 
-async def _validate_native_architecture(requested_arch: str, host_arch: str) -> None:
+async def _validate_native_architecture(requested_arch: Arch, host_arch: Arch) -> None:
     engine_arch = await docker_ops.engine_arch()
-    if requested_arch != host_arch or requested_arch != engine_arch:
+    if requested_arch is not host_arch or requested_arch is not engine_arch:
         raise click.ClickException(
             "base architecture must be native: "
-            f"requested={requested_arch}, host={host_arch}, Docker engine={engine_arch}; "
+            f"requested={requested_arch.value}, host={host_arch.value}, "
+            f"Docker engine={engine_arch.value}; "
             "buildx/emulation and cross-architecture tag publication are not supported"
         )
 
@@ -520,7 +522,7 @@ def _resolve_build_budget(
 
 def _base_work(
     flavor: str | None,
-    target_arch: str,
+    target_arch: Arch,
     context: Path,
     *,
     budget: resources.BuildBudget | None,
@@ -553,7 +555,7 @@ async def _run_base_targets(
     publish: bool,
     sequential: bool,
     context: Path,
-    arch: str,
+    arch: Arch,
 ) -> None:
     """Build locally or complete the pre-smoke→publish→pull→digest→smoke transaction.
 
@@ -606,7 +608,7 @@ _BASE_FLAVOR_OPTION = click.option(
 
 _BASE_ARCH_OPTION = click.option(
     "--arch",
-    type=click.Choice(["amd64", "arm64"]),
+    type=click.Choice([a.value for a in Arch]),
     default=None,
     help="Target arch; defaults to the host arch.",
 )
@@ -647,7 +649,7 @@ def base_build(flavor: str | None, arch: str | None, context: Path, sequential: 
     authority = _require_maintainer_authority()
     resolved_context = context.resolve()
     host_arch = _arch_default()
-    target_arch = arch or host_arch
+    target_arch = Arch(arch) if arch is not None else host_arch
     asyncio.run(_validate_native_architecture(target_arch, host_arch))
     _run_quality_gates_or_abort(resolved_context, authority)
     budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)
@@ -682,7 +684,7 @@ def base_build_and_push(
     authority = _require_maintainer_authority()
     resolved_context = context.resolve()
     host_arch = _arch_default()
-    target_arch = arch or host_arch
+    target_arch = Arch(arch) if arch is not None else host_arch
     asyncio.run(_validate_native_architecture(target_arch, host_arch))
     _run_quality_gates_or_abort(resolved_context, authority)
     budget = _resolve_build_budget(_base_targets(flavor), sequential=sequential)

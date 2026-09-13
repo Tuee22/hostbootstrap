@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from hostbootstrap import docker_ops, process
+from hostbootstrap.substrate import Arch
 
 
 def test_build_command_full() -> None:
@@ -217,13 +218,13 @@ def test_push_tag_inspect_commands() -> None:
 @pytest.mark.parametrize(
     ("rendered", "expected"),
     [
-        ("amd64\n", "amd64"),
-        ("x86_64", "amd64"),
-        ("arm64", "arm64"),
-        ("AARCH64", "arm64"),
+        ("amd64\n", Arch.AMD64),
+        ("x86_64", Arch.AMD64),
+        ("arm64", Arch.ARM64),
+        ("AARCH64", Arch.ARM64),
     ],
 )
-def test_normalize_architecture(rendered: str, expected: str) -> None:
+def test_normalize_architecture(rendered: str, expected: Arch) -> None:
     assert docker_ops.normalize_architecture(rendered) == expected
 
 
@@ -342,7 +343,7 @@ async def test_arch_and_digest_async_wrappers_parse_quiet_output(
 
     monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
 
-    assert await docker_ops.engine_arch() == "arm64"
+    assert await docker_ops.engine_arch() is Arch.ARM64
     assert await docker_ops.image_digest_reference(tag) == digest
     assert await docker_ops.image_id(tag) == f"sha256:{'d' * 64}"
     assert calls == [

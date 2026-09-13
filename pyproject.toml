@@ -30,7 +30,7 @@ hostbootstrap = "hostbootstrap.cli:main"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["hostbootstrap", "stubs"]
+src = ["hostbootstrap"]
 
 [tool.ruff.lint]
 select = [
@@ -55,7 +55,6 @@ warn_unused_ignores = true
 warn_redundant_casts = true
 warn_return_any = true
 no_implicit_reexport = true
-mypy_path = "stubs"
 files = ["hostbootstrap"]
 
 [tool.pytest.ini_options]

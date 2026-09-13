@@ -57,11 +57,11 @@ The update path is explicit. Normal `doctor`, `build`, `run`, and `base` invocat
 mutate the pipx install; see [../engineering/self_update.md](../engineering/self_update.md).
 
 The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
-`hostbootstrap/` package, `stubs/`, and `tests/` all live there alongside
+`hostbootstrap/` package, and `tests/` all live there alongside
 `core/`). Run all Python commands from the repo root:
 
 - Code checks: `poetry run python -m hostbootstrap.check_code`
-  (runs `ruff check hostbootstrap stubs`, `black --check hostbootstrap stubs`, then `mypy hostbootstrap`).
+  (runs `ruff check hostbootstrap`, `black --check hostbootstrap`, then `mypy hostbootstrap`).
 - Tests: `poetry run python -m hostbootstrap.test_all`.
 - Coverage: `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`
   (configured with `fail_under = 100`).

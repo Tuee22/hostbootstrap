@@ -3,8 +3,8 @@
 **Status**: Active
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus on a realized linux-cpu host
-`cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'`
+**Gate**: `cabal test all` from `core/`, plus on a realized linux-cpu host
+`cabal test hostbootstrap-core:test:hostbootstrap-core-test --test-options='--pattern recovery-interruption'`
 from `core/`
 **Gate kind**: deferred
 **Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'` ; pass ; covers 28a1960cfd248366414c686d5a0ab8384a302d24c9d091e95c27c6931aa4e435

@@ -26,6 +26,7 @@ module HostBootstrap.Context
     WitnessKind (..),
     BinaryContextError (..),
     defaultRoleName,
+    allContextKinds,
     contextForKind,
     addRole,
     roleAdditionAllowed,
@@ -131,7 +132,7 @@ data ContextKind
   | Daemon
   | OneShotJob
   | TestHarness
-  deriving (Eq, Show, Generic, FromDhall, ToDhall)
+  deriving (Eq, Show, Enum, Bounded, Generic, FromDhall, ToDhall)
 
 -- | The provider/substrate that owns a topology frame. The graph is deliberately
 -- open-ended: later providers add constructors here without changing the core
@@ -557,6 +558,15 @@ childKindsForKind OneShotJob = []
 childKindsForKind TestHarness = [ClusterService]
 
 -- | The default stable role label used in generated configs and logs.
+{- | Every role a config may declare.
+
+Derived from the sum rather than listed beside it, so a role added to the type
+is a role the vocabulary already advertises. A second literal list would leave a
+new role parseable and undiscoverable.
+-}
+allContextKinds :: [ContextKind]
+allContextKinds = [minBound .. maxBound]
+
 defaultRoleName :: ContextKind -> Text
 defaultRoleName HostOrchestrator = "host-orchestrator"
 defaultRoleName VMOrchestrator = "vm-orchestrator"

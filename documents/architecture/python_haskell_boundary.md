@@ -45,7 +45,7 @@ wrappers. Those operator-invoked distribution tasks are outside the project hand
 they neither initialize project config nor perform provider, project-image, cluster, service, test-run,
 or teardown lifecycle work.
 
-On POSIX, handoff uses `exec`. On Windows, Python uses `subprocess.run` and returns the child's exit code;
+On POSIX, handoff uses `exec`. On Windows, Python launches the binary as a child and returns its exit code;
 it does not replace the Python process. Documentation should not claim identical process provenance on
 all platforms.
 
@@ -55,6 +55,61 @@ after the stable copy, Python asks that binary to install or validate its handof
 build-signing key, and distinct activation secret/public pair. This is an execution handoff, not transferred
 cryptographic ownership: Python neither generates, reads, returns, nor interprets those keys. `project init`
 continues to own only explicit project configuration initialization.
+
+## One way to run a command
+
+`hostbootstrap/process.py` is the only module in the bootstrapper that launches a subprocess, in two
+shapes: an asynchronous runner that streams and captures a long build's output, and a synchronous probe
+for the short host questions asked before any event loop exists. The probe names the child's stdio
+disposition with a closed value rather than with a pair of booleans.
+
+A command fails in two different ways, and every caller cares which: it ran and returned non-zero, or it
+never started. The probe returns that distinction as a value — a completed result, or a statement that
+the command was unavailable and why — so the prerequisite checks, host detection, self-update, and the
+maintainer quality gates each wrap one value into their own error type instead of deriving the same fact
+from which exception they happened to catch.
+
+## Who detects the host
+
+The bootstrapper detects the outer-host realization, because something must classify the host before a
+project binary exists and § M gives that job to the side that runs first. The binary **receives** that
+answer; it does not classify the same host a second time.
+
+The seam is the pair of values the bootstrapper sets on the binary it launches:
+
+```text
+HOSTBOOTSTRAP_HOST_SUBSTRATE = apple-silicon | linux-cpu | linux-gpu | windows-cpu | windows-gpu
+HOSTBOOTSTRAP_HOST_ARCH      = amd64 | arm64
+```
+
+Each value is one spelling of a closed vocabulary, and the pair is set explicitly on the handoff —
+`execve` on POSIX, the child's environment on Windows — rather than left in the ambient environment for
+the binary to pick up. This is the one place a governed document presents an environment value as a
+supported input, and it is a statement from a known sender to a known receiver, not configuration.
+Typed configuration remains Dhall, owned by the binary.
+
+A binary invoked directly, with no bootstrapper in front of it, sees no such pair and falls back to its
+own detection — `HostBootstrap.Substrate.detectHere`, labelled as the fallback where it lives. A pair
+that arrives half-set is refused rather than fallen back from: the sender claimed the seam, so
+re-deriving what it meant to say is how the two sides come to disagree.
+
+The binary's suite reads the bootstrapper's source and asserts that both field names and all seven
+vocabulary spellings appear there, so the two ends of the seam are checked against each other rather
+than agreed by comment.
+
+## Closed vocabularies
+
+The bootstrapper names three things with closed enumerations rather than with text: the outer-host
+realization (`SubstrateName`), the base-image family (`Flavor`), and the architecture (`Arch`, whose two
+members are `amd64` and `arm64`). `Substrate.arch` carries the third, so a detected host's architecture
+is already narrowed by the time anything reads it.
+
+One alias table in `hostbootstrap/substrate.py` maps every outside spelling — the machine string
+`platform.machine()` reports, the answer `docker info` renders, and the operator's `--arch` flag — into
+`Arch`. `parse_arch` is that table's only reader, so the host boundary and the Docker-engine boundary
+cannot disagree about what `aarch64` means. Every tag, image reference, build argument, download URL, and
+per-architecture lookup table downstream takes `Arch`, which is why none of them re-derives validity and
+why a lookup keyed by architecture cannot miss.
 
 ## Project discovery
 
@@ -119,7 +174,8 @@ The boundary is closed only when tests prove:
 
 - Cabal selection ambiguity and every stem/package/executable mismatch fail before build;
 - the Haskell declared name and invoked executable identity agree before dispatch;
-- POSIX exec and Windows subprocess provenance are documented and surfaced;
+- POSIX exec and Windows child-process provenance are documented and surfaced;
+- a command that cannot be launched is reported as such, not as the failure of a command that ran;
 - online/offline modes and fresh-index/unchanged-copy no-ops behave as declared;
 - Linux checks its download prerequisites;
 - every downloaded bootstrap artifact is verified before execution;

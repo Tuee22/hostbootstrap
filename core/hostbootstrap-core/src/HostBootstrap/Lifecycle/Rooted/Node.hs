@@ -49,6 +49,13 @@ import HostBootstrap.Handoff.Runtime
 import HostBootstrap.Lifecycle.Prepared.Internal
     ( PreparedNodeGrant
     , mintPreparedNodeGrantKernel
+    , GateAttempt (GateAttempt)
+    , GateCatalogIdentity (GateCatalogIdentity)
+    , GateFrame (GateFrame)
+    , GateJournalVersion (GateJournalVersion)
+    , GatePlanDigest (GatePlanDigest)
+    , GateSession (GateSession)
+    , GateSupersessionGeneration (GateSupersessionGeneration)
     , renderPreparedGatePackageKernel
     , renderPreparedGatePackagesKernel
     )
@@ -146,7 +153,13 @@ withPreparedRootedNodeGrantKernel runtime session store generation localPlanDige
                         publishOrdered
                             lineage localDigest catalogIdentity frame token ordinal remaining
                             ( renderPreparedGatePackageKernel
-                                localDigest catalogIdentity frame token generation ordinal version
+                                (GatePlanDigest localDigest)
+                                (GateCatalogIdentity catalogIdentity)
+                                (GateFrame frame)
+                                (GateSession token)
+                                (GateSupersessionGeneration generation)
+                                (GateAttempt ordinal)
+                                (GateJournalVersion version)
                                 : packages
                             )
 

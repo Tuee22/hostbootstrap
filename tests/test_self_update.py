@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import json
-import subprocess
+from collections.abc import Sequence
 
 import pytest
 
-from hostbootstrap import self_update
+from hostbootstrap import process, self_update
+
+
+def _ran(
+    args: Sequence[str],
+    *,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> process.CommandResult:
+    return process.CommandResult(tuple(args), returncode, stdout, stderr)
 
 
 def test_direct_vcs_spec_and_pipx_update_args() -> None:
@@ -38,11 +48,12 @@ def test_direct_vcs_spec_and_pipx_update_args() -> None:
 def test_run_update_invokes_pipx(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str]] = []
 
-    def _run(cmd: list[str], *, check: bool) -> subprocess.CompletedProcess[str]:
-        captured.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
+    def _probe(cmd: Sequence[str], *, stdio: process.Stdio) -> process.CommandOutcome:
+        assert stdio is process.Stdio.INHERIT
+        captured.append(list(cmd))
+        return _ran(cmd)
 
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(self_update.process, "probe", _probe)
 
     assert self_update.run_update(ref="feature") == (
         "hostbootstrap @ git+https://github.com/Tuee22/hostbootstrap.git@feature"
@@ -51,19 +62,17 @@ def test_run_update_invokes_pipx(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_run_update_wraps_missing_pipx(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError(2, "missing", "pipx")
-
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(
+        self_update.process,
+        "probe",
+        lambda cmd, **_k: process.CommandUnavailable(tuple(cmd), "No such file: pipx"),
+    )
     with pytest.raises(self_update.SelfUpdateError, match="pipx"):
         self_update.run_update()
 
 
 def test_run_update_wraps_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _run(cmd: list[str], *, check: bool) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 7)
-
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(self_update.process, "probe", lambda cmd, **_k: _ran(cmd, returncode=7))
     with pytest.raises(self_update.SelfUpdateError, match="exit 7"):
         self_update.run_update()
 
@@ -156,47 +165,32 @@ def test_parse_ls_remote_prefers_peeled_annotated_tag_commit() -> None:
 def test_remote_commit_invokes_git(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[list[str]] = []
 
-    def _run(
-        cmd: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        assert capture_output is True
-        assert text is True
-        assert check is False
-        captured.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="e" * 40 + " refs/heads/main\n")
+    def _probe(cmd: Sequence[str]) -> process.CommandOutcome:
+        captured.append(list(cmd))
+        return _ran(cmd, stdout="e" * 40 + " refs/heads/main\n")
 
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(self_update.process, "probe", _probe)
 
     assert self_update.remote_commit(ref="main") == "e" * 40
-    assert captured == [
-        ["git", "ls-remote", self_update.DEFAULT_REPO_URL, "main", "main^{}"]
-    ]
+    assert captured == [["git", "ls-remote", self_update.DEFAULT_REPO_URL, "main", "main^{}"]]
 
 
 def test_remote_commit_wraps_missing_git(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise FileNotFoundError(2, "missing", "git")
-
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(
+        self_update.process,
+        "probe",
+        lambda cmd: process.CommandUnavailable(tuple(cmd), "No such file: git"),
+    )
     with pytest.raises(self_update.SelfUpdateError, match="git"):
         self_update.remote_commit()
 
 
 def test_remote_commit_wraps_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _run(
-        cmd: list[str],
-        *,
-        capture_output: bool,
-        text: bool,
-        check: bool,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="offline")
-
-    monkeypatch.setattr(self_update.subprocess, "run", _run)
+    monkeypatch.setattr(
+        self_update.process,
+        "probe",
+        lambda cmd: _ran(cmd, returncode=2, stderr="offline"),
+    )
     with pytest.raises(self_update.SelfUpdateError, match="offline"):
         self_update.remote_commit()
 

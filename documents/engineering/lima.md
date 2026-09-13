@@ -44,6 +44,13 @@ is descriptive and indexed to the exact opaque managed provider/backend/generati
 authority. Native Lima confirmation is recorded by the completed
 [Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
+Lima and WSL2 are **one guest-VM backend row**, not two. Both admit a declaration through the same
+guard sequence and both build the same backend specification value, so the construction is written once
+and each realization is a value naming what actually differs: its host guard, its closed provider kind,
+the tool it needs resolved, and how it spells itself and the thing it names in a refusal. A third
+guest-VM provider is another such value rather than another copy of the function. That is the substrate
+axis behaving as a lift rather than a fork, which is what the frame table asks for.
+
 The pure command shapes are:
 
 ```text

@@ -18,7 +18,7 @@ import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
-import HostBootstrap.Config.Class (InitArgs (..), TestCfg (projectTestMatrix))
+import HostBootstrap.Config.Class (ExistingOutputPolicy (..), InitArgs (..), TestCfg (projectTestMatrix))
 import qualified HostBootstrap.Config.Class as Config
 import HostBootstrap.Context (
     BinaryContext (..),
@@ -374,8 +374,7 @@ initArgsFor kind =
         , storage = Nothing
         , dockerfile = Nothing
         , haReplicas = Nothing
-        , force = False
-        , ifMissing = False
+        , existingOutput = RefuseExistingOutput
         }
 
 validResources :: Natural -> T.Text -> T.Text -> Resources

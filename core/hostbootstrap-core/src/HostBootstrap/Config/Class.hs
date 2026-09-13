@@ -24,6 +24,7 @@ defaults live (core ships none).
 module HostBootstrap.Config.Class (
     ProjectCfg (..),
     TestCfg (..),
+    ExistingOutputPolicy (..),
     InitArgs (..),
     AssemblyRequest (..),
     ConfigAssembly,
@@ -387,9 +388,25 @@ the test harness' config generation. The role/context selectors are required
 to shape the
 context; the project-tunable knobs are **generic optionals** (core supplies no
 value for any of them), so a project's @init@ builder fills the omitted ones
-with the project's own defaults. The 'force' / 'ifMissing' switches drive the
-idempotent write behaviour.
+with the project's own defaults. 'existingOutput' says what to do when the
+output is already there.
 -}
+{- | What @init@ does when its output is already there.
+
+One value with a case per intended behaviour, rather than two independent
+switches whose documented meanings contradict each other. The contradictory
+combination — overwrite /and/ leave alone — has no spelling here, so no caller
+resolves it and no two callers resolve it differently.
+-}
+data ExistingOutputPolicy
+    = -- | refuse, and say the output is already present
+      RefuseExistingOutput
+    | -- | overwrite whatever is there
+      OverwriteExistingOutput
+    | -- | leave it exactly as it is (idempotent ensure)
+      KeepExistingOutput
+    deriving (Eq, Show)
+
 data InitArgs = InitArgs
     { role :: Context.ContextKind
     -- ^ the primary role the generated config declares
@@ -409,9 +426,7 @@ data InitArgs = InitArgs
     -- ^ Dockerfile path recorded in the config (project default when omitted)
     , haReplicas :: Maybe Natural
     -- ^ HA replica count (project default when omitted)
-    , force :: Bool
-    -- ^ overwrite an existing OUTPUT
-    , ifMissing :: Bool
-    -- ^ no-op when OUTPUT already exists (idempotent ensure)
+    , existingOutput :: ExistingOutputPolicy
+    -- ^ what to do when OUTPUT is already present
     }
     deriving (Eq, Show)

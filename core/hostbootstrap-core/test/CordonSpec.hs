@@ -2,7 +2,6 @@
 
 module CordonSpec (tests) where
 
-import Data.Char (isAlphaNum, isSpace, isUpper)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -17,6 +16,7 @@ import HostBootstrap.HostTool (HostTool (Df, Sysctl), mkAbsExe)
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import System.Directory (findExecutable, getCurrentDirectory)
 import System.FilePath ((</>))
+import qualified SourceGuard
 import qualified System.Info as Info
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -46,7 +46,7 @@ tests =
 foundationCases :: [TestTree]
 foundationCases =
   [ testCase "facade envelope adapters equal the canonical budget renderers" $ do
-      canonical <- either assertFailure pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
+      canonical <- either (assertFailure . Foundation.renderQuantityError) pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
       budgetFromResources demoResources @?= Right canonical
       budgetFromVocabResources (V.Resources 4 "8GiB" "20GiB") @?= Right canonical
       colimaSizingArgs "demo" demoResources
@@ -66,13 +66,14 @@ foundationCases =
           malformedStorage = ResourceEnvelope 4 "8GiB" "wat"
           malformedVocab = V.Resources 4 "wat" "also-wat"
           ampleCapacity = Foundation.HostCapacity 8 (16 * gib) (100 * gib)
-      Foundation.parseQuantity "wat" @?= Left "not a quantity: wat"
-      budgetFromResources malformedMemory @?= Left "not a quantity: wat"
-      budgetFromVocabResources malformedVocab @?= Left "not a quantity: wat"
+      Foundation.parseQuantity "wat" @?= Left (Foundation.QuantityNotANumber "wat")
+      budgetFromResources malformedMemory @?= Left (Foundation.QuantityNotANumber "wat")
+      budgetFromVocabResources malformedVocab @?= Left (Foundation.QuantityNotANumber "wat")
       preflightBudget malformedMemory ampleCapacity @?= Left "not a quantity: wat"
       preflightHostBudget malformedMemory ampleCapacity @?= Left "not a quantity: wat"
-      budgetFromResources malformedStorage @?= Left "not a quantity: wat"
-      budgetFromVocabResources (V.Resources 4 "8GiB" "wat") @?= Left "not a quantity: wat"
+      budgetFromResources malformedStorage @?= Left (Foundation.QuantityNotANumber "wat")
+      budgetFromVocabResources (V.Resources 4 "8GiB" "wat")
+        @?= Left (Foundation.QuantityNotANumber "wat")
       [ colimaSizingArgs "demo" malformedMemory,
         limaSizingArgs malformedMemory,
         incusSizingArgs malformedMemory,
@@ -89,12 +90,43 @@ foundationCases =
         @?= replicate 5 (Left "not a quantity: wat"),
     testCase "unknown and inexact quantities retain exact descriptive refusals" $ do
       Foundation.parseQuantity "8Qi"
-        @?= Left "unknown unit: Qi in quantity: 8Qi"
+        @?= Left (Foundation.QuantityUnknownUnit "Qi" "8Qi")
       Foundation.parseQuantity "0.1B"
-        @?= Left "quantity is not an exact whole-byte value: 0.1B",
+        @?= Left (Foundation.QuantityNotWholeBytes "0.1B")
+      -- The sum renders the sentence these refusals carried before it existed,
+      -- so a closed answer and a legible diagnostic are the same value.
+      map
+        Foundation.renderQuantityError
+        [ Foundation.QuantityNotANumber "wat",
+          Foundation.QuantityUnknownUnit "Qi" "8Qi",
+          Foundation.QuantityNotWholeBytes "0.1B",
+          Foundation.QuantityMalformedNumber "1.2.3",
+          Foundation.DimensionNotPositive Foundation.BudgetCpu,
+          Foundation.DimensionAboveBound Foundation.BudgetMemory
+        ]
+        @?= [ "not a quantity: wat",
+              "unknown unit: Qi in quantity: 8Qi",
+              "quantity is not an exact whole-byte value: 0.1B",
+              "not a number: 1.2.3",
+              "resource budget: cpu must be positive",
+              "resource budget: memory exceeds the supported bound"
+            ],
+    testCase "a refusal names its dimension without matching on rendered text" $ do
+      -- The whole point of the closed answer: a caller asks which dimension
+      -- was refused and gets a value, not a sentence it has to parse.
+      let dimensionOf = either dimension (const Nothing)
+          dimension err = case err of
+            Foundation.DimensionNotPositive d -> Just d
+            Foundation.DimensionAboveBound d -> Just d
+            _ -> Nothing
+      dimensionOf (Foundation.mkResourceBudget 0 gib gib) @?= Just Foundation.BudgetCpu
+      dimensionOf (Foundation.mkResourceBudget 4 0 gib) @?= Just Foundation.BudgetMemory
+      dimensionOf (Foundation.mkResourceBudget 4 gib 0) @?= Just Foundation.BudgetStorage
+      dimensionOf (budgetFromResources (ResourceEnvelope 4 "0" "20GiB"))
+        @?= Just Foundation.BudgetMemory,
     testCase "whole-GiB renderer failures equal the lower canonical renderers" $ do
-      inexactMemory <- either assertFailure pure (Foundation.mkResourceBudget 4 (8 * gib + 1) (20 * gib))
-      inexactStorage <- either assertFailure pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib + 1))
+      inexactMemory <- either (assertFailure . Foundation.renderQuantityError) pure (Foundation.mkResourceBudget 4 (8 * gib + 1) (20 * gib))
+      inexactStorage <- either (assertFailure . Foundation.renderQuantityError) pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib + 1))
       let memoryResources = ResourceEnvelope 4 "8589934593" "20GiB"
           storageResources = ResourceEnvelope 4 "8GiB" "21474836481"
       colimaSizingArgs "demo" memoryResources
@@ -130,7 +162,7 @@ foundationCases =
       wsl2SizingArgs storageResources
         @?= Left "WSL2 VHDX storage must be exactly representable as whole GiB; got 21474836481 bytes",
     testCase "both preflight facades preserve lower failures exactly" $ do
-      canonical <- either assertFailure pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
+      canonical <- either (assertFailure . Foundation.renderQuantityError) pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
       let reserveFreeCapacity = Foundation.HostCapacity 2 (16 * gib) (100 * gib)
           metalCapacity = Foundation.HostCapacity 2 (10 * gib) (100 * gib)
           cpuError = Left "resource budget exceeds host capacity: cpu wants 4 cores, host has 2 cores"
@@ -140,7 +172,7 @@ foundationCases =
       preflightHostBudget demoResources metalCapacity @?= Foundation.verifyHostBudget canonical metalCapacity
       preflightHostBudget demoResources metalCapacity @?= reserveError,
     testCase "foundation verifies canonical budgets without a configuration envelope" $ do
-      canonical <- either assertFailure pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
+      canonical <- either (assertFailure . Foundation.renderQuantityError) pure (Foundation.mkResourceBudget 4 (8 * gib) (20 * gib))
       Foundation.verifyBudget canonical (Foundation.HostCapacity 8 (16 * gib) (100 * gib)) @?= Right ()
       leftHas "reserve" (Foundation.verifyHostBudget canonical (Foundation.HostCapacity 8 (10 * gib) (100 * gib))),
     testCase "foundation owns quantity parsing and the pure storage policy" $ do
@@ -219,135 +251,25 @@ foundationCases =
   ]
 
 hostbootstrapImports :: Text.Text -> [Text.Text]
-hostbootstrapImports = collect . haskellTokens . Text.unpack
-  where
-    collect [] = []
-    collect ("import" : remaining) =
-      case importedModule remaining of
-        Just moduleName
-          | "HostBootstrap." `Text.isPrefixOf` moduleName ->
-              moduleName : collect remaining
-        _ -> collect remaining
-    collect (_ : remaining) = collect remaining
+hostbootstrapImports =
+  filter ("HostBootstrap." `Text.isPrefixOf`)
+    . map Text.pack
+    . SourceGuard.haskellImports
+    . Text.unpack
 
-haskellTokens :: String -> [String]
-haskellTokens source =
-  case dropWhile isSpace source of
-    "" -> []
-    '-' : '-' : remaining -> haskellTokens (dropLineComment remaining)
-    '{' : '-' : '#' : remaining ->
-      "{" : "-#" : haskellTokens remaining
-    '{' : '-' : remaining -> haskellTokens (dropBlockComment 1 remaining)
-    significant ->
-      case lex significant of
-        [(token, remaining)]
-          | not (null token) && remaining /= significant -> token : haskellTokens remaining
-        _ -> haskellTokens (drop 1 significant)
+{- | The modules the unnamed main library exposes, or why they could not be read.
 
-dropLineComment :: String -> String
-dropLineComment source =
-  case dropWhile (/= '\n') source of
-    _newline : remaining -> remaining
-    [] -> []
-
-dropBlockComment :: Int -> String -> String
-dropBlockComment _depth [] = []
-dropBlockComment depth ('{' : '-' : remaining) =
-  dropBlockComment (depth + 1) remaining
-dropBlockComment depth ('-' : '}' : remaining)
-  | depth == 1 = remaining
-  | otherwise = dropBlockComment (depth - 1) remaining
-dropBlockComment depth (_ : remaining) = dropBlockComment depth remaining
-
-importedModule :: [String] -> Maybe Text.Text
-importedModule = parseModuleName . dropImportDecorators
-
-dropImportDecorators :: [String] -> [String]
-dropImportDecorators ("safe" : remaining) = dropImportDecorators remaining
-dropImportDecorators ("qualified" : remaining) = dropImportDecorators remaining
-dropImportDecorators ("{" : "-#" : remaining) =
-  dropImportDecorators (dropImportPragma remaining)
-dropImportDecorators (packageName : remaining)
-  | isQuotedToken packageName = dropImportDecorators remaining
-dropImportDecorators remaining = remaining
-
-dropImportPragma :: [String] -> [String]
-dropImportPragma ("#-" : "}" : remaining) = remaining
-dropImportPragma (_ : remaining) = dropImportPragma remaining
-dropImportPragma [] = []
-
-isQuotedToken :: String -> Bool
-isQuotedToken ('"' : remaining) =
-  case reverse remaining of
-    '"' : _ -> True
-    _ -> False
-isQuotedToken _ = False
-
-parseModuleName :: [String] -> Maybe Text.Text
-parseModuleName (firstSegment : remaining)
-  | isModuleSegment firstSegment =
-      Just (Text.intercalate "." (fmap Text.pack (reverse segments)))
-  where
-    (segments, _afterModule) = gather [firstSegment] remaining
-    gather collected ("." : segment : rest)
-      | isModuleSegment segment = gather (segment : collected) rest
-    gather collected rest = (collected, rest)
-parseModuleName _ = Nothing
-
-isModuleSegment :: String -> Bool
-isModuleSegment segment =
-  case segment of
-    firstCharacter : remaining ->
-      isUpper firstCharacter
-        && all (\character -> isAlphaNum character || character == '_' || character == '\'') remaining
-    [] -> False
-
+Reads through the shared toolkit, so this guard and every other guard over the
+same field enumerate the same modules.
+-}
 mainLibraryExposedModules :: Text.Text -> Either String [Text.Text]
 mainLibraryExposedModules cabal =
-  case dropWhile (not . isMainLibraryHeader) (Text.lines cabal) of
-    [] -> Left "hostbootstrap-core.cabal: unnamed main library stanza is missing"
-    _header : remaining ->
-      exposedModulesFromStanza (takeWhile (not . isTopLevelDeclaration) remaining)
-
-isMainLibraryHeader :: Text.Text -> Bool
-isMainLibraryHeader line =
-  Text.strip line == "library" && Text.stripStart line == line
-
-isTopLevelDeclaration :: Text.Text -> Bool
-isTopLevelDeclaration line =
-  let stripped = Text.strip line
-   in not (Text.null stripped)
-        && not ("--" `Text.isPrefixOf` stripped)
-        && Text.stripStart line == line
-
-exposedModulesFromStanza :: [Text.Text] -> Either String [Text.Text]
-exposedModulesFromStanza [] =
-  Left "hostbootstrap-core.cabal: main library exposed-modules field is missing"
-exposedModulesFromStanza (line : remaining)
-  | "exposed-modules:" `Text.isPrefixOf` Text.stripStart line =
-      let fieldIndent = leadingWhitespace line
-          inlineValue = Text.drop 1 (Text.dropWhile (/= ':') line)
-          continuation = takeWhile (isFieldContinuation fieldIndent) remaining
-       in Right (concatMap cabalModuleWords (inlineValue : continuation))
-  | otherwise = exposedModulesFromStanza remaining
-
-leadingWhitespace :: Text.Text -> Int
-leadingWhitespace line = Text.length (Text.takeWhile isSpace line)
-
-isFieldContinuation :: Int -> Text.Text -> Bool
-isFieldContinuation fieldIndent line =
-  let stripped = Text.strip line
-   in Text.null stripped
-        || "--" `Text.isPrefixOf` stripped
-        || leadingWhitespace line > fieldIndent
-
-cabalModuleWords :: Text.Text -> [Text.Text]
-cabalModuleWords line =
-  Text.words
-    ( Text.map
-        (\character -> if character == ',' then ' ' else character)
-        (fst (Text.breakOn "--" line))
-    )
+  case SourceGuard.mainLibraryStanza (Text.unpack cabal) of
+    Nothing -> Left "hostbootstrap-core.cabal: unnamed main library stanza is missing"
+    Just stanza ->
+      case SourceGuard.fieldModules "exposed-modules:" stanza of
+        [] -> Left "hostbootstrap-core.cabal: main library exposed-modules field is missing"
+        modules -> Right (map Text.pack modules)
 
 quantityCases :: [TestTree]
 quantityCases =

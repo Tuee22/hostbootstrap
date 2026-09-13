@@ -83,6 +83,12 @@ import HostBootstrap.Lifecycle.Execution.Internal
     )
 import HostBootstrap.Lifecycle.Prepared.Internal
     ( PreparedGate
+    , GateAttempt (GateAttempt)
+    , GateFence (GateFence)
+    , GateJournalVersion (GateJournalVersion)
+    , GateOperationKey (GateOperationKey)
+    , GatePlanDigest (GatePlanDigest)
+    , GateSession (GateSession)
     , mintPreparedGate
     , readPreparedGatePackageKernel
     , readPreparedGatePackagesKernel
@@ -465,7 +471,15 @@ withExecutedFrameNodeKernel executor key request signedPrepared run use =
         require "a gate package names another frame" (packageFrame == frameName)
         require "a gate package names another session" (packageSession == session)
         require "a gate package carries a zero supersession generation" (generation > 0)
-        pure (mintPreparedGate packagePlan operation packageSession generation attempt journalVersion)
+        pure
+            ( mintPreparedGate
+                (GatePlanDigest packagePlan)
+                (GateOperationKey operation)
+                (GateSession packageSession)
+                (GateFence generation)
+                (GateAttempt attempt)
+                (GateJournalVersion journalVersion)
+            )
 
 {- | Turn signed bytes into a response only through the installed key.
 

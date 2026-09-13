@@ -1,12 +1,12 @@
 # Phase 5 — Installed identity, operator verification, and authority kernels
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 4 (protected store)
 **Substrates**: none (static)
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the compile-fail fixtures,
+**Gate**: `cabal test all` from `core/`, including the compile-fail fixtures,
 host-native on the gate host that runs it
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Turn independently verified executable, operating-system, store, and generation facts into
 > opaque authority inputs, while leaving lifecycle-specific command admission to the phases that possess
@@ -287,131 +287,151 @@ the remaining families belongs to the
 
 None.
 
-### Sprint 5.9: The identity decision reads the role it parsed [Active]
+### Sprint 5.9: The identity decision reads the role it parsed [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`
 
 #### Objective
 
 Writing the root config at the binary's own sibling path is what provisions the installed handoff and
-build identities. That decision is currently taken by comparing the raw `--role` text against one
-spelling, while the same function has already parsed that text into a role value — and the parser
-accepts aliases and normalises case and separators. So a config written under an accepted alias is
-byte-identical to one written under the canonical spelling and provisions nothing, with no error. The
-parsed value is the one the decision is about.
+build identities, and that decision is about the **role**, not about the spelling the role arrived in.
+`--role` accepts aliases and normalises case and separators, so the decision is taken on the parsed
+value the same function already produced.
 
 #### Deliverables
 
 - The initializer's default-role parameter is the parsed role kind, not its rendered text.
 - The provisioning guard compares parsed role kinds.
 - The parser default and help text render that value rather than carrying a second literal.
-- Cases cover an accepted alias and a case- and separator-normalised spelling, each asserting that identity is provisioned — the assertions that would have caught this, and whose absence is why it stood.
+- Cases cover the canonical spelling, an accepted alias, and a case- and separator-normalised spelling, each asserting that identity is provisioned, and one non-default role asserting that it is not.
+- The cases restore whatever the executable's siblings held, so no case's expectation depends on the order it ran in.
 
 #### Validation
 
-The host static gate; the command suite is where the new cases land.
+The host static gate; the command suite is where the cases land. Dated evidence: on 2026-09-12,
+x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed
+with the four `project init` cases green, including `--role host` and `--role "  HOST_Orchestrator  "`
+each provisioning the five root identity files.
 
 #### Remaining Work
 
-The fixture diagnostics, the testing seam, and the coordinate pilot are Sprints 5.10 to 5.12.
+None. The fixture diagnostics, the testing seam, and the coordinate pilot are Sprints 5.10 to 5.12.
 
-### Sprint 5.10: Every registered fixture pins the diagnostic it expects [Planned]
+### Sprint 5.10: Every registered fixture pins the diagnostic it expects [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeSessionPermit.hs`,
+`core/hostbootstrap-core/test/compile-fail/ObservedReadyGuestAlias.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
 § HH requires a compile-fail fixture to fail *for its named reason*, because a fixture that merely
-fails to compile is satisfied by a typo. Forty-four registered fixtures pin no diagnostic at all, and
-two of those are the ones the architecture page cites as the proof for its readiness and capability
-boundaries — so the weakest fixtures are carrying the most confident prose.
+fails to compile is satisfied by a typo. Every registered fixture therefore states the phrase it
+expects, and the registration takes no other shape — including the two the architecture page cites as
+the proof for its readiness and capability boundaries.
 
 #### Deliverables
 
-- Each fixture that pins nothing gains one contiguous expected phrase, read from the diagnostic it actually produces.
-- The capability and readiness fixtures the boundary table cites are done first.
+- Every registered fixture carries one contiguous expected phrase, read from the diagnostic it actually produces.
+- The capability and readiness fixtures the boundary table cites — `ForgePreparedGate.hs` and `RawReadiness.hs` — are among them.
 - Expectations split across separately-matched fragments are re-joined into one phrase, because fragments can be satisfied independently by an unrelated error on the same line.
-- Any fixture found to fail for a reason other than the one it is registered under is reported rather than re-pinned to whatever it happened to say.
+- The registration combinator that accepted no expectation is gone, so an unpinned fixture is not expressible rather than merely absent.
+- Four fixtures whose diagnostic named an arity or kind error rather than the boundary they are registered under are repaired to ask their own question, not re-pinned to what they happened to say.
 
 #### Validation
 
-The host static gate. The compile-fail suite is the subject and the long pole.
+The host static gate. The compile-fail suite is the subject and the long pole. Dated evidence: on
+2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, the public boundary suite
+passed 522 cases in 83.11 seconds with every case stating its expected phrase.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 5.11: The session testing seam leaves the public surface [Planned]
+### Sprint 5.11: The session testing seam leaves the public surface [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`, `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/test/compile-fail/ForgeTransactionPermitFromDescriptor.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
-The comparable direct-provider testing seam is described as private precisely so downstream code
-cannot use it to mint a value in the sealed column. This one is an exposed module, and it renders
-coordinator bytes for the durable store. The types it exposes mint no authority; the bytes it produces
-are another matter, and no fixture asserts that a consumer cannot reach them.
+The direct-provider testing seam is private precisely so downstream code cannot use it to mint a value
+in the sealed column, and the session seam is private for the same reason. Its types mint no authority;
+the bytes it renders are the coordinator's own, and a consumer that could write them could put the
+store into a state no run produced.
 
 #### Deliverables
 
-- The module moves into a private sublibrary, the pattern the package already uses five times.
-- A compile-fail fixture pins that a downstream consumer cannot import it.
-- The suites that legitimately use it depend on the private sublibrary directly.
+- `HostBootstrap.Lifecycle.Session.Testing` and the transaction vocabulary it re-exports live in a private sublibrary, the pattern the package already uses five times.
+- A compile-fail fixture pins that a downstream consumer cannot import it, naming the sublibrary that holds it.
+- The suite that legitimately uses it depends on the private sublibrary directly.
 
 #### Validation
 
-The host static gate, plus the new fixture.
+The host static gate, plus the fixture. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with
+GHC 9.12.4 and Cabal 3.16.1.0, `cabal build all` and `cabal test all` from `core/` passed, with the
+fixture reporting the seam as a member of the hidden `lifecycle-transaction-internal` sublibrary.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 5.12: Coordinate types at the prepared-gate boundary [Planned]
+### Sprint 5.12: Coordinate types at the prepared-gate boundary [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
-§ HH now states that a coordinate carried across a sealed boundary is a type. The prepared gate is the
+§ HH states that a coordinate carried across a sealed boundary is a type. The prepared gate is the
 smallest complete instance and the one the architecture page leads with: its producer takes three text
-coordinates then three numeric ones, and the canonical renderer beside it has the same shape, so
-transposing two of them is invisible from mint to wire. This sprint is the pilot — one boundary, done
-fully, so the cost of the remaining ones can be judged from something real rather than estimated.
+coordinates then three numeric ones, and the canonical renderer beside it has the same shape, so a
+transposition would be invisible from mint to wire. This sprint is the pilot — one boundary, done
+fully, so the cost of the remaining ones is judged from something real rather than estimated.
 
 #### Deliverables
 
-- Each coordinate role at this boundary gets a newtype: the plan digest, the operation key, the session, the fence, the attempt, and the journal version.
+- Each coordinate role at this boundary is a newtype: the plan digest, the operation key, the session, the fence, the attempt, and the journal version.
+- The rooted renderer's three further roles — the catalog identity, the frame, and the supersession generation — are newtypes too, so the generation that stands where a fence stands cannot be written in its place.
 - The producer and the canonical renderer both take them, so the two cannot disagree about order.
-- No runtime representation changes and no durable bytes change; this is an argument-order proof, not a format change.
-- The sprint reports what the change cost, so the remaining boundaries are a decision with evidence behind it.
+- The fields, the accessors, and the framing are unchanged: no runtime representation changes and no durable byte changes. This is an argument-order proof, not a format change.
+
+#### Objective boundary
+
+What it cost: nine newtypes and one exported constructor each, four call sites wrapped, one round-trip
+check inside the module wrapped, and two source guards re-stated against the new call shape. No
+consumer of a gate changed, because the accessors still answer in the underlying types. That is the
+price for one boundary of six-plus-three coordinates; the remaining sealed producers are not in this
+sprint's scope.
 
 #### Validation
 
-The host static gate. Existing cases pin the canonical bytes, so an unchanged rendering is the
-evidence that the newtypes are a compile-time property only.
+The host static gate. The existing cases pin the canonical bytes, and they pass unchanged — which is
+the evidence that the newtypes are a compile-time property only. Dated evidence: on 2026-09-12,
+x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed
+2,517 tests.
 
 #### Remaining Work
 
-The remaining sealed producers are not in this sprint's scope and are not scheduled until this one
-reports.
+None beyond the phase's own.
 
 ## Remaining Work
 
-The installed-identity decision is owed against the parsed role rather than raw text.
-**Sprint 5.9** owns it. Sprints 5.10 to 5.12 follow with fixture diagnostics, the testing seam, and the
-coordinate-type pilot.
+None.
 
 ## Documentation Requirements
 

@@ -75,7 +75,6 @@ where
 
 import Control.Exception (IOException, finally, mask, onException, try)
 import Control.Monad (when)
-import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -131,12 +130,10 @@ import HostBootstrap.Effect.Vocabulary (HostCommand)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable)
 import HostBootstrap.Ownership.Object (
-    storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (ReportedObject),
     Origin (OriginAbsent, OriginPresent),
-    OriginRecord,
     OwnerClaim,
     OwnershipFault (
         OwnershipConflict,
@@ -145,10 +142,19 @@ import HostBootstrap.Ownership.Object (
     ),
     mkOwnerClaim,
     originRecordKind,
-    originRecordOrigin,
     ownershipFaultMessage,
-    parseOriginRecord,
-    renderOriginRecord,
+ )
+import HostBootstrap.Ownership.Tape (
+    OwnershipCarrier (fromClauseFault, fromStoreFault),
+    RecordSubject (RecordSubject, subjectBinding, subjectRecord),
+    RecordTape,
+    carryClause,
+    carryStore,
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    readRecordUnder,
+    recordTape,
  )
 import HostBootstrap.Ownership.Primitive (
     bindReportedIdentity,
@@ -158,16 +164,11 @@ import HostBootstrap.Ownership.Primitive (
     reobserveReportedIdentity,
  )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     RecordKey,
-    compareAndDeleteProtectedRecord,
-    compareAndSwapProtectedRecord,
     mkRecordKey,
     protectedErrorMessage,
-    readProtectedRecord,
  )
 import System.Directory (doesFileExist, getTemporaryDirectory, removeDirectory, removeFile, renameFile)
 import System.FilePath ((</>), takeDirectory, takeFileName)
@@ -400,7 +401,7 @@ ownedClusterStanding cfg session key owned = do
             case observed of
                 Left fault -> pure (Left fault)
                 Right origin -> do
-                    stored <- readRecordUnder session key
+                    stored <- readRecordUnder (clusterTape session) key
                     pure $ case stored of
                         Left fault -> Left fault
                         Right record -> case clusterStanding record listed origin of
@@ -623,7 +624,7 @@ bindOneNode cfg session nodeKey owned node = do
     case observed of
         Left fault -> pure (Left fault)
         Right origin -> do
-            stored <- readRecordUnder session nodeKey
+            stored <- readRecordUnder (clusterTape session) nodeKey
             case stored of
                 Left fault -> pure (Left fault)
                 Right record -> case nodeStanding record origin of
@@ -716,7 +717,7 @@ requireOwnedNode cfg session nodeKey node unowned = do
     case observed of
         Left fault -> pure (Left fault)
         Right origin -> do
-            stored <- readRecordUnder session nodeKey
+            stored <- readRecordUnder (clusterTape session) nodeKey
             pure $ case stored of
                 Left fault -> Left fault
                 Right record -> case nodeStanding record origin of
@@ -950,13 +951,21 @@ retainedClaim ::
     RecordKey ->
     IO (Either ClusterOwnershipFault OwnerClaim)
 retainedClaim session key = do
-    record <- readRecordUnder session key
+    record <- readRecordUnder (clusterTape session) key
     pure $ case record of
         Left fault -> Left fault
         Right Nothing -> Left (ClusterOwnershipClause (OwnershipProbeFailed "read the retained cluster claim" "the cluster ownership record is absent"))
         Right (Just held) -> case originRecordKind held of
             ReportedObject claim -> Right claim
-            _ -> Left (ClusterOwnershipClause foreignRecord)
+            -- A record of another kind is not this owner's: only a reported
+            -- object carries the claim a retained cluster is released against.
+            _ ->
+                Left
+                    ( ClusterOwnershipClause
+                        ( OwnershipMalformed
+                            "the retained cluster ownership record carries no owner claim"
+                        )
+                    )
 
 {- | Remove the cluster, then forget exactly the records whose objects are gone.
 
@@ -994,8 +1003,8 @@ removeOwnedCluster cfg session key owned nodes releasable = do
                                 releaseReportedObject
                                     releasable
                                     OriginAbsent
-                                    (const (forgetRecord session key))
-                            pure (fmap (const ClusterReleased) (collapseFault released))
+                                    (const (forgetRecord (clusterTape session) key))
+                            pure (fmap (const ClusterReleased) (carryStore released))
 
 {- | Whether the runtime still names any node this record bound.
 
@@ -1141,9 +1150,9 @@ withRecordedNodeClaim session key _owned node claim continue = do
                 recordReportedOrigin
                     entered
                     (ReportedObject claim)
-                    (publishFreshRecord session key)
+                    (publishFreshRecord (clusterTape session) key)
             traverse continue recorded
-    pure (collapseClause outcome)
+    pure (carryClause outcome)
 
 {- | Re-mint clause 3's token over a record that already carries the binding.
 
@@ -1181,8 +1190,8 @@ withBoundNodeClaim ::
     IO (Either ClusterOwnershipFault result)
 withBoundNodeClaim session key owned node claim identity continue =
     withRecordedNodeClaim session key owned node claim $ \recorded -> do
-        bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
-        case collapseFault bound of
+        bound <- bindReportedIdentity recorded identity (publishBoundRecord (clusterTape session) key)
+        case carryStore bound of
             Left fault -> pure (Left fault)
             Right token -> continue token
 
@@ -1210,8 +1219,8 @@ forgetNodeRecords ::
     IO (Either ClusterOwnershipFault ())
 forgetNodeRecords _session [] = pure (Right ())
 forgetNodeRecords session (key : rest) = do
-    forgotten <- forgetRecord session key
-    case collapseFault forgotten of
+    forgotten <- forgetRecord (clusterTape session) key
+    case carryStore forgotten of
         Left fault -> pure (Left fault)
         Right () -> forgetNodeRecords session rest
 
@@ -1220,28 +1229,6 @@ forgetNodeRecords session (key : rest) = do
 A record that is already gone is not an error: the transaction's own goal is that
 nothing of it remains, and a re-entry that finds the key free has reached it.
 -}
-forgetRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either OwnershipFault ())
-forgetRecord session key = do
-    current <- readProtectedRecord session key
-    case current of
-        Left failure -> pure (Left (storeFault "read the cluster origin record" failure))
-        Right Nothing -> pure (Right ())
-        Right (Just stored) -> do
-            forgotten <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion stored))
-            pure
-                ( either
-                    (Left . storeFault "forget the cluster origin record")
-                    (const (Right ()))
-                    forgotten
-                )
-
 -- | Bind clause 3's identity and answer with the outcome that describes it.
 bindIdentity ::
     ProtectedSession session ->
@@ -1251,8 +1238,8 @@ bindIdentity ::
     outcome ->
     IO (Either ClusterOwnershipFault outcome)
 bindIdentity session key recorded identity outcome = do
-    bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
-    pure (fmap (const outcome) (collapseFault bound))
+    bound <- bindReportedIdentity recorded identity (publishBoundRecord (clusterTape session) key)
+    pure (fmap (const outcome) (carryStore bound))
 
 {- | Publish clause 2's record, or accept the one this transaction already wrote.
 
@@ -1263,113 +1250,26 @@ kind and the origin, not the bytes, because a re-entry over a record a previous
 entry already /bound/ finds clause 3's identity there as well — the same thing
 plus one more fact this same transaction established.
 -}
-publishFreshRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    OriginRecord ->
-    IO (Either OwnershipFault ())
-publishFreshRecord session key record = do
-    existing <- readProtectedRecord session key
-    case existing of
-        Left failure -> pure (Left (storeFault "read the cluster origin record" failure))
-        Right Nothing -> do
-            written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
-            pure
-                ( either
-                    (Left . storeFault "publish the cluster origin record")
-                    (const (Right ()))
-                    written
-                )
-        Right (Just stored)
-            | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> pure (extendsThisRecord record (protectedRecordBytes stored))
-  where
-    bytes = renderOriginRecord record
+{- | What this owner calls its records, for the tape's refusals.
 
-extendsThisRecord :: OriginRecord -> ByteString -> Either OwnershipFault ()
-extendsThisRecord record stored = case parseOriginRecord stored of
-    Left _ -> Left foreignRecord
-    Right held
-        | originRecordKind held == originRecordKind record
-        , originRecordOrigin held == originRecordOrigin record ->
-            Right ()
-        | otherwise -> Left foreignRecord
-
-{- | Publish the bound record against the exact version the store now holds.
-
-Read back inside the same exclusive entry rather than carried out of the
-publication continuation, so the store stays the one place a record version
-lives.
+The only thing the cluster supplies to the shared store adapter; publishing,
+binding, forgetting and reading a record back is the same act every owner behind
+the seam performs.
 -}
-publishBoundRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    OriginRecord ->
-    IO (Either OwnershipFault ())
-publishBoundRecord session key record = do
-    current <- readProtectedRecord session key
-    case current of
-        Left failure -> pure (Left (storeFault "read the cluster origin record" failure))
-        Right Nothing ->
-            pure
-                ( Left
-                    ( OwnershipProbeFailed
-                        "bind the cluster node identity"
-                        "the origin record vanished inside the exclusive entry"
-                    )
-                )
-        Right (Just stored)
-            | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> do
-                written <-
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        (ExpectVersion (protectedRecordVersion stored))
-                        bytes
-                pure
-                    ( either
-                        (Left . storeFault "bind the cluster node identity")
-                        (const (Right ()))
-                        written
-                    )
-  where
-    bytes = renderOriginRecord record
+clusterSubject :: RecordSubject
+clusterSubject =
+    RecordSubject
+        { subjectRecord = "the cluster origin record"
+        , subjectBinding = "bind the cluster node identity"
+        }
 
-readRecordUnder ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either ClusterOwnershipFault (Maybe OriginRecord))
-readRecordUnder session key = do
-    stored <- readProtectedRecord session key
-    pure $ case stored of
-        Left failure -> Left (ClusterOwnershipStore failure)
-        Right Nothing -> Right Nothing
-        Right (Just record) ->
-            case parseOriginRecord (protectedRecordBytes record) of
-                Left fault -> Left (ClusterOwnershipClause fault)
-                Right decoded -> Right (Just decoded)
+clusterTape :: ProtectedSession session -> RecordTape session
+clusterTape session = recordTape session clusterSubject
 
-foreignRecord :: OwnershipFault
-foreignRecord =
-    OwnershipMalformed
-        "the durable record under this key is not the one this transaction publishes"
-
+instance OwnershipCarrier ClusterOwnershipFault where
+    fromClauseFault = ClusterOwnershipClause
+    fromStoreFault = ClusterOwnershipStore
 
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand
 
-{- | Carry the seam's own fault into this module's sum, keeping an inner refusal.
-
-The clause producers answer in @'OwnershipFault'@ and the continuations beneath
-them answer in this module's richer sum, so the two nest. Collapsing them here —
-once — is what keeps every caller from writing its own.
--}
-collapseClause ::
-    Either OwnershipFault (Either ClusterOwnershipFault result) ->
-    Either ClusterOwnershipFault result
-collapseClause (Left fault) = Left (ClusterOwnershipClause fault)
-collapseClause (Right inner) = inner
-
-collapseFault :: Either OwnershipFault value -> Either ClusterOwnershipFault value
-collapseFault = either (Left . ClusterOwnershipClause) Right

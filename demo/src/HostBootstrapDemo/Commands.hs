@@ -160,6 +160,7 @@ import HostBootstrap.Cluster.Budget (withActionResourceSlice)
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
+    renderQuantityError,
     budgetMemoryBytes,
     budgetStorageBytes,
     gibibytes,
@@ -168,7 +169,9 @@ import HostBootstrap.Cluster.Cordon (
  )
 import HostBootstrap.Cluster.Lifecycle (
     AcceleratorDaemonPlacement (..),
-    AcceleratorIngressPlan (..),
+    ingressNodePort,
+    ingressServicePort,
+    ingressServiceType,
     ClusterDriver (KindDriver, NvkindDriver),
     ClusterPlan (..),
     ClusterProfile (Production, TestCase),
@@ -281,7 +284,7 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionSignActivationManifest,
  )
 import HostBootstrap.Lifecycle.Prepared (preparedGateFence, preparedGateJournalVersion)
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), InVMSelfPath (InVMSelfPath), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
     Exposure,
@@ -1313,7 +1316,7 @@ containerPlan :: ClusterProfile -> Context.BinaryContext -> ClusterPlan
 containerPlan profile ctx =
     basePlan
         { dataPath = guestProfileDataPath profile root
-        , derivedPaths = [root Posix.</> ".cluster" Posix.</> clusterName basePlan]
+        , derivedStatePath = root Posix.</> ".cluster" Posix.</> clusterName basePlan
         , clusterConfigFile = Just configFile
         }
   where
@@ -1369,7 +1372,11 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
     gate <- stepExecutionPreparedGate execution >>= maybe (failLifecycle "cluster reconcile: the exact producer gate is absent") pure
     (clusterResources, _, _, _, _, _) <-
         either failLifecycle pure (canonicalDemoConfigProjection (stepExecutionConfigDigest execution) projectCfg)
-    sliceBudget <- either failLifecycle pure (budgetFromResources (envelopeOfResources clusterResources))
+    sliceBudget <-
+        either
+            (failLifecycle . renderQuantityError)
+            pure
+            (budgetFromResources (envelopeOfResources clusterResources))
     when (preparedGateJournalVersion gate > maxBound - 1024) (failLifecycle "cluster reconcile: dependency lifetime overflows")
     let direct = Context.isExplicitLinuxGpuContainer ctx
         driver = if direct then NvkindDriver else KindDriver
@@ -2753,7 +2760,7 @@ withHostAcceleratorExposure projectCfg execution consume = do
     projectRoot <- makeAbsolute =<< getCurrentDirectory
     hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
     durableShare <- either (die . show) pure (planProviderShare provider hostDurableRoot)
-    self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
+    self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
     case providerKind provider of
         ProviderLima -> do
             backendSpec <-
@@ -3421,7 +3428,7 @@ vhdx **+** swap. Returns the budget resources with storage bumped by the memory
 -}
 withWsl2SwapStorage :: Resources -> Either String Resources
 withWsl2SwapStorage r = do
-    b <- budgetFromResources (envelopeOfResources r)
+    b <- first renderQuantityError (budgetFromResources (envelopeOfResources r))
     let store = gibibytes (budgetStorageBytes b) + gibibytes (budgetMemoryBytes b)
     mkResources (cpu r) (quantityText (memory r)) (T.pack (show store ++ "GiB"))
 
@@ -3686,7 +3693,7 @@ waitClusterServiceReachable cfg frame url attempts =
             pure (either (const False) (const True) outcome)
   where
     probe hostCfg = classify <$> liftLeaf hostCfg frame command
-    command = RawCmd ["docker", "run", "--rm", "--network", "kind", "--entrypoint", "curl", demoProjectImage, "--fail", "--silent", "--show-error", url]
+    command = RawCmd "docker" ["run", "--rm", "--network", "kind", "--entrypoint", "curl", demoProjectImage, "--fail", "--silent", "--show-error", url]
     classify (Right (ExitSuccess, _, _)) = ProbeReady ()
     classify _ = NotReady "cluster service endpoint has not answered"
 
@@ -3718,7 +3725,7 @@ assertE2EInVM cfg frame node expectedMessage = do
                         ++ " "
                         ++ demoProjectImage
                         ++ " -lc 'cd /workspace/demo/playwright && playwright test'"
-            result <- liftLeaf cfg frame (RawCmd ["bash", "-lc", script])
+            result <- liftLeaf cfg frame (RawCmd "bash" ["-lc", script])
             pure $ case result of
                 Right (ExitSuccess, _, _) -> Pass
                 Right (ExitFailure n, out, err) -> Fail ("e2e failed (exit " ++ show n ++ "):\n" ++ boundedDiagnostic (err ++ out))
@@ -3792,7 +3799,7 @@ assertRegistrySurvivesRestart cfg frame node = do
     if not before
         then pure (Fail ("registry-persistence: pushed image not present before restart at " ++ tagsUrl))
         else do
-            _ <- liftLeaf cfg frame (RawCmd ["bash", "-lc", restart])
+            _ <- liftLeaf cfg frame (RawCmd "bash" ["-lc", restart])
             after <- waitClusterServiceReachable cfg frame tagsUrl 24
             pure $
                 if after
@@ -3862,7 +3869,7 @@ assertDurableReadback phase cfg frame node = do
                     )
                 ++ " >&2 || true; exit \"$status\""
         diagnosedScript = "(" ++ script ++ ") || { " ++ diagnostics ++ "; }"
-    observed <- liftLeaf cfg frame (RawCmd ["bash", "-lc", diagnosedScript])
+    observed <- liftLeaf cfg frame (RawCmd "bash" ["-lc", diagnosedScript])
     pure $ case observed of
         Right (ExitSuccess, _, _) -> Pass
         Right (ExitFailure code, out, err) ->
@@ -4171,7 +4178,7 @@ releases through the project binary rather than a guest shell classifier.
 -}
 reconcileShippedDurableAlias :: ObservedReady DurableShareMounted -> HostConfig -> SubstrateProvider -> HostPathShare -> IO ()
 reconcileShippedDurableAlias _mounted cfg provider share = do
-    self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
+    self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
     let shareTarget = hpsGuestPath share
     spec <- either (throwIO . LifecycleFailure . show) pure (mkGuestAliasSpec durableDockerHostPath shareTarget)
     let transaction = guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink shareTarget)
@@ -4647,7 +4654,7 @@ runExactVmShare ::
     IO ()
 runExactVmShare projectCfg cfg execution durableShare = do
     gate <- stepExecutionPreparedGate execution >>= maybe (failLifecycle "copy-source reconcile: the exact producer gate is absent") pure
-    self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
+    self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
     sp <- demoProvider cfg
     let configured = resources projectCfg
         IncusVM name image = demoVM
@@ -4894,8 +4901,11 @@ applyReconcileCordon cfg sp = do
 
 requireDemoLifecycleResources :: Resources -> Either String ()
 requireDemoLifecycleResources actualResources = do
-    actual <- budgetFromResources (envelopeOfResources actualResources)
-    required <- budgetFromResources (envelopeOfResources demoFullLifecycleResources)
+    actual <- first renderQuantityError (budgetFromResources (envelopeOfResources actualResources))
+    required <-
+        first
+            renderQuantityError
+            (budgetFromResources (envelopeOfResources demoFullLifecycleResources))
     let shortages =
             concat
                 [ shortage "cpu" show budgetCpu actual required
@@ -5671,7 +5681,7 @@ demoGuestAliasReverse projectCfg cfg _action = do
                                     ++ " -mindepth 1 ! -type l -exec chmod a+rwX -- {} +"
                                 )
                         Production -> pure ()
-                    self <- currentSelfRef "/usr/local/bin/hostbootstrap-demo"
+                    self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
                     case mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare) of
                         Left failure -> pure (Step.TeardownFailed (show failure))
                         Right spec -> do

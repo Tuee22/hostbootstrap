@@ -105,7 +105,7 @@ import Dhall (FromDhall (autoWith), ToDhall)
 import qualified Dhall
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import GHC.Generics (Generic)
-import HostBootstrap.Cluster.Cordon (parseQuantity)
+import HostBootstrap.Cluster.Cordon (parseQuantity, renderQuantityError)
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production, TestCase), profileDataSegments)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
@@ -175,7 +175,13 @@ mkQuantity :: Text -> Either String Quantity
 mkQuantity value =
     case parseQuantity value of
         Right _ -> Right (Quantity value)
-        Left err -> Left ("invalid resource quantity " ++ show (T.unpack value) ++ ": " ++ err)
+        Left err ->
+            Left
+                ( "invalid resource quantity "
+                    ++ show (T.unpack value)
+                    ++ ": "
+                    ++ renderQuantityError err
+                )
 
 instance FromDhall Quantity where
     autoWith n = refiningDecoder (autoWith n) mkQuantity
@@ -822,8 +828,7 @@ demoAssemble request =
                 , Config.storage = Just (quantityText tc.testResources.storage)
                 , Config.dockerfile = Just demoDefaultDockerfile
                 , Config.haReplicas = Just (haReplicasNat demoDefaultDeployConfig.haReplicas)
-                , Config.force = True
-                , Config.ifMissing = False
+                , Config.existingOutput = Config.OverwriteExistingOutput
                 }
 
 {- | Project the run matrix out of __decoded configuration__ (the worked-demo

@@ -154,6 +154,7 @@ module HostBootstrap.Reconcile (
 )
 where
 
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.ByteString (ByteString)
 import Data.List (find)
 import Data.Text (Text)
@@ -683,7 +684,7 @@ cannot be minted for a frame outside the plan.
 -}
 lifecyclePlanFrames :: LifecyclePlan scope planId -> [Text]
 lifecyclePlanFrames (LifecyclePlan _ plan) =
-    foldr dedupe [] (map (Text.pack . frameId . stepFrame) (stepPlanSteps plan))
+    foldr dedupe [] (map (Text.pack . frameId . stepFrame) (NonEmpty.toList (stepPlanSteps plan)))
   where
     dedupe value seen
         | value `elem` seen = seen
@@ -1583,7 +1584,7 @@ plannedOperationFromGraph plan planned handle callDigest
                     | dependencyIdentity <- stepDependencies plan step
                     , dependency <-
                         maybeToList
-                            (find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps plan))
+                            (find ((== dependencyIdentity) . stepIdentity) (NonEmpty.toList (stepPlanSteps plan)))
                     , let key = Text.pack (operationKeyText (stepOperationKey dependency))
                     , key `elem` plannedResourceFamilyKeys
                     ]
@@ -1592,7 +1593,7 @@ plannedOperationFromGraph plan planned handle callDigest
     targetStep =
         find
             ((== Text.unpack (plannedResourceKey planned)) . operationKeyText . stepOperationKey)
-            (stepPlanSteps plan)
+            (NonEmpty.toList (stepPlanSteps plan))
 
 {- | Prepare the synthetic provider-guest alias operation from the exact sealed
 alias -> durable-share edge.  Unlike 'plannedOperation', this operation is a

@@ -20,7 +20,12 @@ tested-with: GHC ==9.12.4
 
 common warnings
   default-language: Haskell2010
-  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  -- The warning policy is a property of this package, not of a flag each caller
+  -- remembers to pass: a plain `cabal build` holds exactly what the gate holds.
+  -- `-Wpartial-fields` is here because a partial record selector throws at the
+  -- call site rather than failing to compile; a sum's fields are eliminated
+  -- positionally instead.
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wpartial-fields -Werror
 
 executable hostbootstrap-demo
   import: warnings

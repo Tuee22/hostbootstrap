@@ -139,6 +139,36 @@ The constructors live in one Cabal-private module whose only importers are the f
 abstract types and the seam that mints them. Compile-fail fixtures reject constructing each token,
 coercing either index, carrying one out of its entry, and importing the private module.
 
+## The record tape
+
+Every owner behind the seam supplies the same four store operations to it: publish a fresh origin
+record, publish the bound one, forget the record, and read it back decoded. Those four are the tape,
+and they live once, in `HostBootstrap.Ownership.Tape`, over one session, one key, and one
+`RecordSubject`. The subject is a pair of phrases — what this owner calls its record, and what it
+calls the act of binding an identity to it — so the refusals every owner emits read in its own
+vocabulary while the code that emits them is shared.
+
+The tape's operations are the ones the transaction actually needs and no more:
+
+| Operation | What it settles |
+|---|---|
+| `publishFreshRecord` | clause 2's first write, idempotent when the record already there is this transaction's own |
+| `publishBoundRecord` | clause 3's re-publication, against the exact version read back inside the entry |
+| `forgetRecord` | clause 4's settlement, where an already-absent record is the state asked for rather than a refusal |
+| `readRecordUnder` | the decoded record, with a store failure and a malformed record kept distinct |
+
+Idempotence is a property of the transaction rather than a convenience. The binding is the single
+field a later clause adds, so a record whose kind and origin already match this one is this
+transaction's own earlier write and publishing again is a no-op; a record that differs in any other
+way belongs to someone else and is refused, never overwritten. That refusal is one message, so the
+same condition cannot produce two different answers depending on which owner observed it.
+
+The two error layers collapse through one class rather than ten hand-written lifts.
+`OwnershipCarrier` has exactly two methods — a clause fault and a store fault, each into the owner's
+own closed error sum — and `carryClause` and `carryStore` are the only places the lifting is written.
+An owner therefore declares its instance and its subject, and keeps only what is genuinely its own:
+its removal-set policy, its payload rules, and its create-then-bind path.
+
 ## The two faces
 
 Not every owned object is one a kernel this process can call answers for. A provider instance's stable

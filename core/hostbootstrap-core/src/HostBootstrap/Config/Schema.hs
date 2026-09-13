@@ -169,16 +169,7 @@ import System.IO.Unsafe (unsafePerformIO)
 --role@.
 -}
 configRoleNames :: [Text]
-configRoleNames =
-    [ "host-orchestrator"
-    , "vm-orchestrator"
-    , "vm-project-container"
-    , "image-build-container"
-    , "cluster-service"
-    , "daemon"
-    , "one-shot-job"
-    , "test-harness"
-    ]
+configRoleNames = map renderConfigRole Context.allContextKinds
 
 -- | Render the canonical role name for a context kind.
 renderConfigRole :: Context.ContextKind -> Text

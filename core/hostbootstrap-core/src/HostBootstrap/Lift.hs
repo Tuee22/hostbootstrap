@@ -43,9 +43,12 @@ module HostBootstrap.Lift (
     wslExecArgs,
 
     -- * Self-reference
-    SelfRef (..),
+    SelfRef,
+    LocalSelfPath (..),
+    InVMSelfPath (..),
     mkSelfRef,
     currentSelfRef,
+    selfRefInVMPath,
 
     -- * Generic folding and dispatch
     LiftDispatch (..),
@@ -120,24 +123,43 @@ executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
 @\<project\>@ on the VM's @$PATH@). A container needs no path — its
 @ENTRYPOINT@ is the binary.
 -}
-data SelfRef = SelfRef
-    { localSelfPath :: FilePath
-    , inVMSelfPath :: FilePath
-    }
+-- | Where this binary is on the host that is running it.
+newtype LocalSelfPath = LocalSelfPath FilePath
+    deriving (Eq, Show)
+
+-- | Where this binary is inside the guest it lifts into.
+newtype InVMSelfPath = InVMSelfPath FilePath
+    deriving (Eq, Show)
+
+{- | The two paths are adjacent, both unvalidated, and both @FilePath@ before
+these newtypes existed — so transposing them at a construction site produced a
+value that dispatches the guest path locally and the local path in the guest,
+and nothing said so. They are distinct types, the constructor is package-private,
+and there are no field selectors: a handed value cannot be re-pointed by record
+update either.
+-}
+data SelfRef = SelfRef LocalSelfPath InVMSelfPath
     deriving (Eq, Show)
 
 -- | Build a 'SelfRef' from explicit paths (pure; used by the unit tests).
-mkSelfRef :: FilePath -> FilePath -> SelfRef
-mkSelfRef localP vmP = SelfRef{localSelfPath = localP, inVMSelfPath = vmP}
+mkSelfRef :: LocalSelfPath -> InVMSelfPath -> SelfRef
+mkSelfRef = SelfRef
+
+-- | Where the binary is inside the guest this reference lifts into.
+selfRefInVMPath :: SelfRef -> FilePath
+selfRefInVMPath (SelfRef _ (InVMSelfPath path)) = path
+
+selfRefLocalPath :: SelfRef -> FilePath
+selfRefLocalPath (SelfRef (LocalSelfPath path) _) = path
 
 {- | Resolve a 'SelfRef' for the running binary: the local path from
 'getExecutablePath' (@/proc/self/exe@, not @argv0@); the in-VM path supplied by
 the caller (where its bootstrap installs the binary).
 -}
-currentSelfRef :: FilePath -> IO SelfRef
+currentSelfRef :: InVMSelfPath -> IO SelfRef
 currentSelfRef vmP = do
     exe <- getExecutablePath
-    pure (mkSelfRef exe vmP)
+    pure (mkSelfRef (LocalSelfPath exe) vmP)
 
 {- | The resolved host invocation a lift folds down to: either run the binary
 itself locally, or run a host tool (@incus@/@docker@) whose args encode the
@@ -197,7 +219,10 @@ only thing that varies across Lima and Incus is the 'LiftLayer' constructor.
 -}
 data LiftLeaf
     = SelfSub SelfRef [String]
-    | RawCmd [String]
+    | -- | an executable and its arguments; the executable is a field rather
+      -- than the head of a list, so the empty argument vector that would
+      -- dispatch the empty-string executable has no spelling (§ K)
+      RawCmd String [String]
     | LifecycleProcessCmd String [String]
     deriving (Eq, Show)
 
@@ -207,7 +232,7 @@ frame where the endpoint is published (the VM), it folds to
 probe value is correct on every provider regardless of host port-forwarding.
 -}
 reachLeaf :: String -> LiftLeaf
-reachLeaf url = RawCmd ["curl", "-fsS", "-m", "5", "-o", "/dev/null", url]
+reachLeaf url = RawCmd "curl" ["-fsS", "-m", "5", "-o", "/dev/null", url]
 
 {- | The fixed child-process leaf used by authenticated lifecycle descent.
 Provider-specific root/noninteractive placement is rendered only by
@@ -229,7 +254,7 @@ by a shell pipeline in the guest (§ CC).
 -}
 blobUploadSessionLeaf :: String -> LiftLeaf
 blobUploadSessionLeaf url =
-    RawCmd ["curl", "-sS", "-m", "15", "-o", "/dev/null", "-D", "-", "-X", "POST", url]
+    RawCmd "curl" ["-sS", "-m", "15", "-o", "/dev/null", "-D", "-", "-X", "POST", url]
 
 {- | Send the blob's bytes into an open upload session and print the response
 headers, which carry the session's next @Location@.
@@ -248,23 +273,7 @@ for the host->guest quoting path (§ CC).
 -}
 blobUploadPatchLeaf :: String -> String -> LiftLeaf
 blobUploadPatchLeaf payload url =
-    RawCmd
-        [ "curl"
-        , "-sS"
-        , "-m"
-        , "15"
-        , "-o"
-        , "/dev/null"
-        , "-D"
-        , "-"
-        , "-X"
-        , "PATCH"
-        , "-H"
-        , "Content-Type:application/octet-stream"
-        , "-d"
-        , payload
-        , url
-        ]
+    RawCmd "curl" ["-sS", "-m", "15", "-o", "/dev/null", "-D", "-", "-X", "PATCH", "-H", "Content-Type:application/octet-stream", "-d", payload, url]
 
 {- | Complete a blob upload against its session URL, which must already carry
 @&digest=@.
@@ -277,7 +286,7 @@ space-free, so it survives the host->guest quoting path unchanged (§ CC).
 -}
 blobUploadFinishLeaf :: String -> LiftLeaf
 blobUploadFinishLeaf url =
-    RawCmd ["curl", "-fsS", "-m", "15", "-o", "/dev/null", "-X", "PUT", url]
+    RawCmd "curl" ["-fsS", "-m", "15", "-o", "/dev/null", "-X", "PUT", url]
 
 {- | @HEAD@ one blob and report the status and any @Location@, without following
 it.
@@ -290,23 +299,12 @@ host->guest quoting path unchanged (§ CC).
 -}
 blobHeadLeaf :: String -> LiftLeaf
 blobHeadLeaf url =
-    RawCmd
-        [ "curl"
-        , "-sS"
-        , "-m"
-        , "10"
-        , "-o"
-        , "/dev/null"
-        , "-I"
-        , "-w"
-        , "%{http_code} %{redirect_url}"
-        , url
-        ]
+    RawCmd "curl" ["-sS", "-m", "10", "-o", "/dev/null", "-I", "-w", "%{http_code} %{redirect_url}", url]
 
 -- | The argv to run once inside the innermost VM (no remaining layers).
 leafInVMArgv :: LiftLeaf -> [String]
-leafInVMArgv (SelfSub self sub) = inVMSelfPath self : sub
-leafInVMArgv (RawCmd argv) = argv
+leafInVMArgv (SelfSub self sub) = selfRefInVMPath self : sub
+leafInVMArgv (RawCmd exe argv) = exe : argv
 leafInVMArgv (LifecycleProcessCmd binary argv) = binary : argv
 
 {- | The command tail passed after a container image. A 'SelfSub' relies on the
@@ -314,14 +312,13 @@ container @ENTRYPOINT@ being the binary, so only the subcommand is passed.
 -}
 leafContainerInner :: LiftLeaf -> [String]
 leafContainerInner (SelfSub _ sub) = sub
-leafContainerInner (RawCmd argv) = argv
+leafContainerInner (RawCmd exe argv) = exe : argv
 leafContainerInner (LifecycleProcessCmd _ argv) = argv
 
 -- | The dispatch when the stack is empty (run at the local host frame).
 leafLocalDispatch :: LiftLeaf -> LiftDispatch
-leafLocalDispatch (SelfSub self sub) = DispatchLocal (localSelfPath self) sub
-leafLocalDispatch (RawCmd (exe : args)) = DispatchLocal exe args
-leafLocalDispatch (RawCmd []) = DispatchLocal "" []
+leafLocalDispatch (SelfSub self sub) = DispatchLocal (selfRefLocalPath self) sub
+leafLocalDispatch (RawCmd exe args) = DispatchLocal exe args
 leafLocalDispatch (LifecycleProcessCmd binary argv) = DispatchLocal binary argv
 
 {- | Fold a context stack and a 'LiftLeaf' into the host invocation. Pure, so the

@@ -48,6 +48,10 @@ module HostBootstrap.Ensure
     toolPresent,
     runTool,
     runToolWithStdin,
+    requireSudoStep,
+    reportedGpu,
+    withInvokingGroupMember,
+    grantSocketAccess,
     InstallStep (..),
     installAndVerify,
     installAndVerifyWith,
@@ -68,18 +72,20 @@ import System.FilePath ((</>))
 import HostBootstrap.Effect.Run (capturedTriple)
 import HostBootstrap.Effect.Vocabulary (hostCommand, withCommandStdin)
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Winget, Wsl), toolCommandName)
+import HostBootstrap.HostTool (HostTool (Sudo, Winget, Wsl), toolCommandName)
 import HostBootstrap.Substrate
   ( HostFrame (AppleFrame, LinuxFrame, WindowsFrame),
     Substrate,
     allHostFrames,
     detect,
     hasGpu,
+    nvidiaDeviceMarker,
     renderHostFrame,
     renderSubstrateName,
     substrateFrame,
     substrateName,
   )
+import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die, exitWith)
 import System.IO (hPutStrLn, stderr)
 
@@ -348,6 +354,82 @@ toolPresent cfg t = isJust (resolveMaybe cfg t)
 -- than a @$PATH@-resolved bare name.
 runTool :: HostConfig -> HostTool -> [String] -> IO (Either String (ExitCode, String, String))
 runTool cfg t args = runToolWithStdin cfg t args ""
+
+{- | Whether one captured accelerator listing reported a device.
+
+@nvidia-smi -L@ prints one line per device and exits zero when the driver is
+loaded with nothing attached, so the question is what it /said/. Detection and
+every reconciler that gates on an accelerator ask it through this one predicate,
+over the marker 'nvidiaDeviceMarker' names, so they cannot disagree about what
+counts as a device.
+-}
+reportedGpu :: Either String (ExitCode, String, String) -> Bool
+reportedGpu (Right (ExitSuccess, out, _)) = nvidiaDeviceMarker `isInfixOf` out
+reportedGpu _ = False
+
+{- | Run one privileged step and report its three outcomes in one place.
+
+Every reconciler answers the same three questions about a @sudo@ step — it
+succeeded, it ran and returned non-zero, or the tool could not be run at all —
+and each was answering them again beside every call. *label* names the
+reconciler and *what* names the step, so a refusal reads as
+@ensure docker: add matt to docker (exit 1) ...@ without either being spelled
+at the call site twice.
+-}
+requireSudoStep :: HostConfig -> String -> String -> [String] -> IO ()
+requireSudoStep cfg label what argv = do
+    result <- runTool cfg Sudo argv
+    case result of
+        Right (ExitSuccess, _, _) -> pure ()
+        Right (ExitFailure code, _, errOut) ->
+            die (label ++ ": could not " ++ what ++ " (exit " ++ show code ++ ") " ++ errOut)
+        Left err -> die (label ++ ": " ++ err)
+
+{- | Put the invoking non-root user in a daemon's group, then hand that user to
+the step that grants it immediate access.
+
+Two reconcilers hold this workflow — read the environment, find the invoking
+non-root user, skip with a message when there is none, add that user to a group,
+then grant the socket — and they differ in a group, a socket, and a label
+(§ LL). This is the workflow; the caller supplies the three.
+
+A host with no invoking non-root user is not a failure: nothing needs the
+group, so the reconciler says so and returns.
+-}
+withInvokingGroupMember :: HostConfig -> String -> String -> (String -> IO ()) -> IO ()
+withInvokingGroupMember cfg label groupName grant = do
+    env <- getEnvironment
+    selected <- invokingNonRootUser env
+    case selected of
+        Nothing ->
+            putStrLn
+                ( label
+                    ++ ": no non-root invoking user detected for "
+                    ++ groupName
+                    ++ " membership (skipping)"
+                )
+        Just user -> do
+            putStrLn (label ++ ": ensuring " ++ user ++ " belongs to " ++ groupName)
+            requireSudoStep
+                cfg
+                label
+                ("add " ++ user ++ " to " ++ groupName)
+                ["usermod", "-aG", groupName, user]
+            grant user
+
+{- | Grant one user @rw@ on one daemon socket for the current session.
+
+Group membership takes effect at the next login, so a run that just added the
+user still cannot open the socket. The ACL is what makes the reconciler's work
+visible to the invocation that performed it.
+-}
+grantSocketAccess :: HostConfig -> String -> FilePath -> String -> IO ()
+grantSocketAccess cfg label socketPath user =
+    requireSudoStep
+        cfg
+        label
+        ("grant " ++ user ++ " immediate access to " ++ socketPath)
+        ["setfacl", "-m", "u:" ++ user ++ ":rw", socketPath]
 
 {- | Run a probe in a fresh scratch directory that does not outlive it.
 

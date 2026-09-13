@@ -13,7 +13,9 @@ module HostBootstrap.Ensure.Docker (reconciler, installSteps) where
 
 import Control.Monad (when)
 import HostBootstrap.Ensure (
-    invokingNonRootUser,
+    grantSocketAccess,
+    requireSudoStep,
+    withInvokingGroupMember,
     FramePlan (InstallHere, ProvidedElsewhere),
     InstallStep (..),
     Reconciler (..),
@@ -28,8 +30,7 @@ import HostBootstrap.Ensure (
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Sudo))
 import HostBootstrap.Substrate (Substrate, isLinux)
-import System.Environment (getEnvironment)
-import System.Exit (ExitCode (..), die)
+import System.Exit (ExitCode (..))
 
 reconciler :: Reconciler
 reconciler =
@@ -105,43 +106,29 @@ installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler
 
 ensureDockerGroup :: HostConfig -> IO ()
-ensureDockerGroup cfg = do
-    env <- getEnvironment
-    selectedUser <- invokingNonRootUser env
-    case selectedUser of
-        Nothing ->
-            putStrLn "ensure docker: no non-root invoking user detected for docker group membership (skipping)"
-        Just user -> do
-            putStrLn ("ensure docker: ensuring " ++ user ++ " belongs to docker")
-            result <- runTool cfg Sudo ["usermod", "-aG", "docker", user]
-            case result of
-                Right (ExitSuccess, _, _) -> verifyDockerGroup cfg user
-                Right (ExitFailure n, _, errOut) ->
-                    die
-                        ( "ensure docker: could not add "
-                            ++ user
-                            ++ " to docker (exit "
-                            ++ show n
-                            ++ ") "
-                            ++ errOut
-                        )
-                Left err -> die ("ensure docker: " ++ err)
+ensureDockerGroup cfg =
+    withInvokingGroupMember cfg dockerLabel "docker" (verifyDockerGroup cfg)
 
+-- | The reconciler's name in every message it prints or dies with.
+dockerLabel :: String
+dockerLabel = "ensure docker"
+
+-- | The daemon socket an invocation needs open before its group login exists.
+dockerSocketPath :: FilePath
+dockerSocketPath = "/var/run/docker.sock"
+
+{- | Docker asks one question the Incus row does not: whether a /future/ login
+would work. Group membership that the daemon has not picked up is a reconciler
+that reported success and left the next session broken.
+-}
 verifyDockerGroup :: HostConfig -> String -> IO ()
 verifyDockerGroup cfg user = do
-    future <- runTool cfg Sudo ["-u", user, "sg", "docker", "-c", "docker info >/dev/null"]
-    case future of
-        Right (ExitSuccess, _, _) -> ensureCurrentSessionSocketAccess cfg user
-        Right (ExitFailure n, _, errOut) ->
-            die
-                ( "ensure docker: docker group verification for "
-                    ++ user
-                    ++ " failed (exit "
-                    ++ show n
-                    ++ ") "
-                    ++ errOut
-                )
-        Left err -> die ("ensure docker: " ++ err)
+    requireSudoStep
+        cfg
+        dockerLabel
+        ("verify docker group membership for " ++ user)
+        ["-u", user, "sg", "docker", "-c", "docker info >/dev/null"]
+    ensureCurrentSessionSocketAccess cfg user
 
 ensureCurrentSessionSocketAccess :: HostConfig -> String -> IO ()
 ensureCurrentSessionSocketAccess cfg user = do
@@ -150,37 +137,19 @@ ensureCurrentSessionSocketAccess cfg user = do
         then reportDockerAccessVerified
         else do
             ensureAclTool cfg
-            grant <- runTool cfg Sudo ["setfacl", "-m", "u:" ++ user ++ ":rw", "/var/run/docker.sock"]
-            case grant of
-                Right (ExitSuccess, _, _) -> reportDockerAccessVerified
-                Right (ExitFailure n, _, errOut) ->
-                    die
-                        ( "ensure docker: could not grant "
-                            ++ user
-                            ++ " immediate access to /var/run/docker.sock (exit "
-                            ++ show n
-                            ++ ") "
-                            ++ errOut
-                        )
-                Left err -> die ("ensure docker: " ++ err)
+            grantSocketAccess cfg dockerLabel dockerSocketPath user
+            reportDockerAccessVerified
 
 ensureAclTool :: HostConfig -> IO ()
-ensureAclTool cfg = do
-    result <- runTool cfg Sudo ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "acl"]
-    case result of
-        Right (ExitSuccess, _, _) ->
-            pure ()
-        Right (ExitFailure n, _, errOut) ->
-            die
-                ( "ensure docker: could not install acl for immediate docker socket access (exit "
-                    ++ show n
-                    ++ ") "
-                    ++ errOut
-                )
-        Left err -> die ("ensure docker: " ++ err)
+ensureAclTool cfg =
+    requireSudoStep
+        cfg
+        dockerLabel
+        "install acl for immediate docker socket access"
+        ["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "acl"]
 
 reportDockerAccessVerified :: IO ()
 reportDockerAccessVerified =
-    putStrLn $
-        "ensure docker: docker group membership verified and current-session socket ACL ensured"
+    putStrLn
+        (dockerLabel ++ ": docker group membership verified and current-session socket ACL ensured")
 

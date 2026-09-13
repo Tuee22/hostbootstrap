@@ -1,25 +1,25 @@
 # Phase 15 — Host providers and the self-reference lift
 
-**Status**: Active
+**Status**: Done
 **Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/` on the gate host that runs it (§ C;
+**Gate**: `cabal test all` from `core/` on the gate host that runs it (§ C;
 cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)),
 and
 `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
---test-show-details=direct --ghc-options=-Werror` from `core/` on native Linux/x86_64 with KVM and
+--test-show-details=direct` from `core/` on native Linux/x86_64 with KVM and
 Incus — the suite is built by the ordinary gate on every host and decides at runtime whether its
 subject is present
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
 KVM readable/writable, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0 ;
 `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
---test-show-details=direct --ghc-options=-Werror` ; pass ; covers
-d0b9dfd4203b9ecda1215d346bb11101f91a39b4ba77fcea13d9af95e2d541c5
+--test-show-details=direct` ; pass ; covers
+7bb41d20c9854cc3346d6a10700631da1544a902fee0ad62073de6afb0977067
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider`
 `core/hostbootstrap-core/provider-live`
@@ -1659,9 +1659,9 @@ residue checks.
 
 None.
 
-### Sprint 15.38: One guest-VM backend row [Active]
+### Sprint 15.38: One guest-VM backend row [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/lima.md`, `documents/engineering/wsl2.md`
@@ -1684,16 +1684,37 @@ apart.
 
 #### Validation
 
-The host static gate. The provider backend suite pins each constructor's guards and refusals; unchanged
-refusals are the evidence that the shared row is the same row.
+`mkGuestVmBackendSpec` holds the guard sequence, and `limaRealization` and `wsl2Realization` are values
+naming the five things that actually differ: the host guard, the host the refusal asks for, the closed
+provider kind, what the realization calls the thing it names, and the tool with its own spelling.
+`mkLimaBackendSpec` and `mkWsl2BackendSpec` are one-line applications. `invalidBackend` and
+`requireBackendTool` are hoisted, so all four constructors — Incus and Direct included — refuse through
+one pair.
+
+Every refusal string is byte-for-byte what it was, including WSL2's "distro name" against Lima's
+"instance name" and WSL2's tool spelled `WSL` where its constructor is `Wsl`. That is what makes the
+unchanged provider backend suite evidence: 33 cases pass, and the ones pinning each constructor's
+substrate guard, provider-kind guard, share guard and unresolved-tool refusal are pinning the shared row
+now.
+
+**The module is 34 lines longer, not shorter.** The duplicated function is gone, but the record that
+replaced it carries a documented field per axis of difference. That is the trade this sprint accepts:
+the cost of a third guest-VM provider drops from a copied function to one value, and the line count is
+not the thing § LL asks about.
+
+Two new source guards keep it that way. One asserts `mkGuestVmBackendSpec` is named four times — its
+signature, its definition, and one application per realization — and each realization value three times.
+The other asserts the refusal helpers are named five times each, once per remaining constructor body.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): the phase gate below.
 
 #### Remaining Work
 
-The coordinate opener is Sprint 15.39.
+None beyond the phase's own.
 
-### Sprint 15.39: One runtime-dependency coordinate opener [Planned]
+### Sprint 15.39: One runtime-dependency coordinate opener [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -1713,7 +1734,20 @@ cost is that a new requirement added to one does not apply to its twin.
 
 #### Validation
 
-The host static gate; the dependency suite covers each domain's refusals.
+`openCoordinates` and `openCarriedCoordinates` sit beside `openPackage`, which already had this shape,
+and take the domain as their first argument. The four public names are applications:
+`withProviderRuntimeDependencyCoordinates` and `withClusterRuntimeDependencyCoordinates` open through the
+first, `withCarriedProviderRuntimeDependencyCoordinates` and
+`withCarriedProviderShareRuntimeDependencyCoordinates` through the second. Every `require` line and its
+message is unchanged, and the comment explaining why a carried package does not equate plan identities
+moved from inside one of the pair to the haddock of the implementation both now share.
+
+A source guard asserts each implementation is named four times: its signature, its definition, and once
+per domain that opens through it. That is the deliverable stated as a check — a requirement added to one
+of the two reaches every domain, because there is no second place for a domain to be checked.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): the `runtime dependency
+package` suite passed 10/10, and the phase gate below.
 
 #### Remaining Work
 
@@ -1721,8 +1755,9 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The guest-VM backends are owed one row rather than two copies. **Sprint 15.38** owns it.
-Sprint 15.39 follows with the shared coordinate opener.
+None. Every frame operation names one closed provider operation, the guest-VM realizations are one row of
+the frame table rather than two copies of it, and each domain's runtime-dependency coordinates are checked
+by one implementation.
 
 ## Documentation Requirements
 

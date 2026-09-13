@@ -66,7 +66,6 @@ module HostBootstrap.Wsl2.GlobalWall.Host
   )
 where
 
-import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -112,6 +111,7 @@ import HostBootstrap.Protected
     recordVersionWord,
     withProtectedEntry,
   )
+import HostBootstrap.Wire.LittleEndian (word32LE, word64LE)
 import HostBootstrap.Wsl2.GlobalWall
 import HostBootstrap.Wsl2.GlobalWall.ConfigBytes
 
@@ -1866,28 +1866,10 @@ getWord8 = do
   pure (ByteString.index bytes 0)
 
 getWord32LE :: Decoder Word32
-getWord32LE = do
-  bytes <- getBytes 4
-  pure
-    ( fromIntegral (ByteString.index bytes 0)
-        .|. shiftL (fromIntegral (ByteString.index bytes 1)) 8
-        .|. shiftL (fromIntegral (ByteString.index bytes 2)) 16
-        .|. shiftL (fromIntegral (ByteString.index bytes 3)) 24
-    )
+getWord32LE = word32LE <$> getBytes 4
 
 getWord64LE :: Decoder Word64
-getWord64LE = do
-  bytes <- getBytes 8
-  pure
-    ( fromIntegral (ByteString.index bytes 0)
-        .|. shiftL (fromIntegral (ByteString.index bytes 1)) 8
-        .|. shiftL (fromIntegral (ByteString.index bytes 2)) 16
-        .|. shiftL (fromIntegral (ByteString.index bytes 3)) 24
-        .|. shiftL (fromIntegral (ByteString.index bytes 4)) 32
-        .|. shiftL (fromIntegral (ByteString.index bytes 5)) 40
-        .|. shiftL (fromIntegral (ByteString.index bytes 6)) 48
-        .|. shiftL (fromIntegral (ByteString.index bytes 7)) 56
-    )
+getWord64LE = word64LE <$> getBytes 8
 
 getBytes :: Int -> Decoder ByteString
 getBytes count =

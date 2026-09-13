@@ -9,6 +9,7 @@
 
 module CLISpec (runSchemaFixture, tests) where
 
+import qualified Data.List.NonEmpty as NonEmpty
 import Expect (expectRight)
 import ActivationSpec (withBrokerFor)
 import Control.Exception (finally, throwIO, try)
@@ -383,7 +384,7 @@ tests =
             plan <-
                 Fixture.withFixtureProjectRoot $ \root ->
                     either (assertFailure . show) pure (projectStepPlan spec root cfg)
-            map stepLabel (stepPlanSteps plan) @?= ["first", "second"]
+            map stepLabel (NonEmpty.toList (stepPlanSteps plan)) @?= ["first", "second"]
         , testCase "the finalized step planner accepts the exact Harness config scope" $ do
             let spec = finalized (addSteps sampleChain (builderWith passingSuite (pure ()) []))
                 harnessCfg :: Fixture.ProjectConfig (V.Harness Fixture.FixtureProject HarnessPlanRun)
@@ -400,7 +401,7 @@ tests =
                                 (projectStepPlan spec root harnessCfg)
                         )
                 either (assertFailure . show) pure rooted
-            map stepLabel (stepPlanSteps plan) @?= ["launch the VM"]
+            map stepLabel (NonEmpty.toList (stepPlanSteps plan)) @?= ["launch the VM"]
         , testCase "artifact fragments compose associatively without erasure" $ do
             let budgetCodec = requireCodecWitness "CLISpec.Budget" (autoCodecWitness @V.Budget)
                 firstArtifact = artifactOf "fragmentA" budgetCodec (V.Budget 1 2 3)

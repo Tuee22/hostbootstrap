@@ -1,11 +1,11 @@
 # Phase 3 — Host tools and substrate detection
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 2 (Haskell core scaffolding)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Close both axes of host invocation — *which* executable a call names, and the *shape* the
 > call takes — and classify the outer host realization on which the binary is running.
@@ -408,42 +408,51 @@ host-native at 1,894/1,894 in 226.70 seconds, plus
 
 None.
 
-### Sprint 3.10: One substrate detection, and a total accelerator answer [Active]
+### Sprint 3.10: One substrate detection, and a total accelerator answer [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+`core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`, `documents/engineering/prerequisites.md`
 
 #### Objective
 
-This module states in its own header that it is a port of the bootstrapper's detection, and the two
-are the same program down to their refusal strings. § M gives pre-binary detection to the bootstrapper,
-so the binary's job is to receive that answer, not to compute it a second time. Alongside it, the
-accelerator question is answered by membership in a literal list while its neighbour is a total case —
-so a substrate added to the closed sum silently answers 'no accelerator' instead of failing to
-compile.
+§ M gives pre-binary detection to the bootstrapper, so the binary's job is to receive that answer rather
+than compute it a second time. The accelerator question is answered by a total case over the substrate
+sum, so a substrate added to the closed sum is a compile error here instead of a silent 'no
+accelerator'.
 
 #### Deliverables
 
-- The binary accepts the substrate the bootstrapper detected through the documented invocation-context seam.
-- Its own detection remains as a labelled fallback for direct invocation, and says in one line that it is one.
+- The binary accepts the substrate the bootstrapper detected through the documented invocation-context seam, and the ordinary `detect` is that read.
+- Reading the statement is pure over the two field values, so the refusals are testable without setting a host environment.
+- A statement that arrives half-set is a refusal rather than a fallback; only the complete absence of one means the host is classified here.
+- `detectHere` is the labelled fallback for a binary invoked with no bootstrapper in front of it, and says in one line that it is one.
 - The accelerator predicate is a total case over the substrate sum, so a new substrate is a compile error rather than a default answer.
-- The architecture alias table and the accelerator marker list have one home each across the two languages.
+- The architecture alias table and the accelerator marker list have one home each in this language, and the suite reads the bootstrapper's own source to assert both seam field names and all seven vocabulary spellings agree across the two.
+
+#### Objective boundary
+
+One fallback classification remains, because a binary invoked directly has no statement to read. That is
+why the cross-language agreement is asserted mechanically rather than declared: the second
+implementation exists for a reason, so what keeps it from drifting is a guard, not a comment.
 
 #### Validation
 
-The host static gate. The substrate suite already pins each classification and its refusals; the
-accelerator predicate gains the case a new constructor would break.
+The host static gate. The substrate suite pins each classification and its refusals, the total
+accelerator answer for every constructor the sum has, the seam's complete/absent/half-set/unknown-tag
+readings, and the bootstrapper's source stating the same seven spellings. Dated evidence: on
+2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from
+`core/` passed with `SubstrateSpec` at 24 cases.
 
 #### Remaining Work
 
-The emitting half is Sprint 1.7. Until it lands the fallback is the live path and nothing regresses.
+None.
 
 ## Remaining Work
 
-Detection is owed as one implementation rather than two. **Sprint 3.10** owns it, together
-with the total accelerator answer.
+None.
 
 ## Documentation Requirements
 

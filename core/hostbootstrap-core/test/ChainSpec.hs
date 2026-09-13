@@ -67,6 +67,8 @@ import HostBootstrap.Lift (
     inContainer,
     inVM,
     localContext,
+    InVMSelfPath (InVMSelfPath),
+    LocalSelfPath (LocalSelfPath),
     mkSelfRef,
  )
 import HostBootstrap.ProjectPlan (
@@ -187,7 +189,7 @@ acceleratorPlan =
             ++ [postHandoffStep "start-accelerator-daemon" "start the host accelerator daemon" metal noop]
 
 self :: SelfRef
-self = mkSelfRef "/proc/self/exe" "/usr/local/bin/hostbootstrap-demo"
+self = mkSelfRef (LocalSelfPath "/proc/self/exe") (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
 
 vm :: IncusVM
 vm = IncusVM "demo-vm" "images:ubuntu/24.04"

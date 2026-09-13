@@ -2,9 +2,7 @@
 
 module LiftContextSpec (tests) where
 
-import Data.Char (isSpace)
 import Data.List (isPrefixOf, nub, sort)
-import Data.Maybe (mapMaybe)
 import qualified Data.Text as T
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.DocValidator (findRepoRoot)
@@ -13,6 +11,7 @@ import HostBootstrap.ProjectRoot (
     canonicalDurableHostPath,
     withCanonicalProjectRoot,
  )
+import SourceGuard (fieldModules, haskellImports, mainLibraryStanza)
 import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -112,51 +111,12 @@ repositoryRoot = do
     found <- findRepoRoot cwd
     maybe (fail ("could not locate repository root from " ++ cwd)) pure found
 
+{- | Every @HostBootstrap.*@ module a source imports.
+
+Reads through the shared lexer rather than through @words@ on each line, so a
+multiline, @safe@, pragma-decorated, or package-qualified import counts and a
+commented-out or quoted one does not.
+-}
 hostBootstrapImports :: String -> [String]
-hostBootstrapImports = sort . nub . mapMaybe importedModule . lines
-  where
-    importedModule line =
-        case words line of
-            "import" : "qualified" : moduleName : _ -> hostBootstrapModule moduleName
-            "import" : moduleName : _ -> hostBootstrapModule moduleName
-            _ -> Nothing
-
-    hostBootstrapModule moduleName
-        | "HostBootstrap." `isPrefixOf` moduleName = Just moduleName
-        | otherwise = Nothing
-
-mainLibraryStanza :: String -> Maybe String
-mainLibraryStanza cabalText =
-    case dropWhile ((/= "library") . trim) (lines cabalText) of
-        [] -> Nothing
-        _library : rest -> Just (unlines (takeWhile isLibraryContinuation rest))
-  where
-    isLibraryContinuation [] = True
-    isLibraryContinuation line@(firstCharacter : _) =
-        null (trim line) || isSpace firstCharacter
-
-fieldModules :: String -> String -> [String]
-fieldModules field = go . lines
-  where
-    go [] = []
-    go (line : rest)
-        | trim line == field =
-            let fieldIndent = indentation line
-                (continuation, remaining) =
-                    span
-                        (\next -> null (trim next) || indentation next > fieldIndent)
-                        rest
-             in moduleTokens continuation ++ go remaining
-        | otherwise = go rest
-
-    moduleTokens =
-        filter ("HostBootstrap." `isPrefixOf`)
-            . map (filter (/= ','))
-            . words
-            . unlines
-
-indentation :: String -> Int
-indentation = length . takeWhile isSpace
-
-trim :: String -> String
-trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+hostBootstrapImports =
+    sort . nub . filter ("HostBootstrap." `isPrefixOf`) . haskellImports

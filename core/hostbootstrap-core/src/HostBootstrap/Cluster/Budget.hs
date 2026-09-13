@@ -154,7 +154,10 @@ import HostBootstrap.Reconcile
 import Numeric.Natural (Natural)
 
 data BudgetError
-  = InvalidBudget String
+  = -- | a descriptive envelope did not resolve to a canonical budget; the
+    -- refusal names the dimension and the bound, not a sentence
+    InvalidQuantity Cordon.QuantityError
+  | InvalidBudget String
   | InexactProviderQuantity ProviderBackend String Integer
   | UnsupportedBudgetWall ProviderBackend String
   | EmptyWorkloadSet
@@ -177,7 +180,7 @@ withValidatedBudget ::
   Either BudgetError result
 withValidatedBudget _plan envelope consume =
   case budgetFromResources envelope of
-    Left err -> Left (InvalidBudget err)
+    Left err -> Left (InvalidQuantity err)
     Right budget -> Right (consume (ValidatedBudget budget))
 
 validatedBudgetValue :: ValidatedBudget scope planId budgetId -> ResourceBudget
@@ -233,26 +236,49 @@ effectiveBudgetValue ::
   ResourceBudget
 effectiveBudgetValue (EffectiveBudget budget) = budget
 
+{- | Whether one backend admits this budget at its provider wall.
+
+Every constructor answers for itself. A wildcard here would be the case nobody
+considered: three backends inherited the whole-unit check with no sizing check
+of their own, and a seventh would have joined them without anyone deciding it
+should (§ O). Adding a backend is now a compile error at this site.
+-}
 validateBackendExactness :: ProviderBackend -> ResourceBudget -> Either BudgetError ()
 validateBackendExactness backend budget =
   case backend of
+    -- No quota or image-GC wall exists to size against, so there is nothing to
+    -- admit rather than a budget that trivially fits.
     BareLinuxBackend ->
       Left
         ( UnsupportedBudgetWall
             BareLinuxBackend
             "bare Linux has no quota/image-GC storage wall"
         )
+    -- A kind node is cordoned in bytes by the container runtime, so it accepts
+    -- any positive budget the canonical constructor already admitted.
     DockerNodeBackend -> pure ()
+    -- Colima additionally reserves a fixed writable root disk inside the
+    -- declared ceiling, so its own renderer is part of admission.
     ColimaBackend -> do
-      exact "memory" (budgetMemoryBytes budget)
-      exact "storage" (budgetStorageBytes budget)
+      wholeGibibytes
       case Cordon.colimaSizingArgsForBudget "provider-admission" budget of
         Left reason -> Left (InvalidBudget reason)
         Right _ -> Right ()
-    _ -> do
+    -- Lima's wall is `--memory`/`--disk` in whole gibibytes, so a budget with a
+    -- finer memory or storage figure has no argv that expresses it.
+    LimaBackend -> wholeGibibytes
+    -- Incus renders `limits.memory` and the root volume size as `<n>GiB`
+    -- strings, so the same whole-unit limit applies to both dimensions.
+    IncusBackend -> wholeGibibytes
+    -- WSL2's `.wslconfig` takes `memory=<n>GB` and nothing finer. Its storage
+    -- figure is not a `.wslconfig` key at all — the VHDX cap is applied at
+    -- install time — but it is checked here anyway, because the install
+    -- argument it does reach takes the same whole unit.
+    Wsl2Backend -> wholeGibibytes
+  where
+    wholeGibibytes = do
       exact "memory" (budgetMemoryBytes budget)
       exact "storage" (budgetStorageBytes budget)
-  where
     gib = 1024 ^ (3 :: Integer)
     exact dimension value
       | value `mod` gib == 0 = Right ()

@@ -174,6 +174,12 @@ installed project identity inside the protected transaction that takes the mode.
 recovery settle an interrupted run's own generated config before deciding whether a foreign Production
 config blocks the next run.
 
+Both harness owners reach the store through the one record tape described in the
+[ownership seam](ownership_seam.md): publishing the origin, binding it, forgetting it, and reading it
+back are shared, and what each keeps is its own subject and its own removal-set rule. The data root's
+rule is that the parent is scaffolding and a found directory is preserved; the generated config's is
+that a found file is refused before any mutation rather than adopted.
+
 The project-supplied Production-state probe follows the same ordering. For each variant, the ownership
 bracket holds project liveness, settles every abandoned Harness resource, then evaluates the probe before it
 allocates a fresh run lease, data root, generated config, or plan. A provider left by the abandoned run is

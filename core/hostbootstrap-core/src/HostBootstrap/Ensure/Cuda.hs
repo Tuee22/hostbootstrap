@@ -8,10 +8,10 @@ installed and verified. A verified no-op only when the exact @nvkind@
 volume-mount injection path can see a GPU. The pure 'installSteps' planner and
 probe classifier are unit-tested.
 -}
-module HostBootstrap.Ensure.Cuda (reconciler, installSteps, repositorySetupScript, nvidiaDriverProbeReady, nvkindRuntimeProbeArgs, nvkindRuntimeProbeReady) where
+module HostBootstrap.Ensure.Cuda (reconciler, installSteps, repositorySetupScript, nvkindRuntimeProbeArgs) where
 
-import Data.List (isInfixOf)
 import HostBootstrap.Ensure (
+    reportedGpu,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
@@ -25,7 +25,7 @@ import HostBootstrap.Ensure (
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Docker, NvidiaSmi, Sudo))
 import HostBootstrap.Substrate (Substrate)
-import System.Exit (ExitCode (..), die)
+import System.Exit (die)
 
 reconciler :: Reconciler
 reconciler =
@@ -40,14 +40,10 @@ reconciler =
                 then die "ensure cuda: nvidia-smi not found; install the NVIDIA driver, then re-run."
                 else do
                     driver <- runTool cfg NvidiaSmi ["-L"]
-                    if nvidiaDriverProbeReady driver
+                    if reportedGpu driver
                         then installAndVerify "cuda" satisfied installSteps cfg
                         else die "ensure cuda: nvidia-smi did not report a GPU; repair the NVIDIA driver, then re-run."
         }
-
-nvidiaDriverProbeReady :: Either String (ExitCode, String, String) -> Bool
-nvidiaDriverProbeReady (Right (ExitSuccess, out, _)) = "GPU" `isInfixOf` out
-nvidiaDriverProbeReady _ = False
 
 {- | CUDA is satisfied when the host driver reports a GPU and the exact
 @nvkind@ volume-mount injection smoke can see it from Docker. The latter proves
@@ -59,9 +55,9 @@ satisfied :: HostConfig -> IO Bool
 satisfied cfg = do
     smi <- runTool cfg NvidiaSmi ["-L"]
     case smi of
-        result | nvidiaDriverProbeReady result -> do
+        result | reportedGpu result -> do
             smoke <- runTool cfg Docker nvkindRuntimeProbeArgs
-            pure (nvkindRuntimeProbeReady smoke)
+            pure (reportedGpu smoke)
         _ -> pure False
 
 -- | NVIDIA's documented @nvkind@ toolkit smoke.
@@ -75,10 +71,6 @@ nvkindRuntimeProbeArgs =
     , "nvidia-smi"
     , "-L"
     ]
-
-nvkindRuntimeProbeReady :: Either String (ExitCode, String, String) -> Bool
-nvkindRuntimeProbeReady (Right (ExitSuccess, out, _)) = "GPU" `isInfixOf` out
-nvkindRuntimeProbeReady _ = False
 
 {- | The substrate-branched install plan: install the NVIDIA container toolkit,
 register it as Docker's default with CDI, enable the volume-mount injection

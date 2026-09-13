@@ -54,6 +54,13 @@ import qualified Data.Text as Text
 import Data.Word (Word64)
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import HostBootstrap.Ownership.Object (storeFault)
+import HostBootstrap.Ownership.Tape
+  ( RecordSubject (RecordSubject, subjectBinding, subjectRecord),
+    RecordTape,
+    publishBoundRecord,
+    publishFreshRecord,
+    recordTape,
+  )
 import HostBootstrap.Protected
   ( Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -520,16 +527,7 @@ startPreparedColimaProfileInside interpret session keys profile owner lineage in
           Left fault -> Left fault
           Right token -> recordedEvidence (\_ _ -> Right ()) token
       where
-        publish record = do
-          current <- readProtectedRecord session key
-          case current of
-            Left failure -> pure (Left (storeFault "read reported origin" failure))
-            Right Nothing -> do
-              written <- compareAndSwapProtectedRecord session key ExpectAbsent (renderOriginRecord record)
-              pure (either (Left . storeFault "publish reported origin") (const (Right ())) written)
-            Right (Just stored)
-              | protectedRecordBytes stored == renderOriginRecord record -> pure (Right ())
-              | otherwise -> pure (Left (OwnershipMalformed "reported origin belongs to another object"))
+        publish = publishFreshRecord (reportedTape session) key
 
     requireReportedOrigin key _target = do
       current <- readProtectedRecord session key
@@ -726,19 +724,7 @@ bindColimaCreationIdentitiesInside session keys profile owner lineage invocation
               | protectedRecordBytes stored == renderOriginRecord record,
                 record == expected -> Right ()
             _ -> Left (OwnershipMalformed "reported origin cannot be re-entered for binding")
-        publishBinding record = do
-          current <- readProtectedRecord session key
-          case current of
-            Left failure -> pure (Left (storeFault "read reported binding version" failure))
-            Right Nothing -> pure (Left (OwnershipMalformed "reported origin vanished before binding"))
-            Right (Just stored) -> do
-              written <-
-                compareAndSwapProtectedRecord
-                  session
-                  key
-                  (ExpectVersion (protectedRecordVersion stored))
-                  (renderOriginRecord record)
-              pure (either (Left . storeFault "publish reported identity binding") (const (Right ())) written)
+        publishBinding = publishBoundRecord (reportedTape session) key
 
 -- | Publish Managed only after the profile and disk origins are identity-bound,
 -- the context directory re-enters exactly, and the complete managed evidence
@@ -1262,6 +1248,31 @@ runManagedColimaDockerWith interpret stateRoot profile owner lineage invocation 
       | character >= 'A' && character <= 'Z' = toEnum (fromEnum character + 32)
       | otherwise = character
 
+{- | What this module calls the two kinds of record it publishes.
+
+The reported origin is answered for by Colima itself; the directory origin is a
+host object this process created. They are two subjects rather than one because
+their refusals name different things, and everything else about publishing them
+is the shared tape's.
+-}
+reportedTape :: ProtectedSession session -> RecordTape session
+reportedTape session =
+  recordTape
+    session
+    RecordSubject
+      { subjectRecord = "the reported Colima origin record"
+      , subjectBinding = "bind the reported Colima identity"
+      }
+
+directoryTape :: ProtectedSession session -> RecordTape session
+directoryTape session =
+  recordTape
+    session
+    RecordSubject
+      { subjectRecord = "the Colima directory origin record"
+      , subjectBinding = "bind the Colima directory identity"
+      }
+
 -- | Clauses 1–3 for one Colima-owned directory. Existing objects are never
 -- adopted; recovery from a retained origin is handled by the stage driver.
 acquireColimaDirectory :: ProtectedSession session -> RecordKey -> FilePath -> IO (Either OwnershipFault ObjectIdentity)
@@ -1288,22 +1299,8 @@ acquireColimaDirectory session key target = do
                         pure (fmap (const identity) bound))
               token
   where
-    publishOrigin record = do
-      written <- compareAndSwapProtectedRecord session key ExpectAbsent (renderOriginRecord record)
-      pure (either (Left . storeFault "publish directory origin") (const (Right ())) written)
-    publishBinding record = do
-      current <- readProtectedRecord session key
-      case current of
-        Left failure -> pure (Left (storeFault "read directory origin for binding" failure))
-        Right Nothing -> pure (Left (OwnershipProbeFailed "bind directory identity" "origin record vanished"))
-        Right (Just stored) -> do
-          written <-
-            compareAndSwapProtectedRecord
-              session
-              key
-              (ExpectVersion (protectedRecordVersion stored))
-              (renderOriginRecord record)
-          pure (either (Left . storeFault "publish directory binding") (const (Right ())) written)
+    publishOrigin = publishFreshRecord (directoryTape session) key
+    publishBinding = publishBoundRecord (directoryTape session) key
 
 
 revalidateColimaManifest :: ProtectedSession session -> ColimaOwnershipKeys -> FilePath -> FilePath -> IO (Either OwnershipFault OwnershipManifest)

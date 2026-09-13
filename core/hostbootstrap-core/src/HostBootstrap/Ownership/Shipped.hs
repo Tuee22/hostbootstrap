@@ -59,7 +59,6 @@ where
 #ifndef mingw32_HOST_OS
 import Control.Exception (IOException, displayException, try)
 #endif
-import Data.Bits (shiftL, (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -99,10 +98,8 @@ import HostBootstrap.Ownership.Object (
     originRecordKind,
     originRecordOrigin,
     ownershipFault,
-    parseOriginRecord,
     payloadBytes,
     payloadDigest,
-    renderOriginRecord,
  )
 import HostBootstrap.Ownership.Primitive (
     OwnershipRow,
@@ -125,22 +122,27 @@ import HostBootstrap.Ownership.Primitive (
 #endif
  )
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
+import HostBootstrap.Ownership.Tape (
+    RecordSubject (RecordSubject, subjectBinding, subjectRecord),
+    RecordTape,
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    readRecordUnder,
+    recordTape,
+ )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     RecordKey,
-    compareAndDeleteProtectedRecord,
-    compareAndSwapProtectedRecord,
     mkRecordKey,
     openProtectedStore,
     protectedErrorMessage,
-    readProtectedRecord,
     recordKeyText,
     withProtectedEntry,
  )
 #ifndef mingw32_HOST_OS
+import HostBootstrap.Wire.LittleEndian (word32LE)
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 #ifdef darwin_HOST_OS
 import Foreign.C.Error (throwErrnoIfMinus1_)
@@ -742,91 +744,47 @@ symbolicLinkProbe operation path failure =
 -- ---------------------------------------------------------------------------
 -- Clause 2, in the far frame's own store
 
+{- | What this row calls its records, for the shared tape's refusals.
+
+The shipped row owns no richer error sum than the seam's own, so its carrier is
+the identity on a clause fault; only the subject is its own.
+-}
+shippedSubject :: RecordSubject
+shippedSubject =
+    RecordSubject
+        { subjectRecord = "this object's ownership record"
+        , subjectBinding = "bind this object's identity"
+        }
+
+shippedTape :: ProtectedSession session -> RecordTape session
+shippedTape session = recordTape session shippedSubject
+
 readBoundRecord ::
     ProtectedSession session ->
     RecordKey ->
     IO (Either OwnershipFault (Maybe OriginRecord))
-readBoundRecord session key = do
-    stored <- readProtectedRecord session key
-    pure $ case stored of
-        Left failure -> Left (storeFault "read this object's ownership record" failure)
-        Right Nothing -> Right Nothing
-        Right (Just stamped) ->
-            fmap Just (parseOriginRecord (protectedRecordBytes stamped))
+readBoundRecord session key = readRecordUnder (shippedTape session) key
 
 publishOrigin ::
     ProtectedSession session ->
     RecordKey ->
     OriginRecord ->
     IO (Either OwnershipFault ())
-publishOrigin session key record = do
-    written <-
-        compareAndSwapProtectedRecord session key ExpectAbsent (renderOriginRecord record)
-    pure
-        ( either
-            (Left . storeFault "publish this object's origin record")
-            (const (Right ()))
-            written
-        )
+publishOrigin session key = publishFreshRecord (shippedTape session) key
 
-{- | Publish the binding against the exact version the origin publication left,
-read back inside the same exclusive entry.
--}
 publishBinding ::
     ProtectedSession session ->
     RecordKey ->
     OriginRecord ->
     IO (Either OwnershipFault ())
-publishBinding session key record = do
-    current <- readProtectedRecord session key
-    case current of
-        Left failure ->
-            pure (Left (storeFault "read this object's origin record" failure))
-        Right Nothing ->
-            pure
-                ( Left
-                    ( OwnershipProbeFailed
-                        "bind this object's identity"
-                        "the origin record vanished inside the exclusive entry"
-                    )
-                )
-        Right (Just stored) -> do
-            written <-
-                compareAndSwapProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion stored))
-                    (renderOriginRecord record)
-            pure
-                ( either
-                    (Left . storeFault "bind this object's identity")
-                    (const (Right ()))
-                    written
-                )
+publishBinding session key = publishBoundRecord (shippedTape session) key
 
 forget ::
     ProtectedSession session ->
     RecordKey ->
     OriginRecord ->
     IO (Either OwnershipFault ())
-forget session key _record = do
-    observed <- readProtectedRecord session key
-    case observed of
-        Left failure -> pure (Left (storeFault "read this object's ownership record" failure))
-        Right Nothing -> pure (Right ())
-        Right (Just stored) -> do
-            deleted <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion stored))
-            pure
-                ( either
-                    (Left . storeFault "forget this object's ownership record")
-                    Right
-                    deleted
-                )
-
+forget session key _record = forgetRecord (shippedTape session) key
 
 refusedByStore :: Text -> ProtectedError -> ShippedOutcome
 refusedByStore operation = ShippedRefused . storeFault operation
@@ -1055,14 +1013,7 @@ getWord8 :: Decoder Word8
 getWord8 = ByteString.head <$> getBytes 1
 
 getWord32LE :: Decoder Word32
-getWord32LE = do
-    bytes <- getBytes 4
-    pure
-        ( fromIntegral (ByteString.index bytes 0)
-            .|. shiftL (fromIntegral (ByteString.index bytes 1)) 8
-            .|. shiftL (fromIntegral (ByteString.index bytes 2)) 16
-            .|. shiftL (fromIntegral (ByteString.index bytes 3)) 24
-        )
+getWord32LE = word32LE <$> getBytes 4
 
 getSized :: Text -> Decoder ByteString
 getSized subject = do

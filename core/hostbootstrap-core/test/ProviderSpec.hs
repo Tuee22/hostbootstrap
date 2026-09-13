@@ -424,11 +424,34 @@ inheritedDurabilityCases =
                 assertBool
                     (name ++ " performs its own durable write through " ++ primitive)
                     (SourceGuard.countHaskellIdentifier primitive source == 0)
+        -- Every durable byte still reaches the protected store, one layer
+        -- further down: the owner publishes through the shared record tape, and
+        -- the tape is the one place a compare-and-swap is written.
         ownership <- readFile (driverRoot </> "Ownership.hs")
-        forM_ ["compareAndSwapProtectedRecord", "compareAndDeleteProtectedRecord"] $ \publication ->
+        forM_ ["publishFreshRecord", "publishBoundRecord", "forgetRecord"] $ \publication ->
             assertBool
                 ("the driver no longer publishes through " ++ publication)
                 (SourceGuard.countHaskellIdentifier publication ownership > 0)
+        forM_ ["compareAndSwapProtectedRecord", "compareAndDeleteProtectedRecord"] $ \publication ->
+            assertBool
+                ("the driver reaches " ++ publication ++ " beside the tape rather than through it")
+                (SourceGuard.countHaskellIdentifier publication ownership == 0)
+        root' <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        tape <-
+            readFile
+                ( root'
+                    </> "core"
+                    </> "hostbootstrap-core"
+                    </> "internal"
+                    </> "ownership"
+                    </> "HostBootstrap"
+                    </> "Ownership"
+                    </> "Tape.hs"
+                )
+        forM_ ["compareAndSwapProtectedRecord", "compareAndDeleteProtectedRecord"] $ \publication ->
+            assertBool
+                ("the shared tape no longer publishes through " ++ publication)
+                (SourceGuard.countHaskellIdentifier publication tape > 0)
     ]
 
 providerLiveBoundaryCases :: [TestTree]

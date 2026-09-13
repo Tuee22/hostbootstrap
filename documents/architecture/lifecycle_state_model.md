@@ -234,9 +234,27 @@ package and nonce-bound fresh observation request, rechecks lifetime and generat
 observation data. Consumers open the package from their own execution descriptor and retain exact dependencies
 through preparation. A cached generation number is never substituted for a fresh backend probe.
 
+A package is opened in one of three ways, and each is written once with the domain as its argument. The
+**full opener** checks every field the producer sealed, including the journal and receipt commitments. The
+**coordinate check** checks the subset a fixed successor can see, leaving the opaque commitments bound by
+the package commitment. The **carried coordinate check** is the same for a package that arrived from
+another frame: it does not equate the producer's plan with the successor's projected plan, and it hands
+back the backend origin the package carries rather than asserting one. Provider, provider-share and
+cluster are arguments to these three, so a requirement added to a check applies to every domain rather
+than to whichever one it was written in.
+
+**A prepared gate has one commitment.** Its six fields — plan, operation, session, fence, attempt and
+journal version — are projected once, beside the gate itself, and committed by length-framing each field
+and digesting the result with SHA-256. Framing rather than separator-joining is deliberate: a separator
+that can occur inside a field admits two different gates with the same commitment, and neither the
+operation key nor the session name is constrained to exclude one. The provider and cluster backends both
+commit through that one function. Commitments are invocation-scoped — they travel in authenticated
+handoff packages within a run and are never written to the protected store — so the construction is not
+a durable format.
+
 ## Validation
 
-Run `cabal test all --ghc-options=-Werror` from `core/`. The evidence is divided by the boundary exercised:
+Run `cabal test all` from `core/`. The evidence is divided by the boundary exercised:
 
 | Suite | Contract exercised |
 |---|---|

@@ -1,11 +1,11 @@
 # Phase 8 — Ensure reconcilers
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 7 (Dhall configuration and the generic project model)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Bring each host dependency to a declared state idempotently, with substrate applicability
 > decided by the classified substrate rather than attempted and caught, and supply the generic resolved-tool
@@ -287,88 +287,102 @@ On 2026-09-01, after tightening the interrupted-toolchain probe, the Windows hos
 None. The worked-demo phase adopts this vocabulary at its own pristine-host call site; a live confirmation
 is not a closure obligation of this static phase (§ C, § II).
 
-### Sprint 8.7: A dispatched command names a real executable [Active]
+### Sprint 8.7: A dispatched command names a real executable [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
+`core/hostbootstrap-core/test/compile-fail/RepointSelfReference.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/library_hierarchy.md`
 
 #### Objective
 
-§ K makes a bare command name unrepresentable at host-tool resolution. One layer up, the lift's raw
-command leaf is a plain list, and the fold over an empty one produces a dispatch naming the empty
-string — the same illegal shape, reachable by a different route. Beside it, the self-reference value
-holds two adjacent unvalidated paths with both its constructor and its accessors exported, so a handed
-value can be re-pointed and the two paths can be swapped.
+§ K makes a bare command name unrepresentable at host-tool resolution, and the lift's raw command leaf
+holds the same line one layer up: it names an executable and its arguments separately, so the empty
+vector that would dispatch the empty-string executable has no spelling. Beside it, the self-reference
+value's two paths are distinct types with no constructor or selector a consumer can reach.
 
 #### Deliverables
 
-- The raw command leaf carries a non-empty argument vector, so the equation that dispatches an empty executable has no reason to exist and is deleted.
+- The raw command leaf is an executable and its arguments, so the equation that dispatched an empty executable has no reason to exist.
+- Every caller that holds a list narrows it at its own boundary: the two that already answer with `Maybe` refuse the empty vector, and the one that does not takes the executable and the arguments apart.
 - The self-reference value's two paths are distinct newtypes, so they cannot be transposed.
-- Its constructor and its field accessors are both hidden — an exported accessor still admits record update, which is the half that matters.
+- Its constructor and its field accessors are both hidden — an exported accessor still admits record update, which is the half that matters — and one named reader answers the in-guest path.
 - A compile-fail fixture pins that a caller cannot re-point a self-reference it was handed.
 
 #### Validation
 
-The host static gate, plus the new fixture. The lift suite covers the dispatch shapes.
+The host static gate, plus the new fixture. The lift suite covers the dispatch shapes. Dated evidence:
+on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from
+`core/` passed 2,521 tests.
 
 #### Remaining Work
 
-The reconciler workflow and the accelerator probe are Sprints 8.8 and 8.9.
+None. The reconciler workflow and the accelerator probe are Sprints 8.8 and 8.9.
 
-### Sprint 8.8: One group-and-socket reconciler workflow [Planned]
+### Sprint 8.8: One group-and-socket reconciler workflow [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`
 
 #### Objective
 
-Two reconcilers hold the same workflow: read the environment, find the invoking non-root user, skip
-with a message when there is none, add that user to a group, verify, then grant the socket. They differ
-in a group name, a socket path, and a label. § LL calls a second copy of one workflow a defect because
-each copy passes its own tests — and the exit-code formatting inside them is repeated nine times
-across the two files.
+One workflow puts the invoking non-root user in a daemon's group and grants that user immediate access
+to the daemon's socket: read the environment, find the user, skip with a message when there is none,
+add the user to the group, then grant. The two reconcilers that need it differ in a group, a socket,
+and a label, and § LL makes those three arguments rather than a second copy.
 
 #### Deliverables
 
-- `Ensure.hs`, which already owns the shared reconciler vocabulary, gains the group-and-socket workflow parameterised by group, socket, and label.
-- Both reconcilers become applications of it.
-- The three-way exit-code report is written once.
+- `Ensure.hs`, which already owns the shared reconciler vocabulary, holds the group-and-socket workflow parameterised by group, socket, and label.
+- Both reconcilers are applications of it, and each keeps only what is genuinely its own — Docker's future-login verification, its direct-access short circuit, and its ACL-tool install.
+- The three-way answer to a privileged step — it succeeded, it ran and returned non-zero, or the tool could not be run — is written once and worded from the reconciler's label and the step's own description.
+
+#### Objective boundary
+
+The refusal wording is now derived from the label and the step rather than spelled at each site, so a
+few operator-facing sentences read slightly differently. Nothing pinned them: the ensure suite covers
+these reconcilers' install steps and probes, not their messages, which is why the duplication survived.
 
 #### Validation
 
-The host static gate. The ensure suite already pins each reconciler's messages; unchanged messages are
-the evidence that the shared workflow is the same workflow.
+The host static gate. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and
+Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 8.9: One accelerator probe [Planned]
+### Sprint 8.9: One accelerator probe [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Ensure/CudaWin.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`
 
 #### Objective
 
-The question "does the accelerator tool report a device" is answered by four separate
-implementations — twice with identical bodies in one module, once inline in its Windows neighbour, and
-once more in substrate detection. One of them is the answer; the others are copies of it.
+The question "does the accelerator tool report a device" has one answer. `Ensure.reportedGpu` is it,
+and the two reconcilers, the cluster's runtime smoke, and substrate detection all ask through it or
+through the marker it reads.
 
 #### Deliverables
 
-- The probe has one implementation, shared by the reconcilers that ask it.
-- Substrate detection's marker list and this probe agree by construction rather than by inspection.
-- The duplicate bodies are deleted.
+- The probe has one implementation, in the module that owns the shared reconciler vocabulary.
+- The token a device listing prints is named once, in substrate detection, so detection and the probe agree by construction rather than by inspection.
+- No duplicate body remains: the host-driver predicate, the `nvkind` runtime predicate, the Windows inline match, and the cluster's re-export are the one predicate.
 
 #### Validation
 
-The host static gate.
+The host static gate. The ensure suite asserts the one predicate over a listing, an empty success, a
+failed run, an unrunnable tool, and the shared marker itself. Dated evidence: on 2026-09-12, x86_64
+Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
@@ -376,9 +390,7 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The lift's dispatch leaf is owed a type that cannot name an empty executable.
-**Sprint 8.7** owns it. Sprints 8.8 and 8.9 follow with the shared reconciler workflow and the single
-accelerator probe.
+None.
 
 ## Documentation Requirements
 

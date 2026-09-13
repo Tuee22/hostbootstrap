@@ -247,6 +247,12 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateSession,
  )
 import HostBootstrap.Lifecycle.Prepared.Internal (
+    GateAttempt (GateAttempt),
+    GateFence (GateFence),
+    GateJournalVersion (GateJournalVersion),
+    GateOperationKey (GateOperationKey),
+    GatePlanDigest (GatePlanDigest),
+    GateSession (GateSession),
     mintPreparedGate,
  )
 import HostBootstrap.Lifecycle.ResourceRecord (
@@ -4234,12 +4240,14 @@ withPreparedGate session sess epoch fence opKey unknownPhase (ProjectPermit pres
                         | otherwise ->
                             use
                                 ( mintPreparedGate
-                                    plan
-                                    opKey
-                                    (sessionIdText (sessionRecordId sess))
-                                    liveEpoch
-                                    attempt
-                                    (recordVersionWord (transactionRecordVersion durable))
+                                    (GatePlanDigest plan)
+                                    (GateOperationKey opKey)
+                                    (GateSession (sessionIdText (sessionRecordId sess)))
+                                    (GateFence liveEpoch)
+                                    (GateAttempt attempt)
+                                    ( GateJournalVersion
+                                        (recordVersionWord (transactionRecordVersion durable))
+                                    )
                                 )
                                 (ProjectPermit next)
 

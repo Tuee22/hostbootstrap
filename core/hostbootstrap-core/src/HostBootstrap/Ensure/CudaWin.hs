@@ -16,8 +16,8 @@ module HostBootstrap.Ensure.CudaWin (
 )
 where
 
-import Data.List (isInfixOf)
 import HostBootstrap.Ensure (
+    reportedGpu,
     withProbeDir,
     FramePlan (InstallHere),
     InstallStep (..),
@@ -57,7 +57,7 @@ satisfied :: HostConfig -> IO Bool
 satisfied cfg = do
     smi <- runTool cfg NvidiaSmi ["-L"]
     case smi of
-        Right (ExitSuccess, out, _) | "GPU" `isInfixOf` out -> do
+        result | reportedGpu result -> do
             clang <- toolOk cfg Clang clangVersionArgs
             vctools <- toolOutputNonEmpty cfg Vswhere vswhereVCToolsArgs
             smoke <- cudaSmokeCompile cfg

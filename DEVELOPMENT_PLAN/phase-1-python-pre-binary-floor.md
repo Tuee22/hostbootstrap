@@ -1,14 +1,14 @@
 # Phase 1 — Python pre-binary floor
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 0 (governance and documentation standards)
 **Substrates**: linux-cpu
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
 `poetry run python -m hostbootstrap.check_code && poetry run python -m hostbootstrap.test_all` ; pass ;
-covers 94d3d28830984fd65f6e9382db6b7a813a125122936ecb0f354209420557eaba
+covers a77c02cb583bf7f2b394c85c864c5670bcc6f05dc2aeb2343230b40ff2ed34d7
 **Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project
@@ -125,7 +125,7 @@ Make the Python half's gate one command with no bypass.
 
 #### Deliverables
 
-- `check_code` runs `ruff check`, then `black --check`, then `mypy`, over `hostbootstrap` and `stubs`.
+- `check_code` runs `ruff check`, then `black --check`, then `mypy`, over `hostbootstrap`.
 - `test_all` sets the `HOSTBOOTSTRAP_TEST_ALL` sentinel and invokes `pytest tests` in-process; forwarded
   pytest arguments are supported.
 - `tests/conftest.py` requires the sentinel, so there is one supported suite entry point.
@@ -141,75 +141,81 @@ Both commands pass from the repository root. Dated evidence: `235 passed` in 1.4
 
 None.
 
-### Sprint 1.5: One architecture value in the bootstrapper [Active]
+### Sprint 1.5: One architecture value in the bootstrapper [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/substrate.py`, `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`
 
 #### Objective
 
-The bootstrapper already names substrates and image flavors with closed enumerations. Architecture is
-the third member of that vocabulary and is carried as a bare string, so every function that takes one
-accepts any string and re-derives validity, or does not. One `Arch` value makes the two supported
-architectures the only ones expressible, and makes the alias table a single mapping into it.
+Architecture is the third closed value in the bootstrapper's vocabulary, beside the substrate name and
+the image flavor. The two supported architectures are the only ones expressible, one alias table is the
+single mapping into them, and every function downstream of that table takes the narrowed value rather
+than re-deriving validity from text.
 
 #### Deliverables
 
 - `Arch` joins `SubstrateName` and `Flavor` as a closed enumeration in `hostbootstrap/substrate.py`.
 - `Substrate.arch` and every tag, reference, build-argument, and download-URL producer take `Arch`.
-- The alias table maps host machine strings into `Arch` once; the repeated membership test at the build-argument boundary is gone because its input is already narrowed.
-- `normalize_architecture` in `docker_ops.py` reads the same table rather than carrying its own copy, and the copy is deleted.
+- One alias table maps every outside architecture spelling into `Arch`; the build-argument boundary re-derives no validity, because its input is already narrowed.
+- `normalize_architecture` in `docker_ops.py` reads that one table, so the host boundary and the Docker-engine boundary answer with the same value.
 - The mapping tables keyed by architecture are keyed by `Arch`, so a lookup cannot miss.
-- `stubs/` no longer appears as a check target: it holds no stubs, and its presence needs a comment in the check runner explaining why one tool must skip it.
+- The check runner's targets are exactly the package it checks, so no tool configuration names a path that holds nothing and no tool carries a comment explaining a skip.
 
 #### Validation
 
 The host static gate. `poetry run python -m hostbootstrap.check_code` type-checks the narrowed
 signatures under strict `mypy`, and `poetry run python -m coverage run -m hostbootstrap.test_all`
-holds the 100% line gate — which means the tests must exercise both architectures rather than the one
-the host happens to be.
+holds the 100% line gate — which means the tests exercise both architectures rather than the one
+the host happens to be. Dated evidence: `ruff`/`black`/`mypy` clean and `242 passed` at 100% line
+coverage, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1 (2026-09-12). The two
+boundaries that read an outside architecture spelling — the host machine string and the Docker engine
+answer — are asserted to return the same `Arch` for every alias, which is the absence guard against a
+second table returning.
 
 #### Remaining Work
 
-The subprocess vocabulary and the detection boundary are Sprint 1.6 and Sprint 1.7.
+None. The subprocess vocabulary and the detection boundary are Sprint 1.6 and Sprint 1.7.
 
-### Sprint 1.6: One way to run a command in the bootstrapper [Planned]
+### Sprint 1.6: One way to run a command in the bootstrapper [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/process.py`, `hostbootstrap/prereqs.py`, `hostbootstrap/self_update.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`
 
 #### Objective
 
-`process.py` is the bootstrapper's declared subprocess wrapper and only the Docker operations use it,
-because it offers an asynchronous interface and most callers are synchronous. The rest reach for
-`subprocess.run` directly, so the package carries four unrelated conventions for the same act: run a
-command, decide whether it failed, and say so in this module's own vocabulary. A synchronous sibling
-lets each caller keep its own error type and stop re-deriving the mechanics.
+One module launches every subprocess the bootstrapper runs, and says what happened in one vocabulary.
+A synchronous sibling of the asynchronous runner serves the callers that have no event loop, so each of
+them keeps its own error type instead of re-deriving the mechanics of running a command, deciding
+whether it failed, and saying which kind of failure it was.
 
 #### Deliverables
 
-- `process.py` gains a synchronous probe that returns a result or reports that the command could not be executed at all, and a synchronous checked runner.
-- The prerequisite checks, substrate detection, and self-update paths call them and wrap one result into their own error type.
+- `process.py` carries a synchronous probe that returns a completed result or a statement that the command could not be executed at all, and a synchronous checked runner that raises on either.
+- The child's stdio disposition is a closed value, so a caller names capture or inheritance rather than setting a pair of booleans.
+- The prerequisite checks, substrate detection, self-update, the check runner, the maintainer quality gates, and the Windows binary handoff call them and wrap one outcome into their own error type.
 - No module outside `process.py` imports `subprocess`.
-- The distinction between 'ran and failed' and 'could not be run' survives in the result rather than in which exception was caught.
+- The distinction between 'ran and failed' and 'could not be run' survives in the outcome rather than in which exception was caught.
 
 #### Validation
 
-The host static gate, with coverage still at 100%. The prerequisite and self-update suites already
-assert on the failure text each module produces; those assertions are the regression test that the
-error vocabulary did not change when the mechanics did.
+The host static gate, with coverage still at 100%. The prerequisite and self-update suites assert on
+the failure text each module produces; those assertions are the regression test that the error
+vocabulary did not change when the mechanics did. Dated evidence: `ruff`/`black`/`mypy` clean and
+`249 passed` at 100% line coverage, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1
+(2026-09-12).
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 1.7: The bootstrapper's detection is the one the binary uses [Planned]
+### Sprint 1.7: The bootstrapper's detection is the one the binary uses [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/substrate.py`, `hostbootstrap/bootstrap.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`
@@ -217,20 +223,22 @@ None beyond the phase's own.
 #### Objective
 
 Something must detect the host before the binary exists, and § M gives that job to the bootstrapper.
-What does not follow is that the binary should detect it again: the two implementations agree today
-down to their error strings, which is the shape a second implementation has right up until it drifts.
-The bootstrapper passes what it found to the binary it launches.
+It passes what it found to the binary it launches, so one classification of one host has one author.
 
 #### Deliverables
 
 - The bootstrapper hands its detected substrate and architecture to the binary through the documented invocation-context seam.
-- The seam is typed and explicit, not an inherited environment value read opportunistically.
-- `documents/architecture/python_haskell_boundary.md` states which side detects and which side receives.
+- Each seam value is one spelling of a closed vocabulary, named by a constant rather than written at the call site.
+- The seam is set explicitly on the launched child — `execve` on POSIX, the child's environment on Windows — rather than left in the ambient environment to be read opportunistically.
+- `documents/architecture/python_haskell_boundary.md` states which side detects, which side receives, and what a directly invoked binary sees instead.
 
 #### Validation
 
-The host static gate. The consuming half is Sprint 3.10 and the two land together; until it does, the
-binary's own detection remains the fallback and nothing regresses.
+The host static gate. The suite pins both handoff shapes carrying the pair, and pins that the detected
+substrate reaches the seam rather than a constant. Dated evidence: `ruff`/`black`/`mypy` clean and
+`251 passed` at 100% line coverage, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1
+(2026-09-12). The consuming half is Sprint 3.10; until it lands the binary's own detection remains the
+fallback and nothing regresses.
 
 #### Remaining Work
 
@@ -238,9 +246,7 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The bootstrapper's architecture vocabulary is owed. **Sprint 1.5** owns it: architecture
-is a closed value rather than a string, and the alias table has one home. Sprints 1.6 and 1.7 follow with
-the subprocess vocabulary and the detection boundary.
+None.
 
 ## Documentation Requirements
 

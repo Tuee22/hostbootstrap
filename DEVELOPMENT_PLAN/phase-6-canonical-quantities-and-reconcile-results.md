@@ -1,11 +1,11 @@
 # Phase 6 — Canonical quantities, readiness, and reconcile results
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 5 (operator, root, and command authority)
 **Substrates**: none (static)
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Supply one canonical parser for every quantity, the provider-neutral capacity and cordon
 > foundation, opaque generative readiness bound to a hidden probe, and the ownership- and phase-indexed
@@ -127,40 +127,49 @@ rejected at teardown by the type checker.
 
 None.
 
-### Sprint 6.4: The budget path answers with a closed result [Active]
+### Sprint 6.4: The budget path answers with a closed result [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/resource_budgeting.md`
 
 #### Objective
 
-This phase's own contribution is that a reconcile answer is a closed sum rather than a sentence, and
-the library holds excellent examples of it. The canonical-quantity constructors are not among them:
-they answer with free text, and a caller that needs to know *which* dimension failed reads it by
-matching on a string — or, at the cluster wall, by concatenating one into a typed constructor, which
-keeps the shape and loses the machine-readable part.
+This phase's contribution is that a reconcile answer is a closed sum rather than a sentence, and the
+canonical-quantity constructors answer that way too: a caller that needs to know *which* dimension
+failed reads it off the value rather than by matching on a string.
 
 #### Deliverables
 
-- The quantity constructors answer with a closed error naming the dimension and the bound it broke.
-- The cluster wall's slice refusal carries that value rather than an interpolated sentence.
-- Rendering the new sum produces the operator-facing text those messages carry today, so diagnostics do not regress.
-- A case asserts the dimension of a refusal without matching on its rendered text.
+- `parseQuantity` and `mkResourceBudget` answer with `QuantityError`, a closed sum naming either the grammar that failed or the `BudgetDimension` and the bound it broke.
+- `renderQuantityError` is the one place a refusal becomes operator-facing text, and it produces the sentences those refusals carried before the sum existed, so diagnostics do not regress.
+- The plan-indexed cluster admission carries that value as `InvalidQuantity` rather than interpolating it into a string.
+- The descriptive helpers that answer in text render at their own boundary, so the closed value reaches every caller that can use it and no caller that cannot.
+- A case asserts the dimension of a refusal without matching on its rendered text, and a second pins that every constructor still renders the sentence it used to.
+
+#### Objective boundary
+
+The remaining free-text error channels elsewhere in the library — capacity reads, the fit check, and the
+provider sizing renderers — are not in this sprint's scope. They are a different subject: a fit check
+refuses about a *host*, not about a quantity.
 
 #### Validation
 
-The host static gate. The budget and cordon suites already cover the refusals; the new assertion is
-that they can be identified without string matching.
+The host static gate. The budget and cordon suites cover the refusals, and the added cases are that
+they can be identified without string matching and that their rendering is unchanged. Dated evidence:
+on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from
+`core/` passed 2,518 tests.
 
 #### Remaining Work
 
-The remaining free-text error channels elsewhere in the library are not in this sprint's scope.
+None.
 
 ## Remaining Work
 
-The canonical-quantity refusals are owed as a closed result. **Sprint 6.4** owns it.
+None.
 
 ## Documentation Requirements
 

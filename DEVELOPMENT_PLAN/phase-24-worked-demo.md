@@ -5,7 +5,7 @@
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
 **Substrates**: linux-cpu
-**Gate**: `cabal build all` and `cabal test hostbootstrap-demo-test --ghc-options=-Werror` from `demo/`, the
+**Gate**: `cabal build all` and `cabal test hostbootstrap-demo-test` from `demo/`, the
 core host-static gate from `core/`, plus live
 `hostbootstrap run -- project up`, `hostbootstrap run -- project down`,
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`

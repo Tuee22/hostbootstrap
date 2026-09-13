@@ -1,13 +1,13 @@
 # Phase 14 — The four ownership clauses and host-local reservations
 
-**Status**: Active
+**Status**: Done
 **Current sprint**: None — every sprint is closed
 **Depends on**: Phase 3 (host tools and the closed effect vocabulary), Phase 4 (protected store),
 Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
 
 > **Purpose**: Define the four Locked-Origin Identity Ownership clauses once, supply the one seam that
 > holds them, and supply the platform rows beneath it.
@@ -676,9 +676,9 @@ claim needs a second machine and § C forbids a baseline phase owing hardware it
 
 None. Every host-local owner holds its clauses through the one seam and against the one row.
 
-### Sprint 14.14: One record tape behind the ownership seam [Active]
+### Sprint 14.14: One record tape behind the ownership seam [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
@@ -705,17 +705,31 @@ first would pick a winner silently.
 
 #### Validation
 
-The host static gate. The provider ownership and reconcile suites pin the refusals; the chosen
-foreign-record refusal is asserted explicitly so the decision is visible in a test rather than in a
-diff.
+`HostBootstrap.Ownership.Tape` lives in the private `ownership-internal` sublibrary beside the clause
+producers, and holds `publishFreshRecord`, `publishBoundRecord`, `forgetRecord` and `readRecordUnder`
+over one session, key and `RecordSubject`. `OwnershipCarrier` has exactly two methods, and `carryClause`
+and `carryStore` are the only places the two error layers are collapsed. The provider owner adopted both
+and is 113 lines shorter.
+
+**The foreign-record divergence was decided against the record key.** The refusal now reads *"the durable
+record under this key is not the provider origin record this transaction publishes"* — the key is already
+the thing the reader is looking under, so repeating it in the message added no information the reader did
+not have, while the subject phrase says which owner's record was expected and the other spelling did not.
+`OwnershipSpec`'s "a record another transaction published is refused, named by subject" asserts that exact
+text, so the decision is a test rather than a diff.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `cabal test all
+--ghc-options=-Werror` from `core/` passed 2,526/2,526. `ProviderSpec`'s durability guard follows the
+tape one layer down: the provider module names the tape's operations and no longer names
+`compareAndSwapProtectedRecord`, and the tape does.
 
 #### Remaining Work
 
-The cluster, harness and remaining owners are Sprints 14.15 to 14.17.
+None. The cluster, harness and remaining owners adopted the result in Sprints 14.15 to 14.17.
 
-### Sprint 14.15: The cluster owner adopts the record tape [Planned]
+### Sprint 14.15: The cluster owner adopts the record tape [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
@@ -733,15 +747,28 @@ domain-specific part is the standing check and the create-then-bind path; the re
 
 #### Validation
 
-The host static gate; the cluster ownership and reconcile suites.
+The cluster owner's publish, forget, read-back and collapse helpers are gone; it holds `clusterSubject`,
+`clusterTape`, and an `OwnershipCarrier ClusterOwnershipFault` instance, and is 100 lines shorter. The
+node-identity phrase is `subjectBinding` on that subject rather than a literal repeated at each call.
+
+One site did **not** move to the shared refusal and is called out rather than quietly generalised: the
+retained-claim path refuses a record of the *wrong kind*, which is a different condition from a record
+another transaction owns, so it keeps its own `"the retained cluster ownership record carries no owner
+claim"`.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): this sprint's own
+change built clean under `-Werror`, and the 2,526-test `cabal test all --ghc-options=-Werror` run from
+`core/` that closed Sprint 14.16 is the first full run over it, including `ClusterOwnershipSpec` and
+`ClusterReconcileSpec`. Recording it that way rather than as a run of its own is what § NN asks for: the
+suite that covered this code is the one named.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 14.16: The harness owners adopt the record tape [Planned]
+### Sprint 14.16: The harness owners adopt the record tape [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs`, `core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`
@@ -760,15 +787,28 @@ clearest demonstration that the adapter was duplicated rather than independently
 
 #### Validation
 
-The host static gate. The run-ownership phase re-runs its own gate over these modules.
+Both owners now hold a subject, a tape, and an `OwnershipCarrier` instance, and nothing else of the
+adapter: the eight helpers and the twelve-line import block are deleted, and the two modules are 48 and
+53 lines shorter. Each keeps its own removal-set rule — the data root's parent-is-scaffolding and preserve-found
+policy, the generated config's payload digest and refuse-found policy.
+
+One semantic difference was found rather than assumed away. Both owners published their origin with
+`ExpectAbsent` unconditionally, while the tape reads first and treats an identical record as this
+transaction's own earlier write. Adopting the tape is therefore strictly more forgiving at that one point,
+and the argument that the difference is unreachable — the clause seam has already refused a record under
+this key before the publication runs — is checked by the suite rather than left as reasoning.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `cabal test all
+--ghc-options=-Werror` from `core/` passed 2,526/2,526, including `HarnessSpec` and
+`GeneratedConfigSpec`.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 14.17: The remaining publishers adopt the tape, and one reader decodes the wire [Planned]
+### Sprint 14.17: The remaining publishers adopt the tape, and one reader decodes the wire [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs`, `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_seam.md`
@@ -787,7 +827,24 @@ Windows wall host, which is one wire-format decoder written twice in two unrelat
 
 #### Validation
 
-The host static gate.
+The shipped row's four helpers are the tape's, through an `OwnershipCarrier OwnershipFault` instance the
+tape itself supplies: a row whose transaction crossed a frame has no domain sum above the seam's, so the
+carrier is the identity on a clause fault. The Colima owner's three remaining local publish helpers are
+the tape's too, under two subjects, because the reported origin and the host directory it creates are
+different objects and their refusals name different things. Colima's stage, manifest and profile keys are
+a multi-key protocol of its own rather than the origin-record adapter, and stay where they are.
+
+`HostBootstrap.Wire.LittleEndian` is the one home for reading a fixed-width little-endian word, and both
+decoders take their words from it. The remaining byte-assembling folds in this tree are *big*-endian
+wires, which is a different convention rather than a third copy.
+
+Two guards replace the two ledger rows, in `OwnershipSpec`. "Every owner behind the seam reaches the store
+through the tape" names the five owners explicitly and asserts each imports the tape and names neither
+compare-and-swap nor compare-and-delete; naming them is deliberate, because a guard that walked every
+module would pass the day a sixth owner arrived with a sixth copy. "Both readers of the little-endian wire
+share one word reader" asserts each imports the shared reader and no longer imports `Data.Bits` at all.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): the phase gate below.
 
 #### Remaining Work
 
@@ -795,9 +852,9 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The store adapter behind the ownership seam is owed one implementation rather than five,
-and its already-divergent foreign-record refusal is owed a decision. **Sprint 14.14** owns both. Sprints
-14.15 to 14.17 adopt the result at the remaining owners.
+None. The four clauses, the seam that holds them, the two platform rows beneath it, and the one record
+tape every owner publishes through are all in place, and each host-local object this project owns holds
+its clauses through them.
 
 ## Documentation Requirements
 

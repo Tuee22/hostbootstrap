@@ -34,7 +34,7 @@ import HostBootstrap.Effect.Vocabulary (
     FrameCrossing (CrossContainer, CrossIncusVM, CrossLimaVM, CrossWsl2VM),
  )
 import HostBootstrap.HostConfig (HostConfig (HostConfig, hcSubstrate, hcToolPaths))
-import HostBootstrap.Lift (localContext, mkSelfRef)
+import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelfPath), localContext, mkSelfRef)
 import HostBootstrap.Ownership.Object (
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
@@ -345,7 +345,7 @@ crossingTests =
     [ testCase "an empty context runs the transaction in a real child process" $
         withFrame $ \frame -> do
             executable <- getExecutablePath
-            let self = mkSelfRef executable executable
+            let self = mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable)
             taken <-
                 shipOwnedTransaction
                     unresolvedHostConfig
@@ -372,7 +372,7 @@ crossingTests =
     , testCase "a frame's refusal crosses back as a refusal, not as a broken exchange" $
         withFrame $ \frame -> do
             executable <- getExecutablePath
-            let self = mkSelfRef executable executable
+            let self = mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable)
             ByteString.writeFile (frameTarget frame) "an operator's file\n"
             refused <-
                 shipOwnedTransaction

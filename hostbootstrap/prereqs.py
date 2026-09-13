@@ -31,10 +31,10 @@ import asyncio
 import os
 import platform
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import process
 from .substrate import Substrate, SubstrateName
 
 _LONG_PATHS_KEY = r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem"
@@ -61,16 +61,10 @@ def _check_passwordless_sudo() -> None:
         return
     if not _have("sudo"):
         raise PrereqError("sudo is required but not installed")
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", "true"],
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise PrereqError(f"could not exec sudo: {exc}") from exc
-    if result.returncode != 0:
+    outcome = process.probe(["sudo", "-n", "true"], timeout=5)
+    if isinstance(outcome, process.CommandUnavailable):
+        raise PrereqError(f"could not exec sudo: {outcome.reason}")
+    if not outcome.ok:
         raise PrereqError(
             "passwordless sudo is required. Add a NOPASSWD entry for your "
             "user in /etc/sudoers.d/ before re-running."
@@ -98,17 +92,10 @@ def _check_macos_arm64() -> None:
 
 
 def _check_xcode_clt() -> None:
-    try:
-        result = subprocess.run(
-            ["xcode-select", "-p"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise PrereqError(f"xcode-select failed: {exc}") from exc
-    if result.returncode != 0 or not result.stdout.strip():
+    outcome = process.probe(["xcode-select", "-p"], timeout=5)
+    if isinstance(outcome, process.CommandUnavailable):
+        raise PrereqError(f"xcode-select failed: {outcome.reason}")
+    if not outcome.ok or not outcome.stdout.strip():
         raise PrereqError(
             "Xcode Command Line Tools are required. Install with: xcode-select --install"
         )
@@ -143,32 +130,18 @@ def _git_long_paths_enabled() -> bool | None:
     """Whether Git is configured for paths past ``MAX_PATH``; ``None`` when Git is absent."""
     if not _have("git"):
         return None
-    try:
-        result = subprocess.run(
-            ["git", "config", "--get", "core.longpaths"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    outcome = process.probe(["git", "config", "--get", "core.longpaths"], timeout=5)
+    if isinstance(outcome, process.CommandUnavailable):
         return None
-    return result.stdout.strip().lower() == "true"
+    return outcome.stdout.strip().lower() == "true"
 
 
 def _windows_long_paths_policy_enabled() -> bool:
     """Whether the machine-wide ``LongPathsEnabled`` policy is on; unreadable means off."""
-    try:
-        result = subprocess.run(
-            ["reg", "query", _LONG_PATHS_KEY, "/v", "LongPathsEnabled"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
+    outcome = process.probe(["reg", "query", _LONG_PATHS_KEY, "/v", "LongPathsEnabled"], timeout=5)
+    if isinstance(outcome, process.CommandUnavailable):
         return False
-    fields = result.stdout.split()
+    fields = outcome.stdout.split()
     return bool(fields) and fields[-1] == "0x1"
 
 

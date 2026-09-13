@@ -220,14 +220,14 @@ planCases =
     [ testCase "production: fixed name and .data path" $ do
         clusterName prod @?= "demo"
         dataPath prod @?= rootPath </> ".data"
-        derivedPaths prod @?= [rootPath </> ".cluster" </> "demo"]
+        derivedStatePath prod @?= rootPath </> ".cluster" </> "demo"
         clusterDriver prod @?= KindDriver
-        clusterConfigFile prod @?= Just "kind.yaml"
+        clusterConfigFile prod @?= Nothing
         clusterNodeSuffixes prod @?= ["control-plane"]
     , testCase "test: per-case isolated name and path" $ do
         clusterName test1 @?= "demo-test-case1"
         dataPath test1 @?= rootPath </> ".test_data" </> "case1"
-        derivedPaths test1 @?= [rootPath </> ".cluster" </> "demo-test-case1"]
+        derivedStatePath test1 @?= rootPath </> ".cluster" </> "demo-test-case1"
         clusterConfigFile test1 @?= Nothing
         clusterNodeSuffixes test1 @?= ["control-plane"]
     , testCase "production maps host, VM, and container roots to their canonical .data child" $ do
@@ -245,14 +245,20 @@ driverCases =
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxGpu Amd64)
         clusterDriver plan @?= NvkindDriver
         clusterCreateTool plan @?= Nvkind
-        clusterConfigFile plan @?= Just "nvkind.yaml"
+        clusterConfigFile plan @?= Nothing
         clusterNodeSuffixes plan @?= ["control-plane", "worker"]
-        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo", "--config-template=nvkind.yaml"]
+        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo"]
     , testCase "Linux CPU accelerator plan keeps kind" $ do
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxCpu Amd64)
         clusterDriver plan @?= KindDriver
         clusterCreateTool plan @?= Kind
-        clusterCreateArgs plan True @?= ["create", "cluster", "--name", "demo", "--config", "kind.yaml"]
+        clusterCreateArgs plan True @?= ["create", "cluster", "--name", "demo"]
+    , testCase "a resolved plan names no template, so the library chooses none" $ do
+        -- The one owner of the choice is the project that ships the templates.
+        -- A resolved plan that named one would fail closed here on any project
+        -- whose source root does not carry that exact file.
+        clusterConfigFile (resolvePlanWithDriver "demo" rootPath Production KindDriver) @?= Nothing
+        clusterConfigFile (resolvePlanWithDriver "demo" rootPath Production NvkindDriver) @?= Nothing
     , testCase "a placement-specific cluster config is passed to kind/nvkind" $ do
         let kindPlan = prod{clusterConfigFile = Just "kind-in-cluster.yaml"}
             nvkindPlan = (resolvePlanWithDriver "demo" rootPath Production NvkindDriver){clusterConfigFile = Just "nvkind-in-cluster.yaml"}
@@ -281,20 +287,10 @@ acceleratorIngressCases :: [TestTree]
 acceleratorIngressCases =
     [ testCase "in-cluster daemon uses ClusterIP with no host mapping" $
         acceleratorIngressPlan InClusterDaemon 8081 30081
-            @?= AcceleratorIngressPlan
-                { ingressServiceType = "ClusterIP"
-                , ingressServicePort = 8081
-                , ingressNodePort = Nothing
-                , ingressKindListenAddress = Nothing
-                }
+            @?= ClusterIpIngress 8081
     , testCase "host daemon uses local-only NodePort" $
         acceleratorIngressPlan HostResidentDaemon 8081 30081
-            @?= AcceleratorIngressPlan
-                { ingressServiceType = "NodePort"
-                , ingressServicePort = 8081
-                , ingressNodePort = Just 30081
-                , ingressKindListenAddress = Just "127.0.0.1"
-                }
+            @?= NodePortIngress 8081 30081 "127.0.0.1"
     ]
 
 nvidiaRuntimeCases :: [TestTree]
@@ -446,7 +442,7 @@ dataInvariantCases =
     , testCase "delete removes derived state but never .data" $ do
         let (remove, preserve) = teardown Delete prod
         assertBool ".data not in removal set" (dataPath prod `notElem` remove)
-        assertBool "derived state removed" (derivedPaths prod == remove)
+        assertBool "derived state removed" ([derivedStatePath prod] == remove)
         assertBool ".data preserved" (dataPath prod `elem` preserve)
     , testCase "test profile also never deletes its .data" $ do
         let (removeDown, _) = teardown Down test1
@@ -461,7 +457,7 @@ teardownFailureCases =
         withSystemTempDirectory "hostbootstrap-cluster-down" $ \root -> do
             let durable = root </> ".data"
                 derived = root </> ".cluster" </> "demo"
-                plan = (resolvePlan "demo" root Production){dataPath = durable, derivedPaths = [derived]}
+                plan = (resolvePlan "demo" root Production){dataPath = durable, derivedStatePath = derived}
                 cfg = HostConfig (Substrate LinuxCpu Amd64) Map.empty
             createDirectoryIfMissing True durable
             createDirectoryIfMissing True derived
@@ -474,27 +470,25 @@ teardownFailureCases =
                     assertBool "reports the unresolved kind tool" ("kind delete cluster: kind not found on this host" `isInfixOf` message)
             doesDirectoryExist durable >>= (@?= True)
             doesDirectoryExist derived >>= (@?= True)
-    , testCase "cluster delete attempts every path after a non-zero kind cleanup and then fails" $
+    , testCase "cluster delete attempts every cleanup step after a non-zero kind cleanup and then fails" $
         withSystemTempDirectory "hostbootstrap-cluster-delete" $ \root -> do
             failingProgram <- findExecutable teardownFailureProgram
             case failingProgram >>= either (const Nothing) Just . mkAbsExe of
                 Nothing -> assertFailure ("could not resolve teardown failure fixture: " ++ teardownFailureProgram)
                 Just failingExe -> do
                     let durable = root </> ".data"
-                        derivedOne = root </> ".cluster" </> "demo-a"
-                        derivedTwo = root </> ".cluster" </> "demo-b"
+                        derived = root </> ".cluster" </> "demo-a"
                         plan =
                             (resolvePlan "demo" root Production)
                                 { dataPath = durable
-                                , derivedPaths = [derivedOne, derivedTwo]
+                                , derivedStatePath = derived
                                 }
                         cfg =
                             HostConfig
                                 (Substrate LinuxCpu Amd64)
                                 (Map.singleton Kind failingExe)
                     createDirectoryIfMissing True durable
-                    createDirectoryIfMissing True derivedOne
-                    createDirectoryIfMissing True derivedTwo
+                    createDirectoryIfMissing True derived
                     outcome <- try (clusterDelete cfg plan) :: IO (Either SomeException ())
                     case outcome of
                         Right () -> assertFailure "cluster delete reported success after kind exited non-zero"
@@ -503,8 +497,7 @@ teardownFailureCases =
                             assertBool "names the aggregate teardown failure" ("cluster delete attempted every cleanup step but failed" `isInfixOf` message)
                             assertBool "reports the non-zero kind exit" ("kind delete cluster: exit" `isInfixOf` message)
                     doesDirectoryExist durable >>= (@?= True)
-                    doesDirectoryExist derivedOne >>= (@?= False)
-                    doesDirectoryExist derivedTwo >>= (@?= False)
+                    doesDirectoryExist derived >>= (@?= False)
     ]
 
 teardownFailureProgram :: String

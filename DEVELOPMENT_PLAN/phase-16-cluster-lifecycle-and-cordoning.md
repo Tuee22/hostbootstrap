@@ -1,16 +1,16 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
-**Status**: Active
+**Status**: Done
 **Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
-**Gate**: `cd core && cabal test all --ghc-options=-Werror` on the gate host that runs it (§ C;
+**Gate**: `cd core && cabal test all` on the gate host that runs it (§ C;
 cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)), composed with
 the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-07 ; arm64 macOS 26.6.2 (build 25G83), Colima 0.10.3, kind 0.31.0, Kubernetes v1.35.0 ; bare core binary `hostbootstrap test run cluster-live` ; pass ; covers 3aa15600bd07f4758b7269ac042ed8ad707338b58fa1b77160d1be7b675ed08a
+**Gate evidence**: 2026-09-12 ; x86_64 Linux 7.0.0-28-generic, Docker 29.7.1, Kind 0.32.0, kubectl 1.32.0, GHC 9.12.4, Cabal 3.16.1.0 ; bare core binary `hostbootstrap test run cluster-live` ; pass ; covers 66e8e10f0461991c2ab88c9b9c6623cbeea0ceb4ebde3bf8bb4c886e7a41446d
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Cluster` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/internal/colima-backend`
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
@@ -2493,6 +2493,20 @@ proved no matching node container remained, re-read the byte-identical durable-r
 1/1 passed. A prerequisite run without `kubectl` additionally refused before cluster creation with the exact
 missing-tool diagnostic instead of timing out.
 
+**2026-09-12 — passed.** On Linux 7.0.0-28-generic x86_64 with GHC 9.12.4, Cabal 3.16.1.0,
+Docker 29.7.1, Kind 0.32.0, kubectl 1.32.0, and Kubernetes 1.36.1, the composed gate passed after the
+four closing sprints. The static half passed all 2,533 tests in 182.70 seconds; the same tree also
+passed the `demo/` leg at 150 plus 2,533, the Python code gate, and all 251 Python tests. The live half
+exited 0 in 28 seconds: it created and cordoned `hostbootstrap-test-run-c08210e51f916` with
+`docker update --cpus 2 --memory 2147483648 --memory-swap 4294967296`, reached node readiness, returned
+the Kubernetes client and server versions, deleted the cluster through the retained plan, and left the
+durable root in place, reporting 1/1 passed.
+
+**A note on this host's kubectl.** `/usr/local/bin/kubectl` is a dangling symlink into a removed RKE2
+installation, so the first attempt could not resolve the tool. The run above used a v1.32.0 client placed
+ahead of it on `PATH`; nothing on the host was changed. A prerequisite refusal for a missing `kubectl`
+is the behaviour the 2026-08-22 entry already records, so this was a host condition rather than a defect.
+
 ### Sprint 16.50: The live cluster gate run [Done]
 
 **Status**: Done
@@ -2528,9 +2542,9 @@ here because the refusal left a cluster standing that had to be removed by hand.
 
 None.
 
-### Sprint 16.51: One owner selects the cluster configuration [Active]
+### Sprint 16.51: One owner selects the cluster configuration [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`
@@ -2551,17 +2565,44 @@ exists nowhere in the tree without anything noticing. One owner decides; the oth
 
 #### Validation
 
-The host static gate for the selection and its resolution; the cluster-live leg confirms the selected
-file is the one the driver actually consumes.
+**The decision is that core stops deriving it.** The alternative — core keeps a mapping and the consumer
+stops overwriting — was rejected on three grounds, and the grounds are the point rather than the outcome.
+The templates are files in a *project's* own source root, so a library that names one is naming a file it
+cannot know exists. The choice is not a function of the driver: the consumer's selection turns on where
+the project places its accelerator daemon, which the resolved plan does not carry. And the library's
+answer for the GPU driver was `nvkind.yaml`, which the repository does not ship, so the mapping was
+already wrong in the one case its consumer did not overwrite.
+
+`driverConfigFile` is deleted and a resolved plan carries `Nothing`, which `clusterConfigPresence`
+already reads as *the driver's own default template*. That was not a new meaning invented for this
+sprint; it was the meaning a harness-profile plan already had.
+
+Two things the change surfaced. First, the failure mode was real rather than theoretical:
+`createCluster` fails closed on a named-but-missing config, so a Production nvkind plan that reached
+creation without the consumer's overwrite would have died on `nvkind.yaml`. Second, `clusterCreateArgs`
+carried `maybe "kind.yaml" id` as a default that could never be reached, because the guard above it
+already required the field to be present. Both are gone: the argument builder now renders the named
+template or no flag, and the two conditions cannot disagree about which case it is.
+
+**The templates the project ships are identical for two of the three answers.** `kind.yaml` and
+`kind-in-cluster.yaml` differ only in their comment. That is the consumer's to resolve, not this
+sprint's, and it is recorded here rather than silently collapsed: deleting a shipped template is a
+change to the worked demo's artifacts and belongs to the phase that owns them.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `LifecycleSpec` passed
+154/154 with a new case pinning that both drivers resolve to no template, and the demo suite passed
+150/150 with a new case that walks the project's three contexts and asserts the file each selects is
+present on disk. The direct-GPU context selects the nvkind template, the Incus-VM context the in-cluster
+kind template, and the WSL2-VM context the host-resident one.
 
 #### Remaining Work
 
-Backend-complete wall admission, the ingress sum, and the shared gate commitment are Sprints 16.52 to
-16.54.
+None. Backend-complete wall admission, the ingress sum, the shared gate commitment and the singleton
+state directory are Sprints 16.52 to 16.55, each with its own scope.
 
-### Sprint 16.52: Backend-complete admission at the cluster wall [Planned]
+### Sprint 16.52: Backend-complete admission at the cluster wall [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/applied_cordon.md`
@@ -2579,15 +2620,30 @@ so the named-every-backend rule has to hold here rather than only in the contrac
 
 #### Validation
 
-The host static gate; the cluster-live leg for the backends this host realizes.
+Two of the three deliverables were already met when this sprint opened, and saying so is more useful than
+restating them as work. `validateBackendExactness` already matched on all six constructors with no
+wildcard, and `-Wall` with warnings-as-errors already made a seventh a compile error there. The budget
+suite already asserted all six answers rather than the three the wildcard once covered.
+
+What was missing is the third: three backends shared one grouped comment — *"the three guest-VM walls take
+whole gibibytes and nothing finer"* — which states the rule without stating why any of them holds. Each
+now carries its own reason, and the reasons are not the same fact three times. Lima's `--memory` and
+`--disk` take whole gibibytes, so a finer budget has no argv that expresses it. Incus renders
+`limits.memory` and the root volume size as `<n>GiB` strings. WSL2's `.wslconfig` takes `memory=<n>GB`,
+and its storage figure is not a `.wslconfig` key at all — the VHDX cap is applied at install time — but it
+is checked anyway because the install argument it does reach takes the same unit. That last one is the
+case a grouped comment hides: its two dimensions reach two different mechanisms.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `BudgetSpec` passed
+27/27, and the phase gate below.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 16.53: Accelerator ingress is a closed sum [Planned]
+### Sprint 16.53: Accelerator ingress is a closed sum [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cluster_lifecycle.md`
@@ -2608,15 +2664,27 @@ consumer and only prose says they are wrong.
 
 #### Validation
 
-The host static gate.
+`AcceleratorIngressPlan` is now `ClusterIpIngress Int | NodePortIngress Int Int String` — one case per
+Kubernetes service type, each carrying exactly the fields that case has. The type string and the two
+correlated optional fields are gone, so a `ClusterIP` carrying a node port and a `NodePort` carrying none
+are no longer terms (§ HH). The four accessors survive as total functions over the sum, which is what
+kept both consumers — the Helm value list and the rendered values file — unchanged.
+
+The state-directory accessor no longer repeats its body, and neither does any of its neighbours.
+`planOwnedClusterResolvedPlan` eliminates the two owner constructors once, and the eight accessors that
+read the resolved plan became compositions on it. That removed one of the two `error` calls the legacy
+ledger names; Sprint 16.55 removes the shape that made the call possible.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `LifecycleSpec` passed
+154/154 with the two ingress cases rewritten against the constructors, and the demo suite passed 150/150.
 
 #### Remaining Work
 
 None beyond the phase's own.
 
-### Sprint 16.54: One prepared-gate commitment [Planned]
+### Sprint 16.54: One prepared-gate commitment [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`, `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -2635,8 +2703,67 @@ question, differing where nobody compares them.
 
 #### Validation
 
-The host static gate. The commitment bytes are pinned by existing cases, so the chosen construction is
-asserted rather than assumed.
+`preparedGateFields` and `preparedGateCommitment` live in `HostBootstrap.Lifecycle.Prepared`, beside the
+gate they are about, and both backends commit through them. The provider's local
+`providerGateCommitment` and the cluster's `clusterGateCommitment` are deleted.
+
+**The length-framed digest is canonical; the colon join is not.** A separator that can occur inside a
+field admits two different gates with the same commitment, and this library constrains neither the
+operation key nor the session name to exclude a colon. Framing removes the question instead of answering
+it per-field. The shared construction also digests UTF-8 bytes rather than the provider's former
+Char8 truncation, so a non-ASCII field can no longer collide with a different one.
+
+**No recorded durable state depends on the construction being replaced.** Gate commitments reach only
+runtime-dependency packages, and every use of those packages' wire is authenticated handoff transport
+inside one run's process tree — `Handoff.hs` and `Handoff/Process.hs`, both invocation-scoped. Nothing
+writes a package to the protected store, and the one golden-bytes case in the dependency suite pins
+literal placeholder fields rather than a real commitment, so no golden moved.
+
+A new `BudgetSpec` case asserts the property the choice was made for: two gates that differ only in
+where a colon falls between two fields — `("plan:digest", "operation")` against
+`("plan", "digest:operation")` — commit differently. Under the replaced construction they would not have.
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `BudgetSpec` passed
+27/27, and the phase gate below.
+
+#### Remaining Work
+
+None beyond the phase's own.
+
+### Sprint 16.55: The resolved cluster plan retains one state directory [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`
+
+#### Objective
+
+A resolved cluster plan carried `derivedPaths :: [FilePath]`, and every construction site set exactly one
+element. Reading it therefore needed an `error` for the empty case that no construction could produce —
+a partial function guarding against a state the type admitted and the code did not.
+
+#### Deliverables
+
+- The field is one directory rather than a list, and its name says so.
+- The `error` disappears because the empty case has no term.
+- The teardown partition and the status report read it directly.
+- The ledger row is removed in the same change.
+
+#### Validation
+
+`derivedStatePath :: FilePath` replaces `derivedPaths :: [FilePath]`, and
+`planOwnedClusterStateDirectory` is a composition with no case and no `error`. `teardown` builds its
+removal and preservation sets from the one path, and `statusReport` prints it without `unwords`.
+
+One test did construct a two-element list: the aggregate-teardown case that proves `cluster delete`
+attempts every cleanup step rather than stopping at the first failure. It exploited the list shape that
+no production site produced. The property it checks does not need two derived paths — the aggregate is
+still the kind deletion plus the directory removal — so the case keeps its assertions with one, and its
+name now says "every cleanup step" rather than "every path".
+
+Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `LifecycleSpec` passed
+154/154 and the demo suite 150/150, and the phase gate below.
 
 #### Remaining Work
 
@@ -2644,8 +2771,9 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-Cluster configuration selection is owed one owner. **Sprint 16.51** owns it. Sprints 16.52
-to 16.54 follow with backend-complete wall admission, the ingress sum, and the shared gate commitment.
+None. A cluster fits inside the budget its project declared, every backend answers for its own wall at
+the admission site, the compute slice is applied at the cluster while storage is enforced at a supported
+provider wall or refused as unsupported, and teardown cannot reach the durable root.
 
 ## Documentation Requirements
 

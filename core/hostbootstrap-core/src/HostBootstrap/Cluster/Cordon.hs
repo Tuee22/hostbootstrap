@@ -9,6 +9,9 @@ parsing descriptive configuration once and delegating to that lower module.
 -}
 module HostBootstrap.Cluster.Cordon (
     ResourceBudget,
+    BudgetDimension (..),
+    QuantityError (..),
+    renderQuantityError,
     mkResourceBudget,
     budgetCpu,
     budgetMemoryBytes,
@@ -47,12 +50,15 @@ module HostBootstrap.Cluster.Cordon (
 )
 where
 
+import Data.Bifunctor (first)
 import Data.Text (Text)
 import qualified HostBootstrap.Cluster.Cordon.Foundation as Foundation
 import HostBootstrap.Cluster.Cordon.Foundation
-    ( CapacityReadPlan (..),
+    ( BudgetDimension (..),
+      CapacityReadPlan (..),
       CapacityReadSource (..),
       HostCapacity (..),
+      QuantityError (..),
       ResourceBudget,
       StorageCordonMechanism (..),
       StorageCordonResult (..),
@@ -69,6 +75,7 @@ import HostBootstrap.Cluster.Cordon.Foundation
       mkResourceBudget,
       parseDfAvailableKBytes,
       parseQuantity,
+      renderQuantityError,
       resolveHostCapacity,
       storageCordonPolicy,
       verifyBudget,
@@ -89,16 +96,16 @@ data Overflow = Overflow
     deriving (Eq, Show)
 
 -- | Resolve a descriptive resource envelope into one canonical byte budget.
-budgetFromResources :: ResourceEnvelope -> Either String ResourceBudget
+budgetFromResources :: ResourceEnvelope -> Either QuantityError ResourceBudget
 budgetFromResources resources =
     budgetFromFields resources.cpu resources.memory resources.storage
 
 -- | Resolve the generated configuration vocabulary into one canonical budget.
-budgetFromVocabResources :: Vocab.Resources -> Either String ResourceBudget
+budgetFromVocabResources :: Vocab.Resources -> Either QuantityError ResourceBudget
 budgetFromVocabResources resources =
     budgetFromFields resources.cpu resources.memory resources.storage
 
-budgetFromFields :: Natural -> Text -> Text -> Either String ResourceBudget
+budgetFromFields :: Natural -> Text -> Text -> Either QuantityError ResourceBudget
 budgetFromFields cores memoryQuantity storageQuantity = do
     memoryBytes <- parseQuantity memoryQuantity
     storageBytes <- parseQuantity storageQuantity
@@ -107,13 +114,13 @@ budgetFromFields cores memoryQuantity storageQuantity = do
 -- | Parse an envelope, then apply the reserve-free capacity fit check.
 preflightBudget :: ResourceEnvelope -> HostCapacity -> Either String ()
 preflightBudget resources capacity = do
-    budget <- budgetFromResources resources
+    budget <- first renderQuantityError (budgetFromResources resources)
     verifyBudget budget capacity
 
 -- | Parse an envelope, then apply the metal host fit check with its reserve.
 preflightHostBudget :: ResourceEnvelope -> HostCapacity -> Either String ()
 preflightHostBudget resources capacity = do
-    budget <- budgetFromResources resources
+    budget <- first renderQuantityError (budgetFromResources resources)
     verifyHostBudget budget capacity
 
 {- | Compatibility calculation over the generated Dhall vocabulary.  Exact,
@@ -131,17 +138,17 @@ fitsBudget budget pods
 -- | Parse a descriptive envelope and render a Colima wall.
 colimaSizingArgs :: String -> ResourceEnvelope -> Either String [String]
 colimaSizingArgs project resources =
-    budgetFromResources resources >>= Foundation.colimaSizingArgsForBudget project
+    first renderQuantityError (budgetFromResources resources) >>= Foundation.colimaSizingArgsForBudget project
 
 -- | Parse a descriptive envelope and render a Lima wall.
 limaSizingArgs :: ResourceEnvelope -> Either String [String]
 limaSizingArgs resources =
-    budgetFromResources resources >>= Foundation.limaSizingArgsForBudget
+    first renderQuantityError (budgetFromResources resources) >>= Foundation.limaSizingArgsForBudget
 
 -- | Parse a descriptive envelope and render a WSL2 wall.
 wsl2SizingArgs :: ResourceEnvelope -> Either String [String]
 wsl2SizingArgs resources =
-    budgetFromResources resources >>= Foundation.wsl2SizingArgsForBudget
+    first renderQuantityError (budgetFromResources resources) >>= Foundation.wsl2SizingArgsForBudget
 
 -- | Render the control-plane container wall for a cluster envelope.
 kindNodeCordonArgs :: String -> ResourceEnvelope -> Either String [String]
@@ -151,7 +158,7 @@ kindNodeCordonArgs clusterName =
 -- | Parse an envelope and render one explicitly named node-container wall.
 kindNodeCordonArgsFor :: String -> ResourceEnvelope -> Either String [String]
 kindNodeCordonArgsFor containerName resources =
-    budgetFromResources resources
+    first renderQuantityError (budgetFromResources resources)
         >>= Foundation.kindNodeCordonArgsForBudget containerName
 
 {- | The wall one canonical budget declares, as the limit flags alone.
@@ -166,4 +173,4 @@ kindNodeCordonLimits = Foundation.kindNodeCordonLimitsForBudget
 -- | Parse a descriptive envelope and render an Incus wall.
 incusSizingArgs :: ResourceEnvelope -> Either String [String]
 incusSizingArgs resources =
-    budgetFromResources resources >>= Foundation.incusSizingArgsForBudget
+    first renderQuantityError (budgetFromResources resources) >>= Foundation.incusSizingArgsForBudget

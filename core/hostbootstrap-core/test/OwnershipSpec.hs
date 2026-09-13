@@ -31,7 +31,9 @@ module OwnershipSpec (tests) where
 
 import Control.Exception (SomeException, try)
 import Data.Foldable (for_, traverse_)
+import Data.ByteString (ByteString)
 import Data.List (isInfixOf)
+import Data.Text (Text)
 import Data.Maybe (isJust)
 import HostBootstrap.DocValidator (findRepoRoot)
 import qualified Data.Text as Text
@@ -43,9 +45,10 @@ import HostBootstrap.Ownership.Object
     , ObjectKind (OwnedDirectory, ReportedObject)
     , Origin (OriginAbsent, OriginPresent)
     , OriginRecord
-    , OwnershipFault (OwnershipConflict, OwnershipMalformed, OwnershipUnsupported)
+    , OwnershipFault (OwnershipConflict, OwnershipMalformed, OwnershipProbeFailed, OwnershipUnsupported)
     , bindOriginRecord
     , mkKernelObjectIdentity
+    , mkObjectIdentity
     , mkOwnerClaim
     , mkPayload
     , originRecord
@@ -54,7 +57,20 @@ import HostBootstrap.Ownership.Object
     , ownershipFaultMessage
     )
 import HostBootstrap.Ownership.Primitive
-import HostBootstrap.Protected (ProtectedSession, openProtectedStore, withProtectedEntry)
+import HostBootstrap.Ownership.Tape (
+    RecordSubject (RecordSubject, subjectBinding, subjectRecord),
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    recordTape,
+ )
+import HostBootstrap.Protected (
+    ProtectedSession,
+    RecordKey,
+    mkRecordKey,
+    openProtectedStore,
+    withProtectedEntry,
+ )
 import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
@@ -71,6 +87,7 @@ tests =
         , testGroup "re-entering an owned object" reentryTests
         , testGroup "the reported observation" reportedTests
         , testGroup "the seam's shape" seamTests
+        , testGroup "the shared record tape" tapeTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -450,6 +467,126 @@ expectBound = either (\fault -> assertFailure ("expected a bound record: " <> sh
 -- ---------------------------------------------------------------------------
 -- The seam's shape
 
+{- | The store adapter every owner shares, and the refusal the copies disagreed on.
+
+Two hand-copied adapters produced different refusals for the same condition —
+one named "this instance's key" and carried a 'RecordKey' it never printed, the
+other named "this key" and carried none. The tape keeps the shorter key wording
+and names the /subject/ instead, which is the distinction the longer one was
+reaching for; the unread parameter is gone. The chosen refusal is asserted here
+so the decision is a case rather than a diff.
+-}
+tapeTests :: [TestTree]
+tapeTests =
+    [ testCase "a fresh publish is idempotent within its own transaction" $
+        withEntry $ \session -> do
+            let tape = recordTape session tapeSubject
+            key <- expectKey "tape-idempotent"
+            first <- publishFreshRecord tape key sampleRecord
+            first @?= Right ()
+            again <- publishFreshRecord tape key sampleRecord
+            again @?= Right ()
+    , testCase "a record another transaction published is refused, named by subject" $
+        withEntry $ \session -> do
+            let tape = recordTape session tapeSubject
+            key <- expectKey "tape-foreign"
+            published <- publishFreshRecord tape key sampleRecord
+            published @?= Right ()
+            intruding <- publishFreshRecord tape key otherRecord
+            intruding
+                @?= Left
+                    ( OwnershipMalformed
+                        "the durable record under this key is not the sample origin record this transaction publishes"
+                    )
+    , testCase "forgetting an absent record is the settled state, not a refusal" $
+        withEntry $ \session -> do
+            let tape = recordTape session tapeSubject
+            key <- expectKey "tape-absent"
+            forgotten <- forgetRecord tape key
+            forgotten @?= Right ()
+    , testCase "binding without a published record refuses in the subject's own words" $
+        withEntry $ \session -> do
+            let tape = recordTape session tapeSubject
+            key <- expectKey "tape-unpublished"
+            bound <- publishBoundRecord tape key sampleRecord
+            bound
+                @?= Left
+                    ( OwnershipProbeFailed
+                        "bind the sample identity"
+                        "the origin record vanished inside the exclusive entry"
+                    )
+    , testCase "every owner behind the seam reaches the store through the tape" $
+        withMainSourceRoot $ \sourceRoot ->
+            for_ storeAdapterOwners $ \owner -> do
+                source <- readFile (sourceRoot </> foldr1 (</>) owner)
+                assertBool
+                    (show owner <> " no longer imports the record tape")
+                    (SourceGuard.importsModule "HostBootstrap.Ownership.Tape" source)
+                traverse_
+                    ( \reachedDirectly ->
+                        assertBool
+                            (show owner <> " reaches the store past the tape via " <> reachedDirectly)
+                            (SourceGuard.countHaskellIdentifier reachedDirectly source == 0)
+                    )
+                    ["compareAndSwapProtectedRecord", "compareAndDeleteProtectedRecord"]
+    , testCase "both readers of the little-endian wire share one word reader" $
+        withMainSourceRoot $ \sourceRoot ->
+            for_ littleEndianReaders $ \reader -> do
+                source <- readFile (sourceRoot </> foldr1 (</>) reader)
+                assertBool
+                    (show reader <> " no longer imports the shared word reader")
+                    (SourceGuard.importsModule "HostBootstrap.Wire.LittleEndian" source)
+                assertBool
+                    (show reader <> " still assembles words from bytes itself")
+                    (not (SourceGuard.importsModule "Data.Bits" source))
+    ]
+
+{- | The five owners that each held a copy of the store adapter.
+
+Naming them is the point: a guard that walked every module would pass the day a
+sixth owner was written with a sixth copy, because it would have nothing to say
+about a module it had never been told to expect.
+-}
+storeAdapterOwners :: [[FilePath]]
+storeAdapterOwners =
+    [ ["HostBootstrap", "Substrate", "Provider", "Ownership.hs"]
+    , ["HostBootstrap", "Cluster", "Ownership.hs"]
+    , ["HostBootstrap", "Harness", "DataRoot.hs"]
+    , ["HostBootstrap", "Harness", "GeneratedConfig.hs"]
+    , ["HostBootstrap", "Ownership", "Shipped.hs"]
+    ]
+
+-- | The two modules that decode a little-endian length-prefixed wire.
+littleEndianReaders :: [[FilePath]]
+littleEndianReaders =
+    [ ["HostBootstrap", "Ownership", "Shipped.hs"]
+    , ["HostBootstrap", "Wsl2", "GlobalWall", "Host.hs"]
+    ]
+
+tapeSubject :: RecordSubject
+tapeSubject =
+    RecordSubject
+        { subjectRecord = "the sample origin record"
+        , subjectBinding = "bind the sample identity"
+        }
+
+expectKey :: Text -> IO RecordKey
+expectKey name =
+    either (\fault -> assertFailure ("could not mint a record key: " <> show fault)) pure (mkRecordKey name)
+
+sampleRecord :: OriginRecord
+sampleRecord = originRecord (ReportedObject (mkOwnerClaim "sample-owner")) OriginAbsent
+
+otherRecord :: OriginRecord
+otherRecord =
+    originRecord
+        (ReportedObject (mkOwnerClaim "sample-owner"))
+        (OriginPresent (forceIdentity "another-object"))
+
+forceIdentity :: ByteString -> ObjectIdentity
+forceIdentity raw =
+    either (\fault -> error ("the fixture identity is not one: " <> show fault)) id (mkObjectIdentity raw)
+
 seamTests :: [TestTree]
 seamTests =
     [ testCase "a sealed row discloses its declaration and never its handle type" $ do
@@ -564,6 +701,9 @@ expectUnsupported outcome = case outcome of
     Left thrown -> assertFailure ("a refused clause reached the kernel: " <> show thrown)
     Right (Left (OwnershipUnsupported _)) -> pure ()
     Right other -> assertFailure ("expected an unsupported refusal, got " <> show other)
+
+withMainSourceRoot :: (FilePath -> IO result) -> IO result
+withMainSourceRoot use = SourceGuard.withPackageSourceIn ["src"] (const use)
 
 withCoreSourceRoot :: (FilePath -> IO result) -> IO result
 withCoreSourceRoot use = do

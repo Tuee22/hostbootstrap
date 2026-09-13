@@ -13,7 +13,7 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (isSpace, ord)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf, isPrefixOf, sort, stripPrefix)
+import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
@@ -53,7 +53,6 @@ import HostBootstrap.Config.Schema (
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Handoff (
     HandoffBindingInput (..),
     HandoffPayloadKind (NarrowedProjectConfig),
@@ -233,12 +232,15 @@ import HostBootstrap.Step (
     providerResourceAtImmediateChild,
     stepPlanSteps,
  )
+import SourceGuard
+    ( fieldModules
+    , listHaskellSources
+    , mainLibraryStanza
+    , normalizeWhitespace
+    , significantHaskellLineCount
+    )
 import qualified SourceGuard
-import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath (
-    takeExtension,
-    (</>),
- )
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (
@@ -3401,7 +3403,7 @@ sourceBoundaryTests =
                     , "require \"a gate package names another plan\" (packagePlan == planDigest)"
                     , "require \"a gate package names another frame\" (packageFrame == frameName)"
                     , "require \"a gate package names another session\" (packageSession == session)"
-                    , "pure (mintPreparedGate packagePlan operation packageSession generation attempt journalVersion)"
+                    , "pure ( mintPreparedGate (GatePlanDigest packagePlan) (GateOperationKey operation) (GateSession packageSession) (GateFence generation) (GateAttempt attempt) (GateJournalVersion journalVersion) )"
                     ]
                     execution
                 assertContains
@@ -3866,7 +3868,43 @@ sourceBoundaryTests =
                         , count > 0
                         ]
                 filter (/= ",") gateExports
-                    @?= [ "PreparedGate"
+                    @?= [ "GatePlanDigest"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateOperationKey"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateSession"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateFence"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateAttempt"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateJournalVersion"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateCatalogIdentity"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateFrame"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateSupersessionGeneration"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "PreparedGate"
                         , "preparedGatePlan"
                         , "preparedGateOperation"
                         , "preparedGateSession"
@@ -7098,15 +7136,7 @@ sourceBoundaryTests =
         ]
 
 withPackageSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
-withPackageSourceRoot use = do
-    cwd <- getCurrentDirectory
-    repoRoot <-
-        findRepoRoot cwd
-            >>= maybe
-                (assertFailure ("could not locate repo root from " <> cwd))
-                pure
-    let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
-    use packageRoot (packageRoot </> "src")
+withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
 readProductionSources sourceRoot = do
@@ -7177,94 +7207,8 @@ containsTokenSequence expected observed@(_ : rest) =
     tokenPrefix (wanted : wantedRest) (actual : actualRest) =
         wanted == actual && tokenPrefix wantedRest actualRest
 
-listHaskellSources :: FilePath -> IO [FilePath]
-listHaskellSources directory = do
-    entries <- sort <$> listDirectory directory
-    fmap concat $
-        traverse
-            ( \entry -> do
-                let path = directory </> entry
-                isDirectory <- doesDirectoryExist path
-                if isDirectory
-                    then listHaskellSources path
-                    else pure [path | takeExtension path == ".hs"]
-            )
-            entries
-
 moduleNameFromPath :: FilePath -> FilePath -> String
 moduleNameFromPath = SourceGuard.repoRelativeModuleName
-
-mainLibraryStanza :: String -> Maybe String
-mainLibraryStanza source =
-    case dropWhile ((/= "library") . trim) (lines source) of
-        [] -> Nothing
-        _library : rest ->
-            Just
-                ( unlines
-                    ( takeWhile
-                        isLibraryContinuation
-                        rest
-                    )
-                )
-  where
-    isLibraryContinuation [] = True
-    isLibraryContinuation line@(firstCharacter : _) =
-        null (trim line) || isSpace firstCharacter
-
-fieldModules :: String -> String -> [String]
-fieldModules field = go . lines
-  where
-    go [] = []
-    go (line : rest)
-        | Just inline <- stripPrefix field (trim line) =
-            let fieldIndent = indentation line
-                (continuation, remaining) =
-                    span
-                        (\next -> null (trim next) || indentation next > fieldIndent)
-                        rest
-             in moduleTokens (inline : continuation) <> go remaining
-        | otherwise = go rest
-
-    moduleTokens =
-        filter ("HostBootstrap." `isPrefixOf`)
-            . map (filter (/= ','))
-            . words
-            . unlines
-
-indentation :: String -> Int
-indentation = length . takeWhile isSpace
-
-normalizeWhitespace :: String -> String
-normalizeWhitespace = unwords . words
-
-significantHaskellLineCount :: String -> Int
-significantHaskellLineCount = length . filter (not . all isSpace) . stripComments 0 . lines
-  where
-    stripComments :: Int -> [String] -> [String]
-    stripComments _ [] = []
-    stripComments depth (sourceLine : remaining) =
-        let (nextDepth, code) = stripLine depth sourceLine
-         in code : stripComments nextDepth remaining
-
-    stripLine :: Int -> String -> (Int, String)
-    stripLine = go
-
-    go :: Int -> String -> (Int, String)
-    go depth [] = (depth, [])
-    go 0 ('-' : '-' : _) = (0, [])
-    go 0 ('{' : '-' : '#' : remaining) =
-        let (nextDepth, code) = go 0 remaining
-         in (nextDepth, "{-#" <> code)
-    go depth ('{' : '-' : remaining) = go (depth + 1) remaining
-    go depth ('-' : '}' : remaining)
-        | depth > 0 = go (depth - 1) remaining
-    go 0 (character : remaining) =
-        let (nextDepth, code) = go 0 remaining
-         in (nextDepth, character : code)
-    go depth (_ : remaining) = go depth remaining
-
-trim :: String -> String
-trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
 
 requiredSourceSection :: String -> String -> String -> String -> IO String
 requiredSourceSection label opening closing source =
@@ -7660,7 +7604,7 @@ exerciseFinalizedSpec spec directory value = do
                             validatedConfigSpecDigest validated @?= expectedDigest
                             plan <- expectRight (projectPlanStepPlan spec root validated)
                             drafts <- expectRight (projectPlanDrafts spec root validated)
-                            NonEmpty.length drafts @?= length (stepPlanSteps plan)
+                            NonEmpty.length drafts @?= length (NonEmpty.toList (stepPlanSteps plan))
                             finalizedServiceVariantNames
                                 (finalizedProjectServices spec)
                                 @?= ["probe"]
@@ -8130,7 +8074,7 @@ serviceActivationPlan activationFrame serviceRole effects =
 
 collidingServiceActivationPlan :: StepPlan
 collidingServiceActivationPlan =
-    case stepPlanSteps (chartWorkloadPlanAt "shared-service-frame" "sha256:workload") of
+    case NonEmpty.toList (stepPlanSteps (chartWorkloadPlanAt "shared-service-frame" "sha256:workload")) of
         [cluster, chart] ->
             expectStepPlan
                 [ cluster

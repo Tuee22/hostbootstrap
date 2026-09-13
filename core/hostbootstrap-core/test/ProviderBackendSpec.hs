@@ -128,6 +128,20 @@ portableCases =
         wslSpec <- either (assertFailure . show) pure (mkWsl2BackendSpec wsl2ResolvedHostConfig wsl2Provider limaEnvelope limaShare)
         limaSpec <- either (assertFailure . show) pure (mkLimaBackendSpec limaResolvedHostConfig limaProvider limaEnvelope limaShare)
         assertBool "the WSL2 realization shared Lima's backend identity" (wslSpec /= limaSpec)
+    , testCase "the two guest-VM constructors are applications of one row" $ do
+        backendSource <- readBackendSource
+        -- Its signature, its definition, and one application per realization.
+        SourceGuard.countHaskellIdentifier "mkGuestVmBackendSpec" backendSource @?= 4
+        -- Each realization is a value the row is applied to, named at its
+        -- signature, its definition, and that one application.
+        SourceGuard.countHaskellIdentifier "limaRealization" backendSource @?= 3
+        SourceGuard.countHaskellIdentifier "wsl2Realization" backendSource @?= 3
+    , testCase "every backend constructor refuses through the one pair of helpers" $ do
+        backendSource <- readBackendSource
+        -- Its signature, its definition, and one use in each of the three
+        -- constructor bodies left: the shared guest-VM row, Incus, and Direct.
+        SourceGuard.countHaskellIdentifier "invalidBackend" backendSource @?= 5
+        SourceGuard.countHaskellIdentifier "requireBackendTool" backendSource @?= 5
     , testCase "WSL2 construction refuses an unresolved WSL tool" $
         case mkWsl2BackendSpec wsl2UnresolvedHostConfig wsl2Provider limaEnvelope limaShare of
             Left (Unsupported _) -> pure ()
@@ -307,6 +321,24 @@ backendHasNoExecutionSeamCase = do
             assertBool
                 (takeFileName path <> " names the retired provider executor " <> identifier)
                 (SourceGuard.countHaskellIdentifier identifier source == 0)
+
+-- | This phase's own backend module, read from the tree it is checked against.
+readBackendSource :: IO String
+readBackendSource = do
+    cwd <- getCurrentDirectory
+    root <-
+        findRepoRoot cwd
+            >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
+    readFile
+        ( root
+            </> "core"
+            </> "hostbootstrap-core"
+            </> "src"
+            </> "HostBootstrap"
+            </> "Substrate"
+            </> "Provider"
+            </> "Backend.hs"
+        )
 
 -- | Every production Haskell source under one root, in a stable order.
 listProductionSources :: FilePath -> IO [FilePath]

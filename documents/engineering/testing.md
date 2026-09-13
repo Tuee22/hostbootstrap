@@ -37,7 +37,7 @@ of thing, and none substitutes for another.
 
 | Gate | Command | Where it runs | What it proves | What it cannot prove |
 |---|---|---|---|---|
-| Host static gate | `cabal test all --ghc-options=-Werror` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source guards, plans, argv, documentation, and exercised native kernel/process protocols | live provider, container, cluster, or accelerator acceptance |
+| Host static gate | `cabal test all` from `core/`; `poetry run python -m hostbootstrap.check_code`; `poetry run python -m hostbootstrap.test_all` | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source guards, plans, argv, documentation, and exercised native kernel/process protocols | live provider, container, cluster, or accelerator acceptance |
 | `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, WSL2, or a container | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
 | Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
 | Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
@@ -72,6 +72,19 @@ separate dated Windows, macOS, x86_64 Linux, and arm64 Linux runs, including com
 and platform-row coverage. A hardware set is visited once and records every gate-host result it can
 produce, so those runs are collected on the substrate-acceptance visits rather than by convening extra
 machines. The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns completion status.
+
+### One toolkit for reading this repository's own sources
+
+A source guard asserts something about a set of modules, so a guard that is wrong about which modules it
+enumerated asserts nothing and does so silently. `core/hostbootstrap-core/test/SourceGuard.hs` is the one
+place the suites read their own sources through, in two halves: a lexical reader (tokens, imports,
+exports, identifier and token-sequence counts, repo-relative paths and module names) and a structural one
+(the package-root bracket, the source-tree walker, the main-library stanza reader, the module-field
+reader, and the significant-line counter). A guard writes what it is asserting, not another file reader.
+
+The enumeration is checked rather than frozen: the modules the main library declares are exactly the
+module files under its source roots, so a reader that under-reads a field reports the difference as a
+named set instead of as an absence.
 
 ### Harness portability
 

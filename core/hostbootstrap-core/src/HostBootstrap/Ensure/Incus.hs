@@ -31,7 +31,9 @@ where
 import Data.Char (toLower)
 import Data.List (intercalate, isInfixOf)
 import HostBootstrap.Ensure (
+    grantSocketAccess,
     invokingNonRootUser,
+    withInvokingGroupMember,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
@@ -330,47 +332,18 @@ installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler
 
 ensureIncusAdminGroup :: HostConfig -> IO ()
-ensureIncusAdminGroup cfg = do
-    env <- getEnvironment
-    selectedUser <- invokingNonRootUser env
-    case selectedUser of
-        Nothing ->
-            putStrLn "ensure incus: no non-root invoking user detected for incus-admin membership (skipping)"
-        Just user -> do
-            putStrLn ("ensure incus: ensuring " ++ user ++ " belongs to incus-admin")
-            result <- runTool cfg Sudo ["usermod", "-aG", "incus-admin", user]
-            case result of
-                Right (ExitSuccess, _, _) ->
-                    ensureImmediateSocketAccess cfg user
-                Right (ExitFailure n, _, errOut) ->
-                    die
-                        ( "ensure incus: could not add "
-                            ++ user
-                            ++ " to incus-admin (exit "
-                            ++ show n
-                            ++ ") "
-                            ++ errOut
-                        )
-                Left err -> die ("ensure incus: " ++ err)
+ensureIncusAdminGroup cfg =
+    withInvokingGroupMember cfg incusLabel "incus-admin" $ \user -> do
+        grantSocketAccess cfg incusLabel incusSocketPath user
+        putStrLn (incusLabel ++ ": daemon socket access verified for the current invocation")
 
-ensureImmediateSocketAccess :: HostConfig -> String -> IO ()
-ensureImmediateSocketAccess cfg user = do
-    result <-
-        runTool
-            cfg
-            Sudo
-            ["setfacl", "-m", "u:" ++ user ++ ":rw", "/var/lib/incus/unix.socket"]
-    case result of
-        Right (ExitSuccess, _, _) ->
-            putStrLn "ensure incus: daemon socket access verified for the current invocation"
-        Right (ExitFailure code, _, err) ->
-            die
-                ( "ensure incus: could not grant immediate daemon socket access (exit "
-                    ++ show code
-                    ++ "): "
-                    ++ err
-                )
-        Left err -> die ("ensure incus: " ++ err)
+-- | The reconciler's name in every message it prints or dies with.
+incusLabel :: String
+incusLabel = "ensure incus"
+
+-- | The daemon socket an invocation needs open before its group login exists.
+incusSocketPath :: FilePath
+incusSocketPath = "/var/lib/incus/unix.socket"
 
 {- | Ensure the invoking user can open @/dev/kvm@, the nested-VM providers' gate.
 Self-healing (see @development_plan_standards.md § L@), mirroring the @setfacl@

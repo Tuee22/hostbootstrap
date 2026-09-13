@@ -80,6 +80,14 @@ The chain is the canonical model — its shape, the recursive/fractal interprete
 fractal-bootstrap descent are owned by [composition_methodology](composition_methodology.md); this
 stream describes only the additive merge.
 
+Two shapes at the bottom of that fold are types rather than conventions. A raw command leaf names an
+executable and its arguments separately, so the empty vector that would dispatch the empty-string
+executable — the bare-command-name shape § K makes unrepresentable one layer down — has no spelling;
+a caller holding a list narrows it at its own boundary. And a self-reference carries two distinct
+newtypes, the local path and the in-guest path, with a package-private constructor and no field
+selectors: the two cannot be transposed at construction, and a handed value cannot be re-pointed by
+record update.
+
 The word “lift” in this stream names the project’s composed frame plan; it does not make the
 `HostBootstrap.Lift` module an extension stream. L0 layers that reusable machinery internally: the
 [Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)

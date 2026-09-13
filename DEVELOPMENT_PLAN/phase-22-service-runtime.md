@@ -3,7 +3,7 @@
 **Status**: Active
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus a live `service run` on linux-cpu
+**Gate**: `cabal test all` from `core/`, plus a live `service run` on linux-cpu
 **Gate kind**: deferred
 **Gate evidence**: 2026-09-06 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern CLISpec'` ; pass ; covers 5a6cb07496312d9aa44893dfdd35fd075a25882abf65c73aa20db1987d842bcf
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` `core/hostbootstrap-core/src/HostBootstrap/Service` `core/hostbootstrap-core/src/HostBootstrap/Activation.hs`

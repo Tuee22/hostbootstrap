@@ -44,6 +44,13 @@ real consumer smoke. The demo's one project references local core source and imp
 | `executable hostbootstrap` | `app/Main.hs`, the bare binary: `runBareHostBootstrapCLI "hostbootstrap"` |
 | `test-suite hostbootstrap-core-test` | the `tasty` suite, including the documentation validator gate |
 
+Every component imports one `common warnings` stanza, which carries the project's whole warning policy:
+`-Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+-Wpartial-fields -Werror`. The policy is a property of the package rather than of a flag a caller
+remembers, so a plain `cabal build` refuses exactly what the gate refuses. `hostbootstrap-demo.cabal`
+carries the identical stanza. `-Wpartial-fields` is there because a record selector on a
+multi-constructor type throws at the call site instead of failing to compile.
+
 ## Dependency Surface
 
 The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
@@ -88,7 +95,8 @@ root would run `cabal` where no project file exists and fail for every file.
 
 ## Build And Test
 
-- `cabal build all` builds the library and the bare executable.
+- `cabal build all` builds the library and the bare executable, warning-clean by the package's own
+  policy — there is no `--ghc-options=-Werror` to remember.
 - `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
 - `hostbootstrap --help` prints the composed core command tree, which lists the `context`, `project`,
   `test`, `service`, and `check-code` verbs.

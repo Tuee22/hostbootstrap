@@ -20,16 +20,28 @@ tests =
     withResource resolvePublicCompiler (const (pure ())) $ \getCompiler ->
         testGroup
             "public compile-fail boundaries"
-            (compileFailCases (rejectsUsing getCompiler) (rejectsWithUsing getCompiler))
+            (compileFailCases (rejectsWithUsing getCompiler))
 
+{- | Every registered fixture, each with the diagnostic it expects.
+
+There is one combinator and it takes an expectation, so a fixture cannot be
+registered without stating why it is expected to fail. § HH's first rule —
+"it must fail for the named reason" — is therefore held by the shape of this
+list rather than asked of whoever adds to it.
+-}
 compileFailCases ::
-    (FilePath -> TestTree) ->
     (FilePath -> [String] -> TestTree) ->
     [TestTree]
-compileFailCases rejects rejectsWith =
-    [ rejects "RawStep.hs"
-    , rejects "ImportLifecycleDependencyInternal.hs"
-    , rejects "EscapeFreshRunningProviderDependency.hs"
+compileFailCases rejectsWith =
+    [ rejectsWith
+        "RawStep.hs"
+        ["Illegal term-level use of the type constructor 'Step'"]
+    , rejectsWith
+        "ImportLifecycleDependencyInternal.hs"
+        ["It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:lifecycle-dependency-internal'"]
+    , rejectsWith
+        "EscapeFreshRunningProviderDependency.hs"
+        ["Couldn't match type 'providerId' with 'FixedProvider'"]
     , rejectsWith
         "ForgeValidatedConfig.hs"
         ["Illegal term-level use of the type constructor 'ValidatedConfig'"]
@@ -93,7 +105,7 @@ compileFailCases rejects rejectsWith =
         ["with actual type: Entered session object"]
     , rejectsWith
         "ReleaseWithoutOwnershipBinding.hs"
-        ["with actual type: Bound session object"]
+        ["Couldn't match expected type: hostbootstrap-core-0.1.0.0:ownership-internal:HostBootstrap.Ownership.Internal.Releasable session0 object0 with actual type: Bound session object"]
     , rejectsWith
         "EscapeOwnershipRowHandle.hs"
         ["Couldn't match type 'handle1' with 'handle'"]
@@ -198,21 +210,15 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "OpenFinalizedForwardChildProjector.hs"
-        [ "an item called 'FinalizedProjectSpec' is exported"
-        , "it does not export any children"
-        , "called 'FinalizedProjectSpec'"
+        [ "an item called 'FinalizedProjectSpec' is exported, but it does not export any children (constructors, class methods or field names) called 'FinalizedProjectSpec'"
         , "Module 'HostBootstrap.ProjectPlan.Construct' does not export 'withFinalizedForwardChildProjectionKernel'"
         ]
     , rejectsWith
         "ForgeProviderResourceDeclaration.hs"
-        [ "it does not export any children"
-        , "called 'ProviderResourceDeclaration'"
-        ]
+        ["an item called 'ProviderResourceDeclaration' is exported, but it does not export any children (constructors, class methods or field names) called 'ProviderResourceAtCurrentFrame'"]
     , rejectsWith
         "ForgeChartWorkloadResource.hs"
-        [ "it does not export any children"
-        , "called 'ChartWorkloadResource'"
-        ]
+        ["an item called 'ChartWorkloadResource' is exported, but it does not export any children (constructors, class methods or field names) called 'ChartWorkloadResource'"]
     , rejectsWith
         "ForgePlanExecutionPackage.hs"
         [ "Module 'HostBootstrap.Lifecycle.Execution' does not export 'PlanExecutionPackage'"
@@ -425,10 +431,8 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "CompatibilityInputsAsStepExecutionSource.hs"
-        [ "Couldn't match expected type: ProjectPlan"
-        , "with actual type: LifecyclePlan Scope Plan"
-        , "Couldn't match expected type 'PlannedStep"
-        , "with actual type 'Step'"
+        [ "Couldn't match expected type: ProjectPlan Scope specDigest0 Plan ConfigurationIdentity Configuration with actual type: LifecyclePlan Scope Plan"
+        , "Couldn't match expected type 'PlannedStep Scope Plan ConfigurationIdentity (Configuration Scope)' with actual type 'Step'"
         ]
     , rejectsWith
         "CrossAuthorityChain.hs"
@@ -474,14 +478,10 @@ compileFailCases rejects rejectsWith =
         ["Couldn't match type 'VerbDestroy' with 'VerbDown'"]
     , rejectsWith
         "ProjectUpCannotVerifyDestroy.hs"
-        [ "HostBootstrap.Authority.Kernel.VerbDestroy"
-        , "with 'VerbUp'"
-        ]
+        ["Couldn't match type 'hostbootstrap-core-0.1.0.0:HostBootstrap.Authority.Kernel.VerbDestroy' with 'VerbUp'"]
     , rejectsWith
         "DownCannotVerifyDestroy.hs"
-        [ "HostBootstrap.Authority.Kernel.VerbDestroy"
-        , "with 'VerbDown'"
-        ]
+        ["Couldn't match type 'hostbootstrap-core-0.1.0.0:HostBootstrap.Authority.Kernel.VerbDestroy' with 'VerbDown'"]
     , rejectsWith
         "ForgeSubtreeSettlement.hs"
         [ "Illegal term-level use of the type constructor 'SubtreeSettled'"
@@ -525,9 +525,7 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "FramedDestroySettled.hs"
-        [ "Expected kind '* -> *'"
-        , "but 'DestroySettled Scope Plan' has kind '*'"
-        ]
+        ["Expected kind '* -> *', but 'DestroySettled Scope Plan' has kind '*'"]
     , rejectsWith
         "LegacyRootDestroyVerifier.hs"
         [ "HostBootstrap.Lifecycle.Plan.ProjectPlan"
@@ -587,9 +585,7 @@ compileFailCases rejects rejectsWith =
         ["Couldn't match type 'childFrame' with 'ChosenChild'"]
     , rejectsWith
         "OpenTeardownWorkAgainstForeignForest.hs"
-        [ "is applied to three visible arguments"
-        , "has only two"
-        ]
+        ["The function 'attemptLocalWork' is applied to three visible arguments, but its type 'LocalWork scope planId frame verb -> TeardownOutcome -> TeardownForest scope planId frame verb' has only two"]
     , rejectsWith
         "ImportFormerTeardownCursor.hs"
         [ "does not export 'TeardownCursor'"
@@ -658,10 +654,10 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "OpenTeardownForestWithLifecyclePlan.hs"
-        ["with: LifecyclePlan Scope Plan"]
+        ["Couldn't match type: TeardownPlan scope0 planId0 frame0 verb0 with: LifecyclePlan Scope Plan"]
     , rejectsWith
         "OpenTeardownForestWithCurrentFrame.hs"
-        ["with: CurrentFrame Scope Plan Frame"]
+        ["Couldn't match type: TeardownPlan scope0 planId0 frame0 verb0 with: CurrentFrame Scope Plan Frame"]
     , rejectsWith
         "DuplicateCurrentFrameTeardown.hs"
         [ "Couldn't match expected type: CurrentFrame Scope Plan Frame"
@@ -882,16 +878,14 @@ compileFailCases rejects rejectsWith =
         ["Could not load module 'HostBootstrap.Service.Internal'. it is a hidden module"]
     , rejectsWith
         "OpenProjectCodecReindex.hs"
-        [ "an item called 'ProjectCodec' is exported, but it does not export any children"
-        , "called 'ProjectCodec'"
+        [ "an item called 'ProjectCodec' is exported, but it does not export any children (constructors, class methods or field names) called 'ProjectCodec'"
         , "Module 'HostBootstrap.Config.Class' does not export 'installedCodecSpecDigest'"
         , "Module 'HostBootstrap.Config.Class' does not export 'reindexProjectCodecKernel'"
         ]
     , rejectsWith
         "OpenFinalizedServiceRegistryReindex.hs"
         [ "Module 'HostBootstrap.Service' does not export 'FinalizedServiceDefinition'"
-        , "an item called 'FinalizedServiceRegistry' is exported, but it does not export any children"
-        , "called 'FinalizedServiceRegistry'"
+        , "an item called 'FinalizedServiceRegistry' is exported, but it does not export any children (constructors, class methods or field names) called 'FinalizedServiceRegistry'"
         , "Module 'HostBootstrap.Service' does not export 'reindexFinalizedServiceRegistryKernel'"
         ]
     , rejectsWith
@@ -900,14 +894,37 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "CoerceFinalizedServiceRegistrySpec.hs"
         ["Couldn't match type 'SpecA' with 'SpecB' arising from a use of 'coerce'"]
-    , rejects "RawProjectSpec.hs"
-    , rejects "ForgeProjectStepIdentity.hs"
-    , rejects "ReplaceProjectContribution.hs"
-    , rejects "DispatchUnfinishedBuilder.hs"
-    , rejects "CrossFinalizationCodec.hs"
-    , rejects "ForgeRoleParams.hs"
-    , rejects "RawReadiness.hs"
-    , rejects "RawBudget.hs"
+    , rejectsWith
+        "RawProjectSpec.hs"
+        ["Illegal term-level use of the type constructor 'ProjectSpec'"]
+    , rejectsWith
+        "EmptyValidatedStepPlan.hs"
+        [ "Couldn't match type: NonEmpty Step with: [Step] Expected: StepPlan -> [Step] Actual: StepPlan -> NonEmpty Step"
+        ]
+    , rejectsWith
+        "RepointSelfReference.hs"
+        ["Not in scope: record field 'inVMSelfPath'"]
+    , rejectsWith
+        "ForgeProjectStepIdentity.hs"
+        ["Illegal term-level use of the type constructor 'ProjectStepId'"]
+    , rejectsWith
+        "ReplaceProjectContribution.hs"
+        ["Variable not in scope: withChain"]
+    , rejectsWith
+        "DispatchUnfinishedBuilder.hs"
+        ["Couldn't match type: ProjectSpec cfg0 tcfg0 with: ProjectSpecBuilder cfg tcfg"]
+    , rejectsWith
+        "CrossFinalizationCodec.hs"
+        ["Couldn't match type 'rightDigest' with 'leftDigest' Expected: ProjectCodec scope leftDigest cfg Actual: ProjectCodec scope rightDigest cfg"]
+    , rejectsWith
+        "ForgeRoleParams.hs"
+        ["Illegal term-level use of the type constructor 'RoleParams'"]
+    , rejectsWith
+        "RawReadiness.hs"
+        ["Illegal term-level use of the type constructor 'PollPolicy'"]
+    , rejectsWith
+        "RawBudget.hs"
+        ["Illegal term-level use of the type constructor 'ResourceBudget'"]
     , rejectsWith
         "CrossPlanBudgetWorkload.hs"
         ["Couldn't match type 'PlanB' with 'PlanA'"]
@@ -1098,7 +1115,7 @@ compileFailCases rejects rejectsWith =
         ["it is a hidden module in the package 'hostbootstrap-core-0.1.0.0'"]
     , rejectsWith
         "ForgeResolvedExposure.hs"
-        ["an item called ‘ResolvedExposure’ is exported, but it does not export any children"]
+        ["an item called 'ResolvedExposure' is exported, but it does not export any children (constructors, class methods or field names) called 'ResolvedExposure'"]
     , rejectsWith
         "PrepareCallerSelectedHostPort.hs"
         ["Module 'HostBootstrap.Cluster.Backend' does not export 'mkLoopbackExposure'"]
@@ -1129,7 +1146,9 @@ compileFailCases rejects rejectsWith =
         , "Couldn't match type 'SlicePlanA' with 'SlicePlanB' arising from a use of 'coerce'"
         , "Couldn't match type 'CapabilityPlanA' with 'CapabilityPlanB' arising from a use of 'coerce'"
         ]
-    , rejects "RawReconcile.hs"
+    , rejectsWith
+        "RawReconcile.hs"
+        ["Illegal term-level use of the type constructor 'ResourceHandle'"]
     , rejectsWith
         "ForgeVerifiedResourceRecordBundle.hs"
         ["Illegal term-level use of the type constructor 'VerifiedResourceRecordBundle'"]
@@ -1172,13 +1191,27 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "CoerceProviderCapabilityIdentity.hs"
         ["Couldn't match type 'CapabilityA' with 'CapabilityB' arising from a use of 'coerce'"]
-    , rejects "ForgeStrongAliasBackend.hs"
-    , rejects "ForgePreparedGuestAliasCall.hs"
-    , rejects "ObservedReadyGuestAlias.hs"
-    , rejects "ForeignGuestAliasRelease.hs"
-    , rejects "CrossAliasReceipt.hs"
-    , rejects "ForgePreparedProviderProvision.hs"
-    , rejects "ForgePreparedProviderShare.hs"
+    , rejectsWith
+        "ForgeStrongAliasBackend.hs"
+        ["Illegal term-level use of the type constructor 'StrongAliasBackend'"]
+    , rejectsWith
+        "ForgePreparedGuestAliasCall.hs"
+        ["Illegal term-level use of the type constructor 'PreparedGuestAliasCall'"]
+    , rejectsWith
+        "ObservedReadyGuestAlias.hs"
+        ["Couldn't match expected type: DependencyProbe scope planId shareId DurableShareResource with actual type: ObservedReady DurableShareReady"]
+    , rejectsWith
+        "ForeignGuestAliasRelease.hs"
+        ["Couldn't match expected type: ManagedGuestAliasHandle scope0 planId0 providerId0 backendId0 capabilityId0 aliasId0 shareId0 phase0 with actual type: ResourceHandle scope planId aliasId DurableAliasResource Unmanaged Observed"]
+    , rejectsWith
+        "CrossAliasReceipt.hs"
+        ["Couldn't match type 'aliasB' with 'aliasA'"]
+    , rejectsWith
+        "ForgePreparedProviderProvision.hs"
+        ["Illegal term-level use of the type constructor 'PreparedProviderProvision'"]
+    , rejectsWith
+        "ForgePreparedProviderShare.hs"
+        ["Illegal term-level use of the type constructor 'PreparedProviderShare'"]
     , rejectsWith
         "ForgeManagedProviderHandles.hs"
         [ "Illegal term-level use of the type constructor 'ManagedProviderHandle'"
@@ -1195,12 +1228,24 @@ compileFailCases rejects rejectsWith =
         , "Couldn't match type 'ProviderA' with 'ProviderB' arising from a use of 'coerce'"
         , "Couldn't match type 'PhaseA' with 'PhaseB' arising from a use of 'coerce'"
         ]
-    , rejects "ForgeProviderShareSpec.hs"
-    , rejects "ForgeProviderObservation.hs"
-    , rejects "ForgeProviderCallResult.hs"
-    , rejects "ForgeProviderBackendBinding.hs"
-    , rejects "CrossPreparedProviderResult.hs"
-    , rejects "CrossBackendProviderCall.hs"
+    , rejectsWith
+        "ForgeProviderShareSpec.hs"
+        ["Illegal term-level use of the type constructor 'ProviderShareSpec'"]
+    , rejectsWith
+        "ForgeProviderObservation.hs"
+        ["Data constructor not in scope: ProviderProvisionCreated"]
+    , rejectsWith
+        "ForgeProviderCallResult.hs"
+        ["Illegal term-level use of the type constructor 'ProviderProvisionCallResult'"]
+    , rejectsWith
+        "ForgeProviderBackendBinding.hs"
+        ["Illegal term-level use of the type constructor 'ProviderBackendBinding'"]
+    , rejectsWith
+        "CrossPreparedProviderResult.hs"
+        ["Couldn't match type 'attemptB' with 'attemptA'"]
+    , rejectsWith
+        "CrossBackendProviderCall.hs"
+        ["Couldn't match type 'backendB' with 'backendA' Expected: StrongProviderBackend backendA Actual: StrongProviderBackend backendB"]
     , rejectsWith
         "CrossBackendProviderResult.hs"
         ["Couldn't match type 'backendB' with 'backendA'"]
@@ -1223,26 +1268,46 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "GenericProviderHandleAsManaged.hs"
-        ["ResourceHandle"]
+        ["Couldn't match type: ManagedProviderHandle scope planId backendId providerId Provisioned with: ResourceHandle scope planId providerId ProviderResource Managed Provisioned"]
     , rejectsWith
         "GenericProviderHandleAsBoundExec.hs"
-        ["ResourceHandle"]
+        ["Couldn't match expected type: hostbootstrap-core-0.1.0.0:HostBootstrap.Substrate.Provider.Observation.Internal.ManagedProviderHandle scope0 planId0 backendId providerId0 Running with actual type: ResourceHandle scope planId providerId ProviderResource Managed Running"]
     , rejectsWith
         "GenericShareHandleAsAliasAuthority.hs"
-        ["ResourceHandle"]
+        ["Couldn't match expected type: ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned with actual type: ResourceHandle scope planId shareId DurableShareResource Managed Provisioned"]
     , rejectsWith
         "ImportProviderObservationInternal.hs"
         ["Could not load module 'HostBootstrap.Substrate.Provider.Observation.Internal'. it is a hidden module"]
-    , rejects "ForeignProviderStop.hs"
-    , rejects "CrossProviderReceipt.hs"
-    , rejects "UnstartableProviderPhase.hs"
-    , rejects "BootNonProviderResource.hs"
-    , rejects "ForgeSubstrateProvider.hs"
-    , rejects "UpdateSubstrateProvider.hs"
-    , rejects "OpenSubstrateProviderMutationSelectors.hs"
-    , rejects "ForgeAliasCallObservation.hs"
-    , rejects "CrossAliasCallResult.hs"
-    , rejects "CrossBackendAliasCall.hs"
+    , rejectsWith
+        "ForeignProviderStop.hs"
+        ["Couldn't match expected type: ManagedProviderHandle scope planId backendId0 providerId Running with actual type: ResourceHandle scope planId providerId ProviderResource Unmanaged Observed"]
+    , rejectsWith
+        "CrossProviderReceipt.hs"
+        ["Couldn't match type 'providerB' with 'providerA' Expected: ManagedProviderHandle scope planId backendId providerA Running Actual: ManagedProviderHandle scope planId backendId providerB Running"]
+    , rejectsWith
+        "UnstartableProviderPhase.hs"
+        ["Couldn't match type 'Provisioned' with 'Running'"]
+    , rejectsWith
+        "BootNonProviderResource.hs"
+        ["Couldn't match type 'ProviderResource' with 'DurableShareResource'"]
+    , rejectsWith
+        "ForgeSubstrateProvider.hs"
+        ["Illegal term-level use of the type constructor 'SubstrateProvider'"]
+    , rejectsWith
+        "UpdateSubstrateProvider.hs"
+        ["Not in scope: record field 'spLaunch'"]
+    , rejectsWith
+        "OpenSubstrateProviderMutationSelectors.hs"
+        ["Module 'HostBootstrap.Substrate.Provider' does not export 'spDestroy'"]
+    , rejectsWith
+        "ForgeAliasCallObservation.hs"
+        ["Data constructor not in scope: AliasCallCreated"]
+    , rejectsWith
+        "CrossAliasCallResult.hs"
+        ["Couldn't match type: GuestAliasCallSettlement scope planId providerId backendId capabilityId aliasA shareId with: ReconcileResult scope planId aliasA DurableAliasResource Provisioned"]
+    , rejectsWith
+        "CrossBackendAliasCall.hs"
+        ["Couldn't match type 'backendA' with 'backendB' Expected: StrongAliasBackend scope planId providerId backendA capabilityId"]
     , rejectsWith
         "ForeignClusterCleanup.hs"
         [ "with actual type: ResourceHandle scope planId clusterId ClusterResource Unmanaged Observed"
@@ -1253,10 +1318,18 @@ compileFailCases rejects rejectsWith =
         [ "Couldn't match type 'clusterB' with 'clusterA'"
         , "Expected: OwnershipReceipt scope planId clusterA ClusterResource"
         ]
-    , rejects "HostLocalClusterRedirect.hs"
-    , rejects "EndpointScopeSubstitution.hs"
-    , rejects "RawRegistryPlan.hs"
-    , rejects "ForgeReadyBlobRoute.hs"
+    , rejectsWith
+        "HostLocalClusterRedirect.hs"
+        ["Couldn't match type 'ClusterOnly' with 'HostLocal' Expected: Endpoint HostLocal Actual: Endpoint ClusterOnly"]
+    , rejectsWith
+        "EndpointScopeSubstitution.hs"
+        ["Expected: Endpoint ClusterOnly -> Endpoint HostLocal Actual: Endpoint ClusterOnly -> Endpoint ClusterOnly"]
+    , rejectsWith
+        "RawRegistryPlan.hs"
+        ["Expecting four more arguments to 'RegistryPlan 'HostLocal 'ClusterOnly'"]
+    , rejectsWith
+        "ForgeReadyBlobRoute.hs"
+        ["Expecting four more arguments to 'ReadyBlobRoute client store'"]
     , rejectsWith
         "ForgeCommandAuthority.hs"
         ["Illegal term-level use of the type constructor ‘CommandAuthority’"]
@@ -1355,28 +1428,26 @@ compileFailCases rejects rejectsWith =
         ["Couldn't match type 'FrameA' with 'FrameB' arising from a use of 'coerce'"]
     , rejectsWith
         "CurrentFrameAsCommandAuthority.hs"
-        [ "Couldn't match expected type: CommandAuthority"
-        , "with actual type: CurrentFrame"
-        ]
+        ["Couldn't match expected type: CommandAuthority Scope PlanId Frame BrokerGeneration VerbUp PreparePhase with actual type: CurrentFrame Scope PlanId Frame"]
     , rejectsWith
         "ProjectFrameAsCommandAuthority.hs"
-        [ "Couldn't match expected type: CommandAuthority"
-        , "with actual type: ProjectFrame"
-        ]
+        ["Couldn't match expected type: CommandAuthority Scope PlanId Frame BrokerGeneration VerbUp PreparePhase with actual type: ProjectFrame Scope SpecDigest PlanId ConfigId Frame"]
     , rejectsWith
         "ValidatedContextAsCommandAuthority.hs"
-        [ "Couldn't match expected type: CommandAuthority"
-        , "with actual type: ValidatedContext"
-        ]
-    , rejectsWith "WrongVerbCloseRoot.hs" ["VerbDestroy", "VerbUp"]
-    , rejectsWith "ForgeProductionClosureAuthorization.hs" ["does not export", "SettledProductionClosure"]
+        ["Couldn't match expected type: CommandAuthority Scope PlanId Frame BrokerGeneration VerbUp PreparePhase with actual type: ValidatedContext Scope PlanId Frame"]
+    , rejectsWith
+        "WrongVerbCloseRoot.hs"
+        ["Couldn't match type 'VerbDestroy' with 'VerbUp' Expected: RootInvocationAuthority (Production project) generation VerbUp"]
+    , rejectsWith
+        "ForgeProductionClosureAuthorization.hs"
+        ["an item called 'ProductionClosureAuthorization' is exported, but it does not export any children (constructors, class methods or field names) called 'SettledProductionClosure'"]
     , rejectsWith "CoerceProductionClosureAuthorization.hs" ["FirstGeneration", "SecondGeneration", "coerce"]
     , rejectsWith
         "ForgeHarnessAuthority.hs"
-        ["does not export any children"]
+        ["an item called 'HarnessConfigAuthority' is exported, but it does not export any children (constructors, class methods or field names) called 'HarnessConfigAuthority'"]
     , rejectsWith
         "OpenHarnessAuthorityFromText.hs"
-        ["does not export", "withHarnessAuthority"]
+        ["Module 'HostBootstrap.Config.Vocab' does not export 'withHarnessAuthority'"]
     , rejectsWith
         "HarnessConfigAsProduction.hs"
         ["Expected: SecretRef (Production Project)"]
@@ -1456,9 +1527,7 @@ compileFailCases rejects rejectsWith =
         ["Couldn't match type 'RunB' with 'RunA'"]
     , rejectsWith
         "ForgeHarnessLifecycle.hs"
-        [ "an item called 'HarnessLifecycle' is exported"
-        , "it does not export any children"
-        ]
+        ["an item called 'HarnessLifecycle' is exported, but it does not export any children (constructors, class methods or field names) called 'HarnessLifecycle'"]
     , rejectsWith
         "ImportHarnessLifecycleInternal.hs"
         ["Could not load module 'HostBootstrap.Harness.Lifecycle.Internal'"]
@@ -1511,9 +1580,7 @@ compileFailCases rejects rejectsWith =
         ]
     , rejectsWith
         "AcquisitionJournalAsCommandAuthority.hs"
-        [ "Couldn't match expected type: CommandAuthority"
-        , "with actual type: AcquisitionJournal"
-        ]
+        ["Couldn't match expected type: CommandAuthority Scope PlanId Frame BrokerGeneration VerbUp ExecutePhase with actual type: AcquisitionJournal Scope PlanId BrokerGeneration"]
     , rejectsWith
         "ForgeLifecycleCursor.hs"
         ["Illegal term-level use of the type constructor 'LifecycleCursor'"]
@@ -1564,15 +1631,13 @@ compileFailCases rejects rejectsWith =
         ["Couldn't match type 'TeardownPhase' with 'ExecutePhase'"]
     , rejectsWith
         "LifecycleCursorAsCommandAuthority.hs"
-        [ "Couldn't match expected type: CommandAuthority"
-        , "with actual type: LifecycleCursor"
-        ]
+        ["Couldn't match expected type: CommandAuthority Scope PlanId Frame BrokerGeneration VerbUp PreparePhase with actual type: LifecycleCursor Scope PlanId Frame BrokerGeneration VerbUp PreparePhase"]
     , rejectsWith
         "LifecycleCursorAsTeardownCursor.hs"
-        [ "Couldn't match expected type: LocalWork"
-        , "with actual type: LifecycleCursor"
-        ]
-    , rejects "ForgeProtectedSession.hs"
+        ["Couldn't match expected type: LocalWork Scope PlanId Frame VerbDown with actual type: LifecycleCursor Scope PlanId Frame BrokerGeneration VerbDown TeardownPhase"]
+    , rejectsWith
+        "ForgeProtectedSession.hs"
+        ["Illegal term-level use of the type constructor 'ProtectedSession'"]
     , rejectsWith
         "ForgeProjectSigningKey.hs"
         ["Illegal term-level use of the type constructor 'ProjectSigningKey'"]
@@ -1944,7 +2009,9 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "RecoveryWireGrantAsActivationGrant.hs"
         ["Couldn't match type 'RecoveryWireGrant scope broker verb plan parent child digest' with 'ActivationGrant'"]
-    , rejects "CrossScopeProjectRoot.hs"
+    , rejectsWith
+        "CrossScopeProjectRoot.hs"
+        ["Couldn't match type 'ConfigScope' with 'ForeignScope' Expected: CanonicalProjectRoot ConfigScope rootId Actual: CanonicalProjectRoot ForeignScope rootId"]
     , rejectsWith
         "RawCanonicalHostMount.hs"
         ["Couldn't match type: [Char] with: HostBootstrap.ProjectRoot.CanonicalHostPath"]
@@ -1954,15 +2021,16 @@ compileFailCases rejects rejectsWith =
     , rejectsWith
         "SignHandoffWithoutRootStore.hs"
         ["Variable not in scope: signHandoffGrant"]
-    , rejects "ForgeSessionPermit.hs"
+    , rejectsWith
+        "ForgeSessionPermit.hs"
+        ["Illegal term-level use of the type constructor 'ProjectPermit'"]
     , rejectsWith
         "ClosingPermitAsOpen.hs"
-        [ "Couldn't match expected type: ProjectPermit"
-        , "with actual type: ClosingProjectPermit"
-        ]
+        ["Couldn't match expected type: ProjectPermit scope0 planId0 with actual type: ClosingProjectPermit scope planId"]
     , rejectsWith
         "ForgeTransactionPermitFromDescriptor.hs"
-        ["Data constructor not in scope: TransactionPermit"]
+        [ "Could not load module 'HostBootstrap.Lifecycle.Session.Testing'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:lifecycle-transaction-internal'"
+        ]
     , rejectsWith
         "ForgeBuildSigningKey.hs"
         ["Illegal term-level use of the type constructor 'BuildSigningKey'"]
@@ -2162,8 +2230,12 @@ compileFailCases rejects rejectsWith =
         , "Illegal term-level use of the type constructor 'TeardownForest'"
         , "Illegal term-level use of the type constructor 'DestroySettled'"
         ]
-    , rejects "ForgePreconditionSet.hs"
-    , rejects "ForgePreparedGate.hs"
+    , rejectsWith
+        "ForgePreconditionSet.hs"
+        ["Illegal term-level use of the type constructor 'OperationPreconditionSet'"]
+    , rejectsWith
+        "ForgePreparedGate.hs"
+        ["Illegal term-level use of the type constructor 'PreparedGate'"]
     , -- A role performs only the effects its declared row names. 'HasEffect'
       -- has no empty-row equation, so the diagnostic names the effect the
       -- row lacks rather than reporting a generic mismatch.
@@ -2172,7 +2244,7 @@ compileFailCases rejects rejectsWith =
         ["Could not solve: \8216HasEffect DurableStore '[]\8217"]
     , rejectsWith
         "IOServiceHandler.hs"
-        ["Couldn't match expected type: HostBootstrap.Service.Program.ServiceProgram", "with actual type: IO ()"]
+        ["Couldn't match expected type: HostBootstrap.Service.Program.ServiceProgram Payload service '[] () with actual type: IO ()"]
     , rejectsWith
         "ForgeStepExecution.hs"
         [ "Illegal term-level use of the type constructor 'StepExecution'"
@@ -2262,9 +2334,6 @@ compileFailCases rejects rejectsWith =
     ]
 
 data PublicCompiler = PublicCompiler FilePath [String]
-
-rejectsUsing :: IO PublicCompiler -> FilePath -> TestTree
-rejectsUsing getCompiler fixture = rejectsWithUsing getCompiler fixture []
 
 rejectsWithUsing :: IO PublicCompiler -> FilePath -> [String] -> TestTree
 rejectsWithUsing getCompiler fixture expectedDiagnostics =

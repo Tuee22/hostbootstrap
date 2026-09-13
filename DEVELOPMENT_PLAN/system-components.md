@@ -93,7 +93,7 @@ handler together through finalization and selection.
 
 ## Thin Python Bootstrapper
 
-The root Poetry project owns `hostbootstrap/`, `tests/`, and `stubs/`. Ordinary `doctor`/`build`/`run`
+The root Poetry project owns `hostbootstrap/` and `tests/`. Ordinary `doctor`/`build`/`run`
 establish the pre-binary host floor, build the project executable natively into `./.build/`, and execute it.
 Python does not initialize project Dhall or provision the project's VM, image, cluster, workload, or teardown.
 See the [Python/Haskell boundary](../documents/architecture/python_haskell_boundary.md).

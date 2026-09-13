@@ -9,13 +9,13 @@ import pytest
 
 from hostbootstrap import base_image, resources
 from hostbootstrap.base_image import Flavor
-from hostbootstrap.substrate import SubstrateName
+from hostbootstrap.substrate import Arch, SubstrateName
 
 
 def test_base_tag_and_ref() -> None:
-    assert base_image.base_tag(Flavor.CPU, "amd64") == "basecontainer-cpu-amd64"
+    assert base_image.base_tag(Flavor.CPU, Arch.AMD64) == "basecontainer-cpu-amd64"
     assert (
-        base_image.base_image_ref(Flavor.CUDA, "arm64")
+        base_image.base_image_ref(Flavor.CUDA, Arch.ARM64)
         == "docker.io/tuee22/hostbootstrap:basecontainer-cuda-arm64"
     )
 
@@ -50,7 +50,7 @@ def test_compute_build_args_uses_current_resolvers(monkeypatch: pytest.MonkeyPat
 
     args = base_image.compute_build_args(
         Flavor.CUDA,
-        "amd64",
+        Arch.AMD64,
         base_image_override="custom:base",
     )
     values = args.as_build_args()
@@ -103,7 +103,7 @@ def test_release_resolvers_parse_current_payloads(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(base_image, "_http_get_json", _fake_json)
     monkeypatch.setattr(base_image, "_http_get_text", lambda _url: "v1.30.1\n")
 
-    assert base_image.resolve_node_version("arm64") == "v22.0.0"
+    assert base_image.resolve_node_version(Arch.ARM64) == "v22.0.0"
     assert base_image.resolve_purescript_version() == "v9.9.9"
     assert base_image.resolve_kind_version() == "v9.9.9"
     assert base_image.resolve_kubectl_version() == "v1.30.1"
@@ -124,7 +124,7 @@ def test_go_resolver_accepts_version_without_prefix(monkeypatch: pytest.MonkeyPa
 def test_resolvers_raise_when_no_release_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(base_image, "_http_get_json", lambda _url: [])
     with pytest.raises(RuntimeError, match="no node LTS release"):
-        base_image.resolve_node_version("amd64")
+        base_image.resolve_node_version(Arch.AMD64)
     with pytest.raises(RuntimeError, match="no stable go"):
         base_image.resolve_go_version()
 
@@ -164,9 +164,9 @@ def test_iter_cuda_tags_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_cuda_arch_detection_and_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     images = [{"architecture": "amd64"}, {"architecture": "arm64"}]
-    assert base_image._arch_in_images(images, "arm64")
-    assert not base_image._arch_in_images(images, "ppc64le")
-    assert not base_image._arch_in_images("not-a-list", "amd64")
+    assert base_image._arch_in_images(images, Arch.ARM64)
+    assert not base_image._arch_in_images([{"architecture": "amd64"}], Arch.ARM64)
+    assert not base_image._arch_in_images("not-a-list", Arch.AMD64)
 
     tags = [
         {"name": 5, "images": [{"architecture": "amd64"}]},
@@ -176,11 +176,11 @@ def test_cuda_arch_detection_and_selection(monkeypatch: pytest.MonkeyPatch) -> N
     ]
     monkeypatch.setattr(base_image, "_iter_cuda_tags", lambda: tags)
     assert (
-        base_image.resolve_cuda_base_image("amd64")
+        base_image.resolve_cuda_base_image(Arch.AMD64)
         == "nvidia/cuda:12.4.1-cudnn-devel-ubuntu24.04"
     )
     assert (
-        base_image.resolve_cuda_base_image("arm64")
+        base_image.resolve_cuda_base_image(Arch.ARM64)
         == "nvidia/cuda:12.6.0-cudnn-devel-ubuntu24.04"
     )
 
@@ -188,15 +188,15 @@ def test_cuda_arch_detection_and_selection(monkeypatch: pytest.MonkeyPatch) -> N
 def test_resolve_cuda_raises_without_compatible_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(base_image, "_iter_cuda_tags", lambda: [])
     with pytest.raises(RuntimeError, match="no nvidia/cuda"):
-        base_image.resolve_cuda_base_image("amd64")
+        base_image.resolve_cuda_base_image(Arch.AMD64)
 
 
 def test_compute_build_args_cpu_and_cuda_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_version_resolvers(monkeypatch)
     monkeypatch.setattr(base_image, "resolve_cuda_base_image", lambda arch: f"cuda:{arch}")
 
-    cpu = base_image.compute_build_args(Flavor.CPU, "arm64")
-    cuda = base_image.compute_build_args(Flavor.CUDA, "arm64")
+    cpu = base_image.compute_build_args(Flavor.CPU, Arch.ARM64)
+    cuda = base_image.compute_build_args(Flavor.CUDA, Arch.ARM64)
 
     assert cpu.base_image == "ubuntu:24.04"
     assert cpu.go_download_url.endswith("linux-arm64.tar.gz")
@@ -204,11 +204,6 @@ def test_compute_build_args_cpu_and_cuda_defaults(monkeypatch: pytest.MonkeyPatc
     assert cpu.purescript_download_url.endswith("linux-arm64.tar.gz")
     assert cpu.ghcup_download_url.endswith("aarch64-linux-ghcup")
     assert cuda.base_image == "cuda:arm64"
-
-
-def test_compute_build_args_rejects_unknown_arch() -> None:
-    with pytest.raises(RuntimeError, match="unsupported arch"):
-        base_image.compute_build_args(Flavor.CPU, "s390x")
 
 
 def test_build_spec_for_applies_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,7 +216,7 @@ def test_build_spec_for_applies_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     spec, args = base_image.build_spec_for(
         Flavor.CPU,
-        "amd64",
+        Arch.AMD64,
         context=Path("/repo"),
         budget=budget,
     )
@@ -238,7 +233,7 @@ def test_build_spec_for_is_native_and_unbounded_without_budget(
     _patch_version_resolvers(monkeypatch)
     spec, args = base_image.build_spec_for(
         Flavor.CPU,
-        "amd64",
+        Arch.AMD64,
         context=Path("/repo"),
         extra_tags=("extra:tag",),
         no_cache=True,
@@ -260,10 +255,10 @@ def test_build_spec_for_is_native_and_unbounded_without_budget(
 
 def test_build_spec_accepts_pre_resolved_args(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_version_resolvers(monkeypatch)
-    args = base_image.compute_build_args(Flavor.CPU, "amd64")
+    args = base_image.compute_build_args(Flavor.CPU, Arch.AMD64)
     spec, resolved = base_image.build_spec_for(
         Flavor.CPU,
-        "amd64",
+        Arch.AMD64,
         context=Path("/repo"),
         dockerfile=Path("/custom/Dockerfile"),
         args=args,
@@ -277,7 +272,7 @@ def test_compatibility_smoke_uses_real_consumer() -> None:
     digest = f"docker.io/tuee22/hostbootstrap@sha256:{'d' * 64}"
     spec = base_image.compatibility_smoke_spec(
         Flavor.CPU,
-        "arm64",
+        Arch.ARM64,
         context=context,
         base_reference=digest,
         pull=True,
@@ -296,7 +291,7 @@ def test_compatibility_smoke_can_validate_local_base_before_publish() -> None:
     image_id = f"sha256:{'a' * 64}"
     spec = base_image.compatibility_smoke_spec(
         Flavor.CPU,
-        "amd64",
+        Arch.AMD64,
         context=context,
         base_reference=image_id,
         pull=False,
@@ -319,7 +314,9 @@ def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:
     """
     dockerfile = Path(__file__).resolve().parent.parent / "docker/compatibility-smoke.Dockerfile"
     body = dockerfile.read_text(encoding="utf-8")
-    declared = {line.split()[1].split("=")[0] for line in body.splitlines() if line.startswith("ARG ")}
+    declared = {
+        line.split()[1].split("=")[0] for line in body.splitlines() if line.startswith("ARG ")
+    }
     assert declared == {"BASE_IMAGE"}
     assert "--mount=type=secret" not in body
     assert "--from=" not in body

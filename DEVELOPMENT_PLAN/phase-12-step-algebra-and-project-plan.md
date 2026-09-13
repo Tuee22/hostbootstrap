@@ -1,13 +1,13 @@
 # Phase 12 — The step algebra and the single project plan
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 5 (installed identity, operator verification, and authority kernels), Phase 7
 (Dhall configuration and the generic project model), Phase 8 (ensure reconcilers and the generic Lift),
 Phase 9 (lifecycle modes and run leases), Phase 11 (prepared operations)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Admit a project's authored nodes into one scope-, specification-, plan-, and
 > configuration-indexed value whose forward order, topology, stable snapshot, and reverse effects are
@@ -1847,71 +1847,73 @@ all 238 public compile-fail boundaries and 2/2 governed-documentation checks.
 
 None.
 
-### Sprint 12.32: A validated plan carries its non-emptiness [Active]
+### Sprint 12.32: A validated plan carries its non-emptiness [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`, `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/test/compile-fail/EmptyValidatedStepPlan.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
 #### Objective
 
-The plan constructor refuses an empty step list, so a validated plan is non-empty by construction —
-and its accessor returns a plain list, which throws that fact away. Three sites then rebuild it: each
-matches on the list, reconstructs a non-empty value, and calls `error` on the branch the constructor
-already excluded. Those are the only `error` calls in the library, and each one is the invariant
-written as a crash instead of as a type. The accessor is where the fact is lost.
+The plan constructor refuses an empty step list, and the accessor keeps that fact: a validated plan
+holds and answers with a non-empty step sequence. The constructor's refusal is therefore the one place
+emptiness is decided, rather than a fact each consumer rebuilds and asserts again with a crash.
 
 #### Deliverables
 
 - The validated plan holds and returns a non-empty step sequence.
-- The frame sequence derived from it is non-empty for the same reason.
-- The three `error` branches stop typechecking and are deleted; the constructor's empty-plan refusal is the one place emptiness is decided.
-- A compile-fail fixture pins that a caller cannot obtain an empty step sequence from a validated plan.
+- The frame sequence derived from it is non-empty for the same reason, and the reason is stated: the first step is never a post-handoff one, because a post-handoff step naming a frame no normal step declared is already refused.
+- No branch in the library asserts the invariant a second time; a consumer that wants a list asks for one at its own call site.
+- A compile-fail fixture pins that a caller cannot read a plain list out of a validated plan.
 
 #### Validation
 
-The host static gate, plus the new fixture. Every consumer of the accessor is a compile error until it
-is updated, which is the enumeration this change relies on.
+The host static gate, plus the new fixture. Every consumer of the accessor was a compile error until it
+was updated, which is the enumeration this change relies on. Dated evidence: on 2026-09-12, x86_64
+Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed 2,521
+tests.
 
 #### Remaining Work
 
-The budget-admission contract is Sprint 12.33.
+None. The budget-admission contract is Sprint 12.33.
 
-### Sprint 12.33: Budget admission names every backend [Planned]
+### Sprint 12.33: Budget admission names every backend [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
+`core/hostbootstrap-core/test/BudgetSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/resource_budgeting.md`
 
 #### Objective
 
-§ O gives this phase the budget and cordoning contract. Admission at the provider wall names three
-backends and lets a wildcard absorb the rest, so three of the six inherit whole-unit memory and storage
-with no sizing check — and a seventh backend would join them silently. A wildcard in an eliminator is
-the case nobody considered, which is what the closed-sum technique exists to prevent.
+§ O gives this phase the budget and cordoning contract. Admission at the provider wall names every
+backend constructor, so what each does with a budget is a decision rather than an inheritance, and a
+seventh backend is a compile error at this site rather than a default answer.
 
 #### Deliverables
 
-- Admission names every backend constructor.
-- A backend for which the sizing check does not apply says so in its own case, with the reason.
-- Adding a backend is a compile error at this site rather than a default answer.
-- The wildcard is gone.
+- Admission names every backend constructor; no wildcard absorbs the rest.
+- A backend for which the sizing check does not apply says so in its own case, with the reason: bare Linux has no wall to size against, and a kind node is cordoned in bytes.
+- The three guest-VM walls share one named whole-gibibyte check rather than repeating its two lines.
+- Adding a backend is a compile error at this site.
 
 #### Validation
 
-The host static gate. The budget suite gains a case per backend, so the answers are stated rather than
-inherited.
+The host static gate. The budget suite states each backend's answer to one inexact budget, so the six
+answers are read rather than inherited. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with
+GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
-The cluster-side adoption is owned by the cluster-lifecycle phase.
+None beyond the phase's own. The cluster-side adoption is owned by the cluster-lifecycle phase.
 
 ## Remaining Work
 
-The validated plan is owed an accessor that keeps its non-emptiness. **Sprint 12.32** owns
-it. Sprint 12.33 follows with backend-complete budget admission.
+None.
 
 ## Documentation Requirements
 

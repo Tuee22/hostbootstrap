@@ -17,7 +17,7 @@ from typing import Final
 import httpx
 
 from . import docker_ops, resources
-from .substrate import SubstrateName
+from .substrate import Arch, SubstrateName
 
 
 class Flavor(StrEnum):
@@ -30,22 +30,25 @@ CPU_BASE_IMAGE: Final[str] = "ubuntu:24.04"
 HASKELL_STYLE_TOOLS_DIR: Final[str] = "/opt/hostbootstrap/haskell-style/bin"
 LLVM_MAJOR: Final[str] = "19"
 
-_NODE_ARCH: Final[Mapping[str, str]] = {"amd64": "x64", "arm64": "arm64"}
-_GHCUP_ARCH: Final[Mapping[str, str]] = {"amd64": "x86_64", "arm64": "aarch64"}
-_AWS_ARCH: Final[Mapping[str, str]] = {"amd64": "x86_64", "arm64": "aarch64"}
-_PULUMI_ARCH: Final[Mapping[str, str]] = {"amd64": "x64", "arm64": "arm64"}
-_GO_ARCH: Final[Mapping[str, str]] = {"amd64": "amd64", "arm64": "arm64"}
-_PURESCRIPT_ASSET: Final[Mapping[str, str]] = {
-    "amd64": "linux64.tar.gz",
-    "arm64": "linux-arm64.tar.gz",
+# Every upstream vendor spells the two architectures its own way. Each table is
+# total over `Arch`, so a lookup cannot miss and a third architecture would not
+# type-check until each row is written.
+_NODE_ARCH: Final[Mapping[Arch, str]] = {Arch.AMD64: "x64", Arch.ARM64: "arm64"}
+_GHCUP_ARCH: Final[Mapping[Arch, str]] = {Arch.AMD64: "x86_64", Arch.ARM64: "aarch64"}
+_AWS_ARCH: Final[Mapping[Arch, str]] = {Arch.AMD64: "x86_64", Arch.ARM64: "aarch64"}
+_PULUMI_ARCH: Final[Mapping[Arch, str]] = {Arch.AMD64: "x64", Arch.ARM64: "arm64"}
+_GO_ARCH: Final[Mapping[Arch, str]] = {Arch.AMD64: "amd64", Arch.ARM64: "arm64"}
+_PURESCRIPT_ASSET: Final[Mapping[Arch, str]] = {
+    Arch.AMD64: "linux64.tar.gz",
+    Arch.ARM64: "linux-arm64.tar.gz",
 }
 
 
-def base_tag(flavor: Flavor, arch: str) -> str:
-    return f"basecontainer-{flavor.value}-{arch}"
+def base_tag(flavor: Flavor, arch: Arch) -> str:
+    return f"basecontainer-{flavor.value}-{arch.value}"
 
 
-def base_image_ref(flavor: Flavor, arch: str) -> str:
+def base_image_ref(flavor: Flavor, arch: Arch) -> str:
     return f"{HOSTBOOTSTRAP_IMAGE_REPO}:{base_tag(flavor, arch)}"
 
 
@@ -91,7 +94,7 @@ def _str_field(mapping: dict[str, object], key: str) -> str:
     return value
 
 
-def resolve_node_version(arch: str) -> str:
+def resolve_node_version(arch: Arch) -> str:
     """Return the latest Node LTS release that has the requested Linux asset."""
     platform_key = f"linux-{_NODE_ARCH[arch]}"
     for raw in _as_list(_http_get_json("https://nodejs.org/dist/index.json")):
@@ -159,13 +162,15 @@ def _iter_cuda_tags() -> list[dict[str, object]]:
     return tags
 
 
-def _arch_in_images(images: object, arch: str) -> bool:
+def _arch_in_images(images: object, arch: Arch) -> bool:
     if not isinstance(images, list):
         return False
-    return any(isinstance(image, dict) and image.get("architecture") == arch for image in images)
+    return any(
+        isinstance(image, dict) and image.get("architecture") == arch.value for image in images
+    )
 
 
-def resolve_cuda_base_image(arch: str) -> str:
+def resolve_cuda_base_image(arch: Arch) -> str:
     """Return the newest compatible CUDA/CuDNN Ubuntu parent with *arch*."""
     candidates: list[tuple[tuple[int, int, int], str, object]] = []
     for tag_entry in _iter_cuda_tags():
@@ -182,7 +187,9 @@ def resolve_cuda_base_image(arch: str) -> str:
     for _version, name, images in candidates:
         if _arch_in_images(images, arch):
             return f"nvidia/cuda:{name}"
-    raise RuntimeError(f"no nvidia/cuda cudnn-devel-ubuntu24.04 tag found with a {arch} manifest")
+    raise RuntimeError(
+        f"no nvidia/cuda cudnn-devel-ubuntu24.04 tag found with a {arch.value} manifest"
+    )
 
 
 @dataclass(frozen=True)
@@ -245,14 +252,11 @@ class BaseImageBuildArgs:
 
 def compute_build_args(
     flavor: Flavor,
-    arch: str,
+    arch: Arch,
     *,
     base_image_override: str | None = None,
 ) -> BaseImageBuildArgs:
     """Resolve current compatible values for ``(flavor, arch)``."""
-    if arch not in {"amd64", "arm64"}:
-        raise RuntimeError(f"unsupported arch: {arch}")
-
     if base_image_override is not None:
         parent = base_image_override
     elif flavor is Flavor.CPU:
@@ -271,7 +275,7 @@ def compute_build_args(
     return BaseImageBuildArgs(
         base_image=parent,
         image_flavor=flavor.value,
-        target_arch=arch,
+        target_arch=arch.value,
         llvm_major=LLVM_MAJOR,
         haskell_style_tools_dir=HASKELL_STYLE_TOOLS_DIR,
         go_version=go_version,
@@ -293,12 +297,12 @@ def compute_build_args(
         ghcup_download_url=(
             f"https://downloads.haskell.org/~ghcup/{_GHCUP_ARCH[arch]}-linux-ghcup"
         ),
-        kind_download_url=f"https://kind.sigs.k8s.io/dl/{kind_version}/kind-linux-{arch}",
+        kind_download_url=f"https://kind.sigs.k8s.io/dl/{kind_version}/kind-linux-{arch.value}",
         kubectl_download_url=(
-            f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/{arch}/kubectl"
+            f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/{arch.value}/kubectl"
         ),
-        helm_download_url=f"https://get.helm.sh/helm-{helm_version}-linux-{arch}.tar.gz",
-        mc_download_url=f"https://dl.min.io/client/mc/release/linux-{arch}/mc",
+        helm_download_url=f"https://get.helm.sh/helm-{helm_version}-linux-{arch.value}.tar.gz",
+        mc_download_url=f"https://dl.min.io/client/mc/release/linux-{arch.value}/mc",
         aws_download_url=f"https://awscli.amazonaws.com/awscli-exe-linux-{_AWS_ARCH[arch]}.zip",
         pulumi_download_url=(
             "https://get.pulumi.com/releases/sdk/"
@@ -313,7 +317,7 @@ SMOKE_DOCKERFILE: Final[Path] = Path("docker/compatibility-smoke.Dockerfile")
 
 def build_spec_for(
     flavor: Flavor,
-    arch: str,
+    arch: Arch,
     *,
     context: Path,
     dockerfile: Path | None = None,
@@ -347,7 +351,7 @@ def with_base_override(args: BaseImageBuildArgs, new_base: str) -> BaseImageBuil
 
 def compatibility_smoke_spec(
     flavor: Flavor,
-    arch: str,
+    arch: Arch,
     *,
     context: Path,
     base_reference: str,
@@ -374,7 +378,7 @@ def compatibility_smoke_spec(
     return docker_ops.BuildSpec(
         dockerfile=context / SMOKE_DOCKERFILE,
         context=context,
-        tags=(f"hostbootstrap-base-compatibility:{flavor.value}-{arch}",),
+        tags=(f"hostbootstrap-base-compatibility:{flavor.value}-{arch.value}",),
         build_args={"BASE_IMAGE": base_reference},
         pull=pull,
         no_cache=True,

@@ -17,7 +17,7 @@ import qualified Data.Text as Text
 import HostBootstrap.Cluster.Shipped
 import HostBootstrap.Handoff.Transaction (withFrameChildTransaction)
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.Lift (localContext, mkSelfRef)
+import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelfPath), localContext, mkSelfRef)
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import System.Directory (canonicalizePath)
 import System.Environment (getExecutablePath)
@@ -89,7 +89,7 @@ observationCases =
             crossed <-
                 withFrameChildTransaction
                     unresolvedHostConfig
-                    (mkSelfRef self self)
+                    (mkSelfRef (LocalSelfPath self) (InVMSelfPath self))
                     localContext
                     request
             case crossed of

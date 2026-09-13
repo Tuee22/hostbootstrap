@@ -3,11 +3,11 @@ module ForeignGuestAliasRelease where
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate.Provider.Alias
 
+-- Releasing a guest alias consumes the managed handle the settlement minted,
+-- which is what carries the ownership receipt this run established. A raw
+-- observation of someone else's alias is not that handle, so a foreign alias
+-- cannot be released through this route.
 badRelease ::
-  PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
-  GuestAliasSpec ->
   ResourceHandle scope planId aliasId DurableAliasResource Unmanaged Observed ->
-  OwnershipReceipt scope planId aliasId DurableAliasResource ->
   Either ReconcileError ()
-badRelease prepared _spec handle receipt =
-  withPreparedGuestAliasRelease prepared handle receipt 1 (const ())
+badRelease handle = withPreparedGuestAliasRelease handle 1 (const ())

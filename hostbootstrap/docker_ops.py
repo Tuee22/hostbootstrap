@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Final
 
 from . import process
+from .substrate import Arch, parse_arch
 
 _DOCKER: Final[str] = "docker"
 
@@ -140,18 +141,12 @@ def image_id_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "image", "inspect", "--format", "{{.Id}}", tag)
 
 
-def normalize_architecture(value: str) -> str:
-    normalized = value.strip().lower()
-    aliases = {
-        "amd64": "amd64",
-        "x86_64": "amd64",
-        "arm64": "arm64",
-        "aarch64": "arm64",
-    }
-    try:
-        return aliases[normalized]
-    except KeyError as exc:
-        raise RuntimeError(f"unsupported Docker architecture: {value.strip()!r}") from exc
+def normalize_architecture(value: str) -> Arch:
+    """Read the Docker engine's own architecture answer into the closed value."""
+    arch = parse_arch(value)
+    if arch is None:
+        raise RuntimeError(f"unsupported Docker architecture: {value.strip()!r}")
+    return arch
 
 
 def parse_digest_reference(rendered: str, *, tag: str) -> str:
@@ -234,7 +229,7 @@ async def pull(reference: str, *, prefix: str = "") -> process.CommandResult:
     return await process.run_checked(pull_command(reference), prefix=prefix)
 
 
-async def engine_arch() -> str:
+async def engine_arch() -> Arch:
     result = await process.run_checked(engine_arch_command(), quiet=True)
     return normalize_architecture(result.stdout)
 

@@ -31,6 +31,8 @@ module HostBootstrap.Lifecycle.Prepared (
     preparedGateFence,
     preparedGateAttempt,
     preparedGateJournalVersion,
+    preparedGateFields,
+    preparedGateCommitment,
 
     -- * Its sole producer
     recordDurableUnknown,
@@ -41,12 +43,21 @@ module HostBootstrap.Lifecycle.Prepared (
 ) where
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import HostBootstrap.Digest (frameWire, sha256Hex)
 import Data.Word (Word64)
 import HostBootstrap.Lifecycle.Prepared.Internal (
     PreparedGate,
+    GateAttempt (GateAttempt),
+    GateFence (GateFence),
+    GateJournalVersion (GateJournalVersion),
+    GateOperationKey (GateOperationKey),
+    GatePlanDigest (GatePlanDigest),
+    GateSession (GateSession),
     mintPreparedGate,
     preparedGateAttempt,
     preparedGateFence,
@@ -72,6 +83,38 @@ constrained to the record-key alphabet plus a few punctuation characters, so a
 value can never introduce a separator and shift the meaning of the fields after
 it.
 -}
+{- | The six fields a gate commits to, in the one order every committer uses.
+
+Two backends projected these fields independently and then hashed them
+differently — one length-framed and digested, the other joined with a colon —
+so one question had two answers, differing where nobody compared them. The
+projection lives beside the gate because the gate is what it is about.
+-}
+preparedGateFields :: PreparedGate -> [Text]
+preparedGateFields gate =
+    [ preparedGatePlan gate
+    , preparedGateOperation gate
+    , preparedGateSession gate
+    , Text.pack (show (preparedGateFence gate))
+    , Text.pack (show (preparedGateAttempt gate))
+    , Text.pack (show (preparedGateJournalVersion gate))
+    ]
+
+{- | The one commitment to a prepared gate.
+
+Length-framed and digested rather than joined with a separator: a separator that
+can appear inside a field admits two different gates with the same commitment,
+and the fields here include an operation key and a session name that this
+library does not constrain to exclude one. Framing removes the question rather
+than answering it per-field.
+-}
+preparedGateCommitment :: PreparedGate -> Text
+preparedGateCommitment gate =
+    sha256Hex
+        ( ByteString.concat
+            (map (frameWire . TextEncoding.encodeUtf8) ("hostbootstrap/prepared-gate/v1" : preparedGateFields gate))
+        )
+
 encodeFields :: [Text] -> ByteString
 encodeFields = ByteStringChar8.pack . Text.unpack . Text.intercalate "\t"
 
@@ -124,10 +167,10 @@ recordDurableUnknown session key expectation phase plan operation sessionId fenc
         Right journalVersion ->
             Right
                 ( mintPreparedGate
-                    plan
-                    operation
-                    sessionId
-                    fence
-                    attempt
-                    (recordVersionWord journalVersion)
+                    (GatePlanDigest plan)
+                    (GateOperationKey operation)
+                    (GateSession sessionId)
+                    (GateFence fence)
+                    (GateAttempt attempt)
+                    (GateJournalVersion (recordVersionWord journalVersion))
                 )

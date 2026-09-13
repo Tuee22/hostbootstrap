@@ -19,7 +19,12 @@ extra-source-files:
 
 common warnings
   default-language: Haskell2010
-  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  -- The warning policy is a property of this package, not of a flag each caller
+  -- remembers to pass: a plain `cabal build` holds exactly what the gate holds.
+  -- `-Wpartial-fields` is here because a partial record selector throws at the
+  -- call site rather than failing to compile; a sum's fields are eliminated
+  -- positionally instead.
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -Wpartial-fields -Werror
 
 library effect-internal
   import: warnings
@@ -60,6 +65,8 @@ library ownership-internal
       HostBootstrap.Ownership.Posix
       HostBootstrap.Ownership.Windows
       HostBootstrap.Ownership.Row
+      HostBootstrap.Ownership.Tape
+      HostBootstrap.Wire.LittleEndian
   other-modules:
       HostBootstrap.Ownership.Internal
   build-depends:
@@ -105,6 +112,26 @@ library colima-backend-internal
     build-depends:
         unix
 
+-- The durable state an interrupted lifecycle transaction leaves, and the
+-- vocabulary a recovery fixture writes it in. Private for the same reason the
+-- direct-provider testing seam is: the types mint no authority, but the bytes
+-- they render are the coordinator's own, and a downstream consumer that could
+-- write them could put the store into a state no run produced.
+library lifecycle-transaction-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: src
+  exposed-modules:
+      HostBootstrap.Lifecycle.Transaction
+      HostBootstrap.Lifecycle.Session.Testing
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , crypton <1.1
+    , memory
+    , text
+    , hostbootstrap-core:ownership-internal
+
 library lifecycle-dependency-internal
   import: warnings
   visibility: private
@@ -144,7 +171,6 @@ library
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
-      HostBootstrap.Lifecycle.Session.Testing
       HostBootstrap.ProjectScope
       HostBootstrap.Readiness
       HostBootstrap.Reconcile
@@ -419,6 +445,7 @@ test-suite hostbootstrap-core-test
     , hostbootstrap-core
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:lifecycle-dependency-internal
+    , hostbootstrap-core:lifecycle-transaction-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:ownership-internal

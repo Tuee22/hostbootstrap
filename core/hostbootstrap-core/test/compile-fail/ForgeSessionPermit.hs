@@ -19,7 +19,7 @@ forgedFence = FenceEpoch 9
 
 -- The prepared gate is the proof that the unknown phase was durably recorded
 -- before the adapter ran; asserting one would skip that record.
-forgedGate :: PreparedGate scope planId
+forgedGate :: PreparedGate
 forgedGate = PreparedGate "op-1" 1 1 1
 
 -- An advance carries the sole successor permit; building one directly would let

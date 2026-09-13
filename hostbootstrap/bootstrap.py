@@ -27,16 +27,16 @@ import asyncio
 import hashlib
 import os
 import shutil
-import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
 from . import prereqs, process, substrate
-from .substrate import Substrate, SubstrateName
+from .substrate import Arch, Substrate, SubstrateName
 
 _BREW: str = "brew"
 _GHCUP: str = "ghcup"
@@ -84,16 +84,16 @@ _WINDOWS_TOOLCHAIN_PATHS: tuple[Path, ...] = (
 _WINDOWS_GHCUP: str = r"C:\ghcup\bin\ghcup.exe"
 _WINDOWS_CABAL: str = r"C:\ghcup\bin\cabal.exe"
 _GHCUP_VERSION: str = "0.2.6.2"
-_GHCUP_DOWNLOADS: dict[tuple[str, str], tuple[str, str]] = {
-    ("linux", "amd64"): (
+_GHCUP_DOWNLOADS: dict[tuple[str, Arch], tuple[str, str]] = {
+    ("linux", Arch.AMD64): (
         f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/x86_64-linux-ghcup-{_GHCUP_VERSION}",
         "9ed5da5449b48043a0d17e767c05d2ef585e25a639bb934329496c6d2fad9cf8",
     ),
-    ("linux", "arm64"): (
+    ("linux", Arch.ARM64): (
         f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/aarch64-linux-ghcup-{_GHCUP_VERSION}",
         "65a5f05120288ee4f1a81d28825374b6af317456a351a586adfce90c6dc29e3b",
     ),
-    ("windows", "amd64"): (
+    ("windows", Arch.AMD64): (
         f"https://downloads.haskell.org/ghcup/{_GHCUP_VERSION}/x86_64-mingw64-ghcup-{_GHCUP_VERSION}.exe",
         "94da902a2853b1de1df509d04da900a05258480759efdb4f654e66956b6f30db",
     ),
@@ -434,7 +434,7 @@ async def _install_verified_ghcup(sub: Substrate) -> None:
     try:
         url, expected_sha256 = _GHCUP_DOWNLOADS[(platform_key, sub.arch)]
     except KeyError as exc:
-        raise RuntimeError(f"no pinned GHCup download for {platform_key}/{sub.arch}") from exc
+        raise RuntimeError(f"no pinned GHCup download for {platform_key}/{sub.arch.value}") from exc
 
     destination = Path(_WINDOWS_GHCUP) if sub.is_windows else Path.home() / ".ghcup/bin/ghcup"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -546,16 +546,25 @@ async def bootstrap(
     await _ensure_toolchain(sub, offline=offline)
     await _build_native(spec, project_root=project_root, offline=offline)
     argv = exec_argv(spec, project_root, args)
-    _exec_project_binary(argv, project_root)
+    _exec_project_binary(argv, project_root, context=substrate.invocation_context(sub))
 
 
-def _exec_project_binary(argv: tuple[str, ...], project_root: Path) -> None:
+def _exec_project_binary(
+    argv: tuple[str, ...], project_root: Path, *, context: Mapping[str, str]
+) -> None:
     # Run the binary with cwd = the project home so its cwd is deterministic on
     # every substrate, regardless of where the caller invoked ``hostbootstrap``.
     # ``argv[0]`` is absolute (``binary_path`` of the resolved ``project_root``),
     # so the POSIX ``os.chdir``-before-``os.execv`` cannot break the exec.
+    #
+    # *context* is the invocation-context seam: the host this bootstrapper
+    # detected, stated to the binary it launches rather than left for the binary
+    # to classify again. It is set on the child explicitly, which is why both
+    # branches name the environment instead of letting one be inherited.
     if os.name == "nt":
-        completed = subprocess.run(list(argv), cwd=project_root, check=False)
-        raise SystemExit(completed.returncode)
+        outcome = process.probe(argv, cwd=project_root, env=context, stdio=process.Stdio.INHERIT)
+        if isinstance(outcome, process.CommandUnavailable):
+            raise RuntimeError(process.describe(outcome))
+        raise SystemExit(outcome.returncode)
     os.chdir(project_root)
-    os.execv(argv[0], list(argv))  # pragma: no cover
+    os.execve(argv[0], list(argv), process.merged_environment(context))  # pragma: no cover

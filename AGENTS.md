@@ -88,7 +88,7 @@ for the ownership boundary between the two.
 The Haskell core lives under `core/`: the `hostbootstrap-core` Cabal package, the
 `core/cabal.project` workspace file, and `core/warm-deps/` (the warm-store package). The
 Poetry project (the `hostbootstrap` CLI distribution) is rooted at the repository root —
-`pyproject.toml`, the `hostbootstrap/` package, its `tests/`, and `stubs/`. The `demo/` consumer
+`pyproject.toml`, the `hostbootstrap/` package, and its `tests/`. The `demo/` consumer
 carries its own `demo/cabal.project`. The root also carries `docker/`, `documents/`, and
 `DEVELOPMENT_PLAN/` and no Cabal project file.
 
@@ -129,11 +129,11 @@ It schedules nothing on its own; the deleting phase's own sprints do that.
 
 - `hostbootstrap-core` (under `core/hostbootstrap-core/`) is built and tested with Cabal against
   the pinned GHC, driven by `core/cabal.project`.
-- Build the library with `cabal build all --ghc-options=-Werror` (from `core/`).
-- Run the Haskell tests with `cabal test all --ghc-options=-Werror` (from `core/`).
+- Build the library with `cabal build all` (from `core/`).
+- Run the Haskell tests with `cabal test all` (from `core/`).
 - Run the worked consumer the same way from `demo/`. The `demo/` leg is part of the gate, not an extra.
-- `-Werror` is not optional. It is the spelling every phase closes on, so a run without it accepts
-  warnings the gate refuses and tells you nothing about whether your change closes anything.
+- `-Werror` needs no flag. Both packages carry it in their `common warnings` stanza, so a plain
+  `cabal build` holds exactly the policy a phase closes on and a warning cannot land unnoticed.
 - The Haskell quality gate (formatter check, linter, type-correct build) runs through the project's
   canonical code-check.
 
@@ -142,8 +142,7 @@ It schedules nothing on its own; the deleting phase's own sprints do that.
 - Run all Python commands from the repository root (the Poetry project root).
 - `check_code` and `test_all` are Python modules, not shell commands on `PATH`.
 - Run code checks with `poetry run python -m hostbootstrap.check_code`.
-  - Runs `ruff check hostbootstrap stubs`, `black --check hostbootstrap stubs`, then
-    `mypy hostbootstrap`.
+  - Runs `ruff check hostbootstrap`, `black --check hostbootstrap`, then `mypy hostbootstrap`.
 - Run the full test suite with `poetry run python -m hostbootstrap.test_all`.
   - Sets the `HOSTBOOTSTRAP_TEST_ALL` sentinel and invokes `pytest tests` in-process.
   - Forward pytest args after the module name, for example
@@ -162,8 +161,8 @@ gate** is these four commands, and all four finish well within the tool timeout 
 and iterate normally, on Windows as elsewhere:
 
 ```bash
-cd core && cabal test all --ghc-options=-Werror
-cd demo && cabal test all --ghc-options=-Werror
+cd core && cabal test all
+cd demo && cabal test all
 poetry run python -m hostbootstrap.check_code
 poetry run python -m hostbootstrap.test_all
 ```
@@ -171,8 +170,8 @@ poetry run python -m hostbootstrap.test_all
 § JJ of
 [DEVELOPMENT_PLAN/development_plan_standards.md](DEVELOPMENT_PLAN/development_plan_standards.md) is
 canonical for that list, and this file does not restate it in a second spelling. Dropping
-`check_code`, the `demo/` leg, or `-Werror` runs a strictly weaker gate than the one a phase closes
-on, and the difference is silent.
+`check_code` or the `demo/` leg runs a strictly weaker gate than the one a phase closes on, and the
+difference is silent.
 
 The gate is expected to *pass* natively on Windows, not merely to
 run: the project binary is built host-native on every substrate, so its sources and suites are

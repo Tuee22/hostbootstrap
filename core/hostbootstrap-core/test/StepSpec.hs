@@ -2,6 +2,7 @@
 
 module StepSpec (tests) where
 
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.List (isInfixOf, nub)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lift (localContext)
@@ -66,7 +67,7 @@ projectionCases =
             @?= ["core:copy-source/warm-cache", "core:deploy-vm/core:copy-source/guest-alias"]
     , testCase "a validated plan carries each node's declared projections" $ do
         plan <- either (assertFailure . show) pure (mkStepPlan aliasProjectionSteps)
-        map (map operationKeyText . stepProjectedOperations) (stepPlanSteps plan)
+        map (map operationKeyText . stepProjectedOperations) (NonEmpty.toList (stepPlanSteps plan))
             @?= [[], ["core:deploy-vm/core:copy-source/guest-alias"]]
     , testCase "the declaring node is the last resource the key names" $ do
         let refuse steps expected =
@@ -317,8 +318,8 @@ renderCases =
 
 frameCases :: [TestTree]
 frameCases =
-    [ testCase "chainFrames lists the descent frames in first-appearance order" $
-        map frameId (chainFrames demoPlan)
+    [ testCase "NonEmpty.toList (chainFrames lists) the descent frames in first-appearance order" $
+        map frameId (NonEmpty.toList (chainFrames demoPlan))
             @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
     , testCase "stepsForFrame selects exactly this frame's steps in order" $
         map stepLabel (stepsForFrame "vm-project-container-2" demoPlan)
@@ -371,9 +372,9 @@ validationCases =
                 (assertFailure . show)
                 pure
                 (mkStepPlan [contextInitStep "core context init" metal noop, projectContextInit])
-        map stepKindName (map stepKind (stepPlanSteps plan))
+        map stepKindName (map stepKind (NonEmpty.toList (stepPlanSteps plan)))
             @?= ["context-init", "context-init"]
-        case stepPlanSteps plan of
+        case NonEmpty.toList (stepPlanSteps plan) of
             [coreContextInit, projectContextInit'] ->
                 assertBool
                     "typed identities differ"
@@ -469,7 +470,7 @@ validationCases =
             Left err -> assertFailure ("a core-managed override was rejected: " ++ show err)
             Right _ -> pure ()
     , testCase "validated plans derive one operation key and exact dependency prefix per step" $ do
-        let steps = stepPlanSteps demoPlan
+        let steps = NonEmpty.toList (stepPlanSteps demoPlan)
             keys = map (operationKeyText . stepOperationKey) steps
         assertBool "operation keys are non-empty" (all (not . null) keys)
         assertBool "operation keys are unique" (and [left /= right | (index, left) <- zip [0 :: Int ..] keys, right <- drop (index + 1) keys])
@@ -492,7 +493,7 @@ validateSequence :: [String] -> IO ()
 validateSequence frameIds =
     case (hasClosedFrameReturn frameIds, mkStepPlan steps) of
         (False, Right plan) ->
-            map (frameId . stepFrame) (stepPlanSteps plan) @?= frameIds
+            map (frameId . stepFrame) (NonEmpty.toList (stepPlanSteps plan)) @?= frameIds
         (True, Left (NonContiguousFrameReturn _ actual)) ->
             actual @?= frameIds
         (False, Left err) ->

@@ -229,7 +229,8 @@ import HostBootstrap.Lifecycle.Session (
 import HostBootstrap.Lift (
     LiftContext (LiftContext),
     LiftLayer (ViaContainer),
-    SelfRef (inVMSelfPath),
+    SelfRef,
+    selfRefInVMPath,
  )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -1462,7 +1463,7 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
     targetBinary (LiftContext layers) =
         case reverse layers of
             ViaContainer _ : _ -> Text.empty
-            _ -> Text.pack (inVMSelfPath self)
+            _ -> Text.pack (selfRefInVMPath self)
     refused owner = pure (Left ("reverse lifecycle: " ++ owner ++ " is not a root reverse entry"))
 
 {- | Run the root frame and every declared forward child under one live root.
@@ -1742,7 +1743,7 @@ runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey
                         withCarriedProviderDependencyFromCarrierKernel cfg link route 1 input payload carrier
 
     targetBinary (LiftContext [ViaContainer _]) = Text.empty
-    targetBinary _ = Text.pack (inVMSelfPath self)
+    targetBinary _ = Text.pack (selfRefInVMPath self)
 
     runFailedUpUnwind ::
         forall failedCatalogId.

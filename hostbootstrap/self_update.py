@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final, cast
+
+from . import process
 
 PACKAGE_NAME: Final[str] = "hostbootstrap"
 DEFAULT_REPO_URL: Final[str] = "https://github.com/Tuee22/hostbootstrap.git"
@@ -58,12 +59,11 @@ def pipx_update_args(*, ref: str = DEFAULT_REF, spec: str | None = None) -> tupl
 def run_update(*, ref: str = DEFAULT_REF, spec: str | None = None) -> str:
     install_spec = spec if spec is not None else direct_vcs_spec(ref)
     argv = pipx_update_args(ref=ref, spec=spec)
-    try:
-        completed = subprocess.run(list(argv), check=False)
-    except FileNotFoundError as exc:
-        raise SelfUpdateError("`pipx` not found in PATH; install pipx and retry.") from exc
-    if completed.returncode != 0:
-        raise SelfUpdateError(f"`pipx install --force` failed (exit {completed.returncode}).")
+    outcome = process.probe(argv, stdio=process.Stdio.INHERIT)
+    if isinstance(outcome, process.CommandUnavailable):
+        raise SelfUpdateError("`pipx` not found in PATH; install pipx and retry.")
+    if not outcome.ok:
+        raise SelfUpdateError(f"`pipx install --force` failed (exit {outcome.returncode}).")
     return install_spec
 
 
@@ -115,22 +115,18 @@ def parse_ls_remote(stdout: str) -> str:
 
 
 def remote_commit(*, repo_url: str = DEFAULT_REPO_URL, ref: str = DEFAULT_REF) -> str:
-    try:
-        completed = subprocess.run(
-            # Request the ref and its peeled form so an annotated tag also emits its
-            # ``<ref>^{}`` commit line; parse_ls_remote prefers that peeled commit.
-            ["git", "ls-remote", repo_url, ref, f"{ref}^{{}}"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise SelfUpdateError("`git` not found in PATH; install git and retry.") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip()
+    outcome = process.probe(
+        # Request the ref and its peeled form so an annotated tag also emits its
+        # ``<ref>^{}`` commit line; parse_ls_remote prefers that peeled commit.
+        ["git", "ls-remote", repo_url, ref, f"{ref}^{{}}"]
+    )
+    if isinstance(outcome, process.CommandUnavailable):
+        raise SelfUpdateError("`git` not found in PATH; install git and retry.")
+    if not outcome.ok:
+        detail = outcome.stderr.strip() or outcome.stdout.strip()
         suffix = f": {detail}" if detail else "."
-        raise SelfUpdateError(f"`git ls-remote` failed (exit {completed.returncode}){suffix}")
-    return parse_ls_remote(completed.stdout)
+        raise SelfUpdateError(f"`git ls-remote` failed (exit {outcome.returncode}){suffix}")
+    return parse_ls_remote(outcome.stdout)
 
 
 def check_status(*, ref: str = DEFAULT_REF) -> CheckStatus:

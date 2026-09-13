@@ -169,6 +169,14 @@ capability the dependent operation consumes and, where subsequent work pulls rem
 egress. Current Incus code implements that provider observation, while general lifecycle integration
 still returns a result-free reconciler action:
 
+- **One group-and-socket workflow.** Putting the invoking non-root user in a daemon's group and granting
+  that user immediate access to the daemon's socket is one workflow in `HostBootstrap.Ensure`, taking the
+  group, the socket, and the reconciler's label. `docker` and `incus` are applications of it; a host with
+  no invoking non-root user is a reported skip rather than a failure. The three-way answer to a
+  privileged step — succeeded, ran and returned non-zero, could not be run — is written once beside it.
+- **One accelerator probe.** `reportedGpu` answers whether a device listing reported a device, over the
+  marker `HostBootstrap.Substrate` names, so the host-driver check, the `nvkind` runtime smoke, the
+  Windows reconciler, and outer-host detection cannot disagree about what counts as a device.
 - **`ensure docker`** checks that the invoking process can reach the Docker daemon. On Linux the install
   path also grants socket access through group membership and an immediate ACL. On Apple a missing
   daemon is refused at this config-free seam: the plan-bound Colima adapter observes/reconciles the

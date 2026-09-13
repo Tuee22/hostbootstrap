@@ -243,25 +243,15 @@ caller.
 -}
 stepProbe :: GuestBootstrapStep -> LiftLeaf
 stepProbe (InstallGuestPackages packages) =
-    RawCmd ("dpkg-query" : "-W" : map guestPackageName packages)
+    RawCmd "dpkg-query" ("-W" : map guestPackageName packages)
 stepProbe (InstallPinnedToolchain toolchain toolchainHome) =
-    RawCmd
-        [ "test"
-        , "-x"
-        , toolchainHome Posix.</> "bin" Posix.</> "ghcup"
-        , "-a"
-        , "-x"
-        , toolchainHome Posix.</> "ghc" Posix.</> toolchainGhcVersion toolchain Posix.</> "bin" Posix.</> "ghc"
-        , "-a"
-        , "-x"
-        , toolchainHome Posix.</> "bin" Posix.</> "cabal"
-        ]
+    RawCmd "test" ["-x", toolchainHome Posix.</> "bin" Posix.</> "ghcup", "-a", "-x", toolchainHome Posix.</> "ghc" Posix.</> toolchainGhcVersion toolchain Posix.</> "bin" Posix.</> "ghc", "-a", "-x", toolchainHome Posix.</> "bin" Posix.</> "cabal"]
 stepProbe (InstallGuestBootstrapper _ bootstrapper) =
-    RawCmd ["test", "-x", bootstrapper]
+    RawCmd "test" ["-x", bootstrapper]
 stepProbe (BuildGuestProjectBinary _ _ _ built) =
-    RawCmd ["test", "-x", built]
+    RawCmd "test" ["-x", built]
 stepProbe (InstallGuestProjectBinary built installed) =
-    RawCmd ["cmp", "-s", built, installed]
+    RawCmd "cmp" ["-s", built, installed]
 
 {- | The actions that satisfy a step, in order.
 
@@ -273,49 +263,25 @@ pipe becomes two steps, and a working directory becomes an argument.
 -}
 stepActions :: GuestBootstrapStep -> [LiftLeaf]
 stepActions (InstallGuestPackages packages) =
-    [ RawCmd (aptGet ["update", "-q"])
-    , RawCmd (aptGet (["install", "-y", "-q"] ++ map guestPackageName packages))
+    [ RawCmd "sudo" (aptGet ["update", "-q"])
+    , RawCmd "sudo" (aptGet (["install", "-y", "-q"] ++ map guestPackageName packages))
     ]
   where
     aptGet arguments =
-        ["sudo", "-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get"] ++ arguments
+        ["-n", "env", "DEBIAN_FRONTEND=noninteractive", "apt-get"] ++ arguments
 stepActions (InstallPinnedToolchain toolchain toolchainHome) =
-    [ RawCmd
-        [ "curl"
-        , "--proto"
-        , "=https"
-        , "--tlsv1.2"
-        , "-sSf"
-        , "-o"
-        , installer
-        , ghcupInstallerUrl
-        ]
-    , RawCmd
-        [ "env"
-        , "BOOTSTRAP_HASKELL_NONINTERACTIVE=1"
-        , "BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1"
-        , "BOOTSTRAP_HASKELL_GHC_VERSION=" ++ toolchainGhcVersion toolchain
-        , "GHCUP_INSTALL_BASE_PREFIX=" ++ Posix.takeDirectory toolchainHome
-        , "sh"
-        , installer
-        ]
+    [ RawCmd "curl" ["--proto", "=https", "--tlsv1.2", "-sSf", "-o", installer, ghcupInstallerUrl]
+    , RawCmd "env" ["BOOTSTRAP_HASKELL_NONINTERACTIVE=1", "BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1", "BOOTSTRAP_HASKELL_GHC_VERSION=" ++ toolchainGhcVersion toolchain, "GHCUP_INSTALL_BASE_PREFIX=" ++ Posix.takeDirectory toolchainHome, "sh", installer]
     ]
   where
     installer = Posix.takeDirectory toolchainHome Posix.</> ".ghcup-install.sh"
 stepActions (InstallGuestBootstrapper source _) =
-    [RawCmd ["pipx", "install", "--force", source]]
+    [RawCmd "pipx" ["install", "--force", source]]
 stepActions (BuildGuestProjectBinary projectDir toolchainHome bootstrapper _) =
-    [ RawCmd
-        [ "env"
-        , "-C"
-        , projectDir
-        , "PATH=" ++ intercalate ":" (buildPath toolchainHome bootstrapper)
-        , bootstrapper
-        , "build"
-        ]
+    [ RawCmd "env" ["-C", projectDir, "PATH=" ++ intercalate ":" (buildPath toolchainHome bootstrapper), bootstrapper, "build"]
     ]
 stepActions (InstallGuestProjectBinary built installed) =
-    [RawCmd ["sudo", "-n", "install", "-m", "0755", built, installed]]
+    [RawCmd "sudo" ["-n", "install", "-m", "0755", built, installed]]
 
 {- | The @PATH@ the in-frame build runs with.
 
@@ -410,5 +376,5 @@ runGuestBootstrapWith runLeaf target = go [] (guestBootstrapPlan target)
 
     failure step reason = "guest bootstrap: " ++ stepLabel step ++ ": " ++ reason
 
-    renderLeaf (RawCmd argv) = unwords argv
+    renderLeaf (RawCmd exe argv) = unwords (exe : argv)
     renderLeaf leaf = show leaf

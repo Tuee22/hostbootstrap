@@ -1,14 +1,14 @@
 # Phase 2 — Haskell core scaffolding
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 1 (Python pre-binary floor)
 **Substrates**: none (static)
-**Gate**: `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`, on the gate host
+**Gate**: `cabal build all` and `cabal test all` from `core/`, on the gate host
 that runs it — § C forbids a baseline phase owing evidence from a family it does not declare, and
 cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all && cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Establish the `hostbootstrap-core` package, its pinned compiler, and the generic CLI
 > entrypoint every consuming project binary is built from.
@@ -54,8 +54,8 @@ One self-contained Haskell workspace with a pinned toolchain.
 - Every component that imports `crypton` carries the shared `crypton <1.1` compatibility ceiling. The
   project currently targets the 1.0 API; an unconstrained current-index solve otherwise selects the
   source-incompatible 1.1 series and makes a clean host build depend on stale store contents.
-- `-Werror` is supplied by the gate rather than baked into the package, so a warm tree cannot hide a
-  warning the clean gate would catch.
+- The warning policy lives in the package's own `common warnings` stanza (Sprint 2.6), so every
+  component of the package inherits it and no component opts out.
 - The same `cabal.project` is used host-native and inside the derived container; there is no
   container-only project file and no base-owned freeze import.
 
@@ -297,63 +297,73 @@ a POSIX gate host with those two reports exchanged.
 
 None.
 
-### Sprint 2.6: The build description carries the warnings the gate asserts [Active]
+### Sprint 2.6: The build description carries the warnings the gate asserts [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`, `core/hostbootstrap-core/src/HostBootstrap/Activation.hs`, `core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`, `demo/hostbootstrap-demo.cabal`, `core/hostbootstrap-core/test/PortabilitySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cabal_layout.md`, `documents/engineering/code_check_doctrine.md`
 
 #### Objective
 
-Every phase closes on a gate spelled `--ghc-options=-Werror`, which means the warning policy the
-project actually holds lives in a flag each caller supplies rather than in the package that describes
-the build. A plain `cabal build` is warning-tolerant, so a warning can land and sit until whoever runs
-the gate next happens to pass the flag. Moving it into the package makes the policy a property of the
-source tree, and lets `-Wpartial-fields` close the record selectors that can throw.
+The warning policy the project holds is a property of the packages that describe the build, not of a
+flag each caller supplies. A plain `cabal build` refuses exactly what the gate refuses, so a warning
+cannot land and sit until whoever runs the gate next happens to remember the flag — and
+`-Wpartial-fields` is in the policy because a record selector on a multi-constructor type throws at the
+call site rather than failing to compile.
 
 #### Deliverables
 
-- The `common warnings` stanza carries `-Werror`, so the build description asserts the policy every gate asserts.
-- `-Wpartial-fields` joins it, and the two records whose selectors are partial are given positional elimination instead of field names.
+- The `common warnings` stanza of both Cabal packages carries `-Werror`, so the build description asserts the policy every gate asserts, and every component of each package imports that stanza.
+- `-Wpartial-fields` joins it, and the library, the bare executable, both suites, and the worked consumer compile clean under it.
 - The gate command in every document reduces to `cabal test all` with no remembered flag, and § JJ's spelling is the one that survives.
-- No module gains an `OPTIONS_GHC` suppression; the count of those in the library stays zero.
+- No module carries an `OPTIONS_GHC` suppression; the count of those in the library stays zero.
+- `PortabilitySpec` holds both as absence guards: the stanza carries the two flags, and no production module opts out of them.
 
 #### Validation
 
-The host static gate. `cabal build all` and `cabal test all` from `core/` and from `demo/` now fail on
-a warning without being asked to, which is the property under test.
+The host static gate. `cabal build all` and `cabal test all` from `core/` and from `demo/` fail on a
+warning without being asked to, which is the property under test. Dated evidence: on 2026-09-12,
+x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, a full reconfigure and rebuild of every
+component of both packages under the package-declared policy compiled warning-clean, and
+`cabal test all` from `core/` passed 2,507 tests in 162.32 seconds.
+
+A dated `**Gate evidence**` row records the command that ran on its date and is not rewritten by this
+sprint; the reduced spelling is what a document asks a reader to *run*.
 
 #### Remaining Work
 
-The shared suite toolkit is Sprint 2.7.
+None. The shared suite toolkit is Sprint 2.7.
 
-### Sprint 2.7: One source-introspection toolkit for the suites [Planned]
+### Sprint 2.7: One source-introspection toolkit for the suites [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/SourceGuard.hs`, `core/hostbootstrap-core/test/SpecIndexSpec.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
 
 #### Objective
 
-`SourceGuard.hs` exists so a source guard does not write its own file reader, and twenty-one specs
-import it. The half that reads the Cabal file and walks the source tree was copied instead, into six
-spec files — and the copies have already diverged: two different parsers read the `exposed-modules`
-field, so guards that believe they enumerate the same module list do not. A guard that is wrong about
-its own subject asserts nothing, and it does so silently.
+`SourceGuard.hs` is the one toolkit a source guard reads this repository's own sources through, and it
+owns both halves of that job: the lexical reader that turns a module into tokens, imports, and exports,
+and the structural reader that locates the package, walks its source tree, and reads one field out of
+its description. A guard is an assertion about a set of modules, so one reader is what makes two guards
+over the same field enumerate the same set.
 
 #### Deliverables
 
-- The Cabal-stanza reader, the source-tree walker, the package-root bracket, and the significant-line counter live once, beside the token reader that is already shared.
-- The two `exposed-modules` parsers are reconciled to one, and the resulting module enumeration is checked against what each guard expected to see.
-- `CordonSpec`'s private copy of the token reader is deleted in favour of the shared one.
-- Any guard whose enumerated set changes under the reconciled parser is reported rather than quietly adopted — a guard that was under-enforcing was asserting less than it claimed.
+- The Cabal-stanza reader, the `exposed-modules`/`other-modules` field reader, the source-tree walker, the package-root bracket, and the significant-line counter live once, beside the token reader.
+- One `exposed-modules` parser serves every guard, and it reads both layouts Cabal permits — a value beginning on the field's own line and a value continuing on indented lines.
+- `CordonSpec` reads imports and the exposure field through the shared toolkit, and keeps only its own typed refusals.
+- The enumeration is checked without a frozen number: the modules the main library declares are exactly the module files under its source roots, so a reader that under-reads a field reports the difference as a named set.
 
 #### Validation
 
-The host static gate. The source-guard cases pass, and their enumerated counts are stated so a
-future divergence is visible as a number rather than as an absence.
+The host static gate. Every source-guard case passes unchanged under the one reader, which is the
+evidence that no guard's enumerated set moved when the copies were reconciled. Dated evidence: on
+2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from
+`core/` passed 2,508 tests, including the 99 exposed and 54 other modules the main library declares
+agreeing exactly with the 153 module files under `src` and `internal/cluster-backend`.
 
 #### Remaining Work
 
@@ -361,8 +371,7 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The warning policy is owed in the build description rather than in a remembered flag.
-**Sprint 2.6** owns it. Sprint 2.7 follows with the shared suite toolkit.
+None.
 
 ## Documentation Requirements
 

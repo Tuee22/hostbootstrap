@@ -35,7 +35,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
  )
 import HostBootstrap.Lifecycle.Prepared (PreparedGate, recordDurableUnknown)
-import HostBootstrap.Lift (SelfRef, currentSelfRef, localContext)
+import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), SelfRef, currentSelfRef, localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     forward,
@@ -218,7 +218,7 @@ runProviderRoute root guestSelfPath config backend provider shareSpec exercise =
     withLiveProjectPlan root liveStepPlan $ \projectPlan ->
         case NonEmpty.toList (forward projectPlan) of
             [providerNode, shareNode] -> do
-                self <- currentSelfRef guestSelfPath
+                self <- currentSelfRef (InVMSelfPath guestSelfPath)
                 carrier <- Execution.newResourceCarrier
                 providerRuntime <- Execution.newStepRuntime carrier
                 shareRuntime <- Execution.newStepRuntime carrier

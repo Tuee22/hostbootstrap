@@ -24,7 +24,7 @@ module PortabilitySpec (tests) where
 
 import Control.Monad (forM_)
 import Data.Char (isSpace)
-import Data.List (isInfixOf, isSuffixOf, sort)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort)
 import HostBootstrap.DocValidator (findRepoRoot)
 import SourceGuard
     ( countHaskellIdentifier
@@ -172,6 +172,35 @@ tests =
                                 ++ " record, so a fixture writes the record rather than"
                                 ++ " asking the coordinator to throw"
                             )
+        , testCase "the build description carries the warning policy the gate asserts" $ do
+            -- A policy supplied as a flag each caller remembers is a policy that
+            -- is weakest exactly when someone is in a hurry. Declared in the
+            -- shared stanza every component imports, a plain `cabal build`
+            -- refuses what the gate refuses.
+            description <- readPackageDescription
+            forM_ requiredWarningFlags $ \flag ->
+                if flag `isInfixOf` commonWarningsOptions description
+                    then pure ()
+                    else
+                        assertFailure
+                            ( "the 'common warnings' stanza does not carry "
+                                ++ flag
+                                ++ "; the warning policy is a property of the package, not of"
+                                ++ " a flag the caller supplies"
+                            )
+        , testCase "no production module suppresses a warning the policy asserts" $ do
+            -- A per-module suppression is the same weakening as a dropped flag,
+            -- scoped smaller and therefore harder to see.
+            sources <- productionSources
+            forM_ sources $ \(name, source) ->
+                if optionsPragma `isInfixOf` source
+                    then
+                        assertFailure
+                            ( name
+                                ++ " carries a GHC options pragma; the library holds one"
+                                ++ " warning policy and no module opts out of it"
+                            )
+                    else pure ()
         ]
 
 {- | The crash-injection vocabulary the redo coordinator no longer has.
@@ -220,6 +249,40 @@ haskellSourcesUnder directory = do
                         source <- readFile path
                         pure [(name, source)]
                     else pure []
+
+{- | The warning flags the package description must carry.
+
+Spelled here rather than at the call site so the guard names one list, and so a
+flag added to the policy is added in one place.
+-}
+requiredWarningFlags :: [String]
+requiredWarningFlags = ["-Werror", "-Wpartial-fields"]
+
+{- | The per-module suppression pragma as it appears in a source file.
+
+Assembled from its parts so this module is not itself an occurrence of the shape
+the guard above forbids.
+-}
+optionsPragma :: String
+optionsPragma = "{-# " ++ "OPTIONS_GHC"
+
+{- | The @ghc-options@ line of the shared @common warnings@ stanza.
+
+The stanza is the one every component imports, so this is the whole warning
+policy of the package in one string.
+-}
+commonWarningsOptions :: String -> String
+commonWarningsOptions description =
+    case dropWhile (/= "common warnings") (map squeeze (lines description)) of
+        [] -> ""
+        (_ : rest) ->
+            unwords
+                [ line
+                | line <- takeWhile (not . null) rest
+                , "ghc-options:" `isPrefixOf` line
+                ]
+  where
+    squeeze = dropWhile isSpace . reverse . dropWhile isSpace . reverse
 
 {- | The @PATH@ environment name as the lexer yields it.
 

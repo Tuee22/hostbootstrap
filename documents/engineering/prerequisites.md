@@ -161,8 +161,12 @@ KVM, or NVIDIA runtime state; those transitions belong to their `ensure` reconci
 labelled checks in order and stops at the first failure, returning a
 one-line `PrereqError`. Each check resolves its external tools through the closed `HostTool` enumeration
 to absolute paths (`HostBootstrap.HostTool` / `HostBootstrap.HostConfig`) — no `$PATH`-resolved bare
-command names. Substrate detection and host-tool resolution are owned by `hostbootstrap-core`. The
-pure-Python `prereqs.py` and `substrate.py` are the thin bootstrapper's live fail-fast surface — the
+command names. Host-tool resolution is owned by `hostbootstrap-core`. Substrate detection is owned by
+the bootstrapper, which runs before the binary exists and states what it found through the documented
+invocation-context seam; the binary receives that statement and classifies the host itself only when it
+was invoked with no bootstrapper in front of it (see
+[the Python/Haskell boundary](../architecture/python_haskell_boundary.md)). The pure-Python
+`prereqs.py` and `substrate.py` are the thin bootstrapper's live fail-fast surface — the
 irreducible host floor the pre-binary work depends on. The consolidated host minimums are mirrored in
 `HostBootstrap.HostPrereqs`. See
 [hostbootstrap_core_library.md](../architecture/hostbootstrap_core_library.md).

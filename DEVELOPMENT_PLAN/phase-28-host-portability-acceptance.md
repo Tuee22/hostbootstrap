@@ -3,7 +3,7 @@
 **Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
-**Gate**: the host static gate — `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`,
+**Gate**: the host static gate — `cabal build all` and `cabal test all` from `core/`,
 `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all` — passing
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
@@ -17,7 +17,7 @@ GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all --ghc
 **Gate evidence**: 2026-09-11 ; aarch64 Ubuntu 24.04.4 LTS container, Linux 6.8.0-100-generic, carried by
 the Apple visit's MacBook Pro through Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
 Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
-**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `stubs` `tests` `pyproject.toml`
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
 > and self-test on every supported gate host family.

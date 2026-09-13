@@ -376,6 +376,8 @@ The current flow is:
 
 ```text
 project init  : InitArgs --psAssemble ProductionAssembly--> cfg Production ---write---> <project>.dhall
+                (InitArgs carries one ExistingOutputPolicy — refuse, overwrite, keep — so an output
+                 that is already there has one answer rather than two switches to resolve)
 test init     : InitArgs --psTestInit (defaultTestConfig)--> tcfg --write--> <project>.test.dhall  (no pre-existing <project>.dhall needed)
 test run      : executable [CaseId] + tcfg --projectTestMatrix--> opaque total TestMatrix
                   --typed selection--> [VariantDraft payload]

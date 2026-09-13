@@ -42,6 +42,22 @@ provider are rejected rather than rounded into a different wall.
 No provider sizing declaration promises automatic resizing of a pre-existing foreign or differently sized VM.
 The exact backend's inspection and ownership protocol determine whether it can proceed.
 
+**Admission names every backend, and each backend's exactness rule carries its own reason.** The site that
+admits a budget at the provider wall matches on the backend constructor with no wildcard, so `-Wall`
+plus warnings-as-errors makes adding a backend a compile error there rather than a silent inheritance of
+whichever rule the wildcard happened to hold. The rules and why each holds:
+
+| Backend | Admission | Why |
+|---|---|---|
+| Bare Linux | unsupported | no quota or image-GC wall exists to size against |
+| Docker node | any positive budget | the container runtime cordons in bytes |
+| Colima | whole gibibytes, and its own renderer | it reserves a fixed writable root disk inside the ceiling |
+| Lima | whole gibibytes | `--memory` and `--disk` take whole gibibytes and nothing finer |
+| Incus | whole gibibytes | `limits.memory` and the root volume size render as `<n>GiB` |
+| WSL2 | whole gibibytes | `.wslconfig` takes `memory=<n>GB`, and the VHDX install cap takes the same unit |
+
+The budget suite asserts each of these six answers rather than the three the wildcard once covered.
+
 ## Cluster Node Shares
 
 Kind declares its control-plane node; the demo's nvkind plan declares control-plane and worker nodes. The

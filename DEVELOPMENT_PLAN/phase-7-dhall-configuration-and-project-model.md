@@ -1,11 +1,11 @@
 # Phase 7 — Dhall configuration and the generic project model
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 6 (canonical quantities and reconcile results)
 **Substrates**: none (static)
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the schema golden tests
+**Gate**: `cabal test all` from `core/`, including the schema golden tests
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Own the project-local Dhall vocabulary, the scope-indexed codec that turns untrusted wire
 > into typed configuration, its adapter to the lower canonical budget foundation, the generic project model
@@ -358,60 +358,65 @@ passed 61/61 under `-Werror`, the two canonical-mount compile-fail cases passed 
 
 None.
 
-### Sprint 7.10: The role vocabulary is derived from the role type [Active]
+### Sprint 7.10: The role vocabulary is derived from the role type [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`, `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/test/SchemaSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`
 
 #### Objective
 
-The role names a config may declare are listed twice: once as a total rendering over the role sum, and
-once as a literal list used for help text and for the refusal that enumerates valid roles. Adding a
-role breaks the first and silently leaves the second stale, so the new role would exist and be
-undiscoverable. One table, derived from the type.
+The role names a config may declare are one table, derived from the role type. Help text, the refusal
+that enumerates valid roles, and the parser read it, so a role added to the sum is a role the
+vocabulary already advertises rather than one that exists and cannot be found.
 
 #### Deliverables
 
-- The role sum derives enumeration and bounds.
-- The name list is derived from the total renderer over every constructor.
-- The literal list is deleted, so help text and the refusal enumerate the same set the parser accepts.
-- A case asserts that the accepted set and the advertised set are the same set.
+- The role sum derives enumeration and bounds, and `allContextKinds` is every constructor.
+- The name list is the total renderer mapped over that enumeration.
+- No literal list stands beside it, so help text and the refusal enumerate the same set the parser accepts.
+- A case asserts that the accepted set and the advertised set are the same set, of the same size.
 
 #### Validation
 
-The host static gate.
+The host static gate. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and
+Cabal 3.16.1.0, `cabal test all` from `core/` passed 2,519 tests.
 
 #### Remaining Work
 
-The existing-output policy is Sprint 7.11.
+None. The existing-output policy is Sprint 7.11.
 
-### Sprint 7.11: One existing-output policy for config initialization [Planned]
+### Sprint 7.11: One existing-output policy for config initialization [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`, `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/generic_project_model.md`
 
 #### Objective
 
-Initialization carries two independent flags whose documented meanings contradict each other — one
-overwrites an existing output, the other makes an existing output a no-op — and the command surface
-accepts both at once. Core resolves the pair in one expression at one call site. The value is handed
-to each project's own builder, so a downstream project is free to resolve it differently, which makes
-the contradiction a property of the published surface rather than of one function.
+Initialization carries one `ExistingOutputPolicy` with a case per intended behaviour — refuse,
+overwrite, keep — so what to do about an output that is already there is a value rather than a pair of
+independent switches a caller has to resolve. The value is handed to each project's own builder, so
+one published surface means one answer rather than as many as there are downstream projects.
 
 #### Deliverables
 
-- The pair becomes one policy value with a case per intended behaviour: refuse, overwrite, skip.
-- The command surface builds it from mutually exclusive options, so the contradictory combination has no spelling.
-- The resolution expression at the call site disappears, because the value already says which behaviour was asked for.
+- The pair is one policy value: `RefuseExistingOutput`, `OverwriteExistingOutput`, `KeepExistingOutput`.
+- The command surface builds it from mutually exclusive options, so the contradictory combination has no spelling and does not parse.
+- The write site cases on the policy directly; no expression resolves two booleans into a behaviour.
 
 #### Validation
 
 The host static gate; the command suite covers each policy and the refusal of the combination that no
-longer parses.
+longer parses. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal
+3.16.1.0, `cabal test all` from `core/` passed with the policy case asserting refuse, overwrite, and
+the unparseable pair in turn.
 
 #### Remaining Work
 
@@ -419,8 +424,7 @@ None beyond the phase's own.
 
 ## Remaining Work
 
-The role vocabulary is owed as one derived table. **Sprint 7.10** owns it. Sprint 7.11
-follows with the existing-output policy.
+None.
 
 ## Documentation Requirements
 

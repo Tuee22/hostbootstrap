@@ -111,12 +111,9 @@ import HostBootstrap.Lifecycle.Execution.Internal (
  )
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
-    preparedGateAttempt,
-    preparedGateFence,
-    preparedGateJournalVersion,
+    preparedGateCommitment,
     preparedGateOperation,
     preparedGatePlan,
-    preparedGateSession,
  )
 import qualified HostBootstrap.Lima as Lima
 import qualified HostBootstrap.Wsl2 as Wsl2
@@ -347,138 +344,170 @@ mkIncusBackendSpec name image guardPrefix hostConfig stateDirectory cpu memory s
         executable <- requireTool Incus
         Right (IncusBackendSpec name image guardPrefix executable stateDirectory cpu memory storage)
   where
-    invalid reason = Left (Failure (FailureDetail "validate Incus provider backend" reason DoNotRetry))
-    requireTool tool = case resolveMaybe hostConfig tool of
-        Just executable -> Right (absExePath executable)
-        Nothing ->
-            Left
-                ( Unsupported
-                    ( UnsupportedDetail
-                        "construct Incus provider backend"
-                        (Text.pack ("the HostConfig has no resolved " <> show tool <> " executable"))
-                    )
-                )
+    invalid = Left . invalidBackend "Incus"
+    requireTool tool = requireBackendTool "Incus" (Text.pack (show tool)) hostConfig tool
 
-{- | Admit the closed Lima realization used by the Apple host's universal
-@linux-cpu@ route.  The provider value owns its launch, existence, readiness,
-and guest-shell vocabulary; callers supply no executable or argv.  The exact
-resource envelope and writable share are retained in the backend fingerprint,
-so the managed provider settlement cannot be rebound to another VM budget or
-host root.
+{- | Which guest-VM realization a backend construction is about.
+
+Lima and WSL2 are one row of the frame table (§ LL), not two: the same guard
+sequence over the same declaration, producing the same 'LimaBackendSpec'. What
+actually differs is gathered here, so adding a third guest-VM provider is a new
+value of this record rather than a third copy of the function beneath it.
 -}
+data GuestVmRealization = GuestVmRealization
+    { guestVmLabel :: Text
+    -- ^ how this realization is named in every refusal, e.g. @"Lima"@
+    , guestVmHostAdmits :: HostConfig -> Bool
+    -- ^ whether this host is the one that realizes it
+    , guestVmHostRequirement :: Text
+    -- ^ the host the refusal asks for, e.g. @"an apple-silicon HostConfig"@
+    , guestVmKind :: ProviderKind
+    -- ^ the closed provider realization this backend admits
+    , guestVmNameNoun :: Text
+    -- ^ what this realization calls the thing it names, e.g. @"instance name"@
+    , guestVmTool :: HostTool
+    -- ^ the host tool the backend needs resolved
+    , guestVmToolLabel :: Text
+    -- ^ how that tool is spelled in the refusal, e.g. @"WSL"@
+    }
+
+{- | The closed Lima realization used by the Apple host's universal @linux-cpu@
+route.  The provider value owns its launch, existence, readiness, and
+guest-shell vocabulary; callers supply no executable or argv.
+-}
+limaRealization :: GuestVmRealization
+limaRealization =
+    GuestVmRealization
+        { guestVmLabel = "Lima"
+        , guestVmHostAdmits = (== AppleSilicon) . substrateName . hcSubstrate
+        , guestVmHostRequirement = "an apple-silicon HostConfig"
+        , guestVmKind = ProviderLima
+        , guestVmNameNoun = "instance name"
+        , guestVmTool = Lima
+        , guestVmToolLabel = "Lima"
+        }
+
+{- | The Windows WSL2 realization.  WSL's global wall and distro creation remain
+owned by the host-effect transaction; this backend is opened only after that
+transaction has established the exact provider and supplies the typed
+readiness/share reprobe capability carried to child frames.
+-}
+wsl2Realization :: GuestVmRealization
+wsl2Realization =
+    GuestVmRealization
+        { guestVmLabel = "WSL2"
+        , -- The frame, not the accelerator row. Both Windows classifications
+          -- realize the same WSL2 provider; keying on @WindowsGpu@ alone refused
+          -- a @windows-cpu@ host outright, on the one substrate this project's
+          -- own gates cannot observe. 'substrateFrame' is where the five
+          -- classification tags collapse to the three frames, so asking it keeps
+          -- that collapse in one place.
+          guestVmHostAdmits = (== WindowsFrame) . substrateFrame . hcSubstrate
+        , guestVmHostRequirement = "a Windows HostConfig"
+        , guestVmKind = ProviderWsl2
+        , guestVmNameNoun = "distro name"
+        , guestVmTool = Wsl
+        , guestVmToolLabel = "WSL"
+        }
+
+{- | Admit one guest-VM realization through the one closed guest-VM backend.
+
+The exact resource envelope and writable share are retained in the backend
+fingerprint, so the managed provider settlement cannot be rebound to another VM
+budget or host root.
+-}
+mkGuestVmBackendSpec ::
+    GuestVmRealization ->
+    HostConfig ->
+    SubstrateProvider ->
+    ResourceEnvelope ->
+    HostPathShare ->
+    Either ReconcileError ProviderBackendSpec
+mkGuestVmBackendSpec realization hostConfig provider envelope share
+    | not (guestVmHostAdmits realization hostConfig) =
+        invalid
+            ( "the " <> label <> " provider backend requires " <> guestVmHostRequirement realization
+            )
+    | providerKind provider /= guestVmKind realization =
+        invalid ("the " <> label <> " backend requires the closed " <> label <> " provider realization")
+    | null (providerVmId provider) || '\0' `elem` providerVmId provider =
+        invalid
+            ("the " <> label <> " " <> guestVmNameNoun realization <> " must be non-empty and contain no NUL")
+    | not (hostAbsolutePath (hpsHostPath share)) || not (absolutePath (hpsGuestPath share)) =
+        invalid ("the " <> label <> " writable share must have absolute host and guest paths")
+    | otherwise = do
+        executable <-
+            requireBackendTool label (guestVmToolLabel realization) hostConfig (guestVmTool realization)
+        Right (LimaBackendSpec provider envelope share executable)
+  where
+    label = guestVmLabel realization
+    invalid = Left . invalidBackend label
+
+-- | Admit the Lima realization. One application of 'mkGuestVmBackendSpec'.
 mkLimaBackendSpec ::
     HostConfig ->
     SubstrateProvider ->
     ResourceEnvelope ->
     HostPathShare ->
     Either ReconcileError ProviderBackendSpec
-mkLimaBackendSpec hostConfig provider envelope share
-    | substrateName (hcSubstrate hostConfig) /= AppleSilicon =
-        invalid "the Lima provider backend requires an apple-silicon HostConfig"
-    | providerKind provider /= ProviderLima =
-        invalid "the Lima backend requires the closed Lima provider realization"
-    | null (providerVmId provider) || '\0' `elem` providerVmId provider =
-        invalid "the Lima instance name must be non-empty and contain no NUL"
-    | not (hostAbsolutePath (hpsHostPath share)) || not (absolutePath (hpsGuestPath share)) =
-        invalid "the Lima writable share must have absolute host and guest paths"
-    | otherwise = case resolveMaybe hostConfig Lima of
-        Nothing ->
-            Left
-                ( Unsupported
-                    ( UnsupportedDetail
-                        "construct Lima provider backend"
-                        "the HostConfig has no resolved Lima executable"
-                    )
-                )
-        Just executable ->
-            Right (LimaBackendSpec provider envelope share (absExePath executable))
-  where
-    invalid reason = Left (Failure (FailureDetail "validate Lima provider backend" reason DoNotRetry))
+mkLimaBackendSpec = mkGuestVmBackendSpec limaRealization
 
-{- | Admit the Windows WSL2 realization through the same closed guest-VM
-backend used after provisioning by Lima.  WSL's global wall and distro creation
-remain owned by the host-effect transaction; this backend is opened only after
-that transaction has established the exact provider and supplies the typed
-readiness/share reprobe capability carried to child frames.
--}
+-- | Admit the WSL2 realization. The same row, a different application.
 mkWsl2BackendSpec ::
     HostConfig ->
     SubstrateProvider ->
     ResourceEnvelope ->
     HostPathShare ->
     Either ReconcileError ProviderBackendSpec
-mkWsl2BackendSpec hostConfig provider envelope share
-    -- The frame, not the accelerator row. Both Windows classifications realize
-    -- the same WSL2 provider; keying on @WindowsGpu@ alone refused a
-    -- @windows-cpu@ host outright, on the one substrate this project's own gates
-    -- cannot observe. 'substrateFrame' is where the five classification tags
-    -- collapse to the three frames, so asking it keeps that collapse in one place.
-    | substrateFrame (hcSubstrate hostConfig) /= WindowsFrame =
-        invalid "the WSL2 provider backend requires a Windows HostConfig"
-    | providerKind provider /= ProviderWsl2 =
-        invalid "the WSL2 backend requires the closed WSL2 provider realization"
-    | null (providerVmId provider) || '\0' `elem` providerVmId provider =
-        invalid "the WSL2 distro name must be non-empty and contain no NUL"
-    | not (hostAbsolutePath (hpsHostPath share)) || not (absolutePath (hpsGuestPath share)) =
-        invalid "the WSL2 writable share must have absolute host and guest paths"
-    | otherwise = case resolveMaybe hostConfig Wsl of
-        Nothing ->
-            Left
-                ( Unsupported
-                    ( UnsupportedDetail
-                        "construct WSL2 provider backend"
-                        "the HostConfig has no resolved WSL executable"
-                    )
-                )
-        Just executable ->
-            Right (LimaBackendSpec provider envelope share (absExePath executable))
-  where
-    invalid reason = Left (Failure (FailureDetail "validate WSL2 provider backend" reason DoNotRetry))
+mkWsl2BackendSpec = mkGuestVmBackendSpec wsl2Realization
 
 -- | Admit the canonical already-local root.  No ownership is implied.
 mkDirectHostBackendSpec :: HostConfig -> FilePath -> String -> Either ReconcileError ProviderBackendSpec
 mkDirectHostBackendSpec hostConfig root egressImage
     | not (hostAbsolutePath root) =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "validate Direct provider backend"
-                    "the direct-host root must be an absolute path on this host"
-                    DoNotRetry
-                )
-            )
-    | '\0' `elem` root =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "validate Direct provider backend"
-                    "the direct-host root must not contain NUL"
-                    DoNotRetry
-                )
-            )
+        invalid "the direct-host root must be an absolute path on this host"
+    | '\0' `elem` root = invalid "the direct-host root must not contain NUL"
     | null egressImage || '\0' `elem` egressImage =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "validate Direct provider backend"
-                    "the Direct provider egress image must be non-empty and contain no NUL"
-                    DoNotRetry
-                )
-            )
+        invalid "the Direct provider egress image must be non-empty and contain no NUL"
     | otherwise = do
         docker <- requireTool Docker
         Right (DirectHostBackendSpec root docker egressImage)
   where
-    requireTool tool = case resolveMaybe hostConfig tool of
-        Just executable -> Right (absExePath executable)
-        Nothing ->
-            Left
-                ( Unsupported
-                    ( UnsupportedDetail
-                        "construct Direct provider backend"
-                        (Text.pack ("the HostConfig has no resolved " <> show tool <> " executable"))
-                    )
+    invalid = Left . invalidBackend "Direct"
+    requireTool tool = requireBackendTool "Direct" (Text.pack (show tool)) hostConfig tool
+
+{- | One backend construction's refusal of its own input.
+
+All four constructors refuse in the same two shapes and differ only in which
+backend they name, so the shapes are written here and the name is the argument.
+-}
+invalidBackend :: Text -> Text -> ReconcileError
+invalidBackend label reason =
+    Failure (FailureDetail ("validate " <> label <> " provider backend") reason DoNotRetry)
+
+{- | The host tool a backend needs, or the refusal that it is not resolved.
+
+An unresolved tool is 'Unsupported' rather than a 'Failure': the declaration was
+well formed and this host simply cannot realize it.
+-}
+requireBackendTool ::
+    -- | the backend's own label
+    Text ->
+    -- | how the tool is spelled in the refusal
+    Text ->
+    HostConfig ->
+    HostTool ->
+    Either ReconcileError FilePath
+requireBackendTool label toolLabel hostConfig tool = case resolveMaybe hostConfig tool of
+    Just executable -> Right (absExePath executable)
+    Nothing ->
+        Left
+            ( Unsupported
+                ( UnsupportedDetail
+                    ("construct " <> label <> " provider backend")
+                    ("the HostConfig has no resolved " <> toolLabel <> " executable")
                 )
+            )
 
 safeName :: String -> Bool
 safeName value =
@@ -769,7 +798,7 @@ registerRunningProviderDependencyPackage backend execution scopeCommitment gate 
                         (stepExecutionFrame execution)
                         (preparedProviderBindingOwner binding)
                         (managedProviderGeneration managed)
-                        (providerGateCommitment gate)
+                        (preparedGateCommitment gate)
                         (providerReadyCommitment binding managed)
                         route
                         expiry of
@@ -833,7 +862,7 @@ registerProviderShareDependencyPackage backend execution scopeCommitment gate pr
                     (stepExecutionFrame execution)
                     (preparedProviderBindingOwner binding)
                     (managedProviderShareGeneration managed)
-                    (providerGateCommitment gate)
+                    (preparedGateCommitment gate)
                     (providerShareCommitment binding managed)
                     route
                     expiry of
@@ -864,18 +893,6 @@ registerProviderShareDependencyPackage backend execution scopeCommitment gate pr
                                 pure $ case installed of
                                     Left refusal -> Left (Failure (failed "register provider share runtime dependency" refusal))
                                     Right () -> Right package
-
-providerGateCommitment :: PreparedGate -> Text
-providerGateCommitment gate =
-    providerCommitment
-        "gate"
-        [ preparedGatePlan gate
-        , preparedGateOperation gate
-        , preparedGateSession gate
-        , Text.pack (show (preparedGateFence gate))
-        , Text.pack (show (preparedGateAttempt gate))
-        , Text.pack (show (preparedGateJournalVersion gate))
-        ]
 
 providerReadyCommitment ::
     PreparedProviderBinding scope planId backendId providerId ->
@@ -1903,13 +1920,15 @@ runBoundIncus cfg spec owner request = case providerProbeRequestView request of
             rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Incus ["image", "info", image])
         DirectHostBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
         LimaBackendSpec{} -> pure (RawProviderFailure "invalid Incus backend state")
-    ProviderGuestProbeRequest argv
-        | null argv || any ('\0' `elem`) argv ->
+    ProviderGuestProbeRequest [] ->
+        pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
+    ProviderGuestProbeRequest argv@(exe : arguments)
+        | any ('\0' `elem`) argv ->
             pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
         | otherwise -> do
             outcome <-
                 withOwnedProviderTransaction cfg spec owner $
-                    \session key owned -> execInOwnedInstance cfg session key owned argv
+                    \session key owned -> execInOwnedInstance cfg session key owned exe arguments
             pure (guestOutcome outcome)
 
 runBoundLima ::

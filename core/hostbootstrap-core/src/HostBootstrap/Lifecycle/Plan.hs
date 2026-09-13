@@ -1195,11 +1195,8 @@ planDraftsFromValidatedStepPlanKernel root config plan =
 planDraftsAtRoot ::
     FilePath -> ValidatedConfig scope specDigest configId config -> StepPlan -> NonEmpty (PlanDraft scope specDigest config)
 planDraftsAtRoot root config plan =
-    case stepPlanSteps plan of
-        firstStep : remainingSteps ->
-            makeDraft firstStep :| map makeDraft remainingSteps
-        [] ->
-            error "validated StepPlan invariant violated: empty plan"
+    let firstStep :| remainingSteps = stepPlanSteps plan
+     in makeDraft firstStep :| map makeDraft remainingSteps
   where
     makeDraft step =
         PlanDraft
@@ -1504,7 +1501,7 @@ admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity 
                             Nothing -> Right ()
 
 validateChartWorkloadDeclarations :: StepPlan -> Either PlanError ()
-validateChartWorkloadDeclarations plan = mapM_ validate (stepPlanSteps plan)
+validateChartWorkloadDeclarations plan = mapM_ validate (NonEmpty.toList (stepPlanSteps plan))
   where
     validate step = case stepChartWorkloadResourceDeclarations step of
         [] -> Right ()
@@ -1516,7 +1513,7 @@ validateChartWorkloadDeclarations plan = mapM_ validate (stepPlanSteps plan)
                 let clusters =
                         [ dependency
                         | dependencyIdentity <- stepDependencies plan step
-                        , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps plan)]
+                        , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (NonEmpty.toList (stepPlanSteps plan))]
                         , stepIdentity dependency == CoreStepIdentity DeployKindId
                         , frameId (stepFrame dependency) == frameId (stepFrame step)
                         ]
@@ -1545,14 +1542,14 @@ validateChartWorkloadDeclarations plan = mapM_ validate (stepPlanSteps plan)
 
 validateServiceActivationDeclarations :: StepPlan -> Either PlanError ()
 validateServiceActivationDeclarations plan = do
-    mapM_ validate (stepPlanSteps plan)
+    mapM_ validate (NonEmpty.toList (stepPlanSteps plan))
     let frames =
             [ activationFrame
-            | step <- stepPlanSteps plan
+            | step <- NonEmpty.toList (stepPlanSteps plan)
             , (activationFrame, _, _) <- stepServiceActivationDeclarations step
             ]
                 ++ [ activationFrame
-                   | step <- stepPlanSteps plan
+                   | step <- NonEmpty.toList (stepPlanSteps plan)
                    , (_, _, _, _, _, _, _, activationFrame, _, _) <- stepChartWorkloadResourceDeclarations step
                    ]
     if length frames == length (List.nub frames)
@@ -1576,7 +1573,7 @@ serviceActivationPlacementsKernel ::
     [(Text, Text, Text, [Text])]
 serviceActivationPlacementsKernel plan =
     [ (activationFrame, planDigest, serviceRole, effects)
-    | step <- stepPlanSteps (projectPlanStepPlanKernel plan)
+    | step <- NonEmpty.toList (stepPlanSteps (projectPlanStepPlanKernel plan))
     , (activationFrame, serviceRole, effects) <- stepServiceActivationDeclarations step
     ]
   where
@@ -1595,7 +1592,7 @@ withProjectChartWorkloadResourceKernel plan operation consume = do
             [(artifact, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, activationFrame, serviceRole, effects)] ->
                 case [ Text.pack (operationKeyText (stepOperationKey dependency))
                      | dependencyIdentity <- stepDependencies graph step
-                     , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (stepPlanSteps graph)]
+                     , Just dependency <- [find ((== dependencyIdentity) . stepIdentity) (NonEmpty.toList (stepPlanSteps graph))]
                      , stepIdentity dependency == CoreStepIdentity DeployKindId
                      , frameId (stepFrame dependency) == frameId (stepFrame step)
                      ] of
@@ -1637,10 +1634,8 @@ forwardKernel ::
     NonEmpty (PlannedStep scope planId configId (cfg scope))
 forwardKernel
     (ProjectPlan _ _ _ _ _ _ plan _ (IndexedPlanSnapshot snapshot)) =
-        case stepPlanSteps plan of
-            firstStep : remainingSteps ->
-                PlannedStep digest firstStep [] :| go [firstStep] remainingSteps
-            [] -> error "validated StepPlan invariant violated: empty plan"
+        let firstStep :| remainingSteps = stepPlanSteps plan
+         in PlannedStep digest firstStep [] :| go [firstStep] remainingSteps
       where
         digest = canonicalPlanSnapshotDigest snapshot
         go _ [] = []
@@ -2056,7 +2051,7 @@ resourceFrame graph resourceKind step
 
 immediateChild :: StepPlan -> Step -> Maybe StepFrame
 immediateChild graph author =
-    case dropWhile ((/= frameId (stepFrame author)) . frameId) (chainFrames graph) of
+    case dropWhile ((/= frameId (stepFrame author)) . frameId) (NonEmpty.toList (chainFrames graph)) of
         _current : child : _ -> Just child
         _ -> Nothing
 
@@ -2078,7 +2073,7 @@ findStep :: StepPlan -> Text -> Maybe Step
 findStep graph requestedKey =
     find
         ((== Text.unpack requestedKey) . operationKeyText . stepOperationKey)
-        (stepPlanSteps graph)
+        (NonEmpty.toList (stepPlanSteps graph))
 
 precedes :: Text -> Text -> [(Text, frame)] -> Bool
 precedes earlier later ordered =
@@ -2189,13 +2184,11 @@ non-leaf frame has exactly one descent, and the innermost frame has none.
 -}
 topologyFromAdmittedPlan :: StepPlan -> DerivedTopology scope planId
 topologyFromAdmittedPlan plan =
-    case chainFrames plan of
-        [] -> error "validated StepPlan invariant violated: empty frame topology"
-        firstFrame : remainingFrames ->
-            DerivedTopology
-                ( makeFrame Nothing firstFrame remainingFrames
-                    :| buildFrames firstFrame remainingFrames
-                )
+    let firstFrame :| remainingFrames = chainFrames plan
+     in DerivedTopology
+            ( makeFrame Nothing firstFrame remainingFrames
+                :| buildFrames firstFrame remainingFrames
+            )
   where
     buildFrames _ [] = []
     buildFrames parent (frame : remaining) =
@@ -2444,7 +2437,7 @@ canonicalPlanSnapshot root specDigest configDigest plan =
                     <> taggedBuilder "root" (encodeCanonicalRoot root)
                     <> taggedText "spec-digest" specDigest
                     <> taggedText "config-digest" configDigest
-                    <> taggedList "steps" (encodeStep (stepPlanSteps plan) plan) (stepPlanSteps plan)
+                    <> taggedList "steps" (encodeStep (NonEmpty.toList (stepPlanSteps plan)) plan) (NonEmpty.toList (stepPlanSteps plan))
                 )
             )
 

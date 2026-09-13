@@ -3,6 +3,16 @@
 {-# LANGUAGE RoleAnnotations #-}
 
 module HostBootstrap.Lifecycle.Prepared.Internal (
+    -- * The coordinates a gate is written in
+    GatePlanDigest (..),
+    GateOperationKey (..),
+    GateSession (..),
+    GateFence (..),
+    GateAttempt (..),
+    GateJournalVersion (..),
+    GateCatalogIdentity (..),
+    GateFrame (..),
+    GateSupersessionGeneration (..),
     PreparedGate,
     preparedGatePlan,
     preparedGateOperation,
@@ -30,6 +40,52 @@ import Data.Text (Text)
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 
+{- | The coordinate roles a prepared gate is written in.
+
+Three of them are text and three are numbers, in that order, and the canonical
+renderer beside them has the same shape. Two adjacent coordinates of the same
+underlying type can therefore be transposed at the call site and be invisible
+from mint to wire — the durable bytes are still well formed, and every later
+comparison is between two values that were both written wrong. A newtype per
+role makes the transposition a type error at the one place the coordinates are
+supplied, and changes no runtime representation and no durable byte: the fields,
+the accessors, and the framing are exactly what they were.
+-}
+newtype GatePlanDigest = GatePlanDigest Text
+    deriving (Eq, Show)
+
+newtype GateOperationKey = GateOperationKey Text
+    deriving (Eq, Show)
+
+newtype GateSession = GateSession Text
+    deriving (Eq, Show)
+
+newtype GateFence = GateFence Word64
+    deriving (Eq, Show)
+
+newtype GateAttempt = GateAttempt Word64
+    deriving (Eq, Show)
+
+newtype GateJournalVersion = GateJournalVersion Word64
+    deriving (Eq, Show)
+
+-- | The catalog a rooted gate package names.
+newtype GateCatalogIdentity = GateCatalogIdentity Text
+    deriving (Eq, Show)
+
+-- | The frame a rooted gate package names.
+newtype GateFrame = GateFrame Text
+    deriving (Eq, Show)
+
+{- | What invalidates a prior rooted permit.
+
+It stands where an ordinary operation gate carries its fence epoch, and it is a
+different role, so it is a different type: writing one where the other belongs
+is exactly the confusion these newtypes exist to refuse.
+-}
+newtype GateSupersessionGeneration = GateSupersessionGeneration Word64
+    deriving (Eq, Show)
+
 {- | Proof that one operation's unknown phase was durably recorded before its
 backend call, carrying the exact identities and indices that write established.
 
@@ -48,8 +104,22 @@ data PreparedGate = PreparedGate
     deriving (Eq, Show)
 
 -- | Package-internal constructor used only after the durable write commits.
-mintPreparedGate :: Text -> Text -> Text -> Word64 -> Word64 -> Word64 -> PreparedGate
-mintPreparedGate = PreparedGate
+mintPreparedGate ::
+    GatePlanDigest ->
+    GateOperationKey ->
+    GateSession ->
+    GateFence ->
+    GateAttempt ->
+    GateJournalVersion ->
+    PreparedGate
+mintPreparedGate
+    (GatePlanDigest plan)
+    (GateOperationKey operation)
+    (GateSession session)
+    (GateFence fence)
+    (GateAttempt attempt)
+    (GateJournalVersion journalVersion) =
+        PreparedGate plan operation session fence attempt journalVersion
 
 {- | One root-owned authorization to run exactly one node's local effect.
 
@@ -97,9 +167,22 @@ fence epoch: for rooted work the broker generation is what invalidates a prior
 permit, so it is the coordinate a stale package is caught by.
 -}
 renderPreparedGatePackageKernel ::
-    Text -> Text -> Text -> Text -> Word64 -> Word64 -> Word64 -> ByteString
+    GatePlanDigest ->
+    GateCatalogIdentity ->
+    GateFrame ->
+    GateSession ->
+    GateSupersessionGeneration ->
+    GateAttempt ->
+    GateJournalVersion ->
+    ByteString
 renderPreparedGatePackageKernel
-    planDigest catalogIdentity frame session generation attempt journalVersion =
+    (GatePlanDigest planDigest)
+    (GateCatalogIdentity catalogIdentity)
+    (GateFrame frame)
+    (GateSession session)
+    (GateSupersessionGeneration generation)
+    (GateAttempt attempt)
+    (GateJournalVersion journalVersion) =
         ByteString.concat
             [ framed "hostbootstrap/prepared-node-gate"
             , framedWord 1
@@ -175,7 +258,13 @@ readPreparedGatePackageKernel raw = do
                         decoded
                 requireGate
                     ( renderPreparedGatePackageKernel
-                        planName catalogName frameName sessionName epoch attemptCount rowVersion
+                        (GatePlanDigest planName)
+                        (GateCatalogIdentity catalogName)
+                        (GateFrame frameName)
+                        (GateSession sessionName)
+                        (GateSupersessionGeneration epoch)
+                        (GateAttempt attemptCount)
+                        (GateJournalVersion rowVersion)
                         == raw
                     )
                     "is not a canonical gate package"

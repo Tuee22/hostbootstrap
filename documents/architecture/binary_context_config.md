@@ -139,9 +139,15 @@ Python builds and launches the native binary; it never writes Dhall. The binary 
 name that differs from its executable identity before dispatch.
 
 `project init` is config-free. Its no-flag default writes the executable-sibling host-orchestrator config and
-refuses an existing output. Explicit role/output/write-policy flags remain supported: `--force` overwrites,
-`--if-missing` preserves, and force takes precedence when both are present. Role additions still pass the
+refuses an existing output. Explicit role/output/write-policy flags remain supported: `--force` overwrites and
+`--if-missing` preserves. They are mutually exclusive spellings of one `ExistingOutputPolicy`, so
+asking for both does not parse rather than being resolved by a precedence rule. Role additions still pass the
 closed compatibility validator. A written description is not installed authority.
+
+Writing that root config at the executable's own sibling path is also what provisions the installed handoff,
+build, and activation identities, and the decision is taken on the **parsed role**. `--role` accepts aliases
+and normalises case and separators, so `host`, `host-orchestrator`, and `HOST_Orchestrator` name one role and
+provision alike; an alternate output path or any other role provisions nothing.
 
 `test init` writes the thin test configuration. The Harness assembles each exact run configuration under its
 own generative authority and owns the generated sibling file. Service deployment projects a narrowed role
@@ -204,7 +210,7 @@ they are consumed beside independently verified authority, not promoted into it.
 
 ## Validation
 
-Run `cabal test all --ghc-options=-Werror` from `core/`. Configuration and CLI cases verify schema, selection,
+Run `cabal test all` from `core/`. Configuration and CLI cases verify schema, selection,
 help, wrong-wire-kind messages, and missing-coordinate refusals. Handoff and recursive process cases verify
 exact scope/package/edge/session correspondence, bounded protocol, descriptor ownership, settlement, and
 receipt order. Activation and role cases verify immutable installation, measured execution, one-use admission,

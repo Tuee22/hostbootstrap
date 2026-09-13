@@ -134,6 +134,8 @@ module HostBootstrap.Step (
 )
 where
 
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Kind (Type)
 import Data.List (elemIndex, group, isPrefixOf, sort)
 import Data.Text (Text)
@@ -672,8 +674,13 @@ renderStep step =
         ++ " — "
         ++ stepLabel step
 
--- | An opaque non-empty plan whose declared order and frame traversal agree.
-newtype StepPlan = StepPlan [Step]
+{- | An opaque non-empty plan whose declared order and frame traversal agree.
+
+Non-empty in the type, not only in the constructor: an accessor that answered
+with a plain list threw the fact away, and three call sites rebuilt it and
+crashed on the branch 'mkStepPlan' had already excluded.
+-}
+newtype StepPlan = StepPlan (NonEmpty Step)
 
 data StepPlanError
     = EmptyStepPlan
@@ -715,7 +722,7 @@ separate resolver.
 -}
 mkStepPlan :: [Step] -> Either StepPlanError StepPlan
 mkStepPlan [] = Left EmptyStepPlan
-mkStepPlan steps
+mkStepPlan steps@(firstStep : remainingSteps)
     | Just (index, _) <- firstIndexed (null . frameId . stepFrame) steps =
         Left (EmptyFrameId index)
     | Just (index, _) <- firstIndexed (null . stepLabel) steps =
@@ -742,7 +749,7 @@ mkStepPlan steps
         Left failure
     | Just failure <- providerDeclarationFailure =
         Left failure
-    | otherwise = Right (StepPlan steps)
+    | otherwise = Right (StepPlan (firstStep :| remainingSteps))
   where
     duplicateIdentities = duplicates (map stepIdentity steps)
     framePairs = [(frameId frame, frameLabel frame) | frame <- map stepFrame steps]
@@ -877,16 +884,16 @@ mkStepPlan steps
                 , context <- stepDescents step
                 ]
 
-stepPlanSteps :: StepPlan -> [Step]
+stepPlanSteps :: StepPlan -> NonEmpty Step
 stepPlanSteps (StepPlan steps) = steps
 
 renderChainPlan :: StepPlan -> String
-renderChainPlan plan = unlines (zipWith line [1 :: Int ..] (stepPlanSteps plan))
+renderChainPlan plan = unlines (zipWith line [1 :: Int ..] (NonEmpty.toList (stepPlanSteps plan)))
   where
     line number step = show number ++ ". " ++ renderStep step
 
 stepsForFrame :: String -> StepPlan -> [Step]
-stepsForFrame fid = filter ((== fid) . frameId . stepFrame) . stepPlanSteps
+stepsForFrame fid = filter ((== fid) . frameId . stepFrame) . NonEmpty.toList . stepPlanSteps
 
 preHandoffStepsForFrame :: String -> StepPlan -> [Step]
 preHandoffStepsForFrame fid = filter (not . isPostHandoffStep) . stepsForFrame fid
@@ -904,12 +911,19 @@ frameDescent fid plan =
         (context : _) -> Just context
         [] -> Nothing
 
-chainFrames :: StepPlan -> [StepFrame]
-chainFrames plan = foldl addFrame [] normalSteps
+{- | The frames the plan traverses, outermost first.
+
+Non-empty for the plan's own reason: the first step is never a post-handoff one,
+because 'mkStepPlan' refuses a post-handoff step naming a frame no normal step
+declared — so a plan of nothing but post-handoff steps does not exist.
+-}
+chainFrames :: StepPlan -> NonEmpty StepFrame
+chainFrames plan = stepFrame firstStep :| foldl addFrame [] normalRest
   where
-    normalSteps = takeWhile (not . isPostHandoffStep) (stepPlanSteps plan)
+    firstStep :| rest = stepPlanSteps plan
+    normalRest = takeWhile (not . isPostHandoffStep) rest
     addFrame frames step
-        | frameId (stepFrame step) `elem` map frameId frames = frames
+        | frameId (stepFrame step) `elem` map frameId (stepFrame firstStep : frames) = frames
         | otherwise = frames ++ [stepFrame step]
 
 {- | The exact validated prefix a step depends on. Because plan identities are
@@ -918,7 +932,7 @@ witness.
 -}
 stepDependencies :: StepPlan -> Step -> [StepIdentity]
 stepDependencies plan target =
-    case break ((== stepIdentity target) . stepIdentity) (stepPlanSteps plan) of
+    case break ((== stepIdentity target) . stepIdentity) (NonEmpty.toList (stepPlanSteps plan)) of
         (before, _ : _) -> map stepIdentity before
         (_, []) -> []
 

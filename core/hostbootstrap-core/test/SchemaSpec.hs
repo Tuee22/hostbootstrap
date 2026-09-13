@@ -44,6 +44,7 @@ import HostBootstrap.Config.Class (
     runConfigAssembly,
  )
 import HostBootstrap.Config.Schema (
+    configRoleNames,
     parseConfigRole,
     projectConfigSnapshotHash,
     renderProjectConfigSnapshotLog,
@@ -67,7 +68,9 @@ import HostBootstrap.Context (
     ContextKind (..),
     ProviderKind (..),
     TopologyFrame (..),
+    allContextKinds,
     commandAllowed,
+    defaultRoleName,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Handoff (
@@ -187,6 +190,15 @@ tests =
             parseConfigRole "image-build-container" @?= Right ImageBuildContainer
             parseConfigRole "one_shot" @?= Right OneShotJob
             parseConfigRole "unknown" @?= Left "unknown config role unknown (expected one of: host-orchestrator, vm-orchestrator, vm-project-container, image-build-container, cluster-service, daemon, one-shot-job, test-harness)"
+        , testCase "the advertised role set is the accepted role set" $ do
+            -- Help text, the refusal that enumerates valid roles, and the
+            -- parser all read one list derived from the role sum, so a role
+            -- added to the type cannot be parseable and undiscoverable.
+            map defaultRoleName allContextKinds @?= configRoleNames
+            mapM_
+                (\name -> fmap defaultRoleName (parseConfigRole (T.unpack name)) @?= Right name)
+                configRoleNames
+            length configRoleNames @?= length allContextKinds
         , testCase "default role configs decode and re-render stably" $ do
             mapM_
                 ( \role -> do

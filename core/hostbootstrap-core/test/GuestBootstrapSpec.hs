@@ -196,8 +196,9 @@ renderingCases =
                 ]
     , testCase "the toolchain step fetches the installer, then runs it" $
         case stepActions (plan !! 1) of
-            [RawCmd fetch, RawCmd run] -> do
-                assertBool ("the fetch names curl: " ++ show fetch) (take 1 fetch == ["curl"])
+            [RawCmd fetchExe fetchArgs, RawCmd runExe runTail] -> do
+                let run = runExe : runTail
+                assertBool ("the fetch names curl: " ++ show (fetchExe : fetchArgs)) (fetchExe == "curl")
                 assertBool
                     ("the run pins the GHC version: " ++ show run)
                     ("BOOTSTRAP_HASKELL_GHC_VERSION=9.12.4" `elem` run)
@@ -249,7 +250,7 @@ renderingCases =
         _ -> False
 
 argvOf :: LiftLeaf -> [String]
-argvOf (RawCmd argv) = argv
+argvOf (RawCmd exe argv) = exe : argv
 argvOf leaf = error ("the guest bootstrap renders raw argument vectors only: " ++ show leaf)
 
 isInfixOfList :: (Eq a) => [a] -> [a] -> Bool

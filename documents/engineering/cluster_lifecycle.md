@@ -37,7 +37,23 @@ bound, followed by a fresh API and declared-node readiness observation. The boun
 control plane without turning a failed creation into an unbounded wait. Nvkind adds the NVIDIA runtime smoke,
 a control-plane/GPU-worker topology, per-node CPU/memory cordons, and a device-plugin/allocatable-GPU gate.
 The strong backend passes the finalized driver into its creation transaction: Kind receives `--config`, while
-nvkind receives `--config-template` and performs its NVIDIA containerd/RuntimeClass post-setup. Listing,
+nvkind receives `--config-template` and performs its NVIDIA containerd/RuntimeClass post-setup.
+
+**Which template a cluster is created from is the project's decision, not this library's.** A resolved
+plan names none, and a creation that names none passes no config flag at all, taking the driver's own
+default topology. The templates are files in a project's own source root, and the choice between them
+turns on where that project places its accelerator daemon rather than on the driver, so a library
+answer would be a guess that fails closed on every project whose root does not carry that exact
+filename. A project that ships templates names one on the plan it hands the backend, and owes a case
+that each answer it can give resolves.
+
+**Accelerator ingress is a closed sum with one case per service type.** An in-cluster daemon is reached
+through a `ClusterIP` service and carries only its service port; a host-resident daemon is reached
+through a `NodePort` and carries the node port and the address its kind host mapping listens on. The
+combinations that were previously constructible and meaningless — a `ClusterIP` carrying a node port, a
+`NodePort` carrying none — now have no constructor, so the correlation is held by the type rather than by
+prose (§ HH). A resolved plan also retains exactly one derived state directory rather than a list that
+could be empty, so reading it is total. Listing,
 kubeconfig readback, identity binding, and conditional deletion use Kind after either creator. Kind's quiet
 creation report remains strictly framed. Nvkind has no quiet mode and emits successful progress on both streams,
 so only that closed creation branch classifies its process outcome; it then derives authority from fresh
@@ -351,7 +367,7 @@ From the repository root, the exact
 gate is:
 
 ```sh
-(cd core && cabal test all --ghc-options=-Werror) && hostbootstrap test run cluster-live
+(cd core && cabal test all) && hostbootstrap test run cluster-live
 ```
 
 The static leg covers the exact plan-owned precondition, reconcile-result, ownership-receipt, same-name

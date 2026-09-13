@@ -3,7 +3,7 @@
 **Status**: Done
 **Depends on**: Phase 9 (lifecycle modes and run leases)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`
+**Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-09 ; x86_64 Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate
 
@@ -180,7 +180,9 @@ carrying a branch that exists for the fixture (§ NN).
   the descriptor, the closed transaction kind, the target constructors, and the two encoders — and
   nothing else. It is the encoding production writes rather than a second implementation that could agree
   with itself while disagreeing with the writer, and it mints no authority: there is no permit
-  constructor, no record-key minter beyond the coordinator's own, and no transaction runner.
+  constructor, no record-key minter beyond the coordinator's own, and no transaction runner. It is
+  reached by this package's own suite and by nothing downstream
+  ([phase 5](phase-5-installed-identity-and-authority-kernels.md) holds that boundary).
 - `runLifecycleTransaction`, `recoverApplying`, and `applyTargets` carry no crash point, and the library
   exposes no module whose purpose is to install one. The per-target counter goes with them, because it
   existed only to name a crash point.
@@ -196,8 +198,9 @@ carrying a branch that exists for the fixture (§ NN).
 #### Validation
 
 `SessionSpec`'s twenty-six recovery cases, run against constructed durable state rather than an injected
-exception; `ForgeTransactionPermitFromDescriptor.hs` proving a descriptor is not a permit; and the new
-absence guard proved non-vacuous by naming the shape and finding none.
+exception; `ForgeTransactionPermitFromDescriptor.hs` proving a downstream consumer cannot reach the
+vocabulary at all, which subsumes reaching a permit through it; and the new absence guard proved
+non-vacuous by naming the shape and finding none.
 
 Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
 passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at

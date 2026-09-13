@@ -64,7 +64,6 @@ import HostBootstrap.Config.Vocab (
     harnessRunName,
  )
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Handoff
 import HostBootstrap.Handoff.Transaction (
     FrameAnswer (FrameOutcome, FrameRefusal, FrameUnexpected),
@@ -86,7 +85,7 @@ import HostBootstrap.Lifecycle.Mode (
     withHarnessRoot,
     withProductionRoot,
  )
-import HostBootstrap.Lift (localContext, mkSelfRef)
+import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelfPath), localContext, mkSelfRef)
 import HostBootstrap.Lift.Context (IncusVM (..), inVM)
 import HostBootstrap.Protected (
     ProtectedStore,
@@ -95,10 +94,19 @@ import HostBootstrap.Protected (
     protectedStoreIdentityText,
  )
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
+import SourceGuard
+    ( fieldModules
+    , indentation
+    , mainLibraryStanza
+    , normalizeWhitespace
+    , readHaskellSources
+    , significantHaskellLineCount
+    , trim
+    )
 import qualified SourceGuard
-import System.Directory (doesDirectoryExist, doesPathExist, getCurrentDirectory, listDirectory, removePathForcibly)
+import System.Directory (doesPathExist, removePathForcibly)
 import System.Environment (getExecutablePath)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -194,7 +202,7 @@ frameCrossingTests =
         crossed <-
             withFrameChildTransaction
                 unresolvedHostConfig
-                (mkSelfRef executable executable)
+                (mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable))
                 (inVM IncusVM{vmName = "absent", vmImage = "absent"} localContext)
                 "one transaction"
         crossed @?= Left "frame child: the crossing's host tool resolves to no absolute path"
@@ -203,7 +211,7 @@ frameCrossingTests =
         crossed <-
             withFrameChildTransaction
                 unresolvedHostConfig
-                (mkSelfRef executable executable)
+                (mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable))
                 localContext
                 "one transaction"
         -- What the far frame /said/ belongs to the phase that owns the object;
@@ -9837,32 +9845,7 @@ dropFirstFrame :: ByteString.ByteString -> ByteString.ByteString
 dropFirstFrame = ByteString.drop (ByteString.length (frameWire childPayload))
 
 withHandoffSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
-withHandoffSourceRoot use = do
-    cwd <- getCurrentDirectory
-    repoRoot <-
-        findRepoRoot cwd
-            >>= maybe
-                (assertFailure ("could not locate repo root from " <> cwd))
-                pure
-    let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
-    use packageRoot (packageRoot </> "src")
-
-readHaskellSources :: FilePath -> IO [(FilePath, String)]
-readHaskellSources directory = do
-    entries <- listDirectory directory
-    fmap concat . traverse visit $ sort entries
-  where
-    visit entry = do
-        let path = directory </> entry
-        nested <- doesDirectoryExist path
-        if nested
-            then readHaskellSources path
-            else
-                if takeExtension path == ".hs"
-                    then do
-                        source <- readFile path
-                        pure [(path, source)]
-                    else pure []
+withHandoffSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 sourcePath :: FilePath -> FilePath -> FilePath
 sourcePath = SourceGuard.repoRelativePath
@@ -9979,71 +9962,6 @@ frozenHandoffPackageRows =
     , "text"
     , "unix"
     ]
-
-mainLibraryStanza :: String -> Maybe String
-mainLibraryStanza cabalText =
-    case dropWhile ((/= "library") . trim) (lines cabalText) of
-        [] -> Nothing
-        _library : rest -> Just (unlines (takeWhile isLibraryContinuation rest))
-  where
-    isLibraryContinuation [] = True
-    isLibraryContinuation line@(firstCharacter : _) =
-        null (trim line) || isSpace firstCharacter
-
-fieldModules :: String -> String -> [String]
-fieldModules field = go . lines
-  where
-    go [] = []
-    go (line : rest)
-        | trim line == field =
-            let fieldIndent = indentation line
-                (continuation, remaining) =
-                    span
-                        (\next -> null (trim next) || indentation next > fieldIndent)
-                        rest
-             in moduleTokens continuation <> go remaining
-        | otherwise = go rest
-    moduleTokens =
-        filter ("HostBootstrap." `isPrefixOfText`)
-            . map (filter (/= ','))
-            . words
-            . unlines
-    isPrefixOfText prefix value = Text.pack prefix `Text.isPrefixOf` Text.pack value
-
-indentation :: String -> Int
-indentation = length . takeWhile isSpace
-
-trim :: String -> String
-trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
-
-normalizeWhitespace :: String -> String
-normalizeWhitespace = unwords . words
-
-significantHaskellLineCount :: String -> Int
-significantHaskellLineCount = length . filter (not . all isSpace) . stripComments 0 . lines
-  where
-    stripComments :: Int -> [String] -> [String]
-    stripComments _ [] = []
-    stripComments depth (sourceLine : remaining) =
-        let (nextDepth, code) = stripLine depth sourceLine
-         in code : stripComments nextDepth remaining
-
-    stripLine :: Int -> String -> (Int, String)
-    stripLine = go
-
-    go :: Int -> String -> (Int, String)
-    go depth [] = (depth, [])
-    go 0 ('-' : '-' : _) = (0, [])
-    go 0 ('{' : '-' : '#' : remaining) =
-        let (nextDepth, code) = go 0 remaining
-         in (nextDepth, "{-#" <> code)
-    go depth ('{' : '-' : remaining) = go (depth + 1) remaining
-    go depth ('-' : '}' : remaining)
-        | depth > 0 = go (depth - 1) remaining
-    go 0 (character : remaining) =
-        let (nextDepth, code) = go 0 remaining
-         in (nextDepth, character : code)
-    go depth (_ : remaining) = go depth remaining
 
 normalizedModuleExports :: [String] -> [String]
 normalizedModuleExports = map concat . splitAtTopLevelCommas 0 []

@@ -4,7 +4,7 @@
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, including the real local
+**Gate**: `cabal test all` from `core/`, including the real local
 process-boundary recursive-lifecycle tests
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-09 ; Ubuntu 24.04.4 WSL x86_64, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate

@@ -239,17 +239,7 @@ withProviderRuntimeDependencyCoordinates ::
     RuntimeDependencyPackage scope planId ->
     (Text -> result) ->
     Either Text result
-withProviderRuntimeDependencyCoordinates plan scope resource frame origin generation route now package use = do
-    require (domainOf package == "provider") "runtime dependency domain mismatch"
-    require (planOf package == plan) "runtime dependency plan mismatch"
-    require (scopeOf package == scope) "runtime dependency scope mismatch"
-    require (resourceOf package == resource) "runtime dependency resource mismatch"
-    require (frameOf package == frame) "runtime dependency frame mismatch"
-    require (originOf package == origin) "runtime dependency backend origin mismatch"
-    require (generationOf package == generation) "runtime dependency generation mismatch"
-    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
-    require (now < expiryOf package) "runtime dependency package is expired"
-    pure (use route)
+withProviderRuntimeDependencyCoordinates = openCoordinates "provider"
 
 withCarriedProviderRuntimeDependencyCoordinates ::
     Text ->
@@ -261,20 +251,7 @@ withCarriedProviderRuntimeDependencyCoordinates ::
     RuntimeDependencyPackage scope planId ->
     (Text -> Text -> result) ->
     Either Text result
-withCarriedProviderRuntimeDependencyCoordinates scope resource frame generation route now package use = do
-    require (domainOf package == "provider") "runtime dependency domain mismatch"
-    -- A carried package names the producer's plan, not the successor's
-    -- projected plan.  Its exact producer-plan commitment remains sealed in
-    -- the authenticated handoff package and selects the paired live service;
-    -- successor recovery checks the shared scope and concrete resource
-    -- coordinates below rather than equating distinct plan identities.
-    require (scopeOf package == scope) "runtime dependency scope mismatch"
-    require (resourceOf package == resource) "runtime dependency resource mismatch"
-    require (frameOf package == frame) "runtime dependency frame mismatch"
-    require (generationOf package == generation) "runtime dependency generation mismatch"
-    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
-    require (now < expiryOf package) "runtime dependency package is expired"
-    pure (use (originOf package) route)
+withCarriedProviderRuntimeDependencyCoordinates = openCarriedCoordinates "provider"
 
 withCarriedProviderShareRuntimeDependencyCoordinates ::
     Text ->
@@ -286,15 +263,7 @@ withCarriedProviderShareRuntimeDependencyCoordinates ::
     RuntimeDependencyPackage scope planId ->
     (Text -> Text -> result) ->
     Either Text result
-withCarriedProviderShareRuntimeDependencyCoordinates scope resource frame generation route now package use = do
-    require (domainOf package == "provider-share") "runtime dependency domain mismatch"
-    require (scopeOf package == scope) "runtime dependency scope mismatch"
-    require (resourceOf package == resource) "runtime dependency resource mismatch"
-    require (frameOf package == frame) "runtime dependency frame mismatch"
-    require (generationOf package == generation) "runtime dependency generation mismatch"
-    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
-    require (now < expiryOf package) "runtime dependency package is expired"
-    pure (use (originOf package) route)
+withCarriedProviderShareRuntimeDependencyCoordinates = openCarriedCoordinates "provider-share"
 
 withClusterRuntimeDependencyPackage ::
     Text ->
@@ -328,17 +297,7 @@ withClusterRuntimeDependencyCoordinates ::
     RuntimeDependencyPackage scope planId ->
     (Text -> result) ->
     Either Text result
-withClusterRuntimeDependencyCoordinates plan scope resource frame origin generation route now package use = do
-    require (domainOf package == "cluster") "runtime dependency domain mismatch"
-    require (planOf package == plan) "runtime dependency plan mismatch"
-    require (scopeOf package == scope) "runtime dependency scope mismatch"
-    require (resourceOf package == resource) "runtime dependency resource mismatch"
-    require (frameOf package == frame) "runtime dependency frame mismatch"
-    require (originOf package == origin) "runtime dependency backend origin mismatch"
-    require (generationOf package == generation) "runtime dependency generation mismatch"
-    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
-    require (now < expiryOf package) "runtime dependency package is expired"
-    pure (use route)
+withClusterRuntimeDependencyCoordinates = openCoordinates "cluster"
 
 withClusterRuntimeDependencySuccessor ::
     Text ->
@@ -362,6 +321,68 @@ withClusterRuntimeDependencySuccessor plan scope resource frame generation route
         route
         now
         package
+
+{- | The successor-visible coordinates of one domain's package.
+
+The named opener above checks every field a producer sealed; this checks the
+subset a fixed successor can see, and the producer's opaque gate, journal and
+receipt commitments stay bound by the package commitment instead. Only the
+domain differs between the provider's and the cluster's, so a requirement added
+here applies to both rather than to whichever one it was written in.
+-}
+openCoordinates ::
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Word64 ->
+    RuntimeDependencyPackage scope planId ->
+    (Text -> result) ->
+    Either Text result
+openCoordinates domain plan scope resource frame origin generation route now package use = do
+    require (domainOf package == domain) "runtime dependency domain mismatch"
+    require (planOf package == plan) "runtime dependency plan mismatch"
+    require (scopeOf package == scope) "runtime dependency scope mismatch"
+    require (resourceOf package == resource) "runtime dependency resource mismatch"
+    require (frameOf package == frame) "runtime dependency frame mismatch"
+    require (originOf package == origin) "runtime dependency backend origin mismatch"
+    require (generationOf package == generation) "runtime dependency generation mismatch"
+    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
+    require (now < expiryOf package) "runtime dependency package is expired"
+    pure (use route)
+
+{- | The coordinates of a package that arrived from another frame.
+
+A carried package names the /producer's/ plan, not the successor's projected
+plan.  Its exact producer-plan commitment remains sealed in the authenticated
+handoff package and selects the paired live service; successor recovery checks
+the shared scope and concrete resource coordinates instead, and receives the
+backend origin the package carries rather than asserting one.
+-}
+openCarriedCoordinates ::
+    Text ->
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    Word64 ->
+    RuntimeDependencyPackage scope planId ->
+    (Text -> Text -> result) ->
+    Either Text result
+openCarriedCoordinates domain scope resource frame generation route now package use = do
+    require (domainOf package == domain) "runtime dependency domain mismatch"
+    require (scopeOf package == scope) "runtime dependency scope mismatch"
+    require (resourceOf package == resource) "runtime dependency resource mismatch"
+    require (frameOf package == frame) "runtime dependency frame mismatch"
+    require (generationOf package == generation) "runtime dependency generation mismatch"
+    require (runtimeDependencyPackageRoute package == route) "runtime dependency route mismatch"
+    require (now < expiryOf package) "runtime dependency package is expired"
+    pure (use (originOf package) route)
 
 openPackage ::
     Text ->

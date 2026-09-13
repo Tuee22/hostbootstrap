@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from hostbootstrap import bootstrap
-from hostbootstrap.substrate import Substrate, SubstrateName
+from hostbootstrap import substrate as substrate_module
+from hostbootstrap.substrate import Arch, Substrate, SubstrateName
 
-APPLE = Substrate(SubstrateName.APPLE_SILICON, "arm64")
-LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, "amd64")
-LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, "amd64")
-WINDOWS_CPU = Substrate(SubstrateName.WINDOWS_CPU, "amd64")
+APPLE = Substrate(SubstrateName.APPLE_SILICON, Arch.ARM64)
+LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
+LINUX_GPU = Substrate(SubstrateName.LINUX_GPU, Arch.AMD64)
+WINDOWS_CPU = Substrate(SubstrateName.WINDOWS_CPU, Arch.AMD64)
 
 
 def _project(project_root: Path) -> bootstrap.ProjectBuildSpec:
@@ -291,7 +293,7 @@ async def test_verified_ghcup_download_installs_only_matching_digest(
     chmod_modes: list[int] = []
     monkeypatch.setitem(
         bootstrap._GHCUP_DOWNLOADS,
-        ("linux", "amd64"),
+        ("linux", Arch.AMD64),
         ("https://downloads.haskell.org/ghcup/pinned", digest),
     )
     monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
@@ -315,7 +317,7 @@ async def test_verified_ghcup_download_rejects_digest_mismatch(
 ) -> None:
     monkeypatch.setitem(
         bootstrap._GHCUP_DOWNLOADS,
-        ("linux", "amd64"),
+        ("linux", Arch.AMD64),
         ("https://downloads.haskell.org/ghcup/pinned", "0" * 64),
     )
     monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
@@ -340,7 +342,7 @@ async def test_verified_ghcup_download_supports_windows_powershell(
     monkeypatch.setattr(bootstrap, "_WINDOWS_GHCUP", str(destination))
     monkeypatch.setitem(
         bootstrap._GHCUP_DOWNLOADS,
-        ("windows", "amd64"),
+        ("windows", Arch.AMD64),
         ("https://downloads.haskell.org/ghcup/pinned.exe", digest),
     )
     commands: list[tuple[str, ...]] = []
@@ -362,10 +364,11 @@ async def test_verified_ghcup_download_supports_windows_powershell(
     assert destination.read_bytes() == payload
 
 
-async def test_verified_ghcup_download_rejects_unknown_platform_arch() -> None:
-    unsupported = Substrate(SubstrateName.LINUX_CPU, "ppc64le")
+async def test_verified_ghcup_download_rejects_unpinned_platform_arch() -> None:
+    """The table is total over `Arch` per platform only where a pin exists."""
+    unpinned = Substrate(SubstrateName.WINDOWS_CPU, Arch.ARM64)
     with pytest.raises(RuntimeError, match="no pinned GHCup download"):
-        await bootstrap._install_verified_ghcup(unsupported)
+        await bootstrap._install_verified_ghcup(unpinned)
 
 
 async def test_verified_ghcup_download_requires_curl(
@@ -471,36 +474,81 @@ def test_windows_exec_project_binary_exits_with_child_status(
     calls: list[list[str]] = []
     cwds: list[Path] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, check: bool) -> SimpleNamespace:
-        calls.append(argv)
+    environments: list[dict[str, str]] = []
+
+    def _probe(
+        argv: tuple[str, ...],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        stdio: bootstrap.process.Stdio,
+    ) -> bootstrap.process.CommandOutcome:
+        calls.append(list(argv))
         cwds.append(cwd)
-        assert check is False
-        return SimpleNamespace(returncode=17)
+        environments.append(env)
+        assert stdio is bootstrap.process.Stdio.INHERIT
+        return bootstrap.process.CommandResult(argv, 17, "", "")
 
     monkeypatch.setattr(bootstrap.os, "name", "nt")
-    monkeypatch.setattr(bootstrap.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bootstrap.process, "probe", _probe)
 
     with pytest.raises(SystemExit) as exc:
-        bootstrap._exec_project_binary(("demo.exe", "project", "up"), Path("/proj"))
+        bootstrap._exec_project_binary(
+            ("demo.exe", "project", "up"),
+            Path("/proj"),
+            context=substrate_module.invocation_context(WINDOWS_CPU),
+        )
 
     assert exc.value.code == 17
     assert calls == [["demo.exe", "project", "up"]]
     assert cwds == [Path("/proj")]
+    assert environments == [
+        {"HOSTBOOTSTRAP_HOST_SUBSTRATE": "windows-cpu", "HOSTBOOTSTRAP_HOST_ARCH": "amd64"}
+    ]
+
+
+def test_windows_exec_project_binary_reports_an_unlaunchable_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(bootstrap.os, "name", "nt")
+    monkeypatch.setattr(
+        bootstrap.process,
+        "probe",
+        lambda argv, **_k: bootstrap.process.CommandUnavailable(tuple(argv), "not executable"),
+    )
+
+    with pytest.raises(RuntimeError, match="could not be run"):
+        bootstrap._exec_project_binary(
+            ("demo.exe",), Path("/proj"), context=substrate_module.invocation_context(WINDOWS_CPU)
+        )
 
 
 def test_posix_exec_project_binary_rehomes_to_project_root_then_execs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     chdirs: list[Path] = []
-    execs: list[tuple[str, list[str]]] = []
+    execs: list[tuple[str, list[str], dict[str, str]]] = []
     monkeypatch.setattr(bootstrap.os, "name", "posix")
     monkeypatch.setattr(bootstrap.os, "chdir", lambda p: chdirs.append(p))
-    monkeypatch.setattr(bootstrap.os, "execv", lambda exe, argv: execs.append((exe, argv)))
+    monkeypatch.setattr(
+        bootstrap.os, "execve", lambda exe, argv, env: execs.append((exe, argv, env))
+    )
 
-    bootstrap._exec_project_binary(("/abs/demo", "project", "up"), Path("/proj"))
+    bootstrap._exec_project_binary(
+        ("/abs/demo", "project", "up"),
+        Path("/proj"),
+        context=substrate_module.invocation_context(LINUX_GPU),
+    )
 
     assert chdirs == [Path("/proj")]
-    assert execs == [("/abs/demo", ["/abs/demo", "project", "up"])]
+    assert [(exe, argv) for exe, argv, _env in execs] == [
+        ("/abs/demo", ["/abs/demo", "project", "up"])
+    ]
+    # The seam is set on the child explicitly, not left to be inherited.
+    (_exe, _argv, environment) = execs[0]
+    assert environment[substrate_module.SUBSTRATE_ENV_VAR] == "linux-gpu"
+    assert environment[substrate_module.ARCH_ENV_VAR] == "amd64"
+    assert "PATH" in environment
 
 
 # ---------------------------------------------------------------------------
@@ -514,18 +562,41 @@ def _patch_seams(
     *,
     doctored: list[Substrate],
     execed: list[list[str]],
+    contexts: list[dict[str, str]] | None = None,
 ) -> None:
+    contexts = [] if contexts is None else contexts
     monkeypatch.setattr(bootstrap.substrate, "detect", lambda: sub)
 
     async def _fake_doctor(detected: Substrate) -> bootstrap.prereqs.DoctorResult:
         doctored.append(detected)
         return bootstrap.prereqs.DoctorResult(detected, ("ok",))
 
-    def _fake_exec_project_binary(argv: tuple[str, ...], project_root: Path) -> None:
+    def _fake_exec_project_binary(
+        argv: tuple[str, ...], project_root: Path, *, context: Mapping[str, str]
+    ) -> None:
         execed.append(list(argv))
+        contexts.append(dict(context))
 
     monkeypatch.setattr(bootstrap.prereqs, "run_doctor", _fake_doctor)
     monkeypatch.setattr(bootstrap, "_exec_project_binary", _fake_exec_project_binary)
+
+
+async def test_bootstrap_states_the_detected_host_to_the_binary_it_launches(
+    monkeypatch: pytest.MonkeyPatch,
+    recorded_commands: list[tuple[str, ...]],
+    tmp_path: Path,
+) -> None:
+    """§ M: the bootstrapper detects, the binary receives — it does not re-classify."""
+    _ = recorded_commands
+    doctored: list[Substrate] = []
+    execed: list[list[str]] = []
+    contexts: list[dict[str, str]] = []
+    _patch_seams(monkeypatch, LINUX_GPU, doctored=doctored, execed=execed, contexts=contexts)
+    await bootstrap.bootstrap(_project(tmp_path), project_root=tmp_path)
+
+    assert contexts == [
+        {"HOSTBOOTSTRAP_HOST_SUBSTRATE": "linux-gpu", "HOSTBOOTSTRAP_HOST_ARCH": "amd64"}
+    ]
 
 
 async def test_bootstrap_linux_builds_host_native_without_writing_dhall(

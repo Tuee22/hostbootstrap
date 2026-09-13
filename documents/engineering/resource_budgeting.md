@@ -26,6 +26,14 @@ project configuration and supplies descriptive helpers such as `fitsBudget`.
 [Cluster.Budget](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs) owns exact plan-indexed
 admission. These are distinct layers: a static helper result is not the capability for applying a wall.
 
+A canonical quantity or budget refuses with a **closed answer**, not a sentence. `QuantityError` names
+which of the two grammars failed (the text is not a quantity, its unit is unknown, its value is not a
+whole number of bytes, its numeric part is malformed) or which `BudgetDimension` — cpu, memory, or
+storage — was not positive or was above the supported bound. `renderQuantityError` is the one place that
+turns a refusal into the operator-facing sentence, so a caller can ask which dimension failed without
+matching on rendered text and the diagnostic cannot drift from the answer. The cluster's plan-indexed
+admission carries that value as `InvalidQuantity` rather than interpolating it into a string.
+
 The demo's `ClusterConfig` retains the selected Kind/nvkind driver, canonical config bytes and digest,
 state/config paths, exposure intents, node mapping, and declared workload in `PlanOwnedClusterConfig`.
 Cluster preparation consumes that package, the matching Running provider dependency, and a prepared gate.
@@ -97,7 +105,7 @@ See [applied cordon](applied_cordon.md) for the same limit at the operation boun
 
 ## Validation
 
-Run `cabal test all --ghc-options=-Werror` from `core/`. Quantity, budget, provider, cluster, and compile-fail
+Run `cabal test all` from `core/`. Quantity, budget, provider, cluster, and compile-fail
 cases cover exact parsing, complete partitions, rejected cross-plan evidence, raw-observation refusal,
 prepared settlement, and identity substitution. The demo's cluster-config cases check that rendered driver,
 node mapping, workload, and exposure data remain bound to the same package.

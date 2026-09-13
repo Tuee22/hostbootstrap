@@ -23,11 +23,9 @@ import Data.Foldable (traverse_)
 import Data.List (sort)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ownership.Object
 import qualified SourceGuard
-import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath (takeExtension, (</>))
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -393,26 +391,9 @@ substringOf needle haystack = any (needle `isPrefixOfList`) (suffixes haystack)
     isPrefixOfList (x : xs) (y : ys) = x == y && isPrefixOfList xs ys
 
 {- | Every Haskell source under the library's own source root. -}
-coreHaskellSources :: FilePath -> IO [(FilePath, String)]
-coreHaskellSources directory = do
-    entries <- listDirectory directory
-    fmap concat (traverse visit (sort entries))
-  where
-    visit entry = do
-        let path = directory </> entry
-        nested <- doesDirectoryExist path
-        if nested
-            then coreHaskellSources path
-            else
-                if takeExtension path == ".hs"
-                    then do
-                        source <- readFile path
-                        pure [(path, source)]
-                    else pure []
-
 ownershipInternalImporters :: FilePath -> IO [FilePath]
 ownershipInternalImporters sourceRoot = do
-    sources <- coreHaskellSources sourceRoot
+    sources <- SourceGuard.readHaskellSources sourceRoot
     pure
         ( sort
             [ SourceGuard.repoRelativePath sourceRoot path
@@ -460,10 +441,4 @@ expectMalformed outcome = case outcome of
     other -> assertFailure ("expected a malformed refusal, got " <> show other)
 
 withCoreSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
-withCoreSourceRoot use = do
-    cwd <- getCurrentDirectory
-    repoRoot <-
-        findRepoRoot cwd
-            >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
-    let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
-    use packageRoot (packageRoot </> "internal" </> "ownership")
+withCoreSourceRoot = SourceGuard.withPackageSourceIn ["internal", "ownership"]

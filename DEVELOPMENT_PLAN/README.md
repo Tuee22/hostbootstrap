@@ -38,22 +38,22 @@ its row here.
 | # | Phase | Status | Substrate | Open |
 |---|-------|--------|-----------|------|
 | 0 | [Governance and documentation standards](phase-0-governance-and-documentation-standards.md) | Done | — | — |
-| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Active | linux-cpu | architecture value; subprocess vocabulary |
-| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Active | — | warning policy; suite toolkit |
-| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Active | linux-cpu | one detection; total accelerator answer |
+| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Done | linux-cpu | — |
+| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Done | — | — |
+| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Done | linux-cpu | — |
 | 4 | [Protected store](phase-4-protected-store.md) | Done | linux-cpu | — |
-| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Active | — | identity decision; fixture diagnostics |
-| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Active | — | closed quantity result |
-| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Active | — | derived role table; output policy |
-| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Active | linux-cpu | dispatch leaf; reconciler workflow |
+| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Done | — | — |
+| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Done | — | — |
+| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Done | — | — |
+| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
 | 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Done | linux-cpu | — |
 | 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Done | linux-cpu | — |
 | 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
-| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | non-empty plan; backend-complete admission |
+| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
-| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | the record tape |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | one guest-VM row; coordinate opener |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | one config owner; ingress sum |
+| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
 | 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | named route interactivity |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Done | linux-cpu | — |
 | 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | gate re-run |
@@ -70,19 +70,15 @@ its row here.
 
 ## The current frontier
 
-Twenty-three phases are `Active`. The table above says which and what each owes; this section says how
+Twelve phases are `Active`. The table above says which and what each owes; this section says how
 they relate, and nothing here overrides a row there.
 
-The open work divides into four kinds. **Typed boundaries that were stated in prose rather than in the
-type**: a validated plan whose accessor discards its non-emptiness, a dispatch leaf that admits an empty
-executable, a role decision taken on raw text after the value was parsed, a record whose optional fields
-are correlated by comment. **Workflows written more than once**: the store adapter behind the ownership
-seam, the two guest-VM backend constructors, the group-and-socket reconciler, the runtime-dependency
-coordinate checkers, and — across the language boundary — outer-host detection, the architecture alias
-table, and the accelerator probe. **A quality gate that never reached the sources it was written for**:
-the formatter and the linter run against the base image's sample files and the worked consumer, and have
-never read the library. **And the documentation the first three drifted from**, together with the
-validator checks that would have caught the drift.
+The open work divides into three kinds. **Typed boundaries that are stated in prose rather than in the
+type**: a record whose optional fields are correlated by comment, and a port carried as a number.
+**Workflows written more than once**: the second port-range predicate. **A quality gate that has not reached the
+sources it was written for**: the formatter and the linter run against the base image's sample files and
+the worked consumer, and have not read the library. The documentation reconciliation that follows all
+three is the last phase.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is no longer empty. Each row names the phase whose
 completion deletes the shape, and the ledger schedules nothing on its own: the deleting phase's own
@@ -98,9 +94,13 @@ The documentation reconciliation phase is last for the same reason in reverse: i
 prose against the source those phases are changing, and its validator checks are what keep the two
 aligned afterwards. Reconciling first would reconcile to a tree that is about to move.
 
-Closed and not reopened: the protected store, lifecycle modes and run leases, sessions and fences,
-prepared operations, authenticated handoff and child admission, and recovery and migration. Their
-covered paths are outside the open work, and their gate evidence still measures the tree it names.
+Closed and not reopened: the Python pre-binary floor, the Haskell core scaffolding, host tools and
+substrate detection, the protected store, installed identity and the authority kernels, canonical
+quantities and reconcile results, Dhall configuration and the generic project model, the ensure
+reconcilers, the step algebra and the project plan, lifecycle modes and run leases, sessions and fences, prepared operations, authenticated
+handoff and child admission, the four ownership clauses and host-local reservations, host providers and
+the self-reference lift, cluster lifecycle and cordoning, and recovery and migration. Their covered paths
+are outside the open work, and their gate evidence still measures the tree it names.
 
 ## Validation policy
 
@@ -112,7 +112,7 @@ Two gates **close phases**, and a phase says which one closes it (§ II). Two fu
 build without closing anything — the container `check-code` and the repository's own source gate — which
 is why [the testing page](../documents/engineering/testing.md) counts four and this section counts two.
 They are the same four gates counted for different purposes. The **host static gate** —
-`cabal test all --ghc-options=-Werror` from `core/` plus the two Python commands — runs as an ordinary
+`cabal test all` from `core/` plus the two Python commands — runs as an ordinary
 process of the outer host and proves the pure, typed, and lexical contracts. Because every binary is
 built host-native (§ N), it must pass host-native on macOS, Linux, and Windows alike (§ JJ); running it
 natively on Windows is an outer host realization, not a substrate declaration. A **`linux-cpu` substrate

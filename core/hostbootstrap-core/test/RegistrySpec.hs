@@ -31,6 +31,8 @@ import HostBootstrap.Lift (
     inWsl2VM,
     liftSubcommand,
     localContext,
+    InVMSelfPath (InVMSelfPath),
+    LocalSelfPath (LocalSelfPath),
     mkSelfRef,
  )
 import HostBootstrap.Registry (
@@ -237,7 +239,7 @@ tests =
                             { hcSubstrate = Substrate LinuxCpu Amd64
                             , hcToolPaths = Map.empty
                             }
-                    self = mkSelfRef "/hostbootstrap-registry-spec-missing" "hostbootstrap"
+                    self = mkSelfRef (LocalSelfPath "/hostbootstrap-registry-spec-missing") (InVMSelfPath "hostbootstrap")
                     vmOnly = inVM (IncusVM "incus-vm" "image") localContext
                     containerOnly = inContainer authContainer localContext
                 ordinaryVm <- liftSubcommand cfg self vmOnly authSubcommand

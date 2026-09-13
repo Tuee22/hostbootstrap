@@ -28,7 +28,7 @@ import HostBootstrap.Cluster.Report (
     ClusterPresence (ClusterAbsent, ClusterPresent),
     ClusterReportFault (ClusterCommandUnrun),
  )
-import HostBootstrap.Cluster.Cordon (ResourceBudget, mkResourceBudget)
+import HostBootstrap.Cluster.Cordon (ResourceBudget, mkResourceBudget, renderQuantityError)
 import HostBootstrap.Cluster.Resume (
     ClusterStanding (ClusterCreatedUnbound, ClusterNothingDone, ClusterOwned),
  )
@@ -307,7 +307,11 @@ limits against a value an operator can read instead of against the function that
 produced them.
 -}
 declaredBudget :: ResourceBudget
-declaredBudget = either error id (mkResourceBudget 2 (4 * 1024 * 1024 * 1024) (20 * 1024 * 1024 * 1024))
+declaredBudget =
+    either
+        (error . renderQuantityError)
+        id
+        (mkResourceBudget 2 (4 * 1024 * 1024 * 1024) (20 * 1024 * 1024 * 1024))
 
 declaredLimits :: [String]
 declaredLimits =

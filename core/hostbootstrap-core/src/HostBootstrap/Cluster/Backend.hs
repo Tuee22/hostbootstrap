@@ -236,12 +236,8 @@ import HostBootstrap.Lifecycle.Execution.Internal (
  )
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
-    preparedGateAttempt,
-    preparedGateFence,
-    preparedGateJournalVersion,
-    preparedGateOperation,
+    preparedGateCommitment,
     preparedGatePlan,
-    preparedGateSession,
  )
 import HostBootstrap.Ownership.Object (ObjectIdentity)
 import HostBootstrap.ProjectPlan (ChartWorkloadResource)
@@ -896,7 +892,7 @@ registerClusterRuntimeDependencyPackage backend execution scopeCommitment gate a
                             (stepExecutionFrame execution)
                             origin
                             (managedClusterGeneration handle)
-                            (clusterGateCommitment gate)
+                            (preparedGateCommitment gate)
                             (clusterReadyCommitment generation)
                             route
                             expiry of
@@ -1085,18 +1081,6 @@ clusterBackendOrigin backend =
         [ Text.pack (show (strongClusterDriver backend))
         , strongClusterConfigDigest backend
         , strongClusterOwnershipIdentity backend
-        ]
-
-clusterGateCommitment :: PreparedGate -> Text
-clusterGateCommitment gate =
-    Text.intercalate
-        ":"
-        [ preparedGatePlan gate
-        , preparedGateOperation gate
-        , preparedGateSession gate
-        , Text.pack (show (preparedGateFence gate))
-        , Text.pack (show (preparedGateAttempt gate))
-        , Text.pack (show (preparedGateJournalVersion gate))
         ]
 
 clusterReadyCommitment :: Word64 -> Text

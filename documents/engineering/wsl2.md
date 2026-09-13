@@ -58,6 +58,12 @@ mutation confirmation remains in the
 [Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md). See
 [readiness](../architecture/readiness.md).
 
+The WSL2 backend is an application of the one guest-VM row described in [lima](lima.md), not a second
+constructor: it supplies the Windows host guard, the closed WSL2 provider kind, the WSL tool, and its own
+refusal wording, and the guard sequence beneath it is shared. Its host guard asks the substrate's
+**frame** rather than its accelerator row, because both Windows classifications realize the same
+provider and keying on the GPU row alone refused a `windows-cpu` host outright.
+
 The thin Python bootstrap happens before this provider exists. It requires winget and Windows
 PowerShell, but downloads the pinned GHCup executable directly with `Invoke-WebRequest`; winget does not
 install the Haskell toolchain. See

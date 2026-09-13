@@ -102,12 +102,14 @@ module HostBootstrap.Substrate.Provider (
 )
 where
 
+import Data.Bifunctor (first)
 import Control.Exception (IOException, catch, displayException)
 import Data.Char (isAsciiUpper)
 import Data.List (dropWhileEnd, isPrefixOf)
 import Data.Word (Word64)
 import HostBootstrap.Cluster.Cordon (
     budgetFromResources,
+    renderQuantityError,
     budgetStorageBytes,
     gibibytes,
     incusSizingArgs,
@@ -907,7 +909,7 @@ selectProviderKind kind h = case kind of
                 , spExists = ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
                 , spLaunch = \env _ -> do
                     body <- wsl2SizingArgs env
-                    budget <- budgetFromResources env
+                    budget <- first renderQuantityError (budgetFromResources env)
                     let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
                     pure
                         [ ApplyGlobalWslWall body
@@ -1041,8 +1043,9 @@ single-layer lift the consumer uses to shell into the distro. 'Nothing' for a
 container layer (a container is reached through 'HostBootstrap.Lift', not here).
 -}
 vmShellArgs :: LiftLayer -> [String] -> Maybe (HostTool, [String])
-vmShellArgs layer cmd =
-    case foldLeaf (LiftContext [layer]) (RawCmd cmd) of
+vmShellArgs _layer [] = Nothing
+vmShellArgs layer (exe : arguments) =
+    case foldLeaf (LiftContext [layer]) (RawCmd exe arguments) of
         DispatchTool tool args
             | layerIsVM layer -> Just (tool, args)
         _ -> Nothing

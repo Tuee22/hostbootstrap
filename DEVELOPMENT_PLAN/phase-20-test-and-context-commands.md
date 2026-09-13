@@ -3,8 +3,8 @@
 **Status**: Active
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
-**Gate**: `cabal test all --ghc-options=-Werror` from `core/`, plus the focused `CLISpec` and `ContextSpec`
-groups with `--ghc-options=-Werror` inside a realized linux-cpu host
+**Gate**: `cabal test all` from `core/`, plus the focused `CLISpec` and `ContextSpec`
+groups inside a realized linux-cpu host
 **Gate kind**: deferred
 **Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=CLISpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861
 **Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=ContextSpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861

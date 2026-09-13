@@ -10,6 +10,7 @@ import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ensure (
+    reportedGpu,
     environmentNonRootUser,
     invokingNonRootUser,
     InstallStep (..),
@@ -32,7 +33,7 @@ import qualified HostBootstrap.Ensure.Lima as Lima
 import qualified HostBootstrap.Ensure.Wsl2 as Wsl2
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (..))
-import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..), nvidiaDeviceMarker)
 import SourceGuard (importsModule)
 import System.Directory (getCurrentDirectory)
 import System.Exit (ExitCode (..))
@@ -474,10 +475,14 @@ incusProbeCases =
 
 cudaProbeCases :: [TestTree]
 cudaProbeCases =
-    [ testCase "requires a successful host GPU listing before runtime reconciliation" $ do
-        Cuda.nvidiaDriverProbeReady (Right (ExitSuccess, "GPU 0: NVIDIA RTX 3090\n", "")) @?= True
-        Cuda.nvidiaDriverProbeReady (Right (ExitSuccess, "", "")) @?= False
-        Cuda.nvidiaDriverProbeReady (Right (ExitFailure 9, "", "driver communication failed")) @?= False
+    [ testCase "one predicate answers whether a listing reported a device" $ do
+        -- The host driver listing, the nvkind runtime smoke, and the cluster's
+        -- own probe all ask this; they read the same marker by construction.
+        reportedGpu (Right (ExitSuccess, "GPU 0: NVIDIA RTX 3090\n", "")) @?= True
+        reportedGpu (Right (ExitSuccess, "", "")) @?= False
+        reportedGpu (Right (ExitFailure 9, "", "driver communication failed")) @?= False
+        reportedGpu (Left "nvidia-smi could not be run") @?= False
+        reportedGpu (Right (ExitSuccess, nvidiaDeviceMarker, "")) @?= True
     , testCase "uses the official nvkind volume-mount injection smoke" $
         Cuda.nvkindRuntimeProbeArgs
             @?= [ "run"
@@ -488,10 +493,6 @@ cudaProbeCases =
                 , "nvidia-smi"
                 , "-L"
                 ]
-    , testCase "accepts a visible GPU and rejects empty/failed probes" $ do
-        Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "GPU 0: NVIDIA RTX 3090\n", "")) @?= True
-        Cuda.nvkindRuntimeProbeReady (Right (ExitSuccess, "", "")) @?= False
-        Cuda.nvkindRuntimeProbeReady (Right (ExitFailure 1, "", "runtime misconfigured")) @?= False
     ]
 
 wslPrerequisiteCases :: [TestTree]

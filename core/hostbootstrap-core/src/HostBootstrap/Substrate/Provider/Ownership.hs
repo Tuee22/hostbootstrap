@@ -78,7 +78,6 @@ where
 import Crypto.Hash (Digest, SHA256, hash)
 import Control.Concurrent (threadDelay)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
-import Data.ByteString (ByteString)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -96,7 +95,6 @@ import HostBootstrap.Lift (
  )
 import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable, recordedEvidence)
 import HostBootstrap.Ownership.Object (
-    storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
     ObjectKind (ReportedObject),
@@ -105,7 +103,6 @@ import HostBootstrap.Ownership.Object (
     OwnerClaim,
     OwnershipFault (
         OwnershipConflict,
-        OwnershipMalformed,
         OwnershipOccupied,
         OwnershipProbeFailed,
         OwnershipUnsupported
@@ -113,12 +110,20 @@ import HostBootstrap.Ownership.Object (
     mkObjectIdentity,
     mkOwnerClaim,
     originRecordBinding,
-    originRecordKind,
-    originRecordOrigin,
     ownerClaimText,
     ownershipFaultMessage,
-    parseOriginRecord,
-    renderOriginRecord,
+ )
+import HostBootstrap.Ownership.Tape (
+    OwnershipCarrier (fromClauseFault, fromStoreFault),
+    RecordSubject (RecordSubject, subjectBinding, subjectRecord),
+    RecordTape,
+    carryClause,
+    carryStore,
+    forgetRecord,
+    publishBoundRecord,
+    publishFreshRecord,
+    readRecordUnder,
+    recordTape,
  )
 import HostBootstrap.Ownership.Primitive (
     bindReportedIdentity,
@@ -128,17 +133,12 @@ import HostBootstrap.Ownership.Primitive (
     reobserveReportedIdentity,
  )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
-    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     RecordKey,
-    compareAndDeleteProtectedRecord,
-    compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
     protectedErrorMessage,
-    readProtectedRecord,
     recordKeyText,
  )
 import HostBootstrap.Readiness (microsValue, pollSchedule, vmBootPoll)
@@ -499,7 +499,7 @@ probeGuest ::
     ProviderReadyOutcome ->
     IO (Either ProviderOwnershipFault ProviderReadyOutcome)
 probeGuest cfg session key owned answered = do
-    probe <- execInOwnedInstance cfg session key owned ["true"]
+    probe <- execInOwnedInstance cfg session key owned "true" []
     pure $ case probe of
         Right run -> case classifyProviderReport providerReportLineBound (Right run) of
             Right _ -> Right answered
@@ -702,8 +702,8 @@ forgetUnboundRecord ::
     RecordKey ->
     IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
 forgetUnboundRecord session key = do
-    forgotten <- forgetRecord session key
-    pure (fmap (const DeleteAlreadyRemoved) (collapseFault forgotten))
+    forgotten <- forgetRecord (providerTape session) key
+    pure (fmap (const DeleteAlreadyRemoved) (carryStore forgotten))
 
 removeInstance ::
     HostConfig ->
@@ -738,8 +738,8 @@ removeInstance cfg session key owned identity releasable = do
                                         Left fault -> pure (Left fault)
                                         Right () -> do
                                             forgotten <-
-                                                releaseReportedObject releasable OriginAbsent (const (forgetRecord session key))
-                                            pure (fmap (const DeleteRemoved) (collapseFault forgotten))
+                                                releaseReportedObject releasable OriginAbsent (const (forgetRecord (providerTape session) key))
+                                            pure (fmap (const DeleteRemoved) (carryStore forgotten))
 
 {- | The refusal an object that took the name during the delete earns.
 
@@ -831,7 +831,7 @@ attachOwnedShare cfg session shareKey share = do
                 Left fault -> pure (Left fault)
                 Right (instanceIdentity, _) -> do
                     observed <- observeShareDevice cfg share
-                    stored <- readRecordUnder session shareKey
+                    stored <- readRecordUnder (providerTape session) shareKey
                     case (observed, stored) of
                         (Left fault, _) -> pure (Left fault)
                         (_, Left fault) -> pure (Left fault)
@@ -1132,9 +1132,9 @@ withRecordedShare session key share continue = do
                 recordReportedOrigin
                     entered
                     (ReportedObject (ownedShareClaim share))
-                    (publishFreshRecord session key)
+                    (publishFreshRecord (providerTape session) key)
             traverse continue recorded
-    pure (collapseClause outcome)
+    pure (carryClause outcome)
 
 bindShare ::
     ProtectedSession session ->
@@ -1185,7 +1185,7 @@ observeShareRecord ::
     RecordKey ->
     IO (Either ProviderOwnershipFault ())
 observeShareRecord cfg session owned candidate = do
-    stored <- readRecordUnder session candidate
+    stored <- readRecordUnder (providerTape session) candidate
     case stored of
         Left fault -> pure (Left fault)
         Right Nothing -> pure (Right ())
@@ -1218,7 +1218,7 @@ forgetReleasableShares ::
     IO (Either ProviderOwnershipFault ())
 forgetReleasableShares session = fmap sequence_ . traverse forget
   where
-    forget candidate = collapseFault <$> forgetRecord session candidate
+    forget candidate = carryStore <$> forgetRecord (providerTape session) candidate
 
 -- ---------------------------------------------------------------------------
 -- Running a command where the instance is
@@ -1238,14 +1238,15 @@ execInOwnedInstance ::
     ProtectedSession session ->
     RecordKey ->
     OwnedProviderInstance ->
+    String ->
     [String] ->
     IO (Either ProviderOwnershipFault CapturedRun)
-execInOwnedInstance cfg session key owned argv = do
+execInOwnedInstance cfg session key owned exe arguments = do
     before <- ownedStanding cfg session key owned
     case before of
         Left fault -> pure (Left fault)
         Right (identity, _) -> do
-            captured <- interpret cfg (guestCommand owned argv)
+            captured <- interpret cfg (guestCommand owned exe arguments)
             after <- ownedStanding cfg session key owned
             pure $ case after of
                 Left fault -> Left fault
@@ -1255,11 +1256,11 @@ execInOwnedInstance cfg session key owned argv = do
                         Left refusal -> Left (ProviderOwnershipReport (ProviderCommandUnrun (Text.pack refusal)))
                         Right run -> Right run
 
-guestCommand :: OwnedProviderInstance -> [String] -> HostCommand
-guestCommand owned argv =
+guestCommand :: OwnedProviderInstance -> String -> [String] -> HostCommand
+guestCommand owned exe arguments =
     foldLeafCommand
         (inVM (IncusVM (ownedInstanceName owned) (ownedInstanceImage owned)) localContext)
-        (RawCmd argv)
+        (RawCmd exe arguments)
 
 replacedUnderGuestCommand :: ObjectIdentity -> ObjectIdentity -> ProviderOwnershipFault
 replacedUnderGuestCommand expected observed =
@@ -1307,33 +1308,31 @@ withBoundInstanceClaim ::
     IO (Either ProviderOwnershipFault result)
 withBoundInstanceClaim session key owned claim identity continue =
     withRecordedClaim session key owned claim $ \recorded -> do
-        bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
-        case collapseFault bound of
+        bound <- bindReportedIdentity recorded identity (publishBoundRecord (providerTape session) key)
+        case carryStore bound of
             Left fault -> pure (Left fault)
             Right token -> continue token
 
 -- | Forget one durable record, whatever version the store currently holds.
-forgetRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either OwnershipFault ())
-forgetRecord session key = do
-    current <- readProtectedRecord session key
-    case current of
-        Left failure -> pure (Left (storeFault "read the provider origin record" failure))
-        Right Nothing -> pure (Right ())
-        Right (Just stored) -> do
-            forgotten <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion stored))
-            pure
-                ( either
-                    (Left . storeFault "forget the provider origin record")
-                    (const (Right ()))
-                    forgotten
-                )
+{- | What this owner calls its records, for the tape's refusals.
+
+The only thing the provider supplies to the shared store adapter: everything
+else about publishing, binding, forgetting and reading a record back is the
+same act every owner behind the seam performs.
+-}
+providerSubject :: RecordSubject
+providerSubject =
+    RecordSubject
+        { subjectRecord = "the provider origin record"
+        , subjectBinding = "bind the provider instance identity"
+        }
+
+providerTape :: ProtectedSession session -> RecordTape session
+providerTape session = recordTape session providerSubject
+
+instance OwnershipCarrier ProviderOwnershipFault where
+    fromClauseFault = ProviderOwnershipClause
+    fromStoreFault = ProviderOwnershipStore
 
 -- ---------------------------------------------------------------------------
 -- The shared steps
@@ -1354,7 +1353,7 @@ standingOf cfg session key owned = do
     case observed of
         Left fault -> pure (Left fault)
         Right observation -> do
-            stored <- readRecordUnder session key
+            stored <- readRecordUnder (providerTape session) key
             pure $ case stored of
                 Left fault -> Left fault
                 Right record ->
@@ -1398,9 +1397,9 @@ withRecordedClaim session key owned claim continue = do
                 recordReportedOrigin
                     entered
                     (ReportedObject claim)
-                    (publishFreshRecord session key)
+                    (publishFreshRecord (providerTape session) key)
             traverse continue recorded
-    pure (collapseClause outcome)
+    pure (carryClause outcome)
 
 -- | Bind clause 3's identity and answer with the outcome that describes it.
 bindIdentity ::
@@ -1411,8 +1410,8 @@ bindIdentity ::
     outcome ->
     IO (Either ProviderOwnershipFault outcome)
 bindIdentity session key recorded identity outcome = do
-    bound <- bindReportedIdentity recorded identity (publishBoundRecord session key)
-    pure (fmap (const outcome) (collapseFault bound))
+    bound <- bindReportedIdentity recorded identity (publishBoundRecord (providerTape session) key)
+    pure (fmap (const outcome) (carryStore bound))
 
 {- | Publish clause 2's record, or accept the one this transaction already wrote.
 
@@ -1429,121 +1428,9 @@ bytes alone would refuse the re-entry every release and every dependent
 transaction has to make. A record naming a different kind or a different prior
 origin is somebody else's and is refused rather than replaced.
 -}
-publishFreshRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    OriginRecord ->
-    IO (Either OwnershipFault ())
-publishFreshRecord session key record = do
-    existing <- readProtectedRecord session key
-    case existing of
-        Left failure -> pure (Left (storeFault "read the provider origin record" failure))
-        Right Nothing -> do
-            written <- compareAndSwapProtectedRecord session key ExpectAbsent bytes
-            pure
-                ( either
-                    (Left . storeFault "publish the provider origin record")
-                    (const (Right ()))
-                    written
-                )
-        Right (Just stored)
-            | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> pure (extendsThisRecord record (protectedRecordBytes stored) key)
-  where
-    bytes = renderOriginRecord record
-
-{- | Whether the record already under this key is this transaction's own.
-
-The binding is the one field a later step of the same transaction adds, so it is
-the one field this comparison ignores.
--}
-extendsThisRecord :: OriginRecord -> ByteString -> RecordKey -> Either OwnershipFault ()
-extendsThisRecord record stored key = case parseOriginRecord stored of
-    Left _ -> Left (foreignRecord key)
-    Right held
-        | originRecordKind held == originRecordKind record
-        , originRecordOrigin held == originRecordOrigin record ->
-            Right ()
-        | otherwise -> Left (foreignRecord key)
-
-{- | Publish the bound record against the exact version the store now holds.
-
-Read back inside the same exclusive entry rather than carried out of the
-publication continuation, so the store stays the one place a record version
-lives.
--}
-publishBoundRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    OriginRecord ->
-    IO (Either OwnershipFault ())
-publishBoundRecord session key record = do
-    current <- readProtectedRecord session key
-    case current of
-        Left failure -> pure (Left (storeFault "read the provider origin record" failure))
-        Right Nothing ->
-            pure
-                ( Left
-                    ( OwnershipProbeFailed
-                        "bind the provider instance identity"
-                        "the origin record vanished inside the exclusive entry"
-                    )
-                )
-        Right (Just stored)
-            | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> do
-                written <-
-                    compareAndSwapProtectedRecord
-                        session
-                        key
-                        (ExpectVersion (protectedRecordVersion stored))
-                        bytes
-                pure
-                    ( either
-                        (Left . storeFault "bind the provider instance identity")
-                        (const (Right ()))
-                        written
-                    )
-  where
-    bytes = renderOriginRecord record
-
-readRecordUnder ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either ProviderOwnershipFault (Maybe OriginRecord))
-readRecordUnder session key = do
-    stored <- readProtectedRecord session key
-    pure $ case stored of
-        Left failure -> Left (ProviderOwnershipStore failure)
-        Right Nothing -> Right Nothing
-        Right (Just record) ->
-            case parseOriginRecord (protectedRecordBytes record) of
-                Left fault -> Left (ProviderOwnershipClause fault)
-                Right decoded -> Right (Just decoded)
-
-foreignRecord :: RecordKey -> OwnershipFault
-foreignRecord _key =
-    OwnershipMalformed
-        "the durable record under this instance's key is not the one this transaction publishes"
-
-
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand
 
 reported :: Either ProviderReportFault value -> Either ProviderOwnershipFault value
 reported = either (Left . ProviderOwnershipReport) Right
 
-{- | Carry the seam's own fault into this module's sum, keeping an inner refusal.
-
-The clause producers answer in @'OwnershipFault'@ and the continuations beneath
-them answer in this module's richer sum, so the two nest. Collapsing them here —
-once — is what keeps every caller from writing its own.
--}
-collapseClause ::
-    Either OwnershipFault (Either ProviderOwnershipFault result) ->
-    Either ProviderOwnershipFault result
-collapseClause (Left fault) = Left (ProviderOwnershipClause fault)
-collapseClause (Right inner) = inner
-
-collapseFault :: Either OwnershipFault result -> Either ProviderOwnershipFault result
-collapseFault = either (Left . ProviderOwnershipClause) Right

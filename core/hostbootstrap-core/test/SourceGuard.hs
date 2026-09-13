@@ -1,11 +1,20 @@
--- | Lexical helpers for dependency-direction source guards.
+-- | The suites' one toolkit for reading this repository's own sources.
 --
--- These parse only Haskell import declarations, but deliberately use the
--- standard lexer so comments and string literals cannot create false imports.
--- Source pragmas, package-qualified imports, qualifiers, and multiline imports
--- are all accepted.
+-- Two halves, and both are here for the same reason. The lexical half parses
+-- Haskell import and export declarations, using the standard lexer so comments
+-- and string literals cannot create a false import; source pragmas,
+-- package-qualified imports, qualifiers, and multiline imports are all
+-- accepted. The structural half locates the package, walks its source tree, and
+-- reads one field out of its description.
+--
+-- A source guard is an assertion about a set of modules, so a guard that is
+-- wrong about which modules it enumerated asserts nothing, and does so
+-- silently. One reader means two guards over the same field cannot disagree
+-- about what the field says.
 module SourceGuard
-    ( haskellImports
+    ( -- * Lexical
+      haskellImports
+    , haskellTokens
     , importsModule
     , moduleImportTokens
     , moduleExportTokens
@@ -14,12 +23,141 @@ module SourceGuard
     , countPosixAbsoluteLiteralApplications
     , repoRelativePath
     , repoRelativeModuleName
+
+      -- * Structural
+    , withPackageSourceIn
+    , listHaskellSources
+    , readHaskellSources
+    , mainLibraryStanza
+    , fieldModules
+    , significantHaskellLineCount
+    , indentation
+    , trim
+    , normalizeWhitespace
     )
 where
 
 import Data.Char (isAlphaNum, isSpace, isUpper)
-import Data.List (intercalate)
-import System.FilePath (dropExtension, makeRelative, normalise)
+import Data.List (intercalate, isPrefixOf, sort, stripPrefix)
+import HostBootstrap.DocValidator (findRepoRoot)
+import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
+import System.FilePath (dropExtension, makeRelative, normalise, takeExtension, (</>))
+import Test.Tasty.HUnit (assertFailure)
+
+{- | Run an action with this package's root and one source root beneath it.
+
+Every source guard starts the same way: find the repository, name the package,
+name the directory under it whose modules the guard is about. *segments* names
+that directory relative to the package root, so a guard over the internal
+ownership library and one over @src@ differ in the one thing they actually
+differ in.
+-}
+withPackageSourceIn :: [FilePath] -> (FilePath -> FilePath -> IO result) -> IO result
+withPackageSourceIn segments use = do
+    cwd <- getCurrentDirectory
+    repoRoot <-
+        findRepoRoot cwd
+            >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
+    let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
+    use packageRoot (foldl (</>) packageRoot segments)
+
+-- | Every @.hs@ file under *directory*, depth-first in sorted order.
+listHaskellSources :: FilePath -> IO [FilePath]
+listHaskellSources directory = do
+    entries <- sort <$> listDirectory directory
+    fmap concat . traverse descend $ entries
+  where
+    descend entry = do
+        let path = directory </> entry
+        nested <- doesDirectoryExist path
+        if nested
+            then listHaskellSources path
+            else pure [path | takeExtension path == ".hs"]
+
+-- | 'listHaskellSources', paired with each file's contents.
+readHaskellSources :: FilePath -> IO [(FilePath, String)]
+readHaskellSources directory = do
+    paths <- listHaskellSources directory
+    traverse (\path -> (,) path <$> readFile path) paths
+
+{- | The body of the package description's /unnamed/ main library stanza.
+
+A named library (@library effect-internal@) is a different component with its
+own module list, so the header must be the bare word.
+-}
+mainLibraryStanza :: String -> Maybe String
+mainLibraryStanza description =
+    case dropWhile ((/= "library") . trim) (lines description) of
+        [] -> Nothing
+        _library : rest -> Just (unlines (takeWhile isLibraryContinuation rest))
+  where
+    isLibraryContinuation [] = True
+    isLibraryContinuation line@(firstCharacter : _) =
+        null (trim line) || isSpace firstCharacter
+
+{- | Every @HostBootstrap.*@ module named by one field of a stanza.
+
+*field* is spelled with its colon (@"exposed-modules:"@). A value may begin on
+the field's own line and continue on any line indented past it, which is both
+layouts Cabal permits — reading only one of them is how two copies of this
+function came to enumerate two different module sets from one file.
+-}
+fieldModules :: String -> String -> [String]
+fieldModules field = go . lines
+  where
+    go [] = []
+    go (line : rest)
+        | Just inline <- stripPrefix field (trim line) =
+            let fieldIndent = indentation line
+                (continuation, remaining) =
+                    span
+                        (\next -> null (trim next) || indentation next > fieldIndent)
+                        rest
+             in moduleTokens (inline : continuation) <> go remaining
+        | otherwise = go rest
+
+    moduleTokens =
+        filter ("HostBootstrap." `isPrefixOf`)
+            . map (filter (/= ','))
+            . words
+            . unlines
+
+{- | Lines of Haskell that are neither blank nor comment.
+
+A module's size budget is about the code in it, so a header comment explaining
+why the module is small must not make it large.
+-}
+significantHaskellLineCount :: String -> Int
+significantHaskellLineCount = length . filter (not . all isSpace) . stripComments 0 . lines
+  where
+    stripComments :: Int -> [String] -> [String]
+    stripComments _ [] = []
+    stripComments depth (sourceLine : remaining) =
+        let (nextDepth, code) = go depth sourceLine
+         in code : stripComments nextDepth remaining
+
+    go :: Int -> String -> (Int, String)
+    go depth [] = (depth, [])
+    go 0 ('-' : '-' : _) = (0, [])
+    go 0 ('{' : '-' : '#' : remaining) =
+        let (nextDepth, code) = go 0 remaining
+         in (nextDepth, "{-#" <> code)
+    go depth ('{' : '-' : remaining) = go (depth + 1) remaining
+    go depth ('-' : '}' : remaining)
+        | depth > 0 = go (depth - 1) remaining
+    go 0 (character : remaining) =
+        let (nextDepth, code) = go 0 remaining
+         in (nextDepth, character : code)
+    go depth (_ : remaining) = go depth remaining
+
+indentation :: String -> Int
+indentation = length . takeWhile isSpace
+
+trim :: String -> String
+trim = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+
+normalizeWhitespace :: String -> String
+normalizeWhitespace = unwords . words
 
 {- | Render a source path as a repo-relative path with canonical @\/@ separators.
 
@@ -176,6 +314,12 @@ haskellImports = collect . haskellTokens
             Nothing -> collect remaining
     collect (_ : remaining) = collect remaining
 
+{- | The source as the Haskell lexer yields it, comments removed.
+
+A quoted literal is one token and a pragma opens as @{@ then @-#@, so a guard
+built on this list cannot be fooled by a commented-out or quoted occurrence of
+the shape it forbids.
+-}
 haskellTokens :: String -> [String]
 haskellTokens source =
     case dropWhile isSpace source of

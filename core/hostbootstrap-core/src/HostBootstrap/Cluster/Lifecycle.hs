@@ -45,7 +45,11 @@ module HostBootstrap.Cluster.Lifecycle (
     planOwnedClusterBudget,
     planOwnedClusterNodeNames,
     AcceleratorDaemonPlacement (..),
-    AcceleratorIngressPlan (..),
+    AcceleratorIngressPlan (ClusterIpIngress, NodePortIngress),
+    ingressServiceType,
+    ingressServicePort,
+    ingressNodePort,
+    ingressKindListenAddress,
     TeardownKind (..),
     durableDataPath,
     ensureDurableDataPath,
@@ -85,6 +89,7 @@ module HostBootstrap.Cluster.Lifecycle (
 )
 where
 
+import Data.Bifunctor (first)
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Control.Monad (forM_, unless, when)
@@ -108,6 +113,7 @@ import HostBootstrap.Cluster.Command (ClusterDriver (..))
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
+    renderQuantityError,
     budgetMemoryBytes,
     budgetStorageBytes,
     kindNodeCordonArgsFor,
@@ -116,7 +122,7 @@ import HostBootstrap.Cluster.Cordon (
  )
 import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget)
 import HostBootstrap.Context (ResourceEnvelope (..))
-import HostBootstrap.Ensure (runTool)
+import HostBootstrap.Ensure (reportedGpu, runTool)
 import qualified HostBootstrap.Ensure.Cuda as Cuda
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
@@ -183,7 +189,7 @@ preselecting or colliding on host ports.
 data ClusterPlan = ClusterPlan
     { clusterName :: String
     , dataPath :: FilePath
-    , derivedPaths :: [FilePath]
+    , derivedStatePath :: FilePath
     , clusterDriver :: ClusterDriver
     , clusterConfigFile :: Maybe FilePath
     , clusterNodeSuffixes :: [String]
@@ -472,7 +478,7 @@ setPlanOwnedClusterRendering driver statePath configPath (PlanOwnedCluster plan 
         topologyProjection
         slice
         resolved
-            { derivedPaths = [statePath]
+            { derivedStatePath = statePath
             , clusterDriver = driver
             , clusterConfigFile = Just configPath
             , clusterNodeSuffixes = driverNodeSuffixes driver
@@ -480,7 +486,7 @@ setPlanOwnedClusterRendering driver statePath configPath (PlanOwnedCluster plan 
         owner
         placement
 setPlanOwnedClusterRendering driver statePath configPath (ExecutionOwnedCluster execution cluster provider slice resolved owner placement) =
-    ExecutionOwnedCluster execution cluster provider slice resolved{derivedPaths = [statePath], clusterDriver = driver, clusterConfigFile = Just configPath, clusterNodeSuffixes = driverNodeSuffixes driver} owner placement
+    ExecutionOwnedCluster execution cluster provider slice resolved{derivedStatePath = statePath, clusterDriver = driver, clusterConfigFile = Just configPath, clusterNodeSuffixes = driverNodeSuffixes driver} owner placement
 
 planOwnedClusterConfigBase :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
 planOwnedClusterConfigBase (PlanOwnedClusterConfig base _ _ _ _ _ _ _ _) = base
@@ -545,27 +551,27 @@ absolutizeClusterConfig root resolved =
         { clusterConfigFile = fmap (root </>) (clusterConfigFile resolved)
         }
 
+{- | The resolved plan either owner carries.
+
+Both constructors hold one, at different positions, and every accessor below
+reads it. Eliminating the two positions once is what keeps an accessor from
+being written twice and the two copies from drifting.
+-}
+planOwnedClusterResolvedPlan :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ClusterPlan
+planOwnedClusterResolvedPlan (PlanOwnedCluster _ _ _ _ _ resolved _ _) = resolved
+planOwnedClusterResolvedPlan (ExecutionOwnedCluster _ _ _ _ resolved _ _) = resolved
+
 planOwnedClusterName :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> String
-planOwnedClusterName (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterName resolved
-planOwnedClusterName (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterName resolved
+planOwnedClusterName = clusterName . planOwnedClusterResolvedPlan
 
 planOwnedClusterStateDirectory :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
-planOwnedClusterStateDirectory (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
-    case derivedPaths resolved of
-        stateDirectory : _ -> stateDirectory
-        [] -> error "a resolved cluster plan must retain one derived state directory"
-planOwnedClusterStateDirectory (ExecutionOwnedCluster _ _ _ _ resolved _ _) =
-    case derivedPaths resolved of
-        stateDirectory : _ -> stateDirectory
-        [] -> error "a resolved cluster plan must retain one derived state directory"
+planOwnedClusterStateDirectory = derivedStatePath . planOwnedClusterResolvedPlan
 
 planOwnedClusterDurableRoot :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> FilePath
-planOwnedClusterDurableRoot (PlanOwnedCluster _ _ _ _ _ resolved _ _) = dataPath resolved
-planOwnedClusterDurableRoot (ExecutionOwnedCluster _ _ _ _ resolved _ _) = dataPath resolved
+planOwnedClusterDurableRoot = dataPath . planOwnedClusterResolvedPlan
 
 planOwnedClusterConfigPath :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> Maybe FilePath
-planOwnedClusterConfigPath (PlanOwnedCluster _ _ _ _ _ resolved _ _) = clusterConfigFile resolved
-planOwnedClusterConfigPath (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterConfigFile resolved
+planOwnedClusterConfigPath = clusterConfigFile . planOwnedClusterResolvedPlan
 
 planOwnedClusterPlacement :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> (Text, Text)
 planOwnedClusterPlacement (PlanOwnedCluster _ _ _ _ _ _ _ placement) = placement
@@ -584,9 +590,7 @@ planOwnedClusterBudget (PlanOwnedCluster _ _ _ _ slice _ _ _) = resourceSliceBud
 planOwnedClusterBudget (ExecutionOwnedCluster _ _ _ slice _ _ _) = resourceSliceBudget slice
 
 planOwnedClusterNodeNames :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> [String]
-planOwnedClusterNodeNames (PlanOwnedCluster _ _ _ _ _ resolved _ _) =
-    clusterNodeNames resolved
-planOwnedClusterNodeNames (ExecutionOwnedCluster _ _ _ _ resolved _ _) = clusterNodeNames resolved
+planOwnedClusterNodeNames = clusterNodeNames . planOwnedClusterResolvedPlan
 
 -- | Resolve a cluster plan for a project, rooted at @root@, under a profile.
 resolvePlan :: String -> FilePath -> ClusterProfile -> ClusterPlan
@@ -594,6 +598,13 @@ resolvePlan project root profile = resolvePlanWithDriver project root profile Ki
 
 {- | Resolve a cluster plan with an explicit driver. Most callers use
 'resolvePlan'; accelerator topology code selects 'NvkindDriver' for Linux GPU.
+
+The resolved plan names no configuration template. Which template a cluster is
+created from is the /project's/ decision and not this library's: the templates
+are files in a project's own source root, and the choice between them turns on
+where that project places its accelerator daemon rather than on the driver.
+A plan therefore carries 'Nothing' here — the driver's own default topology —
+until the project that ships a template names it.
 -}
 resolvePlanWithDriver :: String -> FilePath -> ClusterProfile -> ClusterDriver -> ClusterPlan
 resolvePlanWithDriver project root profile driver = case profile of
@@ -601,16 +612,16 @@ resolvePlanWithDriver project root profile driver = case profile of
         ClusterPlan
             { clusterName = project
             , dataPath = durableDataPathFor profile root
-            , derivedPaths = [root </> ".cluster" </> project]
+            , derivedStatePath = root </> ".cluster" </> project
             , clusterDriver = driver
-            , clusterConfigFile = Just (driverConfigFile driver)
+            , clusterConfigFile = Nothing
             , clusterNodeSuffixes = driverNodeSuffixes driver
             }
     TestCase caseId ->
         ClusterPlan
             { clusterName = project ++ "-test-" ++ caseId
             , dataPath = durableDataPathFor profile root
-            , derivedPaths = [root </> ".cluster" </> (project ++ "-test-" ++ caseId)]
+            , derivedStatePath = root </> ".cluster" </> (project ++ "-test-" ++ caseId)
             , clusterDriver = driver
             , clusterConfigFile = Nothing
             , clusterNodeSuffixes = driverNodeSuffixes driver
@@ -632,10 +643,6 @@ clusterRuntimeStateDirectoryFor driver durableRoot =
     driverName = case driver of
         KindDriver -> "kind"
         NvkindDriver -> "nvkind"
-driverConfigFile :: ClusterDriver -> FilePath
-driverConfigFile KindDriver = "kind.yaml"
-driverConfigFile NvkindDriver = "nvkind.yaml"
-
 driverNodeSuffixes :: ClusterDriver -> [String]
 driverNodeSuffixes KindDriver = ["control-plane"]
 driverNodeSuffixes NvkindDriver = ["control-plane", "worker"]
@@ -657,32 +664,48 @@ data AcceleratorDaemonPlacement = InClusterDaemon | HostResidentDaemon
     deriving (Eq, Show)
 
 {- | The web-service accelerator ingress exposure selected for a daemon
-placement. Host daemons get a local-only kind host mapping; in-cluster daemons
-use a normal ClusterIP service and need no host mapping.
+placement.
+
+One case per Kubernetes service type, each carrying exactly what that type has.
+An in-cluster daemon is reached through a normal @ClusterIP@ service and has no
+node port and no host mapping to carry; a host-resident daemon is reached
+through a @NodePort@ and therefore has both. Writing that as one record with a
+type string and two optional fields left the invalid combinations — a
+@ClusterIP@ with a node port, a @NodePort@ without one — constructible by any
+consumer, with only prose saying they were wrong (§ HH).
 -}
-data AcceleratorIngressPlan = AcceleratorIngressPlan
-    { ingressServiceType :: String
-    , ingressServicePort :: Int
-    , ingressNodePort :: Maybe Int
-    , ingressKindListenAddress :: Maybe String
-    }
+data AcceleratorIngressPlan
+    = -- | reached inside the cluster: the service port, and nothing else
+      ClusterIpIngress Int
+    | -- | reached from the host: the service port, the node port, and the
+      -- address the kind mapping listens on
+      NodePortIngress Int Int String
     deriving (Eq, Show)
 
 acceleratorIngressPlan :: AcceleratorDaemonPlacement -> Int -> Int -> AcceleratorIngressPlan
-acceleratorIngressPlan InClusterDaemon servicePort _nodePort =
-    AcceleratorIngressPlan
-        { ingressServiceType = "ClusterIP"
-        , ingressServicePort = servicePort
-        , ingressNodePort = Nothing
-        , ingressKindListenAddress = Nothing
-        }
+acceleratorIngressPlan InClusterDaemon servicePort _nodePort = ClusterIpIngress servicePort
 acceleratorIngressPlan HostResidentDaemon servicePort nodePort =
-    AcceleratorIngressPlan
-        { ingressServiceType = "NodePort"
-        , ingressServicePort = servicePort
-        , ingressNodePort = Just nodePort
-        , ingressKindListenAddress = Just "127.0.0.1"
-        }
+    NodePortIngress servicePort nodePort "127.0.0.1"
+
+-- | The Kubernetes service type this ingress renders as.
+ingressServiceType :: AcceleratorIngressPlan -> String
+ingressServiceType (ClusterIpIngress _) = "ClusterIP"
+ingressServiceType NodePortIngress{} = "NodePort"
+
+-- | The service port, which every case has.
+ingressServicePort :: AcceleratorIngressPlan -> Int
+ingressServicePort (ClusterIpIngress servicePort) = servicePort
+ingressServicePort (NodePortIngress servicePort _ _) = servicePort
+
+-- | The node port, which only the @NodePort@ case has.
+ingressNodePort :: AcceleratorIngressPlan -> Maybe Int
+ingressNodePort (ClusterIpIngress _) = Nothing
+ingressNodePort (NodePortIngress _ nodePort _) = Just nodePort
+
+-- | The kind host mapping's listen address, which only the @NodePort@ case has.
+ingressKindListenAddress :: AcceleratorIngressPlan -> Maybe String
+ingressKindListenAddress (ClusterIpIngress _) = Nothing
+ingressKindListenAddress (NodePortIngress _ _ listenAddress) = Just listenAddress
 
 -- | The kind of teardown.
 data TeardownKind = Down | Delete
@@ -733,8 +756,8 @@ The @.data@ path is preserved under both @down@ and @delete@ — the
 never-delete-@.data@ invariant — so it never appears in the removal set.
 -}
 teardown :: TeardownKind -> ClusterPlan -> ([FilePath], [FilePath])
-teardown Down plan = ([], dataPath plan : derivedPaths plan)
-teardown Delete plan = (derivedPaths plan, [dataPath plan])
+teardown Down plan = ([], [dataPath plan, derivedStatePath plan])
+teardown Delete plan = ([derivedStatePath plan], [dataPath plan])
 
 {- | Render a read-only status report for a resolved plan, given whether the kind
 cluster is currently live. Pure, so the report shape is unit-tested. The data
@@ -746,7 +769,7 @@ statusReport plan live =
     unlines
         [ "cluster:    " ++ clusterName plan ++ (if live then " (running)" else " (absent)")
         , "data:       " ++ dataPath plan ++ " (not removed by cluster teardown)"
-        , "derived:    " ++ unwords (derivedPaths plan)
+        , "derived:    " ++ derivedStatePath plan
         ]
 
 -- ---------------------------------------------------------------------------
@@ -858,18 +881,16 @@ clusterCreateTool plan = case clusterDriver plan of
 clusterCreateArgs :: ClusterPlan -> Bool -> [String]
 clusterCreateArgs plan hasKindConfig = case clusterDriver plan of
     KindDriver ->
-        ["create", "cluster", "--name", clusterName plan] ++ kindConfigArgs
+        ["create", "cluster", "--name", clusterName plan] ++ configArgs (\path -> ["--config", path])
     NvkindDriver ->
-        ["cluster", "create", "--name=" ++ clusterName plan] ++ nvkindConfigArgs
+        ["cluster", "create", "--name=" ++ clusterName plan] ++ configArgs (\path -> ["--config-template=" ++ path])
   where
-    kindConfigArgs
-        | useConfig = ["--config", kindClusterConfig]
+    -- The named template or none, never a template this library chose. The
+    -- probe already answers 'False' for a plan that names none, so the two
+    -- conditions cannot disagree about which case this is.
+    configArgs render
+        | hasKindConfig = maybe [] render (clusterConfigFile plan)
         | otherwise = []
-    nvkindConfigArgs
-        | useConfig = ["--config-template=" ++ kindClusterConfig]
-        | otherwise = []
-    useConfig = hasKindConfig && maybe False (const True) (clusterConfigFile plan)
-    kindClusterConfig = maybe "kind.yaml" id (clusterConfigFile plan)
 
 clusterCreateLabel :: ClusterPlan -> String
 clusterCreateLabel plan = case clusterDriver plan of
@@ -922,7 +943,7 @@ nvidiaRuntimeProbeArgs :: [String]
 nvidiaRuntimeProbeArgs = Cuda.nvkindRuntimeProbeArgs
 
 nvidiaRuntimeProbeReady :: Either String (ExitCode, String, String) -> Bool
-nvidiaRuntimeProbeReady = Cuda.nvkindRuntimeProbeReady
+nvidiaRuntimeProbeReady = reportedGpu
 
 probeNvidiaRuntime :: HostConfig -> ClusterPlan -> IO ()
 probeNvidiaRuntime cfg plan =
@@ -1121,7 +1142,7 @@ double-count the budget.
 -}
 clusterNodeCordonArgs :: ClusterPlan -> ResourceEnvelope -> Either String [[String]]
 clusterNodeCordonArgs plan resources = do
-    budget <- budgetFromResources resources
+    budget <- first renderQuantityError (budgetFromResources resources)
     let names = clusterNodeNames plan
         count = length names
         naturalCount = fromIntegral count

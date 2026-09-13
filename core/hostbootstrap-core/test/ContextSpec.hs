@@ -7,6 +7,8 @@
 module ContextSpec (tests) where
 
 import Control.Exception (finally, try)
+import qualified Data.ByteString as ByteString
+import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -91,13 +93,62 @@ import HostBootstrap.Step (
     ensureStep,
     mkStepPlan,
  )
-import System.Directory (canonicalizePath, getCurrentDirectory, removeFile, withCurrentDirectory)
+import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+{- | Run @project init@ at the executable's own sibling path under one @--role@
+spelling, and assert whether the root identities were provisioned.
+
+The identities and the config are the executable's siblings, so the bracket
+restores whatever was there before: another case's expectation must not depend
+on the order this one ran in.
+-}
+assertRootInitProvisions :: Bool -> String -> IO ()
+assertRootInitProvisions expected role = do
+    projectName <- executableProjectName
+    sibling <- Schema.siblingProjectConfigPath projectName
+    executable <- getExecutablePath
+    let identityPaths =
+            map
+                (executable <>)
+                [".handoff.key", ".handoff.pub", ".build.key", ".activation.key", ".activation.pub"]
+    withRestoredFiles (sibling : identityPaths) $ do
+        mapM_ removeIfPresent (sibling : identityPaths)
+        withArgs
+            ["project", "init", "--role", role, "--output", sibling, "--source-root", "/workspace/demo"]
+            (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
+        present <- traverse doesFileExist identityPaths
+        assertBool
+            ( "--role "
+                <> show role
+                <> ": expected the root identities "
+                <> (if expected then "provisioned" else "untouched")
+                <> ", observed "
+                <> show (zip identityPaths present)
+            )
+            (present == map (const expected) identityPaths)
+
+-- | Run an action with the current contents of *paths* restored afterwards.
+withRestoredFiles :: [FilePath] -> IO () -> IO ()
+withRestoredFiles paths action = do
+    saved <- traverse save paths
+    action `finally` traverse_ restore saved
+  where
+    save path = do
+        present <- doesFileExist path
+        if present then Just . (,) path <$> ByteString.readFile path else pure Nothing
+    restore Nothing = pure ()
+    restore (Just (path, bytes)) = ByteString.writeFile path bytes
+
+removeIfPresent :: FilePath -> IO ()
+removeIfPresent path = do
+    present <- doesFileExist path
+    if present then removeFile path else pure ()
 
 sampleContext :: BinaryContext
 sampleContext =
@@ -874,6 +925,17 @@ tests =
                             (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                     Fixture.ProjectConfig _ _ cfgContext _ <- Fixture.decodeProjectConfigFile path
                     sourceRoot cfgContext @?= T.pack expected
+        , testCase "project init provisions the root identity under every spelling of the default role" $
+            -- The provisioning decision is about the role, and --role accepts
+            -- aliases and normalises case and separators. A config written
+            -- under an accepted alias is byte-identical to one written under
+            -- the canonical spelling, so a decision taken on the raw text
+            -- silently provisions nothing.
+            mapM_
+                (assertRootInitProvisions True)
+                ["host-orchestrator", "host", "  HOST_Orchestrator  "]
+        , testCase "project init at the sibling path provisions nothing for another role" $
+            assertRootInitProvisions False "image-build-container"
         , testCase "project init --if-missing writes when absent and is a no-op when present" $
             withSystemTempDirectory "hostbootstrap-config-init-if-missing" $ \dir -> do
                 projectName <- executableProjectName
@@ -901,6 +963,36 @@ tests =
                     (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                 after <- TIO.readFile path
                 after @?= before
+        , testCase "project init resolves one existing-output policy and refuses the pair" $
+            withSystemTempDirectory "hostbootstrap-config-init-policy" $ \dir -> do
+                projectName <- executableProjectName
+                let path = dir </> T.unpack projectName <> ".dhall"
+                    initArgs extra root =
+                        ["project", "init", "--output", path, "--source-root", root] ++ extra
+                    spec = fixtureSpec (T.unpack projectName)
+                -- Refuse: the no-flag default will not overwrite what is there.
+                withArgs (initArgs [] "/workspace/demo") (runHostBootstrapCLI spec)
+                refused <-
+                    try (withArgs (initArgs [] "/somewhere/else") (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                refused @?= Left (ExitFailure 1)
+                Fixture.ProjectConfig _ _ afterRefusal _ <- Fixture.decodeProjectConfigFile path
+                sourceRoot afterRefusal @?= "/workspace/demo"
+                -- Overwrite: --force replaces it.
+                withArgs (initArgs ["--force"] "/somewhere/else") (runHostBootstrapCLI spec)
+                Fixture.ProjectConfig _ _ afterForce _ <- Fixture.decodeProjectConfigFile path
+                sourceRoot afterForce @?= "/somewhere/else"
+                -- The contradiction has no spelling: asking for both no longer parses.
+                contradiction <-
+                    try
+                        ( withArgs
+                            (initArgs ["--force", "--if-missing"] "/third/place")
+                            (runHostBootstrapCLI spec)
+                        ) ::
+                        IO (Either ExitCode ())
+                contradiction @?= Left (ExitFailure 1)
+                Fixture.ProjectConfig _ _ afterBoth _ <- Fixture.decodeProjectConfigFile path
+                sourceRoot afterBoth @?= "/somewhere/else"
         , frameAdmissionTests
         , lifecycleContextAdmissionTests
         ]
