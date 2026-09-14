@@ -3,11 +3,11 @@ module EscapeProjectPlanIdentity where
 import Data.List.NonEmpty (NonEmpty)
 import HostBootstrap.Config.Schema (ValidatedConfig)
 import HostBootstrap.Lifecycle.Mode (LifecycleProfile)
-import HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , PlanError
-    , ProjectPlan
-    )
+import HostBootstrap.ProjectPlan (
+    PlanDraft,
+    PlanError,
+    ProjectPlan,
+ )
 import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 

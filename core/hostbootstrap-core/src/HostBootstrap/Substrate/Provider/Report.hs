@@ -307,8 +307,7 @@ classifyProviderReport lineBound captured = do
     reported <- capturedReport captured
     reportLines lineBound reported
 
-{- | The captured standard output of a command that ran and succeeded quietly.
--}
+-- | The captured standard output of a command that ran and succeeded quietly.
 capturedReport :: Either String CapturedRun -> Either ProviderReportFault String
 capturedReport (Left refusal) = Left (ProviderCommandUnrun (Text.pack refusal))
 capturedReport (Right run) = case capturedExit run of

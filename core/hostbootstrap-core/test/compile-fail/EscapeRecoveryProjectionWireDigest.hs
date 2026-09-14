@@ -7,7 +7,13 @@ data CallerChosenRecoveryWireDigest
 
 selectDigest ::
     RecoveryProjectionBinding
-        scope broker verb plan parent child CallerChosenRecoveryWireDigest ->
+        scope
+        broker
+        verb
+        plan
+        parent
+        child
+        CallerChosenRecoveryWireDigest ->
     ()
 selectDigest _ = ()
 

@@ -93,7 +93,7 @@ the whole config file.) The `deploy-minio` step is ordered first because the s3
 driver requires the bucket to pre-exist.
 
 Distribution's default storage redirect is illegal for the host-client/cluster-only-store topology. The
-registry DSL does not expose that setting as a boolean: `ProxyThroughRegistry` is the only constructible
+registry DSL does not expose that setting as a boolean: `proxyThroughRegistry` is the only constructible
 delivery strategy for this topology, and the renderer derives `storage.redirect.disable: true`. See
 [network reachability](../architecture/network_reachability.md) for the type-level rule.
 

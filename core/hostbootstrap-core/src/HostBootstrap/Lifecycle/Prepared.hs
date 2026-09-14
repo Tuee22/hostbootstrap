@@ -48,16 +48,16 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import HostBootstrap.Digest (frameWire, sha256Hex)
 import Data.Word (Word64)
+import HostBootstrap.Digest (frameWire, sha256Hex)
 import HostBootstrap.Lifecycle.Prepared.Internal (
-    PreparedGate,
     GateAttempt (GateAttempt),
     GateFence (GateFence),
     GateJournalVersion (GateJournalVersion),
     GateOperationKey (GateOperationKey),
     GatePlanDigest (GatePlanDigest),
     GateSession (GateSession),
+    PreparedGate,
     mintPreparedGate,
     preparedGateAttempt,
     preparedGateFence,
@@ -83,6 +83,7 @@ constrained to the record-key alphabet plus a few punctuation characters, so a
 value can never introduce a separator and shift the meaning of the fields after
 it.
 -}
+
 {- | The six fields a gate commits to, in the one order every committer uses.
 
 Two backends projected these fields independently and then hashed them

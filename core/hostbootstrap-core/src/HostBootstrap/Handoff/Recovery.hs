@@ -5,13 +5,13 @@
 This Cabal-private module owns only the bounded two-field codec. It imports no
 handoff authority, cryptography, protected store, receiver, or catalog owner.
 -}
-module HostBootstrap.Handoff.Recovery
-    ( RecoveryChildPackage
-    , recoveryChildPackageKernel
-    , recoveryChildPackageFromWireKernel
-    , renderRecoveryChildPackageKernel
-    , withRecoveryChildPackageKernel
-    )
+module HostBootstrap.Handoff.Recovery (
+    RecoveryChildPackage,
+    recoveryChildPackageKernel,
+    recoveryChildPackageFromWireKernel,
+    renderRecoveryChildPackageKernel,
+    withRecoveryChildPackageKernel,
+)
 where
 
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))

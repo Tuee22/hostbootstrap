@@ -1,12 +1,13 @@
 # Phase 21 — Composition and network algebra
 
-**Status**: Active
-**Current sprint**: None
+**Status**: Done
 **Depends on**: Phase 16 (cluster lifecycle, budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-13 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4,
+Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct
+--test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Supply the scope-indexed endpoint and reachability algebra, the proof-gated blob delivery it
 > enables, and the opaque role phase machine a long-running workload is driven by.
@@ -178,10 +179,19 @@ and Cabal 3.16.1.0. Authenticated forwarding uses `foldLeaf` for both crossings;
 WSL argument checks, unsupported frame shapes, and the nonvacuous duplicate-renderer guard pass. The native
 macOS registry and finalized-plan checks also passed 42/42 in 20.08 seconds.
 
-### Sprint 21.4: A port is a value, and there is one of it [Active]
+### Sprint 21.4: A port is a value, and there is one of it [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Network.hs`, `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/network-port/HostBootstrap/Network/Port.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Network.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/test/RegistryPlanSpec.hs`
+**Production modules**: `HostBootstrap.Network.Port` is the sprint's one new named contract; the changed
+modules are `HostBootstrap.Network`, `HostBootstrap.Cluster.Backend`, and `HostBootstrap.RegistryPlan`
+(3 changed; cap 3).
+**Sprint budget**: one new named type and its two surfaces; at most 120 production Haskell lines.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/network_reachability.md`
 
@@ -195,9 +205,9 @@ by construction, and every consumer re-decides whether its integer was checked.
 #### Deliverables
 
 - A port is a value with a validating producer, in the module that owns the reachability vocabulary.
-- The range predicate has one definition; the copy is deleted.
-- Exposure, registry and dependency surfaces carry the value rather than a bare integer.
+- The exposure and registry surfaces carry the value rather than a bare integer.
 - A case pins the refusal of an out-of-range port at the producer rather than at each consumer.
+- The copies of the range predicate in those modules are deleted.
 
 #### Validation
 
@@ -205,13 +215,69 @@ The host static gate; the registry and network suites cover the exposure paths.
 
 #### Remaining Work
 
-The vocabulary corrections to this phase's governed page are owned by the documentation
-reconciliation phase.
+None. `HostBootstrap.Network.Port` is a leaf private library owning `Port`, `mkPort`, and `portNumber`,
+and `HostBootstrap.Network` re-exports all three so the reachability vocabulary stays where a reader
+looks for what a port is. It is a leaf because the cluster backend sits *below* the reachability
+vocabulary — `Network` imports `Cluster.Backend`, not the other way round — so a definition inside
+`Network` could not have reached the backend at all. `Exposure` and `ResolvedExposure` carry `Port` for
+their host and target ports, `BlobRouteObservation` carries it for the port a probe dialled, and
+`clusterServiceExposure` mints through the producer so `InvalidEndpointPort` is raised in one place.
+`RegistryPlanSpec` pins the closed range at the producer — `minBound`, `-1`, `0`, `1`, `8080`, `65535`,
+`65536`, `maxBound` — and the exposure refusal at `0` and `65536`. On 2026-09-13 the warning-clean
+`-Werror` build and the complete 2,536/2,536 core host-static gate passed, with the demo consumer's
+150/150 beside it.
+
+The two range predicates that survive in `HostBootstrap.Cluster.Shipped` and
+`HostBootstrap.Cluster.Lifecycle`, and the one in the runtime dependency package, belong to
+**Sprint 21.5**; this sprint's own two are gone.
+
+### Sprint 21.5: The last three range decisions [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Shipped.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`
+**Production modules**: `HostBootstrap.Cluster.Lifecycle`, `HostBootstrap.Cluster.Shipped`,
+`HostBootstrap.Lifecycle.Dependency.Internal` (3; cap 3)
+**Sprint budget**: no new named type and three call-site adoptions; at most 80 production Haskell lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/network_reachability.md`
+
+#### Objective
+
+Sprint 21.4 left the producer as the only definition of the range in the two modules it touched. Three
+byte-identical copies of the old predicate stand elsewhere: the plan's exposure intent, the shipped
+exposure codec, and the runtime dependency package. Each still decides for itself what a port is.
+
+#### Deliverables
+
+- The three remaining copies are deleted; every range decision routes through the one producer.
+- The plan's exposure intent and the runtime dependency exposure rows carry the value.
+- The shipped exposure codec, which returns a number to a consumer outside this phase, asks the producer
+  for its admission rather than restating the bound.
+
+#### Validation
+
+The host static gate, plus the cluster and dependency suites that cover those three surfaces.
+
+#### Remaining Work
+
+None. `ExposureIntent` carries `Port`, `mkPlanExposureIntent` mints through `mkPort`, and the runtime
+dependency exposure rows are `(Text, Text, Port, Text, Port, Text, Word64, Text)` — so
+`renderRuntimeDependencyExposureResponse` no longer needs a port validity clause at all, and the
+resolved exposure the cluster backend builds from those rows no longer re-mints one. The shipped codec
+keeps its `Int` result for its cross-frame consumer and admits it through `mkPort`. `validPort` appears
+nowhere in the tree. On 2026-09-13 the warning-clean `-Werror` build and the complete 2,536/2,536 core
+host-static gate passed, with the demo consumer's 150/150 beside it.
+
+Routing the runtime dependency package through the shared producer needed the
+`lifecycle-dependency-internal` private library to depend on the new leaf, which is what keeps the
+`Port` a test sees through that library identical to the one it sees through
+`HostBootstrap.Network`.
 
 ## Remaining Work
 
-A port is owed a type, and its range predicate one definition. **Sprint 21.4** owns
-both.
+None.
 
 ## Documentation Requirements
 

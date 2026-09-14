@@ -25,11 +25,11 @@ data Attempt
 data JournalVersion
 
 wrongPlan ::
-  ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion ->
-  ProviderWallSettlementPermit Scope PlanB ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion
+    ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion ->
+    ProviderWallSettlementPermit Scope PlanB ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion
 wrongPlan = coerce
 
 wrongOperation ::
-  ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion ->
-  ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationB CallDigest Attempt JournalVersion
+    ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationA CallDigest Attempt JournalVersion ->
+    ProviderWallSettlementPermit Scope PlanA ProviderResource Budget Provider Capability Wall Workloads Partition Reservation Fence OperationB CallDigest Attempt JournalVersion
 wrongOperation = coerce

@@ -196,10 +196,11 @@ WSL drvfs already exposes the Windows project directory below `/mnt/<drive>/...`
 needed. The provider waits for that path and reconciles the stable Docker-visible alias
 `/var/tmp/hostbootstrap-demo-data`, which is then carried through kind and the pod.
 
-The common prepared alias backend uses the WSL guest facts and hidden guest executor retained by discovery
-for the exact opaque managed WSL provider and share authorities. It admits only retained `GuestFlock`; a
-discovered `GuestLockf` remains descriptive `Unsupported` because the lock namespaces are not
-interchangeable. Its explicit-absence/fresh-nonce `prepared` record lives inside that host-backed drvfs
+The common prepared alias backend is the `StrongAliasBackend` that `discoverStrongAliasBackend` mints
+from the exact opaque managed WSL provider and share authorities. It ships one closed symbolic-link act
+to the project binary already installed in the guest, so there is no guest interpreter program and no
+discovered `flock`, `stat`, or Python front end to choose between: the ownership row and kernel in the
+frame that owns the link answer all four clauses. Its explicit-absence/fresh-nonce `prepared` record lives inside that host-backed drvfs
 target, is fsynced and read back before the alias effect, and is bound to the symlink's exact device/inode
 in `managed`. Conditional release first persists the observation-version-fenced `releasing` record and
 then removes only that exact identity. Crash retries recover each durable state rather than adopting an

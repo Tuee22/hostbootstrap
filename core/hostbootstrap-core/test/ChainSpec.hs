@@ -62,13 +62,13 @@ import HostBootstrap.Lifecycle.Session (
 import HostBootstrap.Lift (
     ContainerLift (..),
     ContainerPlacement (ProviderGuestContainer),
+    InVMSelfPath (InVMSelfPath),
     LiftDispatch (DispatchTool),
+    LocalSelfPath (LocalSelfPath),
     SelfRef,
     inContainer,
     inVM,
     localContext,
-    InVMSelfPath (InVMSelfPath),
-    LocalSelfPath (LocalSelfPath),
     mkSelfRef,
  )
 import HostBootstrap.ProjectPlan (

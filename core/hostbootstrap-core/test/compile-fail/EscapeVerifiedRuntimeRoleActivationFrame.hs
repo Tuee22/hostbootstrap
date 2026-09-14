@@ -13,43 +13,85 @@ data CallerActivationInstance
 
 selectScope ::
     VerifiedRuntimeRoleActivation
-        CallerActivationScope plan spec binary frame revision instanceId ->
+        CallerActivationScope
+        plan
+        spec
+        binary
+        frame
+        revision
+        instanceId ->
     IO ()
 selectScope _ = pure ()
 
 selectPlan ::
     VerifiedRuntimeRoleActivation
-        scope CallerActivationPlan spec binary frame revision instanceId ->
+        scope
+        CallerActivationPlan
+        spec
+        binary
+        frame
+        revision
+        instanceId ->
     IO ()
 selectPlan _ = pure ()
 
 selectSpec ::
     VerifiedRuntimeRoleActivation
-        scope plan CallerActivationSpec binary frame revision instanceId ->
+        scope
+        plan
+        CallerActivationSpec
+        binary
+        frame
+        revision
+        instanceId ->
     IO ()
 selectSpec _ = pure ()
 
 selectBinary ::
     VerifiedRuntimeRoleActivation
-        scope plan spec CallerActivationBinary frame revision instanceId ->
+        scope
+        plan
+        spec
+        CallerActivationBinary
+        frame
+        revision
+        instanceId ->
     IO ()
 selectBinary _ = pure ()
 
 selectFrame ::
     VerifiedRuntimeRoleActivation
-        scope plan spec binary CallerActivationFrame revision instanceId ->
+        scope
+        plan
+        spec
+        binary
+        CallerActivationFrame
+        revision
+        instanceId ->
     IO ()
 selectFrame _ = pure ()
 
 selectRevision ::
     VerifiedRuntimeRoleActivation
-        scope plan spec binary frame CallerActivationRevision instanceId ->
+        scope
+        plan
+        spec
+        binary
+        frame
+        CallerActivationRevision
+        instanceId ->
     IO ()
 selectRevision _ = pure ()
 
 selectInstance ::
     VerifiedRuntimeRoleActivation
-        scope plan spec binary frame revision CallerActivationInstance ->
+        scope
+        plan
+        spec
+        binary
+        frame
+        revision
+        CallerActivationInstance ->
     IO ()
 selectInstance _ = pure ()
 

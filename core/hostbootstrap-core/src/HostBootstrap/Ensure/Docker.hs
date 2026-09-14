@@ -13,19 +13,19 @@ module HostBootstrap.Ensure.Docker (reconciler, installSteps) where
 
 import Control.Monad (when)
 import HostBootstrap.Ensure (
-    grantSocketAccess,
-    requireSudoStep,
-    withInvokingGroupMember,
     FramePlan (InstallHere, ProvidedElsewhere),
     InstallStep (..),
     Reconciler (..),
     appleRow,
     frameTable,
+    grantSocketAccess,
     installAndVerify,
     linuxRow,
     reconcilerInstallSteps,
+    requireSudoStep,
     runTool,
     windowsRow,
+    withInvokingGroupMember,
  )
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Sudo))
@@ -152,4 +152,3 @@ reportDockerAccessVerified :: IO ()
 reportDockerAccessVerified =
     putStrLn
         (dockerLabel ++ ": docker group membership verified and current-session socket ACL ensured")
-

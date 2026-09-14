@@ -1,5 +1,5 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -67,6 +67,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
+import HostBootstrap.Authority (InstalledProjectIdentity, VerbUp)
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Config.Class (
     ExistingOutputPolicy (..),
@@ -95,7 +96,6 @@ import HostBootstrap.Harness.Ownership (
     protectedProjectRunOwnership,
     withOwnedHarnessRoot,
  )
-import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.Lifecycle.Mode (
     ProductionRoot,
     harnessActiveMode,
@@ -108,11 +108,11 @@ import HostBootstrap.Lifecycle.Mode (
     productionRootAuthority,
     productionRootModeLease,
     productionRootUnboundLease,
+    withHarnessLifecycleProfile,
     withProductionLifecycleProfile,
     withProductionRoot,
-    withHarnessLifecycleProfile,
  )
-import HostBootstrap.Authority (InstalledProjectIdentity, VerbUp)
+import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     planDraftsFromValidatedBuilder,
@@ -359,9 +359,10 @@ withFixtureProjectPlanContext selectContext stepPlan use =
             modeResult <- either (fail . show) pure rooted
             either (fail . show) pure modeResult
 
--- | Admit a real Production plan while retaining the exact store, installed
--- project, and root that produced it. Recovery specs use this to exercise
--- protected snapshot-indexed folds without manufacturing any authority.
+{- | Admit a real Production plan while retaining the exact store, installed
+project, and root that produced it. Recovery specs use this to exercise
+protected snapshot-indexed folds without manufacturing any authority.
+-}
 withFixtureProjectPlanRoot ::
     StepPlan ->
     ( forall projectId brokerGeneration specDigest planId configId.
@@ -532,10 +533,11 @@ testConfigCodec :: CodecWitness TestConfig
 testConfigCodec =
     requireCodecWitness "fixture TestConfig" (autoCodecWitness @TestConfig)
 
--- | An explicitly installed projector for tests whose subject never reaches
--- forward-child planning.  It preserves the production requirement that a
--- real ProjectSpec installs exactly one projector without inventing runtime
--- projection coverage in unrelated fixtures.
+{- | An explicitly installed projector for tests whose subject never reaches
+forward-child planning.  It preserves the production requirement that a
+real ProjectSpec installs exactly one projector without inventing runtime
+projection coverage in unrelated fixtures.
+-}
 refusingForwardChildPlan ::
     ProjectConfig scope ->
     Text ->

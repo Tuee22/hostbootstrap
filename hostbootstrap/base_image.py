@@ -17,7 +17,8 @@ from typing import Final
 import httpx
 
 from . import docker_ops, resources
-from .substrate import Arch, SubstrateName
+from .bootstrap import GHC_VERSION
+from .substrate import Arch
 
 
 class Flavor(StrEnum):
@@ -50,13 +51,6 @@ def base_tag(flavor: Flavor, arch: Arch) -> str:
 
 def base_image_ref(flavor: Flavor, arch: Arch) -> str:
     return f"{HOSTBOOTSTRAP_IMAGE_REPO}:{base_tag(flavor, arch)}"
-
-
-def substrate_to_flavor(substrate: SubstrateName) -> Flavor:
-    """Return the base family used by a declared hardware target."""
-    if substrate is SubstrateName.LINUX_GPU:
-        return Flavor.CUDA
-    return Flavor.CPU
 
 
 _HTTP_TIMEOUT: Final[httpx.Timeout] = httpx.Timeout(30.0)
@@ -121,6 +115,19 @@ def resolve_kind_version() -> str:
 
 def resolve_kubectl_version() -> str:
     return _http_get_text("https://dl.k8s.io/release/stable.txt").strip()
+
+
+def resolve_mc_version() -> str:
+    """Return the latest MinIO client release tag.
+
+    The binaries used to be served unversioned from ``dl.min.io``; on
+    2026-09-13 that host began answering ``410 Gone`` for every community
+    release, because the open-source server, client and KES projects were
+    archived. The GitHub releases still carry per-architecture assets, so the
+    client is resolved the same way ``kind``, ``helm`` and ``pulumi`` already
+    are: by tag, from the project's own releases.
+    """
+    return _latest_release_tag("https://api.github.com/repos/minio/mc/releases/latest")
 
 
 def resolve_helm_version() -> str:
@@ -210,7 +217,9 @@ class BaseImageBuildArgs:
     kind_version: str
     kubectl_version: str
     helm_version: str
+    mc_version: str
     pulumi_version: str
+    ghc_version: str
     ghcup_download_url: str
     kind_download_url: str
     kubectl_download_url: str
@@ -237,7 +246,9 @@ class BaseImageBuildArgs:
             "KIND_VERSION": self.kind_version,
             "KUBECTL_VERSION": self.kubectl_version,
             "HELM_VERSION": self.helm_version,
+            "MC_VERSION": self.mc_version,
             "PULUMI_VERSION": self.pulumi_version,
+            "GHC_VERSION": self.ghc_version,
             "GHCUP_DOWNLOAD_URL": self.ghcup_download_url,
             "KIND_DOWNLOAD_URL": self.kind_download_url,
             "KUBECTL_DOWNLOAD_URL": self.kubectl_download_url,
@@ -270,6 +281,7 @@ def compute_build_args(
     kind_version = resolve_kind_version()
     kubectl_version = resolve_kubectl_version()
     helm_version = resolve_helm_version()
+    mc_version = resolve_mc_version()
     pulumi_version = resolve_pulumi_version()
 
     return BaseImageBuildArgs(
@@ -293,7 +305,13 @@ def compute_build_args(
         kind_version=kind_version,
         kubectl_version=kubectl_version,
         helm_version=helm_version,
+        mc_version=mc_version,
         pulumi_version=pulumi_version,
+        # Pinned, not resolved: every other version here is discovered because a
+        # rebuild exists to find what consumers will resolve against, but the
+        # compiler is the warm store's ABI key and is already the one constant
+        # the host bootstrapper and the VM guest both install.
+        ghc_version=GHC_VERSION,
         ghcup_download_url=(
             f"https://downloads.haskell.org/~ghcup/{_GHCUP_ARCH[arch]}-linux-ghcup"
         ),
@@ -302,7 +320,10 @@ def compute_build_args(
             f"https://dl.k8s.io/release/{kubectl_version}/bin/linux/{arch.value}/kubectl"
         ),
         helm_download_url=f"https://get.helm.sh/helm-{helm_version}-linux-{arch.value}.tar.gz",
-        mc_download_url=f"https://dl.min.io/client/mc/release/linux-{arch.value}/mc",
+        mc_download_url=(
+            f"https://github.com/minio/mc/releases/download/{mc_version}/"
+            f"mc.linux-{arch.value}.{mc_version}"
+        ),
         aws_download_url=f"https://awscli.amazonaws.com/awscli-exe-linux-{_AWS_ARCH[arch]}.zip",
         pulumi_download_url=(
             "https://get.pulumi.com/releases/sdk/"
@@ -338,9 +359,15 @@ def build_spec_for(
         build_args=resolved.as_build_args(),
         pull=pull,
         no_cache=no_cache,
-        memory=budget.docker_memory if budget is not None else None,
-        memory_swap=budget.docker_memory_swap if budget is not None else None,
-        cpus=budget.docker_cpus if budget is not None else None,
+        builder=(
+            docker_ops.BuildKitBuilder()
+            if budget is None
+            else docker_ops.ClassicBuilder(
+                memory=budget.docker_memory,
+                memory_swap=budget.docker_memory_swap,
+                cpus=budget.docker_cpus,
+            )
+        ),
     )
     return spec, resolved
 
@@ -382,5 +409,5 @@ def compatibility_smoke_spec(
         build_args={"BASE_IMAGE": base_reference},
         pull=pull,
         no_cache=True,
-        use_classic_builder=not pull,
+        builder=docker_ops.BuildKitBuilder() if pull else docker_ops.ClassicBuilder(),
     )

@@ -76,6 +76,7 @@ module HostBootstrap.Teardown (
     PreDescentStep,
     preDescentStepKey,
     preDescentStepFrame,
+    preDescentStepRun,
     SettledChildren,
     settledChildrenKeys,
     TeardownWork,
@@ -570,6 +571,21 @@ preDescentStepKey (PreDescentStep point) = authorizationPointKey point
 -- | The frame whose provider this reachability step makes reachable again.
 preDescentStepFrame :: PreDescentStep scope planId frame verb -> Text
 preDescentStepFrame (PreDescentStep point) = reverseFrame (authorizationPointStep point)
+
+{- | The reachability effect this node runs, which is the same callback its
+forward step declared with 'HostBootstrap.Step.reversedBy', invoked with
+'ReachFrame'.
+
+It is the node's own callback rather than a second declaration because only one
+component knows how to open this provider, and it is the one that knows how to
+stop and delete it. A node that declared no reverse has nothing to open, and the
+driver treats its reachability step as already released — that is the childless
+and core-managed case, not a provider.
+-}
+preDescentStepRun ::
+    PreDescentStep scope planId frame verb ->
+    Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
+preDescentStepRun (PreDescentStep point) = reverseRun (authorizationPointStep point)
 
 -- | Proof that this node's exact child set has settled.
 newtype SettledChildren scope planId frame = SettledChildren [Text]

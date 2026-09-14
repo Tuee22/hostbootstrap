@@ -4,18 +4,18 @@ preparations even when every public byte is otherwise unavailable.
 -}
 module MismatchPreparedPairRoles where
 
-import HostBootstrap.Reconcile
-    ( BackendReconcileObservation (BackendCreated)
-    , Observed
-    , PreparedOperation
-    , PreparedPreconditions
-    , Provisioned
-    , ReconcileError
-    , ReconcileResult
-    , ResourceHandle
-    , Unclassified
-    , completeReconcile
-    )
+import HostBootstrap.Reconcile (
+    BackendReconcileObservation (BackendCreated),
+    Observed,
+    PreparedOperation,
+    PreparedPreconditions,
+    Provisioned,
+    ReconcileError,
+    ReconcileResult,
+    ResourceHandle,
+    Unclassified,
+    completeReconcile,
+ )
 
 data PairScope
 data PairPlan

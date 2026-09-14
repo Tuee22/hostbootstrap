@@ -108,9 +108,9 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.List (sort)
 import Data.Text (Text)
-import Data.Word (Word64, Word8)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Word (Word64, Word8)
 import HostBootstrap.Handoff (
     frameWire,
     unframeWire,

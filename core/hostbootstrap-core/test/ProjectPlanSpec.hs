@@ -5,7 +5,6 @@
 
 module ProjectPlanSpec (tests) where
 
-import Expect (expectRight)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -19,6 +18,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import Expect (expectRight)
 import qualified Fixture
 import HostBootstrap.Authority (
     AuthorityError (AuthorityMalformedBinding),
@@ -198,8 +198,8 @@ import HostBootstrap.Service (
     ServiceResourceBackend (..),
     emptyServiceRegistry,
     finalizedServiceVariantNames,
-    serviceProgramDefinition,
     serviceId,
+    serviceProgramDefinition,
     serviceRoleSchemaFamilies,
     singletonServiceRegistry,
  )
@@ -232,13 +232,13 @@ import HostBootstrap.Step (
     providerResourceAtImmediateChild,
     stepPlanSteps,
  )
-import SourceGuard
-    ( fieldModules
-    , listHaskellSources
-    , mainLibraryStanza
-    , normalizeWhitespace
-    , significantHaskellLineCount
-    )
+import SourceGuard (
+    fieldModules,
+    listHaskellSources,
+    mainLibraryStanza,
+    normalizeWhitespace,
+    significantHaskellLineCount,
+ )
 import qualified SourceGuard
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -1751,8 +1751,9 @@ sourceBoundaryTests =
                     -- the frame-child classification `runCLI` consults before
                     -- the parser, whose 5 lines belong to its own sprint too.
                     -- The identity-install boundary contributes ten later CLI
-                    -- lines: the original lifecycle preflight plus Phase 24's
-                    -- exact private post-copy entry and installer. Phase 16's
+                    -- lines: the original lifecycle preflight plus the
+                    -- worked-demo phase's exact private post-copy entry and
+                    -- installer. The cluster-lifecycle phase's
                     -- private relay classifier contributes three later lines to
                     -- shared CLI and is excluded from this projector owner's
                     -- attribution just like the five frame-child lines. The
@@ -1926,13 +1927,13 @@ sourceBoundaryTests =
                     , "withFinalizedForwardChildProjectionKernel"
                     ]
                 sha256Text constructBytes
-                    @?= "fab624d2ddf1fd067b57323d23df1c7a9c4d2e0b6e78fbbd1a6638e704017eb4"
+                    @?= "05dfeef65e1252a544867f4c91ee67a4934246689ea286e166858aa10bdc2e16"
                 sha256Text internalBytes
-                    @?= "fc8731711546662895f1766e7e79968c9fc30bd770a0f159915fd981a4ee185d"
-                (constructSignificant, internalSignificant) @?= (591, 220)
+                    @?= "821e9b1deb79a23ae62339022d86aee874a0a1f3e02bf4f91204ae596d9cadb3"
+                (constructSignificant, internalSignificant) @?= (631, 226)
                 assertBool "shared CLI lost the installed projector surface" (cliSignificant >= 424)
                 (sourceAttribution, sourceAttribution + cabalAttribution)
-                    @?= (172, 173)
+                    @?= (216, 217)
                 assertBool
                     "the accepted soft-target underrun crossed the hard 400-line split boundary"
                     (sourceAttribution + cabalAttribution < 400)
@@ -2220,8 +2221,8 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text handoffBytes
-                    @?= "d154e781659804d49acd9cd846767f9b5fb37c11a23ea63ffb939691ccf806e4"
-                significantHaskellLineCount handoffSource @?= 304
+                    @?= "161c490e8921b365339b6dec5648c3bc6368855b172c356253b63c5debd4f368"
+                significantHaskellLineCount handoffSource @?= 338
                 assertBool
                     "the forward-package owner crossed the hard 400-line split boundary"
                     (significantHaskellLineCount handoffSource < 400)
@@ -2480,7 +2481,7 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text projectionBytes
-                    @?= "9902a395b1105c1fa9ef7025a3b6a12e1d5d96addb07490e23a0d8b19c8eaef8"
+                    @?= "a424529d34ce42cd8e49c6cd8377b719e48dc670ca8e9e57dc9625c9225f5d07"
                 significantHaskellLineCount projectionSource @?= 274
         , testCase "the recursive rooted plan catalog is nominal, hidden, fold-only, and inert" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
@@ -2726,8 +2727,8 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text catalogBytes
-                    @?= "926d23510b9142d48cc5bce9a96df83e1fe0773b553c4ce9743249c9a50a4780"
-                catalogSignificant @?= 414
+                    @?= "6f38f4a0c3656f3f229ba6f8302e025378a84041b286f26d98a2bb8e80cd17f2"
+                catalogSignificant @?= 421
                 assertBool
                     "the recursive catalog owner crossed the hard 425-line split boundary"
                     (catalogSignificant < 425)
@@ -3631,6 +3632,10 @@ sourceBoundaryTests =
                             ]
                 filter (/= ",") routeExports
                     @?= [ "LifecycleProcessRoute"
+                        , "ChannelInteractivity"
+                        , "("
+                        , ".."
+                        , ")"
                         , "withForwardLifecycleProcessRouteKernel"
                         , "withNestedForwardLifecycleProcessRouteKernel"
                         , "withRecoveryLifecycleProcessRouteKernel"
@@ -3648,17 +3653,39 @@ sourceBoundaryTests =
                 mapM_
                     (\name -> modulesExporting name publicExports @?= [])
                     [ "LifecycleProcessRoute"
+                    , "ChannelInteractivity"
                     , "withForwardLifecycleProcessRouteKernel"
                     , "withRecoveryLifecycleProcessRouteKernel"
                     , "withLifecycleProcessRouteLaunchKernel"
                     , "withLifecycleChildOpeningKernel"
                     ]
                 assertContains
-                    "the sole named type carries seven nominal roles"
+                    "the sealed route carries seven nominal roles"
                     "type role LifecycleProcessRoute nominal nominal nominal nominal nominal nominal nominal"
                     route
-                SourceGuard.countHaskellIdentifier "data" routeSource @?= 1
-                SourceGuard.countHaskellIdentifier "newtype" routeSource @?= 0
+                -- The route type, the two-case channel the launch names, the
+                -- three admitted results that used to be anonymous tuples, and
+                -- the two wrappers that separate admitted text from any other
+                -- text. Nothing else here is allowed to become a type.
+                assertContains
+                    "the channel a launch asks for is a two-case type rather than a boolean"
+                    "data ChannelInteractivity = InteractiveChannel | NoninteractiveChannel"
+                    route
+                mapM_
+                    (\declaration -> assertContains "the route's named results" declaration route)
+                    [ "data AdmittedLaunch = AdmittedLaunch HostTool [Text] ChannelInteractivity"
+                    , "data AdmittedEdge = AdmittedEdge Text Text AdmittedLaunch"
+                    , "data AdmittedLayers = AdmittedLayers [LiftLayer] ChannelInteractivity"
+                    , "newtype ValidatedArgument = ValidatedArgument {admittedText :: Text}"
+                    , "newtype ValidatedPath = ValidatedPath {admittedPathText :: Text}"
+                    ]
+                SourceGuard.countHaskellIdentifier "data" routeSource @?= 5
+                SourceGuard.countHaskellIdentifier "newtype" routeSource @?= 2
+                assertBool
+                    "the only Bool left is the predicate `require` takes, never a threaded result"
+                    ( SourceGuard.countHaskellIdentifier "Bool" routeSource == 1
+                        && "require :: Text -> Bool -> Either Text ()" `isInfixOf` route
+                    )
                 assertContains
                     "the edge is minted by a derivation rather than named"
                     "( forall parent child. LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb -> IO (Either Text ()) ) -> IO (Either Text ())"
@@ -3667,7 +3694,8 @@ sourceBoundaryTests =
                     "both routes are derived from a package rather than assembled from arguments"
                     [ "withCatalogForwardProcessInputsKernel package $ \\route input _payload ->"
                     , "case derive verb \"execute\" (withoutConfigDelivery route) input targetBinary of"
-                    , "use (LifecycleProcessRoute verb parent child tool argv interactive)"
+                    , "Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity))"
+                    , "use (LifecycleProcessRoute verb parent child tool argv interactivity)"
                     , "derive verb \"teardown\" (withoutConfigDelivery route) input targetBinary"
                     ]
                     derivation
@@ -3675,7 +3703,8 @@ sourceBoundaryTests =
                     "the edge is the binding input's own and its phase is checked before a launch is rendered"
                     [ "require \"the admitted edge joins one frame to itself\" (parent /= child)"
                     , "(requestedPhase input == phase)"
-                    , "(tool, argv, interactive) <- sanitizedLaunch route child targetBinary (subcommand verb)"
+                    , "launch <- sanitizedLaunch route child targetBinary (subcommand verb)"
+                    , "pure (AdmittedEdge parent child launch)"
                     , "parent = requestedParentFrame input"
                     , "child = requestedChildFrame input"
                     ]
@@ -3695,12 +3724,12 @@ sourceBoundaryTests =
                 assertFragmentsInOrder
                     "the route validates policy and delegates every crossing argv to the sole Lift fold"
                     [ "admitted <- admittedContainer child container"
-                    , "folded (LiftContext [ViaContainer admitted]) \"\" inner True"
-                    , "folded route targetBinary inner False"
-                    , "(admitted, interactive) <- validateComposedLayers child layers targetBinary"
-                    , "folded (LiftContext admitted) targetBinary inner interactive"
+                    , "folded (LiftContext [ViaContainer admitted]) \"\" inner InteractiveChannel"
+                    , "folded route targetBinary inner NoninteractiveChannel"
+                    , "AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary"
+                    , "folded (LiftContext admitted) targetBinary inner interactivity"
                     , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
-                    , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack frame"
+                    , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack (admittedText frame)"
                     , "++ placementArgs"
                     , "case foldLeaf route (lifecycleProcessLeaf"
                     , "DispatchTool tool argv -> Right"
@@ -3710,7 +3739,7 @@ sourceBoundaryTests =
                     "a composed terminal container receives the same admitted protocol-channel arguments"
                     [ "go [ViaContainer container] = do"
                     , "admitted <- admittedContainer child container"
-                    , "pure ([ViaContainer admitted], True)"
+                    , "pure (AdmittedLayers [ViaContainer admitted] InteractiveChannel)"
                     , "admittedContainer child container = do"
                     , "\"-i\""
                     , "\"--network=host\""
@@ -3733,6 +3762,15 @@ sourceBoundaryTests =
                 assertContains
                     "every derived argument is admitted against that grammar"
                     "require (label <> \" reads as an option or a separator\") (not (\"-\" `Text.isPrefixOf` value))"
+                    route
+                assertFragmentsInOrder
+                    "admitted text leaves the grammar as its own type, and a path is admitted text that is also absolute"
+                    [ "sanitizedPath :: Text -> Text -> Either Text ValidatedPath"
+                    , "admitted <- admittedText <$> sanitizedArgument label value"
+                    , "pure (ValidatedPath admitted)"
+                    , "sanitizedArgument :: Text -> Text -> Either Text ValidatedArgument"
+                    , "pure (ValidatedArgument value)"
+                    ]
                     route
                 assertFragmentsInOrder
                     "a frame opens for itself: its own nested arm carries an OpenFrame built from the nonce alone, and the answer is verified against those exact bytes"
@@ -7634,20 +7672,22 @@ metadataServiceRegistry name =
             (const (pure ()))
         )
   where
-    resources = ServiceResourceBackend
-        { serviceRolePlanDraft = either (error . show) id $ do
-            request <- mkRoleResourceRequest "metadata" False
-            rolePlanDraft [request]
-        , servicePrerequisite = pure PrereqSatisfied
-        , serviceAcquireResource = \_ -> pure Acquired
-        , serviceProbeResource = \_ -> pure ProbeReadyNow
-        , serviceReleaseResource = \_ -> pure Released
-        }
-    backend = ServiceBackend
-        { backendServe = \_ -> fail "NoEffects fixture dispatched listen"
-        , backendCall = \_ _ -> fail "NoEffects fixture dispatched call"
-        , backendWork = \_ _ -> fail "NoEffects fixture dispatched work"
-        }
+    resources =
+        ServiceResourceBackend
+            { serviceRolePlanDraft = either (error . show) id $ do
+                request <- mkRoleResourceRequest "metadata" False
+                rolePlanDraft [request]
+            , servicePrerequisite = pure PrereqSatisfied
+            , serviceAcquireResource = \_ -> pure Acquired
+            , serviceProbeResource = \_ -> pure ProbeReadyNow
+            , serviceReleaseResource = \_ -> pure Released
+            }
+    backend =
+        ServiceBackend
+            { backendServe = \_ -> fail "NoEffects fixture dispatched listen"
+            , backendCall = \_ _ -> fail "NoEffects fixture dispatched call"
+            , backendWork = \_ _ -> fail "NoEffects fixture dispatched work"
+            }
 
 withFoundation ::
     ( forall projectId specDigest rootId configId.
@@ -8246,7 +8286,6 @@ hexRoot root =
 
 expectStepPlan :: [Step] -> StepPlan
 expectStepPlan = either (error . show) id . mkStepPlan
-
 
 joinPlan :: Either PlanError (Either PlanError value) -> Either PlanError value
 joinPlan = either Left id

@@ -4,13 +4,13 @@ relabeled across their nominal generative or phase axes.
 module CoerceReconcileEvidenceRoles where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Reconcile
-    ( LifecyclePlan
-    , OperationDescriptor
-    , OwnershipReceipt
-    , PhaseTransition
-    , ReconcileResult
-    )
+import HostBootstrap.Reconcile (
+    LifecyclePlan,
+    OperationDescriptor,
+    OwnershipReceipt,
+    PhaseTransition,
+    ReconcileResult,
+ )
 
 data LifecycleScopeA
 data LifecycleScopeB

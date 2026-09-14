@@ -17,31 +17,31 @@ data PhaseA
 data PhaseB
 
 coerceScope ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeB PlanA BackendA ProviderA ShareA PhaseA
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeB PlanA BackendA ProviderA ShareA PhaseA
 coerceScope = coerce
 
 coercePlan ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeA PlanB BackendA ProviderA ShareA PhaseA
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeA PlanB BackendA ProviderA ShareA PhaseA
 coercePlan = coerce
 
 coerceBackend ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeA PlanA BackendB ProviderA ShareA PhaseA
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeA PlanA BackendB ProviderA ShareA PhaseA
 coerceBackend = coerce
 
 coerceProvider ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderB ShareA PhaseA
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderB ShareA PhaseA
 coerceProvider = coerce
 
 coerceShare ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareB PhaseA
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareB PhaseA
 coerceShare = coerce
 
 coercePhase ::
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
-  ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseB
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseA ->
+    ManagedProviderShareHandle ScopeA PlanA BackendA ProviderA ShareA PhaseB
 coercePhase = coerce

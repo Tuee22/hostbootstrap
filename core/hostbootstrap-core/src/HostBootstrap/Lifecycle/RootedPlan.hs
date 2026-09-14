@@ -1,8 +1,8 @@
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE NoMonoLocalBinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE NoMonoLocalBinds #-}
 
 {- | The root-owned recursive plan catalog.
 
@@ -22,18 +22,18 @@ strictly compares an observed durable manifest with it.  Both are pure: this
 module names no store, session, record, or compare-and-swap operation, so the
 root entry that persists the manifest holds the only durable authority.
 -}
-module HostBootstrap.Lifecycle.RootedPlan
-    ( RootedPlanCatalog
-    , withRootedPlanCatalogKernel
-    , withRootedPlanCatalogRootKernel
-    , withRootedPlanCatalogEntriesKernel
-    , withRootedPlanCatalogEntriesContinuationKernel
-    , withRootedPlanCatalogEntryKernel
-    , withRootedPlanCatalogEdgeKernel
-    , rootedPlanCatalogRecordIdentityKernel
-    , rootedPlanCatalogManifestKernel
-    , rootedPlanCatalogManifestMatchesKernel
-    )
+module HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+    withRootedPlanCatalogKernel,
+    withRootedPlanCatalogRootKernel,
+    withRootedPlanCatalogEntriesKernel,
+    withRootedPlanCatalogEntriesContinuationKernel,
+    withRootedPlanCatalogEntryKernel,
+    withRootedPlanCatalogEdgeKernel,
+    rootedPlanCatalogRecordIdentityKernel,
+    rootedPlanCatalogManifestKernel,
+    rootedPlanCatalogManifestMatchesKernel,
+)
 where
 
 import Data.Bits (shiftR)
@@ -44,43 +44,43 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Authority.Kernel
-    ( RootInvocationAuthority
-    , rootAuthorityProjectName
-    , rootAuthorityStoreIdentity
-    )
+import HostBootstrap.Authority.Kernel (
+    RootInvocationAuthority,
+    rootAuthorityProjectName,
+    rootAuthorityStoreIdentity,
+ )
 import HostBootstrap.Config.Class (ProjectCfg)
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Lifecycle.Context.Internal
-    ( ValidatedLifecycleContext
-    , withValidatedRootLifecycleContext
-    )
-import HostBootstrap.Lifecycle.Plan
-    ( PlanDigestBinding
-    , ProjectPlan
-    , forwardKernel
-    , planDigestBindingDigestKernel
-    , plannedStepFrameIdKernel
-    , plannedStepProjectedOperationKeysKernel
-    , projectPlanProfileEpochKernel
-    , projectPlanProfileNameKernel
-    , projectPlanProfileProjectNameKernel
-    , projectPlanProfileStoreIdentityKernel
-    , renderSnapshotKernel
-    , stablePlanSnapshotDigestKernel
-    , stablePlanSnapshotSpecDigestKernel
-    , topologyDescentFromKernel
-    , topologyFrameOrderKernel
-    , topologyKernel
-    )
+import HostBootstrap.Lifecycle.Context.Internal (
+    ValidatedLifecycleContext,
+    withValidatedRootLifecycleContext,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    PlanDigestBinding,
+    ProjectPlan,
+    forwardKernel,
+    planDigestBindingDigestKernel,
+    plannedStepFrameIdKernel,
+    plannedStepProjectedOperationKeysKernel,
+    projectPlanProfileEpochKernel,
+    projectPlanProfileNameKernel,
+    projectPlanProfileProjectNameKernel,
+    projectPlanProfileStoreIdentityKernel,
+    renderSnapshotKernel,
+    stablePlanSnapshotDigestKernel,
+    stablePlanSnapshotSpecDigestKernel,
+    topologyDescentFromKernel,
+    topologyFrameOrderKernel,
+    topologyKernel,
+ )
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectPlan.Construct.Internal (FinalizedProjectSpec)
-import HostBootstrap.ProjectPlan.Frame
-    ( CurrentFrame
-    , currentFrameId
-    , projectFrameId
-    , validatedContextValue
-    )
+import HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    currentFrameId,
+    projectFrameId,
+    validatedContextValue,
+ )
 import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
 import HostBootstrap.Step (OperationKey, operationKeyText)
 
@@ -299,7 +299,14 @@ withRootedPlanCatalogEntriesContinuationKernel ::
       ProjectPlan scope specDigest childPlanId childConfigId cfg ->
       PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
       CurrentFrame scope childPlanId childFrame ->
-      Text -> Text -> LiftContext -> LiftContext -> ByteString -> Text -> Text -> [OperationKey] ->
+      Text ->
+      Text ->
+      LiftContext ->
+      LiftContext ->
+      ByteString ->
+      Text ->
+      Text ->
+      [OperationKey] ->
       state ->
       (state -> IO (Either Text ())) ->
       IO (Either Text ())
@@ -555,6 +562,6 @@ manifestWord value =
 refusal :: Text -> Either Text value
 refusal detail = Left ("rooted plan catalog: " <> detail)
 
-failureText :: Show failure => Text -> failure -> Text
+failureText :: (Show failure) => Text -> failure -> Text
 failureText label failure =
     "rooted plan catalog: " <> label <> " refused: " <> Text.pack (show failure)

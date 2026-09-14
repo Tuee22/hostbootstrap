@@ -124,8 +124,9 @@ renderDimension BudgetCpu = "cpu"
 renderDimension BudgetMemory = "memory"
 renderDimension BudgetStorage = "storage"
 
--- | Construct a positive, bounded canonical budget. Raw record construction is
--- private so zero/negative/overflowed values cannot reach provider builders.
+{- | Construct a positive, bounded canonical budget. Raw record construction is
+private so zero/negative/overflowed values cannot reach provider builders.
+-}
 mkResourceBudget :: Natural -> Integer -> Integer -> Either QuantityError ResourceBudget
 mkResourceBudget cores memoryBytes storageBytes
     | cores == 0 = Left (DimensionNotPositive BudgetCpu)
@@ -197,10 +198,11 @@ data StorageCordonUnsupportedReason
     = BareLinuxQuotaAndImageGcUnavailable
     deriving (Eq, Show)
 
--- | The honest storage-cordon policy result. A supported result identifies the
--- provider mechanism that an interpreter must apply. Bare Linux has neither a
--- quota'd host path nor an image-GC wall, so it returns an explicit typed
--- unsupported result instead of treating the capacity preflight as enforcement.
+{- | The honest storage-cordon policy result. A supported result identifies the
+provider mechanism that an interpreter must apply. Bare Linux has neither a
+quota'd host path nor an image-GC wall, so it returns an explicit typed
+unsupported result instead of treating the capacity preflight as enforcement.
+-}
 data StorageCordonResult
     = StorageCordonSupported StorageCordonMechanism
     | StorageCordonUnsupported StorageCordonUnsupportedReason

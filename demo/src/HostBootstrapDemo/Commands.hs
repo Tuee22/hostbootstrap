@@ -110,7 +110,7 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List (dropWhileEnd, find, intercalate, isInfixOf, isPrefixOf, isSuffixOf)
 import qualified Data.List.NonEmpty as NonEmpty
-import Data.Maybe (fromMaybe, listToMaybe)
+import Data.Maybe (fromMaybe, isJust, listToMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
@@ -160,18 +160,14 @@ import HostBootstrap.Cluster.Budget (withActionResourceSlice)
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
-    renderQuantityError,
     budgetMemoryBytes,
     budgetStorageBytes,
     gibibytes,
     preflightHostBudget,
+    renderQuantityError,
     resolveHostCapacity,
  )
 import HostBootstrap.Cluster.Lifecycle (
-    AcceleratorDaemonPlacement (..),
-    ingressNodePort,
-    ingressServicePort,
-    ingressServiceType,
     ClusterDriver (KindDriver, NvkindDriver),
     ClusterPlan (..),
     ClusterProfile (Production, TestCase),
@@ -181,6 +177,9 @@ import HostBootstrap.Cluster.Lifecycle (
     clusterNodeNames,
     ensureNvidiaDevicePluginWith,
     ensureProfileDataPath,
+    ingressNodePort,
+    ingressServicePort,
+    ingressServiceType,
     nvidiaAllocatableProbeArgs,
     nvidiaAllocatableReady,
     nvidiaDevicePluginHelmArgs,
@@ -284,7 +283,7 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionSignActivationManifest,
  )
 import HostBootstrap.Lifecycle.Prepared (preparedGateFence, preparedGateJournalVersion)
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), InVMSelfPath (InVMSelfPath), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), InVMSelfPath (InVMSelfPath), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, inContainer, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
     Exposure,
@@ -326,6 +325,21 @@ import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalHostSubPath,
     canonicalProjectRootPath,
+ )
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedError,
+    ProtectedRecord (protectedRecordVersion),
+    ProtectedSession,
+    ProtectedStore,
+    RecordKey,
+    compareAndDeleteProtectedRecord,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    openProtectedStore,
+    protectedErrorMessage,
+    readProtectedRecord,
+    withProtectedEntry,
  )
 import HostBootstrap.Readiness (
     ObservedReady,
@@ -414,7 +428,7 @@ import HostBootstrap.Step (
     StepFrame (..),
     StepIdentity (..),
     StepPlan,
-    TeardownAction (DeleteFrame, RetainResource),
+    TeardownAction (DeleteFrame, ReachFrame, RetainResource),
     TeardownOutcome,
     buildImageStep,
     buildPbStep,
@@ -483,6 +497,7 @@ import HostBootstrap.Substrate.Provider.Backend (
     runProviderReadyCall,
     runProviderShareCall,
     runRetainedProviderDelete,
+    runRetainedProviderReady,
     runRetainedProviderStop,
     withProviderBoundExec,
  )
@@ -554,13 +569,13 @@ import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWebWithConfig)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeDirectory, removeFile, setPermissions, withCurrentDirectory)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import qualified System.FilePath.Posix as Posix
 import System.IO (hFlush, hPutStr, stderr, stdout)
-import System.IO.Error (isAlreadyExistsError, tryIOError)
+import System.IO.Error (tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 
@@ -621,17 +636,37 @@ demoWebAppCodec =
 
 {- | The demo's canonical build-time quality gate. It runs inside the project
 container after the binary and its container-local context are installed, using
-the formatter/linter/toolchain pinned in the base image.
+the formatter/linter/toolchain pinned in the base image — and on a host that has
+the same three tools.
+
+Each tool used to be an absolute literal: two of them re-spelled the base
+image's @HASKELL_STYLE_TOOLS_DIR@, which the Python bootstrapper owns and passes
+as a build argument, and the third named a GHCup layout. A constant spelled in
+two languages drifts silently, and a path that only exists in the image is the
+reason this verb could only ever run there.
 -}
 demoCheckCode :: IO ()
 demoCheckCode = do
+    fourmoluPath <- resolveCheckTool "fourmolu"
+    hlintPath <- resolveCheckTool "hlint"
+    cabalPath <- resolveCheckTool "cabal"
     runCheck "fourmolu" fourmoluPath ["--mode", "check", "app", "src"]
     runCheck "hlint" hlintPath ["app", "src"]
     runCheck "cabal -Werror" cabalPath ["build", "-j1", "--enable-tests", "--enable-benchmarks", "all", "--ghc-options=-Werror"]
-  where
-    fourmoluPath = "/opt/hostbootstrap/haskell-style/bin/fourmolu"
-    hlintPath = "/opt/hostbootstrap/haskell-style/bin/hlint"
-    cabalPath = "/root/.ghcup/bin/cabal"
+
+{- | Resolve one build-time tool to an absolute path, or refuse by name.
+
+@PATH@ is the seam the location arrives through. The base image sets it from the
+very build argument that decides where the style tools are installed, so the
+bootstrapper still owns that constant and the demo no longer restates it; a host
+with the three tools installed resolves the same names the same way.
+-}
+resolveCheckTool :: String -> IO FilePath
+resolveCheckTool name = do
+    found <- findExecutable name
+    case found of
+        Just path -> pure path
+        Nothing -> die ("check-code: " ++ name ++ " is not on PATH")
 
 runCheck :: String -> FilePath -> [String] -> IO ()
 runCheck label exe args = do
@@ -1321,14 +1356,16 @@ containerPlan profile ctx =
         }
   where
     root = T.unpack (Context.sourceRoot ctx)
-    placement = acceleratorPlacementForContext ctx
     basePlan
         | Context.isExplicitLinuxGpuContainer ctx =
             resolvePlanWithDriver demoProject root profile NvkindDriver
         | otherwise = resolvePlan demoProject root profile
+    -- Two branches, because two templates differ. There used to be three: the
+    -- in-cluster and host-resident kind configs were byte-identical apart from
+    -- their comments, so one branch was a distinction the YAML did not make and
+    -- a reader had to open both files to discover that.
     configFile
         | Context.isExplicitLinuxGpuContainer ctx = "nvkind-in-cluster.yaml"
-        | placement == InClusterDaemon = "kind-in-cluster.yaml"
         | otherwise = "kind.yaml"
 
 demoClusterKubeconfigPath :: ProjectConfig configScope -> Context.BinaryContext -> FilePath
@@ -1573,9 +1610,15 @@ registryImage = "registry:2"
 {- | The MinIO (S3-compatible) object store image the registry's storage backend
 targets. Single-binary and natively multi-arch (like @registry:2@), so it runs on
 every substrate with no per-component override.
+
+It is named by registry host on purpose. On 2026-09-13 the Docker Hub
+@minio/minio@ repository stopped resolving — MinIO archived the open-source
+server, client and KES projects, and @dl.min.io@ answers @410 Gone@ for every
+community release — while the same AGPL builds remain published on Quay. An
+unqualified name would have silently meant the repository that is gone.
 -}
 minioImage :: String
-minioImage = "minio/minio"
+minioImage = "quay.io/minio/minio"
 
 {- | The stable cluster-internal MinIO NodePort. The runtime exposure operation
 maps this target to an independently assigned loopback endpoint before the
@@ -2841,23 +2884,23 @@ startHostAcceleratorDaemonAction stepCfg execution
         demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg ctx -> do
             withHostAcceleratorExposure projectCfg execution $ \hostPort -> do
                 putStrLn "accelerator-daemon: entering the host-daemon lifecycle operation"
-                withHostAcceleratorDaemonOperation ctx $ do
+                withHostAcceleratorDaemonOperation ctx $ \session -> do
                     putStrLn "accelerator-daemon: clearing any prior host-daemon lifecycle"
-                    stopHostAcceleratorDaemonUnlocked cfg ctx
+                    stopHostAcceleratorDaemonUnlocked cfg ctx session
                     putStrLn "accelerator-daemon: prior host-daemon lifecycle is clear"
                     daemonExe <- installHostAcceleratorDaemonBinary ctx
                     putStrLn "accelerator-daemon: host-daemon binary installed"
-                    shutdownPath <- makeAbsolute (hostAcceleratorDaemonShutdownPath ctx)
-                    readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
-                    outputPath <- makeAbsolute (hostAcceleratorDaemonOutputPath ctx)
+                    shutdownPath <- makeAbsolute ((hostAcceleratorDaemonPath ctx "accelerator.shutdown"))
+                    readyPath <- makeAbsolute ((hostAcceleratorDaemonPath ctx "accelerator.ready"))
+                    outputPath <- makeAbsolute ((hostAcceleratorDaemonPath ctx "accelerator.output"))
                     let daemonCtx = Context.deriveHostDaemonContext (context projectCfg) (Context.sourceRoot ctx)
                         daemonCfg =
                             projectConfigFromContext
                                 projectCfg
                                 daemonCtx
-                        daemonCfgPath = hostAcceleratorDaemonConfigPath ctx
+                        daemonCfgPath = (hostAcceleratorDaemonPath ctx "dhall")
                         endpoint = "ws://127.0.0.1:" ++ show hostPort ++ "/api/accelerator/daemon"
-                    pidPath <- makeAbsolute (hostAcceleratorDaemonPidPath ctx)
+                    pidPath <- makeAbsolute ((hostAcceleratorDaemonPath ctx "accelerator.pid"))
                     _ <- either die pure (configuredServiceVariant daemonCfg)
                     binaryDigest <- measureBinaryDigest daemonExe >>= either (die . buildErrorMessage) pure
                     putStrLn "accelerator-daemon: host-daemon binary measured"
@@ -2908,9 +2951,9 @@ startHostAcceleratorDaemonAction stepCfg execution
                                     )
                                     env0
                     mask $ \restore -> do
-                        claimHostAcceleratorDaemon ctx
+                        claimHostAcceleratorDaemon session
                         let abortTracked = do
-                                cleanup <- try (stopHostAcceleratorDaemonUnlocked cfg ctx) :: IO (Either SomeException ())
+                                cleanup <- try (stopHostAcceleratorDaemonUnlocked cfg ctx session) :: IO (Either SomeException ())
                                 case cleanup of
                                     Right () -> pure ()
                                     Left err ->
@@ -2947,7 +2990,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                                             then abortTracked
                                             else do
                                                 removeIfExists readyPath
-                                                releaseHostAcceleratorDaemon ctx
+                                                releaseHostAcceleratorDaemon session
                                 pid <-
                                     restore (startWindowsHostAcceleratorDaemon cfg daemonExe pidPath daemonOverrides)
                                         `onException` abortWindowsLaunch
@@ -2957,7 +3000,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                             else do
                                 launch <-
                                     either
-                                        (\err -> releaseHostAcceleratorDaemon ctx >> die ("accelerator-daemon: " ++ err))
+                                        (\err -> releaseHostAcceleratorDaemon session >> die ("accelerator-daemon: " ++ err))
                                         pure
                                         (hostAcceleratorDaemonLaunch daemonExe hostAcceleratorDaemonArgs daemonEnv (takeDirectory daemonExe) outputPath)
                                 -- Acquire-and-spawn is total (§ HH), so a failed
@@ -2972,7 +3015,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                                             _ <- try (terminateDetachedChild child) :: IO (Either SomeException ())
                                             waited <- try (awaitDetachedChild 5000000 child) :: IO (Either SomeException (Maybe ExitCode))
                                             case (removed, removedReady, waited) of
-                                                (Right (), Right (), Right (Just _)) -> releaseHostAcceleratorDaemon ctx
+                                                (Right (), Right (), Right (Just _)) -> releaseHostAcceleratorDaemon session
                                                 _ ->
                                                     ioError
                                                         ( userError
@@ -2997,7 +3040,7 @@ startHostAcceleratorDaemonAction stepCfg execution
                                 case launched of
                                     Right () -> pure ()
                                     Left err -> do
-                                        releaseHostAcceleratorDaemon ctx
+                                        releaseHostAcceleratorDaemon session
                                         die ("accelerator-daemon: " ++ renderDetachedLaunchError err)
     | otherwise =
         putStrLn "accelerator-daemon: in-cluster daemon placement; host daemon hook is a no-op"
@@ -3008,80 +3051,106 @@ hostAcceleratorDaemonDir :: Context.BinaryContext -> FilePath
 hostAcceleratorDaemonDir ctx =
     T.unpack (Context.sourceRoot ctx) </> ".build" </> "accelerator-daemon"
 
-hostAcceleratorDaemonExePath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonExePath ctx =
-    hostAcceleratorDaemonDir ctx </> daemonExecutableName
-  where
-    daemonExecutableName
-        | os == "mingw32" = demoProject ++ ".exe"
-        | otherwise = demoProject
+{- | One host-daemon file, named by the suffix that distinguishes it.
 
-hostAcceleratorDaemonConfigPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonConfigPath ctx =
-    hostAcceleratorDaemonDir ctx </> (demoProject ++ ".dhall")
-
-hostAcceleratorDaemonPidPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonPidPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.pid"
-
-hostAcceleratorDaemonShutdownPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonShutdownPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.shutdown"
-
-hostAcceleratorDaemonReadyPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonReadyPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.ready"
-
-{- | Where the sealed launch retains the host daemon's own output, so a startup
-failure can quote it (§ CC). It is a lifecycle witness like the pid, ready, and
-shutdown files, and is removed with them.
+There were nine of these, each a one-line function appending one constant to one
+directory. Nine names for one join is nine places a reader has to look to learn
+that the directory is the same, and nine places a directory change has to be
+made. Two of them — the ownership and operation claims — are not files at all any
+more; the rest are this.
 -}
-hostAcceleratorDaemonOutputPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonOutputPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.output"
+hostAcceleratorDaemonPath :: Context.BinaryContext -> String -> FilePath
+hostAcceleratorDaemonPath ctx suffix =
+    hostAcceleratorDaemonDir ctx </> (demoProject ++ "." ++ suffix)
 
-hostAcceleratorDaemonOwnerPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonOwnerPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.owner"
+hostAcceleratorDaemonExePath :: Context.BinaryContext -> FilePath
+hostAcceleratorDaemonExePath ctx
+    | os == "mingw32" = hostAcceleratorDaemonPath ctx "exe"
+    | otherwise = hostAcceleratorDaemonDir ctx </> demoProject
 
-hostAcceleratorDaemonOperationPath :: Context.BinaryContext -> FilePath
-hostAcceleratorDaemonOperationPath ctx =
-    hostAcceleratorDaemonDir ctx </> "hostbootstrap-demo.accelerator.operation"
+{- | The protected store that holds this daemon's two lifecycle claims.
 
-withHostAcceleratorDaemonOperation :: Context.BinaryContext -> IO a -> IO a
+It is the daemon's own directory, so the claims sit beside the witnesses they
+are about and a project root that has never started a daemon has no store.
+-}
+withHostAcceleratorDaemonStore ::
+    Context.BinaryContext ->
+    (ProtectedStore -> IO result) ->
+    IO result
+withHostAcceleratorDaemonStore ctx use = do
+    createDirectoryIfMissing True (hostAcceleratorDaemonDir ctx)
+    opened <- openProtectedStore (hostAcceleratorDaemonDir ctx </> ".claims")
+    either (die . T.unpack . protectedErrorMessage) use opened
+
+{- | Hold the daemon's lifecycle operation for exactly one bracket.
+
+This was a directory created at the start and removed in a @finally@, which is
+precisely the shape the run-ownership module records itself as existing to
+replace: a hard kill skips the @finally@, the directory outlives its holder,
+and every later run refuses with a message telling an operator which directory
+to delete by hand. The protected store's entry is an OS-released exclusive lock
+over the whole bracket, so a dead holder is released by the kernel and the next
+run proceeds — the stale claim is resolved rather than reported.
+-}
+withHostAcceleratorDaemonOperation ::
+    Context.BinaryContext ->
+    (forall session. ProtectedSession session -> IO a) ->
+    IO a
 withHostAcceleratorDaemonOperation ctx action =
-    mask $ \restore -> do
-        let operationPath = hostAcceleratorDaemonOperationPath ctx
-        createDirectoryIfMissing True (hostAcceleratorDaemonDir ctx)
-        claimed <- tryIOError (createDirectory operationPath)
-        case claimed of
-            Left err
-                | isAlreadyExistsError err ->
-                    die ("accelerator-daemon: lifecycle operation already active at " ++ operationPath)
-                | otherwise ->
-                    ioError
-                        ( userError
-                            ( "accelerator-daemon: could not acquire the lifecycle operation at "
-                                ++ operationPath
-                                ++ ": "
-                                ++ show err
-                            )
-                        )
-            Right () -> restore action `finally` removeDirectory operationPath
+    withHostAcceleratorDaemonStore ctx $ \store -> do
+        held <- withProtectedEntry store (\session -> Right <$> action session)
+        either (die . ("accelerator-daemon: " ++) . T.unpack . protectedErrorMessage) pure held
 
-claimHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
-claimHostAcceleratorDaemon ctx = do
-    let ownerPath = hostAcceleratorDaemonOwnerPath ctx
-    claimed <- tryIOError (createDirectory ownerPath)
+-- | The record naming the daemon this project owns, under that same store.
+hostAcceleratorDaemonOwnerKey :: Either ProtectedError RecordKey
+hostAcceleratorDaemonOwnerKey = mkRecordKey (T.pack (demoProject ++ ".accelerator.owner"))
+
+{- | Publish the ownership claim, refusing a second live holder.
+
+The claim outlives this process — the daemon keeps running after @project up@
+returns — so unlike the operation above it is a durable record rather than a
+lock. It is written under the operation entry, so the compare-and-swap that
+refuses a second holder is taken while no other run can be between its own
+observation and its own write.
+-}
+claimHostAcceleratorDaemon :: ProtectedSession session -> IO ()
+claimHostAcceleratorDaemon session = do
+    key <- either (die . T.unpack . protectedErrorMessage) pure hostAcceleratorDaemonOwnerKey
+    claimed <- compareAndSwapProtectedRecord session key ExpectAbsent hostAcceleratorDaemonOwnerBytes
     case claimed of
-        Right () -> pure ()
-        Left _ -> die ("accelerator-daemon: lifecycle ownership already held at " ++ ownerPath)
+        Right _ -> pure ()
+        Left err ->
+            die
+                ( "accelerator-daemon: lifecycle ownership already held: "
+                    ++ T.unpack (protectedErrorMessage err)
+                )
 
-releaseHostAcceleratorDaemon :: Context.BinaryContext -> IO ()
-releaseHostAcceleratorDaemon ctx = do
-    let ownerPath = hostAcceleratorDaemonOwnerPath ctx
-    present <- doesDirectoryExist ownerPath
-    when present (removeDirectory ownerPath)
+-- | Drop the ownership claim, whatever version it currently carries.
+releaseHostAcceleratorDaemon :: ProtectedSession session -> IO ()
+releaseHostAcceleratorDaemon session = do
+    key <- either (die . T.unpack . protectedErrorMessage) pure hostAcceleratorDaemonOwnerKey
+    present <- readProtectedRecord session key
+    case present of
+        Right (Just record) -> do
+            dropped <-
+                compareAndDeleteProtectedRecord
+                    session
+                    key
+                    (ExpectVersion (protectedRecordVersion record))
+            either (die . ("accelerator-daemon: " ++) . T.unpack . protectedErrorMessage) pure dropped
+        Right Nothing -> pure ()
+        Left err -> die ("accelerator-daemon: " ++ T.unpack (protectedErrorMessage err))
+
+-- | What the ownership record says. Its presence is the claim; the bytes name it.
+hostAcceleratorDaemonOwnerBytes :: BS.ByteString
+hostAcceleratorDaemonOwnerBytes = BSC.pack (demoProject ++ "/accelerator-daemon\n")
+
+-- | Whether the ownership claim is currently published.
+hostAcceleratorDaemonOwned :: ProtectedSession session -> IO Bool
+hostAcceleratorDaemonOwned session = do
+    key <- either (die . T.unpack . protectedErrorMessage) pure hostAcceleratorDaemonOwnerKey
+    present <- readProtectedRecord session key
+    either (die . ("accelerator-daemon: " ++) . T.unpack . protectedErrorMessage) (pure . isJust) present
 
 hostAcceleratorSubstrate :: Substrate -> Bool
 hostAcceleratorSubstrate sub =
@@ -3213,14 +3282,15 @@ stopHostAcceleratorDaemon :: HostConfig -> Context.BinaryContext -> IO ()
 stopHostAcceleratorDaemon cfg ctx =
     withHostAcceleratorDaemonOperation ctx (stopHostAcceleratorDaemonUnlocked cfg ctx)
 
-stopHostAcceleratorDaemonUnlocked :: HostConfig -> Context.BinaryContext -> IO ()
-stopHostAcceleratorDaemonUnlocked cfg ctx = do
+stopHostAcceleratorDaemonUnlocked ::
+    HostConfig -> Context.BinaryContext -> ProtectedSession session -> IO ()
+stopHostAcceleratorDaemonUnlocked cfg ctx session = do
     daemonExe <- absoluteHostAcceleratorDaemonExePath ctx
-    readyPath <- makeAbsolute (hostAcceleratorDaemonReadyPath ctx)
-    let pidPath = hostAcceleratorDaemonPidPath ctx
-        shutdownPath = hostAcceleratorDaemonShutdownPath ctx
+    readyPath <- makeAbsolute (hostAcceleratorDaemonPath ctx "accelerator.ready")
+    let pidPath = hostAcceleratorDaemonPath ctx "accelerator.pid"
+        shutdownPath = hostAcceleratorDaemonPath ctx "accelerator.shutdown"
     exists <- doesFileExist pidPath
-    ownerExists <- doesDirectoryExist (hostAcceleratorDaemonOwnerPath ctx)
+    ownerExists <- hostAcceleratorDaemonOwned session
     unless (hostDaemonLifecycleStateConsistent exists ownerExists) $
         die "accelerator-daemon: pid and lifecycle ownership disagree; refusing ambiguous cleanup"
     when exists $ do
@@ -3247,8 +3317,8 @@ stopHostAcceleratorDaemonUnlocked cfg ctx = do
                             Left err -> die err
     removeIfExists shutdownPath
     removeIfExists readyPath
-    removeIfExists (hostAcceleratorDaemonOutputPath ctx)
-    releaseHostAcceleratorDaemon ctx
+    removeIfExists (hostAcceleratorDaemonPath ctx "accelerator.output")
+    releaseHostAcceleratorDaemon session
   where
     waitForExit :: String -> FilePath -> Int -> IO (Either String Bool)
     waitForExit _ _ 0 = pure (Right False)
@@ -5033,6 +5103,7 @@ runAuthenticatedDirectImageBuild parentCfg cfg repoRoot repoRootCfg pinnedBase h
         createDirectory builderContext
         copyBuildTree (repoRoot </> "core" </> "hostbootstrap-core") (staged </> "core" </> "hostbootstrap-core")
         copyBuildTree (repoRoot </> "demo") (staged </> "demo")
+        copyStyleContract repoRoot staged
         executable <- getExecutablePath
         signing <- installedBuildSigningKey (executable <> ".build.key") >>= either (die . buildErrorMessage) pure
         coordinatorDigest <- measureBinaryDigest executable >>= either (die . buildErrorMessage) pure
@@ -5104,6 +5175,7 @@ withAuthenticatedVmBuildSecrets parentCfg cfg provider repoRoot use =
         createDirectory secrets
         copyBuildTree (repoRoot </> "core" </> "hostbootstrap-core") (staged </> "core" </> "hostbootstrap-core")
         copyBuildTree (repoRoot </> "demo") (staged </> "demo")
+        copyStyleContract repoRoot staged
         archiveResult <- withCurrentDirectory staged (runTool cfg Tar ["czf", contextArchive, "."])
         case archiveResult of
             Right (ExitSuccess, _, _) -> pure ()
@@ -5211,6 +5283,26 @@ resolvePublishedBaseInVM cfg provider mAuth tag = do
         maybe (die "the pulled VM base has no repository digest") pure (find (isInfixOf "@sha256:") (lines observed))
     let digest = drop 1 (dropWhile (/= '@') repositoryDigest)
     either die pure (pinnedBaseReference tag digest)
+
+{- | Stage the repository's committed style contract beside the two source
+trees.
+
+The build context is a staged copy, not the checkout, so a file the Dockerfile
+copies has to be put there first. Without these two the in-image @check-code@
+would run the formatter and the linter on whatever defaults their installed
+versions hold, which is exactly the property the committed contract exists to
+remove: the base image installs the current compatible tools, so a base rebuild
+could otherwise change what passes with no repository change at all.
+-}
+copyStyleContract :: FilePath -> FilePath -> IO ()
+copyStyleContract repoRoot staged =
+    mapM_ stage ["fourmolu.yaml", ".hlint.yaml"]
+  where
+    stage name = do
+        let from = repoRoot </> name
+        present <- doesFileExist from
+        unless present (die ("build-image: the committed style contract is missing: " ++ from))
+        copyFile from (staged </> name)
 
 copyBuildTree :: FilePath -> FilePath -> IO ()
 copyBuildTree sourcePath destination = do
@@ -5744,11 +5836,13 @@ demoProviderReverse projectCfg cfg action = do
                         putStrLn
                             ( case action of
                                 DeleteFrame -> "project destroy: deleting " ++ name ++ " through its retained ownership record"
+                                ReachFrame -> "project destroy: starting " ++ name ++ " so its retained children can be reached"
                                 _ -> "project down: stopping " ++ name ++ " through its retained ownership record"
                             )
                         reconciled <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
                             case action of
                                 DeleteFrame -> runRetainedProviderDelete backend
+                                ReachFrame -> runRetainedProviderReady backend
                                 _ -> runRetainedProviderStop backend
                         pure $ case reconciled of
                             Left failure -> Step.TeardownFailed (show failure)
@@ -5764,6 +5858,22 @@ demoProviderReverse projectCfg cfg action = do
                         if remaining
                             then Step.TeardownFailed ("managed VM still exists after deletion: " ++ name)
                             else Step.TeardownReleased
+            -- The reachability step opens a frame a `down` stopped, so it is the
+            -- one action here that must not fall through to the stop branch: a
+            -- provider asked to become reachable and stopped instead leaves the
+            -- destroy that follows unwinding nothing, which is the shape the
+            -- worked demo's live gate caught on the Incus lane.
+            ReachFrame -> case planProviderRebootReady provider of
+                Left err -> pure (Step.TeardownFailed (show err))
+                Right reboot -> do
+                    runEffectsBestEffort
+                        cfg
+                        ("project destroy: starting " ++ name ++ " so its retained children can be reached")
+                        (rebootStartEffects reboot)
+                    -- The same readiness probe the forward path waits on; it
+                    -- refuses rather than returning a guest that does not answer.
+                    _ <- substrateWait cfg provider
+                    pure Step.TeardownReleased
             _ -> case planProviderStop provider envelope of
                 Left err -> pure (Step.TeardownFailed (show err))
                 Right effs -> do

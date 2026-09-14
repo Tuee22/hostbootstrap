@@ -1,13 +1,13 @@
 # Phase 17 — The recursive lifecycle command
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 13 (authenticated handoff and rooted lifecycle protocol), Phase 16 (cluster lifecycle,
 budgets, and cordoning)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`, including the real local
 process-boundary recursive-lifecycle tests
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-09 ; Ubuntu 24.04.4 WSL x86_64, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all` and `cabal test all` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Interpret one project plan recursively under a single root coordinator, execute each remote
 > frame through a storeless child executor, and unwind the same plan child-first for reverse verbs and failed
@@ -2866,12 +2866,19 @@ the control behind the private component. Run `HarnessSpec` and the complete cor
 None. On 2026-08-24 the warning-clean build, command-level restart fixture, focused 45-case Harness gate, and
 complete 2,454/2,454 core host-static gate passed.
 
-### Sprint 17.58: The process route names its interactivity [Active]
+### Sprint 17.58: The process route names its interactivity [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
+`core/hostbootstrap-core/test/HandoffSpec.hs`
+**Production modules**: `HostBootstrap.Handoff.Process.Route`, `HostBootstrap.Handoff.Process` (2; cap 3)
+**Sprint budget**: one two-case type, three named results, two admitted-text wrappers, and no new
+behaviour; at most 40 production Haskell lines.
 **Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/run_models.md`
+**Docs to update**: `documents/architecture/run_models.md`,
+`documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
@@ -2896,12 +2903,118 @@ rendering is the evidence that naming the distinction changed nothing about it.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None. On 2026-09-12 the route carries `ChannelInteractivity` (`InteractiveChannel` /
+`NoninteractiveChannel`) in place of the boolean at all four construction sites and the one borrow site;
+the five-tuple, the triple, and the pair became `AdmittedEdge`, `AdmittedLaunch`, and `AdmittedLayers`;
+the closed grammar now yields `ValidatedArgument` and `ValidatedPath` rather than the text it was given.
+The route's source guard was extended to pin those declarations, to read the rendered vector fragments in
+their new spelling, and to hold the one remaining `Bool` to `require`'s own predicate argument. The
+warning-clean `-Werror` build and the complete 2,533/2,533 core host-static gate passed.
+
+### Sprint 17.59: The descent resolves a provider its own chain just installed [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
+`core/hostbootstrap-core/test/HostToolSpec.hs`
+**Production modules**: `HostBootstrap.HostConfig`, `HostBootstrap.Handoff.Process` (2; cap 3)
+**Sprint budget**: one resolver, one call-site change, and no new type; at most 20 production Haskell
+lines.
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/run_models.md`
+
+#### Objective
+
+The worked demo's live gate found this on the one host shape nothing had run it on: a **pristine**
+Linux host with no provider installed. `HostConfig` measures every host tool once, at the start of an
+invocation, which is what makes every later call read a typed absolute path instead of consulting
+`$PATH` (§ K). The chain's own `ensure` step then installs the provider partway through that same
+invocation. Each reconciler re-measures locally, so the steps that create and probe the guest work; the
+authenticated descent does not, because it resolves the route's host tool through the pure lookup
+against the configuration measured before the install.
+
+The observed failure is exact: `project up` built the guest, built the project image inside it, minted
+the copy-source witness, and then refused with `authenticated descent refused: lifecycle child process:
+the route's host tool resolves to no absolute path` — for the provider that had just created the guest
+it was about to descend into. No previously recorded run could reach it. The Windows lane crosses
+through WSL, which is present on the host before the run; the Linux GPU lane takes the Direct chain and
+descends into a container; and a Linux host that already has Incus installed resolves it at startup.
+
+#### Deliverables
+
+- `HostConfig` gains one resolver that reads the typed configuration first and re-measures the host only
+  when the configuration has no entry, so a tool that was present keeps its recorded path.
+- Neither branch can produce a bare command name: the re-measure goes through the same discovery that
+  answers with an absolute `AbsExe` or with nothing, so § K holds either way.
+- The authenticated descent resolves its route's host tool through it.
+- A case asserts both halves over the whole closed tool set, on whatever gate host runs it.
+
+#### Validation
+
+The host static gate. Beyond it, the run that found this is the run that confirms it: the
+[worked demo](phase-24-worked-demo.md) exercises the descent live on a pristine `linux-cpu` host, and its
+2026-09-14 gate records `project up` descending into a guest its own `ensure` step had just made the
+provider available for — where the same sequence had refused with
+`the route's host tool resolves to no absolute path`.
+
+#### Remaining Work
+
+None. `HostToolSpec` asserts that the configured path wins and that a tool the configuration predates
+resolves to exactly what discovery answers, absolute or absent, for every tool in the closed set.
+
+### Sprint 17.60: The reachability step actually reaches [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/test/TeardownSpec.hs`
+**Production modules**: `HostBootstrap.Step`, `HostBootstrap.Teardown`,
+`HostBootstrap.Command.LifecycleEntry` (3; cap 3)
+**Sprint budget**: one action constructor, one projection, one driver argument and two refusals; at most
+45 production Haskell lines and no new type.
+**Substrates**: linux-cpu
+
+#### Objective
+
+The reverse projection already had the right shape for this: a provider node under `destroy` starts in
+`PreDescentPending`, because after a `down` that provider is stopped and its retained children are
+unreachable until it is started again. What the root reverse driver did with that step was
+`const (pure TeardownReleased)` — it ticked the reachability step without reaching anything, then
+descended into a stopped frame.
+
+The worked demo's live gate found it immediately after the descent repair of the previous sprint:
+`project up` and `project down` both passed, and `project destroy` refused with
+`Error: Instance is not running` and named every in-guest node as unsettled. The step, the state, the
+projection and the test that asserts the ordering all existed; only the effect was missing.
+
+#### Deliverables
+
+- A reachability action distinct from stop and delete, produced only by the driver and never by the
+  reverse projection's own action table, so no step can declare it.
+- The pre-descent step exposes the node's own declared reverse, so the component that knows how to stop
+  and delete this provider is the one asked to open it — not a second declaration that could disagree.
+- The root reverse entry runs it, and records its failure like any other node's.
+- A frame serving its children's reverse, which holds no project callback, refuses loudly instead of
+  answering released.
+
+#### Validation
+
+The host static gate. `TeardownSpec` asserts the step carries the declared callback and that the driver
+invokes it with the reachability action, and separately that a node declaring no reverse has no
+reachability effect to run. The effect itself is observable only live, and the
+[worked demo](phase-24-worked-demo.md) is where it is observed: its 2026-09-14 gate records
+`project destroy` reporting `starting hostbootstrap-demo-vm so its retained children can be reached`,
+settling every retained child through the frame it reopened, and exiting 0 — where the same sequence had
+refused with `Error: Instance is not running`.
+
+#### Remaining Work
+
+None.
 
 ## Remaining Work
 
-The process route's interactivity is owed a name rather than a tuple position.
-**Sprint 17.58** owns it.
+None.
 
 ## Documentation Requirements
 

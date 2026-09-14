@@ -11,4 +11,3 @@ wrongScope ::
     VerifiedHandoff ScopeA Broker ->
     VerifiedHandoff ScopeB Broker
 wrongScope = coerce
-

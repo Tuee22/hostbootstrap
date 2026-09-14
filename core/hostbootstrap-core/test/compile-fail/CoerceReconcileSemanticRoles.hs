@@ -5,14 +5,14 @@ operation or attempt merely because both store the same runtime field types.
 module CoerceReconcileSemanticRoles where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Reconcile
-    ( AdoptionAuthority
-    , PhaseAdvance
-    , PreparedOperation
-    , PreparedPreconditions
-    , VerifiedAtPhase
-    , VerifiedForeignOrigin
-    )
+import HostBootstrap.Reconcile (
+    AdoptionAuthority,
+    PhaseAdvance,
+    PreparedOperation,
+    PreparedPreconditions,
+    VerifiedAtPhase,
+    VerifiedForeignOrigin,
+ )
 
 data Scope
 data Plan

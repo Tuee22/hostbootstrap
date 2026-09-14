@@ -1,5 +1,5 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
@@ -26,6 +26,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import qualified Fixture
 import HostBootstrap.Authority (
     BrokerEpoch,
     InstalledProjectIdentity,
@@ -50,7 +51,6 @@ import HostBootstrap.Lifecycle.Execution (
     newStepRuntime,
     stepExecutionOperationKey,
  )
-import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields)
 import HostBootstrap.Lifecycle.Mode (
     AcquisitionJournal,
     BoundRunLease,
@@ -62,15 +62,15 @@ import HostBootstrap.Lifecycle.Mode (
     acquisitionJournalRunLease,
     acquisitionJournalSnapshotDigest,
     acquisitionJournalStableScope,
+    bindRunLease,
     boundRunLeasePlanDigest,
     boundRunLeaseRunText,
     boundRunLeaseSpecDigest,
-    bindRunLease,
-    lifecycleErrorMessage,
     lifecycleCursorFrame,
     lifecycleCursorPhase,
     lifecycleCursorRecordVersion,
     lifecycleCursorVerb,
+    lifecycleErrorMessage,
     modeErrorMessage,
     persistCanonicalPlanSnapshot,
     productionActiveMode,
@@ -82,26 +82,27 @@ import HostBootstrap.Lifecycle.Mode (
     withCurrentLifecycleCursor,
     withExecuteLifecycleCursor,
     withLifecycleCursor,
-    withTeardownLifecycleCursor,
     withProductionLifecycleProfile,
-    withRecoveredProductionLifecycleProfile,
     withProductionRoot,
+    withRecoveredProductionLifecycleProfile,
+    withTeardownLifecycleCursor,
  )
+import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields)
 import HostBootstrap.Lifecycle.Session hiding (
     AcquisitionJournal,
+    LifecycleCursor,
+    LifecycleError,
     acquisitionJournalBrokerGeneration,
     acquisitionJournalRecordVersion,
     acquisitionJournalRootVerb,
     acquisitionJournalRunLease,
     acquisitionJournalSnapshotDigest,
     acquisitionJournalStableScope,
-    LifecycleError,
-    LifecycleCursor,
-    lifecycleErrorMessage,
     lifecycleCursorFrame,
     lifecycleCursorPhase,
     lifecycleCursorRecordVersion,
     lifecycleCursorVerb,
+    lifecycleErrorMessage,
     withAcquisitionJournalPhase,
     withCurrentLifecycleCursor,
     withExecuteLifecycleCursor,
@@ -109,11 +110,6 @@ import HostBootstrap.Lifecycle.Session hiding (
     withTeardownLifecycleCursor,
  )
 import HostBootstrap.Lifecycle.Session.Testing
-import HostBootstrap.Reconcile (
-    lifecyclePlanFromProjectPlan,
-    lifecyclePlanSnapshot,
-    stepExecutionFor,
- )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     forward,
@@ -129,37 +125,20 @@ import HostBootstrap.ProjectPlan.Construct (
     withRecoveredProductionProjectPlan,
     withRecoveredProductionProjectPlanInputs,
  )
+import HostBootstrap.ProjectPlan.Frame (
+    ProjectFrame,
+    withCurrentFrame,
+ )
 import HostBootstrap.ProjectPlan.Snapshot (
     BoundPlanSnapshot,
     PlanDigestBinding,
     withBoundPlanSnapshot,
     withFreshBoundPlanSnapshot,
  )
-import HostBootstrap.ProjectPlan.Frame (
-    ProjectFrame,
-    withCurrentFrame,
- )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
- )
-import HostBootstrap.Service (emptyServiceRegistry)
-import HostBootstrap.Step (
-    Step,
-    StepFrame (..),
-    StepObservation (StepChanged),
-    StepPlan,
-    deployKindStep,
-    deployVMStep,
-    contextInitStep,
-    mkStepPlan,
-    stepIdentity,
- )
-import HostBootstrap.Substrate (
-    Arch (Arm64),
-    Substrate (..),
-    SubstrateName (LinuxCpu),
  )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -168,8 +147,8 @@ import HostBootstrap.Protected (
     ProtectedSession,
     ProtectedStore,
     RecordKey,
-    compareAndSwapProtectedRecord,
     compareAndDeleteProtectedRecord,
+    compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
     openProtectedStore,
@@ -177,13 +156,34 @@ import HostBootstrap.Protected (
     protectedStoreIdentityText,
     protectedStoreRoot,
     readProtectedRecord,
-    recordVersionWord,
     recordKeyText,
     recordNameIdentity,
+    recordVersionWord,
     sessionStoreRoot,
     withProtectedEntry,
  )
-import qualified Fixture
+import HostBootstrap.Reconcile (
+    lifecyclePlanFromProjectPlan,
+    lifecyclePlanSnapshot,
+    stepExecutionFor,
+ )
+import HostBootstrap.Service (emptyServiceRegistry)
+import HostBootstrap.Step (
+    Step,
+    StepFrame (..),
+    StepObservation (StepChanged),
+    StepPlan,
+    contextInitStep,
+    deployKindStep,
+    deployVMStep,
+    mkStepPlan,
+    stepIdentity,
+ )
+import HostBootstrap.Substrate (
+    Arch (Arm64),
+    Substrate (..),
+    SubstrateName (LinuxCpu),
+ )
 import System.Directory (
     copyFile,
     createDirectoryIfMissing,
@@ -714,15 +714,17 @@ acquisitionJournalTests =
                 differentPlan = "different-plan-digest"
                 mutations =
                     [ ("stable scope", replaceField 1 "production-drift")
-                    , ( "lease version"
-                      , replaceField
+                    ,
+                        ( "lease version"
+                        , replaceField
                             6
                             (Text.pack (show (recordVersionWord (protectedRecordVersion leaseRecord) + 1)))
-                      )
+                        )
                     , ("specification digest", replaceField 8 "different-spec-digest")
-                    , ( "snapshot and lease-plan digest"
-                      , replaceField 9 differentPlan . replaceField 4 differentPlan
-                      )
+                    ,
+                        ( "snapshot and lease-plan digest"
+                        , replaceField 9 differentPlan . replaceField 4 differentPlan
+                        )
                     , ("recognized root verb", replaceField 11 "down")
                     ]
             mapM_
@@ -1271,106 +1273,108 @@ lifecycleCursorTests =
             image <- protectedImage store
             Map.size (Map.filterWithKey (\key _ -> "cursor." `Text.isPrefixOf` key) image) @?= 1
     , testCase "identical current readers redeliver while transition contenders have one CAS winner" $
-        withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
-            withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
-                beforeReaders <- protectedImage store
-                readerCallbacks <- newIORef (0 :: Int)
-                firstReader <- newEmptyMVar
-                secondReader <- newEmptyMVar
-                let readCurrent =
-                        withCurrentLifecycleCursor journal frame Authority.ProjectUp $ \phase _ -> do
-                            atomicModifyIORef' readerCallbacks (\count -> (count + 1, ()))
-                            pure (lifecyclePhaseName phase)
-                _ <- forkFinally readCurrent (putMVar firstReader)
-                _ <- forkFinally readCurrent (putMVar secondReader)
-                readerResults <- sequence [takeMVar firstReader, takeMVar secondReader]
-                case readerResults of
-                    [Right (Right firstPhase), Right (Right secondPhase)] ->
-                        (firstPhase, secondPhase) @?= ("prepare", "prepare")
-                    _ -> assertFailure ("current cursor readers failed: " <> show readerResults)
-                readIORef readerCallbacks >>= (@?= 2)
-                protectedImage store >>= (@?= beforeReaders)
+        withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame ->
+            do
+                withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
+                    beforeReaders <- protectedImage store
+                    readerCallbacks <- newIORef (0 :: Int)
+                    firstReader <- newEmptyMVar
+                    secondReader <- newEmptyMVar
+                    let readCurrent =
+                            withCurrentLifecycleCursor journal frame Authority.ProjectUp $ \phase _ -> do
+                                atomicModifyIORef' readerCallbacks (\count -> (count + 1, ()))
+                                pure (lifecyclePhaseName phase)
+                    _ <- forkFinally readCurrent (putMVar firstReader)
+                    _ <- forkFinally readCurrent (putMVar secondReader)
+                    readerResults <- sequence [takeMVar firstReader, takeMVar secondReader]
+                    case readerResults of
+                        [Right (Right firstPhase), Right (Right secondPhase)] ->
+                            (firstPhase, secondPhase) @?= ("prepare", "prepare")
+                        _ -> assertFailure ("current cursor readers failed: " <> show readerResults)
+                    readIORef readerCallbacks >>= (@?= 2)
+                    protectedImage store >>= (@?= beforeReaders)
 
-                transitionCallbacks <- newIORef (0 :: Int)
-                firstTransition <- newEmptyMVar
-                secondTransition <- newEmptyMVar
-                let transition =
-                        withExecuteLifecycleCursor prepareCursor $ \cursor -> do
-                            atomicModifyIORef' transitionCallbacks (\count -> (count + 1, ()))
-                            pure (cursorEvidencePhase (cursorEvidence cursor))
-                _ <- forkFinally transition (putMVar firstTransition)
-                _ <- forkFinally transition (putMVar secondTransition)
-                transitionResults <- sequence [takeMVar firstTransition, takeMVar secondTransition]
-                let successes = [phase | Right (Right phase) <- transitionResults]
-                    failures = [failure | Right (Left failure) <- transitionResults]
-                successes @?= ["execute"]
-                case failures of
-                    [SessionStaleCursorVersion _ _] -> pure ()
-                    _ -> assertFailure ("expected one stale transition, observed " <> show transitionResults)
-                readIORef transitionCallbacks >>= (@?= 1)
+                    transitionCallbacks <- newIORef (0 :: Int)
+                    firstTransition <- newEmptyMVar
+                    secondTransition <- newEmptyMVar
+                    let transition =
+                            withExecuteLifecycleCursor prepareCursor $ \cursor -> do
+                                atomicModifyIORef' transitionCallbacks (\count -> (count + 1, ()))
+                                pure (cursorEvidencePhase (cursorEvidence cursor))
+                    _ <- forkFinally transition (putMVar firstTransition)
+                    _ <- forkFinally transition (putMVar secondTransition)
+                    transitionResults <- sequence [takeMVar firstTransition, takeMVar secondTransition]
+                    let successes = [phase | Right (Right phase) <- transitionResults]
+                        failures = [failure | Right (Left failure) <- transitionResults]
+                    successes @?= ["execute"]
+                    case failures of
+                        [SessionStaleCursorVersion _ _] -> pure ()
+                        _ -> assertFailure ("expected one stale transition, observed " <> show transitionResults)
+                    readIORef transitionCallbacks >>= (@?= 1)
 
-                replayCallbacks <- newIORef 0
-                executeImage <- protectedImage store
-                assertLifecycleRefusalNoMutation store replayCallbacks $
-                    withLifecycleCursor
-                        journal
-                        frame
-                        Authority.ProjectUp
-                        Authority.Prepare
-                        (countingCallback replayCallbacks)
-                resumedExecute <-
-                    expect
-                        =<< withLifecycleCursor
+                    replayCallbacks <- newIORef 0
+                    executeImage <- protectedImage store
+                    assertLifecycleRefusalNoMutation store replayCallbacks $
+                        withLifecycleCursor
                             journal
                             frame
                             Authority.ProjectUp
-                            Authority.Execute
-                            (pure . cursorEvidence)
-                cursorEvidencePhase resumedExecute @?= "execute"
-                protectedImage store >>= (@?= executeImage)
-                assertLifecycleRefusalNoMutation store replayCallbacks $
-                    withExecuteLifecycleCursor prepareCursor (countingCallback replayCallbacks)
-                withLifecycleCursor
-                    journal
-                    frame
-                    Authority.ProjectUp
-                    Authority.Execute
-                    ( \executeCursor -> do
-                        tornDown <- withTeardownLifecycleCursor executeCursor (pure . cursorEvidence)
-                        teardownEvidence <- expect tornDown
-                        cursorEvidencePhase teardownEvidence @?= "teardown"
-                        assertLifecycleRefusalNoMutation store replayCallbacks $
-                            withTeardownLifecycleCursor executeCursor (countingCallback replayCallbacks)
-                    )
-                    >>= expect
-            >>= expect
-    , testCase "same-byte source ABA invalidates both reopen and retained-successor authority" $
-        withLifecycleCursorFixture $ \store root lease bound binding projectPlan journal frame -> do
-            withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
-                callbacks <- newIORef 0
-                (sourceKey, _) <- soleRecordWithPrefix store "acquisition."
-                _ <- rewriteRecordBytes store sourceKey id
-                afterAba <- protectedImage store
-                assertLifecycleRefusalNoMutation store callbacks $
+                            Authority.Prepare
+                            (countingCallback replayCallbacks)
+                    resumedExecute <-
+                        expect
+                            =<< withLifecycleCursor
+                                journal
+                                frame
+                                Authority.ProjectUp
+                                Authority.Execute
+                                (pure . cursorEvidence)
+                    cursorEvidencePhase resumedExecute @?= "execute"
+                    protectedImage store >>= (@?= executeImage)
+                    assertLifecycleRefusalNoMutation store replayCallbacks $
+                        withExecuteLifecycleCursor prepareCursor (countingCallback replayCallbacks)
                     withLifecycleCursor
                         journal
                         frame
                         Authority.ProjectUp
-                        Authority.Prepare
-                        (countingCallback callbacks)
-                assertLifecycleRefusalNoMutation store callbacks $
-                    withExecuteLifecycleCursor prepareCursor (countingCallback callbacks)
-                reopened <-
-                    withAcquisitionJournal root lease bound binding projectPlan $ \freshJournal ->
-                        assertLifecycleRefusalNoMutation store callbacks $
-                            withCurrentLifecycleCursor
-                                freshJournal
-                                frame
-                                Authority.ProjectUp
-                                (\_phase cursor -> countingCallback callbacks cursor)
-                expect reopened
-                protectedImage store >>= (@?= afterAba)
-            >>= expect
+                        Authority.Execute
+                        ( \executeCursor -> do
+                            tornDown <- withTeardownLifecycleCursor executeCursor (pure . cursorEvidence)
+                            teardownEvidence <- expect tornDown
+                            cursorEvidencePhase teardownEvidence @?= "teardown"
+                            assertLifecycleRefusalNoMutation store replayCallbacks $
+                                withTeardownLifecycleCursor executeCursor (countingCallback replayCallbacks)
+                        )
+                        >>= expect
+                >>= expect
+    , testCase "same-byte source ABA invalidates both reopen and retained-successor authority" $
+        withLifecycleCursorFixture $ \store root lease bound binding projectPlan journal frame ->
+            do
+                withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
+                    callbacks <- newIORef 0
+                    (sourceKey, _) <- soleRecordWithPrefix store "acquisition."
+                    _ <- rewriteRecordBytes store sourceKey id
+                    afterAba <- protectedImage store
+                    assertLifecycleRefusalNoMutation store callbacks $
+                        withLifecycleCursor
+                            journal
+                            frame
+                            Authority.ProjectUp
+                            Authority.Prepare
+                            (countingCallback callbacks)
+                    assertLifecycleRefusalNoMutation store callbacks $
+                        withExecuteLifecycleCursor prepareCursor (countingCallback callbacks)
+                    reopened <-
+                        withAcquisitionJournal root lease bound binding projectPlan $ \freshJournal ->
+                            assertLifecycleRefusalNoMutation store callbacks $
+                                withCurrentLifecycleCursor
+                                    freshJournal
+                                    frame
+                                    Authority.ProjectUp
+                                    (\_phase cursor -> countingCallback callbacks cursor)
+                    expect reopened
+                    protectedImage store >>= (@?= afterAba)
+                >>= expect
     , testCase "corrupt, colliding, and broker-mismatched cursor payloads never normalize" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             _ <-
@@ -1652,7 +1656,7 @@ withLifecycleCursorFixtureForVerb ::
 withLifecycleCursorFixtureForVerb verb use =
     withAcquisitionPlanFixtureForConfig
         cursorStepPlan
-        (\projectName rootPath ->
+        ( \projectName rootPath ->
             projectConfigForFrame projectName rootPath "host-orchestrator-0"
         )
         verb
@@ -1832,7 +1836,8 @@ withAcquisitionPlanFixtureForConfig stepPlan configFor verb use =
 
 {- | Re-enter the existing Production branch, which generates a fresh local
 @planId@, independently re-decodes the configuration, reconstructs the exact
-plan under that identity, and only then attempts acquisition admission. -}
+plan under that identity, and only then attempts acquisition admission.
+-}
 resumeRecoveredAcquisition ::
     ProtectedStore ->
     InstalledProjectIdentity projectId ->
@@ -2009,9 +2014,10 @@ protectedImage store = do
                         Right
                             ( Map.fromList
                                 [ ( recordKeyText key
-                                  , ( recordVersionWord (protectedRecordVersion record)
-                                    , protectedRecordBytes record
-                                    )
+                                  ,
+                                      ( recordVersionWord (protectedRecordVersion record)
+                                      , protectedRecordBytes record
+                                      )
                                   )
                                 | (key, Just record) <- zip keys present
                                 ]
@@ -2562,8 +2568,9 @@ routeStepPlan =
             ]
         )
 
--- | Open the route fixture's plan, so the descriptor and the digest come from
--- one interpretation rather than two computations of it.
+{- | Open the route fixture's plan, so the descriptor and the digest come from
+one interpretation rather than two computations of it.
+-}
 withRoutePlan ::
     ( forall projectId specDigest planId configId.
       ProjectPlan
@@ -2863,7 +2870,7 @@ admissionTests =
                 other -> assertFailure ("expected a plan mismatch, got " <> show other)
     ]
 
-{- | Run the whole fence → manifest → interpret chain over the fixture plan. -}
+-- | Run the whole fence → manifest → interpret chain over the fixture plan.
 interpretHere ::
     ProtectedSession session ->
     IO (Either SessionError (InterpretedRecovery scope planId))
@@ -2965,7 +2972,8 @@ openSessionRecoveryCase point =
                 withInterruptedTransaction point TxnOpenSession store $
                     runEntry store $ \session ->
                         withEpoch session $ \epoch ->
-                            fmap (fmap (const ()))
+                            fmap
+                                (fmap (const ()))
                                 (openOperationSession session epoch plan "session-a" current)
             swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
             recovered <- expect swept
@@ -2980,7 +2988,8 @@ registerIntentRecoveryCase point =
             reopened <-
                 withInterruptedTransaction point TxnRegisterIntent store $
                     runEntry store $ \session ->
-                        fmap (fmap (const ()))
+                        fmap
+                            (fmap (const ()))
                             (registerOperationIntent session sess "op-1" NoHistory oldPermit)
 
             current <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
@@ -3039,7 +3048,8 @@ acknowledgeRecoveryCase point =
             reopened <-
                 withInterruptedTransaction point TxnAcknowledgeOutcome store $
                     runEntry store $ \session ->
-                        fmap (fmap (const ()))
+                        fmap
+                            (fmap (const ()))
                             (acknowledgeOutcome session sess gate "Committed" () permit)
             swept <- inEntry reopened (\session -> recoverAbandonedSessions session plan)
             recovered <- expect swept
@@ -3054,7 +3064,8 @@ closeSessionRecoveryCase point =
             reopened <-
                 withInterruptedTransaction point TxnCloseSession store $
                     runEntry store $ \session ->
-                        fmap (fmap (const ()))
+                        fmap
+                            (fmap (const ()))
                             (closeOperationSession session sess permit)
             verified <- inEntry reopened (\session -> verifyAllSessionsClosed session plan)
             proof <- expect verified
@@ -3068,7 +3079,8 @@ beginProjectCloseRecoveryCase point =
             reopened <-
                 withInterruptedTransaction point TxnBeginProjectClose store $
                     runEntry store $ \session ->
-                        fmap (fmap (const ()))
+                        fmap
+                            (fmap (const ()))
                             (beginClosingProject session plan 7 current)
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= ClosingProject 7
@@ -3081,7 +3093,8 @@ recordProjectClosedRecoveryCase point =
             reopened <-
                 withInterruptedTransaction point TxnRecordProjectClosed store $
                     runEntry store $ \session ->
-                        fmap (fmap (const ()))
+                        fmap
+                            (fmap (const ()))
                             (recordClosedProject session plan 7 closePermit)
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= ClosedProject
@@ -3457,8 +3470,9 @@ withInterruptedProductionTransaction prefix store transition = do
                 _ <- compareAndSwapProtectedRecord session key expectation (protectedRecordBytes record) >>= either (assertFailure . show) pure
                 pure ()
 
--- | Copy a directory tree, so a snapshot is the store itself rather than a
--- reconstruction of it — record versions and all.
+{- | Copy a directory tree, so a snapshot is the store itself rather than a
+reconstruction of it — record versions and all.
+-}
 copyTree :: FilePath -> FilePath -> IO ()
 copyTree from to = do
     removePathForcibly to
@@ -3474,7 +3488,7 @@ copyTree from to = do
             then copyTree source destination
             else copyFile source destination
 
-{- | What the completed transition wrote: its id, and its targets in order. -}
+-- | What the completed transition wrote: its id, and its targets in order.
 data PublishedTransaction = PublishedTransaction
     { publishedSequence :: Word64
     , publishedTargets :: [(RecordKey, ByteString)]
@@ -3617,6 +3631,7 @@ withStore use =
 entry, so a test that reopens between two of them is modelling two separate
 invocations.
 -}
+
 {- | Run one action inside the entry and fail the case on a refusal. Used where
 the case's point is that the protocol succeeds.
 -}

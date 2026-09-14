@@ -254,11 +254,12 @@ conditionalized, so no host family loses the far side of a crossing (§ JJ).
 handoffTransactionPath :: FilePath
 handoffTransactionPath = "core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs"
 
--- | The one module the handoff transports share for ending a child group.
---
--- Both of them held byte-identical copies of the escalation and its three
--- timeouts. Sharing it means the group teardown they perform is the same
--- teardown by construction rather than by two authors agreeing.
+{- | The one module the handoff transports share for ending a child group.
+
+Both of them held byte-identical copies of the escalation and its three
+timeouts. Sharing it means the group teardown they perform is the same
+teardown by construction rather than by two authors agreeing.
+-}
 childGroupPath :: FilePath
 childGroupPath = "core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/ChildGroup.hs"
 

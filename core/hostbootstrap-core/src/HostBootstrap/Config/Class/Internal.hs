@@ -11,18 +11,18 @@ invocation are distinct types even when their digests are equal, and the only
 authority that can join them is the digest-equality token minted by
 'HostBootstrap.Config.Schema.Internal'.
 -}
-module HostBootstrap.Config.Class.Internal
-    ( ProjectCodec (..)
-    , reindexProjectCodecKernel
-    )
+module HostBootstrap.Config.Class.Internal (
+    ProjectCodec (..),
+    reindexProjectCodecKernel,
+)
 where
 
 import Data.Text (Text)
 import qualified Dhall
-import HostBootstrap.Config.Schema.Internal
-    ( RecoverySpecReindex
-    , recoverySpecReindexDigestKernel
-    )
+import HostBootstrap.Config.Schema.Internal (
+    RecoverySpecReindex,
+    recoverySpecReindexDigestKernel,
+ )
 import HostBootstrap.Dhall.Hoist (NamedUnion)
 
 {- | An installed, scope-correct wrapper around the lower admitted

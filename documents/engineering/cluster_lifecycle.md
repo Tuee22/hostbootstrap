@@ -138,7 +138,9 @@ mint one from chosen tool paths.
 The four calls are one transaction shape with four continuations, so the store is opened once per
 transaction and the exclusive entry covers the whole of it:
 
-- **reconcile** answers `Created`, `Healthy`, `Unhealthy`, or `Foreign`. A cluster this record already owned
+- **reconcile** answers `ClusterResultCreated`, `ClusterResultHealthy`, `ClusterResultUnhealthy`, or
+  `ClusterResultForeign` — the `ClusterReconcileResultView` cases, whose remaining constructor
+  `ClusterResultProbeFailed` reports a probe that could not answer at all. A cluster this record already owned
   is asked one further question the creation path does not need — whether every node container the record
   bound is still running — because that is the container runtime's answer rather than the API server's, and
   an owned cluster whose containers are stopped is a conflict an operator resolves rather than something to
@@ -192,14 +194,15 @@ matching cluster dependency package rather than Dhall or canonical cluster YAML.
 mapping, while release removes the relay by identity before deleting the cluster. Wildcard, missing,
 additional, duplicate, changed-target, or replacement mappings are `Conflict`.
 
-The caller-selected `LoopbackExposure` preparation and equality settlement are absent. Public preparation
+No caller-selected loopback-exposure preparation or equality settlement exists; there is no such type
+to construct. Public preparation
 accepts an applied cluster cordon, an immutable relay image identity, and semantic targets only. The protected
 record is published before runtime creation with a fresh 256-bit operation nonce; managed replacement binds
 the inspected relay identity and complete mapping set. Cluster cleanup refuses while that record exists, so
 release must remove and re-observe the exact relay before cluster deletion can begin. The
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-closed this boundary with the complete warning-clean static gate and a live concurrent-allocation run on
-2026-08-22.
+closed this boundary with the complete warning-clean static gate and a live concurrent-allocation run;
+the dated evidence for it lives in that phase.
 
 A parent-frame consumer does not retain the child's cluster runtime package after the deployment child exits.
 For that case, `observeRecordedClusterExposure` opens the exact protected `<cluster>.exposure` row read-only,

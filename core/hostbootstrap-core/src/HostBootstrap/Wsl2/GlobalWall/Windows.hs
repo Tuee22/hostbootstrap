@@ -17,11 +17,11 @@ directory is ordinary scaffolding; what is owned is @.wslconfig@ itself.
 On a host that is not Windows the wall does not exist, so both entry points
 answer a total refusal rather than being absent from the package (§ JJ).
 -}
-module HostBootstrap.Wsl2.GlobalWall.Windows
-  ( windowsGlobalWallSupported,
+module HostBootstrap.Wsl2.GlobalWall.Windows (
+    windowsGlobalWallSupported,
     applyCurrentUserGlobalWall,
     restoreCurrentUserGlobalWall,
-  )
+)
 where
 
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
@@ -38,18 +38,18 @@ windowsGlobalWallSupported = False
 #endif
 
 applyCurrentUserGlobalWall ::
-  CurrentUserWallRequest ->
-  IO (Either HostWallError AppliedWslConfigFile)
+    CurrentUserWallRequest ->
+    IO (Either HostWallError AppliedWslConfigFile)
 applyCurrentUserGlobalWall request =
-  withCurrentUserWall $ \location ->
-    applyGlobalWall ownershipRowForHost location request
+    withCurrentUserWall $ \location ->
+        applyGlobalWall ownershipRowForHost location request
 
 restoreCurrentUserGlobalWall ::
-  CurrentUserWallRequest ->
-  IO (Either HostWallError ())
+    CurrentUserWallRequest ->
+    IO (Either HostWallError ())
 restoreCurrentUserGlobalWall request =
-  withCurrentUserWall $ \location ->
-    restoreGlobalWall ownershipRowForHost location request
+    withCurrentUserWall $ \location ->
+        restoreGlobalWall ownershipRowForHost location request
 
 {- | Locate the one wall this user has, or refuse.
 
@@ -58,26 +58,26 @@ beside the profile the environment names, and the state directory is its fixed
 sibling.
 -}
 withCurrentUserWall ::
-  (HostWallLocation -> IO (Either HostWallError result)) ->
-  IO (Either HostWallError result)
+    (HostWallLocation -> IO (Either HostWallError result)) ->
+    IO (Either HostWallError result)
 withCurrentUserWall use
-  | not windowsGlobalWallSupported =
-      pure (Left (HostWallUnsupported "the WSL global wall requires Windows"))
-  | otherwise = do
-      profile <- lookupEnv "USERPROFILE"
-      case profile of
-        Nothing ->
-          pure
-            ( Left
-                ( HostWallUnsupported
-                    "USERPROFILE is not set, so this user has no .wslconfig target"
-                )
-            )
-        Just home -> do
-          opened <-
-            openHostWallLocation
-              (home </> ".wslconfig")
-              (home </> ".hostbootstrap" </> "global-wall")
-          case opened of
-            Left err -> pure (Left err)
-            Right location -> use location
+    | not windowsGlobalWallSupported =
+        pure (Left (HostWallUnsupported "the WSL global wall requires Windows"))
+    | otherwise = do
+        profile <- lookupEnv "USERPROFILE"
+        case profile of
+            Nothing ->
+                pure
+                    ( Left
+                        ( HostWallUnsupported
+                            "USERPROFILE is not set, so this user has no .wslconfig target"
+                        )
+                    )
+            Just home -> do
+                opened <-
+                    openHostWallLocation
+                        (home </> ".wslconfig")
+                        (home </> ".hostbootstrap" </> "global-wall")
+                case opened of
+                    Left err -> pure (Left err)
+                    Right location -> use location

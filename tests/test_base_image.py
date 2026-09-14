@@ -7,9 +7,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hostbootstrap import base_image, resources
+from hostbootstrap import base_image, bootstrap, docker_ops, resources
 from hostbootstrap.base_image import Flavor
-from hostbootstrap.substrate import Arch, SubstrateName
+from hostbootstrap.substrate import Arch
 
 
 def test_base_tag_and_ref() -> None:
@@ -20,18 +20,6 @@ def test_base_tag_and_ref() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("substrate", "expected"),
-    [
-        (SubstrateName.APPLE_SILICON, Flavor.CPU),
-        (SubstrateName.LINUX_CPU, Flavor.CPU),
-        (SubstrateName.LINUX_GPU, Flavor.CUDA),
-    ],
-)
-def test_substrate_to_flavor(substrate: SubstrateName, expected: Flavor) -> None:
-    assert base_image.substrate_to_flavor(substrate) == expected
-
-
 def _patch_version_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in [
         ("resolve_go_version", "1.23.4"),
@@ -39,6 +27,7 @@ def _patch_version_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
         ("resolve_kind_version", "v0.23.0"),
         ("resolve_kubectl_version", "v1.30.0"),
         ("resolve_helm_version", "v3.15.0"),
+        ("resolve_mc_version", "RELEASE.2025-08-13T08-35-41Z"),
         ("resolve_pulumi_version", "v3.120.0"),
     ]:
         monkeypatch.setattr(base_image, name, lambda result=value: result)
@@ -64,10 +53,21 @@ def test_compute_build_args_uses_current_resolvers(monkeypatch: pytest.MonkeyPat
     assert values["PURESCRIPT_DOWNLOAD_URL"].endswith("/v0.15.0/linux64.tar.gz")
     assert values["GHCUP_DOWNLOAD_URL"].endswith("/x86_64-linux-ghcup")
     assert values["AWS_DOWNLOAD_URL"].endswith("awscli-exe-linux-x86_64.zip")
+    # dl.min.io answers 410 Gone for every community release since the
+    # open-source client was archived; the binary comes from the project's own
+    # GitHub releases, by tag, per architecture.
+    assert values["MC_VERSION"] == "RELEASE.2025-08-13T08-35-41Z"
+    assert values["MC_DOWNLOAD_URL"] == (
+        "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/"
+        "mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z"
+    )
     assert values["CABAL_BUILD_JOBS"] == "1"
     assert values["GHC_RTS_OPTS"] == ""
     assert "HACKAGE_INDEX_STATE" not in values
-    assert "GHC_VERSION" not in values
+    # The compiler is pinned rather than discovered: it is the warm Cabal
+    # store's ABI key, so a base whose GHC drifts from the one consumers select
+    # ships a store none of them can read.
+    assert values["GHC_VERSION"] == bootstrap.GHC_VERSION
 
 
 def test_http_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -108,6 +108,7 @@ def test_release_resolvers_parse_current_payloads(monkeypatch: pytest.MonkeyPatc
     assert base_image.resolve_kind_version() == "v9.9.9"
     assert base_image.resolve_kubectl_version() == "v1.30.1"
     assert base_image.resolve_helm_version() == "v9.9.9"
+    assert base_image.resolve_mc_version() == "v9.9.9"
     assert base_image.resolve_pulumi_version() == "v9.9.9"
     assert base_image.resolve_go_version() == "1.23.4"
 
@@ -220,9 +221,9 @@ def test_build_spec_for_applies_budget(monkeypatch: pytest.MonkeyPatch) -> None:
         context=Path("/repo"),
         budget=budget,
     )
-    assert spec.memory == "6144m"
-    assert spec.memory_swap == "6144m"
-    assert spec.cpus == "3"
+    assert spec.builder == docker_ops.ClassicBuilder(
+        memory="6144m", memory_swap="6144m", cpus="3"
+    )
     assert args.cabal_build_jobs == "3"
     assert spec.build_args["CABAL_BUILD_JOBS"] == "3"
 
@@ -244,9 +245,7 @@ def test_build_spec_for_is_native_and_unbounded_without_budget(
         "extra:tag",
     )
     assert spec.no_cache is True
-    assert spec.memory is None
-    assert spec.memory_swap is None
-    assert spec.cpus is None
+    assert spec.builder == docker_ops.BuildKitBuilder()
 
     overridden = base_image.with_base_override(args, "override:base")
     assert overridden.base_image == "override:base"
@@ -283,7 +282,7 @@ def test_compatibility_smoke_uses_real_consumer() -> None:
     assert spec.build_args == {"BASE_IMAGE": digest}
     assert spec.pull is True
     assert spec.no_cache is True
-    assert spec.use_classic_builder is False
+    assert spec.builder == docker_ops.BuildKitBuilder()
 
 
 def test_compatibility_smoke_can_validate_local_base_before_publish() -> None:
@@ -299,7 +298,7 @@ def test_compatibility_smoke_can_validate_local_base_before_publish() -> None:
     assert spec.build_args == {"BASE_IMAGE": image_id}
     assert spec.pull is False
     assert spec.no_cache is True
-    assert spec.use_classic_builder is True
+    assert spec.builder == docker_ops.ClassicBuilder()
 
 
 def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:
@@ -337,3 +336,26 @@ def test_python_owns_no_demo_path() -> None:
         if "demo/" in module.read_text(encoding="utf-8")
     ]
     assert offenders == []
+
+
+def test_one_ghc_version_governs_host_image_and_guest() -> None:
+    """The family pin has three spellings; two of them cannot import the first.
+
+    ``hostbootstrap.bootstrap.GHC_VERSION`` is the source: the host bootstrapper
+    installs it, ``base_image`` passes it to the image build, and both are
+    Python. The core workspace names it in Cabal syntax and the VM guest
+    bootstrap names it in a Haskell literal, so neither can read the constant.
+    A silent disagreement between them is exactly what left the published base
+    on a compiler ``core/cabal.project`` could not select, so the agreement is
+    asserted rather than assumed.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    version = bootstrap.GHC_VERSION
+
+    core_project = (repo_root / "core" / "cabal.project").read_text(encoding="utf-8")
+    assert f"with-compiler: ghc-{version}" in core_project
+
+    guest_pin = (repo_root / "demo" / "src" / "HostBootstrapDemo" / "Commands.hs").read_text(
+        encoding="utf-8"
+    )
+    assert f'PinnedToolchain "{version}"' in guest_pin

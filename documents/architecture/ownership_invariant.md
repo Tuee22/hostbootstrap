@@ -201,13 +201,17 @@ native validation lives.
   reacquires that exact binding. Cleanup carries a distinct journal invocation, enters `releasing` before
   `colima delete --force --data`, and proves profile/data/context absence before conditionally removing only
   manifest-listed namespaces and origin evidence. This source boundary belongs to the
-  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-  and remains non-closing until that phase's focused and full gates pass.
+  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md),
+  which has closed it. What the source boundary does not carry is the live Apple lane that exercises it
+  against a real Colima; that run belongs to the
+  [Apple Silicon substrate acceptance phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md),
+  and [the plan index](../../DEVELOPMENT_PLAN/README.md) is the authority for both statuses.
 - The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
-  `Windows` backend; the backup-existence (`.bak`) inference is gone. On 2026-08-01 the Windows-gated
-  suite exercised the production entrypoint against a temporary `USERPROFILE` and passed all four
-  native apply/restore/origin/replacement cases. This is focused adapter evidence, not the full WSL2
-  provider lifecycle gate.
+  `Windows` backend; the backup-existence (`.bak`) inference is gone. The Windows-gated
+  suite exercises the production entrypoint against a temporary `USERPROFILE` across four
+  native apply/restore/origin/replacement cases. That is focused adapter evidence, not the full WSL2
+  provider lifecycle gate, and its dated runs belong to the
+  [Windows and WSL2 substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
 
 The plan projections above are descriptive identity and topology evidence, not ownership receipts or
 mutation authority. They prevent a caller from supplying a plan digest, frame text, resource identity, or

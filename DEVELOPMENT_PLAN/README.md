@@ -54,53 +54,67 @@ its row here.
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
 | 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Done | linux-cpu | — |
 | 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | named route interactivity |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Done | linux-cpu | — |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Done | linux-cpu | — |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | gate re-run |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | parsed role at the surface |
-| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | port as a value |
-| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | gate re-run, both legs |
-| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | style contract; core style gate |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | protected-store daemon claims |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Done | linux-cpu | — |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Done | linux-cpu | — |
+| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
+| 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
+| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | acceptance re-run |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | acceptance re-run |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | acceptance re-run |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | acceptance re-run |
-| 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Active | — | reconciliation; validator checks |
+| 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Twelve phases are `Active`. The table above says which and what each owes; this section says how
+Three phases are `Active`. The table above says which and what each owes; this section says how
 they relate, and nothing here overrides a row there.
 
-The open work divides into three kinds. **Typed boundaries that are stated in prose rather than in the
-type**: a record whose optional fields are correlated by comment, and a port carried as a number.
-**Workflows written more than once**: the second port-range predicate. **A quality gate that has not reached the
-sources it was written for**: the formatter and the linter run against the base image's sample files and
-the worked consumer, and have not read the library. The documentation reconciliation that follows all
-three is the last phase.
+What is left is hardware. The Apple Silicon and Windows acceptances owe runs on hardware this repository
+has no access to, and the host-portability matrix owes three of its four gate-host cells — Windows,
+macOS, and arm64 Linux — which those same two visits carry. Its x86_64 Linux cell is current, and so is
+the NVIDIA acceptance. No open phase is waiting on a typed boundary, a duplicated workflow, a gate that
+has not reached the sources it was written for, or anything a machine with the right hardware would not
+simply run.
 
-[The legacy ledger](legacy_tracking_for_deletion.md) is no longer empty. Each row names the phase whose
-completion deletes the shape, and the ledger schedules nothing on its own: the deleting phase's own
-sprint does that.
+The worked demo's own live gate is closed, and closing it was not a formality: it found three defects no
+earlier run could reach, all in the lifecycle of a provider the chain installs itself. The descent
+resolved its host tool against a configuration measured before the chain's own `ensure` step installed
+that provider; the reverse driver ticked its pre-descent reachability step without reaching anything, so
+`destroy` descended into a stopped frame; and the consumer's provider reverse answered that reachability
+action on neither of its backends, one of them by stopping. Each is repaired by the phase that owns the
+surface, each carries a case that fails without the repair, and the same live run confirms all three.
+
+[The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
+Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would
+still schedule nothing on its own: the deleting phase's own sprint does that.
 
 **The acceptance phases close last.** Phases 25 to 28 cover the host-portable tree, so any source change
-in a lower phase re-owes their runs — re-running them before the rest of the plan settles would record
-evidence that the next sprint expires. They are taken once no other phase carries open work, and each
-is owed at the next visit to the hardware it declares. § G names that state as the honest reading of a
-portability claim between runs rather than as an unclosed phase.
+in a lower phase re-owes their runs, and re-running them before the rest of the plan settles records
+evidence the next sprint expires. That is not hypothetical here: the NVIDIA acceptance passed `10/10`
+three times on one day, and only the third run is its evidence, because each of the first two was
+overtaken by a repair landing under its covered paths. Each acceptance is owed at the next visit to the
+hardware it declares, and § G names that state as the honest reading of a portability claim between runs
+rather than as an unclosed phase.
 
-The documentation reconciliation phase is last for the same reason in reverse: it corrects governed
-prose against the source those phases are changing, and its validator checks are what keep the two
-aligned afterwards. Reconciling first would reconcile to a tree that is about to move.
+The documentation reconciliation phase was last for the same reason in reverse: it corrects governed
+prose against the source those phases change, and its validator checks are what keep the two aligned
+afterwards. Reconciling first would have reconciled to a tree that was about to move.
 
 Closed and not reopened: the Python pre-binary floor, the Haskell core scaffolding, host tools and
 substrate detection, the protected store, installed identity and the authority kernels, canonical
 quantities and reconcile results, Dhall configuration and the generic project model, the ensure
 reconcilers, the step algebra and the project plan, lifecycle modes and run leases, sessions and fences, prepared operations, authenticated
 handoff and child admission, the four ownership clauses and host-local reservations, host providers and
-the self-reference lift, cluster lifecycle and cordoning, and recovery and migration. Their covered paths
-are outside the open work, and their gate evidence still measures the tree it names.
+the self-reference lift, cluster lifecycle and cordoning, the recursive lifecycle command, recovery and
+migration, the test harness and its exclusive run ownership, the `test`/`context` command semantics, the
+composition and network algebra, the service runtime, base image publication with its opportunistic warm
+store, the worked demo, the NVIDIA acceptance, and the documentation reconciliation with its drift
+guards. Their covered paths are outside the open work, and their gate evidence still
+measures the tree it names.
 
 ## Validation policy
 

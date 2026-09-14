@@ -52,35 +52,35 @@ where
 
 import Data.Bifunctor (first)
 import Data.Text (Text)
+import HostBootstrap.Cluster.Cordon.Foundation (
+    BudgetDimension (..),
+    CapacityReadPlan (..),
+    CapacityReadSource (..),
+    HostCapacity (..),
+    QuantityError (..),
+    ResourceBudget,
+    StorageCordonMechanism (..),
+    StorageCordonResult (..),
+    StorageCordonTarget (..),
+    StorageCordonUnsupportedReason (..),
+    budgetCpu,
+    budgetMemoryBytes,
+    budgetStorageBytes,
+    capacityReadPlan,
+    gibibytes,
+    hostMemoryReserveBytes,
+    managedWslIdleTimeoutHours,
+    managedWslIdleTimeoutMillis,
+    mkResourceBudget,
+    parseDfAvailableKBytes,
+    parseQuantity,
+    renderQuantityError,
+    resolveHostCapacity,
+    storageCordonPolicy,
+    verifyBudget,
+    verifyHostBudget,
+ )
 import qualified HostBootstrap.Cluster.Cordon.Foundation as Foundation
-import HostBootstrap.Cluster.Cordon.Foundation
-    ( BudgetDimension (..),
-      CapacityReadPlan (..),
-      CapacityReadSource (..),
-      HostCapacity (..),
-      QuantityError (..),
-      ResourceBudget,
-      StorageCordonMechanism (..),
-      StorageCordonResult (..),
-      StorageCordonTarget (..),
-      StorageCordonUnsupportedReason (..),
-      budgetCpu,
-      budgetMemoryBytes,
-      budgetStorageBytes,
-      capacityReadPlan,
-      gibibytes,
-      hostMemoryReserveBytes,
-      managedWslIdleTimeoutHours,
-      managedWslIdleTimeoutMillis,
-      mkResourceBudget,
-      parseDfAvailableKBytes,
-      parseQuantity,
-      renderQuantityError,
-      resolveHostCapacity,
-      storageCordonPolicy,
-      verifyBudget,
-      verifyHostBudget,
-    )
 import qualified HostBootstrap.Config.Vocab as Vocab
 import HostBootstrap.Context (ResourceEnvelope (..))
 import Numeric.Natural (Natural)
@@ -89,9 +89,9 @@ import Numeric.Natural (Natural)
 adapter result grants no plan or mutation authority.
 -}
 data Overflow = Overflow
-    { overflowDimension :: String,
-      overflowWanted :: Natural,
-      overflowAllowed :: Natural
+    { overflowDimension :: String
+    , overflowWanted :: Natural
+    , overflowAllowed :: Natural
     }
     deriving (Eq, Show)
 

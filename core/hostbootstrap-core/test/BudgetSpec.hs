@@ -13,7 +13,7 @@ import HostBootstrap.Cluster.Cordon
 import HostBootstrap.Cluster.Workload.Binding (withMatchingChartWorkloadDeclaration)
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context (ResourceEnvelope (..))
-import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, preparedGateCommitment)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.ProjectPlan (
     ClusterResource,
@@ -49,7 +49,6 @@ import HostBootstrap.Step (
     mkStepPlan,
  )
 import Numeric.Natural (Natural)
-import HostBootstrap.Lifecycle.Prepared (preparedGateCommitment)
 import PrepareFixture (gateFor, gateForValues)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))

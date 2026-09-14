@@ -1,15 +1,15 @@
 module PassFreshEvidenceToBoundSnapshot where
 
 import HostBootstrap.Authority (InstalledProjectIdentity)
-import HostBootstrap.Lifecycle.Mode
-    ( InvocationCloseKey
-    , UnboundRunLease
-    , VerifiedPlanSnapshot
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( SnapshotError
-    , withBoundPlanSnapshot
-    )
+import HostBootstrap.Lifecycle.Mode (
+    InvocationCloseKey,
+    UnboundRunLease,
+    VerifiedPlanSnapshot,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    SnapshotError,
+    withBoundPlanSnapshot,
+ )
 import HostBootstrap.ProjectScope (Production)
 import HostBootstrap.Protected (ProtectedStore)
 

@@ -1,9 +1,9 @@
 {-# LANGUAGE CPP #-}
 
-module HostBootstrap.Ensure.Colima.Backend.Resolver.Native
-  ( resolveNativeAppleToolchain,
+module HostBootstrap.Ensure.Colima.Backend.Resolver.Native (
+    resolveNativeAppleToolchain,
     resolveNativeResolverFixture,
-  )
+)
 where
 
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedResolverProtocol (..))

@@ -37,14 +37,14 @@ predecessor as the digest of that response's complete signed bytes. A frame
 that fabricates a coordinate is not a frame that gets ahead — it is a frame
 whose next request fails to pair.
 -}
-module HostBootstrap.Lifecycle.FrameExecutor
-    ( FrameExecutor
-    , withOpenedFrameExecutorKernel
-    , withOpenedFrameExecutorForPlanKernel
-    , withFrameExecutorRequestKernel
-    , withAdvancedFrameExecutorKernel
-    , withExecutedFrameNodeKernel
-    )
+module HostBootstrap.Lifecycle.FrameExecutor (
+    FrameExecutor,
+    withOpenedFrameExecutorKernel,
+    withOpenedFrameExecutorForPlanKernel,
+    withFrameExecutorRequestKernel,
+    withAdvancedFrameExecutorKernel,
+    withExecutedFrameNodeKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -55,46 +55,46 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (ProjectVerb)
-import HostBootstrap.Handoff
-    ( AuthenticatedRootScope
-    , ProjectVerificationKey
-    , RootedLifecycleResponse
-    , childConfigDigest
-    , handoffErrorMessage
-    , withVerifiedRootedLifecycleResponse
-    )
-import HostBootstrap.Handoff.Rooted
-    ( renderRootedLifecycleRequestKernel
-    , rootedCloseFrameRequestKernel
-    , rootedDescendResultRequestKernel
-    , rootedNextNodeRequestKernel
-    , rootedReceiptConfirmRequestKernel
-    , rootedSettleNodeRequestKernel
-    , withRootedLifecycleResponseKernel
-    )
-import HostBootstrap.Lifecycle.Execution.Internal
-    ( ExecutionNode
-    , ResourceCarrier
-    , executionNodeDependencyKeys
-    , executionNodeFrame
-    , executionNodeOperationKey
-    , executionNodeProjectedKeys
-    , newResourceCarrier
-    )
-import HostBootstrap.Lifecycle.Prepared.Internal
-    ( PreparedGate
-    , GateAttempt (GateAttempt)
-    , GateFence (GateFence)
-    , GateJournalVersion (GateJournalVersion)
-    , GateOperationKey (GateOperationKey)
-    , GatePlanDigest (GatePlanDigest)
-    , GateSession (GateSession)
-    , mintPreparedGate
-    , readPreparedGatePackageKernel
-    , readPreparedGatePackagesKernel
-    , renderPreparedGatePackagesKernel
-    , renderPreparedNodeKeysKernel
-    )
+import HostBootstrap.Handoff (
+    AuthenticatedRootScope,
+    ProjectVerificationKey,
+    RootedLifecycleResponse,
+    childConfigDigest,
+    handoffErrorMessage,
+    withVerifiedRootedLifecycleResponse,
+ )
+import HostBootstrap.Handoff.Rooted (
+    renderRootedLifecycleRequestKernel,
+    rootedCloseFrameRequestKernel,
+    rootedDescendResultRequestKernel,
+    rootedNextNodeRequestKernel,
+    rootedReceiptConfirmRequestKernel,
+    rootedSettleNodeRequestKernel,
+    withRootedLifecycleResponseKernel,
+ )
+import HostBootstrap.Lifecycle.Execution.Internal (
+    ExecutionNode,
+    ResourceCarrier,
+    executionNodeDependencyKeys,
+    executionNodeFrame,
+    executionNodeOperationKey,
+    executionNodeProjectedKeys,
+    newResourceCarrier,
+ )
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    GateAttempt (GateAttempt),
+    GateFence (GateFence),
+    GateJournalVersion (GateJournalVersion),
+    GateOperationKey (GateOperationKey),
+    GatePlanDigest (GatePlanDigest),
+    GateSession (GateSession),
+    PreparedGate,
+    mintPreparedGate,
+    readPreparedGatePackageKernel,
+    readPreparedGatePackagesKernel,
+    renderPreparedGatePackagesKernel,
+    renderPreparedNodeKeysKernel,
+ )
 
 {- | One nested frame's place in its root-owned exchange.
 
@@ -110,8 +110,15 @@ the four coordinates the root selected. The carrier is indexed by the same
 scope and frame index, so a handle acquired in one frame is unreadable in
 another even though the erased form carries no index of its own.
 -}
-data FrameExecutor
-    scope rootPlanId brokerGeneration catalogId frame sessionId verb
+data
+    FrameExecutor
+        scope
+        rootPlanId
+        brokerGeneration
+        catalogId
+        frame
+        sessionId
+        verb
     where
     FrameExecutor ::
         AuthenticatedRootScope scope ->
@@ -129,9 +136,7 @@ data FrameExecutor
 
 type role FrameExecutor nominal nominal nominal nominal nominal nominal nominal
 
-instance
-    Show (FrameExecutor scope rootPlanId brokerGeneration catalogId frame sessionId verb)
-    where
+instance Show (FrameExecutor scope rootPlanId brokerGeneration catalogId frame sessionId verb) where
     show _ = "FrameExecutor <storeless>"
 
 {- | Open one executor from the exact verified answer to this frame's opening.
@@ -214,25 +219,25 @@ withOpenedFrameExecutorForPlanKernel key scope verb frameName planDigest nodes c
             use (FrameExecutor scope verb frameName planDigest nodes carrier path session stage ordinal (childConfigDigest signedOpened))
 admitOpenedFrame :: ProjectVerificationKey -> Text -> Text -> [ExecutionNode] -> ByteString -> ByteString -> Either Text ([Text], Text, Text, Word64)
 admitOpenedFrame key frameName planDigest nodes request signedOpened = do
-        require "the executing frame is empty" (not (Text.null frameName))
-        require "the frame plan digest is empty" (not (Text.null planDigest))
-        require "the frame plan has no execution node" (not (null nodes))
-        require
-            "a supplied execution node belongs to another frame"
-            (all ((== frameName) . executionNodeFrame) nodes)
-        require
-            "the frame plan carries one operation key twice"
-            (length keys == length (nub keys))
-        verified <- verifiedResponse key request signedOpened
-        withRootedLifecycleResponseKernel
-            verified
-            (\_ path session stage ordinal _ -> Right (path, session, stage, ordinal))
-            (\_ _ _ _ _ _ _ _ _ _ _ -> beforeOpened)
-            (\_ _ _ _ _ _ _ _ -> beforeOpened)
-            (\_ _ _ _ _ _ _ _ -> beforeOpened)
-            (\_ _ _ _ _ _ _ _ -> beforeOpened)
-            (\_ _ _ _ _ _ _ _ -> beforeOpened)
-            (\_ _ _ _ _ _ _ _ -> beforeOpened)
+    require "the executing frame is empty" (not (Text.null frameName))
+    require "the frame plan digest is empty" (not (Text.null planDigest))
+    require "the frame plan has no execution node" (not (null nodes))
+    require
+        "a supplied execution node belongs to another frame"
+        (all ((== frameName) . executionNodeFrame) nodes)
+    require
+        "the frame plan carries one operation key twice"
+        (length keys == length (nub keys))
+    verified <- verifiedResponse key request signedOpened
+    withRootedLifecycleResponseKernel
+        verified
+        (\_ path session stage ordinal _ -> Right (path, session, stage, ordinal))
+        (\_ _ _ _ _ _ _ _ _ _ _ -> beforeOpened)
+        (\_ _ _ _ _ _ _ _ -> beforeOpened)
+        (\_ _ _ _ _ _ _ _ -> beforeOpened)
+        (\_ _ _ _ _ _ _ _ -> beforeOpened)
+        (\_ _ _ _ _ _ _ _ -> beforeOpened)
+        (\_ _ _ _ _ _ _ _ -> beforeOpened)
   where
     keys = map executionNodeOperationKey nodes
 

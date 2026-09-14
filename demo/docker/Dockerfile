@@ -26,6 +26,13 @@ WORKDIR /workspace
 # cabal.project references ../core/hostbootstrap-core).
 COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY demo /workspace/demo
+# The committed style contract, at the root both tools search upward to. Without
+# it the in-image `check-code` below would run the formatter and linter on
+# whatever their installed versions default to, which is the property the
+# contract exists to remove — and a base rebuild could then change what passes
+# with no repository change at all.
+COPY fourmolu.yaml /workspace/fourmolu.yaml
+COPY .hlint.yaml /workspace/.hlint.yaml
 
 WORKDIR /workspace/demo
 # The coordinator-selected builder is an integrity-bound named build context;

@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 {- | Which ownership row this host runs.
 
@@ -20,20 +19,20 @@ answers a total refusal (§ JJ), so this module selects between two values that
 both exist everywhere. A caller therefore always holds a row; what differs is
 what that row says when it is asked to hold a clause.
 -}
-module HostBootstrap.Ownership.Row
-    ( ownershipRowForHost
-    , hostOwnershipSupported
-    , observeOwnershipManifestForHost
-    )
+module HostBootstrap.Ownership.Row (
+    ownershipRowForHost,
+    hostOwnershipSupported,
+    observeOwnershipManifestForHost,
+)
 where
 
-import HostBootstrap.Ownership.Primitive
-    ( OwnershipCapabilities (holdsStableIdentity)
-    , OwnershipRow
-    , rowCapabilities
-    , withOwnershipRow
-    )
 import HostBootstrap.Ownership.Manifest (OwnershipManifest)
+import HostBootstrap.Ownership.Primitive (
+    OwnershipCapabilities (holdsStableIdentity),
+    OwnershipRow,
+    rowCapabilities,
+    withOwnershipRow,
+ )
 #if defined(mingw32_HOST_OS)
 import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
 import HostBootstrap.Ownership.Windows (windowsOwnershipRow)

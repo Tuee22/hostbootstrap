@@ -1,0 +1,42 @@
+# The committed Haskell formatting contract (DEVELOPMENT_PLAN § R).
+#
+# Every setting is written out, including the ones that agree with the
+# formatter's current defaults. That is the point of the file: the rolling base
+# image installs "the current compatible fourmolu", so without a committed
+# contract the style the gate enforces would be a property of the day that base
+# was last republished rather than a property of this repository. A tool upgrade
+# that changes a default now changes nothing here.
+#
+# The values are the ones the existing sources already agree with most closely,
+# measured rather than guessed. Of the 190 library, sublibrary and consumer
+# modules, 74 are already byte-identical under these settings, and every
+# alternative tried agrees with fewer: 2-space indentation with leading module
+# headers (0), single-line Haddock (6), leading function arrows (20), leading
+# import/export lists (10).
+
+indentation: 4
+column-limit: none
+function-arrows: trailing
+comma-style: leading
+import-export-style: diff-friendly
+import-grouping: legacy
+indent-wheres: false
+record-brace-space: false
+newlines-between-decls: 1
+haddock-style: multi-line
+haddock-style-module: null
+haddock-location-signature: auto
+let-style: auto
+in-style: right-align
+if-style: indented
+single-constraint-parens: always
+single-deriving-parens: always
+sort-constraints: false
+sort-derived-classes: false
+sort-deriving-clauses: false
+trailing-section-operators: true
+unicode: never
+respectful: true
+fixities: []
+reexports: []
+local-modules: []

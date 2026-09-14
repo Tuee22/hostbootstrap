@@ -1,4 +1,4 @@
-{- | The OS-released lock/origin backend is entirely private. -}
+-- | The OS-released lock/origin backend is entirely private.
 module OpenColimaOwnershipBackend where
 
 import HostBootstrap.Ensure.Colima (ColimaOwnershipBackend)

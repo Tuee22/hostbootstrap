@@ -312,8 +312,8 @@ set and verifies the manifest pairing the independent complete session set with 
 protected interpreter CAS-rebinds each existing stable session record once—including a zero-operation
 Open session—and classifies unknown, the five pre-call continuable phases, already-observed retryable,
 successful, and terminal operation records. Initial intent registration and exact session membership are
-one atomic session/project-journal version transition that consumes either the sole no-prior-generation
-origin or an exact `FreshGeneration` reacquisition origin, so no orphan intent can be omitted from the
+one atomic session/project-journal version transition that consumes an exact `IntentOrigin` — either the
+sole `NoHistory` origin or a `ReleasedReacquisition` one — so no orphan intent can be omitted from the
 manifest and callers cannot choose the generation. An initial intent may have no fence record and cannot
 prepare; recovery idempotently resumes the stable initial-fence protocol and threads its successor
 session/state/permit before exposing current-fence authority. Only continuable phases receive
@@ -358,12 +358,13 @@ can resume only the close plan. Only after all are closed does a protected empty
 compare-and-swap mint `ClosedAbandonedHarnessRuns`; `withHarnessRoot` consumes that versioned proof
 atomically with fresh allocation. A new run ID or a concurrent sweep cannot bypass an abandoned run.
 Production and Harness use disjoint authority/broker lease namespaces but contend on one project-wide
-mode record. `verifyHarnessPreconditions` derives its total probe from the installed project identity;
+mode record. `harnessPreconditions` derives its total probe from the installed project identity;
 `withHarnessRoot` rechecks it while acquiring Harness mode. Production therefore cannot slip between
 precheck and ownership, and a Harness run cannot overlap a stopped Production stack whose mode is still
 held. Production can release that mode only through a closed `ProductionClosureAuthorization`: exact
 `ProjectDestroy` plus `DestroySettled` authorizes settled closure, while any exact Production verb can
-close before its first effect only with `VerifiedNoProjectResourcesAcquired`. The final compare-and-swap
+close before its first effect only through `PreEffectProductionClosure`, whose sole evidence is
+`verifyNoProjectResourcesAcquired`. The final compare-and-swap
 rechecks the same mode/lease/snapshot/Open-state tuple and complete Closed-session set, then atomically
 records `ClosedProject`, closes the invocation lease, and releases mode. Session opening advances and
 compare-and-swaps that same project-journal version, so it and finalization have exactly one winner;
@@ -386,7 +387,7 @@ The recovered frame and matching ordinary-step resource evidence remains a root-
 owned-or-released sum arising only from the bound snapshot and complete rehydrated set. The owned branch can
 produce a signed grant for the matching managed handle/receipt/resource/operation bindings. The released
 branch yields only its verified tombstone, produces no backend-call grant, and requires a protected root-side
-absence recheck plus a distinct new acquisition key before `FreshGeneration`. Its sole root-side consumer
+absence recheck plus a distinct new acquisition key before `ReleasedReacquisition`. Its sole root-side consumer
 creates the exact reacquisition origin and atomically revalidates it with the new generation and session
 membership. Provider reachability can therefore precede retained-child teardown without trusting raw
 persisted receipts, recreating the old normal config, or granting `ProjectUp` authority.

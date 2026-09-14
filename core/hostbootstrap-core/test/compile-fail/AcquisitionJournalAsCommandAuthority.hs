@@ -1,10 +1,10 @@
 module AcquisitionJournalAsCommandAuthority where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , ExecutePhase
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    ExecutePhase,
+    VerbUp,
+ )
 import HostBootstrap.Lifecycle.Mode (AcquisitionJournal)
 
 data Scope

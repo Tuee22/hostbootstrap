@@ -17,17 +17,17 @@ module HostBootstrap.Ensure.CudaWin (
 where
 
 import HostBootstrap.Ensure (
-    reportedGpu,
-    withProbeDir,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
     frameTable,
     installAndVerify,
     reconcilerInstallSteps,
+    reportedGpu,
     runTool,
     toolPresent,
     windowsGpuRow,
+    withProbeDir,
  )
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Clang, MsvcCl, Nvcc, NvidiaSmi, Vswhere, Winget), absExePath)
@@ -92,47 +92,46 @@ cudaSmokeCompile cfg =
                     Right (ExitSuccess, _, _) -> True
                     _ -> False
 
-
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler
 
 windowsGpuSteps :: [InstallStep]
 windowsGpuSteps =
     [ InstallStep
-                Winget
-                [ "install"
-                , "--id"
-                , "Nvidia.CUDA"
-                , "--exact"
-                , "--silent"
-                , "--disable-interactivity"
-                , "--accept-package-agreements"
-                , "--accept-source-agreements"
-                ]
-            , InstallStep
-                Winget
-                [ "install"
-                , "--id"
-                , "Microsoft.VisualStudio.2022.BuildTools"
-                , "--exact"
-                , "--silent"
-                , "--disable-interactivity"
-                , "--accept-package-agreements"
-                , "--accept-source-agreements"
-                , "--override"
-                , "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-                ]
-            , InstallStep
-                Winget
-                [ "install"
-                , "--id"
-                , "LLVM.LLVM"
-                , "--exact"
-                , "--silent"
-                , "--disable-interactivity"
-                , "--accept-package-agreements"
-                , "--accept-source-agreements"
-                ]
+        Winget
+        [ "install"
+        , "--id"
+        , "Nvidia.CUDA"
+        , "--exact"
+        , "--silent"
+        , "--disable-interactivity"
+        , "--accept-package-agreements"
+        , "--accept-source-agreements"
+        ]
+    , InstallStep
+        Winget
+        [ "install"
+        , "--id"
+        , "Microsoft.VisualStudio.2022.BuildTools"
+        , "--exact"
+        , "--silent"
+        , "--disable-interactivity"
+        , "--accept-package-agreements"
+        , "--accept-source-agreements"
+        , "--override"
+        , "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+        ]
+    , InstallStep
+        Winget
+        [ "install"
+        , "--id"
+        , "LLVM.LLVM"
+        , "--exact"
+        , "--silent"
+        , "--disable-interactivity"
+        , "--accept-package-agreements"
+        , "--accept-source-agreements"
+        ]
     ]
 
 clangVersionArgs :: [String]

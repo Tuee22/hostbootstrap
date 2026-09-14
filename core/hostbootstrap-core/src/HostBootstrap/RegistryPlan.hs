@@ -71,6 +71,7 @@ import HostBootstrap.Network (
     Exposure,
     NetworkClient,
     NetworkScope (..),
+    Port,
     Reachability,
     clientScope,
     endpointAuthority,
@@ -78,6 +79,7 @@ import HostBootstrap.Network (
     exposurePort,
     exposureRuntimeIdentity,
     exposureService,
+    portNumber,
     reachabilityEndpointScope,
  )
 
@@ -259,7 +261,7 @@ data BlobProbe
 data BlobRouteObservation = BlobRouteObservation
     { observedProbe :: BlobProbe
     , observedService :: Text
-    , observedPort :: Int
+    , observedPort :: Port
     -- ^ the published port the probe actually dialled
     , observedRuntimeIdentity :: Maybe (Text, Word64, Text)
     , observedStatus :: Int
@@ -319,10 +321,11 @@ settleBlobRoute plan observation =
                     "a different runtime exposure identity"
             | observedPort observation /= exposurePort (planExposure plan) ->
                 mismatch
-                    ("the exposure on port " <> Text.pack (show (exposurePort (planExposure plan))))
-                    ("a probe of port " <> Text.pack (show (observedPort observation)))
+                    ("the exposure on port " <> renderedPort (exposurePort (planExposure plan)))
+                    ("a probe of port " <> renderedPort (observedPort observation))
             | otherwise -> settleForDelivery
   where
+    renderedPort = Text.pack . show . portNumber
     settleForDelivery =
         case (blobDeliveryStrategy (planDelivery plan), observedRedirect observation) of
             (ProxyBlobs, Nothing)

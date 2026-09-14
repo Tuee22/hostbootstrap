@@ -1,7 +1,6 @@
 # Phase 18 — Recovery and migration
 
 **Status**: Done
-**Current sprint**: None
 **Depends on**: Phase 17 (the recursive lifecycle command)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`

@@ -52,13 +52,13 @@ IEEE Float32. The tiny codec uses CBOR float64 as a carrier for those already-qu
 The message family is:
 
 ```text
-AddRequest  { requestId : Text, left : Float, right : Float }
-AddResult   { requestId : Text, result : Float, backend : Text, artifactHash : Text }
-AddFailure  { requestId : Text, error : Text, backend : Text, artifactHash : Text }
+AcceleratorAddRequest { requestId : Text, left : Float, right : Float }
+AcceleratorAddResult  { requestId : Text, result : Float, backend : Text, artifactHash : Text }
+AcceleratorAddFailure { requestId : Text, error : Text, backend : Text, artifactHash : Text }
 ```
 
 The server owns request correlation and timeouts. A UI request is not complete until the daemon returns the
-matching `AddResult`. The response includes a backend identity and artifact hash so tests can prove the UI
+matching `AcceleratorAddResult`. The response includes a backend identity and artifact hash so tests can prove the UI
 path reached the built worker rather than an in-process fallback.
 
 Current demo behavior preserves that invariant: the SPA has the Add controls and renders pending/error/

@@ -7,4 +7,3 @@ import HostBootstrap.Authority (ProjectVerb, VerbDestroy, VerbDown)
 -- cannot be relabelled as destroy through representational coercion.
 coerceDownAsDestroy :: ProjectVerb VerbDown -> ProjectVerb VerbDestroy
 coerceDownAsDestroy = coerce
-

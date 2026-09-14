@@ -1,7 +1,7 @@
 module EscapeProviderCapabilityIdentity where
 
-import HostBootstrap.Substrate.Provider
 import HostBootstrap.Reconcile
+import HostBootstrap.Substrate.Provider
 
 data ChosenCapability
 

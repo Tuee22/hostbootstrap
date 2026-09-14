@@ -97,20 +97,19 @@ tests =
         , testCase "a replaced relative root cannot redirect admission outside the project anchor" $
             if os == "mingw32"
                 then pure ()
-                else
-                    withSystemTempDirectory "hostbootstrap-project-root-replaced" $ \workspace -> do
-                        let project = workspace </> "project"
-                            buildDir = project </> ".build"
-                            outside = workspace </> "outside"
-                            redirected = project </> "root"
-                            configPath = buildDir </> "demo.dhall"
-                        createDirectoryIfMissing True buildDir
-                        createDirectory outside
-                        createDirectoryLink outside redirected
-                        canonicalOutside <- canonicalizePath outside
-                        canonicalProject <- canonicalizePath project
-                        result <- withCanonicalProjectRoot configPath "root" (const (pure ()))
-                        result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+                else withSystemTempDirectory "hostbootstrap-project-root-replaced" $ \workspace -> do
+                    let project = workspace </> "project"
+                        buildDir = project </> ".build"
+                        outside = workspace </> "outside"
+                        redirected = project </> "root"
+                        configPath = buildDir </> "demo.dhall"
+                    createDirectoryIfMissing True buildDir
+                    createDirectory outside
+                    createDirectoryLink outside redirected
+                    canonicalOutside <- canonicalizePath outside
+                    canonicalProject <- canonicalizePath project
+                    result <- withCanonicalProjectRoot configPath "root" (const (pure ()))
+                    result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
         , testCase "the direct host bind consumes the canonical .data projection" $
             withSystemTempDirectory "hostbootstrap-project-root-bind" $ \project -> do
                 let buildDir = project </> ".build"

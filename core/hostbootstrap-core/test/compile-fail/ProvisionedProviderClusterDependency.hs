@@ -8,8 +8,8 @@ import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile (ProviderPhaseAdvance)
 
 provisionedDependency ::
-  StrongProviderBackend backendId ->
-  ProviderPhaseAdvance scope planId backendId providerId Provisioned ->
-  Either ReconcileError (RunningProviderDependency scope planId providerId)
+    StrongProviderBackend backendId ->
+    ProviderPhaseAdvance scope planId backendId providerId Provisioned ->
+    Either ReconcileError (RunningProviderDependency scope planId providerId)
 provisionedDependency backend advance =
-  withRunningProviderDependency backend advance id
+    withRunningProviderDependency backend advance id

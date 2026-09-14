@@ -27,14 +27,14 @@ edge and names a keyless relay that can only move exact bytes. Reading that
 distinction off a runtime is how later work stays honest about which frame is
 allowed to sign, without any frame being handed the means to decide otherwise.
 -}
-module HostBootstrap.Handoff.Runtime
-    ( RecursiveHandoffRuntime
-    , rootRecursiveHandoffRuntimeKernel
-    , nestedRecursiveHandoffRuntimeKernel
-    , withRecursiveHandoffRuntimeKernel
-    , withRootArmRecursiveHandoffRuntimeKernel
-    , withNestedArmRecursiveHandoffRuntimeKernel
-    )
+module HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    rootRecursiveHandoffRuntimeKernel,
+    nestedRecursiveHandoffRuntimeKernel,
+    withRecursiveHandoffRuntimeKernel,
+    withRootArmRecursiveHandoffRuntimeKernel,
+    withNestedArmRecursiveHandoffRuntimeKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -44,34 +44,34 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Authority
-    ( ProjectVerb
-    , RootInvocationAuthority
-    , brokerEpochWord
-    , projectVerbName
-    , rootAuthorityEpoch
-    , rootAuthorityProjectName
-    , rootAuthorityVerb
-    )
+import HostBootstrap.Authority (
+    ProjectVerb,
+    RootInvocationAuthority,
+    brokerEpochWord,
+    projectVerbName,
+    rootAuthorityEpoch,
+    rootAuthorityProjectName,
+    rootAuthorityVerb,
+ )
 import HostBootstrap.Authority.Kernel (rootAuthorityStoreIdentity)
-import HostBootstrap.Handoff
-    ( BrokerRoute
-    , HandoffBinding
-    , HandoffScope
-    , RootBroker
-    , brokerRouteCurrentFrame
-    , brokerRouteVerificationKeyDigest
-    , handoffBrokerGeneration
-    , handoffChildFrame
-    , handoffInstalledProject
-    , handoffScope
-    , handoffScopeProject
-    , handoffScopeTag
-    , handoffStoreIdentity
-    , handoffVerb
-    , rootBrokerVerificationKey
-    , verificationKeyDigest
-    )
+import HostBootstrap.Handoff (
+    BrokerRoute,
+    HandoffBinding,
+    HandoffScope,
+    RootBroker,
+    brokerRouteCurrentFrame,
+    brokerRouteVerificationKeyDigest,
+    handoffBrokerGeneration,
+    handoffChildFrame,
+    handoffInstalledProject,
+    handoffScope,
+    handoffScopeProject,
+    handoffScopeTag,
+    handoffStoreIdentity,
+    handoffVerb,
+    rootBrokerVerificationKey,
+    verificationKeyDigest,
+ )
 
 {- | One frame's installed recursive-handoff trust and arm.
 
@@ -129,13 +129,17 @@ rootRecursiveHandoffRuntimeKernel ::
     Either Text (RecursiveHandoffRuntime scope brokerGeneration verb)
 {-# OPAQUE rootRecursiveHandoffRuntimeKernel #-}
 rootRecursiveHandoffRuntimeKernel broker scope route root verb = do
-    require "the scope evidence names a different installed project than the root authority"
+    require
+        "the scope evidence names a different installed project than the root authority"
         (handoffScopeProject scope == project)
-    require "the runtime verb differs from the root authority"
+    require
+        "the runtime verb differs from the root authority"
         (verbName == projectVerbName (rootAuthorityVerb root))
-    require "the root route advertises a different installed verification key"
+    require
+        "the root route advertises a different installed verification key"
         (brokerRouteVerificationKeyDigest route == keyDigest)
-    require "a root runtime cannot hold an authenticated current frame"
+    require
+        "a root runtime cannot hold an authenticated current frame"
         (isNothing (brokerRouteCurrentFrame route))
     requireIdentity project tag store generation keyDigest verbName
     pure (RootRecursiveHandoffRuntime verb project tag store generation keyDigest)
@@ -164,9 +168,11 @@ nestedRecursiveHandoffRuntimeKernel ::
     Either Text (RecursiveHandoffRuntime scope brokerGeneration verb)
 {-# OPAQUE nestedRecursiveHandoffRuntimeKernel #-}
 nestedRecursiveHandoffRuntimeKernel route binding verb = do
-    require "the runtime verb differs from the authenticated edge"
+    require
+        "the runtime verb differs from the authenticated edge"
         (verbName == handoffVerb binding)
-    require "the relayed route does not name the authenticated child frame"
+    require
+        "the relayed route does not name the authenticated child frame"
         (brokerRouteCurrentFrame route == Just frame)
     require "the authenticated child frame is empty" (not (Text.null frame))
     requireIdentity project tag store generation keyDigest verbName

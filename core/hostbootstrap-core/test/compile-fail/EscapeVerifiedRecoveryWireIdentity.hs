@@ -7,7 +7,13 @@ data CallerChosenVerifiedRecoveryWire
 
 selectWire ::
     VerifiedRecoveryWire
-        scope broker verb plan child digest CallerChosenVerifiedRecoveryWire ->
+        scope
+        broker
+        verb
+        plan
+        child
+        digest
+        CallerChosenVerifiedRecoveryWire ->
     ()
 selectWire _ = ()
 

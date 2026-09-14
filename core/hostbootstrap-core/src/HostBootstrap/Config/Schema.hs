@@ -88,13 +88,14 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
+import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock)
 import HostBootstrap.Authority (
+    InstalledProjectIdentity,
     LifecyclePhase (Execute, Prepare, Teardown),
     ProjectVerb,
+    installedProjectName,
     projectVerbName,
  )
-import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock)
-import HostBootstrap.Authority (InstalledProjectIdentity, installedProjectName)
 import HostBootstrap.Config.Class (
     ConfigAssembly,
     ConfigInput,
@@ -104,6 +105,14 @@ import HostBootstrap.Config.Class (
     projectCodecSpecDigest,
     renderProjectCodecHoisted,
     runConfigAssembly,
+ )
+import HostBootstrap.Config.Install.Native (linkNoReplace)
+import HostBootstrap.Config.Schema.Internal (
+    ValidatedConfig,
+    mintValidatedConfigKernel,
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
+    validatedConfigValue,
  )
 import HostBootstrap.Config.Vocab (Harness, HarnessAuthority, Production)
 import HostBootstrap.Context (BinaryContext)
@@ -128,14 +137,6 @@ import HostBootstrap.Handoff (
     handoffVerb,
     verifiedHandoffBinding,
  )
-import HostBootstrap.Config.Install.Native (linkNoReplace)
-import HostBootstrap.Config.Schema.Internal
-    ( ValidatedConfig
-    , mintValidatedConfigKernel
-    , validatedConfigDigest
-    , validatedConfigSpecDigest
-    , validatedConfigValue
-    )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     ProjectRootError (..),
@@ -392,8 +393,9 @@ mintValidatedConfig specDigest digest value use =
         (VerifiedConfigWire digest)
         (mintValidatedConfigKernel specDigest digest value)
 
--- | Failures while turning authenticated transport bytes into a local config.
--- No constructor retains or renders the payload, a signature, or a token.
+{- | Failures while turning authenticated transport bytes into a local config.
+No constructor retains or renders the payload, a signature, or a token.
+-}
 data ConfigWireAdmissionError
     = ConfigWireDigestMismatch
     | ConfigWireInvalidUtf8
@@ -469,7 +471,14 @@ data VerifiedConfigHandoff scope planDigest brokerGeneration parentFrame childFr
         VerifiedHandoff scope brokerGeneration ->
         LifecyclePhase phase ->
         VerifiedConfigHandoff
-            scope planDigest brokerGeneration parentFrame childFrame configId verb phase
+            scope
+            planDigest
+            brokerGeneration
+            parentFrame
+            childFrame
+            configId
+            verb
+            phase
 
 type role VerifiedConfigHandoff nominal nominal nominal nominal nominal nominal nominal nominal
 
@@ -483,7 +492,14 @@ instance Show (VerifiedConfigHandoff scope planDigest brokerGeneration parentFra
 -- | The authenticated transport binding retained by this config refinement.
 verifiedConfigHandoffBinding ::
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        phase ->
     HandoffBinding scope brokerGeneration
 verifiedConfigHandoffBinding (VerifiedConfigHandoff handoff _) =
     verifiedHandoffBinding handoff
@@ -491,7 +507,14 @@ verifiedConfigHandoffBinding (VerifiedConfigHandoff handoff _) =
 -- | The closed lifecycle phase authenticated by the handoff.
 verifiedConfigHandoffPhase ::
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        phase ->
     LifecyclePhase phase
 verifiedConfigHandoffPhase (VerifiedConfigHandoff _ phase) = phase
 
@@ -508,7 +531,14 @@ withVerifiedConfigHandoff ::
     ValidatedConfig scope specDigest configId config ->
     ( forall planDigest parentFrame childFrame phase.
       VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        phase ->
       result
     ) ->
     Either HandoffError result
@@ -532,16 +562,18 @@ withVerifiedConfigHandoff verb handoff wire config use
     binding = verifiedHandoffBinding handoff
     mismatch = Left . HandoffBindingMismatch
 
--- | Result of installing authenticated bytes at the current binary's sibling
--- config path.  An identical incumbent is a successful idempotent replay of
--- installation, not permission to overwrite it.
+{- | Result of installing authenticated bytes at the current binary's sibling
+config path.  An identical incumbent is a successful idempotent replay of
+installation, not permission to overwrite it.
+-}
 data SiblingConfigInstallResult
     = SiblingConfigInstalled
     | SiblingConfigAlreadyPresent
     deriving (Eq, Show)
 
--- | Fail-closed sibling installation errors.  Payload bytes and OS exception
--- text are deliberately absent from this vocabulary.
+{- | Fail-closed sibling installation errors.  Payload bytes and OS exception
+text are deliberately absent from this vocabulary.
+-}
 data SiblingConfigInstallError
     = SiblingConfigUnsafeDestination FilePath
     | SiblingConfigConflict FilePath
@@ -557,8 +589,9 @@ siblingConfigInstallErrorMessage failure = case failure of
     SiblingConfigInstallFailed path ->
         "failed to install the authenticated sibling config: " <> T.pack path
 
--- | Production scopes can install only beside the exact installed project
--- whose generative identity appears in the payload scope.
+{- | Production scopes can install only beside the exact installed project
+whose generative identity appears in the payload scope.
+-}
 installAuthenticatedProductionSiblingConfig ::
     InstalledProjectIdentity projectId ->
     AuthenticatedConfigPayload (Production projectId) brokerGeneration ->
@@ -566,9 +599,10 @@ installAuthenticatedProductionSiblingConfig ::
 installAuthenticatedProductionSiblingConfig project =
     installAuthenticatedSiblingConfig project . authenticatedConfigBytes
 
--- | Harness scopes preserve the same project identity and their exact run
--- identity while deriving the destination solely from the installed project
--- and the current executable.
+{- | Harness scopes preserve the same project identity and their exact run
+identity while deriving the destination solely from the installed project
+and the current executable.
+-}
 installAuthenticatedHarnessSiblingConfig ::
     InstalledProjectIdentity projectId ->
     AuthenticatedConfigPayload (Harness projectId runId) brokerGeneration ->
@@ -615,18 +649,17 @@ inspectSiblingConfig path expected = do
                     regular <- doesFileExist path
                     if not regular
                         then pure SiblingUnsafe
-                        else
-                            withBinaryFile path ReadMode $ \handle -> do
-                                size <- hFileSize handle
-                                if size /= fromIntegral (BS.length expected)
-                                    then pure SiblingDifferent
-                                    else do
-                                        actual <- BS.hGet handle (BS.length expected + 1)
-                                        pure
-                                            ( if actual == expected
-                                                then SiblingIdentical
-                                                else SiblingDifferent
-                                            )
+                        else withBinaryFile path ReadMode $ \handle -> do
+                            size <- hFileSize handle
+                            if size /= fromIntegral (BS.length expected)
+                                then pure SiblingDifferent
+                                else do
+                                    actual <- BS.hGet handle (BS.length expected + 1)
+                                    pure
+                                        ( if actual == expected
+                                            then SiblingIdentical
+                                            else SiblingDifferent
+                                        )
 
 createSiblingConfig ::
     FilePath ->
@@ -645,7 +678,7 @@ createSiblingConfig path payload =
         -- A HARD link, not a symbolic one: it publishes the written bytes under
         -- the final name in one create-if-absent kernel operation, and a taken
         -- name fails rather than being replaced. A symlink would publish a
-        -- *reference* to the temporary — which 'inspectSiblingConfig' refuses
+        -- \*reference* to the temporary — which 'inspectSiblingConfig' refuses
         -- as a linked destination, and which 'removeTemporary' would then leave
         -- dangling — so the success branch below could never be reached.
         linked <- trySynchronous (restore (linkNoReplace temporary path))

@@ -5,13 +5,13 @@
 
 module SchemaSpec (tests) where
 
-import Expect (expectRight)
 import Control.Exception (SomeException, try)
 import qualified Data.ByteString as BS
 import Data.List (isInfixOf)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Dhall
+import Expect (expectRight)
 import Fixture (
     DeployConfig (..),
     FixtureProject,
@@ -36,8 +36,8 @@ import HostBootstrap.Config.Class (
     ProjectCfg (..),
     configInput,
     decodeProjectCodecWithSettings,
-    projectCodecSpecDigest,
     projectCodecSchemaText,
+    projectCodecSpecDigest,
     pureConfigAssembly,
     readConfigInput,
     renderProjectCodecValue,
@@ -54,8 +54,8 @@ import HostBootstrap.Config.Schema (
     validatedConfigSpecDigest,
     validatedConfigValue,
     verifiedConfigDigest,
-    withAuthenticatedConfigWire,
     withAssembledHarnessConfig,
+    withAuthenticatedConfigWire,
     withValidatedConfig,
     writeProjectConfigFile,
  )
@@ -484,7 +484,6 @@ isSha256Digest digest =
     T.length digest == 64
         && T.all (`elem` ("0123456789abcdef" :: String)) digest
 
-
 withAuthenticatedFixtureConfig ::
     BS.ByteString ->
     ( forall projectId brokerGeneration.
@@ -525,13 +524,12 @@ withAuthenticatedFixtureConfig payload use =
                 frameWire (payload <> " ")
                     <> frameWire tokenBytes
                     <> frameWire bindingBytes
-        case
-            verifyHandoff
-                (rootBrokerVerificationKey broker)
-                substitutedWire
-                binding
-                challenge
-                grant of
+        case verifyHandoff
+            (rootBrokerVerificationKey broker)
+            substitutedWire
+            binding
+            challenge
+            grant of
             Left (HandoffPayloadDigestMismatch expectedDigest actualDigest) ->
                 assertBool
                     "substituted bytes have a different digest"

@@ -36,20 +36,20 @@ read the bytes it was handed answers a refusal rather than closing the pipe, so
 a parent learns that the far side declined instead of inferring it from a stream
 that ended.
 -}
-module HostBootstrap.Handoff.Transaction
-    ( -- * The far side
-      FrameChildEntry
-    , classifyFrameChild
-    , frameChildArguments
-    , FrameInterpreter
-    , frameInterpreter
-    , runFrameChildEntry
+module HostBootstrap.Handoff.Transaction (
+    -- * The far side
+    FrameChildEntry,
+    classifyFrameChild,
+    frameChildArguments,
+    FrameInterpreter,
+    frameInterpreter,
+    runFrameChildEntry,
 
-      -- * The near side
-    , withFrameChildTransaction
-    , FrameAnswer (..)
-    , readFrameAnswer
-    )
+    -- * The near side
+    withFrameChildTransaction,
+    FrameAnswer (..),
+    readFrameAnswer,
+)
 where
 
 import qualified Control.Exception as Exception
@@ -66,40 +66,40 @@ import HostBootstrap.Effect.ChildGroup (
     launchMicros,
     terminationGraceMicros,
  )
-import HostBootstrap.Handoff.Protocol
-    ( HandoffChannel
-    , ProtocolError
-    , ProtocolMessage
-    , ProtocolTag (FrameOutcomeTag, FrameTransactionTag, RefusedTag)
-    , channelReceive
-    , channelSend
-    , handoffChannel
-    , protocolErrorMessage
-    , protocolMessage
-    , protocolMessageFields
-    , protocolMessageRequestId
-    , protocolMessageTag
-    , withPrivateProtocolStdio
-    )
+import HostBootstrap.Handoff.Protocol (
+    HandoffChannel,
+    ProtocolError,
+    ProtocolMessage,
+    ProtocolTag (FrameOutcomeTag, FrameTransactionTag, RefusedTag),
+    channelReceive,
+    channelSend,
+    handoffChannel,
+    protocolErrorMessage,
+    protocolMessage,
+    protocolMessageFields,
+    protocolMessageRequestId,
+    protocolMessageTag,
+    withPrivateProtocolStdio,
+ )
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
-import HostBootstrap.Lift
-    ( LiftContext
-    , LiftDispatch (DispatchLocal, DispatchTool)
-    , SelfRef
-    , foldLift
-    )
+import HostBootstrap.Lift (
+    LiftContext,
+    LiftDispatch (DispatchLocal, DispatchTool),
+    SelfRef,
+    foldLift,
+ )
 import System.Exit (ExitCode, die)
 import System.IO (Handle)
-import System.Process
-    ( CreateProcess (close_fds, create_group, std_err, std_in, std_out)
-    , ProcessHandle
-    , StdStream (CreatePipe, Inherit)
-    , getProcessExitCode
-    , proc
-    , waitForProcess
-    , withCreateProcess
-    )
+import System.Process (
+    CreateProcess (close_fds, create_group, std_err, std_in, std_out),
+    ProcessHandle,
+    StdStream (CreatePipe, Inherit),
+    getProcessExitCode,
+    proc,
+    waitForProcess,
+    withCreateProcess,
+ )
 import System.Timeout (timeout)
 
 -- ---------------------------------------------------------------------------
@@ -164,11 +164,9 @@ framing.
 -}
 newtype FrameInterpreter = FrameInterpreter (ByteString -> IO (Either Text ByteString))
 
-{- | Install an interpreter for the objects a phase owns. -}
+-- | Install an interpreter for the objects a phase owns.
 frameInterpreter :: (ByteString -> IO (Either Text ByteString)) -> FrameInterpreter
 frameInterpreter = FrameInterpreter
-
-
 
 {- | Read one framed transaction and send one framed answer.
 
@@ -237,7 +235,6 @@ because this phase does not interpret what it declined about.
 -}
 uninterpretedCode :: ByteString
 uninterpretedCode = "unavailable"
-
 
 -- ---------------------------------------------------------------------------
 -- The near side
@@ -311,7 +308,7 @@ withFrameChildTransaction config self context transaction =
                     )
             Just channel -> oneTransaction channel transaction
 
-{- | The only process shape this owner ever launches. -}
+-- | The only process shape this owner ever launches.
 frameChildProcess :: FilePath -> [String] -> CreateProcess
 frameChildProcess executable arguments =
     (proc executable arguments)
@@ -347,7 +344,7 @@ oneTransaction channel transaction =
                                 (protocolMessageRequestId answer)
                                 (frameAnswer answer)
 
-{- | The request identity every frame crossing uses. -}
+-- | The request identity every frame crossing uses.
 frameTransactionRequest :: Word64
 frameTransactionRequest = 1
 

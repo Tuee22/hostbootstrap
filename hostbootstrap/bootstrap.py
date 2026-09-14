@@ -64,7 +64,10 @@ _LINUX_BUILD_LIBRARY_PACKAGES: tuple[str, ...] = (
 )
 _POWERSHELL: str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
-# The family-pinned GHC every project's ``cabal.project`` selects.
+# The family-pinned GHC. One constant reaches three places: this host install,
+# the base image (passed as the GHC_VERSION build argument by ``base_image``),
+# and the VM guest bootstrap. ``core/cabal.project`` names it in Cabal syntax
+# and the guest pin in a Haskell literal; a test asserts all three agree.
 GHC_VERSION: str = "9.12.4"
 
 # The host-native build output directory; ./.build/<executable> is always present.

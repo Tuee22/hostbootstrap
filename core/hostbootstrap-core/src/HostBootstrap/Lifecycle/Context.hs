@@ -8,41 +8,41 @@ cursor, handoff, or backend operation.  Later package-private entry leaves may
 borrow its retained evidence, but downstream callers can neither construct it
 nor project the protected store or frame authorities it contains.
 -}
-module HostBootstrap.Lifecycle.Context
-    ( ValidatedLifecycleContext
-    , LifecycleContextError (..)
-    , withValidatedLifecycleContext
-    , lifecycleContextErrorMessage
-    )
+module HostBootstrap.Lifecycle.Context (
+    ValidatedLifecycleContext,
+    LifecycleContextError (..),
+    withValidatedLifecycleContext,
+    lifecycleContextErrorMessage,
+)
 where
 
 import qualified Data.Text as Text
 import HostBootstrap.Config.Class (ProjectCfg)
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Lifecycle.Context.Internal
-    ( LifecycleContextError (..)
-    , ValidatedLifecycleContext
-    , lifecycleContextErrorMessage
-    , mintValidatedLifecycleContext
-    )
+import HostBootstrap.Lifecycle.Context.Internal (
+    LifecycleContextError (..),
+    ValidatedLifecycleContext,
+    lifecycleContextErrorMessage,
+    mintValidatedLifecycleContext,
+ )
 import HostBootstrap.Lifecycle.Plan (projectPlanProfileStoreIdentityKernel)
-import HostBootstrap.ProjectPlan
-    ( ProjectPlan
-    , projectPlanProjectName
-    , renderSnapshot
-    , stablePlanSnapshotRoot
-    )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    projectPlanProjectName,
+    renderSnapshot,
+    stablePlanSnapshotRoot,
+ )
 import HostBootstrap.ProjectPlan.Frame (withCurrentFrame)
-import HostBootstrap.ProjectRoot
-    ( CanonicalProjectRoot
-    , canonicalProjectRootPath
-    )
-import HostBootstrap.Protected
-    ( ProtectedStore
-    , protectedStoreIdentity
-    , protectedStoreIdentityText
-    , protectedStoreRoot
-    )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+ )
+import HostBootstrap.Protected (
+    ProtectedStore,
+    protectedStoreIdentity,
+    protectedStoreIdentityText,
+    protectedStoreRoot,
+ )
 import System.FilePath ((</>))
 
 {- | Join one canonical root, one already-open protected store, one admitted
@@ -127,14 +127,12 @@ withValidatedLifecycleContext root store plan supplied use =
             Left failure ->
                 pure (Left (LifecycleContextBinaryContextError failure))
             Right _ ->
-                case
-                    mintValidatedLifecycleContext
-                        plan
-                        root
-                        store
-                        current
-                        projectFrame
-                        validated
-                of
+                case mintValidatedLifecycleContext
+                    plan
+                    root
+                    store
+                    current
+                    projectFrame
+                    validated of
                     Left failure -> pure (Left failure)
                     Right admitted -> Right <$> use admitted

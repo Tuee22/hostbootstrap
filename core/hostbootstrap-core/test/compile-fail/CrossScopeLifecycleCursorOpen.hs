@@ -1,14 +1,14 @@
 module CrossScopeLifecycleCursorOpen where
 
-import HostBootstrap.Authority
-    ( LifecyclePhase (Prepare)
-    , ProjectVerb (ProjectUp)
-    )
-import HostBootstrap.Lifecycle.Session
-    ( AcquisitionJournal
-    , LifecycleError
-    , withLifecycleCursor
-    )
+import HostBootstrap.Authority (
+    LifecyclePhase (Prepare),
+    ProjectVerb (ProjectUp),
+ )
+import HostBootstrap.Lifecycle.Session (
+    AcquisitionJournal,
+    LifecycleError,
+    withLifecycleCursor,
+ )
 import HostBootstrap.ProjectPlan.Frame (ProjectFrame)
 
 data ScopeA

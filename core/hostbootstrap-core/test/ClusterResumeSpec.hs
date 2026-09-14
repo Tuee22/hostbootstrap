@@ -23,10 +23,10 @@ import HostBootstrap.Ownership.Object (
     Origin (OriginAbsent, OriginPresent),
     OriginRecord,
     bindOriginRecord,
-    objectIdentityText,
     mkObjectIdentity,
     mkOwnerClaim,
     mkPayload,
+    objectIdentityText,
     originRecord,
     payloadDigest,
  )

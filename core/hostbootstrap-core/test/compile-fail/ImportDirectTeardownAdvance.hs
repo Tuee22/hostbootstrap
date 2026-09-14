@@ -1,7 +1,7 @@
 module ImportDirectTeardownAdvance where
 
-import HostBootstrap.Teardown
-    ( attemptDescentWork
-    , attemptTeardownStep
-    , authorizationPointKey
-    )
+import HostBootstrap.Teardown (
+    attemptDescentWork,
+    attemptTeardownStep,
+    authorizationPointKey,
+ )

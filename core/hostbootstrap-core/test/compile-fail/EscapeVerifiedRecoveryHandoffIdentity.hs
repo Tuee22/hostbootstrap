@@ -7,7 +7,14 @@ data CallerChosenVerifiedRecoveryHandoff
 
 selectHandoff ::
     VerifiedRecoveryHandoff
-        scope broker plan parent child digest CallerChosenVerifiedRecoveryHandoff verb ->
+        scope
+        broker
+        plan
+        parent
+        child
+        digest
+        CallerChosenVerifiedRecoveryHandoff
+        verb ->
     ()
 selectHandoff _ = ()
 

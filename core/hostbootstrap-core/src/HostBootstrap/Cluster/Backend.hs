@@ -239,6 +239,7 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateCommitment,
     preparedGatePlan,
  )
+import HostBootstrap.Network.Port (Port, mkPort, portNumber)
 import HostBootstrap.Ownership.Object (ObjectIdentity)
 import HostBootstrap.ProjectPlan (ChartWorkloadResource)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
@@ -936,7 +937,7 @@ consumeNonce usedNonces nonce action = do
         then pure (Left "cluster runtime dependency nonce has already been consumed")
         else action
 
-exposureResponseFields :: ResolvedExposure scope planId clusterId service -> (Text, Text, Int, Text, Int, Text, Word64, Text)
+exposureResponseFields :: ResolvedExposure scope planId clusterId service -> (Text, Text, Port, Text, Port, Text, Word64, Text)
 exposureResponseFields resolved =
     ( resolvedExposureService resolved
     , resolvedExposureListenAddress resolved
@@ -953,7 +954,15 @@ exposureSetCommitment = digestText . Text.intercalate "\NUL" . concatMap fields
   where
     fields resolved =
         let (service, address, hostPort, target, targetPort, relay, generation, operation) = exposureResponseFields resolved
-         in [service, address, Text.pack (show hostPort), target, Text.pack (show targetPort), relay, Text.pack (show generation), operation]
+         in [ service
+            , address
+            , Text.pack (show (portNumber hostPort))
+            , target
+            , Text.pack (show (portNumber targetPort))
+            , relay
+            , Text.pack (show generation)
+            , operation
+            ]
 
 serveClusterChartRequest ::
     StrongClusterBackend ->
@@ -1067,7 +1076,7 @@ withFreshClusterRuntimeDependency execution scopeCommitment plannedCluster depen
 
 resolvedExposureFromFields ::
     Word64 ->
-    (Text, Text, Int, Text, Int, Text, Word64, Text) ->
+    (Text, Text, Port, Text, Port, Text, Word64, Text) ->
     Either Text (ResolvedExposure scope planId clusterId ())
 resolvedExposureFromFields expectedGeneration (service, address, hostPort, target, targetPort, relay, generation, operation)
     | address /= "127.0.0.1" = Left "cluster runtime exposure is not loopback-bound"
@@ -1249,9 +1258,9 @@ exact relay inspection can mint the value.
 data ResolvedExposure scope planId clusterId service
     = ResolvedExposure
         Text
-        Int
+        Port
         Text
-        Int
+        Port
         Text
         Word64
         Text
@@ -1274,13 +1283,13 @@ resolvedExposureService (ResolvedExposure service _ _ _ _ _ _) = service
 resolvedExposureListenAddress :: ResolvedExposure scope planId clusterId service -> Text
 resolvedExposureListenAddress _ = "127.0.0.1"
 
-resolvedExposureHostPort :: ResolvedExposure scope planId clusterId service -> Int
+resolvedExposureHostPort :: ResolvedExposure scope planId clusterId service -> Port
 resolvedExposureHostPort (ResolvedExposure _ port _ _ _ _ _) = port
 
 resolvedExposureTargetHost :: ResolvedExposure scope planId clusterId service -> Text
 resolvedExposureTargetHost (ResolvedExposure _ _ target _ _ _ _) = target
 
-resolvedExposureTargetPort :: ResolvedExposure scope planId clusterId service -> Int
+resolvedExposureTargetPort :: ResolvedExposure scope planId clusterId service -> Port
 resolvedExposureTargetPort (ResolvedExposure _ _ _ port _ _ _) = port
 
 resolvedExposureRelayIdentity :: ResolvedExposure scope planId clusterId service -> Text
@@ -1516,8 +1525,8 @@ parseRecordedPortBindings operationName raw = case eitherDecodeStrict' raw of
         , Just (String portText) <- AesonKeyMap.lookup "HostPort" binding
         , Just hostPort <- readMaybe (Text.unpack portText)
         , address == "127.0.0.1"
-        , validPort listener
-        , validPort hostPort =
+        , isJust (mkPort listener)
+        , isJust (mkPort hostPort) =
             Right (listener, hostPort)
     parseOne _ = exposureFailure operationName "the runtime returned a wildcard, duplicate, absent, or malformed relay binding" ReprobeBeforeRetry
 
@@ -1682,7 +1691,7 @@ createRelay cfg prepared nonce name = do
         [ Text.unpack (exposureIntentService intent)
         , show listener
         , Text.unpack (exposureIntentTargetHost intent)
-        , show (exposureIntentTargetPort intent)
+        , show (portNumber (exposureIntentTargetPort intent))
         ]
 
 inspectRelay :: HostConfig -> PreparedClusterExposure scope planId clusterId clusterFrame -> Text -> Text -> Text -> IO (Either ReconcileError RelayObservation)
@@ -1726,7 +1735,7 @@ parsePortBindings prepared raw = case eitherDecodeStrict' raw of
             , Just (String portText) <- AesonKeyMap.lookup "HostPort" binding
             , Just hostPort <- readMaybe (Text.unpack portText)
             , address == "127.0.0.1"
-            , validPort hostPort ->
+            , isJust (mkPort hostPort) ->
                 Right (listener, address, hostPort)
         _ -> exposureConflict prepared "the runtime returned a wildcard, duplicate, absent, or malformed relay binding"
 
@@ -1766,17 +1775,19 @@ resolvedSet prepared observation@(RelayObservation relay _ _ _ generation operat
     traverse resolve (intentBindings prepared)
   where
     resolve (intent, listener, _) = case lookup listener (observationPorts observation) of
-        Just hostPort ->
-            Right
-                ( ResolvedExposure
-                    (exposureIntentService intent)
-                    hostPort
-                    (exposureIntentTargetHost intent)
-                    (exposureIntentTargetPort intent)
-                    relay
-                    generation
-                    operation
-                )
+        Just hostPort
+            | Just admittedHost <- mkPort hostPort ->
+                Right
+                    ( ResolvedExposure
+                        (exposureIntentService intent)
+                        admittedHost
+                        (exposureIntentTargetHost intent)
+                        (exposureIntentTargetPort intent)
+                        relay
+                        generation
+                        operation
+                    )
+            | otherwise -> exposureConflict prepared "an inspected mapping names a port outside the admitted range"
         Nothing -> exposureConflict prepared "an inspected mapping has no matching semantic service"
 
 observationPorts :: RelayObservation -> [(Int, Int)]
@@ -1836,7 +1847,7 @@ exposureSpecDigest prepared = digestText (Text.intercalate "\NUL" fields)
         [ exposureIntentService intent
         , "tcp"
         , exposureIntentTargetHost intent
-        , Text.pack (show (exposureIntentTargetPort intent))
+        , Text.pack (show (portNumber (exposureIntentTargetPort intent)))
         ]
 
 ownerDigest :: PreparedClusterExposure scope planId clusterId clusterFrame -> Text
@@ -1869,9 +1880,6 @@ immutableImage image = repositoryDigest || imageId
         Just digest -> Text.length digest == 64 && Text.all lowerHex digest
         Nothing -> False
 
-validPort :: Int -> Bool
-validPort port = port > 0 && port < 65536
-
 validExposureService :: Text -> Bool
 validExposureService service =
     not (Text.null service)
@@ -1891,7 +1899,7 @@ validManagedExposureRecord digest nonce name identity mappings =
   where
     validDigest value = Text.length value == 64 && Text.all lowerHex value
     validMapping (service, listener, hostPort) =
-        validExposureService service && validPort listener && validPort hostPort
+        validExposureService service && isJust (mkPort listener) && isJust (mkPort hostPort)
 
 lowerHex :: Char -> Bool
 lowerHex character = isDigit character || character >= 'a' && character <= 'f'

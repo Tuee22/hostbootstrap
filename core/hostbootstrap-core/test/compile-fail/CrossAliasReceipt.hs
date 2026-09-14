@@ -7,19 +7,19 @@ import HostBootstrap.Substrate.Provider.Alias
 -- indexed by that alias. Consuming one with a continuation written for another
 -- alias would move a receipt between objects.
 badConsume ::
-  GuestAliasCallSettlement scope planId providerId backendId capabilityId aliasA shareId ->
-  ( ManagedGuestAliasHandle
-      scope
-      planId
-      providerId
-      backendId
-      capabilityId
-      aliasB
-      shareId
-      Provisioned ->
-    ChangeView ->
+    GuestAliasCallSettlement scope planId providerId backendId capabilityId aliasA shareId ->
+    ( ManagedGuestAliasHandle
+        scope
+        planId
+        providerId
+        backendId
+        capabilityId
+        aliasB
+        shareId
+        Provisioned ->
+      ChangeView ->
+      ()
+    ) ->
     ()
-  ) ->
-  ()
 badConsume settlement consume =
-  withGuestAliasCallSettlement settlement consume (\_ _ _ _ -> ())
+    withGuestAliasCallSettlement settlement consume (\_ _ _ _ -> ())

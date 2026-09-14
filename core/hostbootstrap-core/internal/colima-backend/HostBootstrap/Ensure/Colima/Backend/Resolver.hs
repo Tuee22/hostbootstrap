@@ -1,11 +1,11 @@
 {-# LANGUAGE CPP #-}
 
-module HostBootstrap.Ensure.Colima.Backend.Resolver
-  ( TrustedAppleToolchain,
+module HostBootstrap.Ensure.Colima.Backend.Resolver (
+    TrustedAppleToolchain,
     TrustedAppleBrew,
     TrustedToolIdentity,
-    TrustedResolverResult
-      ( TrustedResolverReady,
+    TrustedResolverResult (
+        TrustedResolverReady,
         TrustedResolverMissingColima,
         TrustedResolverUnsupported
     ),
@@ -24,11 +24,11 @@ module HostBootstrap.Ensure.Colima.Backend.Resolver
     settleTrustedResolverResultForTesting,
     settleTrustedResolverFixtureResultForTesting,
     currentTrustedResolverOverrideHomeForTesting,
-  )
+)
 where
 
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Authority
-  ( TrustedAppleBrew (..),
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Authority (
+    TrustedAppleBrew (..),
     TrustedAppleToolchain (..),
     TrustedResolverResult (..),
     trustedAppleBrewHelperPath,
@@ -40,11 +40,11 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Authority
     trustedAppleLimaPath,
     trustedApplePythonPath,
     trustedAppleToolchainFingerprint,
-  )
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Override
-  ( ResolverOverride (..),
+ )
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Override (
+    ResolverOverride (..),
     currentResolverOverride,
-  )
+ )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedToolIdentity (..))
 #if !defined(mingw32_HOST_OS)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (resolveNativeAppleToolchain)
@@ -119,36 +119,36 @@ resolveTrustedAppleToolchain effectiveHome = do
 
 currentTrustedResolverOverrideHomeForTesting :: IO (Maybe FilePath)
 currentTrustedResolverOverrideHomeForTesting =
-  fmap resolverOverrideHome <$> currentResolverOverride
+    fmap resolverOverrideHome <$> currentResolverOverride
 
 revalidateTrustedAppleToolchain :: TrustedAppleToolchain -> IO (Either String ())
 revalidateTrustedAppleToolchain expected@(TrustedAppleToolchain effectiveHome _ _ _ _ _ _ _ _ _ _) = do
-  observed <- resolveTrustedAppleToolchain effectiveHome
-  pure $ case observed of
-    TrustedResolverReady actual
-      | actual == expected -> Right ()
-      | otherwise -> Left "trusted-apple-toolchain-changed"
-    TrustedResolverMissingColima _ -> Left "trusted-colima-missing"
-    TrustedResolverUnsupported reason -> Left reason
+    observed <- resolveTrustedAppleToolchain effectiveHome
+    pure $ case observed of
+        TrustedResolverReady actual
+            | actual == expected -> Right ()
+            | otherwise -> Left "trusted-apple-toolchain-changed"
+        TrustedResolverMissingColima _ -> Left "trusted-colima-missing"
+        TrustedResolverUnsupported reason -> Left reason
 
 revalidateTrustedAppleBrew :: TrustedAppleBrew -> IO (Either String ())
 revalidateTrustedAppleBrew expected@(TrustedAppleBrew effectiveHome _ _ _ _ _ _) = do
-  observed <- resolveTrustedAppleToolchain effectiveHome
-  pure $ case observed of
-    TrustedResolverMissingColima actual
-      | actual == expected -> Right ()
-      | otherwise -> Left "trusted-apple-brew-changed"
-    TrustedResolverReady _ -> Left "trusted-colima-now-present"
-    TrustedResolverUnsupported reason -> Left reason
+    observed <- resolveTrustedAppleToolchain effectiveHome
+    pure $ case observed of
+        TrustedResolverMissingColima actual
+            | actual == expected -> Right ()
+            | otherwise -> Left "trusted-apple-brew-changed"
+        TrustedResolverReady _ -> Left "trusted-colima-now-present"
+        TrustedResolverUnsupported reason -> Left reason
 
 -- Kept inside the Cabal-private component and re-exposed only through the
 -- non-authorizing testing view.  Production resolution always executes the
 -- closed resolver before reaching this settlement function.
 settleTrustedResolverResultForTesting ::
-  FilePath ->
-  TrustedToolIdentity ->
-  BoundedToolResult ->
-  TrustedResolverResult
+    FilePath ->
+    TrustedToolIdentity ->
+    BoundedToolResult ->
+    TrustedResolverResult
 #if defined(mingw32_HOST_OS)
 settleTrustedResolverResultForTesting _ _ _ = TrustedResolverUnsupported "apple-silicon-required"
 #else
@@ -156,11 +156,11 @@ settleTrustedResolverResultForTesting = settleResolverResult
 #endif
 
 settleTrustedResolverFixtureResultForTesting ::
-  FilePath ->
-  FilePath ->
-  TrustedToolIdentity ->
-  BoundedToolResult ->
-  TrustedResolverResult
+    FilePath ->
+    FilePath ->
+    TrustedToolIdentity ->
+    BoundedToolResult ->
+    TrustedResolverResult
 #if defined(mingw32_HOST_OS)
 settleTrustedResolverFixtureResultForTesting _ _ _ _ = TrustedResolverUnsupported "apple-silicon-required"
 #else

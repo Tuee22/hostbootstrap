@@ -1,10 +1,10 @@
 module CrossSnapshotResourceRecordSet where
 
-import HostBootstrap.Lifecycle.Mode
-    ( ModeError
-    , VerifiedPlanSnapshot
-    , withVerifiedResourceRecordSet
-    )
+import HostBootstrap.Lifecycle.Mode (
+    ModeError,
+    VerifiedPlanSnapshot,
+    withVerifiedResourceRecordSet,
+ )
 import HostBootstrap.ProjectPlan.Snapshot (BoundPlanSnapshot)
 import HostBootstrap.Protected (ProtectedSession)
 

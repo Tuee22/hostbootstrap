@@ -6,9 +6,9 @@
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
+**Gate evidence**: 2026-09-13 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
 `poetry run python -m hostbootstrap.check_code && poetry run python -m hostbootstrap.test_all` ; pass ;
-covers a77c02cb583bf7f2b394c85c864c5670bcc6f05dc2aeb2343230b40ff2ed34d7
+covers 44abe223709138e3946745a8ec1e33432b79d90048dfbba2ac5047d451fe907c
 **Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project

@@ -1,11 +1,12 @@
 {-# LANGUAGE RoleAnnotations #-}
 
--- | Package-private transport primitives for the provider boundary.
---
--- Public callers may /interpret/ a request handed to their injected executor,
--- but cannot construct one.  Alias/backend modules in this package use the
--- bound guest executor below; no public function projects an arbitrary argv
--- runner out of a discovery capability.
+{- | Package-private transport primitives for the provider boundary.
+
+Public callers may /interpret/ a request handed to their injected executor,
+but cannot construct one.  Alias/backend modules in this package use the
+bound guest executor below; no public function projects an arbitrary argv
+runner out of a discovery capability.
+-}
 module HostBootstrap.Substrate.Provider.Internal (
     ProviderProbeRequest,
     ProviderProbeRequestView (..),
@@ -68,10 +69,11 @@ data RawProviderOutcome
     | RawProviderFailure String
     deriving (Eq, Show)
 
--- | Guest execution bound to one discovered managed provider resource.
---
--- Its constructor and runner live only in this hidden module.  Public code can
--- possess the opaque value but cannot turn it into an argv execution oracle.
+{- | Guest execution bound to one discovered managed provider resource.
+
+Its constructor and runner live only in this hidden module.  Public code can
+possess the opaque value but cannot turn it into an argv execution oracle.
+-}
 newtype ProviderGuestExecutor scope planId providerId phase backendId capabilityId
     = ProviderGuestExecutor ([String] -> IO RawProviderOutcome)
 
@@ -88,8 +90,9 @@ runProviderGuestExecutor ::
     IO RawProviderOutcome
 runProviderGuestExecutor (ProviderGuestExecutor execute) = execute
 
--- | Raw discovery execution already bound by the clause-holding provider
--- backend to one exact managed provider resource and phase.
+{- | Raw discovery execution already bound by the clause-holding provider
+backend to one exact managed provider resource and phase.
+-}
 data ProviderBoundRoute
     = ProviderBoundIncusRoute String String
     | ProviderBoundLimaRoute String

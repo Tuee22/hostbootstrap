@@ -140,6 +140,9 @@ Rules:
 - state implemented behavior and target contracts declaratively, and label the boundary between them;
   keep implementation chronology out of governed topic documents
 - keep one canonical home per topic
+- *substrate*, *frame*, and *cordon* are defined once, in the
+  [documents index](README.md#glossary). A page using one of them in a narrower sense says which sense
+  it means rather than redefining the term
 - keep mutable phase/sprint status, dependency order, closure criteria, and dated implementation
   evidence in `DEVELOPMENT_PLAN/`; a topic document may summarize the current defect only as needed to
   prevent its target contract from being mistaken for implemented behavior
@@ -150,6 +153,12 @@ Rules:
   seam between the Python bootstrapper and the project binary
 - when a rule is non-obvious, a tight WRONG/RIGHT example pair is encouraged, but a WRONG example
   must always be paired with the reason it is wrong
+- link the owning module as the signature reference and describe its contract; do not maintain a
+  second set of illustrative Haskell signatures beside it. A sketch is unchecked by the compiler, so
+  it drifts silently, and a reader designing against a drifted sketch designs against nothing. Named
+  types, constructors and functions in backticks, a table of the cases a closed kind admits, and a
+  link to the module are the supported way to describe an API; a fenced `haskell` block restating its
+  declarations is not
 
 ## Brevity
 
@@ -236,12 +245,30 @@ and that is the combination that occurred — a phase sat `Done`, with a current
 section still declaring its live half owed. A check family is only as good as its least-covered corner,
 so the rule is stated in the same shape as its sprint counterpart: the section must begin with `None`.
 
-Three further checks relate a document to the tree rather than to another document, which is the
+Four checks relate a document to the tree rather than to another document, which is the
 distinction that decides whether a green validator means anything: `checkImplementationPaths` resolves
-every path a sprint cites, `checkArchitectureDrift` refuses a shape the architecture removed, and
-`checkGateEvidence` recomputes the digest a phase's gate evidence claims to cover. The first two answer
-"does this name still exist"; the third answers "has the source this run measured changed since", which
+every path a sprint cites, `checkArchitectureDrift` refuses a shape the architecture removed,
+`checkIdentifierResolution` refuses a backticked name no source declares, and
+`checkGateEvidence` recomputes the digest a phase's gate evidence claims to cover. The first three answer
+"does this name still exist"; the last answers "has the source this run measured changed since", which
 is the question a status field cannot answer about itself.
+
+`checkIdentifierResolution` is the one with the widest reach, because a canonical contract page can
+otherwise describe a vocabulary the compiler has never seen while every other check passes above it. It
+reads the backticked spans of every governed page, outside fenced blocks, and resolves the identifier
+each one starts with against the words and module names of the source tree. Prose legitimately names
+things abbreviated or owned elsewhere, so what it cannot resolve is compared against the explicit
+`identifierAllowlist` — reviewed, grouped by reason, and deliberately small — rather than skipped.
+
+Five further checks compare a document against another document, or against the standard's own
+declarations: `checkRootDocStatus` compares a root document's status claims with the plan's table,
+`checkEntryDocAgreement` compares `AGENTS.md` and `CLAUDE.md` modulo the declared `audienceMapping`,
+`checkLinkAnchors` resolves a link's `#fragment` against the target document's own headings,
+`checkPhaseHeaderFields` refuses a phase-header field § G does not declare, and
+`checkGateEvidenceLegs` requires every command leg a `**Gate**` names to appear in that phase's
+`**Gate evidence**` row. The architecture drift guard also reads the suites, not only the source, with
+one reviewed by-name exemption for the validator's own fixture — which authors synthetic plan documents
+and so legitimately contains plan text.
 
 Each has a negative fixture proving it fires. The two scoped checks also assert an **absence** — a
 forward link in a `#### Validation` section, and a bare phase citation inside a contract, must produce no
@@ -252,11 +279,11 @@ governed document drifts from the rules above. That command is the test leg, not
 quality gate: the canonical code-check also runs the formatter check, linter, and a warnings-as-errors
 build.
 
-### Rules the validator grows to enforce
+### Rules the validator enforces mechanically
 
-Each rule below is normative now and mechanical when its check lands. The
+Each rule below is normative, and each has a check and a negative fixture. The
 [documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md) owns
-the implementations, one check per sprint, each with the negative fixture this section already requires.
+the implementations, one check per sprint.
 
 - **A backticked identifier in governed prose names something that exists.** A module, type, function,
   constructor or CLI flag written in backticks resolves against the tree. This is the rule with the
@@ -264,17 +291,22 @@ the implementations, one check per sprint, each with the negative fixture this s
   seen, and every other check here will pass while it does. Prose that names a type abstractly is
   legitimate — [the plan standard](../DEVELOPMENT_PLAN/development_plan_standards.md) says so about its
   own shortened names — so the check carries an explicit reviewed allowlist rather than a silent skip.
+  (`checkIdentifierResolution`.)
 - **A root document does not contradict the plan's status table.** `README.md`, `AGENTS.md` and
   `CLAUDE.md` may summarize status and must not restate it; where they do make a claim, it agrees with
-  [the plan index](../DEVELOPMENT_PLAN/README.md).
+  [the plan index](../DEVELOPMENT_PLAN/README.md). (`checkRootDocStatus`.)
 - **`AGENTS.md` and `CLAUDE.md` agree.** The two are one document with two audiences. They differ only
-  in the words naming that audience.
+  in the words naming that audience, and that mapping is declared rather than inferred.
+  (`checkEntryDocAgreement`, `audienceMapping`.)
 - **A relative link resolves including its anchor.** A `#section-name` fragment names a heading the
-  target actually has.
+  target actually has. (`checkLinkAnchors`.)
 - **A phase header carries no field § G does not declare.** An undeclared field is a convention one
-  phase invented and the others do not share.
+  phase invented and the others do not share. (`checkPhaseHeaderFields`.)
+- **An evidence row records every leg its gate names.** A phase that names a composed gate and records
+  one half of it is claiming the whole. (`checkGateEvidenceLegs`.)
 - **The architecture-drift guard reads the test tree as well as the source tree.** A rule about how
   source may cite a phase applies to the suites too, or it is a rule about where the check looks.
+  (`checkArchitectureDrift`, `driftSourceRoots`.)
 
 ### Prior extensions
 

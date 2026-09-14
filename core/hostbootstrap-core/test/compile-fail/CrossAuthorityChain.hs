@@ -1,12 +1,12 @@
 module CrossAuthorityChain where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , ExecutePhase
-    , PreparePhase
-    , VerbDown
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    ExecutePhase,
+    PreparePhase,
+    VerbDown,
+    VerbUp,
+ )
 import HostBootstrap.Chain (runChainFromFrame)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Mode (LifecycleCursor)

@@ -1,15 +1,18 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-11 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
-NVIDIA GeForce RTX 5090 driver 595.84, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ;
-repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` ; pass ;
-covers dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
+**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1, Kind 0.32.0,
+kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pinned
+base `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
+repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test init` then
+`poetry run hostbootstrap run --project-root demo test run all` ; pass ;
+covers cbbaa6b6e13052bd9e4adb981b64b0de86a34b2d10c0bd0797118b1720e1165b
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
@@ -331,9 +334,9 @@ Per § JJ this visit also recorded the x86_64 Linux gate-host cell for
 
 None.
 
-### Sprint 26.5: The NVIDIA acceptance against the current tree [Active]
+### Sprint 26.5: The NVIDIA acceptance against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/testing.md`
@@ -360,13 +363,139 @@ this sprint may not do.
 
 #### Remaining Work
 
-The run is owed at the next visit to this hardware. It is taken once no other phase carries open
-work, because any earlier source change re-owes it.
+None. On 2026-09-14 the matrix reported `10/10 passed` and exited 0 in 51m27s (02:57:44Z to 03:49:11Z),
+from a pristine demo state, on the host the row above names. Both variants passed all five cases:
+`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and `durable-readback`.
+
+Accelerator placement was observed rather than inferred: each of the four bring-ups reported
+`cluster reconcile: NVIDIA device plugin and allocatable GPU are ready` before the workload was
+released.
+
+The terminal audit is clean. `kind get clusters` reports none, `incus list` is empty, no
+hostbootstrap-named container survives, `.build/hostbootstrap-demo.dhall` is gone while
+`.build/hostbootstrap-demo.test.dhall` remains, and `.test_data` exists with zero entries.
+
+This run is the second of the day on this hardware. The first also reported `10/10` in 53m25s, against
+the tree before the base image's compiler was pinned; it is not recorded as this phase's evidence,
+because pinning the compiler touched `hostbootstrap/` and expired its digest in the same session. The
+two durations are the before-and-after of that pin, and the near-parity is explained in
+[the base-image phase](phase-23-base-image-and-warm-store.md).
+
+### Sprint 26.6: The NVIDIA acceptance against the reconciled tree [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+The documentation-reconciliation phase added drift checks to
+`core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, which is under this phase's
+`**Evidence covers**`. The recorded run therefore names a tree that no longer exists, and § G names that
+as the expected state for an acceptance phase between runs rather than as an unclosed phase. The claim
+is re-established by running the gate again on an NVIDIA Linux host, not by re-recording a digest over a
+tree nothing re-tested.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full on the hardware it declares.
+- A gate-evidence row records the date, the gate host, the command as run, and the result.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- The terminal ownership audit is re-observed, and accelerator placement is observed rather than inferred.
+
+#### Validation
+
+The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
+this sprint may not do.
+
+#### Remaining Work
+
+None. On 2026-09-14 the matrix reported `test report: 10/10 passed` and exited 0 in 3,363.60 seconds
+(56 minutes 4 seconds), from 16:22:35Z to 17:18:39Z, on the host the row above names. Both variants
+passed all five cases: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and
+`durable-readback`, as `hello-world` (`run-c8d39184feb9`) and `hello-universe` (`run-c8ed0f03964d`).
+
+The harness `test init` entry refused, because the operator-owned `.build/hostbootstrap-demo.test.dhall`
+was already present at its exact hash `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`;
+the matrix ran from that file. Each of the four pristine generations pulled the pinned CUDA base and
+built its own derived image:
+`sha256:3848bca779dd19a3d782da9e5fdd61e7b21abc798920cbb8afa62eba3a04495e`,
+`sha256:911d98b8a68dd9e64a36b11a3fab72733f55fadfdd21a53877cfa8a0135e74bf`,
+`sha256:c1175fa166a40f50a5c3a006add20d5ba074b67b04a2f45b489124410336d9e5`, and
+`sha256:c2c3a9f7beb7dedba8cdc3a30f3d4c3aa16e36fe8f72fa01eae476133fbef777`.
+
+Accelerator placement was observed rather than inferred: each of the four bring-ups reported
+`cluster reconcile: NVIDIA device plugin and allocatable GPU are ready` before the workload was released.
+
+The terminal audit is clean. `kind get clusters` reports none, no hostbootstrap-named container survives,
+`.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains, and
+`.test_data` exists with zero entries. Two pieces of ambient state are unrelated to this lane and were
+present before it: one exited container from a previous day, and the `hb-linux-cpu` guest that is the
+worked demo's own `linux-cpu` gate host on this machine.
+
+An earlier run the same day also reported `10/10` in 3,344.77 seconds. It is not recorded as this phase's
+evidence, because the recursive lifecycle command's pre-descent repair landed under this phase's
+`**Evidence covers**` while that run was in flight; the run above is the one against the settled tree.
+
+### Sprint 26.7: The NVIDIA acceptance against the settled tree [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+The worked demo's live gate found two repairs after the run Sprint 26.6 records, and both landed under
+this phase's `**Evidence covers**` — the consumer's provider reverse in `demo/src` and the reverse
+driver's reachability step in `core/hostbootstrap-core/src`. The recorded run therefore names a tree that
+no longer exists. § G names that as the expected state for an acceptance phase between runs; the claim is
+re-established by running the gate again, not by re-recording a digest.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full on the hardware it declares.
+- A gate-evidence row records the date, the gate host, the command as run, and the result.
+- The covers digest is re-measured over this phase's own paths and recorded.
+- Accelerator placement is observed rather than inferred, and the terminal ownership audit is re-observed.
+
+#### Validation
+
+The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
+this sprint may not do.
+
+#### Remaining Work
+
+None. On 2026-09-14 the matrix reported `test report: 10/10 passed` and exited 0 in 3,223.94 seconds
+(53 minutes 44 seconds), from 17:34:58Z to 18:28:42Z, on the host the row above names. Both variants
+passed all five cases — `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and
+`durable-readback` — as `hello-world` (`run-c912c61c28b1`) and `hello-universe` (`run-c92a0baf2bf8`).
+
+The harness `test init` entry refused because the operator-owned `.build/hostbootstrap-demo.test.dhall`
+was already present at hash `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`; the
+matrix ran from that file. Each of the four pristine generations pulled the pinned CUDA base and built its
+own derived image: `sha256:45ba6f68b8d073dd6204d443080c0b4a764447437993892ca85d31374de034a2`,
+`sha256:58896827ba5b4bc27f2b80d096635072038a0011a4e1fa42e1bf51801394e430`,
+`sha256:73bca62b2014bfcd2ba57d735c5ab6413a4f5e3def3c1298a819c64b5904d3e9`, and
+`sha256:763a774118d7db0350a953e5ce4cedfe6b9f3a7d3485bd8f1cfd35977f785ce4`.
+
+Accelerator placement was observed rather than inferred: each of the four bring-ups reported
+`cluster reconcile: NVIDIA device plugin and allocatable GPU are ready` before the workload was released.
+
+The terminal audit is clean. `kind get clusters` reports none, no hostbootstrap-named container survives,
+`.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains at its
+exact hash, and `.test_data` exists with zero entries. One exited container from the previous day is
+ambient state this lane neither created nor touched.
+
+Two earlier runs the same day also reported `10/10`, in 3,344.77 and 3,363.60 seconds. Neither is recorded
+as this phase's evidence: the worked demo's live gate found a repair under this phase's
+`**Evidence covers**` after each of them, and § G admits only a run against the tree the row measures.
+The three durations are within 4% of each other, which is the useful thing they say together.
 
 ## Remaining Work
 
-The NVIDIA acceptance is owed against the current tree. **Sprint 26.5** owns
-the re-run, at the next visit to the hardware this phase declares.
+None.
 
 ## Documentation Requirements
 

@@ -11,16 +11,16 @@ the admitted semantic 'Text' identifier unchanged, including legal Unicode or
 delimiter characters; the effectful lifecycle layer, not this pure boundary,
 owns canonical UTF-8 framing and durable cursor identity.
 -}
-module HostBootstrap.ProjectPlan.Frame
-    ( CurrentFrame
-    , ProjectFrame
-    , ValidatedContext
-    , FrameError (..)
-    , withCurrentFrame
-    , currentFrameId
-    , projectFrameId
-    , validatedContextValue
-    )
+module HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    ProjectFrame,
+    ValidatedContext,
+    FrameError (..),
+    withCurrentFrame,
+    currentFrameId,
+    projectFrameId,
+    validatedContextValue,
+)
 where
 
 import Data.List (find, isPrefixOf)
@@ -31,12 +31,12 @@ import HostBootstrap.Config.Class (ProjectCfg (cfgContext))
 import HostBootstrap.Config.Schema (validatedConfigValue)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Lifecycle.Plan (projectPlanValidatedConfigKernel)
-import HostBootstrap.ProjectPlan
-    ( ProjectPlan
-    , topology
-    , topologyFrameOrder
-    , topologyParentEdges
-    )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    topology,
+    topologyFrameOrder,
+    topologyParentEdges,
+ )
 
 -- | The current frame of one exact admitted plan.
 newtype CurrentFrame scope planId frame = CurrentFrame Text

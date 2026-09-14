@@ -16,15 +16,15 @@ given a bounded grace, then ended with something it cannot decline. Every step
 tolerates the group having already gone, because a child that exited on its own
 is the success case, not an error to report.
 -}
-module HostBootstrap.Effect.ChildGroup
-  ( askChildGroupToStop,
+module HostBootstrap.Effect.ChildGroup (
+    askChildGroupToStop,
     killChildGroup,
     awaitChildExit,
     closeQuietly,
     launchMicros,
     terminationGraceMicros,
     pollMicros,
-  )
+)
 where
 
 import Control.Concurrent (threadDelay)

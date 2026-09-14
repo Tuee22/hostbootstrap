@@ -28,9 +28,9 @@ import HostBootstrap.Effect.Vocabulary (EffectTarget (ToolTarget), HostCommand (
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool
 import qualified HostBootstrap.Incus as Incus
-import qualified HostBootstrap.Lima as Lima
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import qualified HostBootstrap.Lima as Lima
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Step

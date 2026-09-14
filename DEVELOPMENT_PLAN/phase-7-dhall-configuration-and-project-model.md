@@ -78,12 +78,14 @@ None.
 
 #### Objective
 
-Generate the schema from the types, and prove it judgmentally equal.
+Hold the hand-written vocabulary judgmentally equal to the schema the types reflect.
 
 #### Deliverables
 
-- `Core.dhall` is generated from the Haskell types; every exported type has a judgmental-equality witness
-  against its Haskell counterpart.
+- `Core.dhall` is a committed hand-written file, and every type it exports has a judgmental-equality
+  witness against the schema of its Haskell codec. Nothing generates the file; `DhallGenSpec` is what
+  holds the two in step, and its inventory case derives the Core side automatically so an added or
+  removed export cannot leave the comparison stale.
 - `Dhall.Hoist` provides the one validated lower-layer codec witness a project extends.
 - Schema commands emit exact snapshots; golden tests pin them, so a vocabulary change is a visible diff.
 - Decoding runs in-process; there is no shelled `dhall-to-json` path, because a second decoder is a second

@@ -19,13 +19,13 @@ host, and a missing input is a typed refusal rather than a digest over nothing.
 That last property is the load-bearing one: a digest over an empty set would let
 a phase whose cited files have all been deleted keep reporting a stable value.
 -}
-module HostBootstrap.Digest
-  ( sha256Hex,
+module HostBootstrap.Digest (
+    sha256Hex,
     frameWire,
     DigestError (..),
     renderDigestError,
     measurePathSetDigest,
-  )
+)
 where
 
 import Control.Exception.Safe (SomeException, try)
@@ -37,16 +37,16 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.List (sort)
 import Data.Text (Text)
-import Data.Word (Word64, Word8)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Data.Word (Word64, Word8)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>))
 
 -- | Lowercase hex SHA-256 of a payload.
 sha256Hex :: ByteString -> Text
 sha256Hex payload =
-  Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 payload)))
+    Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 payload)))
   where
     hex byte = [hexDigit (byte `shiftR` 4), hexDigit (byte .&. 0x0f)]
     hexDigit nibble = ByteStringChar8.index "0123456789abcdef" (fromIntegral nibble)
@@ -58,18 +58,18 @@ path/contents pair could be rearranged into a different pair with one digest.
 -}
 frameWire :: ByteString -> ByteString
 frameWire payload =
-  ByteString.pack (word64BigEndian (fromIntegral (ByteString.length payload)))
-    <> payload
+    ByteString.pack (word64BigEndian (fromIntegral (ByteString.length payload)))
+        <> payload
   where
     word64BigEndian :: Word64 -> [Word8]
     word64BigEndian value =
-      [fromIntegral (value `shiftR` shiftBy) | shiftBy <- [56, 48, 40, 32, 24, 16, 8, 0 :: Int]]
+        [fromIntegral (value `shiftR` shiftBy) | shiftBy <- [56, 48, 40, 32, 24, 16, 8, 0 :: Int]]
 
 -- | Why a path set could not be measured.
 newtype DigestError
-  = -- | the path that could not be read, and why
-    DigestPathUnavailable Text
-  deriving (Eq, Show)
+    = -- | the path that could not be read, and why
+      DigestPathUnavailable Text
+    deriving (Eq, Show)
 
 renderDigestError :: DigestError -> String
 renderDigestError (DigestPathUnavailable detail) = Text.unpack detail
@@ -83,32 +83,32 @@ host whose separator differs.
 -}
 measurePathSetDigest :: FilePath -> [FilePath] -> IO (Either DigestError Text)
 measurePathSetDigest root paths = do
-  collected <- traverse (collect root) (sort paths)
-  pure (fmap (sha256Hex . ByteString.concat . map entry . sort . concat) (sequence collected))
+    collected <- traverse (collect root) (sort paths)
+    pure (fmap (sha256Hex . ByteString.concat . map entry . sort . concat) (sequence collected))
   where
     entry (path, contents) =
-      frameWire (TextEncoding.encodeUtf8 (Text.pack path)) <> frameWire contents
+        frameWire (TextEncoding.encodeUtf8 (Text.pack path)) <> frameWire contents
 
 collect :: FilePath -> FilePath -> IO (Either DigestError [(FilePath, ByteString)])
 collect root path = do
-  let absolute = root </> path
-  isFile <- doesFileExist absolute
-  isDirectory <- doesDirectoryExist absolute
-  case (isFile, isDirectory) of
-    (True, _) -> fmap (fmap (\contents -> [(forwardSlashes path, contents)])) (readBytes absolute)
-    (_, True) -> do
-      names <- listDirectory absolute
-      nested <- traverse (collect root . (path </>)) (sort (filter (`notElem` generatedNames) names))
-      pure (fmap concat (sequence nested))
-    _ ->
-      pure (Left (DigestPathUnavailable (Text.pack (path <> ": no such file or directory"))))
+    let absolute = root </> path
+    isFile <- doesFileExist absolute
+    isDirectory <- doesDirectoryExist absolute
+    case (isFile, isDirectory) of
+        (True, _) -> fmap (fmap (\contents -> [(forwardSlashes path, contents)])) (readBytes absolute)
+        (_, True) -> do
+            names <- listDirectory absolute
+            nested <- traverse (collect root . (path </>)) (sort (filter (`notElem` generatedNames) names))
+            pure (fmap concat (sequence nested))
+        _ ->
+            pure (Left (DigestPathUnavailable (Text.pack (path <> ": no such file or directory"))))
 
 readBytes :: FilePath -> IO (Either DigestError ByteString)
 readBytes absolute = do
-  loaded <- try (ByteString.readFile absolute) :: IO (Either SomeException ByteString)
-  pure $ case loaded of
-    Left err -> Left (DigestPathUnavailable (Text.pack (absolute <> ": " <> firstLine (show err))))
-    Right contents -> Right contents
+    loaded <- try (ByteString.readFile absolute) :: IO (Either SomeException ByteString)
+    pure $ case loaded of
+        Left err -> Left (DigestPathUnavailable (Text.pack (absolute <> ": " <> firstLine (show err))))
+        Right contents -> Right contents
 
 {- | Directory names whose contents are generated, not source.
 
@@ -124,16 +124,16 @@ something else should name narrower paths instead.
 -}
 generatedNames :: [FilePath]
 generatedNames =
-  [ "__pycache__",
-    "dist-newstyle",
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".venv",
-    ".stack-work",
-    "node_modules"
-  ]
+    [ "__pycache__"
+    , "dist-newstyle"
+    , ".git"
+    , ".mypy_cache"
+    , ".pytest_cache"
+    , ".ruff_cache"
+    , ".venv"
+    , ".stack-work"
+    , "node_modules"
+    ]
 
 forwardSlashes :: FilePath -> FilePath
 forwardSlashes = map (\c -> if c == '\\' then '/' else c)

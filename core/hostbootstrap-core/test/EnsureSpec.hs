@@ -10,15 +10,15 @@ import qualified Data.Map.Strict as Map
 import HostBootstrap.Command (allReconcilers)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ensure (
-    reportedGpu,
-    environmentNonRootUser,
-    invokingNonRootUser,
     InstallStep (..),
     Reconciler (..),
     appliesTo,
     decide,
+    environmentNonRootUser,
     installAndVerifyWith,
+    invokingNonRootUser,
     reconcilerInstallSteps,
+    reportedGpu,
     requirement,
     runReconciler,
  )

@@ -1,6 +1,8 @@
-# The kind cluster config for the demo's persistent stack. Local-only endpoints
-# are allocated by the cluster exposure runtime after reconciliation, so the
-# rendered cluster never reserves or publishes host ports.
+# The kind cluster config for the demo's persistent stack, in-cluster and
+# host-resident accelerator lanes alike. Local-only endpoints are allocated by
+# the cluster exposure runtime after reconciliation, so the rendered cluster
+# never reserves or publishes host ports — which is exactly why the two lanes do
+# not need different clusters, and why there is no second copy of this file.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:

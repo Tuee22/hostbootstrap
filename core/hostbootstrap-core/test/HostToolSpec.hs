@@ -9,6 +9,7 @@ import HostBootstrap.HostConfig (
     HostConfig (..),
     HostToolError (..),
     resolve,
+    resolveInstalled,
     resolveMaybe,
  )
 import HostBootstrap.HostPrereqs (
@@ -25,17 +26,16 @@ tests :: TestTree
 tests =
     testGroup
         "HostToolSpec"
-        [
-      testCase "a CUDA tool prefers the stable symlink, then newest versioned root" $
-        cudaCandidatePaths "nvcc" ["bin", "cuda-12.4", "cuda-13.3", "share"]
-          @?= [ "/usr/local/cuda/bin/nvcc"
-              , "/usr/local/cuda-13.3/bin/nvcc"
-              , "/usr/local/cuda-12.4/bin/nvcc"
-              ],
-      testCase "a prefix with no CUDA install still offers the stable symlink" $
-        cudaCandidatePaths "nvcc" ["bin", "share"]
-          @?= ["/usr/local/cuda/bin/nvcc"],
- testGroup "AbsExe" absExeCases
+        [ testCase "a CUDA tool prefers the stable symlink, then newest versioned root" $
+            cudaCandidatePaths "nvcc" ["bin", "cuda-12.4", "cuda-13.3", "share"]
+                @?= [ "/usr/local/cuda/bin/nvcc"
+                    , "/usr/local/cuda-13.3/bin/nvcc"
+                    , "/usr/local/cuda-12.4/bin/nvcc"
+                    ]
+        , testCase "a prefix with no CUDA install still offers the stable symlink" $
+            cudaCandidatePaths "nvcc" ["bin", "share"]
+                @?= ["/usr/local/cuda/bin/nvcc"]
+        , testGroup "AbsExe" absExeCases
         , testGroup "HostTool enumeration" enumCases
         , testGroup "resolution" resolutionCases
         , testGroup "HostPrereqs os-release" osReleaseCases
@@ -111,6 +111,25 @@ resolutionCases =
         case result of
             Left (UnresolvedTool Helm) -> pure ()
             other -> assertBool ("expected UnresolvedTool Helm, got " ++ show other) False
+    , testCase "resolveInstalled prefers the configured path over re-measuring the host" $ do
+        resolved <- resolveInstalled cfg Docker
+        fmap absExePath resolved @?= Just dockerPath
+    , testCase "resolveInstalled re-measures the host for a tool the configuration predates" $ do
+        -- The pristine-host ordering the authenticated descent hit: the chain's
+        -- own `ensure` step installs the provider after this configuration was
+        -- measured, so the typed lookup is empty and the host is not. Both
+        -- answers must agree with `discover`, whether the tool is present on
+        -- this gate host or not, and neither may be a bare command name.
+        sequence_
+            [ do
+                discovered <- discover tool
+                resolved <- resolveInstalled empty tool
+                fmap absExePath resolved @?= fmap absExePath discovered
+                assertBool
+                    ("a re-measured path is absolute: " ++ toolCommandName tool)
+                    (all (isAbsolute . absExePath) resolved)
+            | tool <- allHostTools
+            ]
     , testCase "no resolved path is ever a bare command name" $
         assertBool "all configured paths absolute" $
             all (isAbsolute . absExePath) (Map.elems (hcToolPaths cfg))
@@ -145,6 +164,12 @@ resolutionCases =
                     [ (Docker, mustAbs dockerPath)
                     , (Sudo, mustAbs sudoPath)
                     ]
+            }
+
+    empty =
+        HostConfig
+            { hcSubstrate = Substrate LinuxCpu Amd64
+            , hcToolPaths = Map.empty
             }
 
     accelCfg =

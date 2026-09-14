@@ -25,6 +25,8 @@ ARG HELM_DOWNLOAD_URL
 ARG PULUMI_VERSION
 ARG PULUMI_DOWNLOAD_URL
 ARG GHCUP_DOWNLOAD_URL
+ARG GHC_VERSION
+ARG MC_VERSION
 ARG MC_DOWNLOAD_URL
 ARG AWS_DOWNLOAD_URL
 ARG CABAL_BUILD_JOBS=1
@@ -191,7 +193,7 @@ RUN set -eux; \
     helm version --short | grep -F "${HELM_VERSION}"; \
     curl -fsSL "${MC_DOWNLOAD_URL}" -o "${tmpdir}/mc"; \
     install -m 0755 "${tmpdir}/mc" /usr/local/bin/mc; \
-    mc --version; \
+    mc --version | grep -F "${MC_VERSION}"; \
     curl -fsSL "${AWS_DOWNLOAD_URL}" -o "${tmpdir}/awscliv2.zip"; \
     unzip -q "${tmpdir}/awscliv2.zip" -d "${tmpdir}"; \
     "${tmpdir}/aws/install" --install-dir /opt/aws-cli --bin-dir /usr/local/bin; \
@@ -201,12 +203,18 @@ RUN set -eux; \
     pulumi version | grep -Fx "${PULUMI_VERSION}"; \
     rm -rf "${tmpdir}"
 
+# GHC is pinned; Cabal rolls. The compiler is the Cabal store's ABI key — the
+# store below lands at /opt/cache/cabal/store/ghc-<version>-<abi>/ — so a base
+# whose compiler drifts from the one consumers select ships a store none of them
+# can read. The same version is what the Python bootstrapper installs on the
+# host and what the VM guest bootstrap pins, so this is one family constant
+# rather than a third opinion (development_plan_standards.md § FF).
 RUN set -eux; \
-    ghcup install ghc recommended; \
-    ghcup set ghc recommended; \
+    ghcup install ghc "${GHC_VERSION}"; \
+    ghcup set ghc "${GHC_VERSION}"; \
     ghcup install cabal recommended; \
     ghcup set cabal recommended; \
-    ghc --numeric-version; \
+    ghc --numeric-version | grep -Fx "${GHC_VERSION}"; \
     cabal --numeric-version
 
 RUN set -eux; \

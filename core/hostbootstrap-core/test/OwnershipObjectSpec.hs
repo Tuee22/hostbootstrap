@@ -16,13 +16,13 @@ half-reads is the one input that could make it delete something it does not own.
 -}
 module OwnershipObjectSpec (tests) where
 
-import Expect (expectRight)
-import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
 import Data.List (sort)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
+import Expect (expectRight)
 import HostBootstrap.Ownership.Object
 import qualified SourceGuard
 import System.FilePath ((</>))
@@ -390,7 +390,7 @@ substringOf needle haystack = any (needle `isPrefixOfList`) (suffixes haystack)
     isPrefixOfList _ [] = False
     isPrefixOfList (x : xs) (y : ys) = x == y && isPrefixOfList xs ys
 
-{- | Every Haskell source under the library's own source root. -}
+-- | Every Haskell source under the library's own source root.
 ownershipInternalImporters :: FilePath -> IO [FilePath]
 ownershipInternalImporters sourceRoot = do
     sources <- SourceGuard.readHaskellSources sourceRoot
@@ -428,7 +428,6 @@ forceIdentity raw = either (error . show) id (mkObjectIdentity raw)
 
 forceBound :: ObjectIdentity -> OriginRecord -> OriginRecord
 forceBound identity record = either (error . show) id (bindOriginRecord identity record)
-
 
 expectUnsupported :: (Show value) => Either OwnershipFault value -> IO ()
 expectUnsupported outcome = case outcome of

@@ -2,10 +2,13 @@
 --
 -- Every project composes its rich project/deploy and per-case test configs from
 -- this vocabulary: `let C = ./Core.dhall in ...` — embedded and extended, never
--- redefined (see development_plan_standards.md § T). The record/union TYPES are
--- the shape the project binary reflects from its Haskell decoders (an anti-drift
--- test asserts the two agree). The budget FUNCTIONS (`Budget/fitsWithin`,
--- `Budget/split`) are hand-written here and drift-controlled by evaluation tests.
+-- redefined (see development_plan_standards.md § T). This whole file is
+-- hand-written: nothing generates it. The record/union TYPES are held equal to
+-- the schema the project binary reflects from its Haskell decoders by an
+-- anti-drift test, which reads the direction the other way round from
+-- generation -- Haskell is the comparand, not the source. The budget FUNCTIONS
+-- (`Budget/fitsWithin`, `Budget/split`) have no Haskell counterpart at all and
+-- are drift-controlled by evaluation tests.
 --
 -- This file is self-contained (no Prelude import) so it evaluates with no network
 -- access, both in-process via the Haskell `dhall` library and via `dhall-to-json`.

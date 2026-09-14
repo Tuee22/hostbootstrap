@@ -1,13 +1,20 @@
 # Phase 20 — `test` and `context` command semantics
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 19 (test harness and exclusive run ownership)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`, plus the focused `CLISpec` and `ContextSpec`
 groups inside a realized linux-cpu host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=CLISpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861
-**Gate evidence**: 2026-09-09 ; x86_64 Ubuntu 24.04.4 LTS realized through WSL2 on Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core-test --ghc-options=-Werror --test-show-details=direct --test-options=--pattern=ContextSpec` ; pass ; covers 1168c0e1694c1337ac62b2d1267a212e4b49f343ec032ac6acf0a5bf014d0861
+**Gate evidence**: 2026-09-13 ; full suite on x86_64 Ubuntu 24.04.4 LTS (Linux 7.0.0-28-generic, GHC
+9.12.4, Cabal 3.16.1.0), focused legs in an x86_64 Linux container from the published
+`basecontainer-cpu-amd64` base with no accelerator device visible, built and run there with that same
+pinned toolchain mounted in ;
+`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
+`core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
+--test-show-details=direct --test-options="--pattern CLISpec"` and the same command with
+`--pattern ContextSpec`, both from `core/` in that container ; pass ;
+covers 893814d13438030a1b058ab5fcefb836048ee69887611031a5d4d24d79d1c175
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/test/CLISpec.hs` `core/hostbootstrap-core/test/ContextSpec.hs`
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
@@ -194,9 +201,9 @@ context and exact Harness mutation boundaries; its covered digest matches the he
 
 None.
 
-### Sprint 20.6: The initializer carries the role it parsed [Active]
+### Sprint 20.6: The initializer carries the role it parsed [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -223,12 +230,18 @@ records both the full suite and the focused legs its gate names.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None. `initParserInfo` takes `Context.ContextKind`, the `--role` default and its shown value are
+rendered from that parsed role, the help text lists `configRoleNames`, and the identity decision compares
+`roleKind == defaultRole`; no role spelling remains in the module outside prose. `ContextSpec` covers the
+canonical, aliased, and case/separator-normalised spellings of the default role reaching one provisioning
+decision, and refuses provisioning for another role at the same path. On 2026-09-13 the complete
+2,536/2,536 `cabal test all` ran on the x86_64 Linux gate host, and the focused 64/64 `CLISpec` and
+88/88 `ContextSpec` legs were built and run inside a realized `linux-cpu` container. One gate-evidence
+row now records both legs and the re-measured covers digest.
 
 ## Remaining Work
 
-The initializer surface is owed the parsed role rather than its rendered text, and this
-phase's gate evidence is owed a row that records both legs its gate names. **Sprint 20.6** owns both.
+None.
 
 ## Documentation Requirements
 

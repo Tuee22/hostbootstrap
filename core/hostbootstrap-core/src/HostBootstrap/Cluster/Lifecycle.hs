@@ -89,11 +89,11 @@ module HostBootstrap.Cluster.Lifecycle (
 )
 where
 
-import Data.Bifunctor (first)
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
 import Control.Monad (forM_, unless, when)
 import Crypto.Hash (Digest, SHA256, hash)
+import Data.Bifunctor (first)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -113,11 +113,11 @@ import HostBootstrap.Cluster.Command (ClusterDriver (..))
 import HostBootstrap.Cluster.Cordon (
     budgetCpu,
     budgetFromResources,
-    renderQuantityError,
     budgetMemoryBytes,
     budgetStorageBytes,
     kindNodeCordonArgsFor,
     preflightBudget,
+    renderQuantityError,
     resolveHostCapacity,
  )
 import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget)
@@ -138,6 +138,7 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     stepExecutionPackage,
     stepExecutionPlanDigest,
  )
+import HostBootstrap.Network.Port (Port, mkPort)
 import HostBootstrap.ProjectPlan (
     ClusterResource,
     DerivedTopology,
@@ -288,15 +289,16 @@ data PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clust
 
 type role PlanOwnedClusterConfig nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
-data ExposureIntent = ExposureIntent Text Text Int
+data ExposureIntent = ExposureIntent Text Text Port
     deriving (Eq, Show)
 
 mkPlanExposureIntent :: Text -> Text -> Int -> Either ClusterPackageError ExposureIntent
 mkPlanExposureIntent service target port
     | T.null service || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t']) service = Left (ClusterPackageMismatch "the exposure service identity is invalid")
     | T.null target || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t', ' ']) target = Left (ClusterPackageMismatch "the exposure target host is invalid")
-    | port < 1 || port > 65535 = Left (ClusterPackageMismatch "the exposure target port is outside 1..65535")
-    | otherwise = Right (ExposureIntent service target port)
+    | otherwise = case mkPort port of
+        Nothing -> Left (ClusterPackageMismatch "the exposure target port is outside 1..65535")
+        Just admitted -> Right (ExposureIntent service target admitted)
 
 exposureIntentService :: ExposureIntent -> Text
 exposureIntentService (ExposureIntent service _ _) = service
@@ -304,7 +306,7 @@ exposureIntentService (ExposureIntent service _ _) = service
 exposureIntentTargetHost :: ExposureIntent -> Text
 exposureIntentTargetHost (ExposureIntent _ target _) = target
 
-exposureIntentTargetPort :: ExposureIntent -> Int
+exposureIntentTargetPort :: ExposureIntent -> Port
 exposureIntentTargetPort (ExposureIntent _ _ port) = port
 
 {- | Join the one admitted plan to its exact cluster resource, direct provider
@@ -677,8 +679,9 @@ consumer, with only prose saying they were wrong (§ HH).
 data AcceleratorIngressPlan
     = -- | reached inside the cluster: the service port, and nothing else
       ClusterIpIngress Int
-    | -- | reached from the host: the service port, the node port, and the
-      -- address the kind mapping listens on
+    | {- | reached from the host: the service port, the node port, and the
+      address the kind mapping listens on
+      -}
       NodePortIngress Int Int String
     deriving (Eq, Show)
 

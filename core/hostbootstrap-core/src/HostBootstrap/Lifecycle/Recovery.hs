@@ -3,59 +3,59 @@
 {-# LANGUAGE RoleAnnotations #-}
 
 -- | Snapshot-only frame reconstruction for configless teardown recovery.
-module HostBootstrap.Lifecycle.Recovery
-    ( RecoveredProjectFrame
-    , recoveredFrameName
-    , recoveredFrameParent
-    , recoveredFrameAdapter
-    , withRecoveredProjectFramesKernel
-    , withMigratedRecoveredProjectFramesKernel
-    , withRecoveredChildProjectionBinding
-    , foldRecoveredFrameResources
-    , RecoveredForestSettled
-    , recoveredForestFrameOrder
-    , recoveredForestOwnedCount
-    , recoveredForestReleasedCount
-    , recoveredForestPlanDigest
-    , driveRecoveredForestKernel
-    )
+module HostBootstrap.Lifecycle.Recovery (
+    RecoveredProjectFrame,
+    recoveredFrameName,
+    recoveredFrameParent,
+    recoveredFrameAdapter,
+    withRecoveredProjectFramesKernel,
+    withMigratedRecoveredProjectFramesKernel,
+    withRecoveredChildProjectionBinding,
+    foldRecoveredFrameResources,
+    RecoveredForestSettled,
+    recoveredForestFrameOrder,
+    recoveredForestOwnedCount,
+    recoveredForestReleasedCount,
+    recoveredForestPlanDigest,
+    driveRecoveredForestKernel,
+)
 where
 
-import Data.List (nub)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Lifecycle.Plan
-    ( CanonicalPlanSnapshot
-    , canonicalPlanSnapshotDigest
-    , canonicalPlanRecoveryFramesKernel
-    , canonicalPlanResourceMembersKernel
-    )
-import HostBootstrap.Lifecycle.ResourceRecord
-    ( RehydratedOwnershipReceipt
-    , RehydratedReleasedTombstone
-    , RehydratedResourceHandle
-    , RehydratedResourceSet
-    , foldRehydratedResourceSetKernel
-    , rehydratedHandleFrameKernel
-    , rehydratedTombstoneFrameKernel
-    , rehydratedResourceSetPlanKernel
-    , rehydratedResourceSetDigestKernel
-    )
-import HostBootstrap.Handoff
-    ( HandoffError (HandoffBindingMismatch)
-    , RecoveryProjectionBinding
-    , RootBroker
-    , mkRecoveryProjectionBinding
-    , withRecoveryProjectionBindingInput
-    )
+import HostBootstrap.Handoff (
+    HandoffError (HandoffBindingMismatch),
+    RecoveryProjectionBinding,
+    RootBroker,
+    mkRecoveryProjectionBinding,
+    withRecoveryProjectionBindingInput,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    CanonicalPlanSnapshot,
+    canonicalPlanRecoveryFramesKernel,
+    canonicalPlanResourceMembersKernel,
+    canonicalPlanSnapshotDigest,
+ )
+import HostBootstrap.Lifecycle.ResourceRecord (
+    RehydratedOwnershipReceipt,
+    RehydratedReleasedTombstone,
+    RehydratedResourceHandle,
+    RehydratedResourceSet,
+    foldRehydratedResourceSetKernel,
+    rehydratedHandleFrameKernel,
+    rehydratedResourceSetDigestKernel,
+    rehydratedResourceSetPlanKernel,
+    rehydratedTombstoneFrameKernel,
+ )
 
-data RecoveredProjectFrame scope planId brokerGeneration frame =
-    RecoveredProjectFrame
+data RecoveredProjectFrame scope planId brokerGeneration frame
+    = RecoveredProjectFrame
         Text
         (Maybe Text)
         Text
@@ -64,8 +64,8 @@ data RecoveredProjectFrame scope planId brokerGeneration frame =
 
 type role RecoveredProjectFrame nominal nominal nominal nominal
 
-data RecoveredForestSettled scope planId brokerGeneration =
-    RecoveredForestSettled Text [Text] Int Int
+data RecoveredForestSettled scope planId brokerGeneration
+    = RecoveredForestSettled Text [Text] Int Int
 
 type role RecoveredForestSettled nominal nominal nominal
 
@@ -90,9 +90,10 @@ recoveredFrameParent (RecoveredProjectFrame _ parent _ _ _) = parent
 recoveredFrameAdapter :: RecoveredProjectFrame scope planId brokerGeneration frame -> (Text, Word64)
 recoveredFrameAdapter (RecoveredProjectFrame _ _ adapter revision _) = (adapter, revision)
 
--- | Root-only construction of the exact parent-to-child recovery adapter.
--- The complete-set digest is part of the signed wire bytes, while the frame
--- values contribute the only accepted plan and edge coordinates.
+{- | Root-only construction of the exact parent-to-child recovery adapter.
+The complete-set digest is part of the signed wire bytes, while the frame
+values contribute the only accepted plan and edge coordinates.
+-}
 withRecoveredChildProjectionBinding ::
     RootBroker scope brokerGeneration verb ->
     RecoveredProjectFrame scope planId brokerGeneration parentFrame ->
@@ -100,7 +101,13 @@ withRecoveredChildProjectionBinding ::
     ( forall planDigest recoveryParent recoveryChild recoveryWireDigest.
       ByteString ->
       RecoveryProjectionBinding
-        scope brokerGeneration verb planDigest recoveryParent recoveryChild recoveryWireDigest ->
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        recoveryParent
+        recoveryChild
+        recoveryWireDigest ->
       result
     ) ->
     Either HandoffError result
@@ -171,11 +178,13 @@ withRecoveredProjectFramesKernel snapshot resources consume initial = do
   where
     admitAdapter (_, kind, revision)
         | kind `elem` ["preserve", "core-managed", "project-managed", "step-declared"]
-            && revision == 1 = Right ()
+            && revision == 1 =
+            Right ()
         | otherwise = Left "the recovery adapter is not in the project-owned closed table"
 
--- | Recover candidate frames over the superseded resource set only when both
--- snapshots describe exactly the same durable resource coordinates.
+{- | Recover candidate frames over the superseded resource set only when both
+snapshots describe exactly the same durable resource coordinates.
+-}
 withMigratedRecoveredProjectFramesKernel ::
     CanonicalPlanSnapshot ->
     CanonicalPlanSnapshot ->
@@ -209,7 +218,8 @@ withMigratedRecoveredProjectFramesKernel candidate superseded resources consume 
         pure (foldl step initial names)
     admitAdapter (_, kind, revision)
         | kind `elem` ["preserve", "core-managed", "project-managed", "step-declared"]
-            && revision == 1 = Right ()
+            && revision == 1 =
+            Right ()
         | otherwise = Left "the recovery adapter is not in the project-owned closed table"
 
 foldRecoveredFrameResources ::
@@ -228,18 +238,20 @@ foldRecoveredFrameResources (RecoveredProjectFrame frame _ _ _ resources) initia
         | rehydratedTombstoneFrameKernel tombstone == frame = onReleased value tombstone
         | otherwise = value
 
--- | Drive the exact recovered forest child-first. Released members are counted
--- as already terminal and never enter the backend callback.
+{- | Drive the exact recovered forest child-first. Released members are counted
+as already terminal and never enter the backend callback.
+-}
 driveRecoveredForestKernel ::
     CanonicalPlanSnapshot ->
     RehydratedResourceSet scope planId brokerGeneration ->
-    (forall id.
+    ( forall id.
       Text ->
       Text ->
       Word64 ->
       RehydratedResourceHandle scope planId id brokerGeneration ->
       RehydratedOwnershipReceipt scope planId id brokerGeneration ->
-      IO (Either Text ())) ->
+      IO (Either Text ())
+    ) ->
     IO (Either Text (RecoveredForestSettled scope planId brokerGeneration))
 driveRecoveredForestKernel snapshot resources runOwned =
     case validate of
@@ -255,7 +267,8 @@ driveRecoveredForestKernel snapshot resources runOwned =
         pure (reverse (nub [frame | (frame, _, _) <- rows]), rows)
     admitAdapter (_, kind, revision)
         | kind `elem` ["preserve", "core-managed", "project-managed", "step-declared"]
-            && revision == 1 = Right ()
+            && revision == 1 =
+            Right ()
         | otherwise = Left "the recovery adapter is not in the project-owned closed table"
     go [] _ owned released = pure (Right (RecoveredForestSettled (canonicalPlanSnapshotDigest snapshot) [] owned released))
     go ordered@(frame : remaining) rows owned released = do
@@ -264,15 +277,19 @@ driveRecoveredForestKernel snapshot resources runOwned =
                 [] -> ("preserve", 1)
             (actions, releasedHere) =
                 snd $
-                    foldRehydratedResourceSetKernel resources ([], 0 :: Int)
-                        (\(pending, count) handle receipt ->
+                    foldRehydratedResourceSetKernel
+                        resources
+                        ([], 0 :: Int)
+                        ( \(pending, count) handle receipt ->
                             if rehydratedHandleFrameKernel handle == frame
                                 then (pending <> [runOwned frame adapter revision handle receipt], count)
-                                else (pending, count))
-                        (\(pending, count) tombstone ->
+                                else (pending, count)
+                        )
+                        ( \(pending, count) tombstone ->
                             if rehydratedTombstoneFrameKernel tombstone == frame
                                 then (pending, count + 1)
-                                else (pending, count))
+                                else (pending, count)
+                        )
         outcome <- runActions actions
         case outcome of
             Left failure -> pure (Left failure)

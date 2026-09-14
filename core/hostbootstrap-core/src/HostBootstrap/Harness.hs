@@ -499,10 +499,11 @@ newtype HarnessRunOwnership authority = HarnessRunOwnership
         IO (Either String (result, Maybe HarnessRunCleanupFailure))
     }
 
--- | Enter ownership without an additional post-recovery precondition.
--- Low-level ownership tests use this seam; the suite engine uses
--- 'runWithOwnedRunAfterRecovery' so its Production-state probe cannot block
--- recovery of the prior Harness run that owns the observed state.
+{- | Enter ownership without an additional post-recovery precondition.
+Low-level ownership tests use this seam; the suite engine uses
+'runWithOwnedRunAfterRecovery' so its Production-state probe cannot block
+recovery of the prior Harness run that owns the observed state.
+-}
 runWithOwnedRun ::
     HarnessRunOwnership authority ->
     (authority -> IO result) ->

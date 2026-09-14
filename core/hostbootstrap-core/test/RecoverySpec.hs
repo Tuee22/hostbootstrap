@@ -1,51 +1,51 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module RecoverySpec (tests) where
 
-import HostBootstrap.Lifecycle.Mode
-    ( RecoveredProjectFrame
-    , foldRecoveredFrameResources
-    , productionRootAuthority
-    , recoveredFrameAdapter
-    , recoveredFrameName
-    , recoveredFrameParent
-    , withRecoveredProjectFrames
-    , withRecoveredChildProjectionBinding
-    , driveRecoveredForest
-    , recoveredForestFrameOrder
-    , recoveredForestOwnedCount
-    , recoveredForestReleasedCount
-    , recordRecoveredResourceReleased
-    , planSnapshotPlanDigest
-    )
-import ResourceRecordSpec (withRecoveryFixture, withRecoveryFixtureFor, withReleasedRecoveryFixture, withReleasedRecoveryFixtureFor, withRecoveryRootFixtureFor, wrongRecoveryMembership)
 import qualified Data.ByteString as ByteString
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text
-import HostBootstrap.Handoff
-    ( projectSigningKeyFromBytes
-    , productionHandoffScope
-    , renderRecoveryProjectionBinding
-    , withRootBroker
-    )
-import HostBootstrap.Step
-    ( StepFrame (StepFrame)
-    , StepObservation (StepChanged)
-    , StepPlan
-    , deployKindStep
-    , deployVMStep
-    , descendsVia
-    , mkStepPlan
-    , mkStepReverseAdapterRevision
-    , reverseAdapterAt
-    )
+import HostBootstrap.Handoff (
+    productionHandoffScope,
+    projectSigningKeyFromBytes,
+    renderRecoveryProjectionBinding,
+    withRootBroker,
+ )
+import HostBootstrap.Lifecycle.Mode (
+    RecoveredProjectFrame,
+    driveRecoveredForest,
+    foldRecoveredFrameResources,
+    planSnapshotPlanDigest,
+    productionRootAuthority,
+    recordRecoveredResourceReleased,
+    recoveredForestFrameOrder,
+    recoveredForestOwnedCount,
+    recoveredForestReleasedCount,
+    recoveredFrameAdapter,
+    recoveredFrameName,
+    recoveredFrameParent,
+    withRecoveredChildProjectionBinding,
+    withRecoveredProjectFrames,
+ )
 import HostBootstrap.Lift (localContext)
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import HostBootstrap.Step (
+    StepFrame (StepFrame),
+    StepObservation (StepChanged),
+    StepPlan,
+    deployKindStep,
+    deployVMStep,
+    descendsVia,
+    mkStepPlan,
+    mkStepReverseAdapterRevision,
+    reverseAdapterAt,
+ )
+import ResourceRecordSpec (withRecoveryFixture, withRecoveryFixtureFor, withRecoveryRootFixtureFor, withReleasedRecoveryFixture, withReleasedRecoveryFixtureFor, wrongRecoveryMembership)
 import System.Directory (removeFile)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -60,10 +60,11 @@ tests =
             withRecoveryFixtureFor nestedPlan $ \snapshot resources ->
                 case withRecoveredProjectFrames snapshot resources collect [] of
                     Left failure -> assertFailure (show failure)
-                    Right frames -> reverse frames @?=
-                        [ ("host", Nothing, ("project-managed", 1), 1, 0)
-                        , ("vm", Just "host", ("core-managed", 1), 1, 0)
-                        ]
+                    Right frames ->
+                        reverse frames
+                            @?= [ ("host", Nothing, ("project-managed", 1), 1, 0)
+                                , ("vm", Just "host", ("core-managed", 1), 1, 0)
+                                ]
         , testCase "recovery is independent of config presence and contents" $
             withRecoveryFixture $ \snapshot resources ->
                 withSystemTempDirectory "hostbootstrap-recovery-config" $ \directory -> do
@@ -159,7 +160,9 @@ tests =
   where
     collect frame frames =
         let (owned, released) =
-                foldRecoveredFrameResources frame (0 :: Int, 0 :: Int)
+                foldRecoveredFrameResources
+                    frame
+                    (0 :: Int, 0 :: Int)
                     (\(o, r) _ _ -> (o + 1, r))
                     (\(o, r) _ -> (o, r + 1))
          in (recoveredFrameName frame, recoveredFrameParent frame, recoveredFrameAdapter frame, owned, released) : frames
@@ -167,20 +170,22 @@ tests =
 data SomeRecoveredFrame scope planId brokerGeneration where
     SomeRecoveredFrame :: RecoveredProjectFrame scope planId brokerGeneration frame -> SomeRecoveredFrame scope planId brokerGeneration
 
-showText :: Show value => value -> Data.Text.Text
+showText :: (Show value) => value -> Data.Text.Text
 showText = Data.Text.pack . show
 
 nestedPlan :: StepPlan
-nestedPlan = either (error . show) id $
-    mkStepPlan
-        [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
-        , deployKindStep "cluster" (StepFrame "vm" "VM") (const (pure StepChanged))
-        ]
+nestedPlan =
+    either (error . show) id $
+        mkStepPlan
+            [ descendsVia localContext (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
+            , deployKindStep "cluster" (StepFrame "vm" "VM") (const (pure StepChanged))
+            ]
 
 unknownAdapterPlan :: StepPlan
-unknownAdapterPlan = either (error . show) id $
-    mkStepPlan
-        [ reverseAdapterAt
-            (either error id (mkStepReverseAdapterRevision 2))
-            (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
-        ]
+unknownAdapterPlan =
+    either (error . show) id $
+        mkStepPlan
+            [ reverseAdapterAt
+                (either error id (mkStepReverseAdapterRevision 2))
+                (deployKindStep "cluster" (StepFrame "host" "Host") (const (pure StepChanged)))
+            ]

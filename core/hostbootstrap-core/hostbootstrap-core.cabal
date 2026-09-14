@@ -132,6 +132,15 @@ library lifecycle-transaction-internal
     , text
     , hostbootstrap-core:ownership-internal
 
+library network-port-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/network-port
+  exposed-modules:
+      HostBootstrap.Network.Port
+  build-depends:
+      base >=4.18 && <5
+
 library lifecycle-dependency-internal
   import: warnings
   visibility: private
@@ -141,6 +150,7 @@ library lifecycle-dependency-internal
   build-depends:
       base >=4.18 && <5
     , bytestring
+    , hostbootstrap-core:network-port-internal
     , text
 
 library
@@ -312,6 +322,7 @@ library
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
+    , hostbootstrap-core:network-port-internal
     , hostbootstrap-core:ownership-internal
     , memory
     , network
@@ -448,6 +459,7 @@ test-suite hostbootstrap-core-test
     , hostbootstrap-core:lifecycle-transaction-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:effect-internal
+    , hostbootstrap-core:network-port-internal
     , hostbootstrap-core:ownership-internal
     , optparse-applicative
     , process

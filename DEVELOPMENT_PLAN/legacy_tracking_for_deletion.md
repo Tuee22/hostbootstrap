@@ -25,16 +25,13 @@ table is the healthy end state**, not a document to keep populated.
 
 ## Tracked shapes
 
-The table is populated. That is the honest state after a review that read the tree against the
-architecture: these shapes are present, the architecture does not want them, and each has a phase whose
-completion removes it. Each row's deleting phase carries the sprint that does the work — the ledger
-schedules nothing on its own, and a row is deleted when its shape is.
+The table is empty, which § I names as the healthy end state rather than a document to keep populated.
+The three shapes it carried are gone: the second port-range predicate (phase 21), the uncalled flavor
+selector on the publication surface (phase 23), and the worked consumer's two directory-creation locks
+(phase 24). Each was removed by the phase's own sprint, and each row was deleted with the shape it named.
 
 | Shape | Location | Why the architecture does not want it | Deleted by |
 |---|---|---|---|
-| A second port-range predicate | `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs` | Identical body to the one in the module that owns the reachability vocabulary, so the range is agreed by coincidence | [phase 21](phase-21-composition-and-network-algebra.md) |
-| An uncalled flavor selector that maps the Windows accelerator substrate to the CPU base | `hostbootstrap/base_image.py` | No production caller, a mapping every other part of the system contradicts, and a test covering three of five substrates — so the 100% line gate certifies a branch nothing exercises | [phase 23](phase-23-base-image-and-warm-store.md) |
-| Two directory-creation locks in the worked consumer | `demo/src/HostBootstrapDemo/Commands.hs` | Exactly the shape the run-ownership module records itself as existing to replace: a hard kill leaves both directories and wedges every subsequent run | [phase 24](phase-24-worked-demo.md) |
 
 ## Related
 

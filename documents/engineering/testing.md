@@ -51,6 +51,18 @@ project root, or dispatch a signed service to its exit does execute those effect
 evidence for it. The distinction is worth stating because the difference between the two is invisible in
 the run's output: both print the same green line.
 
+One consequence is easy to miss on a developer workstation. An outer Linux host with a visible
+accelerator realizes `linux-gpu`, so it is not itself a `linux-cpu` gate host, however Linux it is. The
+`linux-cpu` gate host there is a Linux with no accelerator marker of its own: a container started with no
+accelerator device passed to it, or a guest VM on that workstation, which `doctor` classifies as
+`linux-cpu` because it reports neither `/proc/driver/nvidia/version` nor `/dev/nvidiactl`. A guest VM is
+the realization the **live** demo gate needs, because that gate brings up its own provider guest and
+therefore needs nested virtualization rather than only a namespace; a container is enough for a static
+leg. Either way the gate host's toolchain is the one inside it, and is recorded as such. The base ships the pinned family compiler, which is
+the one every workspace here selects, so a container leg builds with the image's own GHC and its
+evidence row names that. A leg that supplies a compiler from outside the image is doing something the
+pin exists to make unnecessary, and says so.
+
 The independent cluster-phase live gate is the bare binary's `hostbootstrap test run cluster-live` case.
 It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
 run-scoped cluster; the assertion performs read-only Kubernetes observation and concurrently asks Docker to
@@ -109,7 +121,7 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
 - **A conditional expectation follows the subject, not the package.** A platform row exists on every gate
   host, so what varies is what it *answers* there: the kernel result where the row can hold its
   obligations, the total refusal where it cannot. A case reads that from the row's own declaration —
-  `posixGlobalWallSupported`, `windowsGlobalWallSupported` — rather than from a build symbol the suite
+  `posixOwnershipSupported`, `windowsOwnershipSupported`, `windowsGlobalWallSupported` — rather than from a build symbol the suite
   repeats, so the expectation cannot drift from the subject it is about. A compile-fail fixture expects
   one diagnostic, because the module it names is built everywhere.
 - **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable on
@@ -235,16 +247,16 @@ protocol tests; live provider and container execution has its separate substrate
 
 The [host-providers-and-self-reference-lift
 phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) records the separate native
-Linux/x86_64 KVM/Incus provider gate. Its 2026-09-09 current-tree run passed all 2,497 static cases and
-then the live component, including forced restart, post-restart guest readiness, execution of the installed
+Linux/x86_64 KVM/Incus provider gate. That gate runs the static cases and then the live component,
+covering forced restart, post-restart guest readiness, execution of the installed
 frame-child entry, conditional alias release, identity-conditional delete, the mutation-free Direct
-refusal, and exact residue checks.
+refusal, and exact residue checks. Its dated run and totals belong to that phase.
 
 The [base-image-publication-and-opportunistic-warm-store
 phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md) records its separate publication
-gate. On 2026-09-09, the native Linux/x86_64 CPU pipeline passed its complete source preflight and
-immutable local-ID consumer smoke before publishing; it then pulled and re-smoked exact Docker Hub digest
-`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`.
+gate. That pipeline passes a complete source preflight and an immutable local-ID consumer smoke before
+publishing, then pulls the published tag back and re-smokes it against the exact Docker Hub digest. The
+dated publication and that digest belong to that phase.
 
 The [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
 records realized-Linux acceptance of its recovery, ownership, process, interruption, exact-plan, and report

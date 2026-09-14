@@ -21,8 +21,11 @@ table — never a clause written twice.
 Three rows exist, and the frame table's ownership column says which one holds a frame's clauses. Two are
 platforms: POSIX and Windows, and the outer host's column entry is whichever this binary was built for.
 The third is a **transport** that runs the transaction at the frame owning the object; every crossing's
-column entry is the POSIX row, because every frame this project reaches is Linux, so the transport is not
-a third implementation of the clauses. The column is a declaration rather than a value a caller runs,
+column entry is the POSIX row, because every frame reached *through a crossing* is Linux, so the
+transport is not a third implementation of the clauses. That premise is about crossings, not about the
+outer host: the shipped act is built host-native (§ N) like every other binary, so the same POSIX row is
+also compiled for a Darwin outer host, and one of its primitives has two kernel spellings there. A row
+may spell a primitive differently per kernel; what must never be written twice is the clause order. The column is a declaration rather than a value a caller runs,
 which is exactly what keeps it one.
 
 The clause order is a property of the types. A mutation consumes the recorded origin and a release
@@ -294,8 +297,10 @@ The transaction is shared; the policy is the owner's own.
   share key and generation, alias key and generation, alias, and target — and stores the complete binding
   as well, so the digest is only a bounded filename. Its prepared state records explicit absence plus a
   fresh nonce before the first mutation. The shipped row stages the symlink and binds its exact device/inode
-  identity before atomic no-replace publication: Linux uses `link(2)`, while Darwin uses
-  `renamex_np(RENAME_EXCL)` because APFS does not permit hard links to symbolic links. The durable binding
+  identity before atomic no-replace publication. This is the primitive with two spellings: Linux gives the
+  symlink inode a second name with `link(2)`, while Darwin uses `renamex_np(RENAME_EXCL)` because APFS
+  deliberately refuses hard links to symbolic links. Both are the POSIX row's publication step, selected
+  at build time by `publishSymbolicLinkNoReplace`; neither is a fourth row. The durable binding
   therefore identifies the inode in both the bound-staging and bound-published recovery windows. A
   correct-looking foreign symlink with no matching durable record is reported foreign. No pathname sidecar
   participates in ownership.

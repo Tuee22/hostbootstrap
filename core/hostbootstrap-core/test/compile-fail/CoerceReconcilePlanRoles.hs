@@ -5,24 +5,24 @@ plan, even for reporting or intermediate evidence types.
 module CoerceReconcilePlanRoles where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Reconcile
-    ( AdoptionAuthority
-    , DependencyProbe
-    , DependencySnapshot
-    , LifecyclePlan
-    , OperationDescriptor
-    , OperationPreconditionSet
-    , OwnershipReceipt
-    , PhaseAdvance
-    , PhaseTransition
-    , PreparedOperation
-    , PreparedPreconditions
-    , PriorCommitProof
-    , ReconcileResult
-    , VerifiedAtPhase
-    , VerifiedForeignOrigin
-    , VerifiedJournalRecord
-    )
+import HostBootstrap.Reconcile (
+    AdoptionAuthority,
+    DependencyProbe,
+    DependencySnapshot,
+    LifecyclePlan,
+    OperationDescriptor,
+    OperationPreconditionSet,
+    OwnershipReceipt,
+    PhaseAdvance,
+    PhaseTransition,
+    PreparedOperation,
+    PreparedPreconditions,
+    PriorCommitProof,
+    ReconcileResult,
+    VerifiedAtPhase,
+    VerifiedForeignOrigin,
+    VerifiedJournalRecord,
+ )
 
 data Scope
 data Identity

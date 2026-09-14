@@ -5,13 +5,13 @@ module CrossPlanClusterConsumer where
 
 import HostBootstrap.Cluster.Budget (LimaProvider, ResourceSlice)
 import HostBootstrap.Cluster.Lifecycle (ClusterPackageError, withPlanOwnedCluster)
-import HostBootstrap.ProjectPlan
-  ( ClusterResource,
+import HostBootstrap.ProjectPlan (
+    ClusterResource,
     DerivedTopology,
     PlannedResource,
     ProjectPlan,
     ProviderResource,
-  )
+ )
 
 data Scope
 data SpecificationDigest
@@ -33,63 +33,63 @@ data WorkloadIdentity
 data PartitionIdentity
 
 type ExactPlan plan =
-  ProjectPlan Scope SpecificationDigest plan ConfigurationIdentity Configuration
+    ProjectPlan Scope SpecificationDigest plan ConfigurationIdentity Configuration
 
 type Cluster plan =
-  PlannedResource Scope plan ClusterIdentity ClusterResource ClusterFrame
+    PlannedResource Scope plan ClusterIdentity ClusterResource ClusterFrame
 
 type Provider plan =
-  PlannedResource Scope plan ProviderIdentity ProviderResource ProviderFrame
+    PlannedResource Scope plan ProviderIdentity ProviderResource ProviderFrame
 
 type Slice plan =
-  ResourceSlice
-    Scope
-    plan
-    BudgetIdentity
-    LimaProvider
-    CapabilityIdentity
-    WallIdentity
-    WorkloadIdentity
-    PartitionIdentity
-    ClusterFrame
-    ClusterIdentity
+    ResourceSlice
+        Scope
+        plan
+        BudgetIdentity
+        LimaProvider
+        CapabilityIdentity
+        WallIdentity
+        WorkloadIdentity
+        PartitionIdentity
+        ClusterFrame
+        ClusterIdentity
 
 crossPlanClusterResource ::
-  ExactPlan ClusterPlan ->
-  Cluster ForeignClusterPlan ->
-  Provider ClusterPlan ->
-  DerivedTopology Scope ClusterPlan ->
-  Slice ClusterPlan ->
-  Either ClusterPackageError ()
+    ExactPlan ClusterPlan ->
+    Cluster ForeignClusterPlan ->
+    Provider ClusterPlan ->
+    DerivedTopology Scope ClusterPlan ->
+    Slice ClusterPlan ->
+    Either ClusterPackageError ()
 crossPlanClusterResource plan cluster provider topology slice =
-  () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice
 
 crossPlanProviderResource ::
-  ExactPlan ClusterPlan ->
-  Cluster ClusterPlan ->
-  Provider ForeignProviderPlan ->
-  DerivedTopology Scope ClusterPlan ->
-  Slice ClusterPlan ->
-  Either ClusterPackageError ()
+    ExactPlan ClusterPlan ->
+    Cluster ClusterPlan ->
+    Provider ForeignProviderPlan ->
+    DerivedTopology Scope ClusterPlan ->
+    Slice ClusterPlan ->
+    Either ClusterPackageError ()
 crossPlanProviderResource plan cluster provider topology slice =
-  () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice
 
 crossPlanTopology ::
-  ExactPlan ClusterPlan ->
-  Cluster ClusterPlan ->
-  Provider ClusterPlan ->
-  DerivedTopology Scope ForeignTopologyPlan ->
-  Slice ClusterPlan ->
-  Either ClusterPackageError ()
+    ExactPlan ClusterPlan ->
+    Cluster ClusterPlan ->
+    Provider ClusterPlan ->
+    DerivedTopology Scope ForeignTopologyPlan ->
+    Slice ClusterPlan ->
+    Either ClusterPackageError ()
 crossPlanTopology plan cluster provider topology slice =
-  () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice
 
 crossPlanSlice ::
-  ExactPlan ClusterPlan ->
-  Cluster ClusterPlan ->
-  Provider ClusterPlan ->
-  DerivedTopology Scope ClusterPlan ->
-  Slice ForeignSlicePlan ->
-  Either ClusterPackageError ()
+    ExactPlan ClusterPlan ->
+    Cluster ClusterPlan ->
+    Provider ClusterPlan ->
+    DerivedTopology Scope ClusterPlan ->
+    Slice ForeignSlicePlan ->
+    Either ClusterPackageError ()
 crossPlanSlice plan cluster provider topology slice =
-  () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice

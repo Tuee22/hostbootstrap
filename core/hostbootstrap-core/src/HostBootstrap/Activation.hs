@@ -166,13 +166,14 @@ data ActivationManifest = ActivationManifest
     , manifestService :: Text
     , manifestRolePlanDigest :: Text
     , manifestPermittedEffects :: [Text]
-    , -- | where the runtime reads its private bundle; a locator, never bytes
-      manifestSecretChannel :: Text
+    , manifestSecretChannel :: Text
+    -- ^ where the runtime reads its private bundle; a locator, never bytes
     }
     deriving (Eq, Show)
 
--- | Canonical bytes, length-prefixed per field, with the effect row itself
--- length-prefixed so a row of two entries cannot be read as one longer entry.
+{- | Canonical bytes, length-prefixed per field, with the effect row itself
+length-prefixed so a row of two entries cannot be read as one longer entry.
+-}
 renderActivationManifest :: ActivationManifest -> ByteString
 renderActivationManifest manifest =
     ByteString.concat
@@ -505,13 +506,10 @@ A host daemon has no platform UID and instead mints a protected invocation nonce
 when its revision pointer is switched.
 -}
 data MeasuredInstance
-    = KubernetesInstance
-        { podUid :: Text
-        , containerRestartCount :: Word64
-        }
-    | HostServiceInstance
-        { invocationNonce :: Text
-        }
+    = -- | a pod UID and the restart count that distinguishes one start from the next
+      KubernetesInstance Text Word64
+    | -- | a protected invocation nonce minted when the revision pointer is switched
+      HostServiceInstance Text
     deriving (Eq, Show)
 
 -- | The instance's stable textual identity.
@@ -525,10 +523,10 @@ claims.
 -}
 data RuntimeMeasurement = RuntimeMeasurement
     { measuredBinaryDigest :: Text
-    , -- | the hash of the role-wire bytes actually mounted
-      measuredConfigDigest :: Text
-    , -- | the canonical hash computed from private-channel bytes actually read
-      measuredSecretDigest :: ActivationSecretDigest
+    , measuredConfigDigest :: Text
+    -- ^ the hash of the role-wire bytes actually mounted
+    , measuredSecretDigest :: ActivationSecretDigest
+    -- ^ the canonical hash computed from private-channel bytes actually read
     , measuredInstance :: MeasuredInstance
     }
     deriving (Eq, Show)
@@ -573,15 +571,17 @@ activationService ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
 activationService (VerifiedRuntimeRoleActivation manifest _ _) = manifestService manifest
 
--- | The effect row this activation permits. the service-runtime phase revalidates it before
--- minting the service command authority; it is not itself effect authority.
+{- | The effect row this activation permits. the service-runtime phase revalidates it before
+minting the service command authority; it is not itself effect authority.
+-}
 activationPermittedEffects ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> [Text]
 activationPermittedEffects (VerifiedRuntimeRoleActivation manifest _ _) =
     manifestPermittedEffects manifest
 
--- | The protected locator for the run-private bundle, reachable only through a
--- verified activation.
+{- | The protected locator for the run-private bundle, reachable only through a
+verified activation.
+-}
 activationSecretChannel ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId -> Text
 activationSecretChannel (VerifiedRuntimeRoleActivation manifest _ _) = manifestSecretChannel manifest
@@ -673,57 +673,57 @@ verifyRuntimeRoleActivation
     (ActivationGrant signature)
     measurement
     use
-    | Left failure <- validateManifest manifest = pure (Left failure)
-    | Left failure <- validateMeasuredInstance (measuredInstance measurement) = pure (Left failure)
-    | manifestRevision manifest /= manifestRevision expected =
-        pure (Left (ActivationRevisionStale (manifestRevision manifest) (manifestRevision expected)))
-    | Just (fieldName, signed, selected) <- firstManifestMismatch expected manifest =
-        pure (Left (ActivationManifestMismatch fieldName signed selected))
-    | manifestBinaryDigest manifest /= measuredBinaryDigest measurement =
-        pure
-            ( Left
-                ( ActivationMeasurementMismatch
-                    "binary"
-                    (manifestBinaryDigest manifest)
-                    (measuredBinaryDigest measurement)
-                )
-            )
-    | manifestConfigDigest manifest /= measuredConfigDigest measurement =
-        pure
-            ( Left
-                ( ActivationMeasurementMismatch
-                    "config"
-                    (manifestConfigDigest manifest)
-                    (measuredConfigDigest measurement)
-                )
-            )
-    | manifestSecretDigest manifest /= measuredSecretDigest measurement =
-        pure
-            ( Left
-                ( ActivationMeasurementMismatch
-                    "secret"
-                    (activationSecretDigestText (manifestSecretDigest manifest))
-                    (activationSecretDigestText (measuredSecretDigest measurement))
-                )
-            )
-    | otherwise = case Ed25519.signature signature of
-        CryptoFailed err -> pure (Left (ActivationSignatureInvalid (Text.pack (show err))))
-        CryptoPassed parsedSignature
-            | not (Ed25519.verify key (signedMaterial manifest) parsedSignature) ->
-                pure
-                    ( Left
-                        ( ActivationSignatureInvalid
-                            "the grant does not authenticate this manifest"
-                        )
+        | Left failure <- validateManifest manifest = pure (Left failure)
+        | Left failure <- validateMeasuredInstance (measuredInstance measurement) = pure (Left failure)
+        | manifestRevision manifest /= manifestRevision expected =
+            pure (Left (ActivationRevisionStale (manifestRevision manifest) (manifestRevision expected)))
+        | Just (fieldName, signed, selected) <- firstManifestMismatch expected manifest =
+            pure (Left (ActivationManifestMismatch fieldName signed selected))
+        | manifestBinaryDigest manifest /= measuredBinaryDigest measurement =
+            pure
+                ( Left
+                    ( ActivationMeasurementMismatch
+                        "binary"
+                        (manifestBinaryDigest manifest)
+                        (measuredBinaryDigest measurement)
                     )
-            | otherwise ->
-                Right
-                    <$> use
-                        ( VerifiedRuntimeRoleActivation
-                            manifest
-                            (measuredInstance measurement)
-                            (protectedStoreIdentity store)
+                )
+        | manifestConfigDigest manifest /= measuredConfigDigest measurement =
+            pure
+                ( Left
+                    ( ActivationMeasurementMismatch
+                        "config"
+                        (manifestConfigDigest manifest)
+                        (measuredConfigDigest measurement)
+                    )
+                )
+        | manifestSecretDigest manifest /= measuredSecretDigest measurement =
+            pure
+                ( Left
+                    ( ActivationMeasurementMismatch
+                        "secret"
+                        (activationSecretDigestText (manifestSecretDigest manifest))
+                        (activationSecretDigestText (measuredSecretDigest measurement))
+                    )
+                )
+        | otherwise = case Ed25519.signature signature of
+            CryptoFailed err -> pure (Left (ActivationSignatureInvalid (Text.pack (show err))))
+            CryptoPassed parsedSignature
+                | not (Ed25519.verify key (signedMaterial manifest) parsedSignature) ->
+                    pure
+                        ( Left
+                            ( ActivationSignatureInvalid
+                                "the grant does not authenticate this manifest"
+                            )
                         )
+                | otherwise ->
+                    Right
+                        <$> use
+                            ( VerifiedRuntimeRoleActivation
+                                manifest
+                                (measuredInstance measurement)
+                                (protectedStoreIdentity store)
+                            )
 
 validateMeasuredInstance :: MeasuredInstance -> Either ActivationError ()
 validateMeasuredInstance instance' = case instance' of
@@ -749,16 +749,18 @@ firstManifestMismatch expected signed = firstDifferent fields
         , ("frame", manifestFrame signed, manifestFrame expected)
         , ("revision", manifestRevision signed, manifestRevision expected)
         , ("config digest", manifestConfigDigest signed, manifestConfigDigest expected)
-        , ( "secret digest"
-          , activationSecretDigestText (manifestSecretDigest signed)
-          , activationSecretDigestText (manifestSecretDigest expected)
-          )
+        ,
+            ( "secret digest"
+            , activationSecretDigestText (manifestSecretDigest signed)
+            , activationSecretDigestText (manifestSecretDigest expected)
+            )
         , ("service", manifestService signed, manifestService expected)
         , ("role-plan digest", manifestRolePlanDigest signed, manifestRolePlanDigest expected)
-        , ( "permitted effects"
-          , Text.intercalate "," (manifestPermittedEffects signed)
-          , Text.intercalate "," (manifestPermittedEffects expected)
-          )
+        ,
+            ( "permitted effects"
+            , Text.intercalate "," (manifestPermittedEffects signed)
+            , Text.intercalate "," (manifestPermittedEffects expected)
+            )
         , ("secret channel", manifestSecretChannel signed, manifestSecretChannel expected)
         ]
     firstDifferent [] = Nothing

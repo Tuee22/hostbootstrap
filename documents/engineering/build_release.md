@@ -42,9 +42,17 @@ Before any build or push:
 ```text
 Python code check
 Python tests and configured coverage threshold
+Haskell formatter over each source root of both Cabal projects
+Haskell linter over the library and consumer sources
 core Cabal build/test with -Werror
 demo Cabal build/test with -Werror
 ```
+
+The style legs run before the Cabal legs, so a style regression fails in seconds rather than after a
+full build, and each names the root it read. They read the committed
+[`fourmolu.yaml`](../../fourmolu.yaml) and [`.hlint.yaml`](../../.hlint.yaml), so their verdict is a
+property of this repository rather than of the tool version the rolling base last installed; see
+[code-check doctrine](code_check_doctrine.md#the-committed-style-contract).
 
 Any failure stops before registry mutation. The in-image Fourmolu/HLint sample check verifies the
 rolling tools themselves and does not replace source preflight.
@@ -133,10 +141,7 @@ Unit seams cover:
 - build → local consumer smoke → push → pull → digest identification → published consumer smoke ordering;
 - the smoke's use of the dedicated real-consumer Dockerfile and ordinary online Cabal project.
 
-Live publication evidence belongs in the owning development-plan sprint.
-
-The 2026-09-09 native Linux/x86_64 CPU run completed this sequence and published
-`docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64` at
-`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`. Both the immutable
-local-ID smoke before the push and the exact pulled-digest smoke after it resolved the inherited Cabal
-store `Up to date`.
+Live publication evidence — the dated run, the published tag, its resolved digest, and both smoke
+results — belongs in the owning development-plan sprint, which for the rolling base tags is the
+[base-image-publication-and-opportunistic-warm-store phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md).
+This page states only the ordering the sequence must hold.

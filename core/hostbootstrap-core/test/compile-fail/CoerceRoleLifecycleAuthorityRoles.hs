@@ -3,14 +3,14 @@
 module CoerceRoleLifecycleAuthorityRoles where
 
 import Data.Coerce (coerce)
-import HostBootstrap.RoleLifecycle
-    ( EffectAuthorization
-    , RoleCursor
-    , RoleEffect (DurableStore, NetworkListen)
-    , RolePlan
-    , RolePlanDigestBinding
-    , VerifiedServicePlacement
-    )
+import HostBootstrap.RoleLifecycle (
+    EffectAuthorization,
+    RoleCursor,
+    RoleEffect (DurableStore, NetworkListen),
+    RolePlan,
+    RolePlanDigestBinding,
+    VerifiedServicePlacement,
+ )
 
 data A
 data B

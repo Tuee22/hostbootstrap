@@ -108,6 +108,15 @@ visits children before the resources containing them. A failed or incomplete tra
 `DestroySettled`. Preserve-on-reverse nodes retain their declared policy; managed release consumes the exact
 receipt and reverse identity of the acquiring node.
 
+Visiting children before their container has a precondition on one node kind. A `down` stops a provider
+frame and leaves everything inside it retained; the `destroy` that follows cannot unwind those children
+through a frame that is no longer running. A provider node under `destroy` that still has children
+therefore begins in a **pre-descent reachability** state, and the root reverse driver discharges it by
+invoking that node's own declared reverse with `ReachFrame` — the same callback that stops and deletes the
+provider is the one asked to open it, so no second declaration can disagree with the first. Only the root
+holds the project's callbacks: a frame serving its own children's reverse refuses a reachability step
+rather than reporting it released.
+
 Each operation records its durable unknown state before an effect whose answer could be lost. The result
 then settles that same operation, fence, generation, and journal version. A delayed result cannot settle a
 newer attempt. Unknown outcomes remain recoverable rather than being guessed as success or absence.

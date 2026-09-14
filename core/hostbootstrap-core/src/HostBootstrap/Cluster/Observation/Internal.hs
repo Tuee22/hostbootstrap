@@ -6,35 +6,35 @@ journal generation remains exactly the one prepared by reconciliation, while
 the backend-reported immutable control-plane identity is retained separately
 for readiness, cordon, and conditional cleanup.
 -}
-module HostBootstrap.Cluster.Observation.Internal
-    ( ClusterReconcileObservation (..)
-    , ClusterBackendBinding (..)
-    , clusterBackendBindingIdentity
-    , ClusterReconcileCallResult (..)
-    , ClusterCordonObservation (..)
-    , ClusterCordonCallResult (..)
-    , ClusterReadinessObservation (..)
-    , ClusterReadinessCallResult (..)
-    , ClusterCleanupObservation (..)
-    , ClusterCleanupCallResult (..)
-    , ManagedClusterHandle (..)
-    , managedClusterResourceHandle
-    , managedClusterReceipt
-    , managedClusterBackendIdentity
-    , managedClusterBackendBinding
-    )
+module HostBootstrap.Cluster.Observation.Internal (
+    ClusterReconcileObservation (..),
+    ClusterBackendBinding (..),
+    clusterBackendBindingIdentity,
+    ClusterReconcileCallResult (..),
+    ClusterCordonObservation (..),
+    ClusterCordonCallResult (..),
+    ClusterReadinessObservation (..),
+    ClusterReadinessCallResult (..),
+    ClusterCleanupObservation (..),
+    ClusterCleanupCallResult (..),
+    ManagedClusterHandle (..),
+    managedClusterResourceHandle,
+    managedClusterReceipt,
+    managedClusterBackendIdentity,
+    managedClusterBackendBinding,
+)
 where
 
-import Data.Text (Text)
 import Data.Kind (Type)
+import Data.Text (Text)
 import Data.Word (Word64)
 import HostBootstrap.ProjectPlan (ClusterResource)
-import HostBootstrap.Reconcile
-    ( Managed
-    , OwnershipReceipt
-    , ReconcileError
-    , ResourceHandle
-    )
+import HostBootstrap.Reconcile (
+    Managed,
+    OwnershipReceipt,
+    ReconcileError,
+    ResourceHandle,
+ )
 
 -- | Plan-independent report parsed inside the strong reconcile backend.
 data ClusterReconcileObservation
@@ -63,8 +63,8 @@ clusterBackendBindingIdentity :: ClusterBackendBinding -> Text
 clusterBackendBindingIdentity (ClusterBackendBinding identity) = identity
 
 -- | Proof that the strong backend executed one exact prepared reconcile call.
-newtype ClusterReconcileCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion =
-    ClusterReconcileCallResult ClusterReconcileObservation
+newtype ClusterReconcileCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion
+    = ClusterReconcileCallResult ClusterReconcileObservation
     deriving (Eq, Show)
 
 type role ClusterReconcileCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
@@ -77,8 +77,8 @@ data ClusterCordonObservation
     deriving (Eq, Show)
 
 -- | Proof that the strong backend executed one exact prepared cordon call.
-newtype ClusterCordonCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase =
-    ClusterCordonCallResult ClusterCordonObservation
+newtype ClusterCordonCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase
+    = ClusterCordonCallResult ClusterCordonObservation
     deriving (Eq, Show)
 
 type role ClusterCordonCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
@@ -96,8 +96,8 @@ The version is positive only when this call freshly observed the same managed
 container identity with both the API and every node ready.  The retained action
 reruns that exact backend/applied-cordon pair and is never projected publicly.
 -}
-data ClusterReadinessCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase =
-    ClusterReadinessCallResult
+data ClusterReadinessCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase
+    = ClusterReadinessCallResult
         Word64
         ClusterReadinessObservation
         ( IO
@@ -131,14 +131,14 @@ data ClusterCleanupObservation
     deriving (Eq, Show)
 
 -- | Proof that the strong backend executed one exact prepared cleanup call.
-newtype ClusterCleanupCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase =
-    ClusterCleanupCallResult ClusterCleanupObservation
+newtype ClusterCleanupCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase
+    = ClusterCleanupCallResult ClusterCleanupObservation
     deriving (Eq, Show)
 
 type role ClusterCleanupCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
-data ManagedClusterHandle scope planId clusterId phase =
-    ManagedClusterHandle
+data ManagedClusterHandle scope planId clusterId phase
+    = ManagedClusterHandle
         (ResourceHandle scope planId clusterId ClusterResource Managed phase)
         (OwnershipReceipt scope planId clusterId ClusterResource)
         ClusterBackendBinding

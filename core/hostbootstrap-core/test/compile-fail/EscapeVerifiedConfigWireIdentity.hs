@@ -1,12 +1,12 @@
 module EscapeVerifiedConfigWireIdentity where
 
 import HostBootstrap.Config.Class (ProjectCodec)
-import HostBootstrap.Config.Schema
-    ( ConfigWireAdmissionError
-    , ValidatedConfig
-    , VerifiedConfigWire
-    , withAuthenticatedConfigWire
-    )
+import HostBootstrap.Config.Schema (
+    ConfigWireAdmissionError,
+    ValidatedConfig,
+    VerifiedConfigWire,
+    withAuthenticatedConfigWire,
+ )
 import HostBootstrap.Handoff (AuthenticatedConfigPayload)
 
 data ChosenWireDigest

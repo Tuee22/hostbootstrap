@@ -8,17 +8,17 @@ validation mints it through 'mintValidatedConfigKernel'; recovered Production
 construction can change only its specification phantom, and only through a
 token that retains the exact recovered-profile digest for comparison here.
 -}
-module HostBootstrap.Config.Schema.Internal
-    ( ValidatedConfig
-    , validatedConfigSpecDigest
-    , validatedConfigDigest
-    , validatedConfigValue
-    , mintValidatedConfigKernel
-    , RecoverySpecReindex
-    , withRecoverySpecReindexKernel
-    , recoverySpecReindexDigestKernel
-    , reindexValidatedConfigKernel
-    )
+module HostBootstrap.Config.Schema.Internal (
+    ValidatedConfig,
+    validatedConfigSpecDigest,
+    validatedConfigDigest,
+    validatedConfigValue,
+    mintValidatedConfigKernel,
+    RecoverySpecReindex,
+    withRecoverySpecReindexKernel,
+    recoverySpecReindexDigestKernel,
+    reindexValidatedConfigKernel,
+)
 where
 
 import Data.Text (Text)

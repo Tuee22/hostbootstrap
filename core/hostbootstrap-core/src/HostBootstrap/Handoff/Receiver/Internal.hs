@@ -80,23 +80,55 @@ package/projection/grant/wire values later lifecycle and completion kernels need
 The receiver is the sole producer; later code consumes the opaque package
 rather than pairing an edge with recovery evidence of its choosing.
 -}
-data ReceivedRecoveryDescent
-    scope brokerGeneration planDigest parentFrame childFrame
-    recoveryWireDigest recoveryWireId verb where
+data
+    ReceivedRecoveryDescent
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb
+    where
     ReceivedRecoveryDescent ::
         ReceivedEdge scope brokerGeneration ->
         RootedPayloadBinding scope brokerGeneration ->
         RecoveryChildPackage ->
         ProjectVerb verb ->
         RecoveryProjectionBinding
-            scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest ->
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            parentFrame
+            childFrame
+            recoveryWireDigest ->
         RecoveryWireGrant
-            scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest ->
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            parentFrame
+            childFrame
+            recoveryWireDigest ->
         VerifiedRecoveryWire
-            scope brokerGeneration verb planDigest childFrame recoveryWireDigest recoveryWireId ->
+            scope
+            brokerGeneration
+            verb
+            planDigest
+            childFrame
+            recoveryWireDigest
+            recoveryWireId ->
         ReceivedRecoveryDescent
-            scope brokerGeneration planDigest parentFrame childFrame
-            recoveryWireDigest recoveryWireId verb
+            scope
+            brokerGeneration
+            planDigest
+            parentFrame
+            childFrame
+            recoveryWireDigest
+            recoveryWireId
+            verb
 
 type role ReceivedRecoveryDescent nominal nominal nominal nominal nominal nominal nominal nominal
 
@@ -106,20 +138,50 @@ mkReceivedRecoveryDescent ::
     RecoveryChildPackage ->
     ProjectVerb verb ->
     RecoveryProjectionBinding
-        scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest ->
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
     RecoveryWireGrant
-        scope brokerGeneration verb planDigest parentFrame childFrame recoveryWireDigest ->
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
     VerifiedRecoveryWire
-        scope brokerGeneration verb planDigest childFrame recoveryWireDigest recoveryWireId ->
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        childFrame
+        recoveryWireDigest
+        recoveryWireId ->
     ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb
 mkReceivedRecoveryDescent = ReceivedRecoveryDescent
 
 withReceivedRecoveryDescent ::
     ReceivedRecoveryDescent
-        scope brokerGeneration planDigest parentFrame childFrame
-        recoveryWireDigest recoveryWireId verb ->
+        scope
+        brokerGeneration
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest
+        recoveryWireId
+        verb ->
     ( ReceivedEdge scope brokerGeneration ->
       ByteString ->
       ProjectVerb verb ->
@@ -132,24 +194,25 @@ withReceivedRecoveryDescent ::
 withReceivedRecoveryDescent
     (ReceivedRecoveryDescent edge rooted package verb projection grant wire)
     use =
-        edge
-            `seq` rooted
-            `seq` package
-            `seq` verb
-            `seq` projection
-            `seq` grant
-            `seq` wire
-            `seq` use
-                edge
-                (renderRecoveryChildPackage package)
-                verb
-                (verifiedRecoveryWireBytes wire)
-                (renderRecoveryProjectionBinding projection)
-                (recoveryWireGrantSignature grant)
+        edge `seq`
+            rooted `seq`
+                package `seq`
+                    verb `seq`
+                        projection `seq`
+                            grant `seq`
+                                wire `seq`
+                                    use
+                                        edge
+                                        (renderRecoveryChildPackage package)
+                                        verb
+                                        (verifiedRecoveryWireBytes wire)
+                                        (renderRecoveryProjectionBinding projection)
+                                        (recoveryWireGrantSignature grant)
 
--- | Strictly decode one exact request and expose only its requester path.
--- 'OpenFrame' deliberately has no inner ancestry; its sealed relay envelope
--- is therefore the sole path used by the root endpoint.
+{- | Strictly decode one exact request and expose only its requester path.
+'OpenFrame' deliberately has no inner ancestry; its sealed relay envelope
+is therefore the sole path used by the root endpoint.
+-}
 rootedLifecycleRequestPathKernel :: ByteString -> Either Text (Maybe [Text])
 rootedLifecycleRequestPathKernel raw = do
     request <- Rooted.rootedLifecycleRequestFromWireKernel raw
@@ -167,8 +230,9 @@ rootedLifecycleRequestPathKernel raw = do
     path value _ _ _ _ _ = Just value
     bodyPath value _ _ _ _ _ _ = Just value
 
--- | Strictly decode and pair one response, returning only its echoed path.
--- Neither value nor any lifecycle field escapes this neutral transport fold.
+{- | Strictly decode and pair one response, returning only its echoed path.
+Neither value nor any lifecycle field escapes this neutral transport fold.
+-}
 rootedLifecycleResponsePairPathKernel ::
     ByteString ->
     ByteString ->

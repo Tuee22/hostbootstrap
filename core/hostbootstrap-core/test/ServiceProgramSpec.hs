@@ -24,8 +24,8 @@ import HostBootstrap.ProjectRoot (
     withCanonicalProjectRoot,
  )
 import HostBootstrap.RoleLifecycle
-import RoleLifecycleSpec (mutatingEffects, storeDraft, withRole)
 import HostBootstrap.Service.Program
+import RoleLifecycleSpec (mutatingEffects, storeDraft, withRole)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)

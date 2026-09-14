@@ -5,18 +5,18 @@ indexed project plan and its projected node.
 module CompatibilityInputsAsStepExecutionSource where
 
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Lifecycle.Execution
-    ( StepExecution
-    , StepRuntime
-    )
-import HostBootstrap.ProjectPlan
-    ( PlannedStep
-    , ProjectPlan
-    )
-import HostBootstrap.Reconcile
-    ( LifecyclePlan
-    , stepExecutionFor
-    )
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    StepRuntime,
+ )
+import HostBootstrap.ProjectPlan (
+    PlannedStep,
+    ProjectPlan,
+ )
+import HostBootstrap.Reconcile (
+    LifecyclePlan,
+    stepExecutionFor,
+ )
 import HostBootstrap.Step (Step)
 
 data Scope

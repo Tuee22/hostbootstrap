@@ -10,7 +10,9 @@
 ## TL;DR
 
 - `hostbootstrap-demo` is a project binary that depends on `hostbootstrap-core` and contributes one
-  substrate-selected `chain :: ProjectConfig -> [Step]`. There is no base-image LABEL/ENTRYPOINT
+  substrate-selected
+  `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`,
+  installed through `addSteps`. There is no base-image LABEL/ENTRYPOINT
   integration mode.
 - `project up` executes the exact recursive Chain, while `project down`/`destroy` execute the retained
   plan's child-first reverse projection. The **target** recursively authenticates each child invocation; the operator sequence remains
@@ -372,6 +374,49 @@ The case intentions are:
 
 Those case assertions do not replace the recursive end-state audit, receipt-bound ownership checks, or
 native-substrate acceptance gates.
+
+### Linux/CPU pristine acceptance
+
+This is the baseline lane every other one is measured against, and it is the one the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) closes on. Run it only from a
+disposable demo state with no `.build`, `.hostbootstrap`, generated `hostbootstrap-demo.dhall`, or
+`.test_data`, on a host the substrate classifier calls `linux-cpu` — a Linux host reporting neither
+`/proc/driver/nvidia/version` nor `/dev/nvidiactl`. A workstation with a visible accelerator classifies
+as `linux-gpu` and takes the Direct chain instead, so on one of those the `linux-cpu` gate host is a
+guest VM of its own. That guest needs nested virtualization, because this lane creates a provider VM.
+
+The phase's gate is the Production sequence followed by the complete matrix. From the repository root:
+
+```text
+poetry run hostbootstrap run --project-root demo project init
+poetry run hostbootstrap run --project-root demo project up
+poetry run hostbootstrap run --project-root demo project down
+poetry run hostbootstrap run --project-root demo project destroy
+rm demo/.build/hostbootstrap-demo.dhall
+poetry run hostbootstrap run --project-root demo test init
+poetry run hostbootstrap run --project-root demo test run all
+```
+
+Two refusals in that sequence are the design working rather than faults to route around. `project up`
+without a preceding `project init` refuses, because it has no sibling config to admit. And the harness
+refuses every case with `a production config already exists … refusing to overwrite it` while the
+generated Production config is still on disk — that file is the operator's, written by `project init`
+and not removed by `project destroy`, which tears down state rather than the operator's configuration.
+Removing it is the pristine precondition this section already states, and it is why the `rm` above sits
+between the two halves.
+
+This lane takes the Incus VM path. `project up` provisions the guest at the declared budget, attaches
+the durable share, builds the project binary host-native *inside* the guest, pulls the published CPU
+base and builds the derived image there, then descends into that image for the cluster, registry,
+workload, and web service. Budget hours rather than minutes for a cold host: the guest's own GHC and
+dependency closure are built from nothing before the image build begins. The matrix then performs four
+pristine generations, one per fresh guest. Success is exactly `10/10 passed`.
+
+After success, audit the end state: no provider VM remains, no kind cluster and no
+hostbootstrap-named container survive, `.build/hostbootstrap-demo.dhall` is gone while the
+operator-owned `.build/hostbootstrap-demo.test.dhall` remains, and `.test_data` exists and is empty. The
+dated host, versions, run IDs, durations, and image digests belong in
+[the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ### Apple Silicon pristine acceptance
 

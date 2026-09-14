@@ -55,71 +55,71 @@ declaration into the exact refusal a row owes — a total function of a value,
 applied before any mutation, so @Unsupported@ is decided by application rather
 than by a stand-in that has to be trusted to have been reached (§ NN).
 -}
-module HostBootstrap.Ownership.Primitive
-    ( -- * The seam
-      OwnershipPrimitive (..)
-    , OwnershipRow
-    , ownershipRow
-    , withOwnershipRow
+module HostBootstrap.Ownership.Primitive (
+    -- * The seam
+    OwnershipPrimitive (..),
+    OwnershipRow,
+    ownershipRow,
+    withOwnershipRow,
 
-      -- * What a row can hold
-    , OwnershipCapabilities (..)
-    , OwnershipClause (..)
-    , clauseRefusal
+    -- * What a row can hold
+    OwnershipCapabilities (..),
+    OwnershipClause (..),
+    clauseRefusal,
 
-      -- * The clause producers, over an object a kernel answers for
-    , enterOwnedObject
-    , reenterOwnedObject
-    , recordOwnedOrigin
-    , createOwnedDirectory
-    , publishOwnedFile
-    , bindOwnedIdentity
-    , reobserveOwnedIdentity
-    , releaseOwnedObject
+    -- * The clause producers, over an object a kernel answers for
+    enterOwnedObject,
+    reenterOwnedObject,
+    recordOwnedOrigin,
+    createOwnedDirectory,
+    publishOwnedFile,
+    bindOwnedIdentity,
+    reobserveOwnedIdentity,
+    releaseOwnedObject,
 
-      -- * The clause producers, over an object an authority reports on
-    , enterReportedObject
-    , recordReportedOrigin
-    , bindReportedIdentity
-    , reobserveReportedIdentity
-    , releaseReportedObject
-    )
+    -- * The clause producers, over an object an authority reports on
+    enterReportedObject,
+    recordReportedOrigin,
+    bindReportedIdentity,
+    reobserveReportedIdentity,
+    releaseReportedObject,
+)
 where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import HostBootstrap.Ownership.Internal
-    ( Bound (Bound)
-    , Entered (Entered)
-    , OwnedTargetPath
-    , Recorded (Recorded)
-    , Releasable (Releasable)
-    , boundEvidence
-    , enteredEvidence
-    , recordedEvidence
-    , releasableEvidence
-    )
-import HostBootstrap.Ownership.Object
-    ( ConflictReport (..)
-    , ObjectIdentity
-    , ObjectKind (OwnedDirectory, OwnedFile, ReportedObject)
-    , Origin (OriginAbsent, OriginPresent)
-    , OriginRecord
-    , OwnershipFault
-        ( OwnershipConflict
-        , OwnershipMalformed
-        , OwnershipOccupied
-        , OwnershipUnsupported
-        )
-    , Payload
-    , bindOriginRecord
-    , originRecord
-    , originRecordBinding
-    , originRecordKind
-    , payloadBytes
-    , payloadDigest
-    )
+import HostBootstrap.Ownership.Internal (
+    Bound (Bound),
+    Entered (Entered),
+    OwnedTargetPath,
+    Recorded (Recorded),
+    Releasable (Releasable),
+    boundEvidence,
+    enteredEvidence,
+    recordedEvidence,
+    releasableEvidence,
+ )
+import HostBootstrap.Ownership.Object (
+    ConflictReport (..),
+    ObjectIdentity,
+    ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
+    Origin (OriginAbsent, OriginPresent),
+    OriginRecord,
+    OwnershipFault (
+        OwnershipConflict,
+        OwnershipMalformed,
+        OwnershipOccupied,
+        OwnershipUnsupported
+    ),
+    Payload,
+    bindOriginRecord,
+    originRecord,
+    originRecordBinding,
+    originRecordKind,
+    payloadBytes,
+    payloadDigest,
+ )
 import HostBootstrap.Protected (ProtectedSession)
 
 -- ---------------------------------------------------------------------------
@@ -135,21 +135,24 @@ data OwnershipPrimitive handle = OwnershipPrimitive
     { rowCapabilities :: OwnershipCapabilities
     -- ^ Which clauses this kernel can hold.
     , rowObserveIdentity :: OwnedTargetPath -> IO (Either OwnershipFault (Maybe ObjectIdentity))
-    -- ^ The object's stable kernel identity, or an authoritative absence. A
-    -- probe failure is a fault and never a false absence (§ CC).
+    {- ^ The object's stable kernel identity, or an authoritative absence. A
+    probe failure is a fault and never a false absence (§ CC).
+    -}
     , rowOpenExclusive :: OwnedTargetPath -> IO (Either OwnershipFault handle)
-    -- ^ Open one already-existing named object exclusively, without following
-    -- a link.
+    {- ^ Open one already-existing named object exclusively, without following
+    a link.
+    -}
     , rowCreateDirectory :: OwnedTargetPath -> IO (Either OwnershipFault ())
     -- ^ Create exactly one directory, refusing if it is already there.
     , rowCreateFile :: OwnedTargetPath -> ByteString -> IO (Either OwnershipFault ())
     -- ^ Write a whole file and sync it, at a name nothing else holds.
     , rowLinkNoReplace :: OwnedTargetPath -> OwnedTargetPath -> IO (Either OwnershipFault ())
-    -- ^ Give @source@ a second name at @target@ atomically, refusing rather
-    -- than replacing. The source name is left in place, because the kernel
-    -- primitive is a link: an owner that wanted a move withdraws the staging
-    -- name itself, and one that wanted a second durable name — the host wall's
-    -- armed stage — keeps both.
+    {- ^ Give @source@ a second name at @target@ atomically, refusing rather
+    than replacing. The source name is left in place, because the kernel
+    primitive is a link: an owner that wanted a move withdraws the staging
+    name itself, and one that wanted a second durable name — the host wall's
+    armed stage — keeps both.
+    -}
     , rowReadObject :: handle -> IO (Either OwnershipFault ByteString)
     -- ^ Read the whole object behind an open handle.
     , rowRemoveObject :: OwnedTargetPath -> IO (Either OwnershipFault ())
@@ -168,7 +171,7 @@ another.
 -}
 data OwnershipRow = forall handle. OwnershipRow (OwnershipPrimitive handle)
 
-{- | Seal a row's handle type. -}
+-- | Seal a row's handle type.
 ownershipRow :: OwnershipPrimitive handle -> OwnershipRow
 ownershipRow = OwnershipRow
 
@@ -205,7 +208,7 @@ data OwnershipCapabilities = OwnershipCapabilities
     }
     deriving (Eq, Show)
 
-{- | The four clauses, named so a refusal can say which one is missing. -}
+-- | The four clauses, named so a refusal can say which one is missing.
 data OwnershipClause
     = ClauseEnter
     | ClauseRecord

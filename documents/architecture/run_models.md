@@ -133,6 +133,31 @@ one admitted ProjectPlan
 If a future typed classifier is needed, it must consume the exact plan the interpreter will execute and
 return a non-authoritative view. It must not independently choose behavior.
 
+## Launch Channel Shape
+
+A descent edge adds one execution-shape fact the four names above do not carry: whether the argument
+vector rendered for the child keeps that child's standard input attached. A Docker container is launched
+interactively, because the root's request and response bytes travel on the descriptor it keeps open; the
+Incus, Lima, and WSL2 providers are launched noninteractively, because nothing on the far side of them
+reads that descriptor. For a composed route only the terminal layer decides the answer.
+
+That fact is a two-case `ChannelInteractivity` — `InteractiveChannel` or `NoninteractiveChannel` — on the
+Cabal-private `LifecycleProcessRoute`, and the results that carry it from the closed argument grammar to
+the sealed route are named types rather than anonymous tuples. Beside them, admitted text leaves that
+grammar as `ValidatedArgument`, and an admitted absolute delimiter-free path as `ValidatedPath`, so
+"this text passed the grammar" is a property of the value a renderer receives rather than of the order
+in which two functions were called. Like the four names, none of this is a configuration input or a
+second dispatch selector: the route is derived from a catalog-admitted package, and the distinction
+names a rendering the plan cannot influence.
+
+The route's host tool is resolved to an absolute path before anything is spawned, so a bare command name
+cannot be executed even if one reached the argument vector. That resolution reads the typed host
+configuration first and re-measures the host only when the configuration has no entry for the tool,
+because the configuration is measured once at the start of an invocation and the chain's own `ensure`
+step may install the provider partway through it. On a host that already has its provider the two
+answers are the same; on a pristine host only the second one exists. Neither branch can produce a
+relative or bare path, so the rule the resolution exists to hold is unaffected by which one answers.
+
 ## Service And Daemon Shape
 
 `service run` is a leaf process, not a second orchestrator. The finalized project specification binds a
@@ -151,30 +176,32 @@ framework view. Demo handlers do not reopen the sibling config.
 The demo accelerator uses both placements depending on substrate. Its placement follows the configured
 service and lifecycle steps.
 
-The [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) replaces the remaining raw
-handler action with an internal existential
-`SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-fields`. A validated
+The [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns this boundary, and
+no raw handler action survives it. A validated
 parent projects only a role-specific descriptive wire; the child verifies those exact mounted bytes
 through the same finalized runtime spec and a separate verified secret bundle, then locally constructs
 `ValidatedServiceRequest specDigest configId secretDigest fields service` under a fresh `configId`. The request inseparably contains
-`RoleParams specDigest configId secretDigest fields service` filtered from the codec's hidden field row. The selected package
-binds that request to a matching
-`ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-service effects` and closed
-`ServiceProgram` handler; the selection proves the program's exact effect row is authorized by verified
-placement and the one-use workload-instance/Serve command authority. The mounted wire contains
+`RoleParams specDigest configId secretDigest fields service` filtered from the codec's hidden field row.
+`withDecodedServiceProgram` selects the matching `FinalizedServiceDefinition` out of the
+`FinalizedServiceRegistry` and hands its closed `ServiceProgram` handler to a continuation together with
+the declared effect row and the resource draft. `withRuntimeRolePlanForRequest` then binds that request
+to a `RolePlan scope specDigest planId configId secretDigest frame revision instanceId` and a
+`VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`;
+the placement is what proves the program's exact effect row is authorized, through
+`authorizeServiceEffects` and the one-use workload-instance admission. The mounted wire contains
 mandatory `FrameworkValidation` fields plus fields visible to that service; the handler's narrower
 `RoleParams` contains only the latter. Framework-only metadata therefore cannot enter the payload, and
 plan/build/deploy-only fields cross neither boundary. The handler receives neither the full config nor
-raw `IO`/config-read capability. Before any acquisition, a one-use lifecycle-admission compare-and-swap
-binds the measured process instance; a later Serve reservation prevents duplicate handler start. In the
-final API the package and phase eliminators are not exposed: core-owned `runVerifiedRuntimeRole`
-privately invokes `selectAndRunService` with identity-indexed ready handles, the Serve cursor, and the
-inseparable retained receipt/lease package under masking. Selection failure, completion, typed failure, or
-catchable shutdown all return an opaque `RoleAdvance ... ServePhase DrainPhase`; drain consumes the
+raw `IO`/config-read capability. Before any acquisition, the one-use `withRoleLifecycleAdmission`
+compare-and-swap binds the measured process instance; a later Serve reservation prevents duplicate
+handler start. In the final API the phase eliminators are not exposed: the core-owned engine
+`runRoleLifecycle` consumes that plan, that placement, a one-use
+`RoleCursor scope planId frame instanceId PrereqPhase`, and the project's `RoleEngine` callbacks, and
+its sole public result is a `RoleExitReport`. Completion, typed failure, and catchable shutdown are the
+three `RoleServeOutcome` cases — `ServeCompleted`, `ServeFailed`, and `ServeShutdown` — and each advances
+the cursor out of `ServePhase` into `DrainPhase`; drain consumes the
 retained package, attempts every independent release while aggregating failures, and is the sole
-transition to Exit. Serve cannot expose bind/spawn to a handler. A restartable worker instead uses a
+transition to `ExitPhase`. Serve cannot expose bind/spawn to a handler. A restartable worker instead uses a
 stable ready supervisor handle; only a prepared core transition may replace and reprobe its child.
 Mutating effects first seal the exact target/arguments behind an operation key and call digest, then
 require a matching prepared journal value minted from a Ready session and the retained live lease/fence.

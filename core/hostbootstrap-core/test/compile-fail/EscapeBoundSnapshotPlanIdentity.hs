@@ -3,11 +3,11 @@
 module EscapeBoundSnapshotPlanIdentity where
 
 import HostBootstrap.Authority (InstalledProjectIdentity)
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , SnapshotError
-    , withBoundPlanSnapshot
-    )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    SnapshotError,
+    withBoundPlanSnapshot,
+ )
 import HostBootstrap.ProjectScope (Production)
 import HostBootstrap.Protected (ProtectedStore)
 

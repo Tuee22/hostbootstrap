@@ -11,7 +11,6 @@ probe classifier are unit-tested.
 module HostBootstrap.Ensure.Cuda (reconciler, installSteps, repositorySetupScript, nvkindRuntimeProbeArgs) where
 
 import HostBootstrap.Ensure (
-    reportedGpu,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
@@ -19,6 +18,7 @@ import HostBootstrap.Ensure (
     installAndVerify,
     linuxGpuRow,
     reconcilerInstallSteps,
+    reportedGpu,
     runTool,
     toolPresent,
  )

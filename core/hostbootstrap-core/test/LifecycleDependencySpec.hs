@@ -3,14 +3,15 @@
 
 module LifecycleDependencySpec (tests) where
 
-import Expect (expectRight)
 import qualified Data.ByteString.Char8 as ByteString
 import Data.Either (isLeft)
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import Expect (expectRight)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lifecycle.Dependency.Internal
+import HostBootstrap.Network.Port (Port, mkPort)
 import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
@@ -121,7 +122,7 @@ tests =
             package <- expectRight clusterPackage
             request <- expectRight (runtimeDependencyExposureRequest package "exposure-nonce")
             withRuntimeDependencyExposureRequest package request id @?= Right "exposure-nonce"
-            let mappings = [("registry", "127.0.0.1", 41001, "demo-control-plane", 30500, "relay-id", 7, "operation-id")]
+            let mappings = [("registry", "127.0.0.1", admittedPort 41001, "demo-control-plane", admittedPort 30500, "relay-id", 7, "operation-id")]
             response <- expectRight (renderRuntimeDependencyExposureResponse package "exposure-nonce" mappings)
             verifyRuntimeDependencyExposureResponse package "exposure-nonce" response @?= Right mappings
             assertBool "another nonce accepted exposure authority" (isLeft (verifyRuntimeDependencyExposureResponse package "other" response))
@@ -132,7 +133,7 @@ tests =
                 (isLeft (renderRuntimeDependencyExposureResponse package "exposure-nonce" (mappings <> mappings)))
             assertBool
                 "a wildcard address was encoded"
-                (isLeft (renderRuntimeDependencyExposureResponse package "exposure-nonce" [("registry", "0.0.0.0", 41001, "demo-control-plane", 30500, "relay-id", 7, "operation-id")]))
+                (isLeft (renderRuntimeDependencyExposureResponse package "exposure-nonce" [("registry", "0.0.0.0", admittedPort 41001, "demo-control-plane", admittedPort 30500, "relay-id", 7, "operation-id")]))
         , testCase "chart requests admit bounded document values and refuse oversized fields and frames" $ do
             package <- expectRight clusterPackage
             let valuesAtBound = Text.replicate (64 * 1024) "v"
@@ -238,6 +239,11 @@ clusterRoute = "runtime://cluster/reprobe"
 providerPackage :: Either Text.Text (RuntimeDependencyPackage Scope Plan)
 providerPackage = mkProvider 7 providerRoute 100
 
+-- | A fixture port, admitted through the sole producer rather than assumed.
+admittedPort :: Int -> Port
+admittedPort number =
+    maybe (error ("the fixture named an inadmissible port: " ++ show number)) id (mkPort number)
+
 clusterPackage :: Either Text.Text (RuntimeDependencyPackage Scope Plan)
 clusterPackage =
     mkClusterRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt" clusterRoute 100
@@ -249,7 +255,6 @@ providerSharePackage =
 mkProvider :: Word64 -> Text.Text -> Word64 -> Either Text.Text (RuntimeDependencyPackage Scope Plan)
 mkProvider generation route expiry =
     mkProviderRuntimeDependencyPackage "plan" "scope" "resource" "frame" "origin" generation "journal" "receipt" route expiry
-
 
 unique :: (Eq value) => [value] -> [value]
 unique [] = []

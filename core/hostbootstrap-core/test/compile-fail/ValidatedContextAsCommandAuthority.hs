@@ -1,10 +1,10 @@
 module ValidatedContextAsCommandAuthority where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , PreparePhase
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    PreparePhase,
+    VerbUp,
+ )
 import HostBootstrap.ProjectPlan.Frame (ValidatedContext)
 
 data Scope

@@ -134,8 +134,17 @@ tests =
             let package = ByteStringChar8.pack "35:hostbootstrap/runtime-dependency/v18:provider4:plan5:scope8:resource5:frame6:origin1:77:journal7:receipt26:runtime://provider/reprobe3:100"
             request <- either (assertFailure . Text.unpack) pure (providerDependencyProbeRequestFields package "one-use-nonce")
             withProviderDependencyReprobeKernel
-                package "plan" "scope" "resource" "frame" "origin" 7 "journal" "receipt"
-                "runtime://provider/reprobe" 99
+                package
+                "plan"
+                "scope"
+                "resource"
+                "frame"
+                "origin"
+                7
+                "journal"
+                "receipt"
+                "runtime://provider/reprobe"
+                99
                 (modifyIORef' calls (+ 1) >> pure (Right 7))
                 $ \answer -> do
                     first <- answer request >>= either (assertFailure . Text.unpack) pure

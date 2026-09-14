@@ -26,32 +26,32 @@ import qualified Data.ByteString as ByteString
 import Data.List (isInfixOf, isSuffixOf, sort)
 import Data.Maybe (isJust)
 import qualified Data.Text as Text
-import HostBootstrap.Detached
-    ( DetachedLaunch
-    , DetachedLaunchError (DetachedNullDeviceUnavailable, DetachedOutputSinkUnavailable, DetachedSpawnFailed)
-    , awaitDetachedChild
-    , detachedChildOutput
-    , detachedChildPid
-    , detachedLaunch
-    , detachedLaunchArguments
-    , detachedLaunchCommandLine
-    , detachedLaunchExecutable
-    , detachedOutputSinkPath
-    , detachedWorkingDirectoryPath
-    , mkDetachedOutputSink
-    , mkDetachedWorkingDirectory
-    , renderDetachedLaunchError
-    , withDetachedChild
-    )
+import HostBootstrap.Detached (
+    DetachedLaunch,
+    DetachedLaunchError (DetachedNullDeviceUnavailable, DetachedOutputSinkUnavailable, DetachedSpawnFailed),
+    awaitDetachedChild,
+    detachedChildOutput,
+    detachedChildPid,
+    detachedLaunch,
+    detachedLaunchArguments,
+    detachedLaunchCommandLine,
+    detachedLaunchExecutable,
+    detachedOutputSinkPath,
+    detachedWorkingDirectoryPath,
+    mkDetachedOutputSink,
+    mkDetachedWorkingDirectory,
+    renderDetachedLaunchError,
+    withDetachedChild,
+ )
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostTool (AbsExe, absExePath, mkAbsExe)
-import System.Directory
-    ( doesDirectoryExist
-    , doesFileExist
-    , getCurrentDirectory
-    , listDirectory
-    , makeAbsolute
-    )
+import System.Directory (
+    doesDirectoryExist,
+    doesFileExist,
+    getCurrentDirectory,
+    listDirectory,
+    makeAbsolute,
+ )
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeExtension, (</>))
@@ -267,8 +267,8 @@ bodyExceptionsPropagate =
     testCase "a body exception propagates unchanged" $
         withProbeLaunch ["stdio"] $ \launch _ -> do
             outcome <-
-                try (withDetachedChild launch (const (ioError (userError "abort from the body"))))
-                    :: IO (Either IOException (Either DetachedLaunchError ()))
+                try (withDetachedChild launch (const (ioError (userError "abort from the body")))) ::
+                    IO (Either IOException (Either DetachedLaunchError ()))
             case outcome of
                 Left err ->
                     assertBool

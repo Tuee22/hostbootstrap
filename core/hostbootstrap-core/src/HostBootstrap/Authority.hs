@@ -102,22 +102,20 @@ withInstalledProjectIdentity ::
     IO (Either AuthorityError result)
 withInstalledProjectIdentity declared use = do
     invoked <- normalizeExecutableIdentity <$> getExecutablePath
-    case
-        withInstalledProjectKernel declared $ \project ->
-            if installedProjectName project /= invoked
-                then
-                    pure
-                        ( Left
-                            ( AuthorityInvalidIdentity
-                                ( "the declared project name "
-                                    <> installedProjectName project
-                                    <> " does not match the invoked executable "
-                                    <> invoked
-                                )
+    case withInstalledProjectKernel declared $ \project ->
+        if installedProjectName project /= invoked
+            then
+                pure
+                    ( Left
+                        ( AuthorityInvalidIdentity
+                            ( "the declared project name "
+                                <> installedProjectName project
+                                <> " does not match the invoked executable "
+                                <> invoked
                             )
                         )
-                else Right <$> use project
-        of
+                    )
+            else Right <$> use project of
         Left failure -> pure (Left failure)
         Right action -> action
 

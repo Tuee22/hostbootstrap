@@ -9,13 +9,13 @@ exact live or rehydrated handoff state admits them. The constructors stay
 hidden, and every effectful continuation is fixed-unit so no retained report,
 offer, token, binding, or reverse-descent state can escape.
 -}
-module HostBootstrap.Handoff.Completion
-    ( LifecycleCompletion
-    , withAcknowledgedForwardLifecycleCompletionKernel
-    , withAcknowledgedBoundReverseLifecycleCompletionKernel
-    , withRehydratedAcknowledgedReverseLifecycleCompletionKernel
-    , withLifecycleCompletionKernel
-    )
+module HostBootstrap.Handoff.Completion (
+    LifecycleCompletion,
+    withAcknowledgedForwardLifecycleCompletionKernel,
+    withAcknowledgedBoundReverseLifecycleCompletionKernel,
+    withRehydratedAcknowledgedReverseLifecycleCompletionKernel,
+    withLifecycleCompletionKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -24,18 +24,18 @@ import qualified Data.Text as Text
 import HostBootstrap.Authority (VerbUp)
 import qualified HostBootstrap.Handoff as Handoff
 import HostBootstrap.Handoff.Internal (recoverySigningKernel)
-import HostBootstrap.Teardown
-    ( SubtreeSettled
-    , TeardownError
-    , teardownErrorMessage
-    , teardownObservationsFromWire
-    )
-import HostBootstrap.Teardown.Internal
-    ( ReverseDescent
-    , withRehydratedAdoptedReverseDescentKernel
-    , withVerifiedBoundReverseDescentObservationsKernel
-    , withVerifiedBoundReverseDescentReportKernel
-    )
+import HostBootstrap.Teardown (
+    SubtreeSettled,
+    TeardownError,
+    teardownErrorMessage,
+    teardownObservationsFromWire,
+ )
+import HostBootstrap.Teardown.Internal (
+    ReverseDescent,
+    withRehydratedAdoptedReverseDescentKernel,
+    withVerifiedBoundReverseDescentObservationsKernel,
+    withVerifiedBoundReverseDescentReportKernel,
+ )
 
 {- | Evidence that an exact canonical lifecycle report was durably
 acknowledged after its semantic proof was validated.
@@ -51,7 +51,9 @@ data LifecycleCompletion proof scope brokerGeneration verb where
         SubtreeSettled scope planId frame verb ->
         LifecycleCompletion
             (SubtreeSettled scope planId frame verb)
-            scope brokerGeneration verb
+            scope
+            brokerGeneration
+            verb
 
 type role LifecycleCompletion nominal nominal nominal nominal
 
@@ -93,13 +95,22 @@ state. Completed reports alone invoke the retained observation verifier and
 mint evidence; refused and failed reports use the no-proof exact Bound check.
 -}
 withAcknowledgedBoundReverseLifecycleCompletionKernel ::
-    ReverseDescent (Handoff.HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ReverseDescent
+        (Handoff.HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
     ByteString ->
     (ByteString -> ByteString -> IO (Either Text ())) ->
     ( LifecycleCompletion
         (SubtreeSettled scope planId childFrame verb)
-        scope brokerGeneration verb ->
+        scope
+        brokerGeneration
+        verb ->
       IO (Either Text ())
     ) ->
     IO (Either Text ())
@@ -108,13 +119,22 @@ withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist use =
     withBoundReverseLifecycleCompletionKernel bound report (acknowledge report persist) use
 
 withBoundReverseLifecycleCompletionKernel ::
-    ReverseDescent (Handoff.HandoffOffer scope brokerGeneration)
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ReverseDescent
+        (Handoff.HandoffOffer scope brokerGeneration)
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
     ByteString ->
     ((ByteString -> IO (Either Text ())) -> IO (Either Text ())) ->
     ( LifecycleCompletion
         (SubtreeSettled scope planId childFrame verb)
-        scope brokerGeneration verb ->
+        scope
+        brokerGeneration
+        verb ->
       IO (Either Text ())
     ) ->
     IO (Either Text ())
@@ -128,7 +148,11 @@ withBoundReverseLifecycleCompletionKernel bound report acknowledgeReport use =
             Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
             Right rows ->
                 withVerifiedBoundReverseDescentObservationsKernel
-                    bound binding verb rows $ \settled ->
+                    bound
+                    binding
+                    verb
+                    rows
+                    $ \settled ->
                         acknowledgeReport $ \ack ->
                             use (ReverseLifecycleCompletion report ack settled)
     refused binding _ _ _ verb =
@@ -141,19 +165,35 @@ withBoundReverseLifecycleCompletionKernel bound report acknowledgeReport use =
 or map, then enter the same common reverse acknowledgement path.
 -}
 withRehydratedAcknowledgedReverseLifecycleCompletionKernel ::
-    ReverseDescent ()
-        scope planId parentFrame childFrame brokerGeneration verb descentId ->
+    ReverseDescent
+        ()
+        scope
+        planId
+        parentFrame
+        childFrame
+        brokerGeneration
+        verb
+        descentId ->
     ByteString ->
     ( LifecycleCompletion
         (SubtreeSettled scope planId childFrame verb)
-        scope brokerGeneration verb ->
+        scope
+        brokerGeneration
+        verb ->
       IO (Either Text ())
     ) ->
     IO
         ( Either
             ( TeardownError
-            , ReverseDescent ()
-                scope planId parentFrame childFrame brokerGeneration verb descentId
+            , ReverseDescent
+                ()
+                scope
+                planId
+                parentFrame
+                childFrame
+                brokerGeneration
+                verb
+                descentId
             )
             (Either Text ())
         )
@@ -163,12 +203,15 @@ withRehydratedAcknowledgedReverseLifecycleCompletionKernel prepared report use =
         recoverySigningKernel
         prepared
         report
-        (\bound acknowledgement ->
+        ( \bound acknowledgement ->
             withBoundReverseLifecycleCompletionKernel
-                bound report (\continue -> continue acknowledgement) use
+                bound
+                report
+                (\continue -> continue acknowledgement)
+                use
         )
 
-{- | Eliminate semantic completion without exposing its retained wire identity. -}
+-- | Eliminate semantic completion without exposing its retained wire identity.
 withLifecycleCompletionKernel ::
     LifecycleCompletion proof scope brokerGeneration verb ->
     (proof -> IO (Either Text ())) ->

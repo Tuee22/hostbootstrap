@@ -14,5 +14,12 @@ data Phase
 -- Exact config-handoff refinement is produced only by the validating bracket.
 forgedConfigHandoff ::
     VerifiedConfigHandoff
-        Scope PlanDigest BrokerGeneration ParentFrame ChildFrame ConfigIdentity Verb Phase
+        Scope
+        PlanDigest
+        BrokerGeneration
+        ParentFrame
+        ChildFrame
+        ConfigIdentity
+        Verb
+        Phase
 forgedConfigHandoff = VerifiedConfigHandoff undefined undefined

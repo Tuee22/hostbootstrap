@@ -102,18 +102,18 @@ module HostBootstrap.Substrate.Provider (
 )
 where
 
-import Data.Bifunctor (first)
 import Control.Exception (IOException, catch, displayException)
+import Data.Bifunctor (first)
 import Data.Char (isAsciiUpper)
 import Data.List (dropWhileEnd, isPrefixOf)
 import Data.Word (Word64)
 import HostBootstrap.Cluster.Cordon (
     budgetFromResources,
-    renderQuantityError,
     budgetStorageBytes,
     gibibytes,
     incusSizingArgs,
     limaSizingArgs,
+    renderQuantityError,
     wsl2SizingArgs,
  )
 import HostBootstrap.Context (ResourceEnvelope)

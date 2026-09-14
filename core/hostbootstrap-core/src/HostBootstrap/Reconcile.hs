@@ -154,9 +154,9 @@ module HostBootstrap.Reconcile (
 )
 where
 
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.ByteString (ByteString)
 import Data.List (find)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)

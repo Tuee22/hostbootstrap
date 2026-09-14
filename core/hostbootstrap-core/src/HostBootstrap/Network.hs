@@ -49,6 +49,11 @@ module HostBootstrap.Network (
     reachabilityEndpointScope,
     reachableFrom,
 
+    -- * Ports
+    Port,
+    mkPort,
+    portNumber,
+
     -- * Exposure
     Exposure,
     exposureEndpoint,
@@ -77,6 +82,7 @@ import HostBootstrap.Cluster.Backend (
     resolvedExposureRelayIdentity,
     resolvedExposureService,
  )
+import HostBootstrap.Network.Port (Port, mkPort, portNumber)
 
 {- | Where a network name resolves. The three scopes the composition chain
 actually crosses (§ U): the metal host, a provider VM guest, and the inside of
@@ -229,7 +235,7 @@ scope.
 data Exposure (network :: NetworkScope) lifecycleScope planId clusterId service where
     ResolvedLocalExposure ::
         Endpoint network ->
-        Int ->
+        Port ->
         Text ->
         Text ->
         Word64 ->
@@ -237,7 +243,7 @@ data Exposure (network :: NetworkScope) lifecycleScope planId clusterId service 
         Exposure network lifecycleScope planId clusterId service
     ClusterServiceExposure ::
         Endpoint 'ClusterOnly ->
-        Int ->
+        Port ->
         Text ->
         Exposure 'ClusterOnly lifecycleScope planId clusterId service
 
@@ -253,7 +259,7 @@ exposureEndpoint :: Exposure network lifecycleScope planId clusterId service -> 
 exposureEndpoint (ResolvedLocalExposure endpoint _ _ _ _ _) = endpoint
 exposureEndpoint (ClusterServiceExposure endpoint _ _) = endpoint
 
-exposurePort :: Exposure network lifecycleScope planId clusterId service -> Int
+exposurePort :: Exposure network lifecycleScope planId clusterId service -> Port
 exposurePort (ResolvedLocalExposure _ port _ _ _ _) = port
 exposurePort (ClusterServiceExposure _ port _) = port
 
@@ -270,9 +276,6 @@ exposureRuntimeIdentity ::
 exposureRuntimeIdentity (ResolvedLocalExposure _ _ _ relay generation operation) =
     Just (relay, generation, operation)
 exposureRuntimeIdentity (ClusterServiceExposure _ _ _) = Nothing
-
-validPort :: Int -> Bool
-validPort port = port > 0 && port < 65536
 
 resolvedHostExposure ::
     ResolvedExposure lifecycleScope planId clusterId service ->
@@ -294,7 +297,7 @@ resolvedLocalExposure network resolved =
             network
             ( resolvedExposureListenAddress resolved
                 <> ":"
-                <> Text.pack (show (resolvedExposureHostPort resolved))
+                <> Text.pack (show (portNumber (resolvedExposureHostPort resolved)))
             )
         )
         (resolvedExposureHostPort resolved)
@@ -308,8 +311,8 @@ clusterServiceExposure ::
     Text ->
     Int ->
     Either NetworkError (Exposure 'ClusterOnly lifecycleScope planId clusterId service)
-clusterServiceExposure service port
-    | not (validPort port) = Left (InvalidEndpointPort port)
-    | otherwise = do
+clusterServiceExposure service port = case mkPort port of
+    Nothing -> Left (InvalidEndpointPort port)
+    Just admitted -> do
         endpoint <- clusterOnlyEndpoint (service <> ":" <> Text.pack (show port))
-        Right (ClusterServiceExposure endpoint port service)
+        Right (ClusterServiceExposure endpoint admitted service)

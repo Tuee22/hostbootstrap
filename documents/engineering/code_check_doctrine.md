@@ -12,14 +12,44 @@
 - The base publisher runs the Python/core/demo source gates before Docker; derived images run their
   project binary's canonical code-check.
 - Derived images invoke the project binary's project-owned `check-code` body.
+- The style contract is committed: [`fourmolu.yaml`](../../fourmolu.yaml) and
+  [`.hlint.yaml`](../../.hlint.yaml) at the repository root, read by every run of either tool.
 
 Code quality is a **build-time guardrail**, distinct from behavioral tests. Under the finished doctrine,
 every image this repo produces fails its build if the applicable canonical code-check fails.
 
-This is one leg of a larger picture. `fourmolu` and `hlint` are installed in the base image and run only
-here, so the **host static gate** — the fast Haskell and Python suites, which run host-native on every
-supported outer host — is the behavioural leg and is not the complete quality gate. The two together are
-what "the gate passed" means. See [testing](testing.md#gate-kinds).
+This is one leg of a larger picture. The **host static gate** — the fast Haskell and Python suites, which
+run host-native on every supported outer host — is the behavioural leg, and the two together are what
+"the gate passed" means. See [testing](testing.md#gate-kinds).
+
+## The committed style contract
+
+Style is a property of this repository, not of the tool version the rolling base image last installed.
+Two files at the repository root say what it is:
+
+- [`fourmolu.yaml`](../../fourmolu.yaml) writes out every formatter setting, including the ones that
+  agree with the tool's current defaults, so an upgrade that changes a default changes nothing here. The
+  values are the ones the existing sources already agreed with most closely, measured rather than chosen.
+- [`.hlint.yaml`](../../.hlint.yaml) keeps hlint's default rule set and names, family by family, every
+  hint the library's own conventions decline — positional elimination of a sum's fields, `data` rather
+  than `newtype` for a phantom-indexed opaque value, named arguments rather than eta reduction, explicit
+  ASCII ranges rather than a `Data.Char` classifier, and explicit spellings rather than combinator ones.
+  A finding outside those families is a new one, and fails.
+
+Both tools read those files wherever they run, because both search upward from the file they are given.
+
+The **source gate** (`base build` / `base build-and-push`, below) runs the formatter over every Haskell
+root of both Cabal projects — library, internal sublibraries, application, suites, and the worked
+consumer — and the linter over the library and consumer sources. They run before the Cabal legs, so a
+style regression fails in seconds rather than after a full build, and each gate names the root it read.
+
+One limit is written into the gate rather than left implicit: fourmolu parses Haskell, not CPP. In seven
+modules an `#if`/`#else` splits a declaration and the formatter cannot read the file at all. Those seven
+are named one by one in `_FORMATTER_UNREADABLE` in [`hostbootstrap/cli.py`](../../hostbootstrap/cli.py),
+so adding to the list is a decision somebody made rather than a file that quietly stopped being checked.
+The linter reads all of them, because hlint does not need to parse the preprocessor to run — though it
+does not evaluate it either, which is why `.hlint.yaml` refuses its duplicate-import finding in the six
+modules where only a preprocessor branch keeps the two imports apart.
 
 ## The rule
 

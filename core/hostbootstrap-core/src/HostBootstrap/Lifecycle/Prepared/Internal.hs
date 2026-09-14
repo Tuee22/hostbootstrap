@@ -141,8 +141,16 @@ Only a @NextNode -> Prepared@ answer becomes one of these. A @Descend@ or a
 all, which is why "the root told me to descend" can never be mistaken for
 "the root authorized this effect".
 -}
-data PreparedNodeGrant
-    scope rootPlanId brokerGeneration catalogId frame sessionId node verb
+data
+    PreparedNodeGrant
+        scope
+        rootPlanId
+        brokerGeneration
+        catalogId
+        frame
+        sessionId
+        node
+        verb
     where
     PreparedNodeGrant ::
         Text ->
@@ -153,9 +161,7 @@ data PreparedNodeGrant
 
 type role PreparedNodeGrant nominal nominal nominal nominal nominal nominal nominal nominal
 
-instance
-    Show (PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb)
-    where
+instance Show (PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb) where
     show _ = "PreparedNodeGrant <root-signed>"
 
 {- | Frame one operation's gate coordinates canonically.
@@ -307,7 +313,7 @@ renderPreparedGatePackagesKernel packages =
             ++ map frame' packages
         )
 
-{- | Package-internal constructor, reachable only after durable preparation. -}
+-- | Package-internal constructor, reachable only after durable preparation.
 mintPreparedNodeGrantKernel ::
     Text ->
     [Text] ->

@@ -19,32 +19,32 @@ The producers live with the seam that reaches a kernel
 ("HostBootstrap.Ownership.Primitive"), because a token is minted by a clause
 actually being held rather than by a caller deciding it has been.
 -}
-module HostBootstrap.Ownership.Clause
-    ( -- * Where an owned object lives
-      OwnedTargetPath
+module HostBootstrap.Ownership.Clause (
+    -- * Where an owned object lives
+    OwnedTargetPath,
 
-      -- * The tokens
-    , Entered
-    , Recorded
-    , Bound
-    , Releasable
+    -- * The tokens
+    Entered,
+    Recorded,
+    Bound,
+    Releasable,
 
-      -- * Their total eliminators
-    , enteredEvidence
-    , recordedEvidence
-    , boundEvidence
-    , releasableEvidence
-    )
+    -- * Their total eliminators
+    enteredEvidence,
+    recordedEvidence,
+    boundEvidence,
+    releasableEvidence,
+)
 where
 
-import HostBootstrap.Ownership.Internal
-    ( Bound
-    , Entered
-    , OwnedTargetPath
-    , Recorded
-    , Releasable
-    , boundEvidence
-    , enteredEvidence
-    , recordedEvidence
-    , releasableEvidence
-    )
+import HostBootstrap.Ownership.Internal (
+    Bound,
+    Entered,
+    OwnedTargetPath,
+    Recorded,
+    Releasable,
+    boundEvidence,
+    enteredEvidence,
+    recordedEvidence,
+    releasableEvidence,
+ )

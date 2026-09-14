@@ -13,6 +13,7 @@ import HostBootstrap.Cluster.Backend (
  )
 import HostBootstrap.Cluster.Lifecycle (ClusterDriver (KindDriver, NvkindDriver))
 import HostBootstrap.Handoff (childConfigDigest)
+import HostBootstrap.Network (portNumber)
 import HostBootstrapDemo.ClusterConfig (renderExactClusterConfig, verifyExactClusterConfig)
 import HostBootstrapDemo.Config (renderProjectConfig)
 import Test.Tasty (TestTree, testGroup)
@@ -53,7 +54,11 @@ tests =
         ]
   where
     digest = childConfigDigest (TextEncoding.encodeUtf8 (renderProjectConfig hostCfg <> "\n"))
-    intentSummary intent = (exposureIntentService intent, exposureIntentTargetHost intent, exposureIntentTargetPort intent)
+    intentSummary intent =
+        ( exposureIntentService intent
+        , exposureIntentTargetHost intent
+        , portNumber (exposureIntentTargetPort intent)
+        )
     kindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("minio", "hostbootstrap-demo-control-plane", 30900), ("accelerator", "hostbootstrap-demo-control-plane", 30081)]
     nvkindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("minio", "hostbootstrap-demo-control-plane", 30900)]
     kindGolden =

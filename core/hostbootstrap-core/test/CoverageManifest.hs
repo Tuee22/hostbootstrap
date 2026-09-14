@@ -96,21 +96,21 @@ manifest =
     , posixFamily ["WslGlobalWallHostSpec", "ownership refusals"] 4 4
     , posixFamily ["WslGlobalWallHostSpec", "crash resume"] 3 3
     , posixFamily ["WslGlobalWallHostSpec", "the durable record codec"] 3 2
-    -- The two ownership rows are not symmetric, and the numbers below say so
-    -- rather than hide it: POSIX declares 18 clauses and Windows 11. Seven
-    -- clauses the POSIX row asserts have no Windows counterpart --- four are
-    -- symbolic-link behaviours, and three are not platform-specific at all
-    -- ("a probe that cannot answer is a fault rather than an absence", "the
-    -- kernel releases the exclusion when the holding process dies", and
-    -- "removing an object that is not there is a fault rather than a silent
-    -- success"). Under § JJ a clause whose subject a host lacks asserts the
-    -- refusal its row declares; it does not disappear. So this asymmetry is a
-    -- coverage deficit in the Windows row, not a property of Windows, and these
-    -- counts freeze the deficit at its current size rather than endorsing it ---
-    -- a Windows row that loses another clause still fails here. Closing it is
-    -- owed work for the phase that owns the ownership seam, and it needs a
-    -- Windows gate host to write against.
-    , ownershipRowFamily ["OwnershipPosixSpec", "identity"] 5 5
+    , -- The two ownership rows are not symmetric, and the numbers below say so
+      -- rather than hide it: POSIX declares 18 clauses and Windows 11. Seven
+      -- clauses the POSIX row asserts have no Windows counterpart --- four are
+      -- symbolic-link behaviours, and three are not platform-specific at all
+      -- ("a probe that cannot answer is a fault rather than an absence", "the
+      -- kernel releases the exclusion when the holding process dies", and
+      -- "removing an object that is not there is a fault rather than a silent
+      -- success"). Under § JJ a clause whose subject a host lacks asserts the
+      -- refusal its row declares; it does not disappear. So this asymmetry is a
+      -- coverage deficit in the Windows row, not a property of Windows, and these
+      -- counts freeze the deficit at its current size rather than endorsing it ---
+      -- a Windows row that loses another clause still fails here. Closing it is
+      -- owed work for the phase that owns the ownership seam, and it needs a
+      -- Windows gate host to write against.
+      ownershipRowFamily ["OwnershipPosixSpec", "identity"] 5 5
     , ownershipRowFamily ["OwnershipPosixSpec", "creation and publication"] 5 5
     , ownershipRowFamily ["OwnershipPosixSpec", "the exclusive open"] 4 4
     , ownershipRowFamily ["OwnershipPosixSpec", "removal and durability"] 4 4

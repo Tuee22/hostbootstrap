@@ -13,4 +13,3 @@ consumeDestroy _ = ()
 -- Work classified under down cannot enter the destroy interpreter.
 downWorkAsDestroy :: TeardownWork Scope Plan Frame VerbDown -> ()
 downWorkAsDestroy = consumeDestroy
-

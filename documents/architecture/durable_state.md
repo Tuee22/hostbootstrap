@@ -278,7 +278,7 @@ The broader capability and ownership contract is defined in
 [lifecycle_state_model](lifecycle_state_model.md).
 
 The service-runtime target derives durable-store use from the selected closed program's effect row and
-packages it only with a matching `ServiceSelection` proof and opaque durable-placement authority. A
+packages it only with a matching `VerifiedServicePlacement` proof and opaque durable-placement authority. A
 late handler-specific config reload cannot mint or widen that authority.
 
 ## Production and test profiles
@@ -330,7 +330,7 @@ Those claims require the live validation gates below.
    same-privilege process between observation and mutation is reported as `Conflict` with
    expected/observed identity, is not clobbered, and mints no receipt; release is refused on identity
    mismatch. See [ownership_invariant](ownership_invariant.md) § Validation for the full clause suite.
-3. **Passed 2026-07-25:** root-resolution tests are independent of process `cwd`; missing, wrong-kind,
+3. Root-resolution tests are independent of process `cwd`; missing, wrong-kind,
    escaping, and redirected roots fail before the callback, and compile-fail tests prevent raw or
    cross-root paths from entering direct-host bind operations.
 4. **Direct half passed:** native Linux reached Docker with the canonical absolute nonsymlink host

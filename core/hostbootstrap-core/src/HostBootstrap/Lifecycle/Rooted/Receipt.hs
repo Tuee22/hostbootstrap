@@ -21,10 +21,10 @@ Neither exchange mints an answer. Both read complete signed response bytes they
 are handed, and a signed @Refused@ is an ordinary member of each closed
 response family rather than something this module can produce.
 -}
-module HostBootstrap.Lifecycle.Rooted.Receipt
-    ( withRootedTerminalReportKernel
-    , withRootedReceiptConfirmationKernel
-    )
+module HostBootstrap.Lifecycle.Rooted.Receipt (
+    withRootedTerminalReportKernel,
+    withRootedReceiptConfirmationKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -34,27 +34,27 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Handoff
-    ( HandoffError
-    , childConfigDigest
-    , eliminateLifecycleReport
-    , handoffErrorMessage
-    , maxWireBytes
-    )
-import HostBootstrap.Handoff.Rooted
-    ( rootedLifecycleRequestFromWireKernel
-    , rootedLifecycleResponseFromWireKernel
-    , withRootedLifecycleRequestKernel
-    , withRootedLifecycleResponseKernel
-    )
-import HostBootstrap.Handoff.Runtime
-    ( RecursiveHandoffRuntime
-    , withRecursiveHandoffRuntimeKernel
-    )
-import HostBootstrap.Lifecycle.Rooted
-    ( RootedFrameSession
-    , withRootedFrameSessionKernel
-    )
+import HostBootstrap.Handoff (
+    HandoffError,
+    childConfigDigest,
+    eliminateLifecycleReport,
+    handoffErrorMessage,
+    maxWireBytes,
+ )
+import HostBootstrap.Handoff.Rooted (
+    rootedLifecycleRequestFromWireKernel,
+    rootedLifecycleResponseFromWireKernel,
+    withRootedLifecycleRequestKernel,
+    withRootedLifecycleResponseKernel,
+ )
+import HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    withRecursiveHandoffRuntimeKernel,
+ )
+import HostBootstrap.Lifecycle.Rooted (
+    RootedFrameSession,
+    withRootedFrameSessionKernel,
+ )
 
 {- | Publish one exact terminal report, then derive its complete-response digest.
 
@@ -98,9 +98,17 @@ withRootedTerminalReportKernel runtime session request signedComplete publish us
         answer <- terminalResponse True "FrameComplete" signedComplete
         report <- echoedResponse "FrameComplete" path token ordinal nonce answer
         reportVerb <-
-            either handoffFailure Right
+            either
+                handoffFailure
+                Right
                 ( eliminateLifecycleReport
-                    report reportedVerb reportedVerb reportedVerb reportedVerb reportedVerb reportedVerb
+                    report
+                    reportedVerb
+                    reportedVerb
+                    reportedVerb
+                    reportedVerb
+                    reportedVerb
+                    reportedVerb
                 )
         require "the terminal report names another verb" (reportVerb == verbName)
         pure report
@@ -147,12 +155,14 @@ withRootedReceiptConfirmationKernel runtime session request completion signedRec
     admit path token ordinal = do
         require "the confirmed completion digest is empty" (not (Text.null completion))
         echoed <- terminalRequest False request
-        require "the receipt confirmation names another terminal report"
+        require
+            "the receipt confirmation names another terminal report"
             (namedPredecessor echoed == Just completion)
         nonce <- echoedRequest "receipt" path token ordinal echoed
         answer <- terminalResponse False "ReceiptRecorded" signedReceipt
         recorded <- echoedResponse "ReceiptRecorded" path token ordinal nonce answer
-        require "the recorded receipt repeats another terminal report"
+        require
+            "the recorded receipt repeats another terminal report"
             (recorded == TextEncoding.encodeUtf8 completion)
 
 {- | Admit one attached session's terminal coordinates and its predecessor.
@@ -184,7 +194,7 @@ withTerminalRootedSession action runtime session use =
         require "the runtime is not path-agnostic" (isNothing current)
         require "the session has no recorded predecessor" (isJust predecessor)
 
-{- | Decode exactly one terminal request form and refuse every other family. -}
+-- | Decode exactly one terminal request form and refuse every other family.
 terminalRequest :: Bool -> ByteString -> Either Text ([Text], Text, Word64, ByteString, Maybe Text)
 terminalRequest close raw = do
     decoded <- either (Left . receiptFailure) Right (rootedLifecycleRequestFromWireKernel raw)
@@ -206,11 +216,12 @@ terminalRequest close raw = do
                 )
             )
 
-{- | Decode exactly one terminal response form of its closed paired family. -}
+-- | Decode exactly one terminal response form of its closed paired family.
 terminalResponse :: Bool -> Text -> ByteString -> Either Text ([Text], Text, Word64, ByteString, ByteString)
 terminalResponse complete family raw = do
     require ("the signed " <> family <> " response is empty") (not (ByteString.null raw))
-    require ("the signed " <> family <> " response exceeds the durable bound")
+    require
+        ("the signed " <> family <> " response exceeds the durable bound")
         (fromIntegral (ByteString.length raw) <= maxWireBytes)
     response <- either (Left . receiptFailure) Right (rootedLifecycleResponseFromWireKernel raw)
     withRootedLifecycleResponseKernel
@@ -233,7 +244,7 @@ terminalResponse complete family raw = do
                 ("only a paired " <> family <> " or Refused response answers this rooted terminal request")
             )
 
-{- | Require one terminal request to echo this session, and yield its nonce. -}
+-- | Require one terminal request to echo this session, and yield its nonce.
 echoedRequest ::
     Text ->
     [Text] ->
@@ -248,7 +259,7 @@ echoedRequest label path token ordinal (requestPath, requestSession, requestOrdi
     require ("the " <> label <> " request nonce is empty") (not (ByteString.null nonce))
     pure nonce
 
-{- | Require one terminal response to echo the exchange, and yield its body. -}
+-- | Require one terminal response to echo the exchange, and yield its body.
 echoedResponse ::
     Text ->
     [Text] ->
@@ -260,7 +271,8 @@ echoedResponse ::
 echoedResponse label path token ordinal nonce (responsePath, responseSession, responseOrdinal, responseNonce, body) = do
     require ("the signed " <> label <> " response echoes another requester path") (responsePath == path)
     require ("the signed " <> label <> " response echoes another session") (responseSession == token)
-    require ("the signed " <> label <> " response does not select a successor ordinal")
+    require
+        ("the signed " <> label <> " response does not select a successor ordinal")
         (responseOrdinal > ordinal)
     require ("the signed " <> label <> " response echoes another nonce") (responseNonce == nonce)
     require ("the signed " <> label <> " response carries an empty body") (not (ByteString.null body))

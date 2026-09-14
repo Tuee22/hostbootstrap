@@ -15,7 +15,6 @@ protocol refusing, not a broken signature.
 -}
 module ActivationSpec (tests, withBrokerFor) where
 
-import Expect (expectRight)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -26,6 +25,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
+import Expect (expectRight)
 import qualified Fixture
 import HostBootstrap.Activation
 import qualified HostBootstrap.Authority as Authority
@@ -799,4 +799,3 @@ withStore use =
         case opened of
             Left failure -> assertFailure (show failure)
             Right store -> use store
-

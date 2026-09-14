@@ -118,8 +118,9 @@ withSuccessorGate planDigest operation initialSession successorSession fence ini
 gateFor :: Text -> Text -> IO PreparedGate
 gateFor planDigest operation = gateForValues planDigest operation "session-1" 1 1
 
--- | Mint a real gate with deliberately chosen record fields for refusal tests.
--- The journal version still comes only from the protected store write.
+{- | Mint a real gate with deliberately chosen record fields for refusal tests.
+The journal version still comes only from the protected store write.
+-}
 gateForValues :: Text -> Text -> Text -> Word64 -> Word64 -> IO PreparedGate
 gateForValues planDigest operation sessionId fence attempt =
     withSystemTempDirectory "hb-prepare-gate" $ \dir -> do

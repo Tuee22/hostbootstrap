@@ -29,7 +29,28 @@ tests =
         , testGroup "endpoints and exposure" endpointCases
         , testGroup "plans and derived rendering" planCases
         , testGroup "blob-route readiness" routeCases
+        , testGroup "admitted ports" portCases
         ]
+
+{- | The range lives in the producer, so these cases are the whole of what the
+repository believes a port is. Every consumer that used to restate the bound
+now holds a value this refused to mint, or does not hold one at all.
+-}
+portCases :: [TestTree]
+portCases =
+    [ testCase "the producer admits the closed range and nothing outside it" $ do
+        map (fmap portNumber . mkPort) [minBound, -1, 0, 1, 8080, 65535, 65536, maxBound]
+            @?= [Nothing, Nothing, Nothing, Just 1, Just 8080, Just 65535, Nothing, Nothing]
+    , testCase "an admitted port renders as the number it was admitted from" $
+        fmap portNumber (mkPort 41001) @?= Just 41001
+    , testCase "an exposure refuses an out-of-range port at the producer" $ do
+        case clusterServiceExposure "minio.default.svc" 65536 of
+            Left (InvalidEndpointPort 65536) -> pure ()
+            other -> assertFailure ("expected a port refusal, got " ++ show other)
+        case clusterServiceExposure "minio.default.svc" 0 of
+            Left (InvalidEndpointPort 0) -> pure ()
+            other -> assertFailure ("expected a port refusal, got " ++ show other)
+    ]
 
 reachabilityCases :: [TestTree]
 reachabilityCases =
@@ -78,7 +99,7 @@ endpointCases =
     , testCase "a local exposure retains the exact runtime identity" $
         withHostExposure $ \exposure -> do
             endpointAuthority (exposureEndpoint exposure)
-                @?= ("127.0.0.1:" <> Text.pack (show (exposurePort exposure)))
+                @?= ("127.0.0.1:" <> Text.pack (show (portNumber (exposurePort exposure))))
             endpointScope (exposureEndpoint exposure) @?= HostLocal
             exposureService exposure @?= "registry"
             case exposureRuntimeIdentity exposure of
@@ -190,7 +211,9 @@ routeCases =
     ]
 
 onPort :: Int -> BlobRouteObservation -> BlobRouteObservation
-onPort port observation = observation{observedPort = port}
+onPort port observation = case mkPort port of
+    Just admitted -> observation{observedPort = admitted}
+    Nothing -> error ("the fixture named an inadmissible port: " ++ show port)
 
 -- Fixtures --------------------------------------------------------------------
 

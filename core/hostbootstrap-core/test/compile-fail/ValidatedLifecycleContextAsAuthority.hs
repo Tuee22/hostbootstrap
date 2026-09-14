@@ -1,15 +1,15 @@
 module ValidatedLifecycleContextAsAuthority where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , ExecutePhase
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    ExecutePhase,
+    VerbUp,
+ )
 import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
-import HostBootstrap.Lifecycle.Session
-    ( AcquisitionJournal
-    , LifecycleCursor
-    )
+import HostBootstrap.Lifecycle.Session (
+    AcquisitionJournal,
+    LifecycleCursor,
+ )
 
 data Scope
 data Specification

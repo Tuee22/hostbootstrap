@@ -30,9 +30,13 @@ with-compiler: ghc-9.12.4
 optimization: 2
 ```
 
-The core compiler selection is a workspace compatibility choice, not a base-input replay lock. The
-rolling base installs the current recommended compiler; compatibility is validated by source gates and a
-real consumer smoke. The demo's one project references local core source and imports no base-owned path.
+That version is the same one the base image installs and the host bootstrapper pins, which is what lets
+one `cabal.project` be valid host-native and inside the derived container: the compiler keys the warm
+Cabal store, so a base carrying another one would ship a store this workspace could not read and could
+not configure this project at all. It remains a compatibility choice rather than a base-input replay
+lock — everything else in the base still rolls (§ FF) — and compatibility is validated by source gates
+and a real consumer smoke. The demo's one project pins no compiler and needs none: it resolves the same
+GHC on the host and in the container. Neither imports a base-owned path.
 
 ## Package Stanzas
 

@@ -22,8 +22,9 @@
   wire containing mandatory `FrameworkValidation` plus only that service's fields. `service run`
   verifies one canonical sibling snapshot, structurally selects exactly one request, and closes the
   handler over its typed role fields and safe `LocalContextView`; neither a string selector nor the full
-  `cfg` reaches the handler. Effect-indexed, one-use `SelectedService` execution remains
-  [service-runtime-phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) work.
+  `cfg` reaches the handler. Effect-indexed, one-use execution through `withDecodedServiceProgram` and
+  `runRoleLifecycle` is owned by the
+  [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md).
 - `psAssemble` is the sole project-config default-bearing assembler. Its closed request distinguishes
   Production init from one exact generative Harness run, and its restricted effect permits only
   declared reads. `psTestInit` separately constructs the project's `tcfg`; the demo's Web ports and
@@ -178,16 +179,16 @@ set makes it available to the service-projection plan and Web handler without ex
 > -- Web registry entry
 > serveWeb ::
 >   RoleParams specDigest configId secretDigest fields Web ->
->   ServiceProgram
->     scope specDigest planId configId secretDigest frame revision instanceId
->     ServePhase Web effects ()
+>   ServiceProgram payload Web effects ()
 > serveWeb params =
->   serveBudgetMessage (roleField @"message" params)
+>   serveBudgetMessage (servedMessage (roleParamsValue params))
 > ```
 >
 > Child-local codec validation creates the Web request and filtered parameters under the same fresh
-> `configId`. `roleField` is total because the schema row proves that mandatory field is visible to Web;
-> the handler receives neither `DemoConfig` nor a config-reading effect.
+> `configId`. `roleParamsValue` is total because the schema row proves that mandatory field is visible
+> to Web; the handler receives neither `DemoConfig` nor a config-reading effect. The handler's type is
+> exactly `ProgramServiceHandler payload effects fields`, which is what a `FinalizedServiceDefinition`
+> stores.
 
 ## The extension contract: `ProjectSpec cfg tcfg`
 
@@ -257,11 +258,12 @@ digest.
 `ProjectPlan scope specDigest planId configId cfg` construction requires
 `ValidatedConfig scope specDigest configId (cfg scope)` and a
 `NonEmpty (PlanDraft scope specDigest (cfg scope))`. Child projection preserves the exact scope and stable plan
-revision but, because the narrowed child bytes differ, mints a fresh child `configId` linked to the
-parent by an opaque `ProjectionBinding`; it does not reuse an exact-byte parent identity. A
-secrets-strict config uses `SecretRef scope`, whose `TestPlaintext` constructor requires the matching
-harness authority; the reflected Production Dhall schema has no plaintext alternative. A harness Dhall
-payload decodes only to untrusted `HarnessConfigWire`. The standalone `AuthenticatedRootScope` primitive and
+revision but, because the narrowed child bytes differ, mints a fresh child `configId`; the link back to
+the parent is the `childConfigDigest` and the `PlanDigestBinding` joined at projection time, not a
+reused exact-byte parent identity. A
+secrets-strict config uses `SecretRef scope`, whose `ScopedTestPlaintext` constructor requires the
+matching harness authority; the reflected Production Dhall schema has no plaintext alternative. A
+harness Dhall secret reference decodes only to untrusted `HarnessSecretRefWire`. The standalone `AuthenticatedRootScope` primitive and
 its unchanged four-field Offer/Relay/Receiver transport are implemented. The root link mints the capsule,
 nested links copy its exact canonical bytes, and the receiver first verifies
 `AuthenticatedRootScope (Harness projectId runId)` against the independently installed project key;
@@ -341,17 +343,17 @@ and verified secret-bundle digest. That request inseparably contains
 `RoleParams specDigest configId secretDigest fields service`. Current `service run` verifies one
 canonical sibling snapshot and keeps the selected handler action closed over those role fields plus a
 safe `LocalContextView`; the full config does not cross the handler boundary. The
-[service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) replaces that
-remaining raw `IO` action with an exact one-use service command authority and matching closed
-`ServiceProgram`, packaged internally as
-`SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-fields`; its
-`ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-service effects` proves the handler's exact effect row is authorized. Before Acquire, the signed
+[service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) has replaced that
+remaining raw `IO` action with a closed `ServiceProgram` selected through
+`withDecodedServiceProgram` and run under a
+`VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`,
+whose `authorizeServiceEffects` producer proves the handler's exact effect row is authorized. Before
+Acquire, the signed
 placement's `permittedEffects` ceiling conservatively derives the acquisition plan's lease requirement;
 callers cannot choose a no-lease branch, and Serve can select only a row proved within that same ceiling.
-The core-owned masked `runVerifiedRuntimeRole` consumes the ready managed handles and inseparable retained
-receipt/lease package and privately invokes `selectAndRunService`, which always returns a Drain advance;
+The core-owned engine `runRoleLifecycle` consumes the `RolePlan`, that placement, the one-use
+`RoleCursor scope planId frame instanceId PrereqPhase`, and the project's `RoleEngine`, and returns only
+a `RoleExitReport`; every `RoleServeOutcome` advances into Drain, and
 each mutating effect seals its exact target/arguments under a call digest and threads every
 prepare/call failure or unknown outcome with the sole session and retained package. Only the private
 full-lineage same-key recovery transition may resume an unknown call. Project code never receives the

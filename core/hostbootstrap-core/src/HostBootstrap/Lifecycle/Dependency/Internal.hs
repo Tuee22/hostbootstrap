@@ -54,6 +54,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Network.Port (Port, mkPort, portNumber)
 
 {- | One canonical provider- or cluster-recovery commitment.
 
@@ -495,7 +496,7 @@ withRuntimeDependencyExposureRequest package raw use = do
 renderRuntimeDependencyExposureResponse ::
     RuntimeDependencyPackage scope planId ->
     Text ->
-    [(Text, Text, Int, Text, Int, Text, Word64, Text)] ->
+    [(Text, Text, Port, Text, Port, Text, Word64, Text)] ->
     Either Text ByteString.ByteString
 renderRuntimeDependencyExposureResponse package nonce exposures = do
     requireNonce nonce
@@ -505,22 +506,29 @@ renderRuntimeDependencyExposureResponse package nonce exposures = do
     pure (wireFields (["hostbootstrap/runtime-dependency-exposure-response/v1", runtimeDependencyPackageCommitment package, nonce] <> concatMap exposureFields exposures))
   where
     exposureServiceField (service, _, _, _, _, _, _, _) = service
-    validateExposure (service, address, hostPort, target, targetPort, relay, generation, operation) = do
+    validateExposure (service, address, _hostPort, target, _targetPort, relay, generation, operation) = do
         mapM_ requireExposureField [("service", service), ("address", address), ("target", target), ("relay", relay), ("operation", operation)]
         require (address == "127.0.0.1") "runtime dependency exposure address is not loopback"
-        require (validPort hostPort && validPort targetPort) "runtime dependency exposure port is invalid"
         require (generation > 0) "runtime dependency exposure generation is not positive"
     requireExposureField (label, value) = do
         require (not (Text.null value)) ("runtime dependency exposure " <> label <> " is empty")
         require (encodedLength value <= maximumFieldBytes) ("runtime dependency exposure " <> label <> " exceeds its bound")
     exposureFields (service, address, hostPort, target, targetPort, relay, generation, operation) =
-        [service, address, Text.pack (show hostPort), target, Text.pack (show targetPort), relay, Text.pack (show generation), operation]
+        [ service
+        , address
+        , Text.pack (show (portNumber hostPort))
+        , target
+        , Text.pack (show (portNumber targetPort))
+        , relay
+        , Text.pack (show generation)
+        , operation
+        ]
 
 verifyRuntimeDependencyExposureResponse ::
     RuntimeDependencyPackage scope planId ->
     Text ->
     ByteString.ByteString ->
-    Either Text [(Text, Text, Int, Text, Int, Text, Word64, Text)]
+    Either Text [(Text, Text, Port, Text, Port, Text, Word64, Text)]
 verifyRuntimeDependencyExposureResponse package expectedNonce raw = do
     requireNonce expectedNonce
     require (ByteString.length raw <= maximumProbeBytes) "runtime dependency exposure response exceeds its canonical bound"
@@ -538,8 +546,8 @@ verifyRuntimeDependencyExposureResponse package expectedNonce raw = do
   where
     parseExposures [] = Right []
     parseExposures (service : address : hostPortText : target : targetPortText : relay : generationText : operation : rest) = do
-        hostPort <- parsePositiveInt hostPortText
-        targetPort <- parsePositiveInt targetPortText
+        hostPort <- parsePort hostPortText
+        targetPort <- parsePort targetPortText
         generation <- parsePositiveWord generationText
         ((service, address, hostPort, target, targetPort, relay, generation, operation) :) <$> parseExposures rest
     parseExposures _ = Left "runtime dependency exposure response field count differs"
@@ -669,11 +677,11 @@ parsePositiveWord value =
                 Right (fromInteger parsed)
         _ -> Left "runtime dependency probe generation is not canonical"
 
-parsePositiveInt :: Text -> Either Text Int
-parsePositiveInt value = do
+parsePort :: Text -> Either Text Port
+parsePort value = do
     parsed <- parsePositiveWord value
     require (parsed <= fromIntegral (maxBound :: Int)) "runtime dependency exposure port exceeds Int"
-    pure (fromIntegral parsed)
+    maybe (Left "runtime dependency exposure port is invalid") Right (mkPort (fromIntegral parsed))
 
 domainOf :: RuntimeDependencyPackage scope planId -> Text
 domainOf package = case package of
@@ -742,9 +750,6 @@ maximumBundlePackages = 16
 maximumChartValuesBytes, maximumChartRequestBytes :: Int
 maximumChartValuesBytes = 64 * 1024
 maximumChartRequestBytes = 256 * 1024
-
-validPort :: Int -> Bool
-validPort port = port > 0 && port < 65536
 
 distinct :: (Eq value) => [value] -> Bool
 distinct values = length values == length (unique values)

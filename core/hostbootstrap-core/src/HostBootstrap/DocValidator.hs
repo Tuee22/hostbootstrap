@@ -1,33 +1,34 @@
--- | The mechanical documentation validator for the governed plan.
---
--- 'validateRepo' walks the governed @documents/@ suite, the governed root
--- documents (@README.md@, @AGENTS.md@, @CLAUDE.md@), and the @DEVELOPMENT_PLAN/@
--- phase plan, and returns the structural violations defined by
--- @documents/documentation_standards.md § Validation@:
---
---   * required metadata lines for governed @documents/@ content
---   * required structure for the broad doctrine docs (architecture suite)
---   * governed root-document metadata lines
---   * relative-link resolution for governed docs, root docs, and all
---     @DEVELOPMENT_PLAN/@ docs
---   * root @README.md@ references to both @documents/@ and @DEVELOPMENT_PLAN/@
---   * @DEVELOPMENT_PLAN/@ phase docs retaining @## Documentation Requirements@
---   * phase-header status harmony with @DEVELOPMENT_PLAN/README.md@'s status table
---   * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)
---   * the canonical @documents/@ taxonomy (no top-level category outside the
---     declared set)
---   * every path a sprint's @**Implementation**@ field cites resolving in the tree
---   * a @Done@ phase recording gate evidence, carrying a covers digest when
---     its gate is not re-executed by the run performing this check
---   * no phase depending on an acceptance phase (§ II makes them terminal)
---   * an Active phase naming the sprint that owns its owed work
---
--- The individual checks are exported so the same mechanical floor can be reused
--- across the project family (the reusable family doc-floor). It runs through the
--- project's canonical code-check via the @hostbootstrap-core-test@ suite
--- (exercised by @DocValidatorSpec@).
-module HostBootstrap.DocValidator
-  ( Violation (..),
+{- | The mechanical documentation validator for the governed plan.
+
+'validateRepo' walks the governed @documents/@ suite, the governed root
+documents (@README.md@, @AGENTS.md@, @CLAUDE.md@), and the @DEVELOPMENT_PLAN/@
+phase plan, and returns the structural violations defined by
+@documents/documentation_standards.md § Validation@:
+
+  * required metadata lines for governed @documents/@ content
+  * required structure for the broad doctrine docs (architecture suite)
+  * governed root-document metadata lines
+  * relative-link resolution for governed docs, root docs, and all
+    @DEVELOPMENT_PLAN/@ docs
+  * root @README.md@ references to both @documents/@ and @DEVELOPMENT_PLAN/@
+  * @DEVELOPMENT_PLAN/@ phase docs retaining @## Documentation Requirements@
+  * phase-header status harmony with @DEVELOPMENT_PLAN/README.md@'s status table
+  * @snake_case@ file naming under @documents/@ (only @README.md@ is exempt)
+  * the canonical @documents/@ taxonomy (no top-level category outside the
+    declared set)
+  * every path a sprint's @**Implementation**@ field cites resolving in the tree
+  * a @Done@ phase recording gate evidence, carrying a covers digest when
+    its gate is not re-executed by the run performing this check
+  * no phase depending on an acceptance phase (§ II makes them terminal)
+  * an Active phase naming the sprint that owns its owed work
+
+The individual checks are exported so the same mechanical floor can be reused
+across the project family (the reusable family doc-floor). It runs through the
+project's canonical code-check via the @hostbootstrap-core-test@ suite
+(exercised by @DocValidatorSpec@).
+-}
+module HostBootstrap.DocValidator (
+    Violation (..),
     validateRepo,
     renderViolation,
     findRepoRoot,
@@ -62,111 +63,136 @@ module HostBootstrap.DocValidator
     checkAcceptanceTerminal,
     checkImplementationPaths,
     checkGateEvidence,
-  )
+
+    -- * Reconciliation checks (documentation_standards.md § Rules the validator grows to enforce)
+    checkIdentifierResolution,
+    identifierAllowlist,
+    checkRootDocStatus,
+    checkEntryDocAgreement,
+    audienceMapping,
+    checkLinkAnchors,
+    checkPhaseHeaderFields,
+    checkGateEvidenceLegs,
+)
 where
 
 import Control.Monad (filterM, foldM)
-import HostBootstrap.Digest (measurePathSetDigest, renderDigestError)
 import Data.Char (isAlphaNum, isDigit, toLower)
-import qualified Data.Text as Text
-import qualified Data.Text.IO as TextIO
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import Data.Maybe (isJust, isNothing)
-import System.Directory
-  ( doesDirectoryExist,
+import qualified Data.Set as Set
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
+import HostBootstrap.Digest (measurePathSetDigest, renderDigestError)
+import System.Directory (
+    doesDirectoryExist,
     doesFileExist,
     listDirectory,
-  )
-import System.FilePath
-  ( addTrailingPathSeparator,
+ )
+import System.FilePath (
+    addTrailingPathSeparator,
     makeRelative,
     normalise,
     takeDirectory,
     takeExtension,
     takeFileName,
     (</>),
-  )
+ )
 
--- | A single structural violation: the offending file (repo-relative) and a
--- one-line description.
+{- | A single structural violation: the offending file (repo-relative) and a
+one-line description.
+-}
 data Violation = Violation
-  { vFile :: FilePath,
-    vMessage :: String
-  }
-  deriving (Eq, Show)
+    { vFile :: FilePath
+    , vMessage :: String
+    }
+    deriving (Eq, Show)
 
 renderViolation :: Violation -> String
 renderViolation v = vFile v ++ ": " ++ vMessage v
 
--- | Validate the governed documentation under @root@. Returns an empty list
--- when the suite conforms.
+{- | Validate the governed documentation under @root@. Returns an empty list
+when the suite conforms.
+-}
 validateRepo :: FilePath -> IO [Violation]
 validateRepo root = do
-  docFiles <- listMarkdown (root </> "documents")
-  planFiles <- listMarkdown (root </> "DEVELOPMENT_PLAN")
-  let rootDocs = map (root </>) ["README.md", "AGENTS.md", "CLAUDE.md"]
-      phaseDocs = filter isPhaseDoc planFiles
-      architectureDocs = filter (isUnderDirectory (root </> "documents" </> "architecture")) docFiles
-  metaV <- concatMapM (checkGovernedMeta root) docFiles
-  rootV <- concatMapM (checkRootDoc root) rootDocs
-  broadV <- concatMapM (checkBroadDoctrine root) architectureDocs
-  reqV <- concatMapM (checkDocRequirements root) phaseDocs
-  existingRootDocs <- filterM doesFileExist rootDocs
-  linkV <- concatMapM (checkLinks root) (docFiles ++ planFiles ++ existingRootDocs)
-  readmeV <- checkReadmeRefs root
-  let namingV = concatMap (checkNaming root) docFiles
-  taxonomyV <- checkTaxonomy root
-  -- Plan doctrine (§ A, § C, § G, § II). The phase set is validated as a whole
-  -- for contiguity, then each document individually.
-  let numberingV = checkPhaseNumbering root phaseDocs
-  headerV <- concatMapM (checkPhaseHeader root) phaseDocs
-  statusHarmonyV <- checkPhaseStatusHarmony root phaseDocs
-  orderingV <- concatMapM (checkPhaseOrdering root) phaseDocs
-  rwOrderingV <- concatMapM (checkRemainingWorkOrdering root) phaseDocs
-  reversalV <- concatMapM (checkNoReversal root) phaseDocs
-  sprintV <- concatMapM (checkSprintStructure root) phaseDocs
-  doneSprintV <- concatMapM (checkDoneSprintRemainingWork root) phaseDocs
-  activeRemainingV <- concatMapM (checkActivePhaseRemainingWork root) phaseDocs
-  donePhaseRwV <- concatMapM (checkDonePhaseRemainingWork root) phaseDocs
-  activeOwnerV <- concatMapM (checkActivePhaseOwnsRemainingWork root) phaseDocs
-  substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
-  ledgerV <- checkLegacyLedger root
-  contractV <- checkContractOwnership root
-  driftV <- checkArchitectureDrift root
-  acceptanceV <- checkAcceptanceTerminal root phaseDocs
-  implementationV <- concatMapM (checkImplementationPaths root) phaseDocs
-  doneEvidenceV <- concatMapM (checkGateEvidence root) phaseDocs
-  pure
-    ( sortOn
-        (\v -> (vFile v, vMessage v))
-        ( metaV
-            ++ rootV
-            ++ broadV
-            ++ reqV
-            ++ linkV
-            ++ readmeV
-            ++ namingV
-            ++ taxonomyV
-            ++ ledgerV
-            ++ contractV
-            ++ driftV
-            ++ acceptanceV
-            ++ implementationV
-            ++ doneEvidenceV
-            ++ numberingV
-            ++ headerV
-            ++ statusHarmonyV
-            ++ orderingV
-            ++ rwOrderingV
-            ++ reversalV
-            ++ sprintV
-            ++ doneSprintV
-            ++ activeRemainingV
-            ++ donePhaseRwV
-            ++ activeOwnerV
-            ++ substrateV
+    docFiles <- listMarkdown (root </> "documents")
+    planFiles <- listMarkdown (root </> "DEVELOPMENT_PLAN")
+    let rootDocs = map (root </>) ["README.md", "AGENTS.md", "CLAUDE.md"]
+        phaseDocs = filter isPhaseDoc planFiles
+        architectureDocs = filter (isUnderDirectory (root </> "documents" </> "architecture")) docFiles
+    metaV <- concatMapM (checkGovernedMeta root) docFiles
+    rootV <- concatMapM (checkRootDoc root) rootDocs
+    broadV <- concatMapM (checkBroadDoctrine root) architectureDocs
+    reqV <- concatMapM (checkDocRequirements root) phaseDocs
+    existingRootDocs <- filterM doesFileExist rootDocs
+    linkV <- concatMapM (checkLinks root) (docFiles ++ planFiles ++ existingRootDocs)
+    readmeV <- checkReadmeRefs root
+    let namingV = concatMap (checkNaming root) docFiles
+    taxonomyV <- checkTaxonomy root
+    -- Plan doctrine (§ A, § C, § G, § II). The phase set is validated as a whole
+    -- for contiguity, then each document individually.
+    let numberingV = checkPhaseNumbering root phaseDocs
+    headerV <- concatMapM (checkPhaseHeader root) phaseDocs
+    statusHarmonyV <- checkPhaseStatusHarmony root phaseDocs
+    orderingV <- concatMapM (checkPhaseOrdering root) phaseDocs
+    rwOrderingV <- concatMapM (checkRemainingWorkOrdering root) phaseDocs
+    reversalV <- concatMapM (checkNoReversal root) phaseDocs
+    sprintV <- concatMapM (checkSprintStructure root) phaseDocs
+    doneSprintV <- concatMapM (checkDoneSprintRemainingWork root) phaseDocs
+    activeRemainingV <- concatMapM (checkActivePhaseRemainingWork root) phaseDocs
+    donePhaseRwV <- concatMapM (checkDonePhaseRemainingWork root) phaseDocs
+    activeOwnerV <- concatMapM (checkActivePhaseOwnsRemainingWork root) phaseDocs
+    substrateV <- concatMapM (checkSubstrateBudget root) phaseDocs
+    ledgerV <- checkLegacyLedger root
+    contractV <- checkContractOwnership root
+    driftV <- checkArchitectureDrift root
+    acceptanceV <- checkAcceptanceTerminal root phaseDocs
+    implementationV <- concatMapM (checkImplementationPaths root) phaseDocs
+    doneEvidenceV <- concatMapM (checkGateEvidence root) phaseDocs
+    identifierV <- checkIdentifierResolution root
+    rootStatusV <- checkRootDocStatus root
+    entryDocV <- checkEntryDocAgreement root
+    anchorV <- concatMapM (checkLinkAnchors root) (docFiles ++ planFiles ++ existingRootDocs)
+    headerFieldV <- concatMapM (checkPhaseHeaderFields root) phaseDocs
+    gateLegV <- concatMapM (checkGateEvidenceLegs root) phaseDocs
+    pure
+        ( sortOn
+            (\v -> (vFile v, vMessage v))
+            ( metaV
+                ++ rootV
+                ++ broadV
+                ++ reqV
+                ++ linkV
+                ++ readmeV
+                ++ namingV
+                ++ taxonomyV
+                ++ ledgerV
+                ++ contractV
+                ++ driftV
+                ++ acceptanceV
+                ++ implementationV
+                ++ doneEvidenceV
+                ++ identifierV
+                ++ rootStatusV
+                ++ entryDocV
+                ++ anchorV
+                ++ headerFieldV
+                ++ gateLegV
+                ++ numberingV
+                ++ headerV
+                ++ statusHarmonyV
+                ++ orderingV
+                ++ rwOrderingV
+                ++ reversalV
+                ++ sprintV
+                ++ doneSprintV
+                ++ activeRemainingV
+                ++ donePhaseRwV
+                ++ activeOwnerV
+                ++ substrateV
+            )
         )
-    )
 
 {- | Architecture reconciliation adds absence guards to the lower doctrine
 checks. Each refusal points to the owning phase and the design rationale.
@@ -174,88 +200,85 @@ Missing source files are valid while earlier phases are being constructed.
 -}
 checkArchitectureDrift :: FilePath -> IO [Violation]
 checkArchitectureDrift root = do
-  removed <- concatMapM removedModule obsoleteModules
-  boundaries <- concatMapM boundary forbiddenBoundaries
-  docs <- listMarkdown (root </> "documents")
-  sources <- concatMapM sourceFiles (map (root </>) ["core/hostbootstrap-core/src", "core/hostbootstrap-core/internal", "demo/src", "hostbootstrap"])
-  references <- concatMapM phaseReferences (docs ++ sources)
-  pure (removed ++ boundaries ++ references)
- where
-  obsoleteModules =
-    [ ("Authority/ProjectPlan/Internal.hs", "phase-17-recursive-lifecycle-command.md", "a-generic-protected-store-rpc-cannot-stand-in-for-rooted-coordination"),
-      ("Handoff/Lifecycle.hs", "phase-17-recursive-lifecycle-command.md", "a-shared-lifecycle-authority-mount-is-not-a-recursive-transport")
-    ]
-  forbiddenBoundaries =
-    [ ("Service.hs", ["ServiceHandler", "serviceDefinition", "withSelectedServiceRequest", "selectServiceAction", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program"),
-      ("Service/Internal.hs", ["ServiceHandler", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program"),
-      ("Authority/Kernel.hs", ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "childCommandReservationKernel"], "phase-18-recovery-and-migration.md", "only-a-proven-pre-effect-refusal-takes-the-short-close")
-    ]
-  sourcePath name = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> name
-  refusal file shape owner rationale =
-    Violation
-      (rrel root file)
-      ( "forbidden architecture shape "
-          ++ shape
-          ++ "; rewrite DEVELOPMENT_PLAN/"
-          ++ owner
-          ++ "; rationale: DEVELOPMENT_PLAN/rationale.md#"
-          ++ rationale
-      )
-  removedModule (name, owner, rationale) = do
-    let file = sourcePath name
-    exists <- doesFileExist file
-    pure [refusal file name owner rationale | exists]
-  boundary (name, forbidden, owner, rationale) = do
-    let file = sourcePath name
-    exists <- doesFileExist file
-    if not exists
-      then pure []
-      else do
+    removed <- concatMapM removedModule obsoleteModules
+    boundaries <- concatMapM boundary forbiddenBoundaries
+    docs <- listMarkdown (root </> "documents")
+    sources <- concatMapM sourceFiles (map (root </>) driftSourceRoots)
+    let citable = filter ((`notElem` driftCitationExemptions) . takeFileName) sources
+    references <- concatMapM phaseReferences (docs ++ citable)
+    pure (removed ++ boundaries ++ references)
+  where
+    obsoleteModules =
+        [ ("Authority/ProjectPlan/Internal.hs", "phase-17-recursive-lifecycle-command.md", "a-generic-protected-store-rpc-cannot-stand-in-for-rooted-coordination")
+        , ("Handoff/Lifecycle.hs", "phase-17-recursive-lifecycle-command.md", "a-shared-lifecycle-authority-mount-is-not-a-recursive-transport")
+        ]
+    forbiddenBoundaries =
+        [ ("Service.hs", ["ServiceHandler", "serviceDefinition", "withSelectedServiceRequest", "selectServiceAction", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program")
+        , ("Service/Internal.hs", ["ServiceHandler", "LegacyServiceAction"], "phase-22-service-runtime.md", "a-service-handler-returns-a-closed-effect-indexed-program")
+        , ("Authority/Kernel.hs", ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "childCommandReservationKernel"], "phase-18-recovery-and-migration.md", "only-a-proven-pre-effect-refusal-takes-the-short-close")
+        ]
+    sourcePath name = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> name
+    refusal file shape owner rationale =
+        Violation
+            (rrel root file)
+            ( "forbidden architecture shape "
+                ++ shape
+                ++ "; rewrite DEVELOPMENT_PLAN/"
+                ++ owner
+                ++ "; rationale: DEVELOPMENT_PLAN/rationale.md#"
+                ++ rationale
+            )
+    removedModule (name, owner, rationale) = do
+        let file = sourcePath name
+        exists <- doesFileExist file
+        pure [refusal file name owner rationale | exists]
+    boundary (name, forbidden, owner, rationale) = do
+        let file = sourcePath name
+        exists <- doesFileExist file
+        if not exists
+            then pure []
+            else do
+                contents <- Text.unpack <$> TextIO.readFile file
+                let identifiers = words (map (\c -> if isAlphaNum c || c == '_' || c == '\'' then c else ' ') contents)
+                pure [refusal file identifier owner rationale | identifier <- forbidden, identifier `elem` identifiers]
+    phaseReferences file = do
         contents <- Text.unpack <$> TextIO.readFile file
-        let identifiers = words (map (\c -> if isAlphaNum c || c == '_' || c == '\'' then c else ' ') contents)
-        pure [refusal file identifier owner rationale | identifier <- forbidden, identifier `elem` identifiers]
-  phaseReferences file = do
-    contents <- Text.unpack <$> TextIO.readFile file
-    pure
-      [ Violation
-          (rrel root file)
-          ("bare phase/sprint number on line " ++ show lineNumber ++ "; cite the owning phase by name and link; rewrite DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md")
-      | (lineNumber, line) <- zip [1 :: Int ..] (lines contents),
-        hasNumberReference (words (map (\c -> if isAlphaNum c || c `elem` "'_-." then c else ' ') line))
-      ]
-  hasNumberReference (label : number@(first : _) : rest)
-    | map toLower label `elem` ["phase", "sprint"], isDigit first = True
-    | otherwise = hasNumberReference (number : rest)
-  hasNumberReference (_ : rest) = hasNumberReference rest
-  hasNumberReference [] = False
-  sourceFiles directory = do
-    exists <- doesDirectoryExist directory
-    if not exists
-      then pure []
-      else do
-        entries <- sort <$> listDirectory directory
-        concatMapM
-          ( \entry -> do
-              let path = directory </> entry
-              isDirectory <- doesDirectoryExist path
-              if isDirectory then sourceFiles path else pure [path | takeExtension path `elem` [".hs", ".py"]]
-          )
-          entries
+        pure
+            [ Violation
+                (rrel root file)
+                ("bare phase/sprint number on line " ++ show lineNumber ++ "; cite the owning phase by name and link; rewrite DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md")
+            | (lineNumber, line) <- zip [1 :: Int ..] (lines contents)
+            , hasNumberedPhaseReference line
+            ]
+    sourceFiles directory = do
+        exists <- doesDirectoryExist directory
+        if not exists
+            then pure []
+            else do
+                entries <- sort <$> listDirectory directory
+                concatMapM
+                    ( \entry -> do
+                        let path = directory </> entry
+                        isDirectory <- doesDirectoryExist path
+                        if isDirectory then sourceFiles path else pure [path | takeExtension path `elem` [".hs", ".py"]]
+                    )
+                    entries
 
--- | Locate the repository root by walking up from @start@ until a directory
--- containing both @documents/@ and @DEVELOPMENT_PLAN/@ is found.
+{- | Locate the repository root by walking up from @start@ until a directory
+containing both @documents/@ and @DEVELOPMENT_PLAN/@ is found.
+-}
 findRepoRoot :: FilePath -> IO (Maybe FilePath)
 findRepoRoot start = go (normalise start) (32 :: Int)
   where
     go _ 0 = pure Nothing
     go dir n = do
-      hasDocs <- doesDirectoryExist (dir </> "documents")
-      hasPlan <- doesDirectoryExist (dir </> "DEVELOPMENT_PLAN")
-      if hasDocs && hasPlan
-        then pure (Just dir)
-        else
-          let parent = takeDirectory dir
-           in if parent == dir then pure Nothing else go parent (n - 1)
+        hasDocs <- doesDirectoryExist (dir </> "documents")
+        hasPlan <- doesDirectoryExist (dir </> "DEVELOPMENT_PLAN")
+        if hasDocs && hasPlan
+            then pure (Just dir)
+            else
+                let parent = takeDirectory dir
+                 in if parent == dir then pure Nothing else go parent (n - 1)
 
 -- ---------------------------------------------------------------------------
 -- Individual checks
@@ -263,57 +286,57 @@ findRepoRoot start = go (normalise start) (32 :: Int)
 
 checkGovernedMeta :: FilePath -> FilePath -> IO [Violation]
 checkGovernedMeta root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      missing label present = [Violation rel ("missing " ++ label) | not present]
-  pure $
-    concat
-      [ [Violation rel "first non-empty line is not a '# Title' heading" | not (firstIsTitle ls)],
-        missing "**Status**: line" (anyLineStarts "**Status**:" ls),
-        missing "**Supersedes**: line" (anyLineStarts "**Supersedes**:" ls),
-        missing "**Referenced by**: line" (anyLineStarts "**Referenced by**:" ls),
-        missing "> **Purpose**: blockquote" (anyLineStarts "> **Purpose**:" ls),
-        [Violation rel "YAML front-matter is no longer permitted" | hasYamlFrontMatter ls]
-      ]
+    ls <- readLines file
+    let rel = rrel root file
+        missing label present = [Violation rel ("missing " ++ label) | not present]
+    pure $
+        concat
+            [ [Violation rel "first non-empty line is not a '# Title' heading" | not (firstIsTitle ls)]
+            , missing "**Status**: line" (anyLineStarts "**Status**:" ls)
+            , missing "**Supersedes**: line" (anyLineStarts "**Supersedes**:" ls)
+            , missing "**Referenced by**: line" (anyLineStarts "**Referenced by**:" ls)
+            , missing "> **Purpose**: blockquote" (anyLineStarts "> **Purpose**:" ls)
+            , [Violation rel "YAML front-matter is no longer permitted" | hasYamlFrontMatter ls]
+            ]
 
 checkRootDoc :: FilePath -> FilePath -> IO [Violation]
 checkRootDoc root file = do
-  exists <- doesFileExist file
-  if not exists
-    then pure [Violation (rrel root file) "required root document is missing"]
-    else checkRootDocPresent root file
+    exists <- doesFileExist file
+    if not exists
+        then pure [Violation (rrel root file) "required root document is missing"]
+        else checkRootDocPresent root file
 
 checkRootDocPresent :: FilePath -> FilePath -> IO [Violation]
 checkRootDocPresent root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      name = takeFileName file
-      expectedStatus
-        | name == "README.md" = "Governed orientation document"
-        | otherwise = "Governed entry document"
-      statusOk = any (\l -> ("**Status**:" `isPrefixOf` trimStart l) && (expectedStatus `isInfixOf` l)) ls
-      missing label present = [Violation rel ("missing " ++ label) | not present]
-  pure $
-    concat
-      [ [Violation rel "first non-empty line is not a '# Title' heading" | not (firstIsTitle ls)],
-        [Violation rel ("**Status**: must read '" ++ expectedStatus ++ "'") | not statusOk],
-        missing "**Supersedes**: line" (anyLineStarts "**Supersedes**:" ls),
-        missing "**Canonical homes**: line" (anyLineStarts "**Canonical homes**:" ls),
-        missing "> **Purpose**: blockquote" (anyLineStarts "> **Purpose**:" ls)
-      ]
+    ls <- readLines file
+    let rel = rrel root file
+        name = takeFileName file
+        expectedStatus
+            | name == "README.md" = "Governed orientation document"
+            | otherwise = "Governed entry document"
+        statusOk = any (\l -> ("**Status**:" `isPrefixOf` trimStart l) && (expectedStatus `isInfixOf` l)) ls
+        missing label present = [Violation rel ("missing " ++ label) | not present]
+    pure $
+        concat
+            [ [Violation rel "first non-empty line is not a '# Title' heading" | not (firstIsTitle ls)]
+            , [Violation rel ("**Status**: must read '" ++ expectedStatus ++ "'") | not statusOk]
+            , missing "**Supersedes**: line" (anyLineStarts "**Supersedes**:" ls)
+            , missing "**Canonical homes**: line" (anyLineStarts "**Canonical homes**:" ls)
+            , missing "> **Purpose**: blockquote" (anyLineStarts "> **Purpose**:" ls)
+            ]
 
 checkBroadDoctrine :: FilePath -> FilePath -> IO [Violation]
 checkBroadDoctrine root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      hasSummary = anyLineStarts "## TL;DR" ls || anyLineStarts "## Executive Summary" ls
-  pure [Violation rel "broad doctrine doc missing '## TL;DR' or '## Executive Summary'" | not hasSummary]
+    ls <- readLines file
+    let rel = rrel root file
+        hasSummary = anyLineStarts "## TL;DR" ls || anyLineStarts "## Executive Summary" ls
+    pure [Violation rel "broad doctrine doc missing '## TL;DR' or '## Executive Summary'" | not hasSummary]
 
 checkDocRequirements :: FilePath -> FilePath -> IO [Violation]
 checkDocRequirements root file = do
-  ls <- readLines file
-  let rel = rrel root file
-  pure [Violation rel "phase document missing '## Documentation Requirements' section" | not (anyLineStarts "## Documentation Requirements" ls)]
+    ls <- readLines file
+    let rel = rrel root file
+    pure [Violation rel "phase document missing '## Documentation Requirements' section" | not (anyLineStarts "## Documentation Requirements" ls)]
 
 -- ---------------------------------------------------------------------------
 -- Plan doctrine
@@ -330,23 +353,23 @@ means two documents claim one execution position.
 -}
 checkPhaseNumbering :: FilePath -> [FilePath] -> [Violation]
 checkPhaseNumbering root phaseDocs =
-  duplicates ++ gaps
+    duplicates ++ gaps
   where
     numbered = [(n, f) | f <- phaseDocs, Just n <- [phaseNumberOf f]]
     ns = sort (map fst numbered)
     rel = rrel root
     duplicates =
-      [ Violation (rel f) ("duplicate phase number " ++ show n)
-      | (n, f) <- numbered,
-        length (filter (== n) ns) > 1
-      ]
-    gaps = case ns of
-      [] -> []
-      _ ->
-        [ Violation "DEVELOPMENT_PLAN" ("phase numbering is not contiguous from 0: missing " ++ show missing)
-        | let missing = [0 .. maximum ns] `without` ns,
-          not (null missing)
+        [ Violation (rel f) ("duplicate phase number " ++ show n)
+        | (n, f) <- numbered
+        , length (filter (== n) ns) > 1
         ]
+    gaps = case ns of
+        [] -> []
+        _ ->
+            [ Violation "DEVELOPMENT_PLAN" ("phase numbering is not contiguous from 0: missing " ++ show missing)
+            | let missing = [0 .. maximum ns] `without` ns
+            , not (null missing)
+            ]
     without xs ys = [x | x <- xs, x `notElem` ys]
 
 {- | § G: a phase document carries the required header fields. @Depends on@ and
@@ -355,38 +378,39 @@ field is a hole in both.
 -}
 checkPhaseHeader :: FilePath -> FilePath -> IO [Violation]
 checkPhaseHeader root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      missing field =
-        [ Violation rel ("phase document missing '**" ++ field ++ "**:' header field")
-        | isNothing (phaseHeaderFieldValue field ls)
-        ]
-      badStatus =
-        [ Violation rel ("phase status is not one of Done|Active|Planned: " ++ observed)
-        | Just observed <- [phaseHeaderFieldValue "Status" ls],
-          observed `notElem` ["Done", "Active", "Planned"]
-        ]
-      badGateKind =
-        [ Violation rel ("phase gate kind is not self-verifying|deferred: " ++ observed)
-        | Just observed <- [phaseHeaderFieldValue "Gate kind" ls],
-          observed `notElem` ["self-verifying", "deferred"]
-        ]
-  pure
-    ( concatMap missing ["Status", "Depends on", "Substrates", "Gate", "Gate kind"]
-        ++ badStatus
-        ++ badGateKind
-    )
+    ls <- readLines file
+    let rel = rrel root file
+        missing field =
+            [ Violation rel ("phase document missing '**" ++ field ++ "**:' header field")
+            | isNothing (phaseHeaderFieldValue field ls)
+            ]
+        badStatus =
+            [ Violation rel ("phase status is not one of Done|Active|Planned: " ++ observed)
+            | Just observed <- [phaseHeaderFieldValue "Status" ls]
+            , observed `notElem` ["Done", "Active", "Planned"]
+            ]
+        badGateKind =
+            [ Violation rel ("phase gate kind is not self-verifying|deferred: " ++ observed)
+            | Just observed <- [phaseHeaderFieldValue "Gate kind" ls]
+            , observed `notElem` ["self-verifying", "deferred"]
+            ]
+    pure
+        ( concatMap missing ["Status", "Depends on", "Substrates", "Gate", "Gate kind"]
+            ++ badStatus
+            ++ badGateKind
+        )
 
--- | One parsed row from @DEVELOPMENT_PLAN/README.md@'s status table.
---
--- The link label is deliberately discarded. Phase titles are prose and can be
--- edited without changing identity; the numeric cell and normalized link path
--- are the stable join key shared with the phase documents.
+{- | One parsed row from @DEVELOPMENT_PLAN/README.md@'s status table.
+
+The link label is deliberately discarded. Phase titles are prose and can be
+edited without changing identity; the numeric cell and normalized link path
+are the stable join key shared with the phase documents.
+-}
 data PhaseStatusRow = PhaseStatusRow
-  { statusRowNumber :: Int,
-    statusRowPath :: FilePath,
-    statusRowStatus :: String
-  }
+    { statusRowNumber :: Int
+    , statusRowPath :: FilePath
+    , statusRowStatus :: String
+    }
 
 {- | § J: every phase document's header status agrees with the one
 cross-phase status source of truth.
@@ -399,201 +423,203 @@ the comparison vacuously pass.
 -}
 checkPhaseStatusHarmony :: FilePath -> [FilePath] -> IO [Violation]
 checkPhaseStatusHarmony root phaseDocs = do
-  let readme = root </> "DEVELOPMENT_PLAN" </> "README.md"
-      readmeRel = rrel root readme
-  exists <- doesFileExist readme
-  if not exists
-    then pure [Violation readmeRel "required Current Phase Status source is missing"]
-    else do
-      readmeLines <- readLines readme
-      documents <- mapM readPhaseDocument phaseDocs
-      let (rows, tableViolations) = parsePhaseStatusTable root readme readmeLines
-          numberedDocuments =
-            [ (number, rrel root file, status)
-            | (file, Just number, status) <- documents
-            ]
-          malformedDocumentViolations =
-            [ Violation
-                (rrel root file)
-                "phase status cannot be matched because the phase filename has no numeric phase identity"
-            | (file, Nothing, _status) <- documents
-            ]
-          duplicateNumberViolations =
-            [ Violation
-                readmeRel
-                ("duplicate Current Phase Status row for phase number " ++ show number)
-            | number <- nub (map statusRowNumber rows),
-              length (filter ((== number) . statusRowNumber) rows) > 1
-            ]
-          duplicatePathViolations =
-            [ Violation
-                readmeRel
-                ("duplicate Current Phase Status row for path " ++ path)
-            | path <- nub (map statusRowPath rows),
-              length (filter ((== path) . statusRowPath) rows) > 1
-            ]
-          missingRowViolations =
-            [ Violation
-                readmeRel
-                ( "Current Phase Status table is missing phase "
-                    ++ show number
-                    ++ " row for "
-                    ++ path
+    let readme = root </> "DEVELOPMENT_PLAN" </> "README.md"
+        readmeRel = rrel root readme
+    exists <- doesFileExist readme
+    if not exists
+        then pure [Violation readmeRel "required Current Phase Status source is missing"]
+        else do
+            readmeLines <- readLines readme
+            documents <- mapM readPhaseDocument phaseDocs
+            let (rows, tableViolations) = parsePhaseStatusTable root readme readmeLines
+                numberedDocuments =
+                    [ (number, rrel root file, status)
+                    | (file, Just number, status) <- documents
+                    ]
+                malformedDocumentViolations =
+                    [ Violation
+                        (rrel root file)
+                        "phase status cannot be matched because the phase filename has no numeric phase identity"
+                    | (file, Nothing, _status) <- documents
+                    ]
+                duplicateNumberViolations =
+                    [ Violation
+                        readmeRel
+                        ("duplicate Current Phase Status row for phase number " ++ show number)
+                    | number <- nub (map statusRowNumber rows)
+                    , length (filter ((== number) . statusRowNumber) rows) > 1
+                    ]
+                duplicatePathViolations =
+                    [ Violation
+                        readmeRel
+                        ("duplicate Current Phase Status row for path " ++ path)
+                    | path <- nub (map statusRowPath rows)
+                    , length (filter ((== path) . statusRowPath) rows) > 1
+                    ]
+                missingRowViolations =
+                    [ Violation
+                        readmeRel
+                        ( "Current Phase Status table is missing phase "
+                            ++ show number
+                            ++ " row for "
+                            ++ path
+                        )
+                    | (number, path, _status) <- numberedDocuments
+                    , null (matchingRows number path rows)
+                    ]
+                missingHeaderStatusViolations =
+                    [ Violation
+                        path
+                        ( "phase status harmony cannot compare phase "
+                            ++ show number
+                            ++ " because the phase header is missing '**Status**:'"
+                        )
+                    | (number, path, Nothing) <- numberedDocuments
+                    ]
+                unmatchedRowViolations =
+                    [ Violation
+                        readmeRel
+                        ( "Current Phase Status row for phase "
+                            ++ show (statusRowNumber row)
+                            ++ " and path "
+                            ++ statusRowPath row
+                            ++ " does not match any phase document"
+                        )
+                    | row <- rows
+                    , not
+                        ( any
+                            (\(number, path, _status) -> number == statusRowNumber row && path == statusRowPath row)
+                            numberedDocuments
+                        )
+                    ]
+                mismatchViolations =
+                    [ Violation
+                        path
+                        ( "phase status mismatch for phase "
+                            ++ show number
+                            ++ ": README has "
+                            ++ tableStatus
+                            ++ " but the phase header has "
+                            ++ documentStatus
+                        )
+                    | (number, path, Just documentStatus) <- numberedDocuments
+                    , tableStatus <- nub (map statusRowStatus (matchingRows number path rows))
+                    , tableStatus /= documentStatus
+                    ]
+            pure
+                ( tableViolations
+                    ++ malformedDocumentViolations
+                    ++ duplicateNumberViolations
+                    ++ duplicatePathViolations
+                    ++ missingRowViolations
+                    ++ missingHeaderStatusViolations
+                    ++ unmatchedRowViolations
+                    ++ mismatchViolations
                 )
-            | (number, path, _status) <- numberedDocuments,
-              null (matchingRows number path rows)
-            ]
-          missingHeaderStatusViolations =
-            [ Violation
-                path
-                ( "phase status harmony cannot compare phase "
-                    ++ show number
-                    ++ " because the phase header is missing '**Status**:'"
-                )
-            | (number, path, Nothing) <- numberedDocuments
-            ]
-          unmatchedRowViolations =
-            [ Violation
-                readmeRel
-                ( "Current Phase Status row for phase "
-                    ++ show (statusRowNumber row)
-                    ++ " and path "
-                    ++ statusRowPath row
-                    ++ " does not match any phase document"
-                )
-            | row <- rows,
-              not
-                ( any
-                    (\(number, path, _status) -> number == statusRowNumber row && path == statusRowPath row)
-                    numberedDocuments
-                )
-            ]
-          mismatchViolations =
-            [ Violation
-                path
-                ( "phase status mismatch for phase "
-                    ++ show number
-                    ++ ": README has "
-                    ++ tableStatus
-                    ++ " but the phase header has "
-                    ++ documentStatus
-                )
-            | (number, path, Just documentStatus) <- numberedDocuments,
-              tableStatus <- nub (map statusRowStatus (matchingRows number path rows)),
-              tableStatus /= documentStatus
-            ]
-      pure
-        ( tableViolations
-            ++ malformedDocumentViolations
-            ++ duplicateNumberViolations
-            ++ duplicatePathViolations
-            ++ missingRowViolations
-            ++ missingHeaderStatusViolations
-            ++ unmatchedRowViolations
-            ++ mismatchViolations
-        )
   where
     readPhaseDocument file = do
-      ls <- readLines file
-      pure (file, phaseNumberOf file, phaseHeaderFieldValue "Status" ls)
+        ls <- readLines file
+        pure (file, phaseNumberOf file, phaseHeaderFieldValue "Status" ls)
 
 matchingRows :: Int -> FilePath -> [PhaseStatusRow] -> [PhaseStatusRow]
 matchingRows number path =
-  filter (\row -> statusRowNumber row == number && statusRowPath row == path)
+    filter (\row -> statusRowNumber row == number && statusRowPath row == path)
 
--- | Parse only the table beneath the exact status-section heading. Other
--- tables in the plan README are irrelevant to the status contract.
+{- | Parse only the table beneath the exact status-section heading. Other
+tables in the plan README are irrelevant to the status contract.
+-}
 parsePhaseStatusTable :: FilePath -> FilePath -> [String] -> ([PhaseStatusRow], [Violation])
 parsePhaseStatusTable root readme ls =
-  case currentPhaseStatusSection ls of
-    Nothing -> ([], [Violation rel "missing '## Current Phase Status' section"])
-    Just section ->
-      case dropWhile (not . isTableLine) section of
-        [] -> ([], [Violation rel "Current Phase Status section has no markdown table"])
-        tableStart ->
-          let tableLines = takeWhile isTableLine tableStart
-              headerCells = firstTableCells tableLines
-              expectedWidth = max 3 (length headerCells)
-              headerViolations =
-                [ Violation rel "malformed Current Phase Status table header; expected #, Phase, and Status columns"
-                | take 3 headerCells /= ["#", "Phase", "Status"]
-                ]
-              separatorCells = case drop 1 tableLines of
-                (separator : _) -> case splitTableRow separator of
-                  Just cells -> cells
-                  Nothing -> []
-                [] -> []
-              separatorViolations =
-                [ Violation rel "malformed Current Phase Status table separator"
-                | length separatorCells /= expectedWidth
-                    || not (all isSeparatorCell separatorCells)
-                ]
-              parsed = map (parsePhaseStatusRow root readme expectedWidth) (drop 2 tableLines)
-              rows = [row | Right row <- parsed]
-              malformedRowViolations = [violation | Left violation <- parsed]
-           in (rows, headerViolations ++ separatorViolations ++ malformedRowViolations)
+    case currentPhaseStatusSection ls of
+        Nothing -> ([], [Violation rel "missing '## Current Phase Status' section"])
+        Just section ->
+            case dropWhile (not . isTableLine) section of
+                [] -> ([], [Violation rel "Current Phase Status section has no markdown table"])
+                tableStart ->
+                    let tableLines = takeWhile isTableLine tableStart
+                        headerCells = firstTableCells tableLines
+                        expectedWidth = max 3 (length headerCells)
+                        headerViolations =
+                            [ Violation rel "malformed Current Phase Status table header; expected #, Phase, and Status columns"
+                            | take 3 headerCells /= ["#", "Phase", "Status"]
+                            ]
+                        separatorCells = case drop 1 tableLines of
+                            (separator : _) -> case splitTableRow separator of
+                                Just cells -> cells
+                                Nothing -> []
+                            [] -> []
+                        separatorViolations =
+                            [ Violation rel "malformed Current Phase Status table separator"
+                            | length separatorCells /= expectedWidth
+                                || not (all isSeparatorCell separatorCells)
+                            ]
+                        parsed = map (parsePhaseStatusRow root readme expectedWidth) (drop 2 tableLines)
+                        rows = [row | Right row <- parsed]
+                        malformedRowViolations = [violation | Left violation <- parsed]
+                     in (rows, headerViolations ++ separatorViolations ++ malformedRowViolations)
   where
     rel = rrel root readme
     firstTableCells tableLines = case tableLines of
-      (header : _) -> case splitTableRow header of
-        Just cells -> cells
-        Nothing -> []
-      [] -> []
+        (header : _) -> case splitTableRow header of
+            Just cells -> cells
+            Nothing -> []
+        [] -> []
 
 parsePhaseStatusRow :: FilePath -> FilePath -> Int -> String -> Either Violation PhaseStatusRow
 parsePhaseStatusRow root readme expectedWidth row =
-  case splitTableRow row of
-    Nothing -> malformed "row must begin and end with '|'"
-    Just cells
-      | length cells /= expectedWidth ->
-          malformed
-            ( "expected "
-                ++ show expectedWidth
-                ++ " cells but found "
-                ++ show (length cells)
-            )
-      | numberCell : phaseCell : statusCell : _ <- cells ->
-          case parsePhaseNumber numberCell of
-            Nothing -> malformed "the # cell is not a non-negative integer"
-            Just number ->
-              case extractLinkTargets phaseCell of
-                [target]
-                  | isCheckableTarget target ->
-                      let linkedPath =
-                            rrel root
-                              (takeDirectory readme </> takeWhile (/= '#') target)
-                       in case phaseNumberOf linkedPath of
-                            Nothing -> malformed "the Phase link does not target a phase-N-*.md document"
-                            Just linkedNumber
-                              | linkedNumber /= number ->
-                                  malformed
-                                    ( "phase number "
-                                        ++ show number
-                                        ++ " does not match linked path "
-                                        ++ linkedPath
-                                    )
-                              | statusCell `notElem` ["Done", "Active", "Planned"] ->
-                                  malformed
-                                    ( "the Status cell is not one of Done|Active|Planned: "
-                                        ++ statusCell
-                                    )
-                              | otherwise -> Right (PhaseStatusRow number linkedPath statusCell)
-                _ -> malformed "the Phase cell must contain exactly one relative markdown link"
-      | otherwise -> malformed "row has fewer than the required #, Phase, and Status cells"
+    case splitTableRow row of
+        Nothing -> malformed "row must begin and end with '|'"
+        Just cells
+            | length cells /= expectedWidth ->
+                malformed
+                    ( "expected "
+                        ++ show expectedWidth
+                        ++ " cells but found "
+                        ++ show (length cells)
+                    )
+            | numberCell : phaseCell : statusCell : _ <- cells ->
+                case parsePhaseNumber numberCell of
+                    Nothing -> malformed "the # cell is not a non-negative integer"
+                    Just number ->
+                        case extractLinkTargets phaseCell of
+                            [target]
+                                | isCheckableTarget target ->
+                                    let linkedPath =
+                                            rrel
+                                                root
+                                                (takeDirectory readme </> takeWhile (/= '#') target)
+                                     in case phaseNumberOf linkedPath of
+                                            Nothing -> malformed "the Phase link does not target a phase-N-*.md document"
+                                            Just linkedNumber
+                                                | linkedNumber /= number ->
+                                                    malformed
+                                                        ( "phase number "
+                                                            ++ show number
+                                                            ++ " does not match linked path "
+                                                            ++ linkedPath
+                                                        )
+                                                | statusCell `notElem` ["Done", "Active", "Planned"] ->
+                                                    malformed
+                                                        ( "the Status cell is not one of Done|Active|Planned: "
+                                                            ++ statusCell
+                                                        )
+                                                | otherwise -> Right (PhaseStatusRow number linkedPath statusCell)
+                            _ -> malformed "the Phase cell must contain exactly one relative markdown link"
+            | otherwise -> malformed "row has fewer than the required #, Phase, and Status cells"
   where
     rel = rrel root readme
     malformed reason =
-      Left
-        ( Violation
-            rel
-            ("malformed Current Phase Status row (" ++ reason ++ "): " ++ trim row)
-        )
+        Left
+            ( Violation
+                rel
+                ("malformed Current Phase Status row (" ++ reason ++ "): " ++ trim row)
+            )
 
 currentPhaseStatusSection :: [String] -> Maybe [String]
 currentPhaseStatusSection ls =
-  case dropWhile ((/= "## Current Phase Status") . trim) ls of
-    [] -> Nothing
-    (_heading : rest) -> Just (takeWhile (not . isLevelTwoHeading) rest)
+    case dropWhile ((/= "## Current Phase Status") . trim) ls of
+        [] -> Nothing
+        (_heading : rest) -> Just (takeWhile (not . isLevelTwoHeading) rest)
   where
     isLevelTwoHeading line = "## " `isPrefixOf` trim line
 
@@ -602,29 +628,30 @@ isTableLine = ("|" `isPrefixOf`) . trim
 
 splitTableRow :: String -> Maybe [String]
 splitTableRow row =
-  case trim row of
-    '|' : rest
-      | not (null rest), last rest == '|' ->
-          Just (map trim (splitOnPipe (init rest)))
-    _ -> Nothing
+    case trim row of
+        '|' : rest
+            | not (null rest)
+            , last rest == '|' ->
+                Just (map trim (splitOnPipe (init rest)))
+        _ -> Nothing
   where
     splitOnPipe [] = [""]
     splitOnPipe input =
-      let (cell, remainder) = break (== '|') input
-       in cell : case remainder of
-            [] -> []
-            (_pipe : more) -> splitOnPipe more
+        let (cell, remainder) = break (== '|') input
+         in cell : case remainder of
+                [] -> []
+                (_pipe : more) -> splitOnPipe more
 
 isSeparatorCell :: String -> Bool
 isSeparatorCell cell =
-  not (null cell) && all (`elem` ("-:" :: String)) cell
+    not (null cell) && all (`elem` ("-:" :: String)) cell
 
 parsePhaseNumber :: String -> Maybe Int
 parsePhaseNumber raw =
-  case reads raw of
-    [(number, "")]
-      | number >= 0 -> Just number
-    _ -> Nothing
+    case reads raw of
+        [(number, "")]
+            | number >= 0 -> Just number
+        _ -> Nothing
 
 {- | § A: a phase depends only on strictly lower-numbered phases.
 
@@ -634,22 +661,22 @@ is prose, so a link-only reader matched none of them.
 -}
 checkPhaseOrdering :: FilePath -> FilePath -> IO [Violation]
 checkPhaseOrdering root file = do
-  ls <- readLines file
-  let rel = rrel root file
-  pure $ case (phaseNumberOf file, fieldBlockValue "Depends on" ls) of
-    (Just self, Just raw) ->
-      [ Violation
-          rel
-          ( "phase "
-              ++ show self
-              ++ " depends on phase "
-              ++ show dep
-              ++ ", which is not strictly lower"
-          )
-      | dep <- referencedPhaseNumbers raw,
-        dep >= self
-      ]
-    _ -> []
+    ls <- readLines file
+    let rel = rrel root file
+    pure $ case (phaseNumberOf file, fieldBlockValue "Depends on" ls) of
+        (Just self, Just raw) ->
+            [ Violation
+                rel
+                ( "phase "
+                    ++ show self
+                    ++ " depends on phase "
+                    ++ show dep
+                    ++ ", which is not strictly lower"
+                )
+            | dep <- referencedPhaseNumbers raw
+            , dep >= self
+            ]
+        _ -> []
 
 {- | § II: acceptance phases are terminal — nothing depends on them.
 
@@ -664,45 +691,45 @@ phase reads Done or Active, so it cannot be satisfied by re-closing the target.
 -}
 checkAcceptanceTerminal :: FilePath -> [FilePath] -> IO [Violation]
 checkAcceptanceTerminal root phaseDocs = do
-  entries <- mapM readEntry phaseDocs
-  let acceptance =
-        [ number
-        | PhaseEdges{edgePhase = Just number, edgeSubstrates = Just substrates} <- entries,
-          substrates `elem` ["apple-silicon", "nvidia", "windows"]
+    entries <- mapM readEntry phaseDocs
+    let acceptance =
+            [ number
+            | PhaseEdges{edgePhase = Just number, edgeSubstrates = Just substrates} <- entries
+            , substrates `elem` ["apple-silicon", "nvidia", "windows"]
+            ]
+    pure
+        [ Violation
+            (rrel root (edgeFile entry))
+            ( "phase "
+                ++ show number
+                ++ " depends on acceptance phase "
+                ++ show dependency
+                ++ "; § II makes acceptance phases terminal so no phase waits on hardware it does not declare"
+            )
+        | entry <- entries
+        , Just number <- [edgePhase entry]
+        , dependency <- edgeDependencies entry
+        , dependency `elem` acceptance
+        , dependency /= number
         ]
-  pure
-    [ Violation
-      (rrel root (edgeFile entry))
-      ( "phase "
-          ++ show number
-          ++ " depends on acceptance phase "
-          ++ show dependency
-          ++ "; § II makes acceptance phases terminal so no phase waits on hardware it does not declare"
-      )
-    | entry <- entries,
-      Just number <- [edgePhase entry],
-      dependency <- edgeDependencies entry,
-      dependency `elem` acceptance,
-      dependency /= number
-    ]
   where
     readEntry file = do
-      ls <- readLines file
-      pure
-        PhaseEdges
-          { edgeFile = file,
-            edgePhase = phaseNumberOf file,
-            edgeSubstrates = phaseHeaderFieldValue "Substrates" ls,
-            edgeDependencies = maybe [] referencedPhaseNumbers (fieldBlockValue "Depends on" ls)
-          }
+        ls <- readLines file
+        pure
+            PhaseEdges
+                { edgeFile = file
+                , edgePhase = phaseNumberOf file
+                , edgeSubstrates = phaseHeaderFieldValue "Substrates" ls
+                , edgeDependencies = maybe [] referencedPhaseNumbers (fieldBlockValue "Depends on" ls)
+                }
 
 -- | One phase's identity, declared substrate, and dependency edges.
 data PhaseEdges = PhaseEdges
-  { edgeFile :: FilePath,
-    edgePhase :: Maybe Int,
-    edgeSubstrates :: Maybe String,
-    edgeDependencies :: [Int]
-  }
+    { edgeFile :: FilePath
+    , edgePhase :: Maybe Int
+    , edgeSubstrates :: Maybe String
+    , edgeDependencies :: [Int]
+    }
 
 {- | § A: the narrative is strictly additive, so no phase document announces a
 removal, a retirement, or a correction. A hit here means a reversal crept back
@@ -710,18 +737,18 @@ in, and the fix is to rewrite the phase that introduced the surface.
 -}
 checkNoReversal :: FilePath -> FilePath -> IO [Violation]
 checkNoReversal root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      -- Only sprint titles and phase titles are scanned. Prose legitimately says
-      -- "release removes the directory"; a *title* that announces a removal is
-      -- the signal that a phase is undoing an earlier one.
-      titles = [l | l <- ls, "### Sprint " `isPrefixOf` trim l || "# Phase " `isPrefixOf` trim l]
-  pure
-    [ Violation rel ("phase narrative reverses earlier work: " ++ word ++ " in " ++ trim l)
-    | l <- titles,
-      word <- reversalVocabulary,
-      word `isInfixOf` l
-    ]
+    ls <- readLines file
+    let rel = rrel root file
+        -- Only sprint titles and phase titles are scanned. Prose legitimately says
+        -- "release removes the directory"; a *title* that announces a removal is
+        -- the signal that a phase is undoing an earlier one.
+        titles = [l | l <- ls, "### Sprint " `isPrefixOf` trim l || "# Phase " `isPrefixOf` trim l]
+    pure
+        [ Violation rel ("phase narrative reverses earlier work: " ++ word ++ " in " ++ trim l)
+        | l <- titles
+        , word <- reversalVocabulary
+        , word `isInfixOf` l
+        ]
 
 {- | The vocabulary that marks a phase as undoing another (§ A).
 
@@ -733,16 +760,16 @@ check — a genuine reopening shows up as a dependency that is not strictly lowe
 -}
 reversalVocabulary :: [String]
 reversalVocabulary =
-  [ "Historical",
-    "Superseded",
-    "Retire",
-    "Retired",
-    "Deprecat",
-    "Remove the",
-    "Removal of",
-    "Corrected",
-    "Reproduced"
-  ]
+    [ "Historical"
+    , "Superseded"
+    , "Retire"
+    , "Retired"
+    , "Deprecat"
+    , "Remove the"
+    , "Removal of"
+    , "Corrected"
+    , "Reproduced"
+    ]
 
 {- | § C and § G: every sprint declares a status from the closed vocabulary, an
 @Active@ sprint has a non-empty @#### Remaining Work@, and no sprint carries a
@@ -750,48 +777,48 @@ reversalVocabulary =
 -}
 checkSprintStructure :: FilePath -> FilePath -> IO [Violation]
 checkSprintStructure root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      blocked =
-        [ Violation rel "sprint carries a '**Blocked by**' field, but a phase depends only on lower phases"
-        | any (\l -> "**Blocked by**:" `isPrefixOf` trim l) ls
-        ]
-      titles =
-        [ (title, trim (drop 1 (dropWhile (/= '[') title)))
-        | l <- ls,
-          "### Sprint " `isPrefixOf` trim l,
-          let title = trim l
-        ]
-      badTag =
-        [ Violation rel ("sprint title has no [Done|Active|Planned] tag: " ++ title)
-        | (title, tag) <- titles,
-          takeWhile (/= ']') tag `notElem` ["Done", "Active", "Planned"]
-        ]
-      sections = documentSections ls
-      activeWithoutWork =
-        [ Violation rel ("an Active " ++ sprint ++ " has an empty '#### Remaining Work' section")
-        | sprint <- activeSprints sections,
-          s <- remainingWorkOf sections sprint,
-          all (null . trim) (sectionBody s)
-        ]
-      -- The title tag and the body field are two independent declarations of one
-      -- fact, and every other sprint check reads the body while this one reads
-      -- the tag. Disagreement would let a sprint present as Done in the plan's
-      -- own table of contents while every rule that constrains a Done sprint
-      -- looked at the other value and skipped it.
-      tagDisagreement =
-        [ Violation
-          rel
-          (sprint ++ " title tag is [" ++ tag ++ "] but its '**Status**' reads " ++ body)
-        | s <- sections,
-          sectionLevel s == 3,
-          "Sprint " `isPrefixOf` sectionTitle s,
-          Just sprint <- [sectionSprint s],
-          let tag = takeWhile (/= ']') (drop 1 (dropWhile (/= '[') (sectionTitle s))),
-          Just body <- [fieldValue "Status" (sectionBody s)],
-          tag /= body
-        ]
-  pure (blocked ++ badTag ++ activeWithoutWork ++ tagDisagreement)
+    ls <- readLines file
+    let rel = rrel root file
+        blocked =
+            [ Violation rel "sprint carries a '**Blocked by**' field, but a phase depends only on lower phases"
+            | any (\l -> "**Blocked by**:" `isPrefixOf` trim l) ls
+            ]
+        titles =
+            [ (title, trim (drop 1 (dropWhile (/= '[') title)))
+            | l <- ls
+            , "### Sprint " `isPrefixOf` trim l
+            , let title = trim l
+            ]
+        badTag =
+            [ Violation rel ("sprint title has no [Done|Active|Planned] tag: " ++ title)
+            | (title, tag) <- titles
+            , takeWhile (/= ']') tag `notElem` ["Done", "Active", "Planned"]
+            ]
+        sections = documentSections ls
+        activeWithoutWork =
+            [ Violation rel ("an Active " ++ sprint ++ " has an empty '#### Remaining Work' section")
+            | sprint <- activeSprints sections
+            , s <- remainingWorkOf sections sprint
+            , all (null . trim) (sectionBody s)
+            ]
+        -- The title tag and the body field are two independent declarations of one
+        -- fact, and every other sprint check reads the body while this one reads
+        -- the tag. Disagreement would let a sprint present as Done in the plan's
+        -- own table of contents while every rule that constrains a Done sprint
+        -- looked at the other value and skipped it.
+        tagDisagreement =
+            [ Violation
+                rel
+                (sprint ++ " title tag is [" ++ tag ++ "] but its '**Status**' reads " ++ body)
+            | s <- sections
+            , sectionLevel s == 3
+            , "Sprint " `isPrefixOf` sectionTitle s
+            , Just sprint <- [sectionSprint s]
+            , let tag = takeWhile (/= ']') (drop 1 (dropWhile (/= '[') (sectionTitle s)))
+            , Just body <- [fieldValue "Status" (sectionBody s)]
+            , tag /= body
+            ]
+    pure (blocked ++ badTag ++ activeWithoutWork ++ tagDisagreement)
 
 {- | § A: a Remaining Work section never cites a later phase.
 
@@ -811,33 +838,33 @@ where the phase says what it is.
 -}
 checkRemainingWorkOrdering :: FilePath -> FilePath -> IO [Violation]
 checkRemainingWorkOrdering root file = do
-  ls <- readLines file
-  let rel = rrel root file
-  pure $ case phaseNumberOf file of
-    Nothing -> []
-    Just self ->
-      [ Violation
-          rel
-          ( scopeLabel section
-              ++ " cites phase "
-              ++ show linked
-              ++ " ("
-              ++ target
-              ++ "); a Remaining Work section states only what this phase owes,"
-              ++ " so a scope boundary belongs in the Objective"
-          )
-      | section <- documentSections ls,
-        sectionLevel section `elem` [2, 4],
-        isRemainingWorkTitle (sectionTitle section),
-        line <- sectionBody section,
-        target <- linkTargets line,
-        Just linked <- [phaseNumberOf target],
-        linked > self
-      ]
+    ls <- readLines file
+    let rel = rrel root file
+    pure $ case phaseNumberOf file of
+        Nothing -> []
+        Just self ->
+            [ Violation
+                rel
+                ( scopeLabel section
+                    ++ " cites phase "
+                    ++ show linked
+                    ++ " ("
+                    ++ target
+                    ++ "); a Remaining Work section states only what this phase owes,"
+                    ++ " so a scope boundary belongs in the Objective"
+                )
+            | section <- documentSections ls
+            , sectionLevel section `elem` [2, 4]
+            , isRemainingWorkTitle (sectionTitle section)
+            , line <- sectionBody section
+            , target <- linkTargets line
+            , Just linked <- [phaseNumberOf target]
+            , linked > self
+            ]
   where
     scopeLabel section = case sectionSprint section of
-      Just sprint -> sprint ++ "'s '#### Remaining Work'"
-      Nothing -> "the phase's '## Remaining Work'"
+        Just sprint -> sprint ++ "'s '#### Remaining Work'"
+        Nothing -> "the phase's '## Remaining Work'"
 
 {- | § C: an @Active@ phase carries a non-empty @## Remaining Work@, spelled one
 way.
@@ -854,34 +881,34 @@ The status comes from 'phaseHeaderFieldValue', never 'fieldValue': a sprint's ow
 -}
 checkActivePhaseRemainingWork :: FilePath -> FilePath -> IO [Violation]
 checkActivePhaseRemainingWork root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      sections =
-        [ section
-        | section <- documentSections ls,
-          sectionLevel section == 2,
-          isRemainingWorkTitle (sectionTitle section)
-        ]
-      drift =
-        [ Violation
-            rel
-            "phase-level remaining work is headed '## Phase Remaining Work'; § C's section is '## Remaining Work'"
-        | section <- sections,
-          sectionTitle section == "Phase Remaining Work"
-        ]
-      active = phaseHeaderFieldValue "Status" ls == Just "Active"
-      missing =
-        [ Violation rel "an Active phase has no '## Remaining Work' section"
-        | active,
-          null sections
-        ]
-      empty =
-        [ Violation rel "an Active phase has an empty '## Remaining Work' section"
-        | active,
-          section <- sections,
-          all (null . trim) (sectionBody section)
-        ]
-  pure (drift ++ missing ++ empty)
+    ls <- readLines file
+    let rel = rrel root file
+        sections =
+            [ section
+            | section <- documentSections ls
+            , sectionLevel section == 2
+            , isRemainingWorkTitle (sectionTitle section)
+            ]
+        drift =
+            [ Violation
+                rel
+                "phase-level remaining work is headed '## Phase Remaining Work'; § C's section is '## Remaining Work'"
+            | section <- sections
+            , sectionTitle section == "Phase Remaining Work"
+            ]
+        active = phaseHeaderFieldValue "Status" ls == Just "Active"
+        missing =
+            [ Violation rel "an Active phase has no '## Remaining Work' section"
+            | active
+            , null sections
+            ]
+        empty =
+            [ Violation rel "an Active phase has an empty '## Remaining Work' section"
+            | active
+            , section <- sections
+            , all (null . trim) (sectionBody section)
+            ]
+    pure (drift ++ missing ++ empty)
 
 {- | § C: an Active phase names the sprint that owns its owed work.
 
@@ -894,43 +921,43 @@ reopened phase has a defined way back to Done.
 -}
 checkActivePhaseOwnsRemainingWork :: FilePath -> FilePath -> IO [Violation]
 checkActivePhaseOwnsRemainingWork root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      sections = documentSections ls
-      active = phaseHeaderFieldValue "Status" ls == Just "Active"
-      phaseWork =
-        [ s
-        | s <- sections,
-          sectionLevel s == 2,
-          isRemainingWorkTitle (sectionTitle s)
-        ]
-      cited = nub (concatMap (concatMap sprintCitations . sectionBody) phaseWork)
-      known = [sprint | s <- sections, Just sprint <- [sectionSprint s]]
-      stillActive = activeSprints sections
-      missingCitation =
-        [ Violation
-          rel
-          "an Active phase's '## Remaining Work' names no sprint; the owed run has no '#### Validation' to land in"
-        | active,
-          null cited
-        ]
-      unknownSprint =
-        [ Violation
-          rel
-          ("an Active phase's '## Remaining Work' cites " ++ sprint ++ ", which this phase does not define")
-        | active,
-          sprint <- cited,
-          sprint `notElem` known
-        ]
-      noneActive =
-        [ Violation
-          rel
-          "an Active phase's '## Remaining Work' cites only Done sprints; the sprint owning the owed run is Active"
-        | active,
-          not (null cited),
-          all (`notElem` stillActive) cited
-        ]
-  pure (missingCitation ++ unknownSprint ++ noneActive)
+    ls <- readLines file
+    let rel = rrel root file
+        sections = documentSections ls
+        active = phaseHeaderFieldValue "Status" ls == Just "Active"
+        phaseWork =
+            [ s
+            | s <- sections
+            , sectionLevel s == 2
+            , isRemainingWorkTitle (sectionTitle s)
+            ]
+        cited = nub (concatMap (concatMap sprintCitations . sectionBody) phaseWork)
+        known = [sprint | s <- sections, Just sprint <- [sectionSprint s]]
+        stillActive = activeSprints sections
+        missingCitation =
+            [ Violation
+                rel
+                "an Active phase's '## Remaining Work' names no sprint; the owed run has no '#### Validation' to land in"
+            | active
+            , null cited
+            ]
+        unknownSprint =
+            [ Violation
+                rel
+                ("an Active phase's '## Remaining Work' cites " ++ sprint ++ ", which this phase does not define")
+            | active
+            , sprint <- cited
+            , sprint `notElem` known
+            ]
+        noneActive =
+            [ Violation
+                rel
+                "an Active phase's '## Remaining Work' cites only Done sprints; the sprint owning the owed run is Active"
+            | active
+            , not (null cited)
+            , all (`notElem` stillActive) cited
+            ]
+    pure (missingCitation ++ unknownSprint ++ noneActive)
 
 -- | Every @Sprint N.M@ label a line names.
 sprintCitations :: String -> [String]
@@ -938,11 +965,11 @@ sprintCitations = go
   where
     go [] = []
     go s
-      | "Sprint " `isPrefixOf` s
-      , (major@(_ : _), '.' : afterDot) <- span isDigit (drop 7 s)
-      , (minor@(_ : _), _) <- span isDigit afterDot =
-          ("Sprint " ++ major ++ "." ++ minor) : go (drop 7 s)
-      | otherwise = go (drop 1 s)
+        | "Sprint " `isPrefixOf` s
+        , (major@(_ : _), '.' : afterDot) <- span isDigit (drop 7 s)
+        , (minor@(_ : _), _) <- span isDigit afterDot =
+            ("Sprint " ++ major ++ "." ++ minor) : go (drop 7 s)
+        | otherwise = go (drop 1 s)
 
 {- | § C and § G: a @Done@ sprint has a @#### Remaining Work@ and it reads
 "None".
@@ -959,75 +986,76 @@ hardware (§ II), named there rather than parked here.
 -}
 checkDoneSprintRemainingWork :: FilePath -> FilePath -> IO [Violation]
 checkDoneSprintRemainingWork root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      sections = documentSections ls
-      done = sprintsWithStatus "Done" sections
-      missing =
-        [ Violation rel ("Done " ++ sprint ++ " has no '#### Remaining Work' section")
-        | sprint <- done,
-          null (remainingWorkOf sections sprint)
-        ]
-      declaresWork =
-        [ Violation
-            rel
-            ( "Done "
-                ++ sprint
-                ++ " declares remaining work; a Done sprint's '#### Remaining Work' begins with 'None'"
-            )
-        | sprint <- done,
-          section <- remainingWorkOf sections sprint,
-          not (beginsWithNone (sectionBody section))
-        ]
-  pure (missing ++ declaresWork)
+    ls <- readLines file
+    let rel = rrel root file
+        sections = documentSections ls
+        done = sprintsWithStatus "Done" sections
+        missing =
+            [ Violation rel ("Done " ++ sprint ++ " has no '#### Remaining Work' section")
+            | sprint <- done
+            , null (remainingWorkOf sections sprint)
+            ]
+        declaresWork =
+            [ Violation
+                rel
+                ( "Done "
+                    ++ sprint
+                    ++ " declares remaining work; a Done sprint's '#### Remaining Work' begins with 'None'"
+                )
+            | sprint <- done
+            , section <- remainingWorkOf sections sprint
+            , not (beginsWithNone (sectionBody section))
+            ]
+    pure (missing ++ declaresWork)
   where
     beginsWithNone body = case dropWhile (null . trim) body of
-      (l : _) -> "None" `isPrefixOf` trim l
-      [] -> False
+        (l : _) -> "None" `isPrefixOf` trim l
+        [] -> False
 
--- | A @Done@ phase declares no phase-level remaining work (§ C).
---
--- 'checkDoneSprintRemainingWork' holds every *sprint* to this rule and
--- 'checkActivePhaseRemainingWork' holds an @Active@ *phase* to its converse, but
--- nothing read a phase-level @## Remaining Work@ against the phase's own
--- @**Status**@ — so the one combination left unchecked was the one that actually
--- occurred. On 2026-09-08 the worked-demo phase
--- (@DEVELOPMENT_PLAN\/phase-24-worked-demo.md@) was found sitting @Done@, with a
--- current @**Gate evidence**@ row, above a phase-level section still naming its
--- live matrix run as owed — while the sprint that owns that run was itself
--- @[Done]@ with its own remaining work @None@. It was stale text left behind at closure
--- rather than real owed work, but § C is unambiguous that @Done@ requires \"no
--- remaining work in its scope\", and a reader had no way to tell the two apart.
---
--- The rule is deliberately the same shape as the sprint rule — the section must
--- begin with @None@ — so that closing a phase means writing the same word in both
--- places rather than deleting a section.
+{- | A @Done@ phase declares no phase-level remaining work (§ C).
+
+'checkDoneSprintRemainingWork' holds every *sprint* to this rule and
+'checkActivePhaseRemainingWork' holds an @Active@ *phase* to its converse, but
+nothing read a phase-level @## Remaining Work@ against the phase's own
+@**Status**@ — so the one combination left unchecked was the one that actually
+occurred. On 2026-09-08 the worked-demo phase
+(@DEVELOPMENT_PLAN\/phase-24-worked-demo.md@) was found sitting @Done@, with a
+current @**Gate evidence**@ row, above a phase-level section still naming its
+live matrix run as owed — while the sprint that owns that run was itself
+@[Done]@ with its own remaining work @None@. It was stale text left behind at closure
+rather than real owed work, but § C is unambiguous that @Done@ requires \"no
+remaining work in its scope\", and a reader had no way to tell the two apart.
+
+The rule is deliberately the same shape as the sprint rule — the section must
+begin with @None@ — so that closing a phase means writing the same word in both
+places rather than deleting a section.
+-}
 checkDonePhaseRemainingWork :: FilePath -> FilePath -> IO [Violation]
 checkDonePhaseRemainingWork root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      sections = documentSections ls
-      phaseRemaining =
-        [ s
-        | s <- sections,
-          sectionLevel s == 2,
-          isRemainingWorkTitle (sectionTitle s)
+    ls <- readLines file
+    let rel = rrel root file
+        sections = documentSections ls
+        phaseRemaining =
+            [ s
+            | s <- sections
+            , sectionLevel s == 2
+            , isRemainingWorkTitle (sectionTitle s)
+            ]
+    pure
+        [ Violation
+            rel
+            ( "Done phase declares remaining work; a Done phase's '## "
+                ++ sectionTitle s
+                ++ "' begins with 'None'"
+            )
+        | fieldValue "Status" ls == Just "Done"
+        , s <- phaseRemaining
+        , not (beginsWithNone (sectionBody s))
         ]
-  pure
-    [ Violation
-        rel
-        ( "Done phase declares remaining work; a Done phase's '## "
-            ++ sectionTitle s
-            ++ "' begins with 'None'"
-        )
-    | fieldValue "Status" ls == Just "Done",
-      s <- phaseRemaining,
-      not (beginsWithNone (sectionBody s))
-    ]
   where
     beginsWithNone body = case dropWhile (null . trim) body of
-      (l : _) -> "None" `isPrefixOf` trim l
-      [] -> False
+        (l : _) -> "None" `isPrefixOf` trim l
+        [] -> False
 
 {- | § II: every @**Substrates**@ declaration draws from the closed set, and each
 declares at most one substrate beyond the @linux-cpu@ baseline, so no phase is
@@ -1039,23 +1067,23 @@ budget rule was never the part that was failing to hold.
 -}
 checkSubstrateBudget :: FilePath -> FilePath -> IO [Violation]
 checkSubstrateBudget root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      declarations = fieldBlockValues "Substrates" ls
-      overBudget raw =
-        let special = [s | s <- ["apple-silicon", "nvidia", "windows"], s `isInfixOf` raw]
-         in [ Violation
+    ls <- readLines file
+    let rel = rrel root file
+        declarations = fieldBlockValues "Substrates" ls
+        overBudget raw =
+            let special = [s | s <- ["apple-silicon", "nvidia", "windows"], s `isInfixOf` raw]
+             in [ Violation
+                    rel
+                    ("phase declares more than one non-baseline substrate: " ++ unwords special)
+                | length special > 1
+                ]
+        unknown raw =
+            [ Violation
                 rel
-                ("phase declares more than one non-baseline substrate: " ++ unwords special)
-            | length special > 1
+                ("substrate declaration is not one of " ++ unwords substrateVocabulary ++ ": " ++ raw)
+            | raw `notElem` substrateVocabulary
             ]
-      unknown raw =
-        [ Violation
-          rel
-          ("substrate declaration is not one of " ++ unwords substrateVocabulary ++ ": " ++ raw)
-        | raw `notElem` substrateVocabulary
-        ]
-  pure (concatMap overBudget declarations ++ concatMap unknown declarations)
+    pure (concatMap overBudget declarations ++ concatMap unknown declarations)
 
 {- | The closed set a @**Substrates**@ declaration draws from.
 
@@ -1065,13 +1093,13 @@ parenthetical suffix generally would admit any suffix.
 -}
 substrateVocabulary :: [String]
 substrateVocabulary =
-  [ "none",
-    "none (static)",
-    "linux-cpu",
-    "apple-silicon",
-    "nvidia",
-    "windows"
-  ]
+    [ "none"
+    , "none (static)"
+    , "linux-cpu"
+    , "apple-silicon"
+    , "nvidia"
+    , "windows"
+    ]
 
 {- | The plan standards' rule that each contract names its owning phase.
 
@@ -1086,33 +1114,33 @@ must not be asked to.
 -}
 checkContractOwnership :: FilePath -> IO [Violation]
 checkContractOwnership root = do
-  let standards = root </> "DEVELOPMENT_PLAN" </> "development_plan_standards.md"
-      rel = rrel root standards
-  exists <- doesFileExist standards
-  if not exists
-    then pure [Violation rel "required plan standards document is missing"]
-    else do
-      ls <- readLines standards
-      let contractLines =
-            drop 1 (dropWhile ((/= "## hostbootstrap-Specific Contracts") . trim) ls)
-      pure
-        [ Violation
-            rel
-            ( "contract section "
-                ++ letters
-                ++ " names no owning phase; each contract opens with an '**Owning phase**:' line linking one"
-            )
-        | section <- documentSections contractLines,
-          sectionLevel section == 3,
-          Just letters <- [letteredSection (sectionTitle section)],
-          null
-            [ target
-            | line <- sectionBody section,
-              "**Owning phase**:" `isPrefixOf` trim line,
-              target <- linkTargets line,
-              isJust (phaseNumberOf target)
-            ]
-        ]
+    let standards = root </> "DEVELOPMENT_PLAN" </> "development_plan_standards.md"
+        rel = rrel root standards
+    exists <- doesFileExist standards
+    if not exists
+        then pure [Violation rel "required plan standards document is missing"]
+        else do
+            ls <- readLines standards
+            let contractLines =
+                    drop 1 (dropWhile ((/= "## hostbootstrap-Specific Contracts") . trim) ls)
+            pure
+                [ Violation
+                    rel
+                    ( "contract section "
+                        ++ letters
+                        ++ " names no owning phase; each contract opens with an '**Owning phase**:' line linking one"
+                    )
+                | section <- documentSections contractLines
+                , sectionLevel section == 3
+                , Just letters <- [letteredSection (sectionTitle section)]
+                , null
+                    [ target
+                    | line <- sectionBody section
+                    , "**Owning phase**:" `isPrefixOf` trim line
+                    , target <- linkTargets line
+                    , isJust (phaseNumberOf target)
+                    ]
+                ]
 
 {- | @"K. Host-Tool Resolution Doctrine"@ yields @Just "K"@.
 
@@ -1121,8 +1149,8 @@ prose heading inside the contracts is not mistaken for one.
 -}
 letteredSection :: String -> Maybe String
 letteredSection title = case span (\c -> c >= 'A' && c <= 'Z') title of
-  (letters@(_ : _), '.' : ' ' : _) -> Just letters
-  _ -> Nothing
+    (letters@(_ : _), '.' : ' ' : _) -> Just letters
+    _ -> Nothing
 
 {- | § I: every row of the legacy ledger names a __deleting phase__ that resolves.
 
@@ -1136,24 +1164,24 @@ empty ledger is the healthy end state.
 -}
 checkLegacyLedger :: FilePath -> IO [Violation]
 checkLegacyLedger root = do
-  let ledger = root </> "DEVELOPMENT_PLAN" </> "legacy_tracking_for_deletion.md"
-      rel = rrel root ledger
-  exists <- doesFileExist ledger
-  if not exists
-    then pure []
-    else do
-      ls <- readLines ledger
-      let rows = [l | l <- ls, "|" `isPrefixOf` trimStart l, isTrackedRow l]
-      concatMapM (rowViolations root rel) rows
+    let ledger = root </> "DEVELOPMENT_PLAN" </> "legacy_tracking_for_deletion.md"
+        rel = rrel root ledger
+    exists <- doesFileExist ledger
+    if not exists
+        then pure []
+        else do
+            ls <- readLines ledger
+            let rows = [l | l <- ls, "|" `isPrefixOf` trimStart l, isTrackedRow l]
+            concatMapM (rowViolations root rel) rows
 
 {- | A table row that tracks a shape, as opposed to the header or its separator.
 A tracked row has the four columns the ledger declares and is not the header.
 -}
 isTrackedRow :: String -> Bool
 isTrackedRow l =
-  length (filter (== '|') l) >= 5
-    && not ("| Shape" `isPrefixOf` trimStart l)
-    && not ("|---" `isPrefixOf` filter (/= ' ') (trimStart l))
+    length (filter (== '|') l) >= 5
+        && not ("| Shape" `isPrefixOf` trimStart l)
+        && not ("|---" `isPrefixOf` filter (/= ' ') (trimStart l))
 
 {- | The deleting phase a row names must resolve, and there must be exactly one.
 
@@ -1168,34 +1196,34 @@ obligation § A forbids. The fix is always to split the row.
 -}
 rowViolations :: FilePath -> FilePath -> String -> IO [Violation]
 rowViolations root rel row =
-  case linkTargets (deletingCell row) of
-    [] ->
-      pure
-        [ Violation
-            rel
-            "legacy ledger row names no deleting phase; § I requires every row to name one"
-        ]
-    targets -> do
-      unresolved <- concatMapM (resolveTarget root rel) targets
-      let arity =
-            [ Violation
-                rel
-                ( "legacy ledger row names "
-                    ++ show (length targets)
-                    ++ " deleting phases; § I requires exactly one, so split the row: "
-                    ++ unwords targets
-                )
-            | length targets > 1
-            ]
-      pure (arity ++ unresolved)
+    case linkTargets (deletingCell row) of
+        [] ->
+            pure
+                [ Violation
+                    rel
+                    "legacy ledger row names no deleting phase; § I requires every row to name one"
+                ]
+        targets -> do
+            unresolved <- concatMapM (resolveTarget root rel) targets
+            let arity =
+                    [ Violation
+                        rel
+                        ( "legacy ledger row names "
+                            ++ show (length targets)
+                            ++ " deleting phases; § I requires exactly one, so split the row: "
+                            ++ unwords targets
+                        )
+                    | length targets > 1
+                    ]
+            pure (arity ++ unresolved)
   where
     resolveTarget r f target = do
-      let candidate = r </> "DEVELOPMENT_PLAN" </> target
-      present <- doesFileExist candidate
-      pure
-        [ Violation f ("legacy ledger row names an unresolvable deleting phase: " ++ target)
-        | not present
-        ]
+        let candidate = r </> "DEVELOPMENT_PLAN" </> target
+        present <- doesFileExist candidate
+        pure
+            [ Violation f ("legacy ledger row names an unresolvable deleting phase: " ++ target)
+            | not present
+            ]
 
 {- | A ledger row's @Deleted by@ cell.
 
@@ -1205,13 +1233,13 @@ earlier cell's code span.
 -}
 deletingCell :: String -> String
 deletingCell row = case reverse (filter (not . null . trim) (splitOn '|' row)) of
-  (cell : _) -> cell
-  [] -> row
+    (cell : _) -> cell
+    [] -> row
 
 splitOn :: Char -> String -> [String]
 splitOn sep xs = case break (== sep) xs of
-  (chunk, _ : rest) -> chunk : splitOn sep rest
-  (chunk, []) -> [chunk]
+    (chunk, _ : rest) -> chunk : splitOn sep rest
+    (chunk, []) -> [chunk]
 
 -- | Markdown link targets in one line, unadorned by anchors or titles.
 linkTargets :: String -> [String]
@@ -1219,108 +1247,113 @@ linkTargets = go
   where
     go [] = []
     go (c : rest)
-      | c == '(' =
-          let (target, remainder) = break (== ')') rest
-           in [takeWhile (/= '#') target | isPhaseTarget target] ++ go remainder
-      | otherwise = go rest
+        | c == '(' =
+            let (target, remainder) = break (== ')') rest
+             in [takeWhile (/= '#') target | isPhaseTarget target] ++ go remainder
+        | otherwise = go rest
     isPhaseTarget t = "phase-" `isPrefixOf` t && ".md" `isInfixOf` t
 
 checkReadmeRefs :: FilePath -> IO [Violation]
 checkReadmeRefs root = do
-  let readme = root </> "README.md"
-      rel = rrel root readme
-  exists <- doesFileExist readme
-  if not exists
-    then pure [Violation rel "required root document is missing"]
-    else do
-      contents <- readFile readme
-      pure $
-        concat
-          [ [Violation rel "root README.md does not reference documents/" | not ("documents/" `isInfixOf` contents)],
-            [Violation rel "root README.md does not reference DEVELOPMENT_PLAN/" | not ("DEVELOPMENT_PLAN/" `isInfixOf` contents)]
-          ]
+    let readme = root </> "README.md"
+        rel = rrel root readme
+    exists <- doesFileExist readme
+    if not exists
+        then pure [Violation rel "required root document is missing"]
+        else do
+            contents <- readFile readme
+            pure $
+                concat
+                    [ [Violation rel "root README.md does not reference documents/" | not ("documents/" `isInfixOf` contents)]
+                    , [Violation rel "root README.md does not reference DEVELOPMENT_PLAN/" | not ("DEVELOPMENT_PLAN/" `isInfixOf` contents)]
+                    ]
 
--- | The canonical top-level categories under @documents/@. A directory outside
--- this set is a taxonomy violation; adding a category requires updating
--- @documents/documentation_standards.md § Taxonomy@ and this list in the same
--- change (see @development_plan_standards.md@).
+{- | The canonical top-level categories under @documents/@. A directory outside
+this set is a taxonomy violation; adding a category requires updating
+@documents/documentation_standards.md § Taxonomy@ and this list in the same
+change (see @development_plan_standards.md@).
+-}
 allowedTaxonomy :: [String]
 allowedTaxonomy = ["architecture", "engineering", "operations", "languages"]
 
--- | Governed @documents/@ files use lowercase @snake_case@ names with a @.md@
--- suffix; @README.md@ is the only permitted exception under @documents/@ (the
--- other ALL-CAPS root names live at the repository root). Pure.
+{- | Governed @documents/@ files use lowercase @snake_case@ names with a @.md@
+suffix; @README.md@ is the only permitted exception under @documents/@ (the
+other ALL-CAPS root names live at the repository root). Pure.
+-}
 checkNaming :: FilePath -> FilePath -> [Violation]
 checkNaming root file =
-  let rel = rrel root file
-      name = takeFileName file
-   in [ Violation rel ("file name is not lowercase snake_case: " ++ name)
-        | name /= "README.md",
-          not (isSnakeCaseMd name)
-      ]
+    let rel = rrel root file
+        name = takeFileName file
+     in [ Violation rel ("file name is not lowercase snake_case: " ++ name)
+        | name /= "README.md"
+        , not (isSnakeCaseMd name)
+        ]
 
--- | A name is @snake_case.md@ when the stem is non-empty and uses only
--- lowercase letters, digits, and underscores.
+{- | A name is @snake_case.md@ when the stem is non-empty and uses only
+lowercase letters, digits, and underscores.
+-}
 isSnakeCaseMd :: String -> Bool
 isSnakeCaseMd name =
-  case reverse <$> stripPrefix' "dm." (reverse name) of
-    Nothing -> False
-    Just stem -> not (null stem) && all isSnakeChar stem
+    case reverse <$> stripPrefix' "dm." (reverse name) of
+        Nothing -> False
+        Just stem -> not (null stem) && all isSnakeChar stem
   where
     isSnakeChar c = isDigit c || c == '_' || (c >= 'a' && c <= 'z')
     stripPrefix' p s = if p `isPrefixOf` s then Just (drop (length p) s) else Nothing
 
--- | Every immediate subdirectory of @documents/@ must be a declared taxonomy
--- category ('allowedTaxonomy'). Files directly under @documents/@ (the suite
--- @README.md@ and @documentation_standards.md@) are unconstrained here.
+{- | Every immediate subdirectory of @documents/@ must be a declared taxonomy
+category ('allowedTaxonomy'). Files directly under @documents/@ (the suite
+@README.md@ and @documentation_standards.md@) are unconstrained here.
+-}
 checkTaxonomy :: FilePath -> IO [Violation]
 checkTaxonomy root = do
-  let docsDir = root </> "documents"
-  exists <- doesDirectoryExist docsDir
-  if not exists
-    then pure []
-    else do
-      entries <- listDirectory docsDir
-      subdirs <- filterM (doesDirectoryExist . (docsDir </>)) entries
-      pure
-        [ Violation
-            ("documents" </> d)
-            ("documents/ category not in the canonical taxonomy " ++ show allowedTaxonomy)
-          | d <- subdirs,
-            d `notElem` allowedTaxonomy
-        ]
+    let docsDir = root </> "documents"
+    exists <- doesDirectoryExist docsDir
+    if not exists
+        then pure []
+        else do
+            entries <- listDirectory docsDir
+            subdirs <- filterM (doesDirectoryExist . (docsDir </>)) entries
+            pure
+                [ Violation
+                    ("documents" </> d)
+                    ("documents/ category not in the canonical taxonomy " ++ show allowedTaxonomy)
+                | d <- subdirs
+                , d `notElem` allowedTaxonomy
+                ]
 
 checkLinks :: FilePath -> FilePath -> IO [Violation]
 checkLinks root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      targets = concatMap extractLinkTargets (stripFencedCode ls)
-      checkable = filter isCheckableTarget targets
-  foldM (step rel) [] checkable
+    ls <- readLines file
+    let rel = rrel root file
+        targets = concatMap extractLinkTargets (stripFencedCode ls)
+        checkable = filter isCheckableTarget targets
+    foldM (step rel) [] checkable
   where
     step rel acc target = do
-      let dropAnchor = takeWhile (/= '#') target
-          resolved = normalise (takeDirectory file </> dropAnchor)
-      existsF <- doesFileExist resolved
-      existsD <- doesDirectoryExist resolved
-      pure $
-        if existsF || existsD
-          then acc
-          else acc ++ [Violation rel ("unresolved relative link: " ++ target)]
+        let dropAnchor = takeWhile (/= '#') target
+            resolved = normalise (takeDirectory file </> dropAnchor)
+        existsF <- doesFileExist resolved
+        existsD <- doesDirectoryExist resolved
+        pure $
+            if existsF || existsD
+                then acc
+                else acc ++ [Violation rel ("unresolved relative link: " ++ target)]
 
 -- ---------------------------------------------------------------------------
 -- Link extraction
 -- ---------------------------------------------------------------------------
 
--- | A target is checkable when it is a relative in-repo path: not an external
--- URL, not a pure anchor, and not a placeholder ("...", angle brackets, spaces).
+{- | A target is checkable when it is a relative in-repo path: not an external
+URL, not a pure anchor, and not a placeholder ("...", angle brackets, spaces).
+-}
 isCheckableTarget :: String -> Bool
 isCheckableTarget t =
-  not (null t)
-    && not (any (`isPrefixOf` t) ["http://", "https://", "mailto:", "#", "/"])
-    && not ("..." `isInfixOf` t)
-    && not (any (`elem` ("<> " :: String)) t)
-    && takeWhile (/= '#') t /= ""
+    not (null t)
+        && not (any (`isPrefixOf` t) ["http://", "https://", "mailto:", "#", "/"])
+        && not ("..." `isInfixOf` t)
+        && not (any (`elem` ("<> " :: String)) t)
+        && takeWhile (/= '#') t /= ""
 
 -- | Extract every @](target)@ target from a line.
 extractLinkTargets :: String -> [String]
@@ -1328,20 +1361,21 @@ extractLinkTargets = go
   where
     go [] = []
     go (']' : '(' : rest) =
-      let (target, rest') = break (== ')') rest
-       in target : go (drop 1 rest')
+        let (target, rest') = break (== ')') rest
+         in target : go (drop 1 rest')
     go (_ : rest) = go rest
 
--- | Drop lines inside fenced code blocks (``` fences) so example links in the
--- standards docs are not treated as real references.
+{- | Drop lines inside fenced code blocks (``` fences) so example links in the
+standards docs are not treated as real references.
+-}
 stripFencedCode :: [String] -> [String]
 stripFencedCode = go False
   where
     go _ [] = []
     go inside (l : rest)
-      | "```" `isPrefixOf` trimStart l = go (not inside) rest
-      | inside = go inside rest
-      | otherwise = l : go inside rest
+        | "```" `isPrefixOf` trimStart l = go (not inside) rest
+        | inside = go inside rest
+        | otherwise = l : go inside rest
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -1353,24 +1387,25 @@ isPhaseDoc f = "phase-" `isPrefixOf` takeFileName f && ".md" `isSuffixOf` f
 -- | The execution position a phase document's filename declares.
 phaseNumberOf :: FilePath -> Maybe Int
 phaseNumberOf f = case span isDigit (drop (length ("phase-" :: String)) (takeFileName f)) of
-  (digits@(_ : _), '-' : _) -> Just (read digits)
-  _ -> Nothing
+    (digits@(_ : _), '-' : _) -> Just (read digits)
+    _ -> Nothing
 
 {- | The value of a @**Field**: value@ header line, trimmed. Only the first
 occurrence is read, so a sprint-level field cannot shadow the phase header.
 -}
 fieldValue :: String -> [String] -> Maybe String
 fieldValue field ls = case [trim (drop (length prefix) (trim l)) | l <- ls, prefix `isPrefixOf` trim l] of
-  (v : _) -> Just v
-  [] -> Nothing
+    (v : _) -> Just v
+    [] -> Nothing
   where
     prefix = "**" ++ field ++ "**:"
 
--- | Read a field only from the phase-level header block. A sprint's own
--- @**Status**@ must never stand in for a missing phase status.
+{- | Read a field only from the phase-level header block. A sprint's own
+@**Status**@ must never stand in for a missing phase status.
+-}
 phaseHeaderFieldValue :: String -> [String] -> Maybe String
 phaseHeaderFieldValue field =
-  fieldValue field . takeWhile (not . ("## " `isPrefixOf`) . trim)
+    fieldValue field . takeWhile (not . ("## " `isPrefixOf`) . trim)
 
 {- | Every phase number a @Depends on@ value mentions.
 
@@ -1385,24 +1420,24 @@ referencedPhaseNumbers :: String -> [Int]
 referencedPhaseNumbers = go True
   where
     go boundary s = case s of
-      [] -> []
-      (c : rest)
-        | Just after <- stripPrefix' "phase-" s
-        , (digits@(_ : _), '-' : _) <- span isDigit after ->
-            read digits : go False rest
-        | boundary
-        , Just after <- stripPrefix' "Phase " s
-        , (digits@(_ : _), remainder) <- span isDigit (dropWhile (== ' ') after)
-        , not (startsWithDot remainder) ->
-            read digits : go False rest
-        | otherwise -> go (not (isAlphaNum c || c == '-')) rest
+        [] -> []
+        (c : rest)
+            | Just after <- stripPrefix' "phase-" s
+            , (digits@(_ : _), '-' : _) <- span isDigit after ->
+                read digits : go False rest
+            | boundary
+            , Just after <- stripPrefix' "Phase " s
+            , (digits@(_ : _), remainder) <- span isDigit (dropWhile (== ' ') after)
+            , not (startsWithDot remainder) ->
+                read digits : go False rest
+            | otherwise -> go (not (isAlphaNum c || c == '-')) rest
     -- A sprint identifier ("Sprint" then a dotted number) is not a dependency;
     -- a phase number is never followed by a dot and a digit.
     startsWithDot ('.' : d : _) = isDigit d
     startsWithDot _ = False
     stripPrefix' p xs
-      | p `isPrefixOf` xs = Just (drop (length p) xs)
-      | otherwise = Nothing
+        | p `isPrefixOf` xs = Just (drop (length p) xs)
+        | otherwise = Nothing
 
 {- | One markdown section: its heading level, its title, the sprint it sits
 inside, and its body up to the next heading of __any__ level.
@@ -1415,12 +1450,12 @@ phase-level section is attributed to the phase and a sprint-level one to its
 sprint, and one parser serves both.
 -}
 data DocSection = DocSection
-  { sectionLevel :: Int,
-    sectionTitle :: String,
-    -- | @Just a sprint label@ when the section sits inside one.
-    sectionSprint :: Maybe String,
-    sectionBody :: [String]
-  }
+    { sectionLevel :: Int
+    , sectionTitle :: String
+    , sectionSprint :: Maybe String
+    -- ^ @Just a sprint label@ when the section sits inside one.
+    , sectionBody :: [String]
+    }
 
 {- | Every section of a document.
 
@@ -1432,20 +1467,20 @@ documentSections = go Nothing . stripFencedCode
   where
     go _ [] = []
     go sprint (l : rest) = case headingOf l of
-      Nothing -> go sprint rest
-      Just (level, title) ->
-        let sprint'
-              | level <= 2 = Nothing
-              | "Sprint " `isPrefixOf` title = Just (trim (takeWhile (/= ':') title))
-              | otherwise = sprint
-            (body, remainder) = break (isJust . headingOf) rest
-         in DocSection level title sprint' body : go sprint' remainder
+        Nothing -> go sprint rest
+        Just (level, title) ->
+            let sprint'
+                    | level <= 2 = Nothing
+                    | "Sprint " `isPrefixOf` title = Just (trim (takeWhile (/= ':') title))
+                    | otherwise = sprint
+                (body, remainder) = break (isJust . headingOf) rest
+             in DocSection level title sprint' body : go sprint' remainder
 
 -- | @(level, title)@ for an ATX heading line.
 headingOf :: String -> Maybe (Int, String)
 headingOf raw = case span (== '#') (trim raw) of
-  (hashes@(_ : _), ' ' : title) -> Just (length hashes, trim title)
-  _ -> Nothing
+    (hashes@(_ : _), ' ' : title) -> Just (length hashes, trim title)
+    _ -> Nothing
 
 {- | The sprints a document declares with a given @**Status**@.
 
@@ -1456,13 +1491,13 @@ it.
 -}
 sprintsWithStatus :: String -> [DocSection] -> [String]
 sprintsWithStatus status sections =
-  [ sprint
-  | s <- sections,
-    sectionLevel s == 3,
-    Just sprint <- [sectionSprint s],
-    "Sprint " `isPrefixOf` sectionTitle s,
-    fieldValue "Status" (sectionBody s) == Just status
-  ]
+    [ sprint
+    | s <- sections
+    , sectionLevel s == 3
+    , Just sprint <- [sectionSprint s]
+    , "Sprint " `isPrefixOf` sectionTitle s
+    , fieldValue "Status" (sectionBody s) == Just status
+    ]
 
 activeSprints :: [DocSection] -> [String]
 activeSprints = sprintsWithStatus "Active"
@@ -1470,12 +1505,12 @@ activeSprints = sprintsWithStatus "Active"
 -- | The @#### Remaining Work@ sections belonging to one sprint.
 remainingWorkOf :: [DocSection] -> String -> [DocSection]
 remainingWorkOf sections sprint =
-  [ s
-  | s <- sections,
-    sectionLevel s == 4,
-    isRemainingWorkTitle (sectionTitle s),
-    sectionSprint s == Just sprint
-  ]
+    [ s
+    | s <- sections
+    , sectionLevel s == 4
+    , isRemainingWorkTitle (sectionTitle s)
+    , sectionSprint s == Just sprint
+    ]
 
 {- | Both spellings the plan has used for a remaining-work heading.
 
@@ -1488,33 +1523,33 @@ isRemainingWorkTitle t = t `elem` ["Remaining Work", "Phase Remaining Work"]
 
 firstIsTitle :: [String] -> Bool
 firstIsTitle ls = case dropWhile (null . trim) ls of
-  (l : _) -> "# " `isPrefixOf` l
-  [] -> False
+    (l : _) -> "# " `isPrefixOf` l
+    [] -> False
 
 hasYamlFrontMatter :: [String] -> Bool
 hasYamlFrontMatter ls = case dropWhile (null . trim) ls of
-  (l : _) -> trim l == "---"
-  [] -> False
+    (l : _) -> trim l == "---"
+    [] -> False
 
 anyLineStarts :: String -> [String] -> Bool
 anyLineStarts p = any ((p `isPrefixOf`) . trimStart)
 
 readLines :: FilePath -> IO [String]
-readLines f = lines <$> readFile f
+readLines f = lines . Text.unpack <$> TextIO.readFile f
 
 -- | Recursively list @.md@ files under a directory (sorted, repo-stable).
 listMarkdown :: FilePath -> IO [FilePath]
 listMarkdown dir = do
-  exists <- doesDirectoryExist dir
-  if not exists
-    then pure []
-    else do
-      entries <- listDirectory dir
-      let paths = map (dir </>) entries
-      files <- filterM doesFileExist paths
-      subdirs <- filterM doesDirectoryExist paths
-      nested <- concatMapM listMarkdown subdirs
-      pure (sort (filter ((== ".md") . takeExtension) files ++ nested))
+    exists <- doesDirectoryExist dir
+    if not exists
+        then pure []
+        else do
+            entries <- listDirectory dir
+            let paths = map (dir </>) entries
+            files <- filterM doesFileExist paths
+            subdirs <- filterM doesDirectoryExist paths
+            nested <- concatMapM listMarkdown subdirs
+            pure (sort (filter ((== ".md") . takeExtension) files ++ nested))
 
 rrel :: FilePath -> FilePath -> FilePath
 rrel root = makeRelative (normalise root) . normalise
@@ -1534,19 +1569,19 @@ directory resolves as itself.
 -}
 checkImplementationPaths :: FilePath -> FilePath -> IO [Violation]
 checkImplementationPaths root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      cited = nub (concatMap citedPaths (implementationBlocks ls))
-  missing <- filterM (fmap not . resolves) cited
-  pure
-    [ Violation rel ("'**Implementation**' cites a path that does not exist: " ++ path)
-    | path <- missing
-    ]
+    ls <- readLines file
+    let rel = rrel root file
+        cited = nub (concatMap citedPaths (implementationBlocks ls))
+    missing <- filterM (fmap not . resolves) cited
+    pure
+        [ Violation rel ("'**Implementation**' cites a path that does not exist: " ++ path)
+        | path <- missing
+        ]
   where
     resolves path = do
-      isFile <- doesFileExist (root </> path)
-      isDirectory <- doesDirectoryExist (root </> path)
-      pure (isFile || isDirectory)
+        isFile <- doesFileExist (root </> path)
+        isDirectory <- doesDirectoryExist (root </> path)
+        pure (isFile || isDirectory)
 
 {- | § II: a @Done@ phase records gate evidence, and a deferred one records what
 tree that evidence covered.
@@ -1573,68 +1608,68 @@ integration that is the honest ceiling.
 -}
 checkGateEvidence :: FilePath -> FilePath -> IO [Violation]
 checkGateEvidence root file = do
-  ls <- readLines file
-  let rel = rrel root file
-      stripped = stripFencedCode ls
-      done = phaseHeaderFieldValue "Status" stripped == Just "Done"
-      deferred = phaseHeaderFieldValue "Gate kind" stripped == Just "deferred"
-      rows = fieldBlockValues "Gate evidence" stripped
-      parsed = [row | Just row <- map parseEvidenceRow rows]
-      cited = map unquote (maybe [] words (fieldBlockValue "Evidence covers" stripped))
-      missingRow =
-        [ Violation rel "a Done phase records no '**Gate evidence**' row"
-        | done,
-          null rows
-        ]
-      malformed =
-        [ Violation
-          rel
-          ( "'**Gate evidence**' is not <date> ; <host> ; <command> ; pass ; covers <digest|in-gate>: "
-              ++ row
-          )
-        | done,
-          row <- rows,
-          isNothing (parseEvidenceRow row)
-        ]
-      wrongCovers =
-        [ Violation
-          rel
-          ( if deferred
-              then "a deferred phase's gate evidence must name the digest it covers, not 'in-gate'"
-              else "a self-verifying phase's gate evidence covers 'in-gate'; the validating run re-executes its gate"
-          )
-        | done,
-          (_, evidenceCovers) <- parsed,
-          deferred == (evidenceCovers == "in-gate")
-        ]
-      missingCovers =
-        [ Violation rel "a deferred Done phase names no '**Evidence covers**' paths"
-        | done,
-          deferred,
-          null cited
-        ]
-  measured <-
-    if done && deferred && not (null cited)
-      then Just <$> measurePathSetDigest root cited
-      else pure Nothing
-  let stale = case measured of
-        Just (Left err) ->
-          [Violation rel ("'**Evidence covers**' cannot be measured: " ++ renderDigestError err)]
-        Just (Right actual) ->
-          [ Violation
-            rel
-            ( "gate evidence covers "
-                ++ recorded
-                ++ " but '**Evidence covers**' now measures "
-                ++ unpackText actual
-                ++ "; re-run this phase's gate and re-record it"
-            )
-          | (_, recorded) <- parsed,
-            recorded /= "in-gate",
-            recorded /= unpackText actual
-          ]
-        Nothing -> []
-  pure (missingRow ++ malformed ++ wrongCovers ++ missingCovers ++ stale)
+    ls <- readLines file
+    let rel = rrel root file
+        stripped = stripFencedCode ls
+        done = phaseHeaderFieldValue "Status" stripped == Just "Done"
+        deferred = phaseHeaderFieldValue "Gate kind" stripped == Just "deferred"
+        rows = fieldBlockValues "Gate evidence" stripped
+        parsed = [row | Just row <- map parseEvidenceRow rows]
+        cited = map unquote (maybe [] words (fieldBlockValue "Evidence covers" stripped))
+        missingRow =
+            [ Violation rel "a Done phase records no '**Gate evidence**' row"
+            | done
+            , null rows
+            ]
+        malformed =
+            [ Violation
+                rel
+                ( "'**Gate evidence**' is not <date> ; <host> ; <command> ; pass ; covers <digest|in-gate>: "
+                    ++ row
+                )
+            | done
+            , row <- rows
+            , isNothing (parseEvidenceRow row)
+            ]
+        wrongCovers =
+            [ Violation
+                rel
+                ( if deferred
+                    then "a deferred phase's gate evidence must name the digest it covers, not 'in-gate'"
+                    else "a self-verifying phase's gate evidence covers 'in-gate'; the validating run re-executes its gate"
+                )
+            | done
+            , (_, evidenceCovers) <- parsed
+            , deferred == (evidenceCovers == "in-gate")
+            ]
+        missingCovers =
+            [ Violation rel "a deferred Done phase names no '**Evidence covers**' paths"
+            | done
+            , deferred
+            , null cited
+            ]
+    measured <-
+        if done && deferred && not (null cited)
+            then Just <$> measurePathSetDigest root cited
+            else pure Nothing
+    let stale = case measured of
+            Just (Left err) ->
+                [Violation rel ("'**Evidence covers**' cannot be measured: " ++ renderDigestError err)]
+            Just (Right actual) ->
+                [ Violation
+                    rel
+                    ( "gate evidence covers "
+                        ++ recorded
+                        ++ " but '**Evidence covers**' now measures "
+                        ++ unpackText actual
+                        ++ "; re-run this phase's gate and re-record it"
+                    )
+                | (_, recorded) <- parsed
+                , recorded /= "in-gate"
+                , recorded /= unpackText actual
+                ]
+            Nothing -> []
+    pure (missingRow ++ malformed ++ wrongCovers ++ missingCovers ++ stale)
 
 {- | One @**Gate evidence**@ row: its date and what it covers.
 
@@ -1644,17 +1679,17 @@ are what a person needs in order to judge the run, and stay prose.
 -}
 parseEvidenceRow :: String -> Maybe (String, String)
 parseEvidenceRow row = case map trim (splitOnChar ';' row) of
-  [date, _host, command, "pass", coversField]
-    | isIsoDate date
-    , '`' `elem` command
-    , Just value <- stripKeyword "covers" coversField
-    , value == "in-gate" || isSha256Hex value ->
-        Just (date, value)
-  _ -> Nothing
+    [date, _host, command, "pass", coversField]
+        | isIsoDate date
+        , '`' `elem` command
+        , Just value <- stripKeyword "covers" coversField
+        , value == "in-gate" || isSha256Hex value ->
+            Just (date, value)
+    _ -> Nothing
   where
     stripKeyword keyword value = case words value of
-      (first : rest) | first == keyword, not (null rest) -> Just (unwords rest)
-      _ -> Nothing
+        (first : rest) | first == keyword, not (null rest) -> Just (unwords rest)
+        _ -> Nothing
 
 {- | A real ISO calendar date.
 
@@ -1664,35 +1699,35 @@ the question — currency is the digest's job.
 -}
 isIsoDate :: String -> Bool
 isIsoDate raw = case splitOnChar '-' raw of
-  [y, m, d]
-    | length y == 4,
-      length m == 2,
-      length d == 2,
-      all isDigit (y ++ m ++ d) ->
-        let year = read y :: Int
-            month = read m :: Int
-            day = read d :: Int
-         in month >= 1 && month <= 12 && day >= 1 && day <= daysIn year month
-  _ -> False
+    [y, m, d]
+        | length y == 4
+        , length m == 2
+        , length d == 2
+        , all isDigit (y ++ m ++ d) ->
+            let year = read y :: Int
+                month = read m :: Int
+                day = read d :: Int
+             in month >= 1 && month <= 12 && day >= 1 && day <= daysIn year month
+    _ -> False
   where
     daysIn :: Int -> Int -> Int
     daysIn year month
-      | month `elem` [4, 6, 9, 11] = 30
-      | month == 2 = if leap year then 29 else 28
-      | otherwise = 31
+        | month `elem` [4, 6, 9, 11] = 30
+        | month == 2 = if leap year then 29 else 28
+        | otherwise = 31
     leap year = (year `mod` 4 == 0 && year `mod` 100 /= 0) || year `mod` 400 == 0
 
 isSha256Hex :: String -> Bool
 isSha256Hex value =
-  length value == 64 && all (`elem` ("0123456789abcdef" :: String)) value
+    length value == 64 && all (`elem` ("0123456789abcdef" :: String)) value
 
 unpackText :: Text.Text -> String
 unpackText = Text.unpack
 
 splitOnChar :: Char -> String -> [String]
 splitOnChar separator raw = case break (== separator) raw of
-  (chunk, []) -> [chunk]
-  (chunk, _ : rest) -> chunk : splitOnChar separator rest
+    (chunk, []) -> [chunk]
+    (chunk, _ : rest) -> chunk : splitOnChar separator rest
 
 unquote :: String -> String
 unquote = reverse . dropWhile (== '`') . reverse . dropWhile (== '`')
@@ -1712,13 +1747,13 @@ fieldBlocks field = go
     marker = "**" ++ field ++ "**"
     go [] = []
     go (l : rest)
-      | marker `isPrefixOf` trim l =
-          let (body, remaining) = span continuation rest
-           in (l : body) : go remaining
-      | otherwise = go rest
+        | marker `isPrefixOf` trim l =
+            let (body, remaining) = span continuation rest
+             in (l : body) : go remaining
+        | otherwise = go rest
     continuation candidate =
-      let t = trim candidate
-       in not (null t) && not ("**" `isPrefixOf` t) && not ("#" `isPrefixOf` t)
+        let t = trim candidate
+         in not (null t) && not ("**" `isPrefixOf` t) && not ("#" `isPrefixOf` t)
 
 -- | The @**Implementation**@ field and its continuation lines.
 implementationBlocks :: [String] -> [[String]]
@@ -1734,8 +1769,8 @@ across lines.
 -}
 fieldBlockValue :: String -> [String] -> Maybe String
 fieldBlockValue field ls = case fieldBlocks field ls of
-  (block : _) -> Just (joinFieldBlock field block)
-  [] -> Nothing
+    (block : _) -> Just (joinFieldBlock field block)
+    [] -> Nothing
 
 -- | Every occurrence of a wrapped field, each joined into one string.
 fieldBlockValues :: String -> [String] -> [String]
@@ -1743,14 +1778,14 @@ fieldBlockValues field ls = map (joinFieldBlock field) (fieldBlocks field ls)
 
 joinFieldBlock :: String -> [String] -> String
 joinFieldBlock field block = case block of
-  (l : rest) ->
-    let prefix = "**" ++ field ++ "**:"
-        headValue =
-          if prefix `isPrefixOf` trim l
-            then trim (drop (length prefix) (trim l))
-            else trim l
-     in unwords (filter (not . null) (headValue : map trim rest))
-  [] -> ""
+    (l : rest) ->
+        let prefix = "**" ++ field ++ "**:"
+            headValue =
+                if prefix `isPrefixOf` trim l
+                    then trim (drop (length prefix) (trim l))
+                    else trim l
+         in unwords (filter (not . null) (headValue : map trim rest))
+    [] -> ""
 
 {- | Repository-relative paths named between backticks in one field block.
 
@@ -1760,19 +1795,19 @@ the continuation.
 -}
 citedPaths :: [String] -> [String]
 citedPaths block =
-  [ token
-  | token <- backtickedTokens (joinFieldBlock "Implementation" block),
-    '/' `elem` token,
-    '*' `notElem` token
-  ]
+    [ token
+    | token <- backtickedTokens (joinFieldBlock "Implementation" block)
+    , '/' `elem` token
+    , '*' `notElem` token
+    ]
 
 -- | Every backtick-delimited token on one line.
 backtickedTokens :: String -> [String]
 backtickedTokens line = case break (== '`') line of
-  (_, '`' : rest) -> case break (== '`') rest of
-    (token, '`' : remaining) -> trim token : backtickedTokens remaining
+    (_, '`' : rest) -> case break (== '`') rest of
+        (token, '`' : remaining) -> trim token : backtickedTokens remaining
+        _ -> []
     _ -> []
-  _ -> []
 
 trim :: String -> String
 trim = trimStart . reverse . trimStart . reverse
@@ -1785,6 +1820,613 @@ concatMapM f xs = concat <$> mapM f xs
 
 isUnderDirectory :: FilePath -> FilePath -> Bool
 isUnderDirectory parent child =
-  let prefix = addTrailingPathSeparator (normalise parent)
-      candidate = normalise child
-   in prefix `isPrefixOf` candidate
+    let prefix = addTrailingPathSeparator (normalise parent)
+        candidate = normalise child
+     in prefix `isPrefixOf` candidate
+
+-- ---------------------------------------------------------------------------
+-- Reconciliation checks
+--
+-- @documents/documentation_standards.md § Rules the validator grows to enforce@
+-- states each of these as normative prose; the functions below are what make
+-- them mechanical. Every one carries a negative fixture in @DocValidatorSpec@,
+-- because a check nothing has seen fail is a check nobody has tested.
+-- ---------------------------------------------------------------------------
+
+{- | A backticked identifier in governed prose names something that exists.
+
+This is the check with the widest reach in the suite. Every other documentation
+check reads a document against another document; this one reads a document
+against the tree, which is the only way to catch the failure it exists for — a
+canonical contract page describing a vocabulary the compiler has never seen. The
+reachability page did exactly that: a client sum, an exposure type, a
+reachability witness and two delivery constructors under names no module
+exported, with every structural check green above them.
+
+Prose legitimately names things abbreviated or owned elsewhere, so resolution is
+deliberately generous — a dotted name resolves through its module or its last
+component — and what remains is an explicit reviewed 'identifierAllowlist'
+rather than a silent skip, because a skip nobody can enumerate is how the next
+dead vocabulary gets in.
+-}
+checkIdentifierResolution :: FilePath -> IO [Violation]
+checkIdentifierResolution root = do
+    docs <- listMarkdown (root </> "documents")
+    corpus <- identifierCorpus root
+    concatMapM (identifierViolations root corpus) docs
+
+{- | Every word and every module name the tree declares.
+
+The corpus is words rather than an exported-symbol table on purpose: a symbol
+table would need a Haskell parser, and the question here is "does this name
+appear in the sources at all", which is the weakest question that still refuses
+a name nobody has ever written.
+-}
+identifierCorpus :: FilePath -> IO (Set.Set String, Set.Set String)
+identifierCorpus root = do
+    files <- concatMapM (listSourceFiles sourceExtensions) (map (root </>) corpusRoots)
+    chunks <- mapM readChunk files
+    pure (Set.unions (map fst chunks), Set.unions (map snd chunks))
+  where
+    readChunk file = do
+        contents <- Text.unpack <$> TextIO.readFile file
+        let ws = words (map (\c -> if isAlphaNum c || c `elem` ("_'" :: String) then c else ' ') contents)
+        pure (Set.fromList ws, Set.fromList (moduleNames contents))
+    moduleNames contents =
+        [ takeWhile (\c -> isAlphaNum c || c == '.') (trimStart rest)
+        | l <- lines contents
+        , Just rest <- [stripWord "module" l]
+        ]
+    stripWord w l = case words l of
+        (first : _) | first == w -> Just (drop (length w) (trimStart l))
+        _ -> Nothing
+
+corpusRoots :: [FilePath]
+corpusRoots =
+    [ "core/hostbootstrap-core/src"
+    , "core/hostbootstrap-core/internal"
+    , "core/hostbootstrap-core/app"
+    , "core/hostbootstrap-core/test"
+    , "core/hostbootstrap-core/provider-live"
+    , "core/hostbootstrap-core/dhall"
+    , "demo/src"
+    , "demo/app"
+    , "demo/test"
+    , "demo/web/src"
+    , "hostbootstrap"
+    , "tests"
+    ]
+
+sourceExtensions :: [String]
+sourceExtensions = [".hs", ".py", ".dhall", ".purs", ".cabal"]
+
+identifierViolations :: FilePath -> (Set.Set String, Set.Set String) -> FilePath -> IO [Violation]
+identifierViolations root (names, modules) file = do
+    contents <- Text.unpack <$> TextIO.readFile file
+    let candidates = nub [c | span' <- inlineCodeSpans contents, Just c <- [leadingIdentifier span']]
+    pure
+        [ Violation
+            (rrel root file)
+            ( "backticked identifier "
+                ++ candidate
+                ++ " resolves nowhere in the tree; name what the sources export, or add it to identifierAllowlist with the reason"
+            )
+        | candidate <- candidates
+        , not (resolves candidate)
+        ]
+  where
+    resolves candidate
+        | candidate `elem` identifierAllowlist = True
+        | '.' `elem` candidate =
+            Set.member candidate modules
+                || Set.member (lastComponent candidate) names
+        | otherwise = Set.member candidate names
+    lastComponent = reverse . takeWhile (/= '.') . reverse
+
+{- | The reviewed allowlist: names governed prose may write in backticks that no
+source file in this repository declares.
+
+Each group is here for one stated reason. The list is meant to stay short; a new
+entry is a decision that this name is genuinely not ours, not a way to quiet the
+check.
+-}
+identifierAllowlist :: [String]
+identifierAllowlist =
+    -- Taxonomy labels the pages that use them declare are not dispatch values.
+    [ "OneShot"
+    , "HostNative"
+    , -- Names a page's own illustrative sketch defines a few lines above the use.
+      "DemoConfig"
+    , "serveWeb"
+    , "appSteps"
+    , "searchOne"
+    , "A1"
+    , -- Names another system owns: Docker, Kubernetes, GHC, base, the shells.
+      "LABEL"
+    , "SHELL"
+    , "RollingUpdate"
+    , "credsStore"
+    , "credHelpers"
+    , "INLINABLE"
+    , "SPECIALISE"
+    , "IsString"
+    , "CXX"
+    , "PYTHONPYCACHEPREFIX"
+    , "GetLastError"
+    , "REF"
+    , "SHA256SUMS"
+    , "LICENSE"
+    , "jitML"
+    , -- Names the agent harness owns; they are configuration of the tool that
+      -- reads this repository rather than of the repository.
+      "Bash"
+    , "PreToolUse"
+    , "ScheduleWakeup"
+    , "OutputDir"
+    , "ParentProcessId"
+    , -- Cited precisely because it must not exist. A check that refused this
+      -- would forbid stating an absence, which is the stronger claim.
+      "HostBootstrap.Readiness.Internal"
+    ]
+
+{- | The inline code spans of a Markdown document, with fenced blocks removed.
+
+Fences are stripped first so the remaining backticks pair up, and a fence opened
+inside a blockquote counts, because the governed pages use @> ```haskell@.
+-}
+inlineCodeSpans :: String -> [String]
+inlineCodeSpans contents = backtickedTokens (unwords (unfenced False (lines contents)))
+  where
+    unfenced _ [] = []
+    unfenced inside (l : rest)
+        | "```" `isPrefixOf` trimStart (dropQuote l) = unfenced (not inside) rest
+        | inside = unfenced inside rest
+        | otherwise = l : unfenced inside rest
+    dropQuote l = case trimStart l of
+        ('>' : more) -> more
+        other -> other
+
+{- | The identifier a code span starts with, when it is shaped like one.
+
+A span may be a whole applied type (@RolePlan scope specDigest planId@) or one
+name; either way the first token is the name the prose is claiming exists. Three
+shapes count: @CapWords@, @camelCase@, and a dotted qualification of either.
+-}
+leadingIdentifier :: String -> Maybe String
+leadingIdentifier span' =
+    let token = takeWhile (\c -> isAlphaNum c || c `elem` ("_.'" :: String)) (trimStart span')
+     in if identifierShaped token then Just token else Nothing
+  where
+    identifierShaped token = case token of
+        [] -> False
+        (c : rest)
+            | '.' `elem` token -> dotted token
+            | isUpper' c -> all bodyChar rest
+            | otherwise -> camel token
+    camel token = case span isLower' token of
+        (lower@(_ : _), upper@(c : _)) -> not (null lower) && isUpper' c && all bodyChar upper
+        _ -> False
+    dotted token = case splitDots token of
+        parts@(first : _ : _) -> all component parts && startsUpper first
+        _ -> False
+    component part = case part of
+        [] -> False
+        (c : rest) -> (isUpper' c || isLower' c) && all bodyChar rest
+    startsUpper part = case part of
+        (c : _) -> isUpper' c
+        [] -> False
+    splitDots s = case break (== '.') s of
+        (part, '.' : rest) -> part : splitDots rest
+        (part, _) -> [part]
+    bodyChar x = isAlphaNum x || x == '\''
+    isUpper' c = c >= 'A' && c <= 'Z'
+    isLower' c = c >= 'a' && c <= 'z'
+
+-- | Recursively list source files under a directory, filtered by extension.
+listSourceFiles :: [String] -> FilePath -> IO [FilePath]
+listSourceFiles extensions directory = do
+    exists <- doesDirectoryExist directory
+    if not exists
+        then pure []
+        else do
+            entries <- sort <$> listDirectory directory
+            concatMapM
+                ( \entry -> do
+                    let path = directory </> entry
+                    isDirectory <- doesDirectoryExist path
+                    if isDirectory
+                        then listSourceFiles extensions path
+                        else pure [path | takeExtension path `elem` extensions]
+                )
+                entries
+
+{- | A root document may summarize status and must not restate it.
+
+Nothing compared root-document prose against the plan's table, which is how the
+front page came to describe closed contracts as planned repairs while every
+phase header and the table agreed they were done. A root document is read the
+only way a reader reads it — a line that links a phase and names a status from
+the closed vocabulary in the same breath is making a claim, and that claim is
+compared against the row.
+-}
+checkRootDocStatus :: FilePath -> IO [Violation]
+checkRootDocStatus root = do
+    let readme = root </> "DEVELOPMENT_PLAN" </> "README.md"
+    exists <- doesFileExist readme
+    if not exists
+        then pure []
+        else do
+            readmeLines <- readLines readme
+            let (rows, _) = parsePhaseStatusTable root readme readmeLines
+            concatMapM (rootDocStatusViolations root rows) (map (root </>) governedRootDocuments)
+
+governedRootDocuments :: [FilePath]
+governedRootDocuments = ["README.md", "AGENTS.md", "CLAUDE.md"]
+
+rootDocStatusViolations :: FilePath -> [PhaseStatusRow] -> FilePath -> IO [Violation]
+rootDocStatusViolations root rows file = do
+    exists <- doesFileExist file
+    if not exists
+        then pure []
+        else do
+            ls <- readLines file
+            pure
+                [ Violation
+                    (rrel root file)
+                    ( "line "
+                        ++ show lineNumber
+                        ++ " calls phase "
+                        ++ show number
+                        ++ " '"
+                        ++ claimed
+                        ++ "' but DEVELOPMENT_PLAN/README.md's table says '"
+                        ++ statusRowStatus row
+                        ++ "'; a root document summarizes status and does not restate it"
+                    )
+                | (lineNumber, line) <- zip [1 :: Int ..] ls
+                , number <- nub (referencedPhaseNumbers line)
+                , row <- take 1 (filter ((== number) . statusRowNumber) rows)
+                , claimed <- nub (statusWordsIn line)
+                , claimed /= statusRowStatus row
+                ]
+
+-- | The closed status vocabulary, as whole words, appearing on one line.
+statusWordsIn :: String -> [String]
+statusWordsIn line =
+    [ word
+    | word <- words (map (\c -> if isAlphaNum c then c else ' ') line)
+    , word `elem` (["Done", "Active", "Planned"] :: [String])
+    ]
+
+{- | @AGENTS.md@ and @CLAUDE.md@ are one document with two audiences.
+
+They were kept in step by hand, and the pair is long enough that a one-sided
+edit would not be obvious. The mapping between the two audiences is declared
+here rather than inferred, because an inferred mapping would quietly accept the
+drift it exists to catch: any difference the rules below do not explain is a
+violation.
+-}
+checkEntryDocAgreement :: FilePath -> IO [Violation]
+checkEntryDocAgreement root = do
+    let agents = root </> "AGENTS.md"
+        claude = root </> "CLAUDE.md"
+    haveAgents <- doesFileExist agents
+    haveClaude <- doesFileExist claude
+    if not (haveAgents && haveClaude)
+        then pure []
+        else do
+            agentLines <- readLines agents
+            claudeLines <- readLines claude
+            let projected = map applyAudienceMapping agentLines
+                mismatches =
+                    [ (n, expected, actual)
+                    | (n, expected, actual) <- zip3 [1 :: Int ..] projected claudeLines
+                    , expected /= actual
+                    ]
+                lengthViolation =
+                    [ Violation
+                        (rrel root claude)
+                        ( "AGENTS.md has "
+                            ++ show (length agentLines)
+                            ++ " lines and CLAUDE.md has "
+                            ++ show (length claudeLines)
+                            ++ "; the two entry documents differ only in the words naming their audience"
+                        )
+                    | length agentLines /= length claudeLines
+                    ]
+            pure
+                ( lengthViolation
+                    ++ [ Violation
+                        (rrel root claude)
+                        ( "line "
+                            ++ show n
+                            ++ " does not follow from AGENTS.md under the declared audience mapping; expected "
+                            ++ show expected
+                            ++ " but found "
+                            ++ show actual
+                        )
+                       | (n, expected, actual) <- take 5 mismatches
+                       ]
+                )
+
+{- | The declared audience mapping, applied to @AGENTS.md@ to produce
+@CLAUDE.md@. Longest rule first; a replacement is never rescanned.
+-}
+audienceMapping :: [(String, String)]
+audienceMapping =
+    [ ("Instructions for coding agents working in this repository.", "Instructions for Claude and other LLM-based coding assistants working in this repository.")
+    , ("Agent Instructions", "Claude Instructions")
+    , ("coding agents", "Claude-style agents")
+    , ("AGENTS.md", "CLAUDE.md")
+    , ("Agents", "Assistants")
+    , ("agents", "assistants")
+    , ("Agent", "Assistant")
+    , ("agent", "assistant")
+    ]
+
+applyAudienceMapping :: String -> String
+applyAudienceMapping = go
+  where
+    go [] = []
+    go input@(c : rest) = case [(from, to) | (from, to) <- audienceMapping, from `isPrefixOf` input] of
+        ((from, to) : _) -> to ++ go (drop (length from) input)
+        [] -> c : go rest
+
+{- | A relative link resolves including its anchor.
+
+Link resolution strips the fragment and resolves the path, so a link to a
+heading that does not exist resolves clean — and two such links existed, both
+pointing at headings that had been renamed. The fragment is resolved the way a
+browser does: against the target document's own headings, under the slug rule
+the renderer uses.
+-}
+checkLinkAnchors :: FilePath -> FilePath -> IO [Violation]
+checkLinkAnchors root file = do
+    contents <- Text.unpack <$> TextIO.readFile file
+    let targets = nub [t | t <- anchoredLinkTargets contents, '#' `elem` t, not (isExternalTarget t)]
+    concatMapM anchorViolation targets
+  where
+    rel = rrel root file
+    anchorViolation target = do
+        let (path, fragment) = break (== '#') target
+            anchor = drop 1 fragment
+        if null path || null anchor
+            then pure []
+            else do
+                let resolved = normalise (takeDirectory file </> path)
+                exists <- doesFileExist resolved
+                if not exists || takeExtension resolved /= ".md"
+                    then pure []
+                    else do
+                        ls <- readLines resolved
+                        let anchors = map headingSlug (filter isHeading ls)
+                        pure
+                            [ Violation
+                                rel
+                                ( "link to "
+                                    ++ target
+                                    ++ " names no heading in "
+                                    ++ rrel root resolved
+                                )
+                            | anchor `notElem` anchors
+                            ]
+    isHeading l = "#" `isPrefixOf` trimStart l
+
+isExternalTarget :: String -> Bool
+isExternalTarget t = any (`isPrefixOf` t) (["http://", "https://", "mailto:"] :: [String])
+
+-- | Every link target in a Markdown document, in @[text](target)@ position.
+anchoredLinkTargets :: String -> [String]
+anchoredLinkTargets = go
+  where
+    go [] = []
+    go (']' : '(' : rest) =
+        let (target, remaining) = break (== ')') rest
+         in takeWhile (/= ' ') target : go remaining
+    go (_ : rest) = go rest
+
+{- | The anchor a Markdown renderer derives from a heading: lowercase, inline
+formatting dropped, everything but alphanumerics, spaces and hyphens removed,
+spaces to hyphens.
+-}
+headingSlug :: String -> String
+headingSlug heading =
+    map (\c -> if c == ' ' then '-' else c)
+        . filter (\c -> isAlphaNum c || c == ' ' || c == '-')
+        . map toLower
+        . unlinked
+        . filter (/= '`')
+        . dropWhile (== ' ')
+        . dropWhile (== '#')
+        $ heading
+  where
+    -- [text](target) contributes only its text.
+    unlinked s = case break (== '[') s of
+        (before, '[' : rest) -> case break (== ']') rest of
+            (label, ']' : '(' : after) -> before ++ label ++ unlinked (drop 1 (dropWhile (/= ')') after))
+            _ -> before ++ unlinked rest
+        (before, _) -> before
+
+{- | A phase header carries the fields § G declares and no others.
+
+Six phases carried an undeclared field in three different spellings, two of
+which restated the status field beside it — a convention one phase invented and
+the others did not share. An undeclared field is not harmless: a reader cannot
+tell it from a governed one, and nothing reads it.
+-}
+checkPhaseHeaderFields :: FilePath -> FilePath -> IO [Violation]
+checkPhaseHeaderFields root file = do
+    ls <- readLines file
+    let header = takeWhile (not . ("## " `isPrefixOf`) . trim) ls
+    pure
+        [ Violation
+            (rrel root file)
+            ( "phase header carries '**"
+                ++ field
+                ++ "**:', which development_plan_standards.md § G does not declare"
+            )
+        | field <- nub (concatMap headerFieldName header)
+        , field `notElem` declaredPhaseHeaderFields
+        ]
+
+headerFieldName :: String -> [String]
+headerFieldName line = case trim line of
+    ('*' : '*' : rest) -> case break (== '*') rest of
+        (name@(_ : _), '*' : '*' : ':' : _) -> [name]
+        _ -> []
+    _ -> []
+
+declaredPhaseHeaderFields :: [String]
+declaredPhaseHeaderFields =
+    [ "Status"
+    , "Depends on"
+    , "Substrates"
+    , "Gate"
+    , "Gate kind"
+    , "Gate evidence"
+    , "Evidence covers"
+    ]
+
+{- | Every leg a gate names appears in that phase's evidence row.
+
+§ G says an evidence row records every leg its gate names, and the row parser
+checked only that the command contained a backtick — so a phase could name a
+composed gate and record one half of it, which the worked demo did: four live
+verbs in the gate, one of them in the row. A leg is a backticked command; the
+comparison is on its non-flag tokens as a subsequence, so a row may add
+@--ghc-options=-Werror@ or run the same command through the repository's Poetry
+environment without being called a different leg.
+-}
+checkGateEvidenceLegs :: FilePath -> FilePath -> IO [Violation]
+checkGateEvidenceLegs root file = do
+    ls <- readLines file
+    let header = takeWhile (not . ("## " `isPrefixOf`) . trim) ls
+        gateLegs = case fieldBlockValue "Gate" header of
+            Nothing -> []
+            Just gate -> concatMap commandShapes (backtickedTokens gate)
+        rowShapes =
+            concat
+                [ map commandTokens (splitCommands span')
+                | row <- fieldBlockValues "Gate evidence" header
+                , span' <- backtickedTokens row
+                ]
+    pure
+        [ Violation
+            (rrel root file)
+            ( "the gate names the leg `"
+                ++ unwords leg
+                ++ "` and no '**Gate evidence**' row records it; § G requires every leg the gate names"
+            )
+        | not (null (fieldBlockValues "Gate evidence" header))
+        , leg <- nub gateLegs
+        , not (any (isSubsequenceOfTokens leg) rowShapes)
+        ]
+
+-- | The command legs a backticked span contains, one per @&&@-separated part.
+commandShapes :: String -> [[String]]
+commandShapes span' =
+    [ shape
+    | part <- splitCommands span'
+    , let shape = commandTokens part
+    , isCommandLeg shape
+    ]
+
+splitCommands :: String -> [String]
+splitCommands s = go s ""
+  where
+    go [] acc = [reverse acc]
+    go ('&' : '&' : rest) acc = reverse acc : go rest ""
+    go (c : rest) acc = go rest (c : acc)
+
+{- | The tokens of a command that identify it: flags, anything carrying an @=@
+or a quote, and the bare @--@ separator are dropped, because they vary between
+the gate's spelling and the run's without naming a different leg.
+-}
+commandTokens :: String -> [String]
+commandTokens part =
+    [ token
+    | token <- words part
+    , not ("-" `isPrefixOf` token)
+    , '=' `notElem` token || isEnvironmentAssignment token
+    , '\'' `notElem` token
+    , '"' `notElem` token
+    ]
+
+isEnvironmentAssignment :: String -> Bool
+isEnvironmentAssignment token = case break (== '=') token of
+    (name@(_ : _), '=' : _) -> all (\c -> (c >= 'A' && c <= 'Z') || isDigit c || c == '_') name
+    _ -> False
+
+{- | A leg is a command rather than a path, a directory, or a spec name. @cd@ is
+excluded: it names where a leg runs, not the leg.
+-}
+isCommandLeg :: [String] -> Bool
+isCommandLeg tokens = case dropWhile isEnvironmentAssignment tokens of
+    (command : _ : _) -> command `elem` (["cabal", "poetry", "hostbootstrap", "python", "python3", "docker"] :: [String])
+    _ -> False
+
+isSubsequenceOfTokens :: [String] -> [String] -> Bool
+isSubsequenceOfTokens [] _ = True
+isSubsequenceOfTokens _ [] = False
+isSubsequenceOfTokens (x : xs) (y : ys)
+    | x == y = isSubsequenceOfTokens xs ys
+    | otherwise = isSubsequenceOfTokens (x : xs) ys
+
+{- | The trees the architecture drift guard reads.
+
+It read the source tree and not the test tree, which is a rule about where the
+check looks rather than a rule about how source may cite a phase — and a numeric
+citation duly sat in a spec file. The suites are read too.
+-}
+driftSourceRoots :: [FilePath]
+driftSourceRoots =
+    [ "core/hostbootstrap-core/src"
+    , "core/hostbootstrap-core/internal"
+    , "core/hostbootstrap-core/app"
+    , "core/hostbootstrap-core/test"
+    , "core/hostbootstrap-core/provider-live"
+    , "demo/src"
+    , "demo/app"
+    , "demo/test"
+    , "hostbootstrap"
+    , "tests"
+    ]
+
+{- | The one file exempt from the numeric-citation rule: the validator's own
+fixture authors synthetic phase documents, whose whole purpose is to contain
+plan text. The exemption is by name and reviewed, not a directory nobody reads.
+-}
+driftCitationExemptions :: [FilePath]
+driftCitationExemptions = ["DocValidatorSpec.hs"]
+
+{- | A numeric phase or sprint citation: the word, then one or more spaces, then
+a digit.
+
+Two readings are wrong in opposite directions. Erasing punctuation and asking
+for adjacent tokens sees @("execute phase", [(7, "teardown")])@ as a citation,
+which is a data literal; admitting a hyphen as the separator sees the durable
+@phase-27-…@ link target as one, which is exactly the spelling § J asks for. A
+space is what a citation in prose actually uses.
+-}
+hasNumberedPhaseReference :: String -> Bool
+hasNumberedPhaseReference = go True
+  where
+    go _ [] = False
+    go atBoundary input@(c : rest)
+        | atBoundary
+        , Just after <- stripCaseInsensitive "phase" input
+        , startsWithNumber after =
+            True
+        | atBoundary
+        , Just after <- stripCaseInsensitive "sprint" input
+        , startsWithNumber after =
+            True
+        | otherwise = go (not (isAlphaNum c || c == '_' || c == '\'')) rest
+    startsWithNumber after = case after of
+        (' ' : more) -> case dropWhile (== ' ') more of
+            (d : _) -> isDigit d
+            [] -> False
+        _ -> False
+    stripCaseInsensitive word input
+        | map toLower (take (length word) input) == word = Just (drop (length word) input)
+        | otherwise = Nothing

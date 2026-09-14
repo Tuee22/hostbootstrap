@@ -9,8 +9,6 @@
 
 module CLISpec (runSchemaFixture, tests) where
 
-import qualified Data.List.NonEmpty as NonEmpty
-import Expect (expectRight)
 import ActivationSpec (withBrokerFor)
 import Control.Exception (finally, throwIO, try)
 import Control.Monad (filterM)
@@ -21,10 +19,12 @@ import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort)
+import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
+import Expect (expectRight)
 import qualified Fixture
 import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
 import HostBootstrap.Authority (
@@ -1757,7 +1757,7 @@ fixtureServiceRegistry selected handlers =
                 (WithEffect NetworkListenName NoEffects)
                 cliServiceResources
                 cliServiceBackend
-                (\_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
+                ( \_ -> withReadyServiceHandles $ \ready -> case lookupAcquiredResource ready "listener" of
                     Nothing -> pure ()
                     Just listener -> serve [(listener, handler)]
                 )
@@ -1954,18 +1954,21 @@ type ProtectedRecordImage = (T.Text, Word64, ByteString.ByteString)
 pendingDestroyAfterDown :: ByteString.ByteString -> IO ByteString.ByteString
 pendingDestroyAfterDown bytes = do
     let magic = "HOSTBOOTSTRAP-REVERSE-ROOT"
-        header = LazyByteString.toStrict . Builder.toLazyByteString $
-            Builder.byteString magic <> Builder.word64BE 1 <> Builder.word64BE 28
+        header =
+            LazyByteString.toStrict . Builder.toLazyByteString $
+                Builder.byteString magic <> Builder.word64BE 1 <> Builder.word64BE 28
         readFields :: Int -> ByteString.ByteString -> Either String [ByteString.ByteString]
         readFields 0 rest
             | ByteString.null rest = Right []
         readFields count rest
-            | count > 0, ByteString.length rest >= 8 =
+            | count > 0
+            , ByteString.length rest >= 8 =
                 let (encodedSize, payload) = ByteString.splitAt 8 rest
                     size = ByteString.foldl' (\value byte -> value * 256 + fromIntegral byte) (0 :: Word64) encodedSize
                  in if size <= fromIntegral (ByteString.length payload)
-                        then let (field, remaining) = ByteString.splitAt (fromIntegral size) payload
-                              in (field :) <$> readFields (count - 1) remaining
+                        then
+                            let (field, remaining) = ByteString.splitAt (fromIntegral size) payload
+                             in (field :) <$> readFields (count - 1) remaining
                         else Left "truncated reverse-root fixture field"
         readFields _ _ = Left "invalid reverse-root fixture framing"
     ByteString.take (ByteString.length header) bytes @?= header
@@ -2030,7 +2033,6 @@ recordImageFields (_, _, bytes) =
 recordImageContains :: T.Text -> ProtectedRecordImage -> Bool
 recordImageContains needle (_, _, bytes) =
     TextEncoding.encodeUtf8 needle `ByteString.isInfixOf` bytes
-
 
 {- | Admit the exact finalized Production plan the CLI will reconstruct from
 the same static spec and on-disk config.  The callback cannot retain any of the

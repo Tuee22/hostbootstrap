@@ -2,8 +2,8 @@
 
 module StepSpec (tests) where
 
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.List (isInfixOf, nub)
+import qualified Data.List.NonEmpty as NonEmpty
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
@@ -37,12 +37,11 @@ providerDeclarationCases =
             Left failure -> failure @?= DuplicateProviderResourceDeclaration (CoreStepIdentity DeployVMId) 2
             Right _ -> assertFailure "duplicate provider declarations were admitted"
     , testCase "an immediate-child provider requires one validated descent" $
-        case
-            mkStepPlan
-                [ declaresProviderResource
-                    providerResourceAtImmediateChild
-                    (deployVMStep "provider" metal noop)
-                ] of
+        case mkStepPlan
+            [ declaresProviderResource
+                providerResourceAtImmediateChild
+                (deployVMStep "provider" metal noop)
+            ] of
             Left failure -> failure @?= ProviderResourceChildWithoutUniqueDescent (CoreStepIdentity DeployVMId)
             Right _ -> assertFailure "an immediate-child provider without a descent was admitted"
     ]
@@ -115,31 +114,30 @@ projectionCases =
                 "core:copy-source-extra/guest-alias"
             )
     , testCase "a projected operation is claimed exactly once in the plan" $
-        case
-            mkStepPlan
-                [ projectsOperation
-                    "core:copy-source/alias"
-                    (projectsOperation "core:copy-source/alias" (copySourceStep "b" metal noop))
-                ] of
+        case mkStepPlan
+            [ projectsOperation
+                "core:copy-source/alias"
+                (projectsOperation "core:copy-source/alias" (copySourceStep "b" metal noop))
+            ] of
             Left err -> err @?= DuplicateProjectedOperation "core:copy-source/alias"
             Right _ -> assertFailure "one node claiming a projection twice was validated"
     , testCase "a projection may not collide with a node's own operation key" $
         -- An ensure step's tool name is free text, so its key can be spelled to
         -- land exactly where another node projects. Both would then register,
         -- gate, and settle the one durable operation record.
-        case
-            mkStepPlan
-                [ projectsOperation
-                    "core:ensure-docker/warm"
-                    (ensureStep "docker" "ensure docker" metal noop)
-                , ensureStep "docker/warm" "ensure the warm store" metal noop
-                ] of
+        case mkStepPlan
+            [ projectsOperation
+                "core:ensure-docker/warm"
+                (ensureStep "docker" "ensure docker" metal noop)
+            , ensureStep "docker/warm" "ensure the warm store" metal noop
+            ] of
             Left err -> err @?= DuplicateProjectedOperation "core:ensure-docker/warm"
             Right _ -> assertFailure "a projection over a node's own operation key was validated"
     ]
 
 {- | The shape the guest alias needs: the provider, then the durable share that
-claims the relation between them. -}
+claims the relation between them.
+-}
 aliasProjectionSteps :: [Step]
 aliasProjectionSteps =
     [ deployVMStep "launch the VM" metal noop
@@ -149,7 +147,8 @@ aliasProjectionSteps =
     ]
 
 {- | What a step's action reports about its own node. Every returned category
-remains distinct through rendering and higher-level classification. -}
+remains distinct through rendering and higher-level classification.
+-}
 observationCases :: [TestTree]
 observationCases =
     [ testCase "reaching the target state is a success; not reaching it is not" $ do
@@ -332,12 +331,11 @@ frameCases =
     , testCase "stepsForFrame is empty for a frame the chain never enters" $
         map stepLabel (stepsForFrame "no-such-frame" demoPlan) @?= []
     , testCase "a non-contiguous frame return is rejected without reordering" $
-        case
-            mkStepPlan
-                [ deployVMStep "a1" metal noop
-                , contextInitStep "b" vmFrame noop
-                , copySourceStep "a2" metal noop
-                ] of
+        case mkStepPlan
+            [ deployVMStep "a1" metal noop
+            , contextInitStep "b" vmFrame noop
+            , copySourceStep "a2" metal noop
+            ] of
             Left err ->
                 err
                     @?= NonContiguousFrameReturn
@@ -351,11 +349,10 @@ validationCases =
     [ testCase "generated frame sequences preserve exact order or reject a closed-frame return" $
         mapM_ validateSequence generatedFrameSequences
     , testCase "duplicate typed identities are rejected" $
-        case
-            mkStepPlan
-                [ projectStep duplicateId ProjectManagedReverse "first" metal noop
-                , projectStep duplicateId ProjectManagedReverse "second" metal noop
-                ] of
+        case mkStepPlan
+            [ projectStep duplicateId ProjectManagedReverse "first" metal noop
+            , projectStep duplicateId ProjectManagedReverse "second" metal noop
+            ] of
             Left (DuplicateStepIdentities identities) ->
                 identities @?= [ProjectStepIdentity duplicateId]
             other -> assertFailure ("expected duplicate identity rejection, got " ++ either show (const "validated") other)
@@ -381,11 +378,10 @@ validationCases =
                     (stepIdentity coreContextInit /= stepIdentity projectContextInit')
             actual -> assertFailure ("expected two validated steps, got " ++ show (length actual))
     , testCase "post-handoff hooks form only a final suffix" $
-        case
-            mkStepPlan
-                [ postHandoffStep "late" "late hook" metal noop
-                , projectStep (fixtureProjectStepId "after-hook") ProjectManagedReverse "normal" metal noop
-                ] of
+        case mkStepPlan
+            [ postHandoffStep "late" "late hook" metal noop
+            , projectStep (fixtureProjectStepId "after-hook") ProjectManagedReverse "normal" metal noop
+            ] of
             Left (PostHandoffBeforeDescentComplete _) -> pure ()
             other -> assertFailure ("expected post-handoff ordering rejection, got " ++ either show (const "validated") other)
     , testCase "post-handoff hooks unwind from deeper frames toward the root" $ do
@@ -415,7 +411,8 @@ validationCases =
                         "vm-orchestrator-1"
             Right _ -> assertFailure "root-to-deepest post-handoff order was validated"
     , testCase "every smart constructor retains an explicit reverse policy" $
-        map stepReversePolicy
+        map
+            stepReversePolicy
             [ ensureStep "ghc" "ensure" metal noop
             , deployVMStep "deploy" vmFrame noop
             , projectStep (fixtureProjectStepId "mutate") ProjectManagedReverse "mutate" ctrFrame noop
@@ -425,34 +422,30 @@ validationCases =
         case mkStepPlan [deployVMStep "a" metal noop, contextInitStep "b" vmFrame noop] of
             Left err -> err @?= MissingFrameDescent "host-orchestrator-0"
             Right _ -> assertFailure "a frame with a successor and no descent was validated"
-        case
-            mkStepPlan
-                [ descendsVia localContext (deployVMStep "a" metal noop)
-                , descendsVia localContext (copySourceStep "a2" metal noop)
-                , contextInitStep "b" vmFrame noop
-                ] of
+        case mkStepPlan
+            [ descendsVia localContext (deployVMStep "a" metal noop)
+            , descendsVia localContext (copySourceStep "a2" metal noop)
+            , contextInitStep "b" vmFrame noop
+            ] of
             Left err -> err @?= DuplicateFrameDescent "host-orchestrator-0" 2
             Right _ -> assertFailure "two descents out of one frame were validated"
-        case
-            mkStepPlan
-                [ descendsVia localContext (descendsVia localContext (deployVMStep "a" metal noop))
-                , contextInitStep "b" vmFrame noop
-                ] of
+        case mkStepPlan
+            [ descendsVia localContext (descendsVia localContext (deployVMStep "a" metal noop))
+            , contextInitStep "b" vmFrame noop
+            ] of
             Left err -> err @?= DuplicateFrameDescent "host-orchestrator-0" 2
             Right _ -> assertFailure "a step declaring two descents was validated"
     , testCase "the innermost frame and post-handoff hooks declare no descent" $ do
-        case
-            mkStepPlan
-                [ descendsVia localContext (deployVMStep "a" metal noop)
-                , descendsVia localContext (contextInitStep "b" vmFrame noop)
-                ] of
+        case mkStepPlan
+            [ descendsVia localContext (deployVMStep "a" metal noop)
+            , descendsVia localContext (contextInitStep "b" vmFrame noop)
+            ] of
             Left err -> err @?= DescentFromInnermostFrame "vm-orchestrator-1"
             Right _ -> assertFailure "a descent out of the innermost frame was validated"
-        case
-            mkStepPlan
-                [ deployVMStep "a" metal noop
-                , descendsVia localContext (postHandoffStep "late" "late hook" metal noop)
-                ] of
+        case mkStepPlan
+            [ deployVMStep "a" metal noop
+            , descendsVia localContext (postHandoffStep "late" "late hook" metal noop)
+            ] of
             Left err -> err @?= DescentOnPostHandoffStep 2
             Right _ -> assertFailure "a post-handoff descent was validated"
     , testCase "a declared reverse effect must be able to run, and only once" $ do

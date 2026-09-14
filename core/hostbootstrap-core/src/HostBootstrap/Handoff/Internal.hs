@@ -6,12 +6,12 @@ value, and every facade kernel fixes its own canonical domain and typed input.
 The exposed handoff facade can consume the abstract capability, but cannot
 construct it or export its representation.
 -}
-module HostBootstrap.Handoff.Internal
-    ( RecoverySigningKernel
-    , recoverySigningKernel
-    , consumeRecoverySigningKernel
-    , consumeRootedLifecycleResponseSigningKernel
-    )
+module HostBootstrap.Handoff.Internal (
+    RecoverySigningKernel,
+    recoverySigningKernel,
+    consumeRecoverySigningKernel,
+    consumeRootedLifecycleResponseSigningKernel,
+)
 where
 
 import Data.ByteString (ByteString)

@@ -1,19 +1,19 @@
 module HarnessRecoveryAsRecoveredProductionProfile where
 
 import HostBootstrap.Authority (RootInvocationAuthority, VerbUp)
-import HostBootstrap.Lifecycle.Mode
-    ( BoundInvocationRecovery
-    , BoundRunLease
-    , HarnessMode
-    , ModeError
-    , ProjectModeLease
-    , VerifiedPlanSnapshot
-    , withRecoveredProductionLifecycleProfile
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.Lifecycle.Mode (
+    BoundInvocationRecovery,
+    BoundRunLease,
+    HarnessMode,
+    ModeError,
+    ProjectModeLease,
+    VerifiedPlanSnapshot,
+    withRecoveredProductionLifecycleProfile,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 import HostBootstrap.ProjectScope (Harness, Production)
 
 data Project

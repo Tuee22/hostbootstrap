@@ -5,14 +5,14 @@ generative identity.
 module CrossPlanConfigStepExecution where
 
 import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.Lifecycle.Execution
-    ( StepExecution
-    , StepRuntime
-    )
-import HostBootstrap.ProjectPlan
-    ( PlannedStep
-    , ProjectPlan
-    )
+import HostBootstrap.Lifecycle.Execution (
+    StepExecution,
+    StepRuntime,
+ )
+import HostBootstrap.ProjectPlan (
+    PlannedStep,
+    ProjectPlan,
+ )
 import HostBootstrap.Reconcile (stepExecutionFor)
 
 data Scope

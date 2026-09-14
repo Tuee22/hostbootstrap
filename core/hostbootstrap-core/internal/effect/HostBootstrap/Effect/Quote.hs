@@ -22,11 +22,11 @@ quotes in both, which is why single quoting is the shape both use.
 This module is a leaf: it is pure, it names no tool, no path, and no process,
 and it is reachable from every library that composes a command.
 -}
-module HostBootstrap.Effect.Quote
-    ( shellQuoteArg
-    , shellQuoteArgs
-    , powerShellQuoteArg
-    )
+module HostBootstrap.Effect.Quote (
+    shellQuoteArg,
+    shellQuoteArgs,
+    powerShellQuoteArg,
+)
 where
 
 {- | Quote one argument for POSIX @sh@.

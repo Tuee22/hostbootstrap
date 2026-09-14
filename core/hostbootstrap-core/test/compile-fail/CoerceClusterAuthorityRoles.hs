@@ -53,55 +53,184 @@ data DependencyPlanA
 data DependencyPlanB
 
 type Package planId =
-  PlanOwnedCluster
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId
+    PlanOwnedCluster
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
 
 type ReconcileCall planId =
-  PreparedClusterReconcile
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId
-    OperationKey CallDigest Attempt JournalVersion
+    PreparedClusterReconcile
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        OperationKey
+        CallDigest
+        Attempt
+        JournalVersion
 
 type Settlement planId = ClusterReconcileSettlement Scope planId ClusterId
 
 type ReconcileResult planId =
-  ClusterReconcileCallResult
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId
-    OperationKey CallDigest Attempt JournalVersion
+    ClusterReconcileCallResult
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        OperationKey
+        CallDigest
+        Attempt
+        JournalVersion
 
 type Cordon planId =
-  PreparedClusterCordon
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    PreparedClusterCordon
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type CordonResult planId =
-  ClusterCordonCallResult
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    ClusterCordonCallResult
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type AppliedCordon planId =
-  AppliedClusterCordon
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    AppliedClusterCordon
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type Readiness planId = ClusterReadiness Scope planId ClusterId Phase
 
 type ReadinessResult planId =
-  ClusterReadinessCallResult
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    ClusterReadinessCallResult
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type Cleanup planId =
-  PreparedClusterCleanup
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    PreparedClusterCleanup
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type CleanupResult planId =
-  ClusterCleanupCallResult
-    Scope Spec planId ConfigId Cfg ClusterId ClusterFrame ProviderId ProviderFrame
-    BudgetId Provider CapabilityId WallSpecId WorkloadSetId PartitionId Phase
+    ClusterCleanupCallResult
+        Scope
+        Spec
+        planId
+        ConfigId
+        Cfg
+        ClusterId
+        ClusterFrame
+        ProviderId
+        ProviderFrame
+        BudgetId
+        Provider
+        CapabilityId
+        WallSpecId
+        WorkloadSetId
+        PartitionId
+        Phase
 
 type Managed planId = ManagedClusterHandle Scope planId ClusterId Phase
 
@@ -142,6 +271,6 @@ coerceManaged :: Managed ManagedPlanA -> Managed ManagedPlanB
 coerceManaged = coerce
 
 coerceRunningDependency ::
-  RunningProviderDependency Scope DependencyPlanA ProviderId ->
-  RunningProviderDependency Scope DependencyPlanB ProviderId
+    RunningProviderDependency Scope DependencyPlanA ProviderId ->
+    RunningProviderDependency Scope DependencyPlanB ProviderId
 coerceRunningDependency = coerce

@@ -1,9 +1,0 @@
-# Production kind config for in-cluster accelerator-daemon lanes. Runtime-owned
-# relays provide any required local endpoint after cluster reconciliation.
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-  - role: control-plane
-    extraMounts:
-      - hostPath: /var/tmp/hostbootstrap-demo-data
-        containerPath: /var/lib/hostbootstrap-demo-data

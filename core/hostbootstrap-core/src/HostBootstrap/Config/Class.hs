@@ -1,6 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
@@ -51,14 +50,14 @@ where
 
 import Control.Monad (ap)
 import Data.Bits (xor)
+import qualified Data.ByteString as BS
 import Data.Kind (Type)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import qualified Data.ByteString as BS
+import Data.Word (Word64, Word8)
 import qualified Dhall
-import qualified HostBootstrap.Context as Context
 import HostBootstrap.Config.Class.Internal (
     ProjectCodec (
         ProjectCodec,
@@ -77,6 +76,7 @@ import HostBootstrap.Config.Vocab (
     HarnessConfigAuthority,
     Production,
  )
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     codecSchemaText,
@@ -87,9 +87,8 @@ import HostBootstrap.Dhall.Gen (
  )
 import HostBootstrap.Dhall.Hoist (NamedUnion)
 import HostBootstrap.Harness (CaseId, TestMatrix, TestMatrixError, VariantDraft, emptyTestMatrix)
-import Numeric.Natural (Natural)
-import Data.Word (Word64, Word8)
 import Numeric (showHex)
+import Numeric.Natural (Natural)
 import System.IO.Error (tryIOError)
 
 {- | A project's scope-indexed config family, coupled to the core **only**
@@ -253,17 +252,16 @@ withProjectCodec ::
 withProjectCodec label codec use =
     let schema = codecSchemaText codec
         digest = canonicalSpecDigest (label <> "\n" <> schema)
-     in
-    use
-        ProjectCodec
-            { installedCodecLabel = label
-            , installedCodecSchema = schema
-            , installedCodecSpecDigest = digest
-            , installedCodecDecodeFile = decodeFile codec
-            , installedCodecDecodeWithSettings = decodeWithSettings codec
-            , installedCodecRender = renderValue codec
-            , installedCodecRenderHoisted = renderHoistedValue codec
-            }
+     in use
+            ProjectCodec
+                { installedCodecLabel = label
+                , installedCodecSchema = schema
+                , installedCodecSpecDigest = digest
+                , installedCodecDecodeFile = decodeFile codec
+                , installedCodecDecodeWithSettings = decodeWithSettings codec
+                , installedCodecRender = renderValue codec
+                , installedCodecRenderHoisted = renderHoistedValue codec
+                }
 
 {- | Install a scoped config codec through an untrusted wire type. Rendering
 projects to wire; decoding first admits the wire through its lower witness and
@@ -280,21 +278,20 @@ withMappedProjectCodec ::
 withMappedProjectCodec label wireCodec toWire fromWire use =
     let schema = codecSchemaText wireCodec
         digest = canonicalSpecDigest (label <> "\n" <> schema)
-     in
-    use
-        ProjectCodec
-            { installedCodecLabel = label
-            , installedCodecSchema = schema
-            , installedCodecSpecDigest = digest
-            , installedCodecDecodeFile =
-                \path -> decodeFile wireCodec path >>= admit
-            , installedCodecDecodeWithSettings =
-                \settings input ->
-                    decodeWithSettings wireCodec settings input >>= admit
-            , installedCodecRender = renderValue wireCodec . toWire
-            , installedCodecRenderHoisted =
-                \unions -> renderHoistedValue wireCodec unions . toWire
-            }
+     in use
+            ProjectCodec
+                { installedCodecLabel = label
+                , installedCodecSchema = schema
+                , installedCodecSpecDigest = digest
+                , installedCodecDecodeFile =
+                    \path -> decodeFile wireCodec path >>= admit
+                , installedCodecDecodeWithSettings =
+                    \settings input ->
+                        decodeWithSettings wireCodec settings input >>= admit
+                , installedCodecRender = renderValue wireCodec . toWire
+                , installedCodecRenderHoisted =
+                    \unions -> renderHoistedValue wireCodec unions . toWire
+                }
   where
     admit wire =
         case fromWire wire of
@@ -391,6 +388,7 @@ value for any of them), so a project's @init@ builder fills the omitted ones
 with the project's own defaults. 'existingOutput' says what to do when the
 output is already there.
 -}
+
 {- | What @init@ does when its output is already there.
 
 One value with a case per intended behaviour, rather than two independent

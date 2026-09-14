@@ -1,5 +1,5 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 {- | Hidden, narrowly scoped authority for retrying cleanup after one failed Up.
@@ -9,13 +9,13 @@ catalog, failed rooted session, and frozen reached-operation set.  Its folds
 can select cleanup work from that set; they cannot construct a reverse root,
 change Production mode, or mint Destroy authority.
 -}
-module HostBootstrap.Authority.FailedUp.Internal
-    ( FailedUpUnwindAuthority
-    , withFailedUpUnwindAuthorityKernel
-    , withRootFailedUpUnwindAuthorityKernel
-    , withRetriedFailedUpUnwindAuthorityKernel
-    , withFailedUpCleanupOperationsKernel
-    )
+module HostBootstrap.Authority.FailedUp.Internal (
+    FailedUpUnwindAuthority,
+    withFailedUpUnwindAuthorityKernel,
+    withRootFailedUpUnwindAuthorityKernel,
+    withRetriedFailedUpUnwindAuthorityKernel,
+    withFailedUpCleanupOperationsKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -24,33 +24,33 @@ import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
-import HostBootstrap.Authority
-    ( RootInvocationAuthority
-    , VerbUp
-    , brokerEpochWord
-    , rootAuthorityEpoch
-    , rootAuthorityProjectName
-    , rootAuthorityVerb
-    , projectVerbName
-    )
-import HostBootstrap.Lifecycle.Rooted
-    ( RootedFrameSession
-    , withFailedRootedFrameSessionKernel
-    )
-import HostBootstrap.Lifecycle.RootedPlan
-    ( RootedPlanCatalog
-    , rootedPlanCatalogRecordIdentityKernel
-    , withRootedPlanCatalogRootKernel
-    )
+import HostBootstrap.Authority (
+    RootInvocationAuthority,
+    VerbUp,
+    brokerEpochWord,
+    projectVerbName,
+    rootAuthorityEpoch,
+    rootAuthorityProjectName,
+    rootAuthorityVerb,
+ )
+import HostBootstrap.Handoff (
+    eliminateLifecycleReport,
+    handoffErrorMessage,
+    lifecycleObservationsFromWire,
+ )
+import HostBootstrap.Lifecycle.Rooted (
+    RootedFrameSession,
+    withFailedRootedFrameSessionKernel,
+ )
+import HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+    rootedPlanCatalogRecordIdentityKernel,
+    withRootedPlanCatalogRootKernel,
+ )
 import HostBootstrap.ProjectPlan (renderSnapshot, stablePlanSnapshotDigest)
-import HostBootstrap.Handoff
-    ( eliminateLifecycleReport
-    , handoffErrorMessage
-    , lifecycleObservationsFromWire
-    )
 
-data FailedUpUnwindAuthority scope rootPlanId brokerGeneration catalogId =
-    FailedUpUnwindAuthority Text Text Word64 Text Text [Text] Text Word64 ByteString [Text] [Text]
+data FailedUpUnwindAuthority scope rootPlanId brokerGeneration catalogId
+    = FailedUpUnwindAuthority Text Text Word64 Text Text [Text] Text Word64 ByteString [Text] [Text]
 
 type role FailedUpUnwindAuthority nominal nominal nominal nominal
 
@@ -80,7 +80,17 @@ withFailedUpUnwindAuthorityKernel root catalog failed report expectedBinding rea
             Right
                 ( use
                     ( FailedUpUnwindAuthority
-                        project lineage epoch catalogIdentity frame path token ordinal report reached unresolved
+                        project
+                        lineage
+                        epoch
+                        catalogIdentity
+                        frame
+                        path
+                        token
+                        ordinal
+                        report
+                        reached
+                        unresolved
                     )
                 )
     joined

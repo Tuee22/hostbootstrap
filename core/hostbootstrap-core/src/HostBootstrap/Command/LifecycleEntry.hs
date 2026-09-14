@@ -293,6 +293,7 @@ import HostBootstrap.Teardown (
     SubtreeSettled,
     TeardownError (TeardownReverseDescentRefused),
     TeardownForest,
+    TeardownAction (ReachFrame),
     TeardownOutcome (TeardownFailed, TeardownReleased),
     attemptLocalWork,
     attemptPreDescentStep,
@@ -303,6 +304,8 @@ import HostBootstrap.Teardown (
     eliminateTeardownWork,
     failedUpTeardownPlanKernel,
     localWorkKey,
+    preDescentStepKey,
+    preDescentStepRun,
     nextTeardownWork,
     openTeardownForest,
     renderTeardownObservations,
@@ -1365,7 +1368,20 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
                                     driven <-
                                         driveTeardownForest
                                             forest
-                                            (const (pure TeardownReleased))
+                                            ( \pre -> case preDescentStepRun pre of
+                                                -- A node with no declared reverse has nothing to
+                                                -- open; only a provider frame reaches here with one.
+                                                Nothing -> pure TeardownReleased
+                                                Just declared -> do
+                                                    outcome <- declared cfg ReachFrame
+                                                    case outcome of
+                                                        TeardownFailed detail ->
+                                                            modifyIORef'
+                                                                descentFailures
+                                                                (<> [preDescentStepKey pre <> ": " <> Text.pack detail])
+                                                        _ -> pure ()
+                                                    pure outcome
+                                            )
                                             ( \_ local -> do
                                                 outcome <- runLocal plan local
                                                 case outcome of
@@ -1432,7 +1448,7 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
                                         broker
                                         reverseDescent
                                         session
-                                        (const (pure TeardownReleased))
+                                        nestedPreDescentRefusal
                                         (launch store broker runtime)
                                         (\settled -> writeIORef settledRef (Just settled) >> pure (Right ()))
                                         ( \retainOffer service ->
@@ -1921,7 +1937,7 @@ runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey
                             broker
                             reverseDescent
                             session
-                            (const (pure TeardownReleased))
+                            nestedPreDescentRefusal
                             (launchFailed broker runtime failedAuthority)
                             (\settled -> writeIORef settledRef (Just settled) >> pure (Right ()))
                             ( \retain service ->
@@ -2504,3 +2520,23 @@ terminalizeRootReverseLifecycleEntryKernel store project lease sessions settled 
     refused owner = pure (Left ("reverse terminalization: " ++ owner ++ " is not a root reverse entry"))
 
 -- End reverse terminalization kernel ------------------------------------------
+
+{- | A frame serving a reverse for its own children cannot open a provider.
+
+Only the root reverse entry holds the project's declared callbacks, so a nested
+frame asked for a reachability step has nothing to run. It refuses rather than
+answering released: the demo's plan shape puts its one provider at the metal
+frame and never reaches here, and a silent "released" is precisely how the root
+driver's own stubbed reachability step let a @destroy@ descend into a stopped
+provider before that shape was repaired.
+-}
+nestedPreDescentRefusal ::
+    PreDescentStep scope planId frame verb ->
+    IO TeardownOutcome
+nestedPreDescentRefusal pre =
+    pure
+        ( TeardownFailed
+            ( "a frame serving its children's reverse cannot open a provider: "
+                <> Text.unpack (preDescentStepKey pre)
+            )
+        )

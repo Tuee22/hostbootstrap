@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,12 +11,21 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, 15.87 GiB, WSL
-2.7.10.0 (kernel 6.18.33.2-2), GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7 ;
-repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` plus
-`cabal build all --ghc-options=-Werror` and `cabal test hostbootstrap-demo-test --ghc-options=-Werror`
-from `demo/` and `cabal test all --ghc-options=-Werror` from `core/` ; pass ; covers
-bead951148f4b26e04c53272877c55c4f80539619efd081335bdeea7367846dd
+**Gate evidence**: 2026-09-14 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
+x86_64, 16 vCPU and 32 GiB, created with no provider installed by Incus 6.0.0 on `matt-junction`
+(x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic) with nested virtualization, running GHC 9.12.4,
+Cabal 3.16.1.0, Poetry 2.4.3 and Python 3.12.3, where `doctor` reports `substrate: linux-cpu (amd64)` ;
+repository Python bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
+`poetry run hostbootstrap run --project-root demo project up`,
+`poetry run hostbootstrap run --project-root demo project down`,
+`poetry run hostbootstrap run --project-root demo project destroy`, then
+`poetry run hostbootstrap run --project-root demo test init` and
+`poetry run hostbootstrap run --project-root demo test run all`, with
+`cabal build all` and `cabal test hostbootstrap-demo-test` from `demo/` and
+`cabal build all` and `cabal test all` from `core/` plus
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+on the x86_64 Linux gate host ; pass ;
+covers 252c9db4d88681fcaf5c3d236add4019ad6bb792a8587ea5e179a3f5e6d5da96
 **Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -2639,10 +2648,10 @@ source measurement still matches the in-run
 None. The dated run above is complete: the Production sequence, the `10/10` matrix, the terminal
 ownership audit, and the matching source measurement.
 
-### Sprint 24.43: The demo's daemon claims are protected-store entries [Active]
+### Sprint 24.43: The demo's daemon claims are protected-store entries [Done]
 
-**Status**: Active
-**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/operations/demo_runbook.md`, `documents/architecture/ownership_invariant.md`
 
@@ -2668,12 +2677,24 @@ to this sprint.
 
 #### Remaining Work
 
-The kill-and-restart confirmation is owed by the substrate acceptance that declares the host.
+None, beyond the behavioural confirmation this sprint does not own. The lifecycle *operation* is now
+`withProtectedEntry` over a store in the daemon's own directory: an OS-released exclusive lock spanning
+the whole bracket, so a hard kill releases it in the kernel and the next run proceeds rather than
+refusing with a directory name for an operator to delete. The *ownership* claim outlives the process —
+the daemon keeps running after `project up` returns — so it is a compare-and-swapped record rather than
+a lock, written under that same operation entry, with `ExpectAbsent` refusing a second live holder and
+`hostAcceleratorDaemonOwned` answering the pid/ownership consistency check the cleanup already made.
+Nine one-line path accessors became one function taking the suffix; two of the nine were the claims and
+are not files at all now. `CommandsSpec` pins all of that, and the demo suite passed 151/151.
 
-### Sprint 24.44: The demo's cluster configuration and tool paths are its own [Planned]
+The kill-and-restart confirmation is owed by the substrate acceptance that declares the host: the daemon
+runs only on Apple Silicon and Windows/GPU, so no `linux-cpu` gate reaches it.
 
-**Status**: Planned
-**Implementation**: `demo/kind.yaml`, `demo/kind-in-cluster.yaml`, `demo/src/HostBootstrapDemo/Commands.hs`
+### Sprint 24.44: The demo's cluster configuration and tool paths are its own [Done]
+
+**Status**: Done
+**Implementation**: `demo/kind.yaml`, `demo/src/HostBootstrapDemo/Commands.hs`,
+`demo/test/CommandsSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/derived_project_standards.md`
 
@@ -2698,13 +2719,144 @@ The host static gate, plus this phase's demo suite.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None. `kind-in-cluster.yaml` is deleted and the selector branches twice, once per template that differs:
+the two files were byte-identical apart from their comments, so the third branch was a distinction the
+YAML did not make and a reader had to open both files to discover it. `kind.yaml`'s comment now says it
+serves both lanes and why — neither reserves a host port, so neither needs a cluster of its own. The
+drift guard that counted mount lines in the deleted file is gone with it, and the selector case now
+asserts that the in-cluster and host-resident contexts choose the same template rather than naming two.
+
+`demoCheckCode` resolves `fourmolu`, `hlint` and `cabal` by name on `PATH`. Two of the three literals it
+replaced re-spelled `HASKELL_STYLE_TOOLS_DIR`, which the Python bootstrapper owns and passes as a build
+argument and which the base image puts on `PATH`; the third named a GHCup layout. The constant stays
+owned in one place, the demo no longer restates it in a second language, and the verb now runs on a host
+that has the three tools as well as inside the image. The demo suite passed 151/151.
+
+### Sprint 24.45: The worked-demo gate against the current tree [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Sprints 24.43 and 24.44 changed the consumer's daemon claims, its cluster template set and its
+code-check tool resolution, and the reachability algebra's admitted port and the repository-wide
+reformat reached everything under this phase's `**Evidence covers**`. The recorded run names a tree that
+no longer exists.
+
+The run needs a host that realizes `linux-cpu`, which is the substrate this phase declares. A machine
+carrying NVIDIA markers classifies as `linux-gpu` and takes the Direct chain instead, so it exercises a
+different lane and cannot stand in for this one.
+
+#### Deliverables
+
+- The declared gate runs in full: both demo Cabal legs, the core host-static gate, and the live
+  `project up`, `project down`, `project destroy` and `test run all` legs.
+- A gate-evidence row records the gate host, the commands as run, and the case total.
+- The covers digest is re-measured over this phase's own paths and recorded.
+
+#### Validation
+
+The phase's own gate. It brings up real provider, Docker and cluster state on the host that runs it.
+
+#### Remaining Work
+
+None. The gate ran in full on 2026-09-14, on the gate host the row above names.
+
+The `linux-cpu` gate host is a guest VM, because this machine reports `/dev/nvidiactl` and
+`/proc/driver/nvidia/version` and therefore realizes `linux-gpu` on metal. The guest was created with no
+provider installed, so the chain's own `ensure` step installed Incus inside it — which is what exposed
+the two repairs this run also confirms.
+
+The Production sequence:
+
+| Command | Result | Duration |
+|---------|--------|----------|
+| `project init` | exit 0 | 1,012.69 s |
+| `project up` | exit 0 | 2,527.69 s |
+| `project down` | exit 0 | 18.56 s |
+| `project destroy` | exit 0 | 31.88 s |
+
+`project init` writes the sibling config, which measures SHA-256
+`b949ceb3c943ec9b04206b4cbdd2fcf8d2a80da03236745450556c60ae2dcae1`; its duration is the cold host-native
+build of the project binary inside the guest, not the command's own work. Up provisions the Incus guest,
+builds the binary there, pulls published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, and builds derived image
+`sha256:37c013915c0999fa055fcdf055ef649cbb309f2c7462869d398947363ad4ebab` before descending into it for
+the cluster, registry, workload and web service. Down stops the guest through its retained ownership
+record. Destroy then reports
+`project destroy: starting hostbootstrap-demo-vm so its retained children can be reached`, unwinds every
+retained child through the frame it reopened, and deletes the guest — the observable the reachability
+repair exists to produce, and the exact point at which the same sequence failed before it.
+
+The complete Harness matrix then ran against the same covered source, from 18:34:50Z to 21:14:25Z:
+exit 0 after 9,574.61 seconds (2 hours 39 minutes 35 seconds), reporting exactly `10/10 passed`. Both
+`hello-world` (`run-3546b7b4d7f`) and `hello-universe` (`run-7bade736622`) passed pristine bootstrap, web
+build, end-to-end tabs, registry persistence, and durable readback; each durable-readback case crossed a
+settled destruction and a fresh same-run recreation before reading its retained bytes. The four pristine
+generations each built their own derived image:
+
+| Variant | Generation | Derived image digest |
+|---------|------------|----------------------|
+| `hello-world` | 1 | `sha256:34e7966ebf4e6a47d0ca4d414b1e72cce3eba586160e74ac911542c973963e1f` |
+| `hello-world` | 2 | `sha256:cd97972a87414af4b26234083e5b368b4c948d8239afb3866042e6c4d0a2c042` |
+| `hello-universe` | 1 | `sha256:14f6bdab08eba4ac8085b689ce46ccd897f2d897f02218afd272b58c4f8ebca2` |
+| `hello-universe` | 2 | `sha256:7118d37280fb8ff373c21201bea52c545d77ee11d936919b89f586f43c841eaf` |
+
+The terminal audit is clean: `incus list` reports no instance, the generated
+`.build/hostbootstrap-demo.dhall` is gone while the operator-owned
+`.build/hostbootstrap-demo.test.dhall` remains at
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`, and `.test_data` exists and is empty.
+`kind` and `docker` are absent from the gate host's own `PATH`, which is correct for this lane: both live
+inside the guest the run created and deleted.
+
+### Sprint 24.46: The consumer's provider opens on every lane it stops [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`
+**Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
+**Sprint budget**: two branches on an action this consumer already receives; at most 25 production
+Haskell lines and no new type.
+**Substrates**: linux-cpu
+
+#### Objective
+
+The recursive lifecycle command's reachability step hands a provider node its own declared reverse and
+asks it to open the frame. This consumer's provider reverse answered that on neither of its two backends:
+the Incus branch had no case for it, and the other branch — Lima on Apple, WSL2 on Windows — fell through
+its catch-all to **stop**. A provider asked to become reachable and stopped instead leaves the destroy
+that follows unwinding nothing, which is the shape the live gate caught on the Incus lane and which the
+other two lanes would have reproduced.
+
+#### Deliverables
+
+- The Incus branch opens through the retained ownership record, with no caller-supplied generation or
+  owner, exactly as its stop and delete peers do.
+- The Lima/WSL2 branch opens through the plan's own reboot-ready effects and then waits on the same
+  readiness probe the forward path waits on.
+- Neither branch can reach the stop effect while answering a reachability step.
+
+#### Validation
+
+The worked demo's own live gate on the Incus lane, where the observable is `project destroy` reporting
+that it started the provider and then settling every retained child. The Lima and WSL2 branches are
+confirmed by the [Apple Silicon](phase-25-apple-silicon-substrate.md) and
+[Windows and WSL2](phase-27-windows-and-wsl2-substrate.md) acceptances, each on its own hardware; this
+phase does not claim them.
+
+#### Remaining Work
+
+None. The 2026-09-14 run recorded in Sprint 24.45 confirms the Incus branch: `project destroy` reported
+`starting hostbootstrap-demo-vm so its retained children can be reached`, settled every retained child
+through the frame it reopened, and exited 0 where the same sequence had previously refused with
+`Error: Instance is not running`. The Lima and WSL2 branches remain confirmed by their own acceptances,
+which this phase does not claim.
 
 ## Remaining Work
 
-The demo's daemon claims are owed the protected store rather than directory locks.
-**Sprint 24.43** owns it. Sprint 24.44 follows with the cluster configurations and the style-tool
-path.
+None.
 
 ## Documentation Requirements
 

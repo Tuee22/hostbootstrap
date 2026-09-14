@@ -1,13 +1,20 @@
 # Phase 19 — Test harness and exclusive run ownership
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 18 (recovery and migration)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`, plus on a realized linux-cpu host
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --test-options='--pattern recovery-interruption'`
 from `core/`
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-07 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern recovery-interruption'` ; pass ; covers 28a1960cfd248366414c686d5a0ab8384a302d24c9d091e95c27c6931aa4e435
+**Gate evidence**: 2026-09-13 ; static leg on x86_64 Ubuntu 24.04.4 LTS (Linux 7.0.0-28-generic, GHC
+9.12.4, Cabal 3.16.1.0), realized `linux-cpu` leg in an x86_64 Linux container from the published
+`basecontainer-cpu-amd64` base with no accelerator device visible, built and run there with the pinned
+GHC 9.12.4 / Cabal 3.16.1.0 mounted in, because that base ships the GHCup-recommended 9.10.3 ;
+`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
+`core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
+--test-show-details=direct --test-options="--pattern recovery-interruption"` from `core/` in that
+container ; pass ; covers 5a8bbee429919f037959e3874bfd897864a16efd867b4e4d9411919fb7087aae
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs` `core/hostbootstrap-core/src/HostBootstrap/Harness` `core/hostbootstrap-core/internal/harness-lifecycle` `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
@@ -338,9 +345,9 @@ writing to it.
 
 None.
 
-### Sprint 19.8: The run-ownership gate against the current tree [Active]
+### Sprint 19.8: The run-ownership gate against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -364,12 +371,24 @@ sprint may not do.
 
 #### Remaining Work
 
-The run is owed once the record tape reaches the harness owners.
+None. On 2026-09-13 both legs ran against the current tree. The static leg is the complete
+2,536/2,536 `cabal test all` from `core/` on the x86_64 Linux gate host. The realized `linux-cpu` leg is
+the five-case `recovery-interruption` selection plus its manifest row, 6/6, built and run inside an
+x86_64 Linux container from the published `basecontainer-cpu-amd64` base with no accelerator device
+visible — the cases kill real processes and observe convergence under a real project root, so their
+effects executed in that Linux rather than beside it. The covers digest was re-measured over this
+phase's own paths and recorded as
+`5a8bbee429919f037959e3874bfd897864a16efd867b4e4d9411919fb7087aae`.
+
+The published `basecontainer-cpu-amd64` base carries the GHC that GHCup's `recommended` tag named on
+its build date, which is 9.10.3, while `core/cabal.project` selects 9.12.4 as a workspace compatibility
+choice — the split
+[the Cabal layout page](../documents/engineering/cabal_layout.md) describes rather than a drift. The
+realized leg therefore mounted the pinned toolchain into the container instead of using the base's own.
 
 ## Remaining Work
 
-The run-ownership gate is owed against the current tree, because the harness owners'
-record publication changes beneath it. **Sprint 19.8** owns the re-run.
+None.
 
 ## Documentation Requirements
 

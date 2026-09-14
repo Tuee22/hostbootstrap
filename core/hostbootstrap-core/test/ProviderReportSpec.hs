@@ -12,8 +12,8 @@ module ProviderReportSpec (tests) where
 
 import Data.Either (isLeft)
 import qualified Data.Text as Text
-import HostBootstrap.Effect.Run (CapturedRun (..))
 import qualified Data.Text.Encoding as TextEncoding
+import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
     Origin (OriginAbsent, OriginPresent),

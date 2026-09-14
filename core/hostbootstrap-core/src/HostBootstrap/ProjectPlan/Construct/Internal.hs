@@ -2,44 +2,44 @@
 {-# LANGUAGE RoleAnnotations #-}
 
 -- | Hidden ownership and child-projection kernel for finalized project specs.
-module HostBootstrap.ProjectPlan.Construct.Internal
-    ( FinalizedProjectSpec
-    , finalizedProjectCodecKernel
-    , finalizedProjectServicesKernel
-    , withFinalizedProjectSpecKernel
-    , withHarnessFinalizedProjectSpecKernel
-    , withFinalizedProjectSpecPartsKernel
-    , withFinalizedForwardChildProjectionKernel
-    , reindexFinalizedProjectSpecKernel
-    )
+module HostBootstrap.ProjectPlan.Construct.Internal (
+    FinalizedProjectSpec,
+    finalizedProjectCodecKernel,
+    finalizedProjectServicesKernel,
+    withFinalizedProjectSpecKernel,
+    withHarnessFinalizedProjectSpecKernel,
+    withFinalizedProjectSpecPartsKernel,
+    withFinalizedForwardChildProjectionKernel,
+    reindexFinalizedProjectSpecKernel,
+)
 where
 
 import Data.Text (Text)
 import qualified Data.Text as Text
-import HostBootstrap.Config.Class
-    ( ProjectCfg (withHarnessProjectCodec)
-    , ProjectCodec
-    )
+import HostBootstrap.Config.Class (
+    ProjectCfg (withHarnessProjectCodec),
+    ProjectCodec,
+ )
 import HostBootstrap.Config.Class.Internal (reindexProjectCodecKernel)
 import HostBootstrap.Config.Fields (ScopeKind (HarnessScope))
-import HostBootstrap.Config.Schema
-    ( ValidatedConfig
-    , validatedConfigValue
-    , withValidatedConfig
-    )
+import HostBootstrap.Config.Schema (
+    ValidatedConfig,
+    validatedConfigValue,
+    withValidatedConfig,
+ )
 import HostBootstrap.Config.Schema.Internal (RecoverySpecReindex)
-import HostBootstrap.Config.Vocab
-    ( Harness
-    , HarnessConfigAuthority
-    , Production
-    )
+import HostBootstrap.Config.Vocab (
+    Harness,
+    HarnessConfigAuthority,
+    Production,
+ )
 import HostBootstrap.Lift.Context (LiftContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
-import HostBootstrap.Service
-    ( FinalizedServiceRegistry
-    , ServiceRegistry
-    , withFinalizedServiceRegistry
-    )
+import HostBootstrap.Service (
+    FinalizedServiceRegistry,
+    ServiceRegistry,
+    withFinalizedServiceRegistry,
+ )
 import HostBootstrap.Service.Internal (reindexFinalizedServiceRegistryKernel)
 import HostBootstrap.Step (StepPlan, StepPlanError)
 
@@ -49,33 +49,34 @@ The constructor and every retained field stay in this hidden owner.  Public
 eliminators expose the legacy codec/services/builder view but never either
 projector field.
 -}
-data FinalizedProjectSpec scope specDigest cfg = FinalizedProjectSpec
-    (ProjectCodec scope specDigest cfg)
-    (FinalizedServiceRegistry scope specDigest (cfg scope))
-    ( forall rootId.
-        CanonicalProjectRoot scope rootId ->
-        cfg scope ->
-        Either StepPlanError StepPlan
-    )
-    ( cfg scope ->
-        Text ->
-        Text ->
-        LiftContext ->
-        Either String (FilePath, cfg scope, StepPlan)
-    )
-    (ServiceRegistry cfg)
-    ( forall planScope rootId.
-        CanonicalProjectRoot planScope rootId ->
-        cfg planScope ->
-        Either StepPlanError StepPlan
-    )
-    ( forall planScope.
-        cfg planScope ->
-        Text ->
-        Text ->
-        LiftContext ->
-        Either String (FilePath, cfg planScope, StepPlan)
-    )
+data FinalizedProjectSpec scope specDigest cfg
+    = FinalizedProjectSpec
+        (ProjectCodec scope specDigest cfg)
+        (FinalizedServiceRegistry scope specDigest (cfg scope))
+        ( forall rootId.
+          CanonicalProjectRoot scope rootId ->
+          cfg scope ->
+          Either StepPlanError StepPlan
+        )
+        ( cfg scope ->
+          Text ->
+          Text ->
+          LiftContext ->
+          Either String (FilePath, cfg scope, StepPlan)
+        )
+        (ServiceRegistry cfg)
+        ( forall planScope rootId.
+          CanonicalProjectRoot planScope rootId ->
+          cfg planScope ->
+          Either StepPlanError StepPlan
+        )
+        ( forall planScope.
+          cfg planScope ->
+          Text ->
+          Text ->
+          LiftContext ->
+          Either String (FilePath, cfg planScope, StepPlan)
+        )
 
 type role FinalizedProjectSpec nominal nominal nominal
 
@@ -101,7 +102,12 @@ withFinalizedProjectSpecKernel ::
     ) ->
     result
 withFinalizedProjectSpecKernel
-    scopeKind baseCodec staticServices staticPlanBuilder staticProjector use =
+    scopeKind
+    baseCodec
+    staticServices
+    staticPlanBuilder
+    staticProjector
+    use =
         withFinalizedServiceRegistry
             scopeKind
             baseCodec

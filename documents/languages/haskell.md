@@ -9,9 +9,15 @@
 
 This page documents what the base image ships for Haskell.
 
-The base image ships a **single current GHC** selected by GHCup's `recommended` tag, the corresponding
-current recommended Cabal, and a warm Cabal store. `fourmolu`/`hlint`'s `ghc-lib-parser` targets 9.12, so
-the same compiler serves formatting and project builds.
+The base image ships a **single pinned GHC**, the corresponding current recommended Cabal, and a warm
+Cabal store built by that compiler.
+
+The version is one family constant with three spellings: `GHC_VERSION` in
+[`hostbootstrap/bootstrap.py`](../../hostbootstrap/bootstrap.py), which the host bootstrapper installs
+and the base image build receives as a build argument; `with-compiler:` in
+[`core/cabal.project`](../../core/cabal.project); and the guest bootstrap's `PinnedToolchain` literal.
+The first is the source, the other two cannot read it, and a Python test asserts all three agree. See
+[engineering/cabal_layout.md](../engineering/cabal_layout.md#ghc-pin).
 
 ## Warm store
 
@@ -32,8 +38,16 @@ Both are prebuilt into the base image at
 * current compatible `hlint`
 
 `/usr/local/bin/fourmolu` and `/usr/local/bin/hlint` are symlinks to that
-directory. They are **container-only**: never installed, built, or run
-on the host.
+directory.
+
+They are no longer container-only. The repository's own source gate runs both on
+the host before it builds anything, against the committed
+[`fourmolu.yaml`](../../fourmolu.yaml) and [`.hlint.yaml`](../../.hlint.yaml) —
+which is what makes the style a property of this repository rather than of
+whichever tool version the rolling base last installed. A maintainer running
+`base build` or `base build-and-push` therefore needs both on `PATH`, at a
+version compatible with the pinned GHC; see
+[engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md).
 
 The base image smoke-tests both binaries during its own build (see
 [engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md));

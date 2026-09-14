@@ -31,22 +31,22 @@ Neither index is coercible, and no token carries a producer here that a caller
 outside this package could reach: this module is Cabal-private and its
 importers are this phase's own facade and the seam that mints the tokens.
 -}
-module HostBootstrap.Ownership.Internal
-    ( -- * Where an owned object lives
-      OwnedTargetPath
+module HostBootstrap.Ownership.Internal (
+    -- * Where an owned object lives
+    OwnedTargetPath,
 
-      -- * The tokens
-    , Entered (..)
-    , Recorded (..)
-    , Bound (..)
-    , Releasable (..)
+    -- * The tokens
+    Entered (..),
+    Recorded (..),
+    Bound (..),
+    Releasable (..),
 
-      -- * Their total eliminators
-    , enteredEvidence
-    , recordedEvidence
-    , boundEvidence
-    , releasableEvidence
-    )
+    -- * Their total eliminators
+    enteredEvidence,
+    recordedEvidence,
+    boundEvidence,
+    releasableEvidence,
+)
 where
 
 import HostBootstrap.Ownership.Object (ObjectIdentity, Origin, OriginRecord)
@@ -68,6 +68,7 @@ and the record. An origin passed separately is an origin that might have been
 observed before the entry.
 -}
 type role Entered nominal nominal
+
 data Entered session object = Entered OwnedTargetPath Origin
 
 {- | Clause 2 held: the origin record is durably published, and the object it
@@ -79,6 +80,7 @@ token and the next left a record saying what was there before and what it
 intended to install.
 -}
 type role Recorded nominal nominal
+
 data Recorded session object = Recorded OwnedTargetPath OriginRecord
 
 {- | Clause 3 held: the object exists, its own kernel identity has been read, and
@@ -90,6 +92,7 @@ somewhere else would let a release compare against an identity this transaction
 never bound.
 -}
 type role Bound nominal nominal
+
 data Bound session object = Bound OwnedTargetPath OriginRecord ObjectIdentity
 
 {- | Clause 4's precondition held: the object at the target has just been
@@ -100,6 +103,7 @@ object and its record — must not be reachable from a comparison someone else
 made earlier.
 -}
 type role Releasable nominal nominal
+
 data Releasable session object = Releasable OwnedTargetPath OriginRecord ObjectIdentity
 
 {- | Disclose what clause 1 established.

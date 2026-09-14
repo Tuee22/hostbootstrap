@@ -1,7 +1,6 @@
 # Phase 14 — The four ownership clauses and host-local reservations
 
 **Status**: Done
-**Current sprint**: None — every sprint is closed
 **Depends on**: Phase 3 (host tools and the closed effect vocabulary), Phase 4 (protected store),
 Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu

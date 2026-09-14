@@ -69,6 +69,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     runProviderShareCall,
     runProviderDeleteCall,
     runRetainedProviderStop,
+    runRetainedProviderReady,
     runRetainedProviderDelete,
 
     -- * Provider-bound discovery and guest execution
@@ -88,10 +89,10 @@ import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capturedStdout))
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
-import HostBootstrap.Context (ResourceEnvelope)
 import HostBootstrap.HostConfig (HostConfig (hcSubstrate), resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), absExePath)
 import HostBootstrap.Lifecycle.Dependency.Internal (
@@ -116,7 +117,6 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGatePlan,
  )
 import qualified HostBootstrap.Lima as Lima
-import qualified HostBootstrap.Wsl2 as Wsl2
 import HostBootstrap.Ownership.Object (
     Origin (OriginAbsent, OriginPresent),
     objectIdentityText,
@@ -262,6 +262,7 @@ import HostBootstrap.Substrate.Provider.Resume (
         RecordNotAClaimedObject
     ),
  )
+import qualified HostBootstrap.Wsl2 as Wsl2
 import System.Directory (
     Permissions (readable, searchable, writable),
     canonicalizePath,
@@ -426,8 +427,7 @@ mkGuestVmBackendSpec ::
 mkGuestVmBackendSpec realization hostConfig provider envelope share
     | not (guestVmHostAdmits realization hostConfig) =
         invalid
-            ( "the " <> label <> " provider backend requires " <> guestVmHostRequirement realization
-            )
+            ("the " <> label <> " provider backend requires " <> guestVmHostRequirement realization)
     | providerKind provider /= guestVmKind realization =
         invalid ("the " <> label <> " backend requires the closed " <> label <> " provider realization")
     | null (providerVmId provider) || '\0' `elem` providerVmId provider =
@@ -1629,6 +1629,44 @@ runRetainedProviderStop backend = case backend of
         pure (Left (Failure (failed "stop retained provider" "invalid Incus backend state")))
     StrongLimaBackend _ _ _ ->
         pure (Left (Unsupported (UnsupportedDetail "stop retained Lima provider" "Lima reverse is owned by the plan's retained step-declared adapter")))
+
+{- | Re-enter the retained ownership record and make the provider reachable.
+
+The peer of 'runRetainedProviderStop', for the other direction. A @down@ stops
+the provider and leaves its children retained inside it; the @destroy@ that
+follows cannot unwind them through a stopped frame, so its pre-descent
+reachability step comes here first. Like its peer it derives claim and identity
+from the durable record alone and refuses a replacement, and like the forward
+readiness path it re-observes before starting and then asks the guest itself
+whether it answers — an instance that is running but not yet answering is polled
+rather than assumed.
+-}
+runRetainedProviderReady ::
+    StrongProviderBackend backendId ->
+    IO (Either ReconcileError ())
+runRetainedProviderReady backend = case backend of
+    StrongDirectHostBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "start Direct provider" "the local host is not project-owned and is already reachable")))
+    StrongIncusBackend _ cfg spec@(IncusBackendSpec name _ _ _ _ _ _ _) ->
+        poll cfg spec (Text.pack name) (60 :: Int)
+    StrongIncusBackend _ _ _ ->
+        pure (Left (Failure (failed "start retained provider" "invalid Incus backend state")))
+    StrongLimaBackend _ _ _ ->
+        pure (Left (Unsupported (UnsupportedDetail "start retained Lima provider" "Lima reverse is owned by the plan's retained step-declared adapter")))
+  where
+    poll cfg spec name remaining = do
+        outcome <-
+            withOwnedProviderTransaction cfg spec "" $
+                \session key owned -> readyOwnedInstance cfg session key owned
+        case outcome of
+            Right (ReadyStarted _) -> pure (Right ())
+            Right (ReadyAlready _) -> pure (Right ())
+            Right (ReadyNotAnswering reason)
+                | remaining > 1 -> case seconds 1 of
+                    Left _ -> pure (Left (Failure (failed "start retained provider" reason)))
+                    Right delay -> providerBackendWait delay >> poll cfg spec name (remaining - 1)
+                | otherwise -> pure (Left (Failure (failed "start retained provider" reason)))
+            Left fault -> pure (Left (retainedProviderFault "start retained provider" name fault))
 
 runRetainedProviderDelete ::
     StrongProviderBackend backendId ->

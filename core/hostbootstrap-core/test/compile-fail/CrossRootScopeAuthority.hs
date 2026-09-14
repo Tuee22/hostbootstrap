@@ -1,7 +1,7 @@
 module CrossRootScopeAuthority where
 
-import HostBootstrap.Authority
 import Data.Coerce (coerce)
+import HostBootstrap.Authority
 
 data ScopeA
 data ScopeB

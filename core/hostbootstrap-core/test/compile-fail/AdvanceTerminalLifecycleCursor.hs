@@ -1,11 +1,11 @@
 module AdvanceTerminalLifecycleCursor where
 
 import HostBootstrap.Authority (ExecutePhase, TeardownPhase, VerbUp)
-import HostBootstrap.Lifecycle.Session
-    ( LifecycleCursor
-    , LifecycleError
-    , withTeardownLifecycleCursor
-    )
+import HostBootstrap.Lifecycle.Session (
+    LifecycleCursor,
+    LifecycleError,
+    withTeardownLifecycleCursor,
+ )
 
 data Scope
 data PlanId

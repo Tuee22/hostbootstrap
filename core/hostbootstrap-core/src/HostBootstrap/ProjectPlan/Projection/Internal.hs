@@ -1,6 +1,6 @@
-{-# LANGUAGE NoMonoLocalBinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE NoMonoLocalBinds #-}
 
 {- | The one immediate-target projection kernel.
 
@@ -15,9 +15,9 @@ retained lifecycle evidence.
 Every check finishes before the rank-2 continuation runs, so a refusal cannot
 create a handoff, session, or backend effect through this boundary.
 -}
-module HostBootstrap.ProjectPlan.Projection.Internal
-    ( withImmediateTargetKernel
-    )
+module HostBootstrap.ProjectPlan.Projection.Internal (
+    withImmediateTargetKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -26,47 +26,47 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Config.Class (ProjectCfg (cfgContext))
-import HostBootstrap.Config.Schema
-    ( renderScopedProjectConfigBytes
-    , validatedConfigDigest
-    , validatedConfigSpecDigest
-    , validatedConfigValue
-    )
+import HostBootstrap.Config.Schema (
+    renderScopedProjectConfigBytes,
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
+    validatedConfigValue,
+ )
 import HostBootstrap.Config.Vocab (Mount (..))
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Handoff
-    ( HandoffBindingInput (..)
-    , HandoffPayloadKind (NarrowedProjectConfig)
-    , childConfigDigest
-    )
-import HostBootstrap.Lifecycle.Plan
-    ( PlanDigestBinding
-    , ProjectPlan
-    , canonicalProjectedRootKernel
-    , planDigestBindingDigestKernel
-    , projectPlanValidatedConfigKernel
-    , topologyDescentEdgesKernel
-    , topologyFrameOrderKernel
-    , topologyKernel
-    , topologyParentEdgesKernel
-    , withProjectedProjectPlanKernel
-    )
-import HostBootstrap.Lift.Context
-    ( ConfigDelivery (cdPayload)
-    , ContainerLift (..)
-    , LiftContext (..)
-    , LiftLayer (..)
-    )
-import HostBootstrap.ProjectPlan.Construct.Internal
-    ( FinalizedProjectSpec
-    , finalizedProjectCodecKernel
-    , withFinalizedForwardChildProjectionKernel
-    )
-import HostBootstrap.ProjectPlan.Frame
-    ( CurrentFrame
-    , currentFrameId
-    , withCurrentFrame
-    )
+import HostBootstrap.Handoff (
+    HandoffBindingInput (..),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    childConfigDigest,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    PlanDigestBinding,
+    ProjectPlan,
+    canonicalProjectedRootKernel,
+    planDigestBindingDigestKernel,
+    projectPlanValidatedConfigKernel,
+    topologyDescentEdgesKernel,
+    topologyFrameOrderKernel,
+    topologyKernel,
+    topologyParentEdgesKernel,
+    withProjectedProjectPlanKernel,
+ )
+import HostBootstrap.Lift.Context (
+    ConfigDelivery (cdPayload),
+    ContainerLift (..),
+    LiftContext (..),
+    LiftLayer (..),
+ )
+import HostBootstrap.ProjectPlan.Construct.Internal (
+    FinalizedProjectSpec,
+    finalizedProjectCodecKernel,
+    withFinalizedForwardChildProjectionKernel,
+ )
+import HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    currentFrameId,
+    withCurrentFrame,
+ )
 
 {- | Project the single declared descent of one exact parent frame.
 
@@ -115,12 +115,10 @@ withImmediateTargetKernel finalized parent suppliedCurrent parentContext use
     parentFrameId = currentFrameId suppliedCurrent
 
     selectEdge placement =
-        case
-            [ (child, route)
-            | (edgeParent, child, route) <- topologyDescentEdgesKernel (topologyKernel parent)
-            , edgeParent == parentFrameId
-            ]
-        of
+        case [ (child, route)
+             | (edgeParent, child, route) <- topologyDescentEdgesKernel (topologyKernel parent)
+             , edgeParent == parentFrameId
+             ] of
             [(child, rawRoute@(LiftContext [_]))] ->
                 withFinalizedForwardChildProjectionKernel
                     finalized
@@ -150,11 +148,14 @@ withImmediateTargetKernel finalized parent suppliedCurrent parentContext use
                                 (validatedConfigValue childConfig)
                      in if childConfigDigest payload /= validatedConfigDigest childConfig
                             then pure (refusal "canonical child payload digest differs")
-                            else
-                                case withProjectedProjectPlanKernel parent descriptor childConfig childPlan
-                                    (sealTarget placement expected child rawRoute payload childConfig) of
-                                    Left failure -> pure (Left (failureText "projected plan" failure))
-                                    Right action -> action
+                            else case withProjectedProjectPlanKernel
+                                parent
+                                descriptor
+                                childConfig
+                                childPlan
+                                (sealTarget placement expected child rawRoute payload childConfig) of
+                                Left failure -> pure (Left (failureText "projected plan" failure))
+                                Right action -> action
 
     sealTarget placement expected child rawRoute payload childConfig targetPlan binding =
         case validatePlanPrefixes parent targetPlan expected placement of
@@ -175,8 +176,7 @@ withImmediateTargetKernel finalized parent suppliedCurrent parentContext use
                             payload
                             (validatedConfigDigest childConfig)
                             (childConfigDigest payload)
-                            input
-                    of
+                            input of
                         Left failure -> pure (Left (failureText "target frame" failure))
                         Right action -> action
       where
@@ -307,6 +307,6 @@ require False detail = refusal detail
 refusal :: Text -> Either Text value
 refusal detail = Left ("immediate target projection: " <> detail)
 
-failureText :: Show failure => Text -> failure -> Text
+failureText :: (Show failure) => Text -> failure -> Text
 failureText label failure =
     "immediate target projection: " <> label <> " refused: " <> Text.pack (show failure)

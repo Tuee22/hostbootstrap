@@ -42,6 +42,7 @@ import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nvkind), mkAbsExe)
+import HostBootstrap.Network.Port (portNumber)
 import HostBootstrap.Protected (
     RecordKey,
     listProtectedRecords,
@@ -496,7 +497,7 @@ exposureCases =
             Right intent -> do
                 exposureIntentService intent @?= "web"
                 exposureIntentTargetHost intent @?= "demo-control-plane"
-                exposureIntentTargetPort intent @?= 30080
+                portNumber (exposureIntentTargetPort intent) @?= 30080
             Left refusal -> assertFailure (show refusal)
     , testCase "an invalid internal target port is refused" $
         forM_ [0, 65536] $ \port -> case mkExposureIntent "web" "demo-control-plane" port of
@@ -686,9 +687,9 @@ resolvedTuple :: Text.Text -> [ResolvedExposure scope planId clusterId seed] -> 
 resolvedTuple service resolved =
     case withResolvedExposure service resolved $ \exact ->
         ( resolvedExposureListenAddress exact
-        , resolvedExposureHostPort exact
+        , portNumber (resolvedExposureHostPort exact)
         , resolvedExposureTargetHost exact
-        , resolvedExposureTargetPort exact
+        , portNumber (resolvedExposureTargetPort exact)
         ) of
         Left refusal -> assertFailure (show refusal)
         Right tuple -> pure tuple

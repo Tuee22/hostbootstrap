@@ -1,16 +1,16 @@
 module CrossPlanProjectUpAuthority where
 
-import HostBootstrap.Authority
-    ( ProjectVerb (ProjectUp)
-    , RootInvocationAuthority
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    ProjectVerb (ProjectUp),
+    RootInvocationAuthority,
+    VerbUp,
+ )
 import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode (VerifiedPlanSnapshot)
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 
 data Scope
 data BrokerGeneration

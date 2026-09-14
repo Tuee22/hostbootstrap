@@ -1,12 +1,12 @@
 module RawReverseInputsAsLifecycleEntry where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , RootInvocationAuthority
-    , TeardownPhase
-    , VerbDown
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    RootInvocationAuthority,
+    TeardownPhase,
+    VerbDown,
+    VerbUp,
+ )
 import HostBootstrap.Command (LifecycleEntry)
 import HostBootstrap.Lifecycle.Mode (AcquisitionJournal, LifecycleCursor)
 

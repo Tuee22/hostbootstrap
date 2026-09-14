@@ -35,8 +35,10 @@ A base rebuild intentionally discovers current/latest compatible upstream inputs
 rolling Ubuntu 24.04 tag; CUDA resolution selects the highest compatible
 `cudnn-devel-ubuntu24.04` tag that publishes the requested native architecture. Go, Node LTS,
 PureScript, kind, kubectl, Helm, Pulumi, and similar tools are resolved from their authoritative release
-metadata at build-workflow time. GHCup selects its current recommended GHC and Cabal; Rustup selects the
-stable Rust channel; package managers install current compatible quality/build tools.
+metadata at build-workflow time. GHCup installs the **pinned** GHC the build argument names and its own
+current recommended Cabal; Rustup selects the stable Rust channel; package managers install current
+compatible quality/build tools. The compiler is the one input that does not roll, because it keys the
+warm Cabal store rather than being discovered by it (§ FF).
 
 There is no committed base-input version lock and rebuilding the same source revision need not reproduce
 an older image. HTTPS is required for direct downloads and release queries. Provider-published integrity
@@ -47,10 +49,10 @@ The rolling tag is the consumer discovery name. A registry digest can identify t
 publication and bind a pull-to-smoke workflow, but it does not imply locked inputs, reproducible rebuilds,
 or a permanent digest-pinned consumer contract.
 
-The dated CPU/amd64 publication on 2026-09-09 resolved to
-`sha256:e46fb5699af246dc631704cd9bba5020776a7e96fbba1f4c450b5b9971ffb9d5`. Its immutable local-ID
-smoke passed before the push, and its exact pulled-digest smoke passed afterward. This identifies that
-publication; consumers continue to discover the rolling tag.
+A publication's immutable local-ID smoke runs before the push and its exact pulled-digest smoke runs
+afterward, and the resolved digest identifies that one publication; consumers continue to discover the
+rolling tag. The dated publications and their digests belong to the
+[base-image-publication-and-opportunistic-warm-store phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md).
 
 ## Republishing
 
@@ -65,10 +67,21 @@ Before pushing, the workflow cold-builds
 local base. A consumer incompatibility therefore refuses before registry mutation. After pushing, the
 workflow pulls the tag and builds
 [`docker/compatibility-smoke.Dockerfile`](../../docker/compatibility-smoke.Dockerfile) as a compatibility
-smoke. It may pass the pulled digest to prevent a local-tag race within that one workflow. The smoke
-observes the toolchain the base exists to carry, the warm store, and a derived resolution against that
-store — it proves that a project which builds `FROM` the publication can do so. It does not prove offline
-behavior, complete cache reuse, or reproducible inputs.
+smoke. It may pass the pulled digest to prevent a local-tag race within that one workflow.
+
+The smoke observes three things, as three separate failures. The toolchain the base exists to carry.
+The formatter and the linter, because the code-check doctrine treats their presence as part of what the
+base guarantees and an image missing either would fail every derived project's `check-code` at build
+time rather than here. And a build plan for a **separate consumer package** — written by the smoke, with
+its own name, version and dependency list, naming the dependency shape a real derived project has.
+
+That last one is written out rather than pointed at deliberately. The smoke used to resolve
+`/opt/basecontainer/haskell-deps`, which is the warm store's own package set: re-resolving the very
+description whose resolution produced the store is close to tautological, and would succeed on an image
+no derived project could use. A plan that names downloads is still a pass — the warm store is an
+opportunistic cache rather than a lock — and a plan that cannot be produced at all is the failure this
+catches. It proves that a project which builds `FROM` the publication can do so. It does not prove
+offline behavior, complete cache reuse, or reproducible inputs.
 
 The smoke is deliberately not the demo's own
 [`demo/docker/Dockerfile`](../../demo/docker/Dockerfile). That one authenticates a separately selected
@@ -85,7 +98,8 @@ question it can answer on its own.
   command tree through `runHostBootstrapCLI`.
 - A broad Cabal store at `/opt/cache/cabal/`, populated from both manifests under `core/warm-deps/`.
   It is an opportunistic performance cache, not a freeze or version API.
-- Current recommended GHC/Cabal, current compatible Fourmolu and HLint, and the Cabal build tools.
+- The pinned GHC and current recommended Cabal, current compatible Fourmolu and HLint, and the Cabal
+  build tools.
 - Current stable Go and Rust toolchains, current Node LTS, PureScript, Spago, TypeScript, esbuild,
   Playwright, and purs-tidy.
 - Docker/Compose, kind, kubectl, Helm, Skopeo, MinIO `mc`, AWS CLI v2, Pulumi, and nvkind.

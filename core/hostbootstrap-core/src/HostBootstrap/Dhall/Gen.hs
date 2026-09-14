@@ -50,10 +50,8 @@ import qualified HostBootstrap.Dhall.Hoist as Hoist
 -- | Why a decoder/encoder pair could not be admitted as one codec.
 data CodecWitnessError
     = DecoderExpectedTypeUnavailable
-    | CodecTypeMismatch
-        { decoderTypeText :: Text
-        , encoderTypeText :: Text
-        }
+    | -- | the decoder's normalized type, then the encoder's
+      CodecTypeMismatch Text Text
     deriving (Eq, Show)
 
 {- | An admitted Dhall codec. The constructor is intentionally private: callers
@@ -83,10 +81,10 @@ mkCodecWitness decoder encoder =
                         }
             | otherwise ->
                 Left
-                    CodecTypeMismatch
-                        { decoderTypeText = Dhall.Core.pretty normalizedDecoder
-                        , encoderTypeText = Dhall.Core.pretty normalizedEncoder
-                        }
+                    ( CodecTypeMismatch
+                        (Dhall.Core.pretty normalizedDecoder)
+                        (Dhall.Core.pretty normalizedEncoder)
+                    )
           where
             normalizedDecoder = Dhall.Core.normalize decoderType
             normalizedEncoder = Dhall.Core.normalize (declared encoder)

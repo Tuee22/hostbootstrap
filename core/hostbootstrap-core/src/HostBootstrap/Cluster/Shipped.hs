@@ -19,8 +19,9 @@ module HostBootstrap.Cluster.Shipped (
 )
 where
 
-import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -32,6 +33,7 @@ import HostBootstrap.Cluster.Report (safeClusterName)
 import HostBootstrap.Handoff.Transaction (withFrameChildTransaction)
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Lift (LiftContext, SelfRef)
+import HostBootstrap.Network.Port (mkPort)
 import HostBootstrap.Substrate (detect)
 import HostBootstrap.Substrate.Provider (ProviderCapability, providerCapabilityLiftContext)
 import qualified System.FilePath.Posix as Posix
@@ -45,7 +47,7 @@ maxRequestBytes, maxStatePathBytes :: Int
 maxRequestBytes = 4096
 maxStatePathBytes = 2048
 
-{- | Render the one canonical request admitted by the far frame. -}
+-- | Render the one canonical request admitted by the far frame.
 encodeShippedClusterExposureRequest :: FilePath -> String -> Text -> Either Text ByteString
 encodeShippedClusterExposureRequest stateDirectory cluster service = do
     validateRequest stateDirectory cluster service
@@ -75,7 +77,7 @@ decodeShippedClusterExposureRequest raw
                     else Left "the cluster exposure request is not canonical"
             _ -> Left "the cluster exposure request does not contain exactly three fields"
 
-{- | Decode the far frame's sole success value. -}
+-- | Decode the far frame's sole success value.
 decodeShippedClusterExposureResponse :: ByteString -> Either Text Int
 decodeShippedClusterExposureResponse raw = case ByteString.stripPrefix responsePrefix raw of
     Nothing -> Left "the bytes are not a shipped cluster exposure response"
@@ -83,8 +85,9 @@ decodeShippedClusterExposureResponse raw = case ByteString.stripPrefix responseP
         portText <- decodeField "host port" portBytes
         case readMaybe (Text.unpack portText) of
             Just port
-                | validPort port
-                , responsePrefix <> TextEncoding.encodeUtf8 (Text.pack (show port)) == raw -> Right port
+                | isJust (mkPort port)
+                , responsePrefix <> TextEncoding.encodeUtf8 (Text.pack (show port)) == raw ->
+                    Right port
             _ -> Left "the shipped cluster exposure response carries an invalid host port"
 
 {- | Cross into the exact provider capability and return only the freshly
@@ -177,9 +180,6 @@ validService service =
     not (Text.null service)
         && Text.length service <= 128
         && not (Text.any (`elem` ['\0', '/', '\\', ':', '\n', '\r', '\t']) service)
-
-validPort :: Int -> Bool
-validPort port = port > 0 && port < 65536
 
 decodeField :: Text -> ByteString -> Either Text Text
 decodeField label bytes = case TextEncoding.decodeUtf8' bytes of

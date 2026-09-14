@@ -29,59 +29,58 @@ Three shapes are deliberately unrepresentable rather than validated:
   * a record that claims an identity binding it never made — the binding is
     attached by its own producer and the record carries no updatable field.
 -}
-module HostBootstrap.Ownership.Object
-    ( -- * The kernel's answer
-      storeFault
-    , ObjectIdentity
-    , mkObjectIdentity
-    , mkKernelObjectIdentity
-    , objectIdentityBytes
-    , objectIdentityText
-    , parseObjectIdentityHex
+module HostBootstrap.Ownership.Object (
+    -- * The kernel's answer
+    storeFault,
+    ObjectIdentity,
+    mkObjectIdentity,
+    mkKernelObjectIdentity,
+    objectIdentityBytes,
+    objectIdentityText,
+    parseObjectIdentityHex,
 
-      -- * What this run intends to install
-    , Payload
-    , mkPayload
-    , payloadBytes
-    , PayloadDigest
-    , payloadDigest
-    , payloadDigestText
-    , parsePayloadDigestHex
+    -- * What this run intends to install
+    Payload,
+    mkPayload,
+    payloadBytes,
+    PayloadDigest,
+    payloadDigest,
+    payloadDigestText,
+    parsePayloadDigestHex,
 
-      -- * The claim a run stamps on an object another authority owns
-    , OwnerClaim
-    , mkOwnerClaim
-    , ownerClaimText
-    , parseOwnerClaimHex
+    -- * The claim a run stamps on an object another authority owns
+    OwnerClaim,
+    mkOwnerClaim,
+    ownerClaimText,
+    parseOwnerClaimHex,
 
-      -- * What is owned, and what was there before
-    , ObjectKind (..)
-    , objectKindIsDirectory
-    , Origin (..)
-    , originIdentity
+    -- * What is owned, and what was there before
+    ObjectKind (..),
+    objectKindIsDirectory,
+    Origin (..),
+    originIdentity,
 
-      -- * The durable origin record
-    , OriginRecord
-    , originRecord
-    , originRecordKind
-    , originRecordOrigin
-    , originRecordBinding
-    , bindOriginRecord
-    , renderOriginRecord
-    , parseOriginRecord
-    , ownershipRecordVersion
+    -- * The durable origin record
+    OriginRecord,
+    originRecord,
+    originRecordKind,
+    originRecordOrigin,
+    originRecordBinding,
+    bindOriginRecord,
+    renderOriginRecord,
+    parseOriginRecord,
+    ownershipRecordVersion,
 
-      -- * Failure
-    , OwnershipFault (..)
-    , ConflictReport (..)
-    , ownershipFault
-    , ownershipFaultMessage
-    )
+    -- * Failure
+    OwnershipFault (..),
+    ConflictReport (..),
+    ownershipFault,
+    ownershipFaultMessage,
+)
 where
 
-import HostBootstrap.Protected (ProtectedError, protectedErrorMessage)
-import Data.Bits (shiftR, (.&.))
 import qualified Crypto.Hash as Hash
+import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -90,6 +89,7 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64, Word8)
+import HostBootstrap.Protected (ProtectedError, protectedErrorMessage)
 
 -- ---------------------------------------------------------------------------
 -- The kernel's answer
@@ -343,7 +343,7 @@ never made and a bound record cannot be silently rebound to a different object.
 data OriginRecord = OriginRecord ObjectKind Origin (Maybe ObjectIdentity)
     deriving (Eq, Show)
 
-{- | Record what is about to be owned and what was there before it. -}
+-- | Record what is about to be owned and what was there before it.
 originRecord :: ObjectKind -> Origin -> OriginRecord
 originRecord kind origin = OriginRecord kind origin Nothing
 
@@ -491,7 +491,7 @@ parseBinding raw
     | raw == absentToken = Right Nothing
     | otherwise = Just <$> parseObjectIdentityHex raw
 
-{- | Take the record's one line, refusing anything after it. -}
+-- | Take the record's one line, refusing anything after it.
 exactLine :: ByteString -> Either OwnershipFault Text
 exactLine raw = do
     body <- decodeAscii raw

@@ -12,55 +12,55 @@ import Data.Word (Word64, Word8)
 import qualified Fixture
 import HostBootstrap.Authority (InstalledProjectIdentity, VerbUp)
 import HostBootstrap.Config.Vocab (Production)
-import HostBootstrap.Lifecycle.Mode
-    ( ModeError (ModeMalformedRecord)
-    , ProductionRoot
-    , VerifiedPlanSnapshot
-    , productionRootAuthority
-    , productionRootModeLease
-    , productionRootUnboundLease
-    , projectModeLeaseEpoch
-    , recordSetDigest
-    , withVerifiedResourceRecordSet
-    )
-import HostBootstrap.ProjectPlan
-    ( ProjectPlan
-    , forward
-    , plannedResourceFrame
-    , plannedResourceKey
-    , plannedStepOperationKey
-    , withPlannedResourceOfKind
-    )
+import HostBootstrap.Lifecycle.Mode (
+    ModeError (ModeMalformedRecord),
+    ProductionRoot,
+    VerifiedPlanSnapshot,
+    productionRootAuthority,
+    productionRootModeLease,
+    productionRootUnboundLease,
+    projectModeLeaseEpoch,
+    recordSetDigest,
+    withVerifiedResourceRecordSet,
+ )
+import HostBootstrap.Lifecycle.Session (
+    RehydratedResourceSet,
+    SessionError (SessionRecordCorrupt),
+    foldRehydratedResourceSet,
+    withRehydratedResourceSet,
+ )
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    forward,
+    plannedResourceFrame,
+    plannedResourceKey,
+    plannedStepOperationKey,
+    withPlannedResourceOfKind,
+ )
 import HostBootstrap.ProjectPlan.Snapshot (BoundPlanSnapshot, withPersistedPlanSnapshot)
-import HostBootstrap.Lifecycle.Session
-    ( SessionError (SessionRecordCorrupt)
-    , RehydratedResourceSet
-    , foldRehydratedResourceSet
-    , withRehydratedResourceSet
-    )
-import HostBootstrap.Protected
-    ( Expectation (ExpectAbsent)
-    , ProtectedSession
-    , ProtectedStore
-    , compareAndSwapProtectedRecord
-    , mkRecordKey
-    , openProtectedStore
-    , withProtectedEntry
-    )
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedSession,
+    ProtectedStore,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    openProtectedStore,
+    withProtectedEntry,
+ )
 import HostBootstrap.Reconcile hiding (plannedResourceFrame, plannedResourceKey)
-import HostBootstrap.Step
-    ( StepFrame (StepFrame)
-    , StepObservation (StepChanged)
-    , StepPlan
-    , deployKindStep
-    , deployVMStep
-    , mkStepPlan
-    , operationKeyText
-    )
-import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import HostBootstrap.Step (
+    StepFrame (StepFrame),
+    StepObservation (StepChanged),
+    StepPlan,
+    deployKindStep,
+    deployVMStep,
+    mkStepPlan,
+    operationKeyText,
+ )
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Test.Tasty (TestTree, testGroup)
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -226,8 +226,7 @@ rehydratedDispositions =
                             rehydrated
                             (0, 0)
                             (\(owned, released) _handle _receipt -> (owned + 1, released))
-                            (\(owned, released) _tombstone -> (owned, released + 1))
-                 of
+                            (\(owned, released) _tombstone -> (owned, released + 1)) of
                     Left failure -> error (show failure)
                     Right counts -> counts
 
@@ -330,49 +329,54 @@ assertRefused plan planned raw =
         Right _ -> assertFailure "a substituted resource record was accepted"
 
 withRecoveryFixture ::
-    (forall projectId specDigest planDigest planId brokerGeneration.
+    ( forall projectId specDigest planDigest planId brokerGeneration.
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withRecoveryFixture use =
     withRecoveryFixtureFor resourcePlan use
 
 withRecoveryFixtureFor ::
     StepPlan ->
-    (forall projectId specDigest planDigest planId brokerGeneration.
+    ( forall projectId specDigest planDigest planId brokerGeneration.
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withRecoveryFixtureFor planSteps use =
     withRecoveryFixtureDisposition False planSteps use
 
 withReleasedRecoveryFixture ::
-    (forall projectId specDigest planDigest planId brokerGeneration.
+    ( forall projectId specDigest planDigest planId brokerGeneration.
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withReleasedRecoveryFixture =
     withRecoveryFixtureDisposition True resourcePlan
 
 withReleasedRecoveryFixtureFor ::
     StepPlan ->
-    (forall projectId specDigest planDigest planId brokerGeneration.
+    ( forall projectId specDigest planDigest planId brokerGeneration.
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withReleasedRecoveryFixtureFor = withRecoveryFixtureDisposition True
 
 withRecoveryFixtureDisposition ::
     Bool ->
     StepPlan ->
-    (forall projectId specDigest planDigest planId brokerGeneration.
+    ( forall projectId specDigest planDigest planId brokerGeneration.
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withRecoveryFixtureDisposition released planSteps use =
     do
@@ -392,13 +396,14 @@ withRecoveryFixtureDisposition released planSteps use =
 
 withRecoveryRootFixtureFor ::
     StepPlan ->
-    (forall projectId brokerGeneration specDigest planDigest planId.
+    ( forall projectId brokerGeneration specDigest planDigest planId.
       ProtectedStore ->
       InstalledProjectIdentity projectId ->
       ProductionRoot projectId brokerGeneration VerbUp ->
       VerifiedPlanSnapshot (Production projectId) specDigest planDigest ->
       RehydratedResourceSet (Production projectId) planId brokerGeneration ->
-      IO result) ->
+      IO result
+    ) ->
     IO result
 withRecoveryRootFixtureFor planSteps use =
     Fixture.withFixtureProjectPlanRoot planSteps $ \store project root plan -> do
@@ -407,7 +412,7 @@ withRecoveryRootFixtureFor planSteps use =
                 (productionRootAuthority root)
                 (productionRootUnboundLease root)
                 plan
-                (\verified bound _binding _lease _recovery -> do
+                ( \verified bound _binding _lease _recovery -> do
                     records <- resourceRecords plan
                     mapM_ (uncurry (writeRecord store)) records
                     deferred <- withSetSession store $ \session ->
@@ -417,7 +422,8 @@ withRecoveryRootFixtureFor planSteps use =
                                 Right action -> pure action
                     case deferred of
                         Left failure -> error (show failure)
-                        Right action -> action)
+                        Right action -> action
+                )
         either (error . show) id opened
 
 withResource ::

@@ -21,8 +21,8 @@ clauses. Each clause has a case that fails when the clause is dropped:
 -}
 module DataRootSpec (tests) where
 
-import Expect (expectRight)
 import Data.ByteString (ByteString)
+import Expect (expectRight)
 import HostBootstrap.Harness.DataRoot
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
@@ -290,7 +290,6 @@ readRecordBytes session key = do
     case stored of
         Right (Just record) -> pure (protectedRecordBytes record)
         other -> assertFailure ("expected a stored record, got " <> show other)
-
 
 expectConflict :: (Show value) => String -> Either DataRootError value -> IO ()
 expectConflict label outcome = case outcome of

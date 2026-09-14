@@ -12,7 +12,7 @@ data ConfigScope
 data ForeignScope
 
 crossScopeRoot ::
-    ProjectCfg cfg =>
+    (ProjectCfg cfg) =>
     ProjectCodec ConfigScope specDigest cfg ->
     Text ->
     IO ()

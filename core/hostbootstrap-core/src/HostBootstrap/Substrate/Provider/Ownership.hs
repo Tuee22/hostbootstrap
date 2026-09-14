@@ -75,8 +75,8 @@ module HostBootstrap.Substrate.Provider.Ownership (
 )
 where
 
-import Crypto.Hash (Digest, SHA256, hash)
 import Control.Concurrent (threadDelay)
+import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.List (sort)
 import Data.Text (Text)
@@ -113,6 +113,13 @@ import HostBootstrap.Ownership.Object (
     ownerClaimText,
     ownershipFaultMessage,
  )
+import HostBootstrap.Ownership.Primitive (
+    bindReportedIdentity,
+    enterReportedObject,
+    recordReportedOrigin,
+    releaseReportedObject,
+    reobserveReportedIdentity,
+ )
 import HostBootstrap.Ownership.Tape (
     OwnershipCarrier (fromClauseFault, fromStoreFault),
     RecordSubject (RecordSubject, subjectBinding, subjectRecord),
@@ -124,13 +131,6 @@ import HostBootstrap.Ownership.Tape (
     publishFreshRecord,
     readRecordUnder,
     recordTape,
- )
-import HostBootstrap.Ownership.Primitive (
-    bindReportedIdentity,
-    enterReportedObject,
-    recordReportedOrigin,
-    releaseReportedObject,
-    reobserveReportedIdentity,
  )
 import HostBootstrap.Protected (
     ProtectedError,
@@ -1314,6 +1314,7 @@ withBoundInstanceClaim session key owned claim identity continue =
             Right token -> continue token
 
 -- | Forget one durable record, whatever version the store currently holds.
+
 {- | What this owner calls its records, for the tape's refusals.
 
 The only thing the provider supplies to the shared store adapter: everything
@@ -1433,4 +1434,3 @@ interpret = interpretHostCommand
 
 reported :: Either ProviderReportFault value -> Either ProviderOwnershipFault value
 reported = either (Left . ProviderOwnershipReport) Right
-

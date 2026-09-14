@@ -134,10 +134,10 @@ module HostBootstrap.Step (
 )
 where
 
-import Data.List.NonEmpty (NonEmpty ((:|)))
-import qualified Data.List.NonEmpty as NonEmpty
 import Data.Kind (Type)
 import Data.List (elemIndex, group, isPrefixOf, sort)
+import Data.List.NonEmpty (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -317,6 +317,15 @@ data TeardownAction
       RetainResource
     | -- | any other acquired resource this run owns
       ReleaseResource
+    | {- | provider frame: start it again so its retained children can be
+      reached. Never produced by the reverse projection's own action table and
+      never declarable by a step: it is supplied only by the destroy-only
+      pre-descent reachability step, to the same callback the node already
+      declared with 'reversedBy'. A @down@ stops a provider and leaves its
+      children retained inside it; the @destroy@ that follows has to open that
+      frame before it can unwind them.
+      -}
+      ReachFrame
     deriving (Eq, Ord, Show)
 
 {- | What one reverse attempt observed. Only 'TeardownFailed' blocks completion:

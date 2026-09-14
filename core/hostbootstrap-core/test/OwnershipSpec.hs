@@ -30,32 +30,32 @@ real kernel, rather than here against something written to stand in for one.
 module OwnershipSpec (tests) where
 
 import Control.Exception (SomeException, try)
-import Data.Foldable (for_, traverse_)
 import Data.ByteString (ByteString)
-import Data.List (isInfixOf)
-import Data.Text (Text)
-import Data.Maybe (isJust)
-import HostBootstrap.DocValidator (findRepoRoot)
-import qualified Data.Text as Text
+import Data.Foldable (for_, traverse_)
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
+import Data.Maybe (isJust)
+import Data.Text (Text)
+import qualified Data.Text as Text
+import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ownership.Clause (Bound, boundEvidence)
-import HostBootstrap.Ownership.Object
-    ( ConflictReport (conflictExpected, conflictObserved, conflictSubject)
-    , ObjectIdentity
-    , ObjectKind (OwnedDirectory, ReportedObject)
-    , Origin (OriginAbsent, OriginPresent)
-    , OriginRecord
-    , OwnershipFault (OwnershipConflict, OwnershipMalformed, OwnershipProbeFailed, OwnershipUnsupported)
-    , bindOriginRecord
-    , mkKernelObjectIdentity
-    , mkObjectIdentity
-    , mkOwnerClaim
-    , mkPayload
-    , originRecord
-    , originRecordBinding
-    , originRecordOrigin
-    , ownershipFaultMessage
-    )
+import HostBootstrap.Ownership.Object (
+    ConflictReport (conflictExpected, conflictObserved, conflictSubject),
+    ObjectIdentity,
+    ObjectKind (OwnedDirectory, ReportedObject),
+    Origin (OriginAbsent, OriginPresent),
+    OriginRecord,
+    OwnershipFault (OwnershipConflict, OwnershipMalformed, OwnershipProbeFailed, OwnershipUnsupported),
+    bindOriginRecord,
+    mkKernelObjectIdentity,
+    mkObjectIdentity,
+    mkOwnerClaim,
+    mkPayload,
+    originRecord,
+    originRecordBinding,
+    originRecordOrigin,
+    ownershipFaultMessage,
+ )
 import HostBootstrap.Ownership.Primitive
 import HostBootstrap.Ownership.Tape (
     RecordSubject (RecordSubject, subjectBinding, subjectRecord),
@@ -449,7 +449,8 @@ withBound session identity use = do
 reportedFace :: String -> String
 reportedFace source =
     unlines
-        ( takeWhile (not . ("-- Shared steps" `isInfixOf`))
+        ( takeWhile
+            (not . ("-- Shared steps" `isInfixOf`))
             (drop 1 (dropWhile (not . (opening `isInfixOf`)) (lines source)))
         )
   where
@@ -639,7 +640,7 @@ normalize = unwords . words
 -- ---------------------------------------------------------------------------
 -- Helpers
 
-{- | Every capability combination, so the classifier is applied to all sixteen. -}
+-- | Every capability combination, so the classifier is applied to all sixteen.
 everyCapability :: [OwnershipCapabilities]
 everyCapability =
     [ OwnershipCapabilities identity open publication parent

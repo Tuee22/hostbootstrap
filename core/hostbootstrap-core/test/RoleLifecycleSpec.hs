@@ -622,8 +622,9 @@ engineTests =
     , testCase "a delayed callback exception is forced inside the guarded transition" $
         withRole servingEffects listenerDraft $ \store plan placement cursor -> do
             trace <- newIORef []
-            report <- runRoleLifecycle store plan placement cursor $
-                (tracingEngine trace){engineAcquire = \_ -> pure (error "delayed acquisition failure")}
+            report <-
+                runRoleLifecycle store plan placement cursor $
+                    (tracingEngine trace){engineAcquire = \_ -> pure (error "delayed acquisition failure")}
             exitTurnedAtPhase report @?= Acquire
             exitUnknownResources report @?= []
             readIORef trace >>= (@?= ["prereq", "release:listener"])
@@ -715,10 +716,11 @@ engineTests =
                         (maybe False (Text.isInfixOf "cursor was already consumed") (exitReason report))
             readIORef inner >>= (@?= [])
     , testCase "a distinct live exclusive instance is refused before acquisition" $ do
-        let manifest = baseManifest
-                { manifestPermittedEffects = mutatingEffects
-                , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
-                }
+        let manifest =
+                baseManifest
+                    { manifestPermittedEffects = mutatingEffects
+                    , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
+                    }
             peerMeasurement = baseMeasurement{measuredInstance = KubernetesInstance "pod-uid-2" 0}
         withBroker manifest $ \broker store key -> do
             grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
@@ -732,27 +734,28 @@ engineTests =
                                 case (outerReserved, peerReserved) of
                                     (RoleAdmissionReserved outerAdmission, RoleAdmissionReserved peerAdmission) ->
                                         do
-                                          outerOpened <- withRuntimeRolePlan session outerActivation outerDraft outerAdmission $ \outerPlan _ outerPlacement outerCursor -> do
-                                            peerOpened <- withRuntimeRolePlan session peerActivation peerDraft peerAdmission $ \peerPlan _ peerPlacement peerCursor -> do
-                                                peer <- newIORef Nothing
-                                                outerTrace <- newIORef []
-                                                outerReport <- runRoleLifecycle store outerPlan outerPlacement outerCursor $
-                                                    (tracingEngine outerTrace)
-                                                        { engineServe = \_ -> do
-                                                            peerTrace <- newIORef []
-                                                            report <- runRoleLifecycle store peerPlan peerPlacement peerCursor (tracingEngine peerTrace)
-                                                            writeIORef peer (Just (report, peerTrace))
-                                                            pure ServeCompleted
-                                                        }
-                                                observed <- readIORef peer
-                                                case observed of
-                                                    Nothing -> assertFailure ("the distinct peer never ran: " <> renderRoleExitReport outerReport)
-                                                    Just (report, peerTrace) -> do
-                                                        exitTurnedAtPhase report @?= Prereq
-                                                        assertBool "the live lease refusal is explicit" (maybe False (Text.isInfixOf "exclusive generation lease") (exitReason report))
-                                                        readIORef peerTrace >>= (@?= [])
-                                            either (assertFailure . roleLifecycleErrorMessage) pure peerOpened
-                                          either (assertFailure . roleLifecycleErrorMessage) pure outerOpened
+                                            outerOpened <- withRuntimeRolePlan session outerActivation outerDraft outerAdmission $ \outerPlan _ outerPlacement outerCursor -> do
+                                                peerOpened <- withRuntimeRolePlan session peerActivation peerDraft peerAdmission $ \peerPlan _ peerPlacement peerCursor -> do
+                                                    peer <- newIORef Nothing
+                                                    outerTrace <- newIORef []
+                                                    outerReport <-
+                                                        runRoleLifecycle store outerPlan outerPlacement outerCursor $
+                                                            (tracingEngine outerTrace)
+                                                                { engineServe = \_ -> do
+                                                                    peerTrace <- newIORef []
+                                                                    report <- runRoleLifecycle store peerPlan peerPlacement peerCursor (tracingEngine peerTrace)
+                                                                    writeIORef peer (Just (report, peerTrace))
+                                                                    pure ServeCompleted
+                                                                }
+                                                    observed <- readIORef peer
+                                                    case observed of
+                                                        Nothing -> assertFailure ("the distinct peer never ran: " <> renderRoleExitReport outerReport)
+                                                        Just (report, peerTrace) -> do
+                                                            exitTurnedAtPhase report @?= Prereq
+                                                            assertBool "the live lease refusal is explicit" (maybe False (Text.isInfixOf "exclusive generation lease") (exitReason report))
+                                                            readIORef peerTrace >>= (@?= [])
+                                                either (assertFailure . roleLifecycleErrorMessage) pure peerOpened
+                                            either (assertFailure . roleLifecycleErrorMessage) pure outerOpened
                                     other -> assertFailure ("could not reserve both instances: " <> show (describeAdmission (fst other), describeAdmission (snd other)))
                     either (assertFailure . activationErrorMessage) pure peerVerified
             either (assertFailure . activationErrorMessage) pure outerVerified
@@ -829,20 +832,20 @@ withActivationFor effects draft use =
                 , manifestRolePlanDigest = rolePlanDraftDigest draft
                 }
      in withBroker manifest $ \broker store key -> do
-        signed <- signActivationManifest broker manifest
-        case signed of
-            Left failure -> assertFailure (activationErrorMessage failure)
-            Right grant -> do
-                verified <-
-                    verifyRuntimeRoleActivation
-                        key
-                        store
-                        manifest
-                        manifest
-                        grant
-                        baseMeasurement
-                        (use store)
-                either (assertFailure . activationErrorMessage) pure verified
+            signed <- signActivationManifest broker manifest
+            case signed of
+                Left failure -> assertFailure (activationErrorMessage failure)
+                Right grant -> do
+                    verified <-
+                        verifyRuntimeRoleActivation
+                            key
+                            store
+                            manifest
+                            manifest
+                            grant
+                            baseMeasurement
+                            (use store)
+                    either (assertFailure . activationErrorMessage) pure verified
 
 withVerifiedDraft ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
@@ -857,9 +860,10 @@ withVerifiedDraft activation draft use =
         Left failure -> assertFailure (roleLifecycleErrorMessage failure)
         Right action -> action
 
--- | Verify one measured instance and return the key only after its admission
--- has been durably reserved.  Returning plain text keeps all generative
--- activation and draft indices inside their verification continuations.
+{- | Verify one measured instance and return the key only after its admission
+has been durably reserved.  Returning plain text keeps all generative
+activation and draft indices inside their verification continuations.
+-}
 reserveAdmissionKey ::
     ProtectedStore ->
     ActivationVerificationKey ->
@@ -977,9 +981,8 @@ withBroker manifest use = case activationSigningPolicy [manifest] of
                             Right key -> pure key
                     let provisioned = activationSigningVerificationKey signing
                     verification <-
-                        case
-                            activationVerificationKeyFromBytes
-                                (activationVerificationKeyBytes provisioned) of
+                        case activationVerificationKeyFromBytes
+                            (activationVerificationKeyBytes provisioned) of
                             Left failure -> assertFailure (activationErrorMessage failure)
                             Right key -> pure key
                     outcome <-

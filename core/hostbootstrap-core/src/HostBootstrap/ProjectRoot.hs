@@ -1,16 +1,16 @@
 {-# LANGUAGE RankNTypes #-}
 
 -- | Canonical project-root admission and scope-bound path projections.
-module HostBootstrap.ProjectRoot
-    ( CanonicalProjectRoot
-    , CanonicalHostPath
-    , ProjectRootError (..)
-    , withCanonicalProjectRoot
-    , canonicalProjectRootPath
-    , canonicalDurableHostPath
-    , canonicalHostSubPath
-    , canonicalHostPathValue
-    )
+module HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    CanonicalHostPath,
+    ProjectRootError (..),
+    withCanonicalProjectRoot,
+    canonicalProjectRootPath,
+    canonicalDurableHostPath,
+    canonicalHostSubPath,
+    canonicalHostPathValue,
+)
 where
 
 import Control.Exception (IOException, try)
@@ -18,15 +18,17 @@ import Data.List (isPrefixOf)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesPathExist)
 import System.FilePath (addTrailingPathSeparator, equalFilePath, isAbsolute, normalise, takeDirectory, takeFileName, (</>))
 
--- | A root whose constructor and root identity are private to this module.
--- The surrounding admission chooses @scope@; 'withCanonicalProjectRoot' mints
--- only @rootId@.  This lets the config/lifecycle bracket retain its exact scope
--- while still preventing a root identity from escaping its continuation.
+{- | A root whose constructor and root identity are private to this module.
+The surrounding admission chooses @scope@; 'withCanonicalProjectRoot' mints
+only @rootId@.  This lets the config/lifecycle bracket retain its exact scope
+while still preventing a root identity from escaping its continuation.
+-}
 newtype CanonicalProjectRoot scope rootId = CanonicalProjectRoot FilePath
 
--- | An absolute host path derived from one canonical project-root identity.
--- The constructor is private; host adapters consume this type instead of a raw
--- 'FilePath'.
+{- | An absolute host path derived from one canonical project-root identity.
+The constructor is private; host adapters consume this type instead of a raw
+'FilePath'.
+-}
 newtype CanonicalHostPath scope rootId = CanonicalHostPath FilePath
 
 data ProjectRootError
@@ -38,10 +40,11 @@ data ProjectRootError
       ProjectRootSegmentUnsafe String
     deriving (Eq, Show)
 
--- | Resolve a configured root against the stable project-home anchor owned by
--- the sibling config. Configs next to a @.build@ executable are owned by the
--- parent project directory; other config locations own their containing
--- directory directly.
+{- | Resolve a configured root against the stable project-home anchor owned by
+the sibling config. Configs next to a @.build@ executable are owned by the
+parent project directory; other config locations own their containing
+directory directly.
+-}
 withCanonicalProjectRoot ::
     FilePath ->
     FilePath ->
@@ -121,7 +124,8 @@ canonicalHostSubPathUnchecked ::
 canonicalHostSubPathUnchecked root segments =
     CanonicalHostPath (foldl (</>) (canonicalProjectRootPath root) segments)
 
--- | Render a canonical host path for the small set of trusted adapters that
--- consume it. Construction remains private.
+{- | Render a canonical host path for the small set of trusted adapters that
+consume it. Construction remains private.
+-}
 canonicalHostPathValue :: CanonicalHostPath scope rootId -> FilePath
 canonicalHostPathValue (CanonicalHostPath path) = path

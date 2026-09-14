@@ -1,10 +1,10 @@
 module ProjectFrameAsCommandAuthority where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , PreparePhase
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    PreparePhase,
+    VerbUp,
+ )
 import HostBootstrap.ProjectPlan.Frame (ProjectFrame)
 
 data Scope

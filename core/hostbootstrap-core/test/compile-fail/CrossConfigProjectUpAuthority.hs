@@ -1,24 +1,24 @@
 module CrossConfigProjectUpAuthority where
 
-import HostBootstrap.Authority
-    ( PreparePhase
-    , ProjectVerb (ProjectUp)
-    , RootInvocationAuthority
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    PreparePhase,
+    ProjectVerb (ProjectUp),
+    RootInvocationAuthority,
+    VerbUp,
+ )
 import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
-import HostBootstrap.Lifecycle.Mode
-    ( AcquisitionJournal
-    , BoundRunLease
-    , LifecycleCursor
-    , VerifiedPlanSnapshot
-    )
 import HostBootstrap.Lifecycle.Context (ValidatedLifecycleContext)
+import HostBootstrap.Lifecycle.Mode (
+    AcquisitionJournal,
+    BoundRunLease,
+    LifecycleCursor,
+    VerifiedPlanSnapshot,
+ )
 import HostBootstrap.ProjectPlan (ProjectPlan)
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 
 data Scope
 data BrokerGeneration

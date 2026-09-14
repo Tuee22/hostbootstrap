@@ -128,7 +128,7 @@ for the pattern; add it where measured.
   that participate in the inner search loop.
 * **jitML:** the project builds on GHC 9.12 with `base >=4.18`. It adopts the
   canonical `cabal.project` template from
-  [warm_store.md](warm_store.md#recommended-project-cabalproject) and audits
+  [warm_store.md](warm_store.md#consumer-project) and audits
   hot numeric modules for `-fllvm` opportunities.
 
 ## See also

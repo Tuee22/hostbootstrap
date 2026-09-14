@@ -16,49 +16,48 @@ the same size everywhere, which is what "CoverageManifest" checks.
 -}
 module WslGlobalWallWindowsSpec (tests) where
 
-import Expect (expectRightLabelled)
 import Control.Exception (bracket)
 import qualified Data.ByteString as ByteString
+import Expect (expectRightLabelled)
 import HostBootstrap.Wsl2.GlobalWall
 import HostBootstrap.Wsl2.GlobalWall.Host
 import HostBootstrap.Wsl2.GlobalWall.Windows
 import System.Directory (doesFileExist, removeFile)
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
-import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 managedBody :: [ByteString.ByteString]
 managedBody =
-  [ "[general]",
-    "instanceIdleTimeout=21600000",
-    "[wsl2]",
-    "processors=4",
-    "memory=8GB",
-    "swap=8GB",
-    "vmIdleTimeout=21600000"
-  ]
+    [ "[general]"
+    , "instanceIdleTimeout=21600000"
+    , "[wsl2]"
+    , "processors=4"
+    , "memory=8GB"
+    , "swap=8GB"
+    , "vmIdleTimeout=21600000"
+    ]
 
 request :: IO CurrentUserWallRequest
 request =
-  case mkCurrentUserWallRequest "owner" "spec" "reservation" "receipt" managedBody of
-    Left err -> assertFailure ("unexpected request error: " ++ show err)
-    Right value -> pure value
+    case mkCurrentUserWallRequest "owner" "spec" "reservation" "receipt" managedBody of
+        Left err -> assertFailure ("unexpected request error: " ++ show err)
+        Right value -> pure value
 
 withTemporaryProfile :: (FilePath -> IO result) -> IO result
 withTemporaryProfile consume =
-  withSystemTempDirectory "hostbootstrap-windows-wall" $ \profile ->
-    bracket
-      (lookupEnv "USERPROFILE")
-      (restoreEnvironment "USERPROFILE")
-      (\_ -> setEnv "USERPROFILE" profile >> consume profile)
+    withSystemTempDirectory "hostbootstrap-windows-wall" $ \profile ->
+        bracket
+            (lookupEnv "USERPROFILE")
+            (restoreEnvironment "USERPROFILE")
+            (\_ -> setEnv "USERPROFILE" profile >> consume profile)
 
 restoreEnvironment :: String -> Maybe String -> IO ()
 restoreEnvironment name Nothing = unsetEnv name
 restoreEnvironment name (Just value) = setEnv name value
-
 
 {- | One case that drives the Win32 row against the kernel.
 
@@ -68,11 +67,11 @@ the case stays and asserts the refusal the row declares.
 -}
 rowCase :: TestName -> (FilePath -> IO ()) -> TestTree
 rowCase name body =
-  testCase name $
-    withTemporaryProfile $ \profile ->
-      if windowsGlobalWallSupported
-        then body profile
-        else expectRowRefusal
+    testCase name $
+        withTemporaryProfile $ \profile ->
+            if windowsGlobalWallSupported
+                then body profile
+                else expectRowRefusal
 
 {- | The disposition the Win32 row owes a caller on a host that is not Windows.
 
@@ -81,60 +80,60 @@ them would be a row that half exists.
 -}
 expectRowRefusal :: IO ()
 expectRowRefusal = do
-  wall <- request
-  applied <- applyCurrentUserGlobalWall wall
-  case applied of
-    Left (HostWallUnsupported _) -> pure ()
-    other ->
-      assertFailure
-        ("expected the Windows row to refuse this apply, got " ++ show other)
-  restored <- restoreCurrentUserGlobalWall wall
-  case restored of
-    Left (HostWallUnsupported _) -> pure ()
-    other ->
-      assertFailure
-        ("expected the Windows row to refuse this restore, got " ++ show other)
+    wall <- request
+    applied <- applyCurrentUserGlobalWall wall
+    case applied of
+        Left (HostWallUnsupported _) -> pure ()
+        other ->
+            assertFailure
+                ("expected the Windows row to refuse this apply, got " ++ show other)
+    restored <- restoreCurrentUserGlobalWall wall
+    case restored of
+        Left (HostWallUnsupported _) -> pure ()
+        other ->
+            assertFailure
+                ("expected the Windows row to refuse this restore, got " ++ show other)
 
 tests :: TestTree
 tests =
-  testGroup
-    "WslGlobalWallWindowsSpec"
-    [ testCase "the row's own declaration agrees with the gate host" $
-        windowsGlobalWallSupported @?= (os == "mingw32"),
-      rowCase "an absent origin is published and restored to absence" $
-        \profile -> do
-          wall <- request
-          applied <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
-          persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
-          let target = profile </> ".wslconfig"
-          published <- ByteString.readFile target
-          assertBool
-            "the native publication contains the managed memory wall"
-            ("memory=8GB" `ByteString.isInfixOf` published)
-          _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
-          doesFileExist target >>= (@?= False)
-          doesFileExist (profile </> ".hostbootstrap" </> "global-wall.record")
-            >>= (@?= False),
-      rowCase "a present origin is restored byte-for-byte" $ \profile -> do
-          let target = profile </> ".wslconfig"
-              original = "# operator bytes\r\n[wsl2]\r\nkernel=C:\\\\custom\r\n"
-          ByteString.writeFile target original
-          wall <- request
-          _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
-          _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
-          ByteString.readFile target >>= (@?= original),
-      rowCase "a replacement is refused and preserved" $ \profile -> do
-          let target = profile </> ".wslconfig"
-              replacement = "foreign replacement\r\n"
-          wall <- request
-          _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
-          removeFile target
-          ByteString.writeFile target replacement
-          restored <- restoreCurrentUserGlobalWall wall
-          case restored of
-            Left (HostWallConflict _) -> pure ()
-            other ->
-              assertFailure
-                ("expected an identity conflict, got " ++ show other)
-          ByteString.readFile target >>= (@?= replacement)
-    ]
+    testGroup
+        "WslGlobalWallWindowsSpec"
+        [ testCase "the row's own declaration agrees with the gate host" $
+            windowsGlobalWallSupported @?= (os == "mingw32")
+        , rowCase "an absent origin is published and restored to absence" $
+            \profile -> do
+                wall <- request
+                applied <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+                persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
+                let target = profile </> ".wslconfig"
+                published <- ByteString.readFile target
+                assertBool
+                    "the native publication contains the managed memory wall"
+                    ("memory=8GB" `ByteString.isInfixOf` published)
+                _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
+                doesFileExist target >>= (@?= False)
+                doesFileExist (profile </> ".hostbootstrap" </> "global-wall.record")
+                    >>= (@?= False)
+        , rowCase "a present origin is restored byte-for-byte" $ \profile -> do
+            let target = profile </> ".wslconfig"
+                original = "# operator bytes\r\n[wsl2]\r\nkernel=C:\\\\custom\r\n"
+            ByteString.writeFile target original
+            wall <- request
+            _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+            _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
+            ByteString.readFile target >>= (@?= original)
+        , rowCase "a replacement is refused and preserved" $ \profile -> do
+            let target = profile </> ".wslconfig"
+                replacement = "foreign replacement\r\n"
+            wall <- request
+            _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+            removeFile target
+            ByteString.writeFile target replacement
+            restored <- restoreCurrentUserGlobalWall wall
+            case restored of
+                Left (HostWallConflict _) -> pure ()
+                other ->
+                    assertFailure
+                        ("expected an identity conflict, got " ++ show other)
+            ByteString.readFile target >>= (@?= replacement)
+        ]

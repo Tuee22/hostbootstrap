@@ -1,18 +1,18 @@
 module OpenLifecycleEntryProducer where
 
-import HostBootstrap.Command
-    ( AuthorizedChildCursor
-    , ChildRecoveryLifecycleEntry
-    , renderForwardTerminalOrigin
-    , runChildProjectUpLifecycleEntry
-    , runRootProjectUpLifecycleEntry
-    , settleRootedPlanCatalog
-    , withChildRecoveryTerminalOrigin
-    , withChildProjectUpLifecycleEntry
-    , withReceivedRecoveryChildLifecycleEntry
-    , withRootProjectUpLifecycleEntry
-    , withRootProjectReverseLifecycleEntry
-    )
+import HostBootstrap.Command (
+    AuthorizedChildCursor,
+    ChildRecoveryLifecycleEntry,
+    renderForwardTerminalOrigin,
+    runChildProjectUpLifecycleEntry,
+    runRootProjectUpLifecycleEntry,
+    settleRootedPlanCatalog,
+    withChildProjectUpLifecycleEntry,
+    withChildRecoveryTerminalOrigin,
+    withReceivedRecoveryChildLifecycleEntry,
+    withRootProjectReverseLifecycleEntry,
+    withRootProjectUpLifecycleEntry,
+ )
 
 hidden :: ()
 hidden = ()

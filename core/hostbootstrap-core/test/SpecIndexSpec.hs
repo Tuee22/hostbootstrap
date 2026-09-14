@@ -16,12 +16,12 @@ the recovered finalized specification the next sprint threads into both root
 module SpecIndexSpec (tests) where
 
 import Data.List (isInfixOf, isPrefixOf, sort)
-import SourceGuard
-    ( fieldModules
-    , listHaskellSources
-    , mainLibraryStanza
-    , normalizeWhitespace
-    )
+import SourceGuard (
+    fieldModules,
+    listHaskellSources,
+    mainLibraryStanza,
+    normalizeWhitespace,
+ )
 import qualified SourceGuard
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -69,7 +69,6 @@ tests =
                     <> show (filter (\name -> not (name `isInfixOf` description)) present)
                 )
                 (all (`isInfixOf` description) present)
-
         , testCase "the installed project codec keeps one hidden owner and one relabelling authority" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 let ownerPath =
@@ -154,7 +153,7 @@ tests =
                     requiredModuleExports "HostBootstrap.Service.Internal" ownerSource
                 serviceSource <- readFile (sourceRoot </> "HostBootstrap" </> "Service.hs")
                 mapM_
-                    (\identifier -> do
+                    ( \identifier -> do
                         SourceGuard.countHaskellIdentifier identifier ("type " ++ identifier ++ " = IO ()") @?= 1
                         SourceGuard.countHaskellIdentifier identifier (ownerSource ++ serviceSource) @?= 0
                     )

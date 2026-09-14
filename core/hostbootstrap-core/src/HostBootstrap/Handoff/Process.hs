@@ -58,8 +58,11 @@ module HostBootstrap.Handoff.Process (
 )
 where
 
+import qualified Control.Exception as Exception
 import Data.ByteString (ByteString)
+import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
+import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Effect.ChildGroup (
     askChildGroupToStop,
@@ -70,11 +73,26 @@ import HostBootstrap.Effect.ChildGroup (
     terminationGraceMicros,
  )
 import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackagesFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
+import HostBootstrap.Handoff.Completion (
+    withAcknowledgedBoundReverseLifecycleCompletionKernel,
+    withAcknowledgedForwardLifecycleCompletionKernel,
+ )
 import HostBootstrap.Handoff.Process.Route (
     LifecycleProcessRoute,
+    withLifecycleProcessRouteLaunchKernel,
+    withRecoveryLifecycleProcessRouteForKernel,
  )
-import HostBootstrap.Handoff.Relay (BrokerLink, withProviderDependencyReprobeEndpointKernel)
-import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Handoff.Protocol (HandoffChannel, handoffChannel)
+import HostBootstrap.Handoff.Relay (
+    BrokerLink,
+    RelayError,
+    offerHandoffEdge,
+    offerReverseDescentKernel,
+    relayErrorMessage,
+    withProviderDependencyReprobeEndpointKernel,
+ )
+import HostBootstrap.HostConfig (HostConfig, resolveInstalled)
+import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
 import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import HostBootstrap.Lifecycle.Execution.Internal (
     ResourceCarrier,
@@ -88,35 +106,18 @@ import HostBootstrap.Lifecycle.Execution.Internal (
  )
 import HostBootstrap.Teardown.Internal (
     ReverseDescent,
+    withReverseDescentProcessInputsKernel,
  )
-import qualified Control.Exception as Exception
-import Data.Proxy (Proxy (Proxy))
-import qualified Data.Text as Text
-import HostBootstrap.Handoff.Completion
-    ( withAcknowledgedBoundReverseLifecycleCompletionKernel
-    , withAcknowledgedForwardLifecycleCompletionKernel
-    )
-import HostBootstrap.Handoff.Process.Route (withLifecycleProcessRouteLaunchKernel, withRecoveryLifecycleProcessRouteForKernel)
-import HostBootstrap.Handoff.Protocol (HandoffChannel, handoffChannel)
-import HostBootstrap.Handoff.Relay
-    ( RelayError
-    , offerHandoffEdge
-    , offerReverseDescentKernel
-    , relayErrorMessage
-    )
-import HostBootstrap.HostConfig (resolveMaybe)
-import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
-import HostBootstrap.Teardown.Internal (withReverseDescentProcessInputsKernel)
 import System.Exit (ExitCode)
 import System.IO (Handle)
-import System.Process
-    ( CreateProcess (close_fds, create_group, std_err, std_in, std_out)
-    , ProcessHandle
-    , StdStream (CreatePipe, Inherit)
-    , proc
-    , waitForProcess
-    , withCreateProcess
-    )
+import System.Process (
+    CreateProcess (close_fds, create_group, std_err, std_in, std_out),
+    ProcessHandle,
+    StdStream (CreatePipe, Inherit),
+    proc,
+    waitForProcess,
+    withCreateProcess,
+ )
 import System.Timeout (timeout)
 
 {- | Launch one forward child and complete its edge, or leave nothing running.
@@ -313,6 +314,7 @@ withPreparedReverseLifecycleChildProcess ::
     Text ->
     ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     IO (Either Text ())
+
 withReverseLifecycleChildProcess config link route request descent =
     withLifecycleChild config route $ \channel ->
         offerReverseDescentKernel link channel request descent $ \bound report persist ->
@@ -324,7 +326,12 @@ withPreparedReverseLifecycleChildProcess config link request targetBinary descen
         withRecoveryLifecycleProcessRouteForKernel
             (Proxy :: Proxy scope)
             (Proxy :: Proxy brokerGeneration)
-            package route input verb targetBinary $ \processRoute ->
+            package
+            route
+            input
+            verb
+            targetBinary
+            $ \processRoute ->
                 withReverseLifecycleChildProcess config link processRoute request descent
 
 {- | Hold one child, its pipes, and its group for exactly one exchange.
@@ -334,6 +341,10 @@ through the installed configuration, so a bare command name cannot be executed
 even if one reached the argument vector, and an already opened route refuses
 before a process exists. Standard error is inherited deliberately — it is where
 the isolated child sends everything that is not a protocol frame.
+
+Resolution goes through 'resolveInstalled' rather than the pure lookup, because
+on a pristine host the provider this route crosses is installed by the chain's
+own @ensure@ step, after the configuration threaded in here was measured.
 -}
 withLifecycleChild ::
     HostConfig ->
@@ -341,8 +352,9 @@ withLifecycleChild ::
     (HandoffChannel -> IO (Either RelayError ())) ->
     IO (Either Text ())
 withLifecycleChild config route serve =
-    withLifecycleProcessRouteLaunchKernel route $ \tool argv _interactive ->
-        case resolveMaybe config tool of
+    withLifecycleProcessRouteLaunchKernel route $ \tool argv _interactivity -> do
+        resolved <- resolveInstalled config tool
+        case resolved of
             Nothing ->
                 pure (Left (processFailure "the route's host tool resolves to no absolute path"))
             Just exe ->
@@ -363,11 +375,11 @@ withLifecycleChild config route serve =
                                     (exchange childStdin childStdout serve)
                             _ ->
                                 pure (Left (processFailure "the child was launched without its own pipes"))
-                )
-                :: IO (Either Exception.SomeException (Either Text ()))
+                ) ::
+                IO (Either Exception.SomeException (Either Text ()))
         pure (either (Left . processFailure . Text.pack . Exception.displayException) id attempted)
 
-{- | The only process shape this owner ever launches. -}
+-- | The only process shape this owner ever launches.
 childProcess :: FilePath -> [String] -> CreateProcess
 childProcess executable arguments =
     (proc executable arguments)

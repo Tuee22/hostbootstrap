@@ -774,6 +774,54 @@ def test_quality_gates_run_all_python_core_and_demo_commands(
     ]
 
 
+def test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "core" / "hostbootstrap-core" / "src" / "HostBootstrap"
+    src.mkdir(parents=True)
+    (src / "Network.hs").write_text("module HostBootstrap.Network where\n", encoding="utf-8")
+    # The one module named in the CPP exclusion set, at exactly that path.
+    (src / "Registry.hs").write_text("module HostBootstrap.Registry where\n", encoding="utf-8")
+    demo = tmp_path / "demo" / "src"
+    demo.mkdir(parents=True)
+    (demo / "Main.hs").write_text("module Main where\n", encoding="utf-8")
+
+    gates = {gate.label: list(gate.command) for gate in cli._style_gates(tmp_path)}
+
+    assert gates["Haskell formatter over core/hostbootstrap-core/src"] == [
+        "fourmolu",
+        "--mode",
+        "check",
+        "core/hostbootstrap-core/src/HostBootstrap/Network.hs",
+    ]
+    assert gates["Haskell formatter over demo/src"] == [
+        "fourmolu",
+        "--mode",
+        "check",
+        "demo/src/Main.hs",
+    ]
+    assert gates["Haskell linter over core/hostbootstrap-core/src"] == [
+        "hlint",
+        "core/hostbootstrap-core/src",
+    ]
+    assert gates["Haskell linter over demo/src"] == ["hlint", "demo/src"]
+    # A root with no Haskell under it contributes no formatter gate, and a root
+    # that does not exist contributes no linter gate.
+    assert "Haskell formatter over demo/app" not in gates
+    assert "Haskell linter over demo/app" not in gates
+
+
+def test_style_gates_run_before_the_cabal_legs(tmp_path: Path) -> None:
+    src = tmp_path / "demo" / "src"
+    src.mkdir(parents=True)
+    (src / "Main.hs").write_text("module Main where\n", encoding="utf-8")
+
+    labels = [gate.label for gate in cli._quality_gates(tmp_path)]
+
+    assert labels.index("Haskell formatter over demo/src") < labels.index("core Haskell build")
+    assert labels.index("Haskell linter over demo/src") < labels.index("core Haskell build")
+
+
 def test_quality_gate_nonzero_raises_before_docker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

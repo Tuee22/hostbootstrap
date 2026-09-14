@@ -25,8 +25,8 @@ module HostBootstrap.HostTool (
 where
 
 import Control.Exception (IOException, catch)
-import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import Data.List (isPrefixOf, sort)
+import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import System.FilePath (isAbsolute, takeFileName)
 import qualified System.FilePath.Posix as Posix
 #ifdef mingw32_HOST_OS
@@ -268,14 +268,14 @@ from whichever toolkit a particular host happens to carry.
 -}
 cudaCandidatePaths :: String -> [FilePath] -> [FilePath]
 cudaCandidatePaths name entries =
-  [ root Posix.</> "bin" Posix.</> name
-  | root <-
-      (cudaPrefix Posix.</> "cuda")
-        : [ cudaPrefix Posix.</> entry
-          | entry <- reverse (sort entries)
-          , "cuda-" `isPrefixOf` entry
-          ]
-  ]
+    [ root Posix.</> "bin" Posix.</> name
+    | root <-
+        (cudaPrefix Posix.</> "cuda")
+            : [ cudaPrefix Posix.</> entry
+              | entry <- reverse (sort entries)
+              , "cuda-" `isPrefixOf` entry
+              ]
+    ]
 
 #ifdef mingw32_HOST_OS
 firstWindowsVersionedTool :: [FilePath] -> FilePath -> IO (Maybe AbsExe)
@@ -296,7 +296,7 @@ firstWindowsVersionedTool (root : roots) suffix = do
 firstExisting :: [FilePath] -> IO (Maybe AbsExe)
 firstExisting [] = pure Nothing
 firstExisting (path : paths) = do
-  exists <- doesFileExist path
-  if exists
-    then pure (either (const Nothing) Just (mkAbsExe path))
-    else firstExisting paths
+    exists <- doesFileExist path
+    if exists
+        then pure (either (const Nothing) Just (mkAbsExe path))
+        else firstExisting paths

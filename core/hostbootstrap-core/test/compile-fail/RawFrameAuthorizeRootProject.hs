@@ -1,18 +1,18 @@
 module RawFrameAuthorizeRootProject where
 
-import HostBootstrap.Authority
-    ( PreparePhase
-    , ProjectVerb (ProjectUp)
-    , RootInvocationAuthority
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    PreparePhase,
+    ProjectVerb (ProjectUp),
+    RootInvocationAuthority,
+    VerbUp,
+ )
 import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
-import HostBootstrap.Lifecycle.Mode
-    ( AcquisitionJournal
-    , BoundRunLease
-    , LifecycleCursor
-    , VerifiedPlanSnapshot
-    )
+import HostBootstrap.Lifecycle.Mode (
+    AcquisitionJournal,
+    BoundRunLease,
+    LifecycleCursor,
+    VerifiedPlanSnapshot,
+ )
 import HostBootstrap.ProjectPlan (ProjectPlan)
 import HostBootstrap.ProjectPlan.Frame (ProjectFrame, ValidatedContext)
 import HostBootstrap.ProjectPlan.Snapshot (BoundPlanSnapshot, PlanDigestBinding)

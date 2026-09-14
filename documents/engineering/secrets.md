@@ -201,8 +201,8 @@ restricted assembler;
 everything about
 where secrets live, how they unseal, and which fixtures stand in for them is the project's concern. This is
 why the generic `ProjectSpec cfg tcfg` (rather than a fixed `ProjectConfig`) is required — a
-secrets-strict consumer's `cfg scope` is a different shape. `psTestMatrix` validates a pure
-matrix of stable variant drafts, while restricted `psAssemble` injects each variant's test secrets only
+secrets-strict consumer's `cfg scope` is a different shape. `psTestSuite` carries the matrix `mkTestMatrix` validates out of stable
+variant drafts, while restricted `psAssemble` injects each variant's test secrets only
 after the harness has opened that variant's fresh project/run-scoped authority. Its
 `ConfigAssembly` effect can perform only declared config/secret reads and has no general `IO` or
 lifecycle/backend mutation capability.

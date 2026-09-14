@@ -1,11 +1,18 @@
 # Phase 22 — Service runtime
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 20 (`test` and `context` command semantics), Phase 21 (composition and network algebra)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`, plus a live `service run` on linux-cpu
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-06 ; aarch64 Linux realized through the published `basecontainer-cpu-arm64` base, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern CLISpec'` ; pass ; covers 5a6cb07496312d9aa44893dfdd35fd075a25882abf65c73aa20db1987d842bcf
+**Gate evidence**: 2026-09-13 ; static leg on x86_64 Ubuntu 24.04.4 LTS (Linux 7.0.0-28-generic, GHC
+9.12.4, Cabal 3.16.1.0), live `service run` leg in an x86_64 Linux container from the published
+`basecontainer-cpu-amd64` base with no accelerator device visible, built and run there with that same
+pinned toolchain mounted in ;
+`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
+`core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
+--test-show-details=direct --test-options="--pattern CLISpec"` from `core/` in that container ; pass ;
+covers c14b03715891c9d46bdef4928b644507fe406df3d412070652289014fe478044
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` `core/hostbootstrap-core/src/HostBootstrap/Service` `core/hostbootstrap-core/src/HostBootstrap/Activation.hs`
 
 > **Purpose**: Make a project's long-running workload a config-selected service variant reached through one
@@ -298,9 +305,9 @@ the current tree.
 
 None.
 
-### Sprint 22.5: The service-runtime gate records both its legs [Active]
+### Sprint 22.5: The service-runtime gate records both its legs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -325,13 +332,21 @@ The phase's own gate, both legs.
 
 #### Remaining Work
 
+None. On 2026-09-13 both legs ran against the current tree and one row records both. The static leg is
+the complete 2,536/2,536 `cabal test all` from `core/` on the x86_64 Linux gate host. The live leg is
+the `CLISpec` group, 64/64, built and run inside a realized `linux-cpu` container from the published
+`basecontainer-cpu-amd64` base; `service run verifies activation and dispatches exactly its signed
+program variant` reported `role exit: turned at Serve` there, so activation was verified and exactly the
+signed variant was dispatched before the role turned, and the six refusal cases that bound it passed
+beside it. The covers digest was re-measured over this phase's own paths; it is unchanged, because
+nothing under `Service` or `Activation` has moved since the row it replaces.
+
 The dead service-entry-point names in this phase's governed pages are owned by the documentation
 reconciliation phase.
 
 ## Remaining Work
 
-This phase's gate evidence is owed a row that records the live leg its gate names, not
-only the static one. **Sprint 22.5** owns the re-run.
+None.
 
 ## Documentation Requirements
 

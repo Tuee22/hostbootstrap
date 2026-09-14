@@ -3,11 +3,11 @@ workload set, even when both plans share the same scope.
 -}
 module CrossPlanBudgetWorkload where
 
-import HostBootstrap.Cluster.Budget
-  ( BudgetError,
+import HostBootstrap.Cluster.Budget (
+    BudgetError,
     Workload,
     withPlannedWorkloadSet,
-  )
+ )
 import HostBootstrap.ProjectPlan (ProjectPlan)
 
 data Scope
@@ -18,8 +18,8 @@ data ConfigurationIdentity
 data Configuration scope
 
 crossPlanWorkload ::
-  ProjectPlan Scope SpecificationDigest PlanA ConfigurationIdentity Configuration ->
-  Workload Scope PlanB ->
-  Either BudgetError ()
+    ProjectPlan Scope SpecificationDigest PlanA ConfigurationIdentity Configuration ->
+    Workload Scope PlanB ->
+    Either BudgetError ()
 crossPlanWorkload plan workload =
-  withPlannedWorkloadSet plan [workload] (const ())
+    withPlannedWorkloadSet plan [workload] (const ())

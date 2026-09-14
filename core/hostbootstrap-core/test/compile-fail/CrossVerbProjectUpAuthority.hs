@@ -1,11 +1,11 @@
 module CrossVerbProjectUpAuthority where
 
-import HostBootstrap.Authority
-    ( ProjectVerb (ProjectDown)
-    , RootInvocationAuthority
-    , VerbDown
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    ProjectVerb (ProjectDown),
+    RootInvocationAuthority,
+    VerbDown,
+    VerbUp,
+ )
 import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 
 data Scope

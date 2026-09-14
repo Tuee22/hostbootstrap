@@ -5,8 +5,8 @@ This module contains no runner.  Keeping construction here makes the tool set
 and exact argument vectors independently testable while the ownership driver
 holds its protected entry around interpretation.
 -}
-module HostBootstrap.Ensure.Colima.Command
-  ( colimaCommandTools,
+module HostBootstrap.Ensure.Colima.Command (
+    colimaCommandTools,
     listColimaProfilesCommand,
     startColimaProfileCommand,
     deleteColimaProfileCommand,
@@ -16,7 +16,7 @@ module HostBootstrap.Ensure.Colima.Command
     listDockerContextsCommand,
     removeDockerContextCommand,
     routedDockerCommand,
-  )
+)
 where
 
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
@@ -34,11 +34,11 @@ startColimaProfileCommand = hostCommand Colima
 
 deleteColimaProfileCommand :: String -> HostCommand
 deleteColimaProfileCommand profile =
-  hostCommand Colima ["delete", "--profile", profile, "--force", "--data"]
+    hostCommand Colima ["delete", "--profile", profile, "--force", "--data"]
 
 readColimaMachineIdCommand :: String -> HostCommand
 readColimaMachineIdCommand profile =
-  hostCommand Colima ["ssh", "--profile", profile, "--", "cat", "/etc/machine-id"]
+    hostCommand Colima ["ssh", "--profile", profile, "--", "cat", "/etc/machine-id"]
 
 listLimaDisksCommand :: HostCommand
 listLimaDisksCommand = hostCommand Lima ["disk", "list", "--json"]
@@ -54,6 +54,6 @@ removeDockerContextCommand context = hostCommand Docker ["context", "rm", "--for
 
 routedDockerCommand :: String -> [String] -> Either String HostCommand
 routedDockerCommand profile arguments =
-  if validRoutedDockerArguments arguments
-    then Right (hostCommand Docker (["--context", "colima-" ++ profile] ++ arguments))
-    else Left "Docker command may not override the owned Colima route"
+    if validRoutedDockerArguments arguments
+        then Right (hostCommand Docker (["--context", "colima-" ++ profile] ++ arguments))
+        else Left "Docker command may not override the owned Colima route"

@@ -1,40 +1,41 @@
--- | The suites' one toolkit for reading this repository's own sources.
---
--- Two halves, and both are here for the same reason. The lexical half parses
--- Haskell import and export declarations, using the standard lexer so comments
--- and string literals cannot create a false import; source pragmas,
--- package-qualified imports, qualifiers, and multiline imports are all
--- accepted. The structural half locates the package, walks its source tree, and
--- reads one field out of its description.
---
--- A source guard is an assertion about a set of modules, so a guard that is
--- wrong about which modules it enumerated asserts nothing, and does so
--- silently. One reader means two guards over the same field cannot disagree
--- about what the field says.
-module SourceGuard
-    ( -- * Lexical
-      haskellImports
-    , haskellTokens
-    , importsModule
-    , moduleImportTokens
-    , moduleExportTokens
-    , countHaskellIdentifier
-    , countHaskellTokenSequence
-    , countPosixAbsoluteLiteralApplications
-    , repoRelativePath
-    , repoRelativeModuleName
+{- | The suites' one toolkit for reading this repository's own sources.
 
-      -- * Structural
-    , withPackageSourceIn
-    , listHaskellSources
-    , readHaskellSources
-    , mainLibraryStanza
-    , fieldModules
-    , significantHaskellLineCount
-    , indentation
-    , trim
-    , normalizeWhitespace
-    )
+Two halves, and both are here for the same reason. The lexical half parses
+Haskell import and export declarations, using the standard lexer so comments
+and string literals cannot create a false import; source pragmas,
+package-qualified imports, qualifiers, and multiline imports are all
+accepted. The structural half locates the package, walks its source tree, and
+reads one field out of its description.
+
+A source guard is an assertion about a set of modules, so a guard that is
+wrong about which modules it enumerated asserts nothing, and does so
+silently. One reader means two guards over the same field cannot disagree
+about what the field says.
+-}
+module SourceGuard (
+    -- * Lexical
+    haskellImports,
+    haskellTokens,
+    importsModule,
+    moduleImportTokens,
+    moduleExportTokens,
+    countHaskellIdentifier,
+    countHaskellTokenSequence,
+    countPosixAbsoluteLiteralApplications,
+    repoRelativePath,
+    repoRelativeModuleName,
+
+    -- * Structural
+    withPackageSourceIn,
+    listHaskellSources,
+    readHaskellSources,
+    mainLibraryStanza,
+    fieldModules,
+    significantHaskellLineCount,
+    indentation,
+    trim,
+    normalizeWhitespace,
+)
 where
 
 import Data.Char (isAlphaNum, isSpace, isUpper)

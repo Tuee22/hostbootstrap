@@ -4,15 +4,15 @@
 
 module CommandsSpec (hostCfg, tests) where
 
-import qualified Data.List.NonEmpty as NonEmpty
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad (forM_)
 import Data.Either (isLeft)
 import Data.Function ((&))
 import Data.List (findIndex, isInfixOf, isPrefixOf, isSuffixOf, tails)
+import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
 import qualified Dhall
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ingressKindListenAddress, ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, profileDataPath, profileDataSegments)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, ingressKindListenAddress, profileDataPath, profileDataSegments)
 import HostBootstrap.Cluster.Reconcile (ClusterReadinessResultView (..))
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
@@ -541,6 +541,51 @@ tests =
             assertBool
                 "share readiness retained the old guest-writable-only success path"
                 (not ("_ -> \"test -d \" ++ q ++ \" && test -w \" ++ q" `isInfixOf` readinessSource))
+        , testCase "the host daemon's two lifecycle claims are protected-store entries" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            -- The run-ownership module records, in its own header, that it
+            -- exists to replace a bare directory-creation lock: a hard kill
+            -- skips the finally, the directory outlives its holder, and every
+            -- later run refuses with a message naming a directory an operator
+            -- must delete. Both of the demo's claims were that lock.
+            assertBool
+                "the lifecycle operation is not an OS-released store entry"
+                ( "withHostAcceleratorDaemonOperation ctx action =" `isInfixOf` commandsSource
+                    && "withProtectedEntry store (\\session -> Right <$> action session)"
+                        `isInfixOf` commandsSource
+                )
+            assertBool
+                "the ownership claim is not a compare-and-swapped record"
+                ( "compareAndSwapProtectedRecord session key ExpectAbsent hostAcceleratorDaemonOwnerBytes"
+                    `isInfixOf` commandsSource
+                    && "compareAndDeleteProtectedRecord" `isInfixOf` commandsSource
+                    && "ownerExists <- hostAcceleratorDaemonOwned session" `isInfixOf` commandsSource
+                )
+            assertBool
+                "a daemon lifecycle claim is still a created directory"
+                ( not ("hostAcceleratorDaemonOwnerPath" `isInfixOf` commandsSource)
+                    && not ("hostAcceleratorDaemonOperationPath" `isInfixOf` commandsSource)
+                    && not ("lifecycle operation already active at" `isInfixOf` commandsSource)
+                )
+            -- Nine one-line accessors appended one constant to one directory.
+            assertBool
+                "the daemon's files are not reached through one suffix function"
+                ( "hostAcceleratorDaemonPath ctx suffix =" `isInfixOf` commandsSource
+                    && "hostAcceleratorDaemonDir ctx </> (demoProject ++ \".\" ++ suffix)"
+                        `isInfixOf` commandsSource
+                )
+            mapM_
+                ( \accessor ->
+                    assertBool
+                        ("a per-file accessor survives: " ++ accessor)
+                        (not ((accessor ++ " ::") `isInfixOf` commandsSource))
+                )
+                [ "hostAcceleratorDaemonConfigPath"
+                , "hostAcceleratorDaemonPidPath"
+                , "hostAcceleratorDaemonShutdownPath"
+                , "hostAcceleratorDaemonReadyPath"
+                , "hostAcceleratorDaemonOutputPath"
+                ]
         , testCase "the registry plan consumes only a runtime-resolved exposure" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             assertBool
@@ -588,7 +633,7 @@ tests =
             clusterDriver (containerPlan Production directCtx) @?= NvkindDriver
             clusterConfigFile (containerPlan Production directCtx) @?= Just "nvkind-in-cluster.yaml"
             clusterDriver (containerPlan Production ordinaryCtx) @?= KindDriver
-            clusterConfigFile (containerPlan Production ordinaryCtx) @?= Just "kind-in-cluster.yaml"
+            clusterConfigFile (containerPlan Production ordinaryCtx) @?= Just "kind.yaml"
         , testCase "every cluster template this project can select is one it ships" $ do
             -- The project owns the choice, so the project owes the proof that
             -- each answer resolves. Core resolves no template at all, which is
@@ -599,7 +644,10 @@ tests =
                 wslVmCtx = Context.deriveVMContextWithProvider Context.Wsl2VMProvider (context hostCfg) "/vm/demo"
                 hostResidentCtx = Context.deriveContainerContext wslVmCtx "/workspace/demo"
                 selected ctx = clusterConfigFile (containerPlan Production ctx)
+            -- Two templates, two branches: the in-cluster and host-resident
+            -- lanes select the same one, because the same one is what they need.
             selected hostResidentCtx @?= Just "kind.yaml"
+            selected inClusterCtx @?= selected hostResidentCtx
             forM_ [directCtx, inClusterCtx, hostResidentCtx] $ \ctx ->
                 case selected ctx of
                     Nothing -> assertFailure "the project selected no cluster template"
@@ -820,8 +868,9 @@ tests =
             runtimeRbac <- readFile ("chart" ++ "/templates/runtime-rbac.yaml")
             staticConfigMap <- doesFileExist ("chart" ++ "/templates/configmap.yaml")
             playwrightConfig <- readFile ("playwright" ++ "/playwright.config.ts")
-            inClusterKind <- readFile "kind-in-cluster.yaml"
             nvkindTemplate <- readFile "nvkind-in-cluster.yaml"
+            -- One kind template serves both the in-cluster and the
+            -- host-resident lane, because neither reserves a host port.
             hostKind <- readFile "kind.yaml"
             let hostListenAddress = ingressKindListenAddress (acceleratorIngressPlan HostResidentDaemon 8081 30081)
                 countLines fragment = length . filter (isInfixOf fragment) . lines
@@ -839,14 +888,11 @@ tests =
             assertBool "the runtime identity reader has only pod-get authority" (all (`isInfixOf` runtimeRbac) ["kind: ServiceAccount", "resources: [\"pods\"]", "verbs: [\"get\"]"] && not ("list" `isInfixOf` runtimeRbac || "watch" `isInfixOf` runtimeRbac))
             assertBool "the service config is owned by the chart transaction" staticConfigMap
             assertBool "browser engines serialize against the single accelerator session" ("workers: 1" `isInfixOf` playwrightConfig)
-            assertBool "in-cluster config has no host mappings" (not ("hostPort:" `isInfixOf` inClusterKind || "extraPortMappings:" `isInfixOf` inClusterKind))
             assertBool "nvkind template injects all GPUs into its worker" ("/var/run/nvidia-container-devices/all" `isInfixOf` nvkindTemplate)
             assertBool "nvkind GPU worker is selected by the device-plugin chart" ("nvidia.com/gpu.present: \"true\"" `isInfixOf` nvkindTemplate)
             assertBool "nvkind config has no host mappings" (not ("hostPort:" `isInfixOf` nvkindTemplate || "extraPortMappings:" `isInfixOf` nvkindTemplate))
             countLines "hostPath: /var/tmp/hostbootstrap-demo-data" hostKind @?= 1
             countLines "containerPath: /var/lib/hostbootstrap-demo-data" hostKind @?= 1
-            countLines "hostPath: /var/tmp/hostbootstrap-demo-data" inClusterKind @?= 1
-            countLines "containerPath: /var/lib/hostbootstrap-demo-data" inClusterKind @?= 1
             countLines "hostPath: /var/tmp/hostbootstrap-demo-data" nvkindTemplate @?= 2
             countLines "containerPath: /var/lib/hostbootstrap-demo-data" nvkindTemplate @?= 2
             assertBool "host config has no host mappings" (not ("hostPort:" `isInfixOf` hostKind || "extraPortMappings:" `isInfixOf` hostKind))
@@ -1396,7 +1442,8 @@ tests =
             let coordinatorTail = maybe "" (`drop` commandsSource) (substringOffset "runAuthenticatedDirectImageBuild ::" commandsSource)
                 coordinator = maybe coordinatorTail (`take` coordinatorTail) (substringOffset "copyBuildTree ::" coordinatorTail)
                 coordinatorStages =
-                    [ "installedBuildSigningKey"
+                    [ "copyStyleContract repoRoot staged"
+                    , "installedBuildSigningKey"
                     , "measureBinaryDigest executable"
                     , "measureSourceDigest (staged </> \"demo\")"
                     , "BuildBinding"
@@ -1406,6 +1453,8 @@ tests =
                     ]
                 dockerStages =
                     [ "COPY demo /workspace/demo"
+                    , "COPY fourmolu.yaml /workspace/fourmolu.yaml"
+                    , "COPY .hlint.yaml /workspace/.hlint.yaml"
                     , "COPY --from=hostbootstrap-builder hostbootstrap-demo /usr/local/libexec/hostbootstrap-demo"
                     , "id=hostbootstrap-build-channel,required=true"
                     , "/usr/local/libexec/hostbootstrap-demo check-code"

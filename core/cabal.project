@@ -1,10 +1,14 @@
 -- hostbootstrap-core build configuration (the self-contained Haskell workspace).
 --
--- The GHC pin matches the base-image toolchain (see
--- ../documents/engineering/cabal_layout.md and haskell-deps/cabal.project).
--- The optimisation level matches the warm Cabal store baked into the base image
--- so derived project builds reuse the pre-built dependency unfoldings
--- (../documents/engineering/warm_store.md).
+-- The GHC pin is the family constant: the same version the Python bootstrapper
+-- installs on the host, the base image build receives as GHC_VERSION, and the
+-- guest bootstrap pins in a VM (see ../documents/engineering/cabal_layout.md).
+-- It has to match the base, because the compiler keys the warm Cabal store --
+-- a base on another compiler would ship a store this workspace cannot read and
+-- could not configure this project at all. The optimisation level matches that
+-- store for the same reason, so derived project builds reuse the pre-built
+-- dependency unfoldings. That store is built from the warm-store project at
+-- core/warm-deps/ in this repository (../documents/engineering/warm_store.md).
 
 packages:
   hostbootstrap-core/hostbootstrap-core.cabal
@@ -13,12 +17,11 @@ with-compiler: ghc-9.12.4
 
 optimization: 2
 
--- Bounded host memory, added 2026-08-14. Mirrors what `infernix init` generates for itself in
--- ~/infernix/cabal.project.local; doctrine in ~/infernix/documents/architecture/bounded_host_memory.md.
--- A per-process cap is not a host bound on its own: the compiler subtotal here is
--- 1 job x 6144 MiB. This is precautionary — the 2026-08-14 kernel panic was NOT caused by this
--- project (its `cabal test all` finished cleanly 39 minutes before the panic, with zero cabal
--- processes present in either jetsam snapshot).
+-- Bounded host memory. A per-process RTS cap is not a host bound on its own -- the bound is the cap
+-- times the number of compiler processes -- so the job count is pinned beside it, making the compiler
+-- subtotal here 1 job x 6144 MiB. This is precautionary: an unbounded parallel build can drive a
+-- workstation into the kernel's out-of-memory path, and the build configuration is where that bound
+-- has to live, because nothing downstream of it can reimpose one.
 jobs: 1
 
 package *

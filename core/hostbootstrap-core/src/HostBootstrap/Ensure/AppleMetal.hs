@@ -20,7 +20,6 @@ where
 import Data.List (isInfixOf)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit), runCaptured)
 import HostBootstrap.Ensure (
-    withProbeDir,
     FramePlan (ProvidedElsewhere),
     InstallStep,
     Reconciler (..),
@@ -30,6 +29,7 @@ import HostBootstrap.Ensure (
     reconcilerInstallSteps,
     runTool,
     toolPresent,
+    withProbeDir,
  )
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.HostTool (HostTool (Swiftc, SystemProfiler, Xcrun))
@@ -99,7 +99,6 @@ swiftMetalSmokeBuild cfg sdkPath =
                     Right run -> capturedExit run == ExitSuccess
                     _ -> False
             _ -> pure False
-
 
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler

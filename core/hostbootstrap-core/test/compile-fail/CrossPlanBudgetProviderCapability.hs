@@ -3,12 +3,12 @@ projected from another admitted plan.
 -}
 module CrossPlanBudgetProviderCapability where
 
-import HostBootstrap.Cluster.Budget
-  ( BudgetError,
+import HostBootstrap.Cluster.Budget (
+    BudgetError,
     ProviderBudgetCapability,
     ValidatedBudget,
     admitProviderBudget,
-  )
+ )
 
 data Scope
 data PlanA
@@ -18,8 +18,8 @@ data Provider
 data CapabilityIdentity
 
 crossPlanProviderCapability ::
-  ValidatedBudget Scope PlanA BudgetIdentity ->
-  ProviderBudgetCapability Scope PlanB Provider CapabilityIdentity ->
-  Either BudgetError ()
+    ValidatedBudget Scope PlanA BudgetIdentity ->
+    ProviderBudgetCapability Scope PlanB Provider CapabilityIdentity ->
+    Either BudgetError ()
 crossPlanProviderCapability budget capability =
-  admitProviderBudget budget capability (\_wall _effective -> ())
+    admitProviderBudget budget capability (\_wall _effective -> ())

@@ -1,11 +1,11 @@
 module SkipLifecycleCursorExecute where
 
 import HostBootstrap.Authority (ExecutePhase, PreparePhase, VerbUp)
-import HostBootstrap.Lifecycle.Session
-    ( LifecycleCursor
-    , LifecycleError
-    , withTeardownLifecycleCursor
-    )
+import HostBootstrap.Lifecycle.Session (
+    LifecycleCursor,
+    LifecycleError,
+    withTeardownLifecycleCursor,
+ )
 
 data Scope
 data PlanId

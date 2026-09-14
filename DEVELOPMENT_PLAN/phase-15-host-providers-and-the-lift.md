@@ -1,7 +1,6 @@
 # Phase 15 — Host providers and the self-reference lift
 
 **Status**: Done
-**Current sprint**: None — phase complete
 **Depends on**: Phase 8 (ensure reconcilers), Phase 12 (step algebra and plan-owned resource
 projections), Phase 13 (authenticated handoff and the frame-child entry), Phase 14 (the four ownership
 clauses and host-local reservations)
@@ -15,11 +14,12 @@ and
 Incus — the suite is built by the ordinary gate on every host and decides at runtime whether its
 subject is present
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
-KVM readable/writable, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0 ;
+**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, KVM readable and writable, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal build all` and `cabal test all` from `core/`, then
 `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all
 --test-show-details=direct` ; pass ; covers
-7bb41d20c9854cc3346d6a10700631da1544a902fee0ad62073de6afb0977067
+bf8c604c0a5ca54e70d6927f2ec9c5bbb4542e4d151198f98dd2e91342331018
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider`
 `core/hostbootstrap-core/provider-live`
@@ -1753,11 +1753,48 @@ package` suite passed 10/10, and the phase gate below.
 
 None beyond the phase's own.
 
+### Sprint 15.40: The retained provider opens as well as closes [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Production modules**: `HostBootstrap.Substrate.Provider.Backend` (1; cap 3)
+**Sprint budget**: one retained operation beside the two that exist, no new type; at most 35 production
+Haskell lines.
+**Substrates**: linux-cpu
+
+#### Objective
+
+The retained-record boundary had two operations — stop and delete — and no way to open a provider it had
+closed. That is only half a reverse: a `down` stops the provider and leaves its children retained inside
+it, and the `destroy` that follows has to reach those children through a frame that is no longer running.
+The worked demo's live gate found the gap exactly there, with `Error: Instance is not running` and every
+in-guest node reported unsettled.
+
+#### Deliverables
+
+- One retained operation that re-observes the record, starts the instance when it is stopped, and asks the
+  guest itself whether it answers.
+- It derives claim and identity from the durable record alone and refuses a replacement, exactly as its two
+  peers do; no caller-supplied generation or owner is accepted.
+- An instance that is running but not yet answering is polled rather than assumed ready.
+- Direct and Lima answer the declared `Unsupported` refusals their peers already answer.
+
+#### Validation
+
+The phase's own gate: the host static gate plus the live Incus/KVM provider component. The new
+operation's own effect on a real guest is observable one level up, in the
+[worked demo](phase-24-worked-demo.md)'s live `project destroy`, which opens the retained provider before
+unwinding the children inside it.
+
+#### Remaining Work
+
+None. On 2026-09-14 the host static gate passed 2,546/2,546 in 200.71 seconds and the live component
+reported `PASS — prepared Incus lifecycle/share/alias/restart/delete and mutation-free Direct refusal`,
+both on the host the row above names.
+
 ## Remaining Work
 
-None. Every frame operation names one closed provider operation, the guest-VM realizations are one row of
-the frame table rather than two copies of it, and each domain's runtime-dependency coordinates are checked
-by one implementation.
+None.
 
 ## Documentation Requirements
 

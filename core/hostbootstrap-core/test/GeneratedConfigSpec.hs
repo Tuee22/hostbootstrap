@@ -23,10 +23,10 @@ clause has a case that fails when the clause is dropped:
 -}
 module GeneratedConfigSpec (tests) where
 
-import Expect (expectRight)
 import Data.ByteString (ByteString)
-import qualified Data.Text as Text
 import qualified Data.ByteString as ByteString
+import qualified Data.Text as Text
+import Expect (expectRight)
 import HostBootstrap.Harness.GeneratedConfig
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
@@ -396,7 +396,6 @@ readRecordBytes session key = do
     case stored of
         Right (Just record) -> pure (protectedRecordBytes record)
         other -> assertFailure ("expected a stored record, got " <> show other)
-
 
 expectConflict :: (Show value) => String -> Either GeneratedConfigError value -> IO ()
 expectConflict label outcome = case outcome of

@@ -20,6 +20,7 @@ import HostBootstrap.Cluster.Backend (
     withFreshClusterRuntimeDependency,
     withPreparedChartWorkload,
  )
+import HostBootstrap.Network.Port (portNumber)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile (
     ChangeView (..),
@@ -92,7 +93,7 @@ tests =
                 Right mappings -> do
                     map (\(service, _, _, _, _, _) -> service) mappings @?= ["registry"]
                     assertBool "the recovered endpoint is not loopback-bound" (all (\(_, address, _, _, _, _) -> address == "127.0.0.1") mappings)
-                    assertBool "the recovered host port was not runtime-selected" (all (\(_, _, port, _, _, _) -> port /= 30500 && port > 0) mappings)
+                    assertBool "the recovered host port was not runtime-selected" (all (\(_, _, port, _, _, _) -> portNumber port /= 30500) mappings)
                     assertBool "the recovered exposure lacks runtime identity" (all (\(_, _, _, relay, generation, operation) -> not (Text.null relay) && generation > 0 && not (Text.null operation)) mappings)
                 Left refusal -> assertFailure (show refusal)
         ]

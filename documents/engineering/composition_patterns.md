@@ -230,7 +230,7 @@ service. Execution across its declared frames uses authenticated child admission
 primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, with authenticated recursive
 closure owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The
-reconcilers (`clusterUp`, `clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
+reconcilers (`clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
 The opaque `StepPlan`, admitted `ProjectPlan`, core Step algebra, and workload-contributed step kinds

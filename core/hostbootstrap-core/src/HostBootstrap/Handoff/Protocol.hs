@@ -38,8 +38,8 @@ module HostBootstrap.Handoff.Protocol (
 
 import Control.Exception (IOException, bracket, bracket_, try)
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
-import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.Word (Word16, Word64, Word8)
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Handoff (renderLifecycleAcknowledgement)
@@ -87,18 +87,19 @@ data ProtocolTag
     | GrantTag
     | AcceptedTag
     | CompletedTag
-    | -- | A nested frame asking the root to sign one activation manifest.
-      --
-      -- The config-admission edges above relay a child's /config/ to the root.
-      -- This pair relays an /activation manifest/, and it exists because
-      -- 'HostBootstrap.Activation.withActivationBroker' consumes a
-      -- @RootInvocationAuthority@ that only the root frame can mint, while the
-      -- services that need a signed manifest are deployed from a nested frame.
-      -- Without it a nested frame has no route to a signature at all.
-      --
-      -- It is deliberately a distinct tag pair rather than a reuse of the grant
-      -- edges: the two carry different material, are answered by different
-      -- keypairs, and must not be substitutable for one another.
+    | {- | A nested frame asking the root to sign one activation manifest.
+
+      The config-admission edges above relay a child's /config/ to the root.
+      This pair relays an /activation manifest/, and it exists because
+      'HostBootstrap.Activation.withActivationBroker' consumes a
+      @RootInvocationAuthority@ that only the root frame can mint, while the
+      services that need a signed manifest are deployed from a nested frame.
+      Without it a nested frame has no route to a signature at all.
+
+      It is deliberately a distinct tag pair rather than a reuse of the grant
+      edges: the two carry different material, are answered by different
+      keypairs, and must not be substitutable for one another.
+      -}
       ActivationSignRequestTag
     | -- | The root's signature over that manifest.
       ActivationSignResponseTag
@@ -112,15 +113,16 @@ data ProtocolTag
     | LifecycleAckResponseTag
     | RootedLifecycleRequestTag
     | RootedLifecycleResponseTag
-    | -- | The one transaction a frame child is launched to run.
-      --
-      -- A frame crossing is not an admission: the parent already owns the
-      -- object the transaction is about, and what it needs on the far side is
-      -- one act performed where that object lives. So this pair carries no
-      -- offer, challenge, grant, or acceptance — it is one opaque transaction
-      -- out and one opaque outcome back, framed by the same magic, version,
-      -- tag, and request identity as every other message here, so a frame
-      -- child speaks this framing rather than a second one.
+    | {- | The one transaction a frame child is launched to run.
+
+      A frame crossing is not an admission: the parent already owns the
+      object the transaction is about, and what it needs on the far side is
+      one act performed where that object lives. So this pair carries no
+      offer, challenge, grant, or acceptance — it is one opaque transaction
+      out and one opaque outcome back, framed by the same magic, version,
+      tag, and request identity as every other message here, so a frame
+      child speaks this framing rather than a second one.
+      -}
       FrameTransactionTag
     | -- | That transaction's outcome, as produced at the frame that ran it.
       FrameOutcomeTag
@@ -373,7 +375,7 @@ withPrivateProtocolStdio use =
                 (restoreGlobalStdio savedIn savedOut)
                 (handoffChannel inbound outbound >>= use)
 
-{- | Take the protocol pair, the restore pair, and the null sink, in that order. -}
+-- | Take the protocol pair, the restore pair, and the null sink, in that order.
 openProtocolStdio :: IO (Handle, Handle, Handle, Handle, Handle)
 openProtocolStdio = do
     hFlush stdout
@@ -384,19 +386,19 @@ openProtocolStdio = do
     sink <- openFile nullDevicePath ReadMode
     pure (inbound, outbound, savedIn, savedOut, sink)
 
-{- | Close every duplicate this bracket opened, and nothing global. -}
+-- | Close every duplicate this bracket opened, and nothing global.
 closeProtocolStdio :: (Handle, Handle, Handle, Handle, Handle) -> IO ()
 closeProtocolStdio (inbound, outbound, savedIn, savedOut, sink) =
     mapM_ closeQuietly [inbound, outbound, savedIn, savedOut, sink]
 
-{- | Point the global handles away from the protocol for the callback's life. -}
+-- | Point the global handles away from the protocol for the callback's life.
 isolateGlobalStdio :: Handle -> IO ()
 isolateGlobalStdio sink = do
     hFlush stdout
     hDuplicateTo sink stdin
     hDuplicateTo stderr stdout
 
-{- | Put the global handles back, attempting both regardless of either. -}
+-- | Put the global handles back, attempting both regardless of either.
 restoreGlobalStdio :: Handle -> Handle -> IO ()
 restoreGlobalStdio savedIn savedOut = do
     flushQuietly stdout
@@ -418,7 +420,7 @@ closeQuietly handle = do
     closed <- try (hClose handle)
     either (\(_ :: IOException) -> pure ()) pure closed
 
-{- | The host's null device: an open descriptor that is already at EOF. -}
+-- | The host's null device: an open descriptor that is already at EOF.
 nullDevicePath :: FilePath
 nullDevicePath
     | os == "mingw32" = "\\\\.\\NUL"
@@ -443,8 +445,9 @@ readExactly handle wanted = go [] 0
                 then pure (Left actual)
                 else go (chunk : chunks) (actual + ByteString.length chunk)
 
--- | Runtime receiver sequencing.  Request identity is retained after the
--- first offer and every later message must match it.
+{- | Runtime receiver sequencing.  Request identity is retained after the
+first offer and every later message must match it.
+-}
 data ChildProtocolState
     = ChildAwaitingOffer
     | ChildMustSendChallenge Word64
@@ -578,8 +581,9 @@ requireAcknowledgement expected acknowledgement message = do
             | otherwise -> Left ProtocolAcknowledgementMismatch
         fields -> Left (ProtocolWrongFieldCount AcknowledgedTag 1 (length fields))
 
--- | Structural and transport failures.  No constructor carries protocol field
--- bytes, tokens, config text, keys, challenges, or signatures.
+{- | Structural and transport failures.  No constructor carries protocol field
+bytes, tokens, config text, keys, challenges, or signatures.
+-}
 data ProtocolError
     = ProtocolTruncated Int Int
     | ProtocolBodyTooLarge Word64 Word64

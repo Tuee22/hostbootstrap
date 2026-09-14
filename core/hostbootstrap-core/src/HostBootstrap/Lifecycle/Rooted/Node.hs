@@ -19,10 +19,10 @@ response — the signed bytes are supplied, and the live root endpoint owns
 producing them — so no answer can be manufactured here to match a decision
 already taken.
 -}
-module HostBootstrap.Lifecycle.Rooted.Node
-    ( withPreparedRootedNodeGrantKernel
-    , withSettledRootedNodeKernel
-    )
+module HostBootstrap.Lifecycle.Rooted.Node (
+    withPreparedRootedNodeGrantKernel,
+    withSettledRootedNodeKernel,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -36,39 +36,39 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Handoff (childConfigDigest, frameWire)
-import HostBootstrap.Handoff.Rooted
-    ( rootedLifecycleRequestFromWireKernel
-    , rootedLifecycleResponseFromWireKernel
-    , withRootedLifecycleRequestKernel
-    , withRootedLifecycleResponseKernel
-    )
-import HostBootstrap.Handoff.Runtime
-    ( RecursiveHandoffRuntime
-    , withRecursiveHandoffRuntimeKernel
-    )
-import HostBootstrap.Lifecycle.Prepared.Internal
-    ( PreparedNodeGrant
-    , mintPreparedNodeGrantKernel
-    , GateAttempt (GateAttempt)
-    , GateCatalogIdentity (GateCatalogIdentity)
-    , GateFrame (GateFrame)
-    , GateJournalVersion (GateJournalVersion)
-    , GatePlanDigest (GatePlanDigest)
-    , GateSession (GateSession)
-    , GateSupersessionGeneration (GateSupersessionGeneration)
-    , renderPreparedGatePackageKernel
-    , renderPreparedGatePackagesKernel
-    )
-import HostBootstrap.Lifecycle.Rooted
-    ( RootedFrameSession
-    , withRootedFrameSessionKernel
-    )
-import HostBootstrap.Lifecycle.Session
-    ( publishRootedUnknownRowKernel
-    , rootedNodeUnknownKeyKernel
-    , rootedSettlementKeyKernel
-    , sessionErrorMessage
-    )
+import HostBootstrap.Handoff.Rooted (
+    rootedLifecycleRequestFromWireKernel,
+    rootedLifecycleResponseFromWireKernel,
+    withRootedLifecycleRequestKernel,
+    withRootedLifecycleResponseKernel,
+ )
+import HostBootstrap.Handoff.Runtime (
+    RecursiveHandoffRuntime,
+    withRecursiveHandoffRuntimeKernel,
+ )
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    GateAttempt (GateAttempt),
+    GateCatalogIdentity (GateCatalogIdentity),
+    GateFrame (GateFrame),
+    GateJournalVersion (GateJournalVersion),
+    GatePlanDigest (GatePlanDigest),
+    GateSession (GateSession),
+    GateSupersessionGeneration (GateSupersessionGeneration),
+    PreparedNodeGrant,
+    mintPreparedNodeGrantKernel,
+    renderPreparedGatePackageKernel,
+    renderPreparedGatePackagesKernel,
+ )
+import HostBootstrap.Lifecycle.Rooted (
+    RootedFrameSession,
+    withRootedFrameSessionKernel,
+ )
+import HostBootstrap.Lifecycle.Session (
+    publishRootedUnknownRowKernel,
+    rootedNodeUnknownKeyKernel,
+    rootedSettlementKeyKernel,
+    sessionErrorMessage,
+ )
 import HostBootstrap.Protected (ProtectedStore, RecordKey, recordVersionWord, withProtectedEntry)
 
 {- | Publish every exact durable unknown row, then mint one node's grant.
@@ -135,7 +135,8 @@ withPreparedRootedNodeGrantKernel runtime session store generation localPlanDige
         require "the prepared node key is empty" (not (Text.null node))
         require "a dependency operation key is empty" (not (any Text.null dependencies))
         require "the prepared node appears in its own projections" (node `notElem` projectedOperations)
-        require "the projected operation order contains duplicates"
+        require
+            "the projected operation order contains duplicates"
             (length projectedOperations == length (nub projectedOperations))
         require "a projected operation key is empty" (not (any Text.null projectedOperations))
         require "the broker generation is zero" (generation > 0)
@@ -151,7 +152,13 @@ withPreparedRootedNodeGrantKernel runtime session store generation localPlanDige
                     Left failure -> pure (Left failure)
                     Right version ->
                         publishOrdered
-                            lineage localDigest catalogIdentity frame token ordinal remaining
+                            lineage
+                            localDigest
+                            catalogIdentity
+                            frame
+                            token
+                            ordinal
+                            remaining
                             ( renderPreparedGatePackageKernel
                                 (GatePlanDigest localDigest)
                                 (GateCatalogIdentity catalogIdentity)

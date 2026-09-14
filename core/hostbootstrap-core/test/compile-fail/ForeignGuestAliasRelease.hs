@@ -8,6 +8,6 @@ import HostBootstrap.Substrate.Provider.Alias
 -- observation of someone else's alias is not that handle, so a foreign alias
 -- cannot be released through this route.
 badRelease ::
-  ResourceHandle scope planId aliasId DurableAliasResource Unmanaged Observed ->
-  Either ReconcileError ()
+    ResourceHandle scope planId aliasId DurableAliasResource Unmanaged Observed ->
+    Either ReconcileError ()
 badRelease handle = withPreparedGuestAliasRelease handle 1 (const ())

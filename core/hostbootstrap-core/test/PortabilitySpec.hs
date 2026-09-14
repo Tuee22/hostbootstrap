@@ -26,13 +26,13 @@ import Control.Monad (forM_)
 import Data.Char (isSpace)
 import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort)
 import HostBootstrap.DocValidator (findRepoRoot)
-import SourceGuard
-    ( countHaskellIdentifier
-    , countHaskellTokenSequence
-    , countPosixAbsoluteLiteralApplications
-    , importsModule
-    , moduleImportTokens
-    )
+import SourceGuard (
+    countHaskellIdentifier,
+    countHaskellTokenSequence,
+    countPosixAbsoluteLiteralApplications,
+    importsModule,
+    moduleImportTokens,
+ )
 import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)

@@ -12,12 +12,12 @@ description and the locally measured reality must agree.
 module BuildAuthoritySpec (tests) where
 
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
+import qualified Crypto.PubKey.Ed25519 as Ed25519
 import Data.ByteArray (convert)
-import qualified Data.ByteString as ByteString
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
-import qualified Crypto.PubKey.Ed25519 as Ed25519
 import HostBootstrap.Build
 import HostBootstrap.Handoff (frameWire)
 import System.Directory (createDirectoryIfMissing)
@@ -376,8 +376,9 @@ withFixture use =
                     , fixtureResign = sign
                     }
 
--- | Re-sign a modified binding, so the tampered case is a *genuine* signature
--- over a false description rather than a broken signature.
+{- | Re-sign a modified binding, so the tampered case is a *genuine* signature
+over a false description rather than a broken signature.
+-}
 rebind :: Fixture -> (BuildBinding -> BuildBinding) -> IO BuildChannel
 rebind fixture edit = fixtureResign fixture (edit (channelBinding (fixtureChannel fixture)))
 

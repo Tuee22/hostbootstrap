@@ -5,11 +5,11 @@ project scope or the exact plan whose resources they carry.
 module CoerceExecutionRoles where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Lifecycle.Execution
-    ( ResourceCarrier
-    , StepExecution
-    , StepRuntime
-    )
+import HostBootstrap.Lifecycle.Execution (
+    ResourceCarrier,
+    StepExecution,
+    StepRuntime,
+ )
 
 data ExecutionScopeA
 data ExecutionScopeB

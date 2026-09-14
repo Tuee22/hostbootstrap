@@ -1,10 +1,10 @@
 module LifecycleCursorAsCommandAuthority where
 
-import HostBootstrap.Authority
-    ( CommandAuthority
-    , PreparePhase
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    CommandAuthority,
+    PreparePhase,
+    VerbUp,
+ )
 import HostBootstrap.Lifecycle.Session (LifecycleCursor)
 
 data Scope

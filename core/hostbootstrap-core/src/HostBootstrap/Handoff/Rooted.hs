@@ -8,44 +8,44 @@ authority.  The exposed 'HostBootstrap.Handoff' facade fixes the binding to an
 already authenticated edge, signs it through the live root broker, and admits
 received bytes only after the ordinary one-use handoff has verified.
 -}
-module HostBootstrap.Handoff.Rooted
-    ( RootedPayloadBinding
-    , rootedPayloadBindingKernel
-    , rootedPayloadBindingFromWireKernel
-    , rootedPayloadBindingEdgeKernel
-    , rootedPayloadDigestKernel
-    , rootedChildConfigDigestKernel
-    , rootedPayloadSignatureKernel
-    , renderRootedPayloadBindingKernel
-    , renderRootedPayloadUnsignedKernel
-    , renderRootedPayloadUnsignedPartsKernel
-    , RootedLifecycleRequest
-    , rootedOpenFrameRequestKernel
-    , rootedNextNodeRequestKernel
-    , rootedSettleNodeRequestKernel
-    , rootedDescendResultRequestKernel
-    , rootedCloseFrameRequestKernel
-    , rootedReceiptConfirmRequestKernel
-    , rootedLifecycleRequestFromWireKernel
-    , renderRootedLifecycleRequestKernel
-    , withRootedLifecycleRequestKernel
-    , RootedLifecycleResponse
-    , rootedOpenedResponseUnsignedKernel
-    , rootedPreparedResponseUnsignedKernel
-    , rootedDescendResponseUnsignedKernel
-    , rootedSettledResponseUnsignedKernel
-    , rootedFrameCompleteResponseUnsignedKernel
-    , rootedReceiptRecordedResponseUnsignedKernel
-    , rootedRefusedResponseUnsignedKernel
-    , rootedLifecycleResponseFromUnsignedKernel
-    , rootedLifecycleResponseFromWireKernel
-    , rootedLifecycleResponseSignatureKernel
-    , renderRootedLifecycleResponseKernel
-    , renderRootedLifecycleUnsignedResponseKernel
-    , rootedLifecycleResponsePairKernel
-    , rootedLifecycleUnsignedResponsePairKernel
-    , withRootedLifecycleResponseKernel
-    )
+module HostBootstrap.Handoff.Rooted (
+    RootedPayloadBinding,
+    rootedPayloadBindingKernel,
+    rootedPayloadBindingFromWireKernel,
+    rootedPayloadBindingEdgeKernel,
+    rootedPayloadDigestKernel,
+    rootedChildConfigDigestKernel,
+    rootedPayloadSignatureKernel,
+    renderRootedPayloadBindingKernel,
+    renderRootedPayloadUnsignedKernel,
+    renderRootedPayloadUnsignedPartsKernel,
+    RootedLifecycleRequest,
+    rootedOpenFrameRequestKernel,
+    rootedNextNodeRequestKernel,
+    rootedSettleNodeRequestKernel,
+    rootedDescendResultRequestKernel,
+    rootedCloseFrameRequestKernel,
+    rootedReceiptConfirmRequestKernel,
+    rootedLifecycleRequestFromWireKernel,
+    renderRootedLifecycleRequestKernel,
+    withRootedLifecycleRequestKernel,
+    RootedLifecycleResponse,
+    rootedOpenedResponseUnsignedKernel,
+    rootedPreparedResponseUnsignedKernel,
+    rootedDescendResponseUnsignedKernel,
+    rootedSettledResponseUnsignedKernel,
+    rootedFrameCompleteResponseUnsignedKernel,
+    rootedReceiptRecordedResponseUnsignedKernel,
+    rootedRefusedResponseUnsignedKernel,
+    rootedLifecycleResponseFromUnsignedKernel,
+    rootedLifecycleResponseFromWireKernel,
+    rootedLifecycleResponseSignatureKernel,
+    renderRootedLifecycleResponseKernel,
+    renderRootedLifecycleUnsignedResponseKernel,
+    rootedLifecycleResponsePairKernel,
+    rootedLifecycleUnsignedResponsePairKernel,
+    withRootedLifecycleResponseKernel,
+)
 where
 
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
@@ -57,11 +57,12 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
 
 -- | One root-signed complete-payload and child-config identity.
-data RootedPayloadBinding scope brokerGeneration = RootedPayloadBinding
-    ByteString
-    Text
-    Text
-    ByteString
+data RootedPayloadBinding scope brokerGeneration
+    = RootedPayloadBinding
+        ByteString
+        Text
+        Text
+        ByteString
 
 type role RootedPayloadBinding nominal nominal
 
@@ -447,7 +448,7 @@ decodeLifecyclePostOpenBody ::
 decodeLifecyclePostOpenBody makeRequest fields = case reverse fields of
     body : reversedCommon ->
         decodeLifecyclePostOpen
-            (\path session stage ordinal nonce predecessor ->
+            ( \path session stage ordinal nonce predecessor ->
                 makeRequest path session stage ordinal nonce predecessor body
             )
             (reverse reversedCommon)
@@ -705,7 +706,8 @@ boundedResponseUnsigned wire = do
 rootedLifecycleResponseFromUnsignedKernel :: ByteString -> ByteString -> Either Text RootedLifecycleResponse
 rootedLifecycleResponseFromUnsignedKernel unsigned signature = do
     require (ByteString.length signature == rootedLifecycleResponseSignatureBytes) "has a rooted lifecycle response signature whose width is not 64 bytes"
-    withUnsignedResponse unsigned
+    withUnsignedResponse
+        unsigned
         (\digest path session stage ordinal -> Opened digest path session stage ordinal signature)
         (\digest path session stage ordinal nonce node dependencies operationGate projectedGates -> Prepared digest path session stage ordinal nonce node dependencies operationGate projectedGates signature)
         (\digest path session stage ordinal nonce body -> Descend digest path session stage ordinal nonce body signature)
@@ -835,9 +837,10 @@ rootedLifecycleUnsignedResponsePairKernel expected request unsigned = do
     requireDigest "rooted lifecycle request" expected
     withUnsignedResponse unsigned opened prepared descend settled complete receipt refused >>= id
   where
-    opened digest _ _ _ _ = require (digest == expected) "names a different rooted lifecycle request" >> case request of
-        OpenFrame _ -> Right Nothing
-        _ -> Left "opened does not answer this rooted lifecycle request"
+    opened digest _ _ _ _ =
+        require (digest == expected) "names a different rooted lifecycle request" >> case request of
+            OpenFrame _ -> Right Nothing
+            _ -> Left "opened does not answer this rooted lifecycle request"
     prepared digest path session stage ordinal nonce _ _ _ _ = post "prepared" Nothing Nothing digest path session stage ordinal nonce
     descend digest path session stage ordinal nonce _ = post "descend" Nothing Nothing digest path session stage ordinal nonce
     settled digest path session stage ordinal nonce _ = post "settled" Nothing Nothing digest path session stage ordinal nonce

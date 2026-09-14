@@ -3,12 +3,12 @@ module ProjectUpCannotVerifyDestroy where
 import HostBootstrap.Authority (VerbUp)
 import HostBootstrap.ProjectPlan (ProjectPlan)
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame)
-import HostBootstrap.Teardown
-    ( DestroySettled
-    , SubtreeSettled
-    , TeardownError
-    , verifyDestroySettled
-    )
+import HostBootstrap.Teardown (
+    DestroySettled,
+    SubtreeSettled,
+    TeardownError,
+    verifyDestroySettled,
+ )
 
 data Scope
 data SpecificationDigest

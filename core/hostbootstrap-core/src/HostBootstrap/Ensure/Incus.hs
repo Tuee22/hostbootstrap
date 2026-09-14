@@ -31,19 +31,19 @@ where
 import Data.Char (toLower)
 import Data.List (intercalate, isInfixOf)
 import HostBootstrap.Ensure (
-    grantSocketAccess,
-    invokingNonRootUser,
-    withInvokingGroupMember,
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
     appleRow,
     frameTable,
+    grantSocketAccess,
     installAndVerify,
+    invokingNonRootUser,
     linuxRow,
     reconcilerInstallSteps,
     runTool,
     toolPresent,
+    withInvokingGroupMember,
  )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
 import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo), absExePath)
@@ -406,4 +406,3 @@ kvmFirmwareResidue =
 kvmUnwritableResidue :: String
 kvmUnwritableResidue =
     "ensure kvm: /dev/kvm still not read/write after setfacl; grant rw on /dev/kvm and retry."
-

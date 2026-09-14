@@ -3,10 +3,10 @@ module HarnessCandidateAsRecoveredProjectPlanInputs where
 import HostBootstrap.Config.Schema (ValidatedConfig)
 import HostBootstrap.Lifecycle.Mode (RecoveredProductionLifecycleProfile)
 import HostBootstrap.ProjectPlan (PlanError)
-import HostBootstrap.ProjectPlan.Construct
-    ( FinalizedProjectSpec
-    , withRecoveredProductionProjectPlanInputs
-    )
+import HostBootstrap.ProjectPlan.Construct (
+    FinalizedProjectSpec,
+    withRecoveredProductionProjectPlanInputs,
+ )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.ProjectScope (Harness, Production)
 

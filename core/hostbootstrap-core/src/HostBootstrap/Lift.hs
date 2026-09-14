@@ -123,6 +123,7 @@ executable; the in-VM path is a deployment fact (e.g. the pipx/ghcup-installed
 @\<project\>@ on the VM's @$PATH@). A container needs no path — its
 @ENTRYPOINT@ is the binary.
 -}
+
 -- | Where this binary is on the host that is running it.
 newtype LocalSelfPath = LocalSelfPath FilePath
     deriving (Eq, Show)
@@ -219,9 +220,10 @@ only thing that varies across Lima and Incus is the 'LiftLayer' constructor.
 -}
 data LiftLeaf
     = SelfSub SelfRef [String]
-    | -- | an executable and its arguments; the executable is a field rather
-      -- than the head of a list, so the empty argument vector that would
-      -- dispatch the empty-string executable has no spelling (§ K)
+    | {- | an executable and its arguments; the executable is a field rather
+      than the head of a list, so the empty argument vector that would
+      dispatch the empty-string executable has no spelling (§ K)
+      -}
       RawCmd String [String]
     | LifecycleProcessCmd String [String]
     deriving (Eq, Show)

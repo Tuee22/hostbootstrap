@@ -5,7 +5,7 @@ module RenderLifecycleProcessRouteArgv where
 -- input, and the three VM forms that inherit whatever the host frame held.
 -- The public lift facade exposes none of the route's own sanitized renderers,
 -- so a consumer cannot obtain a protocol-safe argument vector from it.
-import HostBootstrap.Lift
-    ( sanitizedLaunch
-    , withLifecycleProcessRouteLaunchKernel
-    )
+import HostBootstrap.Lift (
+    sanitizedLaunch,
+    withLifecycleProcessRouteLaunchKernel,
+ )

@@ -47,34 +47,34 @@ directly, and they do not make a runtime disposition safe. Keeping this surface
 sealed is a drift-guard obligation, not a property the type system maintains on
 its own.
 -}
-module HostBootstrap.Detached
-    ( -- * The sealed launch specification
-      DetachedLaunch
-    , detachedLaunch
-    , detachedLaunchExecutable
-    , detachedLaunchArguments
-    , detachedLaunchCommandLine
+module HostBootstrap.Detached (
+    -- * The sealed launch specification
+    DetachedLaunch,
+    detachedLaunch,
+    detachedLaunchExecutable,
+    detachedLaunchArguments,
+    detachedLaunchCommandLine,
 
-      -- * Absolute-by-construction operands
-    , DetachedWorkingDirectory
-    , mkDetachedWorkingDirectory
-    , detachedWorkingDirectoryPath
-    , DetachedOutputSink
-    , mkDetachedOutputSink
-    , detachedOutputSinkPath
+    -- * Absolute-by-construction operands
+    DetachedWorkingDirectory,
+    mkDetachedWorkingDirectory,
+    detachedWorkingDirectoryPath,
+    DetachedOutputSink,
+    mkDetachedOutputSink,
+    detachedOutputSinkPath,
 
-      -- * The launch bracket and its running child
-    , DetachedChild
-    , withDetachedChild
-    , detachedChildPid
-    , detachedChildOutput
-    , terminateDetachedChild
-    , awaitDetachedChild
+    -- * The launch bracket and its running child
+    DetachedChild,
+    withDetachedChild,
+    detachedChildPid,
+    detachedChildOutput,
+    terminateDetachedChild,
+    awaitDetachedChild,
 
-      -- * Typed launch failure
-    , DetachedLaunchError (..)
-    , renderDetachedLaunchError
-    )
+    -- * Typed launch failure
+    DetachedLaunchError (..),
+    renderDetachedLaunchError,
+)
 where
 
 import Control.Exception (IOException, try)
@@ -90,17 +90,17 @@ import System.Exit (ExitCode)
 import System.FilePath (isAbsolute, normalise, takeDirectory)
 import System.IO (Handle, IOMode (AppendMode, ReadMode, WriteMode), hClose, openFile)
 import System.Info (os)
-import System.Process
-    ( CreateProcess (close_fds, cwd, detach_console, env, new_session, std_err, std_in, std_out)
-    , Pid
-    , ProcessHandle
-    , StdStream (UseHandle)
-    , createProcess
-    , getPid
-    , proc
-    , terminateProcess
-    , waitForProcess
-    )
+import System.Process (
+    CreateProcess (close_fds, cwd, detach_console, env, new_session, std_err, std_in, std_out),
+    Pid,
+    ProcessHandle,
+    StdStream (UseHandle),
+    createProcess,
+    getPid,
+    proc,
+    terminateProcess,
+    waitForProcess,
+ )
 import System.Timeout (timeout)
 
 {- | An absolute working directory for a detached child. The constructor is
@@ -228,8 +228,8 @@ withDetachedChild launch body = do
             ( do
                 createDirectoryIfMissing True (takeDirectory sinkPath)
                 openFile sinkPath WriteMode >>= hClose
-            )
-            :: IO (Either IOException ())
+            ) ::
+            IO (Either IOException ())
     case truncated of
         Left err -> pure (Left (DetachedOutputSinkUnavailable sinkPath (show err)))
         Right () -> do
@@ -250,8 +250,8 @@ withDetachedChild launch body = do
   where
     spawn stdinHandle sink = do
         spawned <-
-            try (createProcess (detachedProcess launch stdinHandle sink))
-                :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
+            try (createProcess (detachedProcess launch stdinHandle sink)) ::
+                IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
         -- 'createProcess' closes the handles it was handed through @UseHandle@;
         -- closing them again is a no-op and keeps the failure path symmetric.
         mapM_ closeQuietly [stdinHandle, sink]
@@ -272,8 +272,8 @@ a diagnostic, and a child that dies mid-write must not also break the report.
 detachedChildOutput :: DetachedChild child -> IO Text
 detachedChildOutput child = do
     raw <-
-        try (ByteString.readFile (detachedOutputSinkPath (dcSink child)))
-            :: IO (Either IOException ByteString)
+        try (ByteString.readFile (detachedOutputSinkPath (dcSink child))) ::
+            IO (Either IOException ByteString)
     pure (either (const Text.empty) decodeLenient raw)
   where
     decodeLenient = TextEncoding.decodeUtf8With TextEncodingError.lenientDecode

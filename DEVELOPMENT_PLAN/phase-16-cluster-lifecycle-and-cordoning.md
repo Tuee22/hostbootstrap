@@ -1,7 +1,6 @@
 # Phase 16 — Cluster lifecycle, budgets, and cordoning
 
 **Status**: Done
-**Current sprint**: None
 **Depends on**: Phase 12 (the generic plan-indexed budget boundary), Phase 14 (the four ownership clauses
 and the ownership seam), Phase 15 (host providers and the self-reference lift)
 **Substrates**: linux-cpu
@@ -10,7 +9,11 @@ cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-28-host-portability-acceptance.md)), composed with
 the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-12 ; x86_64 Linux 7.0.0-28-generic, Docker 29.7.1, Kind 0.32.0, kubectl 1.32.0, GHC 9.12.4, Cabal 3.16.1.0 ; bare core binary `hostbootstrap test run cluster-live` ; pass ; covers 66e8e10f0461991c2ab88c9b9c6623cbeea0ceb4ebde3bf8bb4c886e7a41446d
+**Gate evidence**: 2026-09-13 ; x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, Docker 29.7.1,
+Kind 0.32.0, kubectl 1.37.0 against a Kubernetes 1.36.1 server, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
+`core/`, composed with the bare core binary `hostbootstrap test run cluster-live` ; pass ;
+covers d65409e63b895e9acfc5249a5be7836ff2769b84d91273ae9ba4d8f619659cd5
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Cluster` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/internal/colima-backend`
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
@@ -2587,7 +2590,8 @@ template or no flag, and the two conditions cannot disagree about which case it 
 **The templates the project ships are identical for two of the three answers.** `kind.yaml` and
 `kind-in-cluster.yaml` differ only in their comment. That is the consumer's to resolve, not this
 sprint's, and it is recorded here rather than silently collapsed: deleting a shipped template is a
-change to the worked demo's artifacts and belongs to the phase that owns them.
+change to the worked demo's artifacts and belongs to the phase that owns them. The worked-demo phase
+resolved it in Sprint 24.44, which deleted the duplicate and left the selector branching twice.
 
 Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): `LifecycleSpec` passed
 154/154 with a new case pinning that both drivers resolve to no template, and the demo suite passed
@@ -2768,6 +2772,53 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 #### Remaining Work
 
 None beyond the phase's own.
+
+### Sprint 16.56: The cluster gate against the port-carrying tree [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+This phase's evidence covers `HostBootstrap.Cluster`. The reachability algebra's admitted port reaches
+three modules under that path — the backend's resolved exposure, the plan's exposure intent, and the
+shipped exposure codec — so the covered tree changes and this phase's claim expires with it. The claim
+is re-established by re-running the gate, not by assuming a type change was harmless.
+
+#### Deliverables
+
+- The phase's declared gate is re-run in full: the static suite and the live `linux-cpu` leg, not one of
+  the two.
+- A gate-evidence row records both legs, the gate host, and the command as run.
+- The covers digest is re-measured over this phase's own paths and recorded.
+
+#### Validation
+
+The phase's own gate, both legs.
+
+#### Remaining Work
+
+None. On 2026-09-13 the bare core binary's `test run cluster-live` reported `1/1 passed` and exited 0 in
+27 seconds on x86_64 Ubuntu 24.04.4 (Docker 29.7.1, Kind 0.32.0, kubectl 1.37.0 against a Kubernetes
+1.36.1 server). It generated the run config, created and cordoned
+`hostbootstrap-test-run-c4456ff0010cb` with
+`docker update --cpus 2 --memory 2147483648 --memory-swap 4294967296`, exported its kubeconfig, reached
+node readiness, returned the client and server versions through a read-only query, deleted the cluster
+through the retained plan, and left `.test_data/run-c4456ff0010cb` in place. The static leg is the
+complete 2,536/2,536 `cabal test all` from `core/` recorded in the row above.
+
+The run above is the second of the day. The first, earlier on 2026-09-13, closed this phase against the
+tree as it then stood; the reachability algebra's admitted port reached three modules under
+`HostBootstrap.Cluster` and the repository-wide reformat reached all of them, so the claim expired twice
+and was re-established twice. Only the current run is recorded in the row above.
+
+**This host's kubectl, again.** `/usr/local/bin/kubectl` is still the dangling symlink into a removed
+RKE2 installation that Sprint 16.50 recorded. This run resolved the tool by installing the current
+stable client — v1.37.0, the version `resolve_kubectl_version` itself selects — at
+`~/.local/bin/kubectl`, which precedes the dangling link on `PATH`. Unlike the earlier run, that is a
+change to the host and is recorded as one.
 
 ## Remaining Work
 

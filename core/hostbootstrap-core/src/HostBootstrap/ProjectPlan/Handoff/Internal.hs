@@ -1,8 +1,8 @@
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE NoMonoLocalBinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE NoMonoLocalBinds #-}
 
 {- | Exact, inert evidence for one forward lifecycle handoff.
 
@@ -18,74 +18,80 @@ package a recursive descent edge authorizes: it is produced only from an edge
 the root-owned plan catalog already admitted, retains no lifecycle context, and
 carries no store, catalog row, process, or effect authority.
 -}
-module HostBootstrap.ProjectPlan.Handoff.Internal
-    ( PlannedForwardHandoff
-    , withPlannedForwardHandoffKernel
-    , withPlannedForwardProcessInputsKernel
-    , CatalogForwardHandoff
-    , withCatalogForwardHandoffKernel
-    , withCatalogForwardProcessInputsKernel
-    )
+module HostBootstrap.ProjectPlan.Handoff.Internal (
+    PlannedForwardHandoff,
+    withPlannedForwardHandoffKernel,
+    withPlannedForwardProcessInputsKernel,
+    CatalogForwardHandoff,
+    withCatalogForwardHandoffKernel,
+    withCatalogForwardProcessInputsKernel,
+)
 where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Config.Class (ProjectCfg (cfgContext))
-import HostBootstrap.Config.Schema
-    ( validatedConfigDigest
-    , validatedConfigSpecDigest
-    , validatedConfigValue
-    )
+import HostBootstrap.Config.Schema (
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
+    validatedConfigValue,
+ )
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Handoff
-    ( HandoffBindingInput (..)
-    , HandoffPayloadKind (NarrowedProjectConfig)
-    , childConfigDigest
-    )
-import HostBootstrap.Lifecycle.Context.Internal
-    ( LifecycleContextError (LifecycleContextRootFrameRequired)
-    , ValidatedLifecycleContext
-    , withValidatedNestedLifecycleContext
-    , withValidatedRootLifecycleContext
-    )
-import HostBootstrap.Lifecycle.Plan
-    ( PlanDigestBinding
-    , ProjectPlan
-    , planDigestBindingDigestKernel
-    , projectPlanValidatedConfigKernel
-    , renderSnapshotKernel
-    , stablePlanSnapshotDigestKernel
-    )
-import HostBootstrap.Lifecycle.RootedPlan
-    ( RootedPlanCatalog
-    , withRootedPlanCatalogEdgeKernel
-    )
+import HostBootstrap.Handoff (
+    HandoffBindingInput (..),
+    HandoffPayloadKind (NarrowedProjectConfig),
+    childConfigDigest,
+ )
+import HostBootstrap.Lifecycle.Context.Internal (
+    LifecycleContextError (LifecycleContextRootFrameRequired),
+    ValidatedLifecycleContext,
+    withValidatedNestedLifecycleContext,
+    withValidatedRootLifecycleContext,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    PlanDigestBinding,
+    ProjectPlan,
+    planDigestBindingDigestKernel,
+    projectPlanValidatedConfigKernel,
+    renderSnapshotKernel,
+    stablePlanSnapshotDigestKernel,
+ )
+import HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+    withRootedPlanCatalogEdgeKernel,
+ )
 import HostBootstrap.Lift.Context (LiftContext (..))
 import HostBootstrap.ProjectPlan.Construct.Internal (FinalizedProjectSpec)
-import HostBootstrap.ProjectPlan.Frame
-    ( CurrentFrame
-    , currentFrameId
-    , projectFrameId
-    , validatedContextValue
-    )
+import HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    currentFrameId,
+    projectFrameId,
+    validatedContextValue,
+ )
 import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
 import HostBootstrap.Step (OperationKey)
 
-data PlannedForwardHandoff
-    scope
-    specDigest
-    parentPlanId
-    parentConfigId
-    parentFrame
-    childPlanDigest
-    childConfigId
-    childFrame where
+data
+    PlannedForwardHandoff
+        scope
+        specDigest
+        parentPlanId
+        parentConfigId
+        parentFrame
+        childPlanDigest
+        childConfigId
+        childFrame
+    where
     PlannedForwardHandoff ::
         ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
         CurrentFrame scope parentPlanId parentFrame ->
         ValidatedLifecycleContext
-            scope specDigest parentPlanId parentConfigId parentFrame ->
+            scope
+            specDigest
+            parentPlanId
+            parentConfigId
+            parentFrame ->
         ProjectPlan scope specDigest childPlanId childConfigId cfg ->
         PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
         CurrentFrame scope childPlanId childFrame ->
@@ -111,7 +117,11 @@ withPlannedForwardHandoffKernel ::
     ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
     CurrentFrame scope parentPlanId parentFrame ->
     ValidatedLifecycleContext
-        scope specDigest parentPlanId parentConfigId parentFrame ->
+        scope
+        specDigest
+        parentPlanId
+        parentConfigId
+        parentFrame ->
     ( forall childPlanDigest childConfigId childFrame.
       PlannedForwardHandoff
         scope
@@ -129,7 +139,9 @@ withPlannedForwardHandoffKernel finalized parent suppliedCurrent lifecycle use =
     case withValidatedRootLifecycleContext lifecycle borrow of
         Right action -> flatten action
         Left (LifecycleContextRootFrameRequired _) ->
-            either (pure . Left . failureText "lifecycle context") flatten
+            either
+                (pure . Left . failureText "lifecycle context")
+                flatten
                 (withValidatedNestedLifecycleContext lifecycle borrow)
         Left failure -> pure (Left (failureText "lifecycle context" failure))
   where
@@ -185,13 +197,22 @@ runPlannedForward ::
     (PlannedForwardHandoff a b c d e f g h -> result) ->
     result
 runPlannedForward planned@(PlannedForwardHandoff parent current lifecycle targetPlan binding child raw route input payload) use =
-    parent `seq` current `seq` lifecycle `seq` targetPlan `seq` binding `seq`
-        child `seq` raw `seq` route `seq` input `seq` payload `seq` use planned
+    parent `seq`
+        current `seq`
+            lifecycle `seq`
+                targetPlan `seq`
+                    binding `seq`
+                        child `seq`
+                            raw `seq`
+                                route `seq`
+                                    input `seq`
+                                        payload `seq`
+                                            use planned
 
 refusal :: Text -> Either Text value
 refusal detail = Left ("planned forward handoff: " <> detail)
 
-failureText :: Show failure => Text -> failure -> Text
+failureText :: (Show failure) => Text -> failure -> Text
 failureText label failure =
     "planned forward handoff: " <> label <> " refused: " <> Text.pack (show failure)
 
@@ -210,15 +231,17 @@ cursor, session, grant, signing, or process authority, and the one eliminator
 below exposes only the stripped route, binding input, and canonical payload
 under a fixed unit result.
 -}
-data CatalogForwardHandoff
-    scope
-    rootPlanId
-    brokerGeneration
-    catalogId
-    parentFrame
-    childPlanDigest
-    childConfigId
-    childFrame where
+data
+    CatalogForwardHandoff
+        scope
+        rootPlanId
+        brokerGeneration
+        catalogId
+        parentFrame
+        childPlanDigest
+        childConfigId
+        childFrame
+    where
     CatalogForwardHandoff ::
         (ProjectCfg cfg) =>
         CurrentFrame scope parentPlanId parentFrame ->
@@ -361,9 +384,20 @@ runCatalogForward ::
     (CatalogForwardHandoff a b c d e f g h -> result) ->
     result
 runCatalogForward package@(CatalogForwardHandoff parentCurrent childPlan binding childCurrent parent child raw route input payload configDigest payloadDigest keys) use =
-    parentCurrent `seq` childPlan `seq` binding `seq` childCurrent `seq` parent `seq`
-        child `seq` raw `seq` route `seq` input `seq` payload `seq`
-            configDigest `seq` payloadDigest `seq` keys `seq` use package
+    parentCurrent `seq`
+        childPlan `seq`
+            binding `seq`
+                childCurrent `seq`
+                    parent `seq`
+                        child `seq`
+                            raw `seq`
+                                route `seq`
+                                    input `seq`
+                                        payload `seq`
+                                            configDigest `seq`
+                                                payloadDigest `seq`
+                                                    keys `seq`
+                                                        use package
 
 oneLayer :: LiftContext -> Bool
 oneLayer (LiftContext [_]) = True

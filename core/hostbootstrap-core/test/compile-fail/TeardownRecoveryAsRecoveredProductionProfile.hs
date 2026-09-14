@@ -1,23 +1,23 @@
 module TeardownRecoveryAsRecoveredProductionProfile where
 
-import HostBootstrap.Authority
-    ( RootInvocationAuthority
-    , VerbDestroy
-    , VerbUp
-    )
-import HostBootstrap.Lifecycle.Mode
-    ( BoundInvocationRecovery
-    , BoundRunLease
-    , ModeError
-    , ProductionMode
-    , ProjectModeLease
-    , VerifiedPlanSnapshot
-    , withRecoveredProductionLifecycleProfile
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.Authority (
+    RootInvocationAuthority,
+    VerbDestroy,
+    VerbUp,
+ )
+import HostBootstrap.Lifecycle.Mode (
+    BoundInvocationRecovery,
+    BoundRunLease,
+    ModeError,
+    ProductionMode,
+    ProjectModeLease,
+    VerifiedPlanSnapshot,
+    withRecoveredProductionLifecycleProfile,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 import HostBootstrap.ProjectScope (Production)
 
 data Project

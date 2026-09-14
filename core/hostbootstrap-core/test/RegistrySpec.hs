@@ -16,9 +16,11 @@ import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Lift (
     ContainerLift (..),
     ContainerPlacement (ProviderGuestContainer),
+    InVMSelfPath (InVMSelfPath),
     IncusVM (..),
     LiftDispatch (..),
     LimaVM (..),
+    LocalSelfPath (LocalSelfPath),
     Wsl2VM (..),
     blobHeadLeaf,
     blobUploadFinishLeaf,
@@ -31,8 +33,6 @@ import HostBootstrap.Lift (
     inWsl2VM,
     liftSubcommand,
     localContext,
-    InVMSelfPath (InVMSelfPath),
-    LocalSelfPath (LocalSelfPath),
     mkSelfRef,
  )
 import HostBootstrap.Registry (

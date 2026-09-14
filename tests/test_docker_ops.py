@@ -76,9 +76,7 @@ def test_build_command_resource_limits() -> None:
         tags=("t",),
         build_args={},
         pull=False,
-        memory="4096m",
-        memory_swap="4096m",
-        cpus="3",
+        builder=docker_ops.ClassicBuilder(memory="4096m", memory_swap="4096m", cpus="3"),
     )
     cmd = docker_ops.build_command(spec)
     i = cmd.index("--memory")
@@ -126,14 +124,18 @@ async def test_build_forces_classic_builder_for_caps_or_explicit_local_resolutio
         dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}
     )
     capped = docker_ops.BuildSpec(
-        dockerfile=Path("D"), context=Path("."), tags=("t",), build_args={}, memory="1g", cpus="2"
+        dockerfile=Path("D"),
+        context=Path("."),
+        tags=("t",),
+        build_args={},
+        builder=docker_ops.ClassicBuilder(memory="1g", cpus="2"),
     )
     local = docker_ops.BuildSpec(
         dockerfile=Path("D"),
         context=Path("."),
         tags=("t",),
         build_args={},
-        use_classic_builder=True,
+        builder=docker_ops.ClassicBuilder(),
     )
     await docker_ops.build(plain)
     await docker_ops.build(capped)

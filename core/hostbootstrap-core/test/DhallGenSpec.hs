@@ -39,8 +39,8 @@ import HostBootstrap.Dhall.Gen (
     schemaUnion,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
-import System.Directory (doesPathExist, getCurrentDirectory)
 import SourceGuard (repoRelativePath)
+import System.Directory (doesPathExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -297,8 +297,8 @@ secretRefCases =
                 IO (Either SomeException V.ProductionSecretRefWire)
         assertBool "production decode rejects plaintext" (either (const True) (const False) result)
     , testCase "scoped plaintext requires matching rank-2 harness authority" $ do
-        withFixtureHarnessAuthority
-            $ \_project runAuthority ->
+        withFixtureHarnessAuthority $
+            \_project runAuthority ->
                 V.secretRefView
                     ( V.testPlaintextSecret
                         (V.harnessConfigAuthority runAuthority)
@@ -317,8 +317,8 @@ secretRefCases =
     , testCase "wire conversion preserves scope and pointer values" $ do
         let production = V.productionSecretRef (V.ProductionPrompt "password")
         V.productionSecretRefWire production @?= V.ProductionPrompt "password"
-        withFixtureHarnessAuthority
-            $ \_project runAuthority -> do
+        withFixtureHarnessAuthority $
+            \_project runAuthority -> do
                 let authority = V.harnessConfigAuthority runAuthority
                     harness = V.harnessSecretRef authority (V.HarnessTestPlaintext "fixture")
                 assertBool

@@ -1,19 +1,19 @@
 module CrossBrokerRecoveredProductionProfile where
 
 import HostBootstrap.Authority (RootInvocationAuthority, VerbUp)
-import HostBootstrap.Lifecycle.Mode
-    ( BoundInvocationRecovery
-    , BoundRunLease
-    , ModeError
-    , ProductionMode
-    , ProjectModeLease
-    , VerifiedPlanSnapshot
-    , withRecoveredProductionLifecycleProfile
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.Lifecycle.Mode (
+    BoundInvocationRecovery,
+    BoundRunLease,
+    ModeError,
+    ProductionMode,
+    ProjectModeLease,
+    VerifiedPlanSnapshot,
+    withRecoveredProductionLifecycleProfile,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 import HostBootstrap.ProjectScope (Production)
 
 data Project

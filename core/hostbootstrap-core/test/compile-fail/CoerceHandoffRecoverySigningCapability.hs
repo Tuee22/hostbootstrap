@@ -1,18 +1,18 @@
 module CoerceHandoffRecoverySigningCapability where
 
 import Data.Coerce (coerce)
-import HostBootstrap.Handoff
-    ( adoptLifecycleAcknowledgementKernel
-    , prepareLifecycleAcknowledgementKernel
-    , publishLifecycleReportKernel
-    , receiveLifecycleAcknowledgementKernel
-    , registerRecoverableAdmittedHandoffEdgeKernel
-    , signAuthenticatedRootScopeKernel
-    , signRecoveryChildPackageBindingKernel
-    , signRecoveryWireKernel
-    , signRootedLifecycleResponseKernel
-    , signRootedPayloadBindingKernel
-    )
+import HostBootstrap.Handoff (
+    adoptLifecycleAcknowledgementKernel,
+    prepareLifecycleAcknowledgementKernel,
+    publishLifecycleReportKernel,
+    receiveLifecycleAcknowledgementKernel,
+    registerRecoverableAdmittedHandoffEdgeKernel,
+    signAuthenticatedRootScopeKernel,
+    signRecoveryChildPackageBindingKernel,
+    signRecoveryWireKernel,
+    signRootedLifecycleResponseKernel,
+    signRootedPayloadBindingKernel,
+ )
 
 -- The hidden ordinary-data capability cannot be supplied by representational
 -- coercion even when its type is inferred from the sealed public kernel.

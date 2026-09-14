@@ -15,7 +15,6 @@ actually leaves behind.
 -}
 module AuthoritySpec (tests, runEntryProbe, runLivenessInheritanceProbe, runModeProfileProbe) where
 
-import Expect (expectRight)
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (IOException, bracket_, finally, throwIO, try)
 import Control.Monad (filterM, replicateM)
@@ -32,6 +31,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
+import Expect (expectRight)
 import qualified Fixture
 import HostBootstrap.Authority
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), ProjectCodec)
@@ -2797,7 +2797,6 @@ readModeRecord store key =
     withProtectedEntry' store $ \session -> do
         observed <- readProtectedRecord session key
         pure (either (Left . ModeStoreFailure) Right observed)
-
 
 expectCloseKey :: Text -> IO InvocationCloseKey
 expectCloseKey raw = case mkInvocationCloseKey raw of

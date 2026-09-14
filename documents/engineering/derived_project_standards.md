@@ -151,7 +151,7 @@ The target has the same **parallel extension streams**, one additive merge idiom
 | **Dhall vocabulary** | `let C = ./Core.dhall` | embed and extend; never redefine `Core` |
 | **schema-gen** `ConfigArtifact` registry | concatenate across levels | a level appends its own artifacts |
 | **test-harness** `Seams` | supply the level's seams | the app supplies its seams + case matrix as a `TestSuite`, threaded into the inherited `test run` verb |
-| **service handlers** | `withServices` | append handlers; duplicate variants are rejected |
+| **service handlers** | `addServices` | append handlers; duplicate variants are rejected |
 
 This table is the current composition rule. Builder fragments append steps, artifacts, assembly inputs,
 and typed services under duplicate checks; teardown is a checked single-assignment slot, while each
@@ -334,7 +334,12 @@ development plan:
   the whole matrix with `all`. The help calls this root-only, but a root context gate is not currently
   enforced.
 - `service init|schema|run` runs long-running roles as leaf-frame service handlers.
-- `check-code` runs the project's fail-fast code-check gate.
+- `check-code` runs the project's fail-fast code-check gate. It resolves its formatter, linter and
+  Cabal by name on `PATH` rather than by absolute path, so the same verb runs inside the derived image —
+  whose `PATH` the base image sets from the build argument that decides where the style tools are
+  installed — and on a host that has the three tools. A derived project that spells those paths as
+  literals re-states a constant the bootstrapper owns, in a second language, and can only ever run its
+  own gate inside the image.
 - `ensure` is a reconciler library, not a command. Core exposes `ensureStep`, but the current demo
   invokes `runEnsure` from composite provider/build/accelerator actions.
 

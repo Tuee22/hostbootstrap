@@ -2,19 +2,19 @@ module HarnessRootAsRecoveredProjectPlan where
 
 import Data.List.NonEmpty (NonEmpty)
 import HostBootstrap.Config.Schema (ValidatedConfig)
-import HostBootstrap.Lifecycle.Mode
-    ( RecoveredProductionLifecycleProfile
-    , VerifiedPlanSnapshot
-    )
-import HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , PlanError
-    )
+import HostBootstrap.Lifecycle.Mode (
+    RecoveredProductionLifecycleProfile,
+    VerifiedPlanSnapshot,
+ )
+import HostBootstrap.ProjectPlan (
+    PlanDraft,
+    PlanError,
+ )
 import HostBootstrap.ProjectPlan.Construct (withRecoveredProductionProjectPlan)
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+ )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.ProjectScope (Harness, Production)
 

@@ -17,11 +17,11 @@ import HostBootstrap.Cluster.Backend
 import HostBootstrap.Cluster.Budget
 import HostBootstrap.Cluster.Cordon (
     QuantityError,
-    renderQuantityError,
     budgetCpu,
     budgetMemoryBytes,
     budgetStorageBytes,
     mkResourceBudget,
+    renderQuantityError,
  )
 import HostBootstrap.Cluster.Lifecycle (
     ClusterDriver (..),
@@ -40,6 +40,7 @@ import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nv
 import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
+import HostBootstrap.Network.Port (portNumber)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Protected (
     Expectation (ExpectVersion),
@@ -206,7 +207,7 @@ packageCases =
             >>= \case
                 Right (KindDriver, bytes, intents, [("control-plane", node)], ["core:deploy-chart"]) -> do
                     bytes @?= ByteStringChar8.pack "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n"
-                    map (\intent -> (exposureIntentService intent, exposureIntentTargetPort intent)) intents @?= [("registry", 30500)]
+                    map (\intent -> (exposureIntentService intent, portNumber (exposureIntentTargetPort intent))) intents @?= [("registry", 30500)]
                     assertBool "the node mapping lost the plan-owned cluster identity" ("-control-plane" `Text.isSuffixOf` node)
                 other -> assertFailure ("expected complete exact cluster config retention, got " ++ show other)
     , testCase "the config binder is closed over both drivers and every independent mismatch" $ do

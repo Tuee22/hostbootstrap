@@ -146,8 +146,9 @@ data GeneratedConfigError
       GeneratedConfigUnsupported Text
     | -- | Something is already at the path; it is never adopted or replaced.
       GeneratedConfigOccupied FilePath
-    | -- | The object at the path is not the one ownership names, or its bytes
-      -- are not the ones this run installed.
+    | {- | The object at the path is not the one ownership names, or its bytes
+      are not the ones this run installed.
+      -}
       GeneratedConfigConflict Text Text Text
     | -- | The durable origin record could not be interpreted.
       GeneratedConfigMalformedRecord Text
@@ -514,11 +515,11 @@ payloadStillMatches row target record = case originRecordKind record of
             Left fault -> Left fault
             Right bytes ->
                 let observed = payloadDigest (mkPayload bytes)
-                in Right
-                    ( if observed == expected
-                        then Nothing
-                        else Just (expected, observed)
-                    )
+                 in Right
+                        ( if observed == expected
+                            then Nothing
+                            else Just (expected, observed)
+                        )
 
 -- | The one refusal for a record under this owner's key that is not this owner's.
 notThisOwnersRecord :: Text.Text -> OwnershipFault

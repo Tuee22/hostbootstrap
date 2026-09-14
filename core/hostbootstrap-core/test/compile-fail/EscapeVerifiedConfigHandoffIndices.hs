@@ -1,12 +1,12 @@
 module EscapeVerifiedConfigHandoffIndices where
 
 import HostBootstrap.Authority (ProjectVerb)
-import HostBootstrap.Config.Schema
-    ( ValidatedConfig
-    , VerifiedConfigHandoff
-    , VerifiedConfigWire
-    , withVerifiedConfigHandoff
-    )
+import HostBootstrap.Config.Schema (
+    ValidatedConfig,
+    VerifiedConfigHandoff,
+    VerifiedConfigWire,
+    withVerifiedConfigHandoff,
+ )
 import HostBootstrap.Handoff (HandoffError, VerifiedHandoff)
 
 data ChosenHandoffPlan
@@ -16,29 +16,53 @@ data ChosenHandoffPhase
 
 selectPlan ::
     VerifiedConfigHandoff
-        scope ChosenHandoffPlan brokerGeneration parentFrame childFrame
-        configId verb phase ->
+        scope
+        ChosenHandoffPlan
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        phase ->
     ()
 selectPlan _ = ()
 
 selectParent ::
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration ChosenHandoffParent childFrame
-        configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        ChosenHandoffParent
+        childFrame
+        configId
+        verb
+        phase ->
     ()
 selectParent _ = ()
 
 selectChild ::
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame ChosenHandoffChild
-        configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        ChosenHandoffChild
+        configId
+        verb
+        phase ->
     ()
 selectChild _ = ()
 
 selectPhase ::
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame childFrame
-        configId verb ChosenHandoffPhase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        ChosenHandoffPhase ->
     ()
 selectPhase _ = ()
 

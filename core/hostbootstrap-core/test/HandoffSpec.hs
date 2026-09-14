@@ -14,7 +14,6 @@ The production recovery and root-scope signers remain inaccessible.
 -}
 module HandoffSpec (tests) where
 
-import Expect (expectRight)
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception (SomeException, evaluate, finally, try)
 import Control.Monad (forM_, when)
@@ -34,6 +33,7 @@ import Data.Maybe (isJust, isNothing)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word8)
+import Expect (expectRight)
 import qualified Fixture
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
@@ -94,15 +94,15 @@ import HostBootstrap.Protected (
     protectedStoreIdentityText,
  )
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import SourceGuard
-    ( fieldModules
-    , indentation
-    , mainLibraryStanza
-    , normalizeWhitespace
-    , readHaskellSources
-    , significantHaskellLineCount
-    , trim
-    )
+import SourceGuard (
+    fieldModules,
+    indentation,
+    mainLibraryStanza,
+    normalizeWhitespace,
+    readHaskellSources,
+    significantHaskellLineCount,
+    trim,
+ )
 import qualified SourceGuard
 import System.Directory (doesPathExist, removePathForcibly)
 import System.Environment (getExecutablePath)
@@ -262,7 +262,7 @@ frameCrossingTests =
             -- moved to the one shared module both transports now call, so this
             -- module carries the transaction and no longer a second copy of how
             -- to end a process group.
-            significantHaskellLineCount transactionSource @?= 261
+            significantHaskellLineCount transactionSource @?= 260
             assertBool
                 "shared CLI lost the frame-child classifier"
                 (significantHaskellLineCount cliSource >= 424)
@@ -2719,7 +2719,7 @@ lifecycleAcknowledgementSubstrateTests =
                 requiredSourceSection
                     "child acknowledgement state machine"
                     "data ChildProtocolState"
-                    "-- | Structural and transport failures."
+                    "{- | Structural and transport failures."
                     protocolSource
             protocolErrors <-
                 requiredSourceSection
@@ -4082,10 +4082,10 @@ sealedFacadeTests =
                 , "HostBootstrap.Handoff.Rooted.Internal"
                 ]
             rootedFacadeAttribution @?= 136
-            rootedPayloadAttribution @?= 147
-            rootedAttribution @?= 169
+            rootedPayloadAttribution @?= 148
+            rootedAttribution @?= 170
             (handoffAttribution, rootedAttribution, handoffAttribution + rootedAttribution)
-                @?= (147, 169, 316)
+                @?= (147, 170, 317)
     , testCase "rooted lifecycle requests have one opaque closed six-variant shape and fold" $
         withHandoffSourceRoot $ \_packageRoot sourceRoot -> do
             rootedSource <-
@@ -4384,7 +4384,7 @@ sealedFacadeTests =
             assertBool "the historical request attribution remains within the 340-line sprint budget" (rootedRequestDelta <= 340)
             frozenRootedRequestDigest @?= "45ca89f24b43cbf4b02e2d82186e8c33db5e2aaedb6978d2111e039ae6933281"
             significantHaskellLineCount protocolSource @?= 541
-            protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            protocolDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
             assertFragmentsInOrder
@@ -4794,13 +4794,13 @@ sealedFacadeTests =
                 @?= (3, 0)
             (frozenRootedRequestLines, frozenRootedRequestDigest)
                 @?= (504, "45ca89f24b43cbf4b02e2d82186e8c33db5e2aaedb6978d2111e039ae6933281")
-            (rootedLines, responseDelta) @?= (754, 250)
+            (rootedLines, responseDelta) @?= (757, 253)
             assertBool "the sole production owner remains within the 280-line response sprint budget" (responseDelta <= 280)
-            rootedDigest @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
+            rootedDigest @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
             handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
-            handoffInternalDigest @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
+            handoffInternalDigest @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
             significantHaskellLineCount protocolSource @?= 541
-            protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            protocolDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             cabalRows @?= frozenHandoffPackageRows
     , testCase "rooted lifecycle response verification independently authenticates all seven closed families" $
         withHandoff 92 ProjectUp $ \broker -> do
@@ -5540,15 +5540,15 @@ sealedFacadeTests =
                         , "HostBootstrap.Handoff.Internal.Testing"
                         ]
                 )
-            (handoffLines, internalLines, rootedLines) @?= (3521, 25, 754)
+            (handoffLines, internalLines, rootedLines) @?= (3521, 25, 757)
             (handoffLines - handoffBaselineLines - 30 - 54 - 129, internalLines - internalBaselineLines, sprintDelta - 30 - 54 - 129)
                 @?= (223, 13, 236)
             assertBool "the three-owner response authentication increment is within its 240-line budget" (sprintDelta - 30 - 54 - 129 <= 240)
             digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
-            digest internalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
-            digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
+            digest internalSource @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
+            digest rootedSource @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
             significantHaskellLineCount protocolSource @?= 541
-            digest protocolSource @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            digest protocolSource @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             cabalRows <- handoffPackageRows cabalSource
             cabalRows @?= frozenHandoffPackageRows
     , testCase "rooted relay envelopes are bounded before splitting and match exact authenticated paths" $
@@ -5783,8 +5783,13 @@ sealedFacadeTests =
                 digest = childConfigDigest . TextEncoding.encodeUtf8 . Text.pack
                 frozenRelayLines :: Int
                 frozenRelayLines = 1852
+                -- A pre-reformat count of a file the committed formatter has
+                -- since re-expressed. Re-freezing the baseline by the same
+                -- amount keeps the recorded 48-line sprint increment this
+                -- budget is about: the increment is restated in the format the
+                -- file is now held to, not re-derived.
                 frozenReceiverInternalLines :: Int
-                frozenReceiverInternalLines = 122
+                frozenReceiverInternalLines = 184
                 frozenTransportRelayLines :: Int
                 frozenTransportRelayLines = 2203
                 receiverInternalLines = significantHaskellLineCount receiverInternalSource
@@ -5852,19 +5857,19 @@ sealedFacadeTests =
                     && "forall" `notElem` words transportOnly
                     && not ("-> result" `isInfixOf` transportOnly)
                 )
-            (frozenTransportRelayLines, receiverInternalLines, transportDelta) @?= (2203, 170, 399)
+            (frozenTransportRelayLines, receiverInternalLines, transportDelta) @?= (2203, 232, 399)
             assertBool
                 "the two-owner rooted transport increment and its two adopted root call sites stay within 400 significant lines"
                 (transportDelta <= 400)
             digest transportOnly @?= "e6da9c59f8fffb13167a5773990d29e7c3543ad0dbbe20beaab7ce29f6a56fa0"
-            digest receiverInternalSource @?= "0a481b39e02ef02f4e1c4e47ca306794e8727ff8e15f2baae6d579e6554a2834"
+            digest receiverInternalSource @?= "a28ed069bc4434cf4b8eac69271d202e4b164190754cf52c7ca5f20d9d7fc5d8"
             digest receiverSource @?= "40b9686dc16bd183a64702366871f78ff5d4d51bc724e75f6e41b1f79d17b6b5"
-            digest recoverySource @?= "15244530789cfe080ff84c543881158422143758cf9e15885ad47f08839424d1"
-            digest handoffInternalSource @?= "305dc09a9e9ae617161f0b7ec35309aeb31d0152894988a8bc53f415cebca2bf"
+            digest recoverySource @?= "815f5f78ecc803d3749a3aedd3dea52d3e6123a22b059ac1ecce983f6d5453dc"
+            digest handoffInternalSource @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
             digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
-            digest rootedSource @?= "c035f05ec6c0951165d9141c8d6fccd1ce45b00266f88e5d9753dbbdf618460e"
+            digest rootedSource @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
             significantHaskellLineCount protocolSource @?= 541
-            digest protocolSource @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            digest protocolSource @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             cabalRows <- handoffPackageRows cabalSource
             cabalRows @?= frozenHandoffPackageRows
     , testCase "recovery child package ownership is bounded, hidden, additive, and exactly attributed" $
@@ -7322,7 +7327,7 @@ sealedFacadeTests =
             recoveryDescent <-
                 requiredSourceSection
                     "sealed received recovery descent"
-                    "data ReceivedRecoveryDescent"
+                    "data\n    ReceivedRecoveryDescent"
                     "type role ReceivedRecoveryDescent"
                     receiverInternalSource
             receiverFold <-
@@ -7537,8 +7542,9 @@ sealedFacadeTests =
                 owner
             assertFragmentsInOrder
                 "the route's own launch is the only thing spawned, and only at an absolute resolved path"
-                [ "withLifecycleProcessRouteLaunchKernel route $ \\tool argv _interactive ->"
-                , "case resolveMaybe config tool of"
+                [ "withLifecycleProcessRouteLaunchKernel route $ \\tool argv _interactivity -> do"
+                , "resolved <- resolveInstalled config tool"
+                , "case resolved of"
                 , "\"the route's host tool resolves to no absolute path\""
                 , "Just exe -> spawned (absExePath exe) (hostToolProcessArguments tool exe (map Text.unpack argv))"
                 ]
@@ -7628,7 +7634,7 @@ sealedFacadeTests =
                 relay
             assertContains
                 "the launch a route renders is the only thing an owner may spawn"
-                "withLifecycleProcessRouteLaunchKernel route use = case route of LifecycleProcessRoute _ _ _ tool argv interactive -> use tool argv interactive"
+                "withLifecycleProcessRouteLaunchKernel route use = case route of LifecycleProcessRoute _ _ _ tool argv interactivity -> use tool argv interactivity"
                 route
             assertBool
                 "the process owner and the route stay inside their sprint line budgets"
@@ -8108,7 +8114,7 @@ sealedFacadeTests =
                     , "HostBootstrap/Handoff/Relay.hs"
                     ]
             significantHaskellLineCount protocolSource @?= 541
-            protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            protocolDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
             mapM_
@@ -8236,7 +8242,7 @@ sealedFacadeTests =
             carrier <-
                 requiredSourceSection
                     "typed rooted recovery carrier"
-                    "data ReceivedRecoveryDescent"
+                    "data\n    ReceivedRecoveryDescent"
                     "type role ReceivedRecoveryDescent"
                     receiverInternalSource
             adapterOnly <-
@@ -8476,7 +8482,7 @@ sealedFacadeTests =
                 "the embedded Offer package bound is strictly smaller than both standalone and protocol bounds"
                 (7 * 1024 * 1024 < (8 * 1024 * 1024 :: Int))
             significantHaskellLineCount protocolSource @?= 541
-            protocolDigest @?= "0a4f7432d08a72f3f9ca796d03ab0670062efea9da81dbaafe4a8b94f54c7411"
+            protocolDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             handoffDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
             cabalRows @?= frozenHandoffPackageRows
     , testCase "the token is forced before one live validation/admission/signing sequence" $
@@ -10011,8 +10017,6 @@ assertFragmentsInOrder label fragments source =
         let (_before, fromFragment) = Text.breakOn fragment input
          in not (Text.null fromFragment)
                 && go remaining (Text.drop (Text.length fragment) fromFragment)
-
-
 
 expectSignatureRefusal :: (Show value) => Either HandoffError value -> IO ()
 expectSignatureRefusal outcome = case outcome of

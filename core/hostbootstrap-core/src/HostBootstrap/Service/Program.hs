@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -123,10 +122,12 @@ class ServicePayloads (payload :: Type) where
 
     -- | What is sent to an acquired peer, and what comes back.
     type CallRequest payload
+
     type CallReply payload
 
     -- | What is asked of an acquired worker, and what comes back.
     type WorkRequest payload
+
     type WorkReply payload
 
 -- ---------------------------------------------------------------------------

@@ -215,12 +215,11 @@ including prepared create/recovery, ready, share/readback, stop/restart, bound g
 acquisition/release, identity-conditional delete, and the Direct no-mutation/refusal path. A macOS run is
 not evidence for that gate.
 
-That run passed against the current tree on 2026-09-09 on Ubuntu 24.04.4 LTS x86_64, Linux
-7.0.0-28-generic, with readable/writable KVM, Incus 6.0.0, GHC 9.12.4, and Cabal 3.16.1.0. All 2,497
-static cases passed before the live component confirmed the prepared lifecycle, forced restart,
-post-restart guest readiness, installed frame-child execution, conditional alias release, delete, Direct
-refusal, and residue checks. The phase document holds the exact command and evidence digest. Recursive
-teardown and end-to-end demo durability remain later phase concerns. Status and scheduling belong in
+The gate host needs readable/writable KVM and a working Incus daemon; the static cases pass before the
+live component confirms the prepared lifecycle, forced restart, post-restart guest readiness, installed
+frame-child execution, conditional alias release, delete, Direct refusal, and residue checks. The phase
+document holds the dated run, the exact command, the host and toolchain versions, and the evidence digest.
+Recursive teardown and end-to-end demo durability remain later phase concerns. Status and scheduling belong in
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ### Provider naming bounds

@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Final
 
 from . import process
@@ -26,6 +27,36 @@ _DOCKER: Final[str] = "docker"
 # 100 ms period (quota = cpus * period), exactly how `--cpus` is implemented.
 _BUILDKIT_OFF_ENV: Final[dict[str, str]] = {"DOCKER_BUILDKIT": "0"}
 _CPU_PERIOD_US: Final[int] = 100_000
+_NO_ENV: Final[Mapping[str, str]] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class BuildKitBuilder:
+    """The default builder.
+
+    It rejects ``--memory``/``--cpu-*`` outright, so it carries no resource caps
+    and there is no field on which to request one.
+    """
+
+
+@dataclass(frozen=True)
+class ClassicBuilder:
+    """The non-BuildKit builder, and the only one that honours per-build caps.
+
+    A cap is optional here, but it is *only* expressible here. That is the whole
+    point of the split: a build could previously carry ``memory``/``cpus``
+    alongside a builder flag that decided whether they were honoured at all, so a
+    silently ignored resource request was a representable state.
+    """
+
+    memory: str | None = None
+    memory_swap: str | None = None
+    cpus: str | None = None
+
+
+#: Which builder runs a ``docker build``, and — for the one that honours them —
+#: the caps it runs under. The two cases are the two builders Docker has.
+Builder = BuildKitBuilder | ClassicBuilder
 
 
 @dataclass(frozen=True)
@@ -43,10 +74,7 @@ class BuildSpec:
     target: str | None = None
     pull: bool = True
     no_cache: bool = False
-    memory: str | None = None
-    cpus: str | None = None
-    memory_swap: str | None = None
-    use_classic_builder: bool = False
+    builder: Builder = BuildKitBuilder()
 
 
 def build_command(spec: BuildSpec) -> tuple[str, ...]:
@@ -61,13 +89,14 @@ def build_command(spec: BuildSpec) -> tuple[str, ...]:
         cmd.append("--pull")
     if spec.no_cache:
         cmd.append("--no-cache")
-    if spec.memory is not None:
-        cmd.extend(["--memory", spec.memory])
-    if spec.memory_swap is not None:
-        cmd.extend(["--memory-swap", spec.memory_swap])
-    if spec.cpus is not None:
-        quota = int(float(spec.cpus) * _CPU_PERIOD_US)
-        cmd.extend(["--cpu-period", str(_CPU_PERIOD_US), "--cpu-quota", str(quota)])
+    if isinstance(spec.builder, ClassicBuilder):
+        if spec.builder.memory is not None:
+            cmd.extend(["--memory", spec.builder.memory])
+        if spec.builder.memory_swap is not None:
+            cmd.extend(["--memory-swap", spec.builder.memory_swap])
+        if spec.builder.cpus is not None:
+            quota = int(float(spec.builder.cpus) * _CPU_PERIOD_US)
+            cmd.extend(["--cpu-period", str(_CPU_PERIOD_US), "--cpu-quota", str(quota)])
     cmd.extend(["--file", spec.dockerfile.as_posix()])
     cmd.append(spec.context.as_posix())
     return tuple(cmd)
@@ -82,7 +111,7 @@ class RunSpec:
     name: str | None = None
     detach: bool = False
     rm: bool = False
-    env: Mapping[str, str] = ()  # type: ignore[assignment]
+    env: Mapping[str, str] = _NO_ENV
     mounts: Sequence[tuple[str, str, bool]] = ()  # (host, container, read_only)
     network: str | None = None
     extra: tuple[str, ...] = ()
@@ -212,12 +241,8 @@ def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
     return tuple(entrypoint)
 
 
-def _has_resource_caps(spec: BuildSpec) -> bool:
-    return spec.memory is not None or spec.memory_swap is not None or spec.cpus is not None
-
-
 async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
-    env = _BUILDKIT_OFF_ENV if _has_resource_caps(spec) or spec.use_classic_builder else None
+    env = _BUILDKIT_OFF_ENV if isinstance(spec.builder, ClassicBuilder) else None
     return await process.run_checked(build_command(spec), prefix=prefix, env=env)
 
 

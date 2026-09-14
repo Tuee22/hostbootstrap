@@ -144,6 +144,13 @@ import HostBootstrap.Ownership.Object (
     originRecordKind,
     ownershipFaultMessage,
  )
+import HostBootstrap.Ownership.Primitive (
+    bindReportedIdentity,
+    enterReportedObject,
+    recordReportedOrigin,
+    releaseReportedObject,
+    reobserveReportedIdentity,
+ )
 import HostBootstrap.Ownership.Tape (
     OwnershipCarrier (fromClauseFault, fromStoreFault),
     RecordSubject (RecordSubject, subjectBinding, subjectRecord),
@@ -156,13 +163,6 @@ import HostBootstrap.Ownership.Tape (
     readRecordUnder,
     recordTape,
  )
-import HostBootstrap.Ownership.Primitive (
-    bindReportedIdentity,
-    enterReportedObject,
-    recordReportedOrigin,
-    releaseReportedObject,
-    reobserveReportedIdentity,
- )
 import HostBootstrap.Protected (
     ProtectedError,
     ProtectedSession,
@@ -171,7 +171,7 @@ import HostBootstrap.Protected (
     protectedErrorMessage,
  )
 import System.Directory (doesFileExist, getTemporaryDirectory, removeDirectory, removeFile, renameFile)
-import System.FilePath ((</>), takeDirectory, takeFileName)
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO (IOMode (WriteMode), hClose, hFlush, openBinaryFile, openBinaryTempFile)
 import System.IO.Temp (createTempDirectory)
 
@@ -1229,6 +1229,7 @@ forgetNodeRecords session (key : rest) = do
 A record that is already gone is not an error: the transaction's own goal is that
 nothing of it remains, and a re-entry that finds the key free has reached it.
 -}
+
 -- | Bind clause 3's identity and answer with the outcome that describes it.
 bindIdentity ::
     ProtectedSession session ->
@@ -1250,6 +1251,7 @@ kind and the origin, not the bytes, because a re-entry over a record a previous
 entry already /bound/ finds clause 3's identity there as well — the same thing
 plus one more fact this same transaction established.
 -}
+
 {- | What this owner calls its records, for the tape's refusals.
 
 The only thing the cluster supplies to the shared store adapter; publishing,
@@ -1272,4 +1274,3 @@ instance OwnershipCarrier ClusterOwnershipFault where
 
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand
-

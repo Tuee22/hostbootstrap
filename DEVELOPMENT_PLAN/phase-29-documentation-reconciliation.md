@@ -1,11 +1,11 @@
 # Phase 29 — Documentation reconciliation and drift guards
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 28 (host-portability acceptance)
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: After the narrative is fully built, reconcile the governed `documents/` suite, comments, and help
 > text with what the code actually does — and install the guards that keep them reconciled.
@@ -164,10 +164,11 @@ The guard families retain their constructive owners:
 Every new architecture violation names its constructive phase to rewrite and its rationale. Existing lower
 boundary guards stay with their owners; the final phase adds no second interpreter or authority surface.
 
-### Sprint 29.4: The reachability page describes the algebra that exists [Active]
+### Sprint 29.4: The reachability page describes the algebra that exists [Done]
 
-**Status**: Active
-**Implementation**: `documents/architecture/network_reachability.md`
+**Status**: Done
+**Implementation**: `documents/architecture/network_reachability.md`,
+`documents/documentation_standards.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
 
@@ -190,16 +191,36 @@ cardinality is the part to fix first, because it is the part someone would build
 #### Validation
 
 The host static gate. The identifier-resolution check lands later in this phase; until it does, the
-check is reading the page against the source by hand, and this sprint records that it was done.
+check is reading the page against the source by hand, and this sprint records that it was done. Every
+backticked identifier on the page was resolved against the tree, and the page now carries no Haskell
+block at all: the two owning modules are linked as the signature reference, the three-scope table, the
+four-constructor reachability table, the two exposure mints, the two plan constructors, and the
+two-case rendering rule replace the sketches. The rendering rule also changed meaning — a redirecting
+plan renders *nothing* and leaves Distribution's default, where the page had claimed it renders
+`disable: false`. `documents/documentation_standards.md` now states the signature-reference rule the
+page adopted.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-The remaining dead identifiers across the other governed pages are Sprint 29.5.
+None. The remaining dead identifiers across the other governed pages were Sprint 29.5.
 
-### Sprint 29.5: Governed prose names what exists [Planned]
+### Sprint 29.5: Governed prose names what exists [Done]
 
-**Status**: Planned
-**Implementation**: `documents/architecture/run_models.md`, `documents/architecture/generic_project_model.md`, `documents/operations/demo_runbook.md`
+**Status**: Done
+**Implementation**: `documents/architecture/run_models.md`,
+`documents/architecture/generic_project_model.md`, `documents/architecture/durable_state.md`,
+`documents/architecture/harness_workflow.md`, `documents/architecture/unrepresentable_state.md`,
+`documents/engineering/cluster_lifecycle.md`, `documents/engineering/derived_project_standards.md`,
+`documents/engineering/in_cluster_registry.md`, `documents/engineering/accelerator_daemon.md`,
+`documents/engineering/secrets.md`, `documents/engineering/testing.md`,
+`documents/engineering/wsl2.md`, `documents/operations/demo_runbook.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
 
@@ -219,16 +240,46 @@ and one phase describes a closed piece of work in the future tense.
 
 #### Validation
 
-The host static gate; each corrected name is checked against the tree as it is written.
+The host static gate; each corrected name was checked against the tree as it was written. The
+substitutions were `runVerifiedRuntimeRole` to `runRoleLifecycle`, `selectAndRunService` to
+`withDecodedServiceProgram`, `SelectedService`/`ServiceSelection` to `VerifiedServicePlacement` and
+`RolePlan`, `RoleAdvance` to `RoleServeOutcome` and `RoleExitReport`, `roleField` to `roleParamsValue`,
+`withServices` to `addServices`, `verifyHarnessPreconditions` to `harnessPreconditions`,
+`VerifiedNoProjectResourcesAcquired` to `PreEffectProductionClosure` plus
+`verifyNoProjectResourcesAcquired`, `FreshGeneration` to the `IntentOrigin` cases `NoHistory` and
+`ReleasedReacquisition`, `HarnessConfigWire` to `HarnessSecretRefWire`, `TestPlaintext` to
+`ScopedTestPlaintext`, `ProxyThroughRegistry` to `proxyThroughRegistry`, `psTestMatrix` to `psTestSuite`
+and `mkTestMatrix`, `posixGlobalWallSupported` to `posixOwnershipSupported` and
+`windowsOwnershipSupported`, `RunLease` to `UnboundRunLease` and `BoundRunLease`, `AddResult` to
+`AcceleratorAddResult`, the four `Created`/`Healthy`/`Unhealthy`/`Foreign` answers to the five
+`ClusterReconcileResultView` constructors, and the runbook's `chain :: ProjectConfig -> [Step]` to the
+real `demoChainFor`. Two named shapes had no real counterpart at all and the prose was rewritten rather
+than renamed: the WSL alias backend's `GuestFlock`/`GuestLockf` choice, which the shipped
+`StrongAliasBackend` does not make because it ships a closed act instead of discovering a lock front
+end, and the caller-selected `LoopbackExposure`, whose absence the page now states without naming a
+type. `ProjectionBinding` likewise named nothing; the parent link is the `childConfigDigest` and
+`PlanDigestBinding` joined at projection. The service-runtime paragraph also moved from future to
+present tense, because that phase is closed.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.6: Dated evidence lives in the plan [Planned]
+### Sprint 29.6: Dated evidence lives in the plan [Done]
 
-**Status**: Planned
-**Implementation**: `documents/engineering/build_release.md`, `documents/engineering/testing.md`, `documents/architecture/unrepresentable_state.md`
+**Status**: Done
+**Implementation**: `documents/engineering/build_release.md`, `documents/engineering/testing.md`,
+`documents/architecture/unrepresentable_state.md`, `documents/engineering/incus.md`,
+`documents/engineering/warm_store.md`, `documents/engineering/base_image.md`,
+`documents/engineering/cluster_lifecycle.md`, `documents/architecture/durable_state.md`,
+`documents/architecture/ownership_invariant.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
 
@@ -247,15 +298,28 @@ dated totals belong in phase records and then records dated totals.
 
 #### Validation
 
-The host static gate.
+The host static gate. The three self-contradicting pages were corrected first. No governed document
+under `documents/` now contains an ISO date at all, which is the mechanical form of the rule and what
+a later check can assert. Each page kept its contract and dropped its chronology, and every dated fact
+removed was confirmed already recorded by its owning phase before the removal — the provider gate's
+run and totals in the host-providers-and-the-lift phase, the publication run and its digest in the
+base-image-and-warm-store phase, the Apple matrix in the Apple Silicon acceptance phase, and the
+Windows wall cases in the Windows and WSL2 phase.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.7: The three ambiguous terms are defined once [Planned]
+### Sprint 29.7: The three ambiguous terms are defined once [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `documents/README.md`, `documents/documentation_standards.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -278,15 +342,29 @@ project drives: here it applies resource limits, there it marks a node unschedul
 
 #### Validation
 
-The host static gate.
+The host static gate. `documents/README.md` carries a `## Glossary` section that is the one canonical
+home for the three terms, and `documents/documentation_standards.md` points at it under its content
+rules. *Substrate* is given as a three-row table separating the five-constructor `SubstrateName`
+enumeration from the plan header's hardware-context tokens and from the `linux-cpu` baseline, and the
+header field is named as a hardware-context declaration rather than the code enumeration. *Frame*
+separates the eight-constructor `ContextKind` from the plan-level `ProjectFrame` identity. *Cordon*
+states the divergence from the Kubernetes term explicitly: here it applies the plan's resource wall,
+where `kubectl cordon` makes a node unschedulable and changes no limit.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.8: The contradictory closure claims are settled [Planned]
+### Sprint 29.8: The contradictory closure claims are settled [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `documents/architecture/ownership_invariant.md`, `documents/architecture/ownership_seam.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -308,15 +386,33 @@ the premise holds the branch is dead code; if the branch is live the premise is 
 
 #### Validation
 
-The host static gate.
+The host static gate. The three closure claims are reconciled to the plan, in which the
+cluster-lifecycle-and-cordoning phase is `Done`: the two pages that called the direct-Colima boundary
+implemented and gate-closed were right, and `ownership_invariant.md`'s "remains non-closing" was the
+one that contradicted the table. It now records the boundary as closed by that phase and points the
+remaining live Apple lane at the Apple Silicon acceptance phase, naming the plan index as the authority
+for both. The Linux-only premise is resolved by restating what it is actually about — frames reached
+*through a crossing*, which are Linux — and then accounting for the Darwin branch within it: the
+shipped act is built host-native like every other binary (§ N), so the same POSIX row compiles for a
+Darwin outer host, where APFS refuses hard links to symbolic links and the publication step is spelled
+`renamex_np(RENAME_EXCL)` instead of `link(2)`. The page says why this leaves the three-row argument
+standing: a row may spell a primitive differently per kernel, and what must never be written twice is
+the clause order.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.9: The overview agrees with the headers it summarizes [Planned]
+### Sprint 29.9: The overview agrees with the headers it summarizes [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/00-overview.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -336,16 +432,31 @@ false rather than a different emphasis.
 
 #### Validation
 
-The host static gate.
+The host static gate. "**28** depends on everything" is replaced by what the header says — the worked
+demo and nothing later — with the distinction the false claim was reaching for stated explicitly: the
+host-portability phase's relation to every source file is its `**Evidence covers**` set, which is an
+evidence relation, not a `Depends on` edge. The worked demo's entry no longer presents two of its four
+declared dependencies as the whole list. The acceptance paragraph no longer counts gate-host families
+at all; it says one sprint per family and defers the families and the count to the phase's own header,
+which names four against the three the prose had. A closing line states that each header's
+`**Depends on**` field is the authority for its own edges.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.10: The remaining stale references [Planned]
+### Sprint 29.10: The remaining stale references [Done]
 
-**Status**: Planned
-**Implementation**: `core/cabal.project`, `documents/engineering/schema.md`
+**Status**: Done
+**Implementation**: `core/cabal.project`, `core/hostbootstrap-core/dhall/Core.dhall`,
+`DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
 
@@ -367,15 +478,32 @@ one of its settings by citing files in a different repository on one machine.
 
 #### Validation
 
-The host static gate.
+The host static gate. `core/cabal.project` now names the warm-store project by its in-repository path,
+`core/warm-deps/`, beside the documentation link it already carried. The generation direction is
+corrected in both places that stated it backwards: the Dhall-configuration phase's deliverable and
+`Core.dhall`'s own header now say the file is hand-written, that nothing generates it, and that
+`DhallGenSpec` is what holds its exported types equal to the schema the Haskell codecs reflect — with
+the budget functions noted as having no Haskell counterpart at all. The cross-repository citation to
+another project's `cabal.project.local` and doctrine page is replaced by the reason it was making: a
+per-process RTS cap is not a host bound, so the job count is pinned beside it, and the build
+configuration is where that bound has to live because nothing downstream can reimpose one.
+`documents/engineering/schema.md` needed no change — it makes no claim about the vocabulary's
+generation direction, and this sprint's Implementation list records the files actually touched.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,536/2,536, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.11: The identifier-resolution check [Planned]
+### Sprint 29.11: The identifier-resolution check [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -397,17 +525,31 @@ its own — so the check carries an explicit reviewed allowlist rather than a si
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkIdentifierResolution` reads every backticked span of every governed page,
+outside fenced blocks, takes the identifier each span starts with, and resolves it against the words and
+module names of the source tree. It fired on the repaired corpus once more than the hand read had found —
+a `clusterUp` reconciler that `HostBootstrap.Cluster.Lifecycle` does not export — which is the argument
+for the check in one line. The allowlist is `identifierAllowlist`, grouped by the reason each entry is
+there: taxonomy labels the page using them declares are not dispatch values, names a page's own
+illustrative sketch defines, names another system owns, names the agent harness owns, and one name cited
+precisely because it must not exist. The positive half of the fixture asserts an allowlisted abbreviation
+and a fenced block produce no violation; the negative half asserts a name nothing declares does, and that
+the refusal names the allowlist as the reviewed escape.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.12: The root-document status check [Planned]
+### Sprint 29.12: The root-document status check [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -426,17 +568,26 @@ planned repairs while every phase header and the table agreed they were done.
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkRootDocStatus` reads the plan's own status table and compares it against every line of
+`README.md`, `AGENTS.md` and `CLAUDE.md` that links a phase and names a status in the same breath. The
+corpus was already clean, so the fixture carries the whole proof: a root document pointing at the table
+without restating it produces nothing, and one calling a `Done` phase `Active` produces a refusal naming
+both statuses.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.13: The entry-document agreement check [Planned]
+### Sprint 29.13: The entry-document agreement check [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -455,17 +606,27 @@ obvious.
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkEntryDocAgreement` projects `AGENTS.md` through the declared `audienceMapping` and compares the
+result with `CLAUDE.md` line by line, reporting a length difference and the first few divergences. The
+mapping is a list of ordered rules, longest first, and a replacement is never rescanned. It found one
+real divergence the pair had carried: `CLAUDE.md` said "LLM assistants must never" where every other
+occurrence mapped `Agents` to `Assistants`, so the two documents were one hand-edit apart from a
+mapping nothing could state.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.14: The link-anchor check [Planned]
+### Sprint 29.14: The link-anchor check [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -484,17 +645,25 @@ renamed.
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkLinkAnchors` resolves a link's `#fragment` against the target document's own headings under the
+renderer's slug rule. It found both dead anchors the sprint predicted — a `warm_store.md` section
+renamed to `Consumer project` and a `base_image.md` section renamed to `Host-sized warm-store budget` —
+each of which the existing path check had resolved clean because it strips the fragment first.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.15: The phase-header field-set check [Planned]
+### Sprint 29.15: The phase-header field-set check [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -513,17 +682,25 @@ invented and the others do not share.
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkPhaseHeaderFields` refuses a `**Field**:` line in a phase header that § G does not declare. It
+found the six `**Current sprint**` fields, in the three spellings the sprint predicted — `None`,
+`None — every sprint is closed`, and `None — phase complete`, the last two restating the status field
+beside them. All six are removed.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
-### Sprint 29.16: The gate-evidence completeness check, and the drift guard's reach [Planned]
+### Sprint 29.16: The gate-evidence completeness check, and the drift guard's reach [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/documentation_standards.md`
@@ -544,20 +721,38 @@ phase citation by number sits in a spec file against the rule that forbids it.
 
 #### Validation
 
-The host static gate. Each check is green against the repaired tree and red against its own negative
-fixture; the standard requires the fixture, because a check nothing has seen fail is a check nobody has
-tested.
+The host static gate. `checkGateEvidenceLegs` compares the command legs a `**Gate**` names against the legs its
+`**Gate evidence**` rows record, on the non-flag tokens of each as a subsequence, so a row may add
+`--ghc-options=-Werror` or run the same command through the repository's Poetry environment without
+counting as a different leg. It found the worked demo naming four live verbs and recording one, which is
+the shape § G's new sentence forbids; that row now records all four. The architecture drift guard also
+reads the suites now, with one reviewed by-name exemption for the validator's own fixture, which authors
+synthetic plan documents and so legitimately contains plan text. Reaching the suites required tightening
+the citation predicate itself: the old reading erased punctuation and asked for adjacent tokens, which
+sees a data literal as a citation, and admitting a hyphen as the separator would have seen the durable
+`phase-NN-…` link target as one. A space is what a citation in prose actually uses, and with that
+spelling the guard found the one numeric citation sitting in `ProjectPlanSpec`.
+
+On 2026-09-14 the host static gate passed on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1: `cabal build all`
+and `cabal test all` from `core/` passed 2,546/2,546 in 200.71 seconds, `cabal build all` and
+`cabal test hostbootstrap-demo-test` from `demo/` passed 151/151, and from the repository root
+`poetry run python -m hostbootstrap.check_code` passed and
+`poetry run python -m hostbootstrap.test_all` passed 251/251.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 
-The governed corpus is owed reconciliation to the source, and the validator is owed the
-checks that keep it reconciled. **Sprint 29.4** owns the first — the canonical reachability page, whose
-vocabulary the compiler has never seen. Sprints 29.5 to 29.10 carry the remaining prose, and Sprints
-29.11 to 29.16 add one check each, with the negative fixture the standard requires.
+None. The governed corpus is reconciled to the source, and each of the seven rules the standard states is
+now a check with a negative fixture beside it. The reconciliation found what the checks were written to
+find: a canonical contract page describing a vocabulary the compiler had never seen, dated evidence in
+eleven pages that state the rule against carrying it, three load-bearing terms with no definition, a
+closure claim contradicting the status table, an overview contradicting the headers it summarises, six
+invented header fields, two dead link anchors, one one-sided edit between the two entry documents, and a
+gate recording one of its four legs. Each is repaired, and each repair is now the thing a check refuses.
 
 ## Documentation Requirements
 

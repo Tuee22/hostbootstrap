@@ -2,14 +2,14 @@
 
 module LifecyclePlanAsResourceProjectionSource where
 
-import HostBootstrap.ProjectPlan
-    ( OperationKey
-    , PlanError
-    , PlannedResource
-    , PlannedResourceKind
-    , ProjectPlan
-    , withPlannedResourceOfKind
-    )
+import HostBootstrap.ProjectPlan (
+    OperationKey,
+    PlanError,
+    PlannedResource,
+    PlannedResourceKind,
+    ProjectPlan,
+    withPlannedResourceOfKind,
+ )
 import HostBootstrap.Reconcile (LifecyclePlan)
 
 data ProjectionScope

@@ -10,8 +10,8 @@ host, each recorded with its own dated evidence
 **Gate kind**: deferred
 **Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, GHC 9.12.4,
 Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
-**Gate evidence**: 2026-09-11 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
-GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all` and `cabal test all` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers 6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0
 **Gate evidence**: 2026-09-11 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
 GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
 **Gate evidence**: 2026-09-11 ; aarch64 Ubuntu 24.04.4 LTS container, Linux 6.8.0-100-generic, carried by
@@ -364,13 +364,18 @@ this sprint may not do.
 
 #### Remaining Work
 
-The run is owed at the next visit to this hardware. It is taken once no other phase carries open
-work, because any earlier source change re-owes it.
+The Windows, macOS and arm64 Linux cells are owed at the next visit to each. The x86_64 Linux cell is
+recorded: on 2026-09-14, on the host its row names, `cabal build all` and `cabal test all` from `core/`
+passed 2,546/2,546 in 200.71 seconds, `poetry run python -m hostbootstrap.check_code` passed, and
+`poetry run python -m hostbootstrap.test_all` passed 251/251 with the coverage configuration's
+`fail_under = 100` satisfied at 1,413/1,413 statements. That row's digest is the current one; the other
+three still carry the digest of the tree they measured, which is what marks them owed.
 
 ## Remaining Work
 
-The host-portability acceptance is owed against the current tree. **Sprint 28.5** owns
-the re-run, at the next visit to the hardware this phase declares.
+Three of this phase's four cells are owed against the current tree — Windows, macOS, and arm64 Linux —
+each at the next visit to the hardware that carries it. The x86_64 Linux cell is current.
+**Sprint 28.5** owns the remaining three.
 
 ## Documentation Requirements
 

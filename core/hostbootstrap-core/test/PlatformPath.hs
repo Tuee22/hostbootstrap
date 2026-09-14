@@ -22,11 +22,11 @@ through one absolute host-provider command, which is the invocation split § K
 already draws. Those literals stay POSIX on every host and must not be routed
 through this module.
 -}
-module PlatformPath
-    ( hostFixtureRoot
-    , hostFixturePath
-    , hostPathAsPosixDescriptor
-    )
+module PlatformPath (
+    hostFixtureRoot,
+    hostFixturePath,
+    hostPathAsPosixDescriptor,
+)
 where
 
 import System.FilePath (isPathSeparator, joinPath, splitDirectories, splitDrive, (</>))

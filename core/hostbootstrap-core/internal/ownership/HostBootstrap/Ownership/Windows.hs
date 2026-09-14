@@ -46,21 +46,21 @@ The module is compiled on every host family and answers a total refusal where it
 cannot apply, so no package-description stanza excludes it from a build and the
 cases that cover it assert that refusal instead of disappearing (§ JJ).
 -}
-module HostBootstrap.Ownership.Windows
-    ( windowsOwnershipRow
-    , windowsOwnershipCapabilities
-    , windowsOwnershipSupported
-    )
+module HostBootstrap.Ownership.Windows (
+    windowsOwnershipRow,
+    windowsOwnershipCapabilities,
+    windowsOwnershipSupported,
+)
 where
 
 import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
-import HostBootstrap.Ownership.Primitive
-    ( OwnershipCapabilities (..)
-    , OwnershipPrimitive (..)
-    , OwnershipRow
-    , ownershipRow
-    , withOwnershipRow
-    )
+import HostBootstrap.Ownership.Primitive (
+    OwnershipCapabilities (..),
+    OwnershipPrimitive (..),
+    OwnershipRow,
+    ownershipRow,
+    withOwnershipRow,
+ )
 
 #if defined(mingw32_HOST_OS)
 import Control.Exception (IOException, catch)

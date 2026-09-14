@@ -7,10 +7,10 @@ import Data.Word (Word64)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Reconcile (ReconcileError)
 import HostBootstrap.Substrate.Provider.Backend (RunningProviderDependency)
-import HostBootstrap.Substrate.Provider.Reconcile
-    ( ProviderBackendBinding
-    , withFreshRunningProviderDependency
-    )
+import HostBootstrap.Substrate.Provider.Reconcile (
+    ProviderBackendBinding,
+    withFreshRunningProviderDependency,
+ )
 
 data FixedProvider
 

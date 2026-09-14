@@ -11,38 +11,38 @@ context.  Later lifecycle-entry modules may borrow those retained values only
 through the root- or nested-specific continuation below.  No downstream module
 can import this representation.
 -}
-module HostBootstrap.Lifecycle.Context.Internal
-    ( ValidatedLifecycleContext
-    , LifecycleContextError (..)
-    , mintValidatedLifecycleContext
-    , withValidatedRootLifecycleContext
-    , withValidatedNestedLifecycleContext
-    , lifecycleContextErrorMessage
-    )
+module HostBootstrap.Lifecycle.Context.Internal (
+    ValidatedLifecycleContext,
+    LifecycleContextError (..),
+    mintValidatedLifecycleContext,
+    withValidatedRootLifecycleContext,
+    withValidatedNestedLifecycleContext,
+    lifecycleContextErrorMessage,
+)
 where
 
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Context (BinaryContextError)
-import HostBootstrap.ProjectPlan
-    ( ProjectPlan
-    , topology
-    , topologyFrameOrder
-    , topologyParentEdges
-    )
-import HostBootstrap.ProjectPlan.Frame
-    ( CurrentFrame
-    , FrameError
-    , ProjectFrame
-    , ValidatedContext
-    , currentFrameId
-    , projectFrameId
-    , validatedContextValue
-    )
+import qualified HostBootstrap.Context as Context
+import HostBootstrap.ProjectPlan (
+    ProjectPlan,
+    topology,
+    topologyFrameOrder,
+    topologyParentEdges,
+ )
+import HostBootstrap.ProjectPlan.Frame (
+    CurrentFrame,
+    FrameError,
+    ProjectFrame,
+    ValidatedContext,
+    currentFrameId,
+    projectFrameId,
+    validatedContextValue,
+ )
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Protected (ProtectedStore)
-import qualified HostBootstrap.Context as Context
 
 -- | The exact frame's structural position in the admitted plan topology.
 data LifecycleFrameMembership

@@ -21,8 +21,8 @@ import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelf
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import System.Directory (canonicalizePath)
 import System.Environment (getExecutablePath)
-import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 

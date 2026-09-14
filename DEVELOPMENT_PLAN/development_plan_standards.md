@@ -227,6 +227,11 @@ states what this phase owes and nothing else (§ A); a boundary with another pha
 `## Phase Objective`. While the phase is `Active` it also names the sprint that owns the owed run, so
 closing the phase is the same act as closing that sprint rather than the deletion of a paragraph.
 
+No other field belongs in that block. An undeclared header field is a convention one phase invents and
+the others do not share, and nothing reads it; `checkPhaseHeaderFields` refuses one. An evidence row
+records **every leg the gate names** — a phase that names a composed gate and records one half of it is
+claiming the whole — and `checkGateEvidenceLegs` compares the two.
+
 `**Gate kind**` says whether the run that validates this plan also re-executes this phase's gate.
 **Self-verifying** phases close on the host static gate, so the same `cabal test all` that reads this
 document re-establishes their currency; their `**Gate evidence**` records `covers in-gate` and carries no
@@ -827,7 +832,7 @@ Linux, the maintainer-only `hostbootstrap base build` separately measures host C
 warm-store build container. On macOS and Windows the current command supplies no explicit Docker
 CPU/memory caps and retains the Dockerfile's `-j1`; it must not be described as host-sized there. That
 build-phase limit is not an interpreter of `<project>.dhall`; see
-[base_image.md](../documents/engineering/base_image.md#host-sized-warm-store-build-budget).
+[base_image.md](../documents/engineering/base_image.md#host-sized-warm-store-budget).
 
 ### P. Fixed Command Surface And The Extension Streams
 
@@ -2775,6 +2780,18 @@ available integrity metadata should still protect downloads, but neither turns t
 into a replayability contract. A resulting digest may identify one published build for inspection or a
 single workflow handoff; it does not make locked inputs, digest-pinned consumers, or reproducible rebuilds
 part of the architecture.
+
+**The compiler is the one selection that does not roll.** GHC arrives as an explicit build argument
+carrying the same version the Python bootstrapper installs on the host and the guest bootstrap pins in a
+VM, and the image build verifies the installed compiler reports it. This is not a retreat from rolling
+selection, because it is not the same kind of selection. Every other version here is discovered so that a
+rebuild finds what consumers will actually resolve against; the compiler instead *keys* what the base
+ships. A Cabal store lives at `store/ghc-<version>-<abi>/`, so a base whose compiler drifts from the one
+consumers select ships a warm store none of them can read, and a workspace that names its compiler
+explicitly cannot even be configured inside the image. The pin also costs nothing in maintenance: the
+version was already written down twice for the host and the guest, and this makes the base agree with
+them rather than hold a third opinion. Cabal continues to roll, matching the host, which pins no Cabal
+either.
 
 `base build` and `base build-and-push` validate that the requested architecture matches the native Docker
 engine/host architecture before work starts. Cross-architecture emulation is not silently selected. A

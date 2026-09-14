@@ -4,13 +4,13 @@ admitted plan.
 module CrossPlanBudgetSlice where
 
 import Data.List.NonEmpty (NonEmpty)
-import HostBootstrap.Cluster.Budget
-  ( BudgetError,
+import HostBootstrap.Cluster.Budget (
+    BudgetError,
     EffectiveBudget,
     SliceRequest,
     VerifiedWorkloadFit,
     withBudgetPartition,
-  )
+ )
 import HostBootstrap.Cluster.Cordon (ResourceBudget)
 
 data Scope
@@ -23,23 +23,23 @@ data WallSpecificationIdentity
 data WorkloadSetIdentity
 
 crossPlanSlice ::
-  EffectiveBudget
-    Scope
-    PlanA
-    BudgetIdentity
-    Provider
-    CapabilityIdentity
-    WallSpecificationIdentity ->
-  VerifiedWorkloadFit
-    Scope
-    PlanA
-    BudgetIdentity
-    Provider
-    CapabilityIdentity
-    WallSpecificationIdentity
-    WorkloadSetIdentity ->
-  ResourceBudget ->
-  NonEmpty (SliceRequest Scope PlanB) ->
-  Either BudgetError ()
+    EffectiveBudget
+        Scope
+        PlanA
+        BudgetIdentity
+        Provider
+        CapabilityIdentity
+        WallSpecificationIdentity ->
+    VerifiedWorkloadFit
+        Scope
+        PlanA
+        BudgetIdentity
+        Provider
+        CapabilityIdentity
+        WallSpecificationIdentity
+        WorkloadSetIdentity ->
+    ResourceBudget ->
+    NonEmpty (SliceRequest Scope PlanB) ->
+    Either BudgetError ()
 crossPlanSlice effective fit overhead requests =
-  withBudgetPartition effective fit overhead requests (\_partition _slices -> ())
+    withBudgetPartition effective fit overhead requests (\_partition _slices -> ())

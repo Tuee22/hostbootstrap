@@ -14,6 +14,7 @@ module TeardownSpec (tests) where
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Maybe (isNothing)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -699,6 +700,33 @@ forestTests =
             let afterReach = attempt forest TeardownReleased
             firstWork afterReach
                 @?= Just (OfferedDescent "host-orchestrator-0" "vm-orchestrator-1")
+    , testCase "the pre-descent step runs the provider's own declared reverse, with ReachFrame" $ do
+        -- The reachability step is not a marker the driver can tick: it carries
+        -- the same callback the forward step declared, and the driver invokes it
+        -- with the one action that means "open this frame". A driver that
+        -- answered TeardownReleased without calling it would descend into a
+        -- stopped provider, which is exactly the live failure this asserts away.
+        seen <- newIORef []
+        let recorder _cfg action = modifyIORef' seen (++ [action]) >> pure TeardownReleased
+        withExactPlan id (reachablePlan recorder) $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            case nextPreDescent forest of
+                Nothing -> assertFailure "destroy offered no pre-descent step"
+                Just pre -> do
+                    preDescentStepKey pre @?= "core:deploy-vm"
+                    case preDescentStepRun pre of
+                        Nothing -> assertFailure "the pre-descent step carries no declared reverse"
+                        Just declared -> do
+                            _ <- declared hostConfigFixture ReachFrame
+                            readIORef seen >>= (@?= [ReachFrame])
+    , testCase "a node that declared no reverse has no reachability effect to run" $
+        withDestroyForest $ \forest ->
+            case nextPreDescent forest of
+                Nothing -> assertFailure "destroy offered no pre-descent step"
+                Just pre ->
+                    assertBool
+                        "a plan whose provider declares no reverse offers no reachability effect"
+                        (isNothing (preDescentStepRun pre))
     , testCase "root, VM, and container openings classify only their immediate edge" $ do
         assertFirstOrdinaryPlacement
             id
@@ -1254,6 +1282,29 @@ hostConfigFixture = unsafePerformIO (detect >>= either fail pure >>= buildHostCo
 {- | The demo's own shape: an ensure step that preserves on reverse, the VM
 launch, the in-VM build, and the in-container cluster and chart.
 -}
+{- | The demo shape with a reverse effect actually declared on the provider, so
+the reachability step has something to carry.
+-}
+reachablePlan :: (HostConfig -> TeardownAction -> IO TeardownOutcome) -> StepPlan
+reachablePlan reverseEffect =
+    mkPlan
+        [ projectStep (demoStep "ensure-vm-provider") PreserveOnReverse "ensure" metalFrame noop
+        , reversedBy reverseEffect (descendsVia localContext (deployVMStep "launch" metalFrame noop))
+        , descendsVia localContext (buildPbStep "build" vmFrame noop)
+        , deployKindStep "cluster" containerFrame noop
+        , deployChartStep "chart" containerFrame noop
+        ]
+
+-- | The forest's next offer, when it is a pre-descent reachability step.
+nextPreDescent ::
+    TeardownForest scope planId frame verb ->
+    Maybe (PreDescentStep scope planId frame verb)
+nextPreDescent forest =
+    eliminateTeardownProgress
+        (nextTeardownWork forest)
+        (const Nothing)
+        (\point -> withTeardownAuthorization point Just (\_ _ -> Nothing))
+
 demoShapedPlan :: StepPlan
 demoShapedPlan =
     mkPlan

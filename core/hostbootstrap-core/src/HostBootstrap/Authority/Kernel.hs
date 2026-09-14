@@ -340,8 +340,9 @@ rootScopeAuthority ::
 rootScopeAuthority (RootInvocationAuthority project storeIdentity epoch _) =
     RootScopeAuthority project storeIdentity (brokerEpochWord epoch)
 
--- | Package-private runtime projection used by the lifecycle-mode kernel.
--- Public callers receive only the opaque scope authority through the facade.
+{- | Package-private runtime projection used by the lifecycle-mode kernel.
+Public callers receive only the opaque scope authority through the facade.
+-}
 rootScopeProjectName :: RootScopeAuthority scope -> Text
 rootScopeProjectName (RootScopeAuthority project _ _) = project
 
@@ -683,32 +684,32 @@ reserveCommandInvocationKernel
                                             deliver (protectedRecordVersion record)
                                     Right _ ->
                                         pure (Left (AuthorityReservationConflict invocation))
-  where
-    currentStore = protectedStoreIdentityText (sessionStoreIdentity session)
-    identity =
-        reservationIdentity
-            rootProject
-            rootStore
-            planDigest
-            frameName
-            epoch
-            verb
-            phase
-    invocation = "command-" <> sha256Hex identity
-    deliver version =
-        use
-            ( CommandAuthority
-                ( InvocationId
-                    ( invocation
-                        <> "#"
-                        <> Text.pack (show (recordVersionWord version))
-                    )
-                )
+      where
+        currentStore = protectedStoreIdentityText (sessionStoreIdentity session)
+        identity =
+            reservationIdentity
+                rootProject
+                rootStore
+                planDigest
                 frameName
                 epoch
                 verb
                 phase
-            )
+        invocation = "command-" <> sha256Hex identity
+        deliver version =
+            use
+                ( CommandAuthority
+                    ( InvocationId
+                        ( invocation
+                            <> "#"
+                            <> Text.pack (show (recordVersionWord version))
+                        )
+                    )
+                    frameName
+                    epoch
+                    verb
+                    phase
+                )
 
 reverseRootReplayEligible :: ProjectVerb verb -> LifecyclePhase phase -> Bool
 reverseRootReplayEligible ProjectDown Teardown = True

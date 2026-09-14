@@ -119,10 +119,10 @@ accept the additional Apple-host, NVIDIA-acceleration, and Windows-host realizat
 hardware; they do not define three competing project substrates. Each confirms the already-built universal
 contract through its provider and adds only realization-specific pieces. A fourth terminal phase (28)
 declares no substrate at all and confirms the other axis: that the sources § N builds host-native
-everywhere do in fact build and self-test on a Windows, a macOS, and a Linux gate host. It exists because
-that claim needs three machines while § C forbids a baseline phase owing hardware it does not declare,
-and it is one sprint per family because the three runs are independent evidence from independent
-machines.
+everywhere do in fact build and self-test on every supported gate host. It exists because
+that claim needs machines § C forbids a baseline phase owing, and it carries one sprint per gate-host
+family because each family's run is independent evidence from an independent machine. Its own header
+names those families and the count; this section does not restate them.
 
 **Reconciliation (29).** The governed-document sweep and the drift guards. Last because its subject is every
 other phase.
@@ -141,9 +141,15 @@ only *backwards*:
 - **17** depends on handoff (13) and clusters (16).
 - **21** depends on clusters (16) rather than on the test surface, because reachability is a property of the
   cluster's frames.
-- **24** depends on the recursive lifecycle command (17) and publication (23): its terminal live gate is the
+- **24** reaches back past its predecessor to the recursive lifecycle command (17) and publication (23),
+  alongside the cluster and service-runtime foundations its header names: its terminal live gate is the
   first real worked-consumer confirmation of the host-static recursive interpreter.
-- **28** depends on everything.
+- **28** depends on the worked demo (24) and nothing later, which is what makes it terminal. It is not a
+  dependency on every phase: its *covers* set is the host-portable source, so any source change expires
+  its claim, but that is an evidence relation rather than a `Depends on` edge.
+
+Each phase header's `**Depends on**` field is the authority for its own edges; the list above names why
+the non-obvious ones exist, and never a different set.
 
 ## Non-goals
 

@@ -1,10 +1,10 @@
 module CrossScopeProjectUpAuthority where
 
-import HostBootstrap.Authority
-    ( ProjectVerb (ProjectUp)
-    , RootInvocationAuthority
-    , VerbUp
-    )
+import HostBootstrap.Authority (
+    ProjectVerb (ProjectUp),
+    RootInvocationAuthority,
+    VerbUp,
+ )
 import HostBootstrap.Authority.ProjectPlan (authorizeRootProject)
 import HostBootstrap.Lifecycle.Mode (VerifiedPlanSnapshot)
 

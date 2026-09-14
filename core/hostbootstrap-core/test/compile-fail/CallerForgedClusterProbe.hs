@@ -10,13 +10,13 @@ import HostBootstrap.ProjectPlan (ProviderResource)
 import HostBootstrap.Reconcile (DependencyProbe, ReconcileError)
 
 forgedProbeConsumer ::
-  PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
-  DependencyProbe scope planId providerId ProviderResource ->
-  PreparedGate ->
-  IO (Either ReconcileError ())
+    PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
+    DependencyProbe scope planId providerId ProviderResource ->
+    PreparedGate ->
+    IO (Either ReconcileError ())
 forgedProbeConsumer configured callerProbe gate =
-  withPreparedClusterReconcile
-    configured
-    callerProbe
-    gate
-    (const ())
+    withPreparedClusterReconcile
+        configured
+        callerProbe
+        gate
+        (const ())

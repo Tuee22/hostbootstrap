@@ -4,5 +4,11 @@ import HostBootstrap.Handoff
 
 forgedGrant ::
     RecoveryWireGrant
-        scope brokerGeneration verb planDigest parentFrame childFrame wireDigest
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        wireDigest
 forgedGrant = RecoveryWireGrant undefined

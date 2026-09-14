@@ -47,9 +47,9 @@ module HostBootstrap.Config.Fields (
 )
 where
 
+import Control.Exception.Safe (tryAny)
 import Data.Text (Text)
 import qualified Dhall
-import Control.Exception.Safe (tryAny)
 import HostBootstrap.Config.Class (
     ProjectCfg (cfgContext),
     ProjectCodec,

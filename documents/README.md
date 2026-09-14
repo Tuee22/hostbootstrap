@@ -182,6 +182,39 @@ The command surface is summarized in [Command Surface](#command-surface).
   visualization, the durable alias path and purpose, the compiled harness-case table, and current
   operator-safety limitations.
 
+## Glossary
+
+Three terms are load-bearing across the corpus and mean narrower things than their ordinary English
+reading. This section is their one canonical home; a page using one of them in a narrower sense says
+which sense it means.
+
+**Substrate.** Three related vocabularies share the word, and they are not the same set.
+
+| Vocabulary | Where it lives | Members |
+|---|---|---|
+| the detected outer host | `SubstrateName` in [`HostBootstrap.Substrate`](../core/hostbootstrap-core/src/HostBootstrap/Substrate.hs) | `AppleSilicon`, `LinuxCpu`, `LinuxGpu`, `WindowsCpu`, `WindowsGpu`, each paired with an `Arch` |
+| the plan's hardware-context declaration | the `**Substrates**:` phase-header field ([§ II](../DEVELOPMENT_PLAN/development_plan_standards.md)) | `linux-cpu`, plus at most one of `apple-silicon`, `nvidia`, `windows` |
+| the universal baseline | this corpus and the plan | `linux-cpu` alone |
+
+The header field is a **hardware-context declaration**, not the code enumeration: `nvidia` and `windows`
+are context names that no `SubstrateName` constructor spells, and a phase declaring `windows` is naming
+the context it accepts rather than a detected outer host. `linux-cpu` is the one token all three
+vocabularies share, and it is the baseline every phase targets.
+
+**Frame.** A frame is one process's place in the composed topology. The closed code kind is
+`ContextKind` in [`HostBootstrap.Context`](../core/hostbootstrap-core/src/HostBootstrap/Context.hs), with
+eight constructors — `HostOrchestrator`, `VMOrchestrator`, `VMProjectContainer`, `ImageBuildContainer`,
+`ClusterService`, `Daemon`, `OneShotJob`, and `TestHarness`. Plan-level frame *identities* are separate:
+a `ProjectFrame` names one node of an admitted plan and is carried as opaque text, so "frame" in a plan
+or lifecycle context means that identity rather than the kind. Where a page means the kind, it names a
+constructor.
+
+**Cordon.** In `hostbootstrap` a cordon **applies the plan's resource wall** to each bound cluster-node
+container — the CPU and memory ceiling the budget renderer produced. It does not mark a node
+unschedulable. This is the opposite of the Kubernetes term: `kubectl cordon` makes a node refuse new
+pods and changes no resource limit. A reader who knows Kubernetes will otherwise read every cordon
+sentence in [cluster lifecycle](engineering/cluster_lifecycle.md) backwards.
+
 ## Command Surface
 
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,

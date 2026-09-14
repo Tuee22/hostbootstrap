@@ -8,22 +8,22 @@ Recovered Production admission instead retains the fixed identity generated
 by existing-snapshot admission and exposes a candidate only after its complete
 descriptive package and root-bound canonical snapshot agree.
 -}
-module HostBootstrap.ProjectPlan.Construct
-    ( FinalizedProjectSpec
-    , withFinalizedProjectSpec
-    , withHarnessFinalizedProjectSpec
-    , withFinalizedProjectSpecParts
-    , finalizedProjectCodec
-    , finalizedProjectServices
-    , projectPlanStepPlan
-    , projectPlanDrafts
-    , withProjectPlan
-    , ChildPlanAuthority
-    , childPlanAuthorityBinding
-    , withChildProjectPlan
-    , withRecoveredProductionProjectPlanInputs
-    , withRecoveredProductionProjectPlan
-    )
+module HostBootstrap.ProjectPlan.Construct (
+    FinalizedProjectSpec,
+    withFinalizedProjectSpec,
+    withHarnessFinalizedProjectSpec,
+    withFinalizedProjectSpecParts,
+    finalizedProjectCodec,
+    finalizedProjectServices,
+    projectPlanStepPlan,
+    projectPlanDrafts,
+    withProjectPlan,
+    ChildPlanAuthority,
+    childPlanAuthorityBinding,
+    withChildProjectPlan,
+    withRecoveredProductionProjectPlanInputs,
+    withRecoveredProductionProjectPlan,
+)
 where
 
 import Data.ByteString (ByteString)
@@ -31,128 +31,128 @@ import qualified Data.ByteString as ByteString
 import Data.List.NonEmpty (NonEmpty)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import HostBootstrap.Authority
-    ( AuthorityError (AuthorityMalformedBinding)
-    , ProjectVerb
-    , projectVerbName
-    )
-import HostBootstrap.Config.Class
-    ( ProjectCfg
-    , ProjectCodec
-    , projectCodecSpecDigest
-    )
-import HostBootstrap.Config.Fields
-    ( ScopeKind
-    )
-import HostBootstrap.Config.Schema
-    ( ValidatedConfig
-    , VerifiedConfigHandoff
-    , VerifiedConfigWire
-    , validatedConfigDigest
-    , validatedConfigSpecDigest
-    , validatedConfigValue
-    , verifiedConfigDigest
-    , verifiedConfigHandoffBinding
-    )
-import HostBootstrap.Config.Schema.Internal
-    ( reindexValidatedConfigKernel
-    , withRecoverySpecReindexKernel
-    )
-import HostBootstrap.Config.Vocab
-    ( Harness
-    , HarnessConfigAuthority
-    , Production
-    )
-import HostBootstrap.Lifecycle.Mode
-    ( LifecycleProfile
-    , RecoveredProductionLifecycleProfile
-    , VerifiedPlanSnapshot
-    , lifecycleProfileEpoch
-    , lifecycleProfileName
-    , lifecycleProfileProjectName
-    , lifecycleProfileStoreIdentity
-    , planSnapshotCanonicalBytes
-    , planSnapshotConfigDigest
-    , planSnapshotPlanDigest
-    , planSnapshotProjectName
-    , planSnapshotRevision
-    , planSnapshotRunText
-    , planSnapshotSpecDigest
-    , planSnapshotStoreIdentity
-    , recoveredProductionProfileCanonicalBytes
-    , recoveredProductionProfileConfigDigest
-    , recoveredProductionProfileEpoch
-    , recoveredProductionProfilePlanDigest
-    , recoveredProductionProfileProjectName
-    , recoveredProductionProfileRevision
-    , recoveredProductionProfileRunText
-    , recoveredProductionProfileSpecDigest
-    , recoveredProductionProfileStoreIdentity
-    )
-import HostBootstrap.Lifecycle.Plan
-    ( planDigestBindingDigestKernel
-    , projectPlanProfileEpochKernel
-    , projectPlanProfileNameKernel
-    , projectPlanProfileProjectNameKernel
-    , projectPlanProfileStoreIdentityKernel
-    , withChildProjectPlanKernel
-    , withProjectPlanKernel
-    , withRecoveredProjectPlanKernel
-    )
+import HostBootstrap.Authority (
+    AuthorityError (AuthorityMalformedBinding),
+    ProjectVerb,
+    projectVerbName,
+ )
+import HostBootstrap.Config.Class (
+    ProjectCfg,
+    ProjectCodec,
+    projectCodecSpecDigest,
+ )
+import HostBootstrap.Config.Fields (
+    ScopeKind,
+ )
+import HostBootstrap.Config.Schema (
+    ValidatedConfig,
+    VerifiedConfigHandoff,
+    VerifiedConfigWire,
+    validatedConfigDigest,
+    validatedConfigSpecDigest,
+    validatedConfigValue,
+    verifiedConfigDigest,
+    verifiedConfigHandoffBinding,
+ )
+import HostBootstrap.Config.Schema.Internal (
+    reindexValidatedConfigKernel,
+    withRecoverySpecReindexKernel,
+ )
+import HostBootstrap.Config.Vocab (
+    Harness,
+    HarnessConfigAuthority,
+    Production,
+ )
+import HostBootstrap.Handoff (
+    HandoffBinding,
+    handoffBrokerGeneration,
+    handoffChildConfigDigest,
+    handoffInstalledProject,
+    handoffPlanRevision,
+    handoffScope,
+    handoffStoreIdentity,
+    handoffVerb,
+ )
+import HostBootstrap.Lifecycle.Mode (
+    LifecycleProfile,
+    RecoveredProductionLifecycleProfile,
+    VerifiedPlanSnapshot,
+    lifecycleProfileEpoch,
+    lifecycleProfileName,
+    lifecycleProfileProjectName,
+    lifecycleProfileStoreIdentity,
+    planSnapshotCanonicalBytes,
+    planSnapshotConfigDigest,
+    planSnapshotPlanDigest,
+    planSnapshotProjectName,
+    planSnapshotRevision,
+    planSnapshotRunText,
+    planSnapshotSpecDigest,
+    planSnapshotStoreIdentity,
+    recoveredProductionProfileCanonicalBytes,
+    recoveredProductionProfileConfigDigest,
+    recoveredProductionProfileEpoch,
+    recoveredProductionProfilePlanDigest,
+    recoveredProductionProfileProjectName,
+    recoveredProductionProfileRevision,
+    recoveredProductionProfileRunText,
+    recoveredProductionProfileSpecDigest,
+    recoveredProductionProfileStoreIdentity,
+ )
+import HostBootstrap.Lifecycle.Plan (
+    planDigestBindingDigestKernel,
+    projectPlanProfileEpochKernel,
+    projectPlanProfileNameKernel,
+    projectPlanProfileProjectNameKernel,
+    projectPlanProfileStoreIdentityKernel,
+    withChildProjectPlanKernel,
+    withProjectPlanKernel,
+    withRecoveredProjectPlanKernel,
+ )
 import HostBootstrap.Lift.Context (LiftContext)
-import HostBootstrap.ProjectPlan
-    ( PlanDraft
-    , PlanError (InvalidProjectPlan, PlanRecoveryEvidenceMismatch)
-    , ProjectPlan
-    , planDraftsFromValidatedBuilder
-    , renderSnapshot
-    , stablePlanSnapshotBytes
-    , stablePlanSnapshotConfigDigest
-    , stablePlanSnapshotDigest
-    , stablePlanSnapshotRoot
-    , stablePlanSnapshotSpecDigest
-    )
-import HostBootstrap.ProjectPlan.Snapshot
-    ( BoundPlanSnapshot
-    , PlanDigestBinding
-    , boundPlanSnapshotBytes
-    )
-import HostBootstrap.ProjectPlan.Child.Internal
-    ( ChildPlanAuthority
-    , childPlanAuthorityBindingKernel
-    , mintChildPlanAuthorityKernel
-    )
-import HostBootstrap.ProjectPlan.Construct.Internal
-    ( FinalizedProjectSpec
-    , finalizedProjectCodecKernel
-    , finalizedProjectServicesKernel
-    , reindexFinalizedProjectSpecKernel
-    , withFinalizedProjectSpecKernel
-    , withFinalizedProjectSpecPartsKernel
-    , withHarnessFinalizedProjectSpecKernel
-    )
-import HostBootstrap.Handoff
-    ( HandoffBinding
-    , handoffBrokerGeneration
-    , handoffChildConfigDigest
-    , handoffInstalledProject
-    , handoffPlanRevision
-    , handoffScope
-    , handoffStoreIdentity
-    , handoffVerb
-    )
-import HostBootstrap.ProjectRoot
-    ( CanonicalProjectRoot
-    , canonicalProjectRootPath
-    )
-import HostBootstrap.Service
-    ( FinalizedServiceRegistry
-    , ServiceRegistry
-    )
-import HostBootstrap.Step
-    ( StepPlan
-    , StepPlanError
-    )
+import HostBootstrap.ProjectPlan (
+    PlanDraft,
+    PlanError (InvalidProjectPlan, PlanRecoveryEvidenceMismatch),
+    ProjectPlan,
+    planDraftsFromValidatedBuilder,
+    renderSnapshot,
+    stablePlanSnapshotBytes,
+    stablePlanSnapshotConfigDigest,
+    stablePlanSnapshotDigest,
+    stablePlanSnapshotRoot,
+    stablePlanSnapshotSpecDigest,
+ )
+import HostBootstrap.ProjectPlan.Child.Internal (
+    ChildPlanAuthority,
+    childPlanAuthorityBindingKernel,
+    mintChildPlanAuthorityKernel,
+ )
+import HostBootstrap.ProjectPlan.Construct.Internal (
+    FinalizedProjectSpec,
+    finalizedProjectCodecKernel,
+    finalizedProjectServicesKernel,
+    reindexFinalizedProjectSpecKernel,
+    withFinalizedProjectSpecKernel,
+    withFinalizedProjectSpecPartsKernel,
+    withHarnessFinalizedProjectSpecKernel,
+ )
+import HostBootstrap.ProjectPlan.Snapshot (
+    BoundPlanSnapshot,
+    PlanDigestBinding,
+    boundPlanSnapshotBytes,
+ )
+import HostBootstrap.ProjectRoot (
+    CanonicalProjectRoot,
+    canonicalProjectRootPath,
+ )
+import HostBootstrap.Service (
+    FinalizedServiceRegistry,
+    ServiceRegistry,
+ )
+import HostBootstrap.Step (
+    StepPlan,
+    StepPlanError,
+ )
 
 {- | Jointly finalize a scope's project codec, service registry, and static
 plan builder under one fresh specification identity.
@@ -183,8 +183,8 @@ withFinalizedProjectSpec ::
       result
     ) ->
     result
-withFinalizedProjectSpec
-    = withFinalizedProjectSpecKernel
+withFinalizedProjectSpec =
+    withFinalizedProjectSpecKernel
 
 {- | Re-instantiate the exact static definition retained by a Production
 finalization under one exact generative Harness authority.
@@ -207,8 +207,8 @@ withHarnessFinalizedProjectSpec ::
       result
     ) ->
     result
-withHarnessFinalizedProjectSpec
-    = withHarnessFinalizedProjectSpecKernel
+withHarnessFinalizedProjectSpec =
+    withHarnessFinalizedProjectSpecKernel
 
 {- | Eliminate one finalized specification as a matched codec, service
 registry, and scope-specialized builder.  The callback cannot retain one part
@@ -291,8 +291,16 @@ withProjectPlan profile root config drafts =
 -- | The authenticated binding retained by an exact child-plan authority.
 childPlanAuthorityBinding ::
     ChildPlanAuthority
-        scope specDigest planDigest brokerGeneration parentFrame childFrame
-        planId configId verb phase ->
+        scope
+        specDigest
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        planId
+        configId
+        verb
+        phase ->
     HandoffBinding scope brokerGeneration
 childPlanAuthorityBinding = childPlanAuthorityBindingKernel
 
@@ -308,14 +316,29 @@ yields the local plan, binding, and fully indexed child authority.
 withChildProjectPlan ::
     ProjectVerb verb ->
     VerifiedConfigHandoff
-        scope planDigest brokerGeneration parentFrame childFrame configId verb phase ->
+        scope
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        configId
+        verb
+        phase ->
     VerifiedConfigWire scope configDigest configId ->
     ValidatedConfig scope specDigest configId (cfg scope) ->
     NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
     ( forall planId.
       ChildPlanAuthority
-        scope specDigest planDigest brokerGeneration parentFrame childFrame
-        planId configId verb phase ->
+        scope
+        specDigest
+        planDigest
+        brokerGeneration
+        parentFrame
+        childFrame
+        planId
+        configId
+        verb
+        phase ->
       ProjectPlan scope specDigest planId configId cfg ->
       PlanDigestBinding scope specDigest planDigest planId ->
       a
@@ -343,7 +366,7 @@ withChildProjectPlan verb handoff wire config drafts use = do
             (handoffPlanRevision binding)
             config
             drafts
-            (\plan digestBinding ->
+            ( \plan digestBinding ->
                 use
                     (mintChildPlanAuthorityKernel handoff plan digestBinding)
                     plan
@@ -364,7 +387,8 @@ childProfileName :: HandoffBinding scope brokerGeneration -> Either AuthorityErr
 childProfileName binding
     | handoffScope binding == "Production" = Right "production"
     | Just runName <- Text.stripPrefix "Harness " (handoffScope binding)
-    , not (Text.null runName) = Right ("harness:" <> runName)
+    , not (Text.null runName) =
+        Right ("harness:" <> runName)
     | otherwise =
         Left
             ( AuthorityMalformedBinding
@@ -388,7 +412,11 @@ identity is generated here.
 -}
 withRecoveredProductionProjectPlanInputs ::
     RecoveredProductionLifecycleProfile
-        projectId recoveredSpecDigest planDigest planId brokerGeneration ->
+        projectId
+        recoveredSpecDigest
+        planDigest
+        planId
+        brokerGeneration ->
     CanonicalProjectRoot (Production projectId) rootId ->
     FinalizedProjectSpec
         (Production projectId)
@@ -473,14 +501,26 @@ effect authority.
 -}
 withRecoveredProductionProjectPlan ::
     RecoveredProductionLifecycleProfile
-        projectId specDigest planDigest planId brokerGeneration ->
+        projectId
+        specDigest
+        planDigest
+        planId
+        brokerGeneration ->
     CanonicalProjectRoot (Production projectId) rootId ->
     VerifiedPlanSnapshot
-        (Production projectId) specDigest planDigest ->
+        (Production projectId)
+        specDigest
+        planDigest ->
     BoundPlanSnapshot
-        (Production projectId) specDigest planDigest planId ->
+        (Production projectId)
+        specDigest
+        planDigest
+        planId ->
     PlanDigestBinding
-        (Production projectId) specDigest planDigest planId ->
+        (Production projectId)
+        specDigest
+        planDigest
+        planId ->
     ValidatedConfig
         (Production projectId)
         specDigest
@@ -523,7 +563,7 @@ withRecoveredProductionProjectPlan
                 id
         validateCandidate candidate
         Right (use candidate)
-  where
+      where
         profileRun = recoveredProductionProfileRunText profile
         profileProject = recoveredProductionProfileProjectName profile
         profileStore = recoveredProductionProfileStoreIdentity profile

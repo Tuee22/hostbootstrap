@@ -28,6 +28,13 @@ import HostBootstrap.Authority.Kernel (
     rootAuthorityStoreIdentity,
  )
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Lifecycle.Context (
+    ValidatedLifecycleContext,
+    lifecycleContextErrorMessage,
+ )
+import HostBootstrap.Lifecycle.Context.Internal (
+    withValidatedRootLifecycleContext,
+ )
 import HostBootstrap.Lifecycle.Mode (
     BoundRunLease,
     VerifiedPlanSnapshot,
@@ -44,13 +51,6 @@ import HostBootstrap.Lifecycle.Mode (
     planSnapshotStoreIdentity,
     validateBoundRunLeaseAcquisitionJournal,
  )
-import HostBootstrap.Lifecycle.Context
-    ( ValidatedLifecycleContext
-    , lifecycleContextErrorMessage
-    )
-import HostBootstrap.Lifecycle.Context.Internal
-    ( withValidatedRootLifecycleContext
-    )
 import HostBootstrap.Lifecycle.Plan (
     BoundPlanSnapshot,
     PlanDigestBinding,
@@ -112,11 +112,9 @@ authorizeRootProject ::
             (CommandAuthority scope planId frame brokerGeneration verb phase)
         )
 authorizeRootProject root verb verified bound binding lease plan journal cursor lifecycleContext =
-    case
-        withValidatedRootLifecycleContext
-            lifecycleContext
-            (\_canonicalRoot _store _current frame validated -> authorize frame validated)
-    of
+    case withValidatedRootLifecycleContext
+        lifecycleContext
+        (\_canonicalRoot _store _current frame validated -> authorize frame validated) of
         Left failure ->
             pure
                 ( Left

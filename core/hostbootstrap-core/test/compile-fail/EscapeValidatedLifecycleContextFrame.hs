@@ -2,11 +2,11 @@ module EscapeValidatedLifecycleContextFrame where
 
 import HostBootstrap.Config.Class (ProjectCfg)
 import HostBootstrap.Context (BinaryContext)
-import HostBootstrap.Lifecycle.Context
-    ( LifecycleContextError
-    , ValidatedLifecycleContext
-    , withValidatedLifecycleContext
-    )
+import HostBootstrap.Lifecycle.Context (
+    LifecycleContextError,
+    ValidatedLifecycleContext,
+    withValidatedLifecycleContext,
+ )
 import HostBootstrap.ProjectPlan (ProjectPlan)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Protected (ProtectedStore)

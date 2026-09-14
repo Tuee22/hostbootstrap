@@ -32,8 +32,9 @@ unrelated host directory becomes writable.
 writableMountArgs :: FilePath -> [String]
 writableMountArgs source = ["--mount-only", source ++ ":w"]
 
--- | Stop a named Lima instance without deleting it — the @project down@
--- teardown stops the VM (it does not destroy it; that is @project destroy@).
+{- | Stop a named Lima instance without deleting it — the @project down@
+teardown stops the VM (it does not destroy it; that is @project destroy@).
+-}
 stopVMArgs :: LimaVM -> [String]
 stopVMArgs vm = ["stop", limaName vm]
 

@@ -18,38 +18,38 @@ size everywhere, which is what "CoverageManifest" checks.
 -}
 module OwnershipPosixSpec (tests, runOwnershipPosixLockProbe) where
 
-import Expect (expectOccupied, expectOwned)
 import Control.Concurrent (threadDelay)
 import qualified Data.ByteString as ByteString
-import HostBootstrap.Ownership.Object
-    ( ObjectIdentity
-    , OwnershipFault (OwnershipUnsupported)
-    )
-import HostBootstrap.Ownership.Posix
-    ( posixOwnershipCapabilities
-    , posixOwnershipRow
-    , posixOwnershipSupported
-    )
-import HostBootstrap.Ownership.Primitive
-    ( OwnershipCapabilities (OwnershipCapabilities)
-    , OwnershipPrimitive
-        ( rowCloseHandle
-        , rowCreateDirectory
-        , rowCreateFile
-        , rowObserveIdentity
-        , rowOpenExclusive
-        , rowLinkNoReplace
-        , rowReadObject
-        , rowRemoveObject
-        , rowSyncParent
-        )
-    , withOwnershipRow
-    )
+import Expect (expectOccupied, expectOwned)
+import HostBootstrap.Ownership.Object (
+    ObjectIdentity,
+    OwnershipFault (OwnershipUnsupported),
+ )
+import HostBootstrap.Ownership.Posix (
+    posixOwnershipCapabilities,
+    posixOwnershipRow,
+    posixOwnershipSupported,
+ )
+import HostBootstrap.Ownership.Primitive (
+    OwnershipCapabilities (OwnershipCapabilities),
+    OwnershipPrimitive (
+        rowCloseHandle,
+        rowCreateDirectory,
+        rowCreateFile,
+        rowLinkNoReplace,
+        rowObserveIdentity,
+        rowOpenExclusive,
+        rowReadObject,
+        rowRemoveObject,
+        rowSyncParent
+    ),
+    withOwnershipRow,
+ )
 import System.Directory (createFileLink, doesFileExist, doesPathExist)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
-import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import System.Process (spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -321,8 +321,6 @@ observeExisting target = do
     case observed of
         Right (Just identity) -> pure identity
         other -> assertFailure ("expected an identity at " <> target <> ", got " <> show other)
-
-
 
 expectUnsupported :: (Show value) => String -> Either OwnershipFault value -> IO ()
 expectUnsupported label outcome = case outcome of

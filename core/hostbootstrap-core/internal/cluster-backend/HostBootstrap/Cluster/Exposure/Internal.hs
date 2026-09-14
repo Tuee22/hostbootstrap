@@ -17,28 +17,28 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, bracket, bracketOnError, catch, throwIO)
 import Control.Monad (forever, unless, void)
 import qualified Data.ByteString as ByteString
-import Network.Socket
-    ( AddrInfo (addrAddress, addrFamily, addrProtocol, addrSocketType)
-    , Family (AF_INET)
-    , ShutdownCmd (ShutdownReceive, ShutdownSend)
-    , Socket
-    , SocketOption (ReuseAddr)
-    , SocketType (Stream)
-    , accept
-    , bind
-    , close
-    , connect
-    , defaultHints
-    , defaultProtocol
-    , getAddrInfo
-    , listen
-    , setSocketOption
-    , shutdown
-    , socket
-    , tupleToHostAddress
-    , SockAddr (SockAddrInet)
-    , withSocketsDo
-    )
+import Network.Socket (
+    AddrInfo (addrAddress, addrFamily, addrProtocol, addrSocketType),
+    Family (AF_INET),
+    ShutdownCmd (ShutdownReceive, ShutdownSend),
+    SockAddr (SockAddrInet),
+    Socket,
+    SocketOption (ReuseAddr),
+    SocketType (Stream),
+    accept,
+    bind,
+    close,
+    connect,
+    defaultHints,
+    defaultProtocol,
+    getAddrInfo,
+    listen,
+    setSocketOption,
+    shutdown,
+    socket,
+    tupleToHostAddress,
+    withSocketsDo,
+ )
 import qualified Network.Socket.ByteString as SocketByteString
 import Text.Read (readMaybe)
 

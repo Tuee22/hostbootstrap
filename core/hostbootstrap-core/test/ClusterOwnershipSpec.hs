@@ -22,13 +22,13 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
 import HostBootstrap.Cluster.Command (ClusterDriver (KindDriver))
+import HostBootstrap.Cluster.Cordon (ResourceBudget, mkResourceBudget, renderQuantityError)
 import HostBootstrap.Cluster.Ownership hiding (reconcileOwnedCluster)
 import qualified HostBootstrap.Cluster.Ownership as Ownership
 import HostBootstrap.Cluster.Report (
     ClusterPresence (ClusterAbsent, ClusterPresent),
     ClusterReportFault (ClusterCommandUnrun),
  )
-import HostBootstrap.Cluster.Cordon (ResourceBudget, mkResourceBudget, renderQuantityError)
 import HostBootstrap.Cluster.Resume (
     ClusterStanding (ClusterCreatedUnbound, ClusterNothingDone, ClusterOwned),
  )

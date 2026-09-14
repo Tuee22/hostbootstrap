@@ -1,15 +1,14 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiWayIf #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 {- | The phase-indexed role lifecycle engine (the composition-and-network-algebra phase).
 
@@ -150,18 +149,18 @@ import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Kind (Constraint)
 import Data.List (group, sort)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Activation (
     MeasuredInstance (..),
     VerifiedRuntimeRoleActivation,
+    activationConfigDigest,
     activationErrorMessage,
     activationFrame,
-    activationConfigDigest,
     activationInstance,
     activationPermittedEffects,
     activationPlanDigest,
@@ -172,11 +171,11 @@ import HostBootstrap.Activation (
     instanceIdentityText,
     validateActivationStoreOrigin,
  )
-import HostBootstrap.Config.Fields.Internal
-    ( FrameworkValidation (frameworkLocalContext, frameworkSpecDigest)
-    , LocalContextView (localContextKind, localCurrentFrame)
-    , ValidatedServiceRequest (ValidatedServiceRequest)
-    )
+import HostBootstrap.Config.Fields.Internal (
+    FrameworkValidation (frameworkLocalContext, frameworkSpecDigest),
+    LocalContextView (localContextKind, localCurrentFrame),
+    ValidatedServiceRequest (ValidatedServiceRequest),
+ )
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Handoff (frameWire)
 import HostBootstrap.Protected (
@@ -888,16 +887,18 @@ resumeRuntimeRolePlanOpen session activation (VerifiedRolePlanDraft requests dig
                         Right (Just record)
                             | TextEncoding.decodeUtf8Lenient (protectedRecordBytes record) == "consumed " <> digest -> do
                                 cursorUse <- newIORef False
-                                Right <$> use
-                                    (RolePlan (activationFrame activation) (activationRevision activation) (instanceIdentityText (activationInstance activation)) requests (sessionStoreIdentity session))
-                                    (RolePlanDigestBinding (activationPlanDigest activation) digest)
-                                    (VerifiedServicePlacement (activationService activation) effects (leaseRequirementOf effects))
-                                    (RoleCursor Prereq cursorUse)
+                                Right
+                                    <$> use
+                                        (RolePlan (activationFrame activation) (activationRevision activation) (instanceIdentityText (activationInstance activation)) requests (sessionStoreIdentity session))
+                                        (RolePlanDigestBinding (activationPlanDigest activation) digest)
+                                        (VerifiedServicePlacement (activationService activation) effects (leaseRequirementOf effects))
+                                        (RoleCursor Prereq cursorUse)
                         _ -> pure (Left (RoleAdmissionAlreadyConsumed (roleAdmissionKey activation)))
 
 {- | Request-indexed counterpart of 'resumeRuntimeRolePlanOpen'.  It reopens
 only the matching Consumed row and retains the already-decoded request's
-config, secret, specification, and service indices. -}
+config, secret, specification, and service indices.
+-}
 resumeRuntimeRolePlanOpenForRequest ::
     ProtectedSession session ->
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
@@ -1133,33 +1134,34 @@ runRoleLifecycle store plan placement (RoleCursor _ cursorUse) engine = do
         else runFresh
   where
     runFresh
-      | protectedStoreIdentity store /= rolePlanStoreOrigin plan =
-        pure
-            ( exitWithNoRoleResources
-                (noRoleResources plan)
-                "the role plan belongs to a different protected store"
-            )
-      | otherwise =
-        case placementLeaseRequirement placement of
-            NoExclusiveEffects -> drive
-            RequiresGenerationLease -> do
-                held <- withRunLiveness store leaseName drive
-                pure $ case held of
-                    Left failure ->
-                        exitWithNoRoleResources
-                            (noRoleResources plan)
-                            ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
-                    Right Nothing ->
-                        exitWithNoRoleResources
-                            (noRoleResources plan)
-                            ( "another live instance holds the exclusive generation lease for "
-                                <> placementService placement
-                                <> " in frame "
-                                <> rolePlanFrame plan
-                            )
-                    Right (Just report) -> report
+        | protectedStoreIdentity store /= rolePlanStoreOrigin plan =
+            pure
+                ( exitWithNoRoleResources
+                    (noRoleResources plan)
+                    "the role plan belongs to a different protected store"
+                )
+        | otherwise =
+            case placementLeaseRequirement placement of
+                NoExclusiveEffects -> drive
+                RequiresGenerationLease -> do
+                    held <- withRunLiveness store leaseName drive
+                    pure $ case held of
+                        Left failure ->
+                            exitWithNoRoleResources
+                                (noRoleResources plan)
+                                ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
+                        Right Nothing ->
+                            exitWithNoRoleResources
+                                (noRoleResources plan)
+                                ( "another live instance holds the exclusive generation lease for "
+                                    <> placementService placement
+                                    <> " in frame "
+                                    <> rolePlanFrame plan
+                                )
+                        Right (Just report) -> report
     leaseName =
-        Text.filter legalKeyCharacter
+        Text.filter
+            legalKeyCharacter
             ("role-lease." <> placementService placement <> "." <> rolePlanFrame plan)
 
     requests = planRequests plan

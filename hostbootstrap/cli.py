@@ -430,6 +430,76 @@ class _QualityGate:
     cwd: Path
 
 
+#: Haskell source roots the committed style contract covers, per Cabal project.
+#: The formatter reads every root; the linter reads the library and consumer
+#: sources but not their suites, which is the split the style contract declares.
+_FORMATTER_ROOTS: Final[tuple[tuple[str, ...], ...]] = (
+    ("core", "hostbootstrap-core", "src"),
+    ("core", "hostbootstrap-core", "internal"),
+    ("core", "hostbootstrap-core", "app"),
+    ("core", "hostbootstrap-core", "test"),
+    ("demo", "src"),
+    ("demo", "app"),
+    ("demo", "test"),
+)
+
+_LINTER_ROOTS: Final[tuple[tuple[str, ...], ...]] = (
+    ("core", "hostbootstrap-core", "src"),
+    ("core", "hostbootstrap-core", "internal"),
+    ("core", "hostbootstrap-core", "app"),
+    ("demo", "src"),
+    ("demo", "app"),
+)
+
+#: Modules the formatter cannot read at all. fourmolu parses Haskell, not CPP,
+#: and in each of these an ``#if``/``#else`` splits a declaration, so the file
+#: fails to parse rather than failing to match the style. They are named one by
+#: one rather than matched by pattern, so adding to the list is a decision
+#: somebody made rather than a file that quietly stopped being checked.
+_FORMATTER_UNREADABLE: Final[frozenset[str]] = frozenset(
+    {
+        "core/hostbootstrap-core/src/HostBootstrap/Context.hs",
+        "core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs",
+        "core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs",
+        "core/hostbootstrap-core/src/HostBootstrap/Registry.hs",
+        "core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/Run.hs",
+        "core/hostbootstrap-core/test/LifecycleSpec.hs",
+        "core/hostbootstrap-core/test/LiftSpec.hs",
+    }
+)
+
+
+def _haskell_sources(context: Path, root: tuple[str, ...]) -> tuple[str, ...]:
+    """Every checkable Haskell file under one root, as a context-relative path."""
+    base = context.joinpath(*root)
+    found = sorted(path.relative_to(context).as_posix() for path in base.rglob("*.hs"))
+    return tuple(path for path in found if path not in _FORMATTER_UNREADABLE)
+
+
+def _style_gates(context: Path) -> tuple[_QualityGate, ...]:
+    """The committed formatter and linter, before anything expensive runs."""
+    formatter = tuple(
+        _QualityGate(
+            f"Haskell formatter over {'/'.join(root)}",
+            ("fourmolu", "--mode", "check", *sources),
+            context,
+        )
+        for root in _FORMATTER_ROOTS
+        for sources in (_haskell_sources(context, root),)
+        if sources
+    )
+    linter = tuple(
+        _QualityGate(
+            f"Haskell linter over {'/'.join(root)}",
+            ("hlint", "/".join(root)),
+            context,
+        )
+        for root in _LINTER_ROOTS
+        if context.joinpath(*root).is_dir()
+    )
+    return formatter + linter
+
+
 def _quality_gates(context: Path) -> tuple[_QualityGate, ...]:
     return (
         _QualityGate(
@@ -442,6 +512,7 @@ def _quality_gates(context: Path) -> tuple[_QualityGate, ...]:
             (sys.executable, "-m", "hostbootstrap.test_all"),
             context,
         ),
+        *_style_gates(context),
         _QualityGate(
             "core Haskell build",
             ("cabal", "build", "all", "--ghc-options=-Werror"),

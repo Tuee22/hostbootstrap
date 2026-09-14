@@ -204,7 +204,7 @@ priorlessRecord record = case originRecordOrigin record of
     OriginAbsent -> Right ()
     OriginPresent identity -> Left (RecordNamesAPriorInstance identity)
 
-{- | Require that the instance carries exactly this record's claim. -}
+-- | Require that the instance carries exactly this record's claim.
 sameClaim :: OwnerClaim -> ProviderConfigValue -> Either ProviderStandingConflict ()
 sameClaim claim carried = case carried of
     ProviderConfigValue observed

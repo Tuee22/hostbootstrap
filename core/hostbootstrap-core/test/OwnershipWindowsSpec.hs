@@ -22,47 +22,47 @@ whose declaration says it can hold the clauses here.
 -}
 module OwnershipWindowsSpec (tests) where
 
-import Expect (expectOccupied, expectOwned)
 import qualified Data.ByteString as ByteString
-import HostBootstrap.Ownership.Object
-    ( ObjectIdentity
-    , OwnershipFault (OwnershipUnsupported)
-    , mkKernelObjectIdentity
-    , objectIdentityBytes
-    , objectIdentityText
-    )
-import HostBootstrap.Ownership.Posix (posixOwnershipCapabilities, posixOwnershipSupported)
-import HostBootstrap.Ownership.Primitive
-    ( OwnershipCapabilities (OwnershipCapabilities)
-    , OwnershipPrimitive
-        ( rowCapabilities
-        , rowCloseHandle
-        , rowCreateDirectory
-        , rowCreateFile
-        , rowObserveIdentity
-        , rowOpenExclusive
-        , rowLinkNoReplace
-        , rowReadObject
-        , rowRemoveObject
-        , rowSyncParent
-        )
-    , OwnershipRow
-    , withOwnershipRow
-    )
-import HostBootstrap.Ownership.Row (ownershipRowForHost)
-import HostBootstrap.Ownership.Windows
-    ( windowsOwnershipCapabilities
-    , windowsOwnershipRow
-    , windowsOwnershipSupported
-    )
 import Data.Foldable (traverse_)
 import Data.List (isInfixOf)
+import Expect (expectOccupied, expectOwned)
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Ownership.Object (
+    ObjectIdentity,
+    OwnershipFault (OwnershipUnsupported),
+    mkKernelObjectIdentity,
+    objectIdentityBytes,
+    objectIdentityText,
+ )
+import HostBootstrap.Ownership.Posix (posixOwnershipCapabilities, posixOwnershipSupported)
+import HostBootstrap.Ownership.Primitive (
+    OwnershipCapabilities (OwnershipCapabilities),
+    OwnershipPrimitive (
+        rowCapabilities,
+        rowCloseHandle,
+        rowCreateDirectory,
+        rowCreateFile,
+        rowLinkNoReplace,
+        rowObserveIdentity,
+        rowOpenExclusive,
+        rowReadObject,
+        rowRemoveObject,
+        rowSyncParent
+    ),
+    OwnershipRow,
+    withOwnershipRow,
+ )
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
+import HostBootstrap.Ownership.Windows (
+    windowsOwnershipCapabilities,
+    windowsOwnershipRow,
+    windowsOwnershipSupported,
+ )
 import qualified SourceGuard
 import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
 import System.FilePath ((</>))
-import System.Info (os)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -343,8 +343,6 @@ observeExisting target = do
 
 expectIdentity :: Either OwnershipFault ObjectIdentity -> IO ObjectIdentity
 expectIdentity = either (\fault -> assertFailure ("expected an identity: " <> show fault)) pure
-
-
 
 expectUnsupported :: (Show value) => String -> Either OwnershipFault value -> IO ()
 expectUnsupported label outcome = case outcome of

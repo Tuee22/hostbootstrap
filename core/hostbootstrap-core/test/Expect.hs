@@ -12,13 +12,13 @@ concrete fault so they could not be used anywhere else.
 'HasCallStack' is the reason to have one of these at all. Without it a failure
 points at the helper; with it, it points at the assertion that failed.
 -}
-module Expect
-  ( expectRight,
+module Expect (
+    expectRight,
     expectRightLabelled,
     expectLeft,
     expectOwned,
     expectOccupied,
-  )
+)
 where
 
 import GHC.Stack (HasCallStack)
@@ -33,12 +33,12 @@ expectRight = either (assertFailure . show) pure
 -- | The value, or a failure naming both the expectation and what came back.
 expectRightLabelled :: (HasCallStack, Show failure) => String -> Either failure value -> IO value
 expectRightLabelled label =
-  either (\failure -> assertFailure (label <> ": " <> show failure)) pure
+    either (\failure -> assertFailure (label <> ": " <> show failure)) pure
 
 -- | The failure, or a failure naming the value that was not supposed to arrive.
 expectLeft :: (HasCallStack, Show value) => String -> Either failure value -> IO failure
 expectLeft label =
-  either pure (\value -> assertFailure (label <> ": expected a refusal, got " <> show value))
+    either pure (\value -> assertFailure (label <> ": expected a refusal, got " <> show value))
 
 {- | The two halves of an ownership-row clause, shared by both platform rows.
 

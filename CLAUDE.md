@@ -11,7 +11,7 @@ Instructions for Claude and other LLM-based coding assistants working in this re
 
 ## Non-negotiable rules
 
-Git history is **exclusively a user-controlled domain**. LLM assistants must never perform any of the
+Git history is **exclusively a user-controlled domain**. Assistants must never perform any of the
 following:
 
 - never run `git add`
