@@ -1,12 +1,16 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on an Apple Silicon host, plus a focused live exact-plan direct-Colima adapter lane
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-09 ; arm64 macOS 26.6.2 (build 25G83), Lima 2.1.2, Colima 0.10.3, kind 0.31.0, GHC 9.12.4, Cabal 3.16.1.0 ; repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all` plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --ghc-options=-Werror --test-options='--pattern Colima' --test-show-details=direct` ; pass ; covers 2b2a396a8b090a54079696ecc9966d79d6784d7ed73f89609979ca753d788ebc
+**Gate evidence**: 2026-09-16 ; `MacBookPro`, arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
+Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ;
+repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
+from the repository root, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
+from `core/` ; pass ; covers d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs` `core/hostbootstrap-core/src/HostBootstrap/Lima.hs` `core/hostbootstrap-core/internal/colima-backend` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider` `core/hostbootstrap-core/internal/effect`
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
@@ -256,9 +260,9 @@ status harmony, and the recorded evidence against the tree. `git diff --check` p
 
 None. Both live lanes, the terminal audit, and the matching evidence measurement are complete.
 
-### Sprint 25.5: The Apple Silicon acceptance against the current tree [Active]
+### Sprint 25.5: The Apple Silicon acceptance against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: apple-silicon
 **Docs to update**: `documents/engineering/testing.md`
@@ -280,18 +284,68 @@ over a tree nothing re-tested. That visit also carries the macOS gate host and a
 
 #### Validation
 
-The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
-this sprint may not do.
+On 2026-09-16, the complete declared gate passes on `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max with 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2,
+Lima 2.1.2, and Colima 0.10.3. Preflight finds no demo `.build`, `.hostbootstrap`, `.test_data`,
+`.data`, Lima instance, demo process, or ambient Docker container. The ambient Docker context is
+`colima`; the `default` Colima profile is Running at 9 CPUs, 32 GiB memory, and 512 GiB disk,
+and the `incus` profile is Stopped at 2 CPUs, 2 GiB memory, and 100 GiB disk.
+
+The repository Poetry environment is installed from `pyproject.toml`, and the imported Python package
+resolves to this checkout. The repository bootstrapper's
+`poetry run hostbootstrap run --project-root demo test init` passes in 1,147.48 seconds,
+including its cold host-native build, and writes the sibling test config. Its SHA-256 is
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b` before and after the matrix.
+
+The focused live lane passes from `core/` with
+`HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`:
+33/33 cases in 40.31 seconds (132.39 seconds including test compilation). Its native case takes
+36.99 seconds, derives exact profile `h-f3b022`, refuses the incompatible same-name acquisition,
+and confirms exact profile/context/data cleanup with the ambient default unchanged.
+
+Supporting native checks pass: `cabal build all` from `core/` in 199.40 seconds,
+`poetry run python -m hostbootstrap.check_code`, and
+`poetry run python -m hostbootstrap.test_all` at 251/251 in 1.71 seconds. The complete
+`cabal test all --test-show-details=direct` from `core/` passes 2,546/2,546 in 381.88 seconds
+(391.90 seconds including component work), including the documentation validator. The provider-live
+component builds and reports its declared no-request `Unsupported` result.
+
+The repository bootstrapper's `poetry run hostbootstrap run --project-root demo test run all`
+starts at 13:25:19 UTC and exits 0 with **10/10 passed** in 7,066.79 seconds (1 h 57 min 46.79 s).
+Each variant passes `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and
+`durable-readback`, including its same-run guest destruction and durable reconstruction.
+The first guest's measured allocation matches the declared 6 CPUs, 10 GiB memory, and 80 GiB disk,
+with the exact run's writable durable share. All four fresh guests pull published CPU/arm64 base
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`.
+Each completes its host-native bootstrap, derived-image gate, and export verification, then starts
+MinIO, the registry, the web service, and the host-native accelerator daemon.
+
+| Variant and run | First image | Image after durable reconstruction |
+|---|---|---|
+| `hello-world`, `run-3efb3a560f8` | `sha256:98db091f15c7cce1e4c5cc562be119c2625a1eac0f28cda3616aa9b447562aab` | `sha256:e6fa8eb7d03f8aa138c4a439f400aa4d8dac9d761e6f92ff3c790183d7ea97a6` |
+| `hello-universe`, `run-7625e8580c8` | `sha256:5f6b0d72901c0d874e448d18fe2a89e7ff3d414fd190d8c7b1d8de514867867a` | `sha256:40b846a5369a681be8b0b72a7e78fa7bdc7cf07c92502ff6b37ecd696c41ec95` |
+
+The terminal audit at 15:23 UTC confirms both run leases Closed (epochs 4 and 8), both profiles
+Available, and no run config, data-root, or mode ownership records. The sibling production config
+is absent, `.test_data` is empty, and `.data` remains absent. No Lima instance or demo process
+remains. The ambient Docker context, both Colima profiles and their budgets, and empty ambient
+container set match preflight; the focused lane's temporary Colima profile is absent.
+
+The post-run measurement of the 31 covered files matches the pre-run measurement and the header's
+`d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2`. No covered source changes
+were needed. The same visit's complete macOS and arm64 Linux host static gates, including both
+Cabal workspaces, are recorded in [phase 28, Sprint 28.5](phase-28-host-portability-acceptance.md).
+After closure, `cabal test hostbootstrap-core-test --test-options='--pattern DocValidatorSpec' --test-show-details=direct`
+passes 11/11 in 2.77 seconds, checking status harmony, governed documentation, and the recorded
+evidence against the tree. `git diff --check` passes.
 
 #### Remaining Work
 
-The run is owed at the next visit to this hardware. It is taken once no other phase carries open
-work, because any earlier source change re-owes it.
+None.
 
 ## Remaining Work
 
-The Apple Silicon acceptance is owed against the current tree. **Sprint 25.5** owns
-the re-run, at the next visit to the hardware this phase declares.
+None.
 
 ## Documentation Requirements
 

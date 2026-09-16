@@ -3,8 +3,8 @@
 **Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
-**Gate**: the host static gate — `cabal build all` and `cabal test all` from `core/`,
-`poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all` — passing
+**Gate**: `cabal build all` from `core/`, plus all four commands of the
+[host static gate (§ JJ)](development_plan_standards.md#jj-host-portable-static-gate-and-test-harness) — passing
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
@@ -12,11 +12,18 @@ host, each recorded with its own dated evidence
 Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
 **Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
 GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all` and `cabal test all` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers 6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0
-**Gate evidence**: 2026-09-11 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
-GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
-**Gate evidence**: 2026-09-11 ; aarch64 Ubuntu 24.04.4 LTS container, Linux 6.8.0-100-generic, carried by
-the Apple visit's MacBook Pro through Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
-Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
+**Gate evidence**: 2026-09-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
+GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all` from `core/`,
+`cabal test all --test-show-details=direct` from both `core/` and `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root ; pass ; covers 6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0
+**Gate evidence**: 2026-09-16 ; `hostbootstrap-portability-arm64-20260916`, aarch64 Ubuntu 24.04.4 LTS
+container, Linux 6.8.0-100-generic, carried by `MacBookPro` through Colima 0.10.3, GHC 9.12.4,
+Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all` and
+`cabal test all --test-show-details=direct` from `core/`,
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root ; pass ; covers 6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
@@ -359,23 +366,65 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 
 #### Validation
 
-The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
-this sprint may not do.
+On 2026-09-14, the x86_64 Linux gate host its header row names passes `cabal build all` and
+`cabal test all` from `core/` at 2,546/2,546 in 200.71 seconds, the Python code check, and the
+Python suite at 251/251 with the coverage configuration's `fail_under = 100` satisfied at
+1,413/1,413 statements. Its source digest remains current. That row records the core and Python
+legs; it does not record the `demo/` leg of § JJ's complete host static gate.
+
+On 2026-09-16, the Apple visit records the complete macOS gate on `MacBookPro`, native arm64
+macOS 26.6.2 (build 25G83), Apple M1 Max with 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0,
+Python 3.14.3, and Poetry 2.3.2. The repository Poetry environment is resolved from `pyproject.toml`.
+
+- From `core/`, `cabal build all` passes in 199.40 seconds and
+  `cabal test all --test-show-details=direct` passes 2,546/2,546 in 381.88 seconds
+  (391.90 seconds including component work).
+- From `demo/`, `cabal test all --test-show-details=direct` passes the 151-case demo component,
+  the provider-live component's declared no-request result, and 2,546/2,546 core cases in
+  406.31 seconds; the complete workspace command takes 521.53 seconds.
+- From the repository root, `poetry run python -m hostbootstrap.check_code` passes and
+  `poetry run python -m hostbootstrap.test_all` passes 251/251 in 1.71 seconds.
+
+The POSIX ownership and process cases execute against Darwin; unavailable Windows rows assert their
+declared refusals. The native direct-Colima lane has its separate live result in Sprint 25.5.
+The 823 covered files measure the header's current digest.
+
+The same visit records the complete arm64 Linux gate in `hostbootstrap-portability-arm64-20260916`,
+an aarch64 Ubuntu 24.04.4 LTS container on Linux 6.8.0-100-generic through Colima 0.10.3.
+It uses published CPU/arm64 base digest
+`sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, the image's own
+GHC 9.12.4 and Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1. Docker's `--init` supplies a
+reaping PID 1. The covered source is byte-identical to the macOS gate's. The Python environment is
+resolved inside this gate host with `POETRY_VIRTUALENVS_CREATE=true` and
+`POETRY_VIRTUALENVS_IN_PROJECT=true`, overriding the base image's system-environment defaults.
+
+- From `core/`, `cabal build all` passes in 275.26 seconds and
+  `cabal test all --test-show-details=direct` passes 2,546/2,546 in 142.49 seconds
+  (243.08 seconds including component work).
+- From `demo/`, `cabal test all --test-show-details=direct --test-options=--hide-successes` passes
+  151/151 demo cases in 1.09 seconds and 2,546/2,546 core cases in 147.97 seconds.
+  The complete workspace command takes 371.76 seconds.
+- The repository Python code check passes, and its suite passes 251/251 in 1.89 seconds.
+
+The Linux POSIX rows execute against the guest kernel. Both Cabal workspaces compile and run the
+provider-live component with its declared no-request `Unsupported` result; the core suite likewise
+reports its direct-Colima lane as not requested. The two POSIX gate hosts report the same core total.
+
+After recording these rows, the focused `DocValidatorSpec` run passes 11/11 on each gate host
+(3.42 seconds on macOS and 3.32 seconds on arm64 Linux). The container's final source measurement
+still matches the recorded digest, and the temporary gate container is removed.
 
 #### Remaining Work
 
-The Windows, macOS and arm64 Linux cells are owed at the next visit to each. The x86_64 Linux cell is
-recorded: on 2026-09-14, on the host its row names, `cabal build all` and `cabal test all` from `core/`
-passed 2,546/2,546 in 200.71 seconds, `poetry run python -m hostbootstrap.check_code` passed, and
-`poetry run python -m hostbootstrap.test_all` passed 251/251 with the coverage configuration's
-`fail_under = 100` satisfied at 1,413/1,413 statements. That row's digest is the current one; the other
-three still carry the digest of the tree they measured, which is what marks them owed.
+The native Windows gate remains owed. The x86_64 Linux row also needs
+dated current-source evidence for § JJ's `demo/` leg; a Windows visit can supply an x86_64 Linux
+gate host through WSL2 without requiring another machine. The complete macOS and arm64 Linux gates
+are recorded.
 
 ## Remaining Work
 
-Three of this phase's four cells are owed against the current tree — Windows, macOS, and arm64 Linux —
-each at the next visit to the hardware that carries it. The x86_64 Linux cell is current.
-**Sprint 28.5** owns the remaining three.
+**Sprint 28.5** owns the remaining native Windows run and recorded current-source confirmation of
+the x86_64 Linux demo leg. The complete macOS and arm64 Linux gates are current.
 
 ## Documentation Requirements
 

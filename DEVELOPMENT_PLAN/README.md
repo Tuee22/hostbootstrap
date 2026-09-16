@@ -62,7 +62,7 @@ its row here.
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
-| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | acceptance re-run |
+| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | acceptance re-run |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | acceptance re-run |
@@ -70,13 +70,14 @@ its row here.
 
 ## The current frontier
 
-Three phases are `Active`. The table above says which and what each owes; this section says how
+Two phases are `Active`. The table above says which and what each owes; this section says how
 they relate, and nothing here overrides a row there.
 
-What is left is hardware. The Apple Silicon and Windows acceptances owe runs on hardware this repository
-has no access to, and the host-portability matrix owes three of its four gate-host cells — Windows,
-macOS, and arm64 Linux — which those same two visits carry. Its x86_64 Linux cell is current, and so is
-the NVIDIA acceptance. No open phase is waiting on a typed boundary, a duplicated workflow, a gate that
+What is left is hardware acceptance. The Apple Silicon and NVIDIA acceptances are current; the Windows
+acceptance awaits its native host. In the host-portability matrix, the macOS and arm64 Linux gates are
+current, and the Windows gate is owed. The x86_64 Linux core and Python evidence is current;
+its demo leg needs a dated record. The Windows visit can supply the remaining evidence, including an
+x86_64 Linux gate host through WSL2. No open phase is waiting on a typed boundary, a duplicated workflow, a gate that
 has not reached the sources it was written for, or anything a machine with the right hardware would not
 simply run.
 
@@ -112,7 +113,7 @@ handoff and child admission, the four ownership clauses and host-local reservati
 the self-reference lift, cluster lifecycle and cordoning, the recursive lifecycle command, recovery and
 migration, the test harness and its exclusive run ownership, the `test`/`context` command semantics, the
 composition and network algebra, the service runtime, base image publication with its opportunistic warm
-store, the worked demo, the NVIDIA acceptance, and the documentation reconciliation with its drift
+store, the worked demo, the Apple Silicon and NVIDIA acceptances, and the documentation reconciliation with its drift
 guards. Their covered paths are outside the open work, and their gate evidence still
 measures the tree it names.
 
@@ -126,7 +127,7 @@ Two gates **close phases**, and a phase says which one closes it (§ II). Two fu
 build without closing anything — the container `check-code` and the repository's own source gate — which
 is why [the testing page](../documents/engineering/testing.md) counts four and this section counts two.
 They are the same four gates counted for different purposes. The **host static gate** —
-`cabal test all` from `core/` plus the two Python commands — runs as an ordinary
+all four commands in [§ JJ](development_plan_standards.md#jj-host-portable-static-gate-and-test-harness) — runs as an ordinary
 process of the outer host and proves the pure, typed, and lexical contracts. Because every binary is
 built host-native (§ N), it must pass host-native on macOS, Linux, and Windows alike (§ JJ); running it
 natively on Windows is an outer host realization, not a substrate declaration. A **`linux-cpu` substrate
