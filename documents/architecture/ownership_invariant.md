@@ -306,12 +306,15 @@ Stating this exactly is part of the contract; any stronger claim is unsupported.
 | A run crashes between the origin record and the first write | Recoverable. The next run reads the origin record and restores exact bytes or absence. |
 | A run crashes after the first write | Recoverable, same mechanism. |
 | Two concurrent `hostbootstrap` runs target the same state | Excluded. The second blocks on clause 1, then observes clause 3's identity. |
-| A cooperating peer replaces the object between two operations | Detected. Clause 3 reports `Conflict`; clause 4 refuses release. |
-| A hostile same-privilege process ignores the lock and replaces the object | **Not excluded.** Detected on the next identity observation, never silently overwritten. |
+| A cooperating peer replaces the object with a different kernel identity between two operations | Detected. Clause 3 reports `Conflict`; clause 4 refuses release. |
+| A hostile same-privilege process ignores the lock and replaces the object | **Not excluded.** A changed identity is detected on the next observation. |
+| A removed object's kernel identity is recycled for a replacement with the same checked payload | Not distinguishable by the recorded identity and payload alone. |
 
-The last row is the honest boundary. An advisory lock can be ignored by a process that chooses to, and
-no substrate in scope offers a mandatory one for these objects. The contract detects that case and
-refuses to act; it does not prevent it.
+An advisory lock can be ignored by a process that chooses to, and no substrate in scope offers a
+mandatory one for these objects. Kernel identities describe live objects; the POSIX device/inode pair
+is not a permanent generation identifier after unlink. Replacement tests retain the original object at
+a sibling path while creating the replacement, so they prove refusal of a distinct live identity
+without assuming the filesystem never recycles one. They do not establish detection of identity reuse.
 
 ## When a backend returns `Unsupported`
 
@@ -354,7 +357,7 @@ requires a uniform gate, so the ownership suite runs on every substrate, and a c
 unavailable on the gate host asserts the refusal its row declares rather than disappearing. What counts as
 evidence for each criterion — and what cannot — is in [testing](../engineering/testing.md).
 
-1. An adversary replaces the object between observation and mutation. The backend reports `Conflict`
+1. An adversary replaces the object with a distinct kernel identity between observation and mutation. The backend reports `Conflict`
    with structured expected/observed identity, does **not** clobber the object, and mints no receipt.
 2. Release is refused when the observed identity does not match the receipt's.
 3. A second entry attempt is excluded while the lock is held, and succeeds after the holding process is

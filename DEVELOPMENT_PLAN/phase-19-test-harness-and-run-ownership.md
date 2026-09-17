@@ -7,14 +7,13 @@
 `cabal test hostbootstrap-core:test:hostbootstrap-core-test --test-options='--pattern recovery-interruption'`
 from `core/`
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-13 ; static leg on x86_64 Ubuntu 24.04.4 LTS (Linux 7.0.0-28-generic, GHC
-9.12.4, Cabal 3.16.1.0), realized `linux-cpu` leg in an x86_64 Linux container from the published
-`basecontainer-cpu-amd64` base with no accelerator device visible, built and run there with the pinned
-GHC 9.12.4 / Cabal 3.16.1.0 mounted in, because that base ships the GHCup-recommended 9.10.3 ;
-`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
-`core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
---test-show-details=direct --test-options="--pattern recovery-interruption"` from `core/` in that
-container ; pass ; covers 5a8bbee429919f037959e3874bfd897864a16efd867b4e4d9411919fb7087aae
+**Gate evidence**: 2026-09-17 ; static leg on `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, with the realized `linux-cpu` leg on `hb-linux-cpu`,
+x86_64 Ubuntu 24.04.5 LTS, Linux 6.8.0-139-generic, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from native `core/`, then
+`cabal --store-dir=/home/ubuntu/hostbootstrap/demo/.build/cabal-store test hostbootstrap-core:test:hostbootstrap-core-test --test-options='--pattern recovery-interruption' --test-show-details=direct`
+from `core/` in the CPU VM ; pass ; covers
+5a8bbee429919f037959e3874bfd897864a16efd867b4e4d9411919fb7087aae
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs` `core/hostbootstrap-core/src/HostBootstrap/Harness` `core/hostbootstrap-core/internal/harness-lifecycle` `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
@@ -73,13 +72,19 @@ One bracket that owns everything a run touches, in one order.
 
 `HarnessSpec` covers the acquisition order, both settlements, the conflict reports, both post-sweep safety
 refusals, admission after an abandoned provider release, a hard kill holding each owned object, and a
-racing-harness probe converging on one acquisition. The complete core host-static gate must pass.
+racing-harness probe converging on one acquisition. Replacement fixtures keep the original directory
+alive at a sibling path so their new object has a distinct kernel identity.
+
+On 2026-09-17, the replaced-data-root bracket case passes 20 consecutive focused runs. The complete
+native Linux gate passes 2,552 core cases in 176.58 seconds, the full demo workspace passes 2,552 core
+cases and 151 demo cases, and the Python code check and all 251 Python tests pass. In `hb-linux-cpu`,
+the exact recovery-interruption command in the header passes all five real-process interruption cases
+and its coverage-manifest check, six tests in 1.18 seconds. The remeasured seven-file covers digest
+matches the header; these fixture changes are outside that production/recovery path set.
 
 #### Remaining Work
 
-None. Completed 2026-08-26 on aarch64 macOS: `HarnessSpec` passed 46/46, including admission only after the
-abandoned provider release, and the complete core host-static gate passed 2,462/2,462 under `-Werror` in
-433.14 seconds. Governed-document validation passed 2/2.
+None.
 
 ### Sprint 19.2: The engine and per-variant isolation [Done]
 

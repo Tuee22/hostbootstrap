@@ -420,6 +420,12 @@ the unresolved Harness lease still excludes Production and subsequent Harness ru
 211-file source measurement is
 `a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`.
 
+On 2026-09-17, the native Linux visit reaches this phase after closing phases 24 and 26 with their
+complete gates. No Windows connection is configured in this workspace, and no connection details
+have been supplied. The preserved Windows resource forest cannot be inspected or settled from this
+host. No recovery mutation, new Windows run, or refreshed Windows acceptance claim is made. The
+Linux CPU and NVIDIA successes do not substitute for this phase's native Windows gate.
+
 #### Remaining Work
 
 Resolve the preserved run's canonical provider/share ownership through verified recovery, establish a

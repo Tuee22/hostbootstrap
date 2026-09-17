@@ -6,9 +6,10 @@ Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
-GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-show-details=direct --test-options=--hide-successes`
-from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-17 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` ;
+pass ; covers in-gate
 
 > **Purpose**: Define the four Locked-Origin Identity Ownership clauses once, supply the one seam that
 > holds them, and supply the platform rows beneath it.
@@ -96,6 +97,9 @@ Own a generated directory under all four clauses.
 refused on identity mismatch, exclusion while the lock is held, admission after the holder is killed, and a
 kill between the origin record and the first write.
 
+The real-kernel directory replacement cases pass 20 consecutive focused runs, and the
+complete phase gate passes 2,552/2,552 on 2026-09-17 in 176.58 seconds.
+
 #### Remaining Work
 
 None.
@@ -126,7 +130,16 @@ The same four clauses over a file.
 #### Validation
 
 `GeneratedConfigSpec` covers each clause, the payload-conditional release, the found-object refusal, the
-conflict report, and a kill between the origin record and publication.
+conflict report, and a kill between the origin record and publication. Replacement fixtures retain the
+original object at a sibling path, so the real kernel cannot recycle its identity for the replacement.
+
+The 2026-09-17 native Linux demo-workspace gate exposes immediate inode reuse in the delete/recreate
+fixture: the core workspace passes 2,552 cases while the demo workspace fails its replaced-config
+release case. A real-filesystem probe observes inode reuse in 500/500 delete/recreate pairs.
+
+All 23 generated-config cases pass in each of 20 consecutive runs. On 2026-09-17 the
+complete phase gate passes 2,552/2,552 in 176.58 seconds. The full demo workspace also passes
+2,552 core cases (175.82 seconds) and 151 demo cases (0.69 seconds), and both Python legs pass.
 
 #### Remaining Work
 

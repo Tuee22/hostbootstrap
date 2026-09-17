@@ -61,28 +61,30 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | recovery and live gate |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | acceptance re-run |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | recovery and live gate |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | macOS and arm64 Linux runs |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | Windows, macOS, arm64 Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-The next phase in numerical order is the worked demo. The Windows compilation, namespaced-operation
-parser, and canonical resource short-close corrections close phases 14, 10, and 17 on their complete
-gates. The final source passes the complete native Windows and independent x86_64 Linux static gates.
+The next phase in numerical order is Windows recovery and acceptance. On 2026-09-17, phase 24's
+complete baseline gate passes in `hb-linux-cpu`: Production up/down/destroy and the `10/10` Harness
+matrix, followed by a clean terminal audit. Phase 26 then passes its complete native NVIDIA matrix
+`10/10`, with observed GPU pod placement and a clean terminal audit. Both covered-source measurements
+are current.
 
-Phase 24's live gate remains blocked. Repeated image extraction failures occur both in the demo and
-in independent Docker/Kind probes. The final-source recovery retry closes the abandoned session but
-retains the provider/share ownership and Harness lease, which prevent a fresh Production or Harness
-run. The earlier Production pass predates the final corrections; no current live pass is claimed.
-[Sprint 27.5](phase-27-windows-and-wsl2-substrate.md) records the failed attempts and preserved state.
+The native x86_64 Linux static gate also passes, including the ownership replacement fixture
+corrections recorded in phases 14 and 19. Production source is unchanged. The test-tree change
+expires the other host-portability evidence rows; the current Linux result is shared evidence.
 
-The operator supplies native Linux/NVIDIA, macOS, and arm64 Linux runs on those machines after this
-visit. Their older evidence remains explicitly expired. The Apple substrate acceptance covers a
-narrower path set and remains current.
+The Windows run separately retains provider/share ownership and a Harness lease after intermittent
+image extraction failures. [Sprint 27.5](phase-27-windows-and-wsl2-substrate.md) records its failed
+attempts and preserved state. This Linux visit has no configured Windows or macOS connection, so
+Windows recovery and acceptance remain next, followed by the current-source Windows, macOS, and
+arm64 Linux static gates. The Apple substrate acceptance covers a narrower path set and remains current.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would

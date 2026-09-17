@@ -8,6 +8,12 @@
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
+**Gate evidence**: 2026-09-17 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ;
+`cabal build all` and `cabal test all --test-show-details=direct --test-options=--hide-successes`
+from `core/`, `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root ; pass ; covers d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9
 **Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
 GHC 9.12.4, Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all`
 from `core/`, `cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/`,
@@ -488,15 +494,22 @@ The updated documentation validator passes 11/11 on Windows in 4.81 seconds and 
 After validation, the temporary Linux container and its dedicated WSL distribution are removed, and
 the idle WSL utility VM is shut down.
 
+On 2026-09-17, the native Linux visit records the complete header gate against the corrected real-kernel
+replacement fixtures. Core passes 2,552 cases in 176.58 seconds; the full demo workspace passes 2,552
+core cases in 175.82 seconds and 151 demo cases in 0.69 seconds. Both workspaces run the declared
+no-request provider-live component. Python code checks pass and 251 tests pass in 1.65 seconds.
+The 823-file digest is `d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`.
+This is shared static evidence from the earlier phases, not closure of the remaining acceptance work.
+
 #### Remaining Work
 
-The operator
-supplies complete macOS and arm64 Linux runs on those machines afterward.
+The ownership replacement fixture corrections change the covered test tree. Repeat the Windows,
+macOS, and arm64 Linux gates against the measured current tree; native x86_64 Linux is current.
 
 ## Remaining Work
 
-**Sprint 28.5** owns the current-source macOS and arm64 Linux runs, which the operator supplies on
-those machines. Native Windows and x86_64 Linux are current.
+**Sprint 28.5** owns current-source Windows, macOS, and arm64 Linux static runs. The replacement
+fixture corrections expire their earlier evidence; the 2026-09-17 native x86_64 Linux row is current.
 
 ## Documentation Requirements
 

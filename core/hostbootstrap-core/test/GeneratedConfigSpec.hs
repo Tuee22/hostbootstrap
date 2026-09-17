@@ -51,7 +51,7 @@ import HostBootstrap.Ownership.Primitive (
  )
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Protected
-import System.Directory (doesFileExist, listDirectory, removeFile)
+import System.Directory (doesFileExist, listDirectory, removeFile, renameFile)
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -132,7 +132,8 @@ tests =
             , testCase "a same-named replacement has a different identity" $
                 withOwnership $ \session key path -> do
                     acquired <- expectRight =<< acquireGeneratedConfig row session key path payload
-                    removeFile path
+                    -- Keep the owned inode alive so the replacement cannot reuse it.
+                    renameFile path (path <> "-original")
                     ByteString.writeFile path payload
                     replaced <- observeIdentity path
                     assertBool
@@ -217,7 +218,7 @@ tests =
             , testCase "a replaced config is refused and left intact" $
                 withOwnership $ \session key path -> do
                     acquired <- expectRight =<< acquireGeneratedConfig row session key path payload
-                    removeFile path
+                    renameFile path (path <> "-original")
                     ByteString.writeFile path payload
                     refused <- releaseGeneratedConfig row session key acquired
                     expectConflict "releasing a replacement" refused
@@ -290,7 +291,7 @@ tests =
             , testCase "a foreign replacement is refused, not restored" $
                 withOwnership $ \session key path -> do
                     _ <- expectRight =<< acquireGeneratedConfig row session key path payload
-                    removeFile path
+                    renameFile path (path <> "-original")
                     ByteString.writeFile path "-- a stranger's config\n"
                     refused <- recoverGeneratedConfig row session key path
                     expectConflict "recovering over a replacement" refused

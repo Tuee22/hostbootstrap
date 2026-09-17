@@ -49,6 +49,7 @@ import System.Directory (
     doesDirectoryExist,
     doesFileExist,
     removeDirectoryRecursive,
+    renameDirectory,
  )
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -107,7 +108,7 @@ tests =
             , testCase "a same-named replacement has a different identity" $
                 withOwnership $ \_ session key path -> do
                     acquired <- expectRight =<< acquireDataRoot row session key path
-                    removeDirectoryRecursive path
+                    renameDirectory path (path <> "-original")
                     createDirectory path
                     replaced <- observeIdentity path
                     assertBool
@@ -145,7 +146,7 @@ tests =
             , testCase "a replaced directory is refused and left intact" $
                 withOwnership $ \_ session key path -> do
                     acquired <- expectRight =<< acquireDataRoot row session key path
-                    removeDirectoryRecursive path
+                    renameDirectory path (path <> "-original")
                     createDirectory path
                     writeFile (path </> "stranger.txt") "not yours"
                     refused <- releaseDataRoot row session key acquired
@@ -199,7 +200,7 @@ tests =
             , testCase "a foreign replacement is refused, not restored" $
                 withOwnership $ \_ session key path -> do
                     _ <- expectRight =<< acquireDataRoot row session key path
-                    removeDirectoryRecursive path
+                    renameDirectory path (path <> "-original")
                     createDirectory path
                     writeFile (path </> "stranger.txt") "not yours"
                     refused <- recoverDataRoot row session key path

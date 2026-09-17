@@ -1,18 +1,18 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
+**Gate evidence**: 2026-09-17 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
 Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1, Kind 0.32.0,
-kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pinned
+kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pulled published
 base `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
 repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test init` then
 `poetry run hostbootstrap run --project-root demo test run all` ; pass ;
-covers cbbaa6b6e13052bd9e4adb981b64b0de86a34b2d10c0bd0797118b1720e1165b
+covers a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
@@ -493,9 +493,9 @@ as this phase's evidence: the worked demo's live gate found a repair under this 
 `**Evidence covers**` after each of them, and § G admits only a run against the tree the row measures.
 The three durations are within 4% of each other, which is the useful thing they say together.
 
-### Sprint 26.8: NVIDIA acceptance of the current ownership rows [Active]
+### Sprint 26.8: NVIDIA acceptance of the current ownership rows [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/testing.md`
@@ -521,14 +521,49 @@ this is a source measurement, not gate evidence. No native Linux/NVIDIA connecti
 configured for this visit and no new NVIDIA run is recorded. The operator supplies this run on the native
 Linux/NVIDIA machine after the available Windows visit finishes; the Windows result cannot replace it.
 
+On 2026-09-17, the native visit on `matt-junction` begins after phase 24's complete baseline gate
+passes. Preflight confirms the RTX 5090 on driver 595.84, no Docker containers, and no demo `.build`,
+`.hostbootstrap`, or `.test_data` state. The pre-existing `hb-linux-cpu` gate VM is stopped after its
+clean terminal audit; it is unrelated to this Direct lane and is preserved. The repository Python
+bootstrapper completes `test init` from the pristine native demo state. Its operator test config measures
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`. The complete `test run all`
+starts at 04:25:40 UTC. The complete native host static gate already passed on this visit, as recorded
+in phase 28.
+
+The first `hello-world` generation (`run-d51d791325677`) pulls published CUDA base
+`sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` and builds image
+`sha256:a45e679e1b2a4419c38d5dd1ce19c5b33f203712558d56b556aef91c4c630423`.
+Direct inspection observes Running pod `accelerator-daemon-7d59c7b686-pzdr9` selecting RuntimeClass
+`nvidia`, with both request and limit `nvidia.com/gpu: 1`, on
+`hostbootstrap-demo-test-run-d51d791325677-worker`, which advertises one allocatable GPU.
+The second generation builds
+`sha256:a1cd03e33e0aa2d2f872fa40c1abfeab0013021957109530e12a98b75d79762e`, reaches its assertion
+opening, and tears down the recreated cluster. The matrix then starts `hello-universe`, run
+`run-d53562a514313`. Its first generation builds
+`sha256:2094608bdb60a6b9b8ee4d84a92083c2745effaa9ca52e1d9fa0ce2a6f0fb507`, reaches the assertion
+opening, and tears down its cluster. The fourth generation builds
+`sha256:62482da52797a1e29e9a96e472c13b10553f818cff954fd564b760447afd0b16`, recreates the cluster,
+and completes durable readback. Every generation passes the image quality gate, exported-runtime
+verification, unmodified Kind import, registry push, and NVIDIA device-plugin/allocatable-GPU checks.
+
+The complete matrix exits 0 with `test report: 10/10 passed` in 3,202.744 seconds
+(53 minutes 22.744 seconds). Both variants pass `pristine-bootstrap`, `web-build`, `e2e-tabs`,
+`registry-persistence`, and `durable-readback`.
+
+The terminal audit at 05:19:23 UTC finds no Docker container and no Kind cluster. Both leases encode
+`closed` at generations 4 and 8, and both profiles encode `available` at generations 3 and 7. No mode,
+generated-config ownership, or data-root ownership record remains. The generated project config is
+absent, `.test_data` is empty, and the operator test config retains its exact hash. The unrelated
+pre-existing `hb-linux-cpu` VM remains stopped. All 211 covered files remeasure to the header digest.
+The post-closure `DocValidatorSpec` check passes 11/11 in 2.64 seconds.
+
 #### Remaining Work
 
-Run the full NVIDIA matrix and terminal audit against the settled source tree on the hardware this
-phase declares, then record current evidence.
+None.
 
 ## Remaining Work
 
-**Sprint 26.8** owns the current-tree NVIDIA matrix, accelerator observation, and terminal audit.
+None.
 
 ## Documentation Requirements
 

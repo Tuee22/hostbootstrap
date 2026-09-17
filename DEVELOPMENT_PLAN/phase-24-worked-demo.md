@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,21 +11,20 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-14 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
-x86_64, 16 vCPU and 32 GiB, created with no provider installed by Incus 6.0.0 on `matt-junction`
+**Gate evidence**: 2026-09-17 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
+x86_64, 16 vCPU and 32 GiB, reused with an empty nested provider inventory under Incus 6.0.0 on `matt-junction`
 (x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic) with nested virtualization, running GHC 9.12.4,
 Cabal 3.16.1.0, Poetry 2.4.3 and Python 3.12.3, where `doctor` reports `substrate: linux-cpu (amd64)` ;
 repository Python bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
 `poetry run hostbootstrap run --project-root demo project up`,
 `poetry run hostbootstrap run --project-root demo project down`,
 `poetry run hostbootstrap run --project-root demo project destroy`, then
-`poetry run hostbootstrap run --project-root demo test init` and
-`poetry run hostbootstrap run --project-root demo test run all`, with
-`cabal build all` and `cabal test hostbootstrap-demo-test` from `demo/` and
+`poetry run hostbootstrap run --project-root demo test run all` using the preserved operator test config, with
+`cabal build all`, `cabal test hostbootstrap-demo-test`, and `cabal test all` from `demo/` and
 `cabal build all` and `cabal test all` from `core/` plus
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
 on the x86_64 Linux gate host ; pass ;
-covers 252c9db4d88681fcaf5c3d236add4019ad6bb792a8587ea5e179a3f5e6d5da96
+covers 281a2cd1e6247562ae90d3edb1738daa0b498b6c9072c6a382b296ab31e63f5c
 **Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -2732,9 +2731,9 @@ argument and which the base image puts on `PATH`; the third named a GHCup layout
 owned in one place, the demo no longer restates it in a second language, and the verb now runs on a host
 that has the three tools as well as inside the image. The demo suite passed 151/151.
 
-### Sprint 24.45: The worked-demo gate against the current tree [Active]
+### Sprint 24.45: The worked-demo gate against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/operations/demo_runbook.md`
@@ -2854,13 +2853,52 @@ unsettled canonical provider/share ownership and Harness mode. It exits 1 with `
 refused, after 26.52 seconds. That retained mode also excludes a fresh Production cycle. No complete
 current-source live gate is claimed; the previous Production pass predates these corrections.
 
+On 2026-09-17 UTC, the native Linux visit validates the settled working tree on `matt-junction`
+and its existing `hb-linux-cpu` gate VM. All 976 tracked working-tree files are copied and verified
+byte-for-byte before the live gate. The native host passes `cabal build all` from `core/` and `demo/`,
+the focused demo suite (151/151), and the complete host static gate after the real-kernel replacement
+fixture corrections in phases 14 and 19: core `cabal test all` passes 2,552/2,552 in 176.58 seconds;
+the demo workspace passes 2,552/2,552 core cases in 175.82 seconds plus 151/151 demo cases in
+0.69 seconds; the repository Python code check and 251/251 Python tests in 1.65 seconds pass.
+The VM reports `substrate: linux-cpu (amd64)` and begins with an empty nested provider inventory
+and test-data root. Repository Python-bootstrapper `project init` succeeds.
+
+Production `project up` passes, observed complete by 01:28:28 UTC. It pulls CPU/amd64 base
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, builds image
+`sha256:2eb9674f9485106b38afdc36b75f1d987fa2d8e349e2b758f4e94930796dca30`, passes the image quality
+gate, web build, exported-runtime verification, unmodified Kind import, and registry push, and reaches
+Running web and accelerator pods. `project down` exits 0 in 9.454 seconds. `project destroy` restarts
+the stopped guest to reach its retained children, exits 0 in 34.250 seconds, and leaves the nested
+Incus inventory empty. The Production lease is `closed` at generation 14, project mode is absent,
+and Production durable data is retained. The generated Production config measures
+`b949ceb3c943ec9b04206b4cbdd2fcf8d2a80da03236745450556c60ae2dcae1`; the operator test config
+retains `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The disposable Production config is removed only after that check. `test init` refuses to overwrite
+the existing operator test config, which is retained unchanged.
+
+The complete `test run all` starts at 01:30:37 UTC and exits 0 with `test report: 10/10 passed`
+in 9,408.679 seconds (2 hours 36 minutes 48.679 seconds). Both variants pass `pristine-bootstrap`,
+`web-build`, `e2e-tabs`, `registry-persistence`, and `durable-readback`, including destruction and
+same-run recreation before durable readback. Each of the four generations passes exported-runtime
+verification and the unmodified Kind import:
+
+| Variant and run | Generation | Derived image digest |
+|-----------------|------------|----------------------|
+| `hello-world`, `run-270210cc9b7` | 1 | `sha256:414335c49d125bbb5417719240dfe482ec326fa707dd642cf192f205e4eda755` |
+| `hello-world`, `run-270210cc9b7` | 2 | `sha256:cfb80494a89ac1c564ac0841c460d2c485e88eb6bfac9229282a8f4b6083faa5` |
+| `hello-universe`, `run-6bd796f49d0` | 1 | `sha256:5260f0334c222cdc3640e8d98b2fd52bc125d74f43ae3a1e5181d157c41a3797` |
+| `hello-universe`, `run-6bd796f49d0` | 2 | `sha256:53fd80771c56155ef65d1df98849d88c9bc31aa566aeb745e79a6cbb490cdb59` |
+
+The terminal audit at 04:10:38 UTC finds no nested Incus instance, both current Harness leases
+`closed` at generations 18 and 22, both profiles `available`, and no mode, generated-config ownership,
+or data-root ownership record. The generated config is absent, `.test_data` is empty, and the operator
+test config retains its exact hash. The 46 covered files remeasure to the digest in the header.
+The current-source baseline gate is complete; the preserved Windows run remains owned by phase 27.
+The post-closure `DocValidatorSpec` check passes 11/11 in 2.66 seconds.
+
 #### Remaining Work
 
-Settle the preserved run through verified resource recovery, resolve the intermittent image-import
-failures, and repeat the complete Production cycle and `10/10` matrix against the settled source.
-Record a clean terminal ownership audit and remeasure the covered-source digest. Current native
-Windows and independent x86_64 Linux static validation pass; the earlier Production pass does not
-cover the final corrections.
+None.
 
 ### Sprint 24.46: The consumer's provider opens on every lane it stops [Done]
 
@@ -2906,8 +2944,7 @@ which this phase does not claim.
 
 ## Remaining Work
 
-**Sprint 24.45** owns verified recovery of the preserved run, the complete current-source live gate,
-terminal audit, and evidence refresh. Unsettled Harness ownership currently prevents a fresh live run.
+None.
 
 ## Documentation Requirements
 

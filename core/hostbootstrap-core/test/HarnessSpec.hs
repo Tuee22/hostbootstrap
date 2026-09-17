@@ -83,8 +83,8 @@ import System.Directory (
     doesFileExist,
     getCurrentDirectory,
     listDirectory,
-    removeDirectory,
     removeFile,
+    renameDirectory,
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die, exitSuccess, exitWith)
@@ -1326,7 +1326,7 @@ ownershipCases =
                         case generations of
                             [generation] -> do
                                 let ownedPath = parent </> generation
-                                removeDirectory ownedPath
+                                renameDirectory ownedPath (ownedPath <> "-original")
                                 createDirectory ownedPath
                             _ -> assertFailure ("expected one owned generation, got " ++ show generations)
                 case outcome of
