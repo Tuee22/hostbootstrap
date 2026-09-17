@@ -8,10 +8,20 @@
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, GHC 9.12.4,
-Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers c9c91d0b5dcfbbe1c18be2c54f8563d2767a5c6dc8113f11bfe35c539f8e4e65
-**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
-GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ; `cabal build all` and `cabal test all` from `core/`, then `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` ; pass ; covers 6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0
+**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
+GHC 9.12.4, Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all`
+from `core/`, `cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/`,
+`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root ; pass ; covers f35c89016994f5470e24b50e56c7bb180f12d79334251f4ac012ac60d2ab836a
+**Gate evidence**: 2026-09-16 ; `hb-linux-static2-20260916`, x86_64 Ubuntu 24.04.4 LTS container
+with a reaping init, Linux 6.18.33.2-microsoft-standard-WSL2, manually provisioned through
+`hostbootstrap-portability-amd64-20260916b` on the Windows gate host, GHC 9.12.4, Cabal 3.16.1.0,
+Python 3.12.3, Poetry 2.4.3 ; `cabal build all` and
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/`,
+`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root ; pass ; covers f35c89016994f5470e24b50e56c7bb180f12d79334251f4ac012ac60d2ab836a
 **Gate evidence**: 2026-09-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
 GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ; `cabal build all` from `core/`,
 `cabal test all --test-show-details=direct` from both `core/` and `demo/`,
@@ -369,7 +379,7 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 On 2026-09-14, the x86_64 Linux gate host its header row names passes `cabal build all` and
 `cabal test all` from `core/` at 2,546/2,546 in 200.71 seconds, the Python code check, and the
 Python suite at 251/251 with the coverage configuration's `fail_under = 100` satisfied at
-1,413/1,413 statements. Its source digest remains current. That row records the core and Python
+1,413/1,413 statements. Its digest predates the ownership corrections below. That row records the core and Python
 legs; it does not record the `demo/` leg of § JJ's complete host static gate.
 
 On 2026-09-16, the Apple visit records the complete macOS gate on `MacBookPro`, native arm64
@@ -387,7 +397,7 @@ Python 3.14.3, and Poetry 2.3.2. The repository Poetry environment is resolved f
 
 The POSIX ownership and process cases execute against Darwin; unavailable Windows rows assert their
 declared refusals. The native direct-Colima lane has its separate live result in Sprint 25.5.
-The 823 covered files measure the header's current digest.
+The 823 covered files measure the digest in this macOS run's header row.
 
 The same visit records the complete arm64 Linux gate in `hostbootstrap-portability-arm64-20260916`,
 an aarch64 Ubuntu 24.04.4 LTS container on Linux 6.8.0-100-generic through Colima 0.10.3.
@@ -414,17 +424,79 @@ After recording these rows, the focused `DocValidatorSpec` run passes 11/11 on e
 (3.42 seconds on macOS and 3.32 seconds on arm64 Linux). The container's final source measurement
 still matches the recorded digest, and the temporary gate container is removed.
 
+On 2026-09-16, the Windows visit's ownership compilation corrections expire the earlier rows'
+covered-source claims. The complete native Windows gate then passes on Windows 11 Home 10.0.26200,
+AMD Ryzen 7 5700G, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, and repository-venv Python 3.14.7.
+These are the same runs used to validate the ownership phase, so this entry records shared evidence
+without advancing past the earlier open acceptance phases.
+
+- From `core/`, `cabal build all` passes, and the complete test command in the header passes
+  2,541/2,541 in 370.93 seconds (528.74 seconds including component compilation).
+- From `demo/`, the complete header command passes 151/151 demo cases in 5.47 seconds and
+  2,541/2,541 core cases in 368.57 seconds; the workspace command takes 703.01 seconds.
+- The repository Python code check passes, and the Python suite passes 251/251 in 4.01 seconds.
+
+Both workspaces run the provider-live component with its declared no-request `Unsupported` result.
+The native Windows ownership and host-wall cases exercise the Win32 kernel; POSIX-only rows assert
+their declared refusals. The five-case difference from the POSIX totals follows the source conditions
+listed in Sprint 28.1. The 823 covered files measure
+`f87e2c335a541d015248234b288f9ea5e8a457d65724335883a71f25f82497f9`.
+
+The subsequent short-close correction adds two regression cases. Against the settled source, the
+complete native Windows gate passes again: core build plus 2,543/2,543 cases in 413.56 seconds;
+demo workspace 151/151 in 5.47 seconds plus 2,543/2,543 core cases in 439.78 seconds; Python code check
+and 251/251 tests in 6.42 seconds. Both workspaces run the declared no-request provider-live component.
+The same Windows host and toolchain are used, and the 823 covered files now measure
+`b50f67e53015c4c35f1f4e329069ba8889d9e5278dab0fe248de8a67bddfb367`.
+
+The same visit passes every leg on the independently provisioned x86_64 Linux host in the new header
+row. The host uses published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, Docker's `--init`, and
+an in-project Poetry environment resolved from `pyproject.toml`. The working-tree bytes and checkout
+metadata are copied into its Linux filesystem; no project ensure or provider step provisions this gate.
+
+- Core build passes; the complete core suite passes 2,548/2,548 in 216.57 seconds.
+- Demo build and its focused 151-case component pass; the complete demo workspace passes its demo
+  component and 2,548/2,548 core cases in 174.20 seconds.
+- The Python code check passes, and the Python suite passes 251/251 in 1.86 seconds.
+
+The first Python attempt lacks checkout metadata and correctly hides the maintainer commands; copying
+that metadata resolves the gate setup error without a source change. Both Cabal workspaces run the
+provider-live component with its declared no-request result. The core suite likewise reports its
+Apple-only live lane as not requested. The Linux measurement matches the Windows row's 823-file digest.
+After the evidence update, `DocValidatorSpec` passes 11/11 on Windows in 4.77 seconds and on x86_64
+Linux in 3.50 seconds. The temporary gate container and its dedicated WSL distribution are removed
+before the live demo gate starts.
+
+After the session-journal and canonical-resource corrections, the final native Windows gate passes
+again on the same host and toolchain. Core build and all 2,547 cases pass in 511.60 seconds; the
+provider-live component returns its declared no-request result. Demo build and focused 151-case tests
+pass (5.57 seconds), then the complete demo workspace passes 151 demo cases (5.54 seconds), the
+provider-live component, and 2,547 core cases (402.99 seconds). The complete demo command takes
+611.58 seconds. Python code checks pass, with 251/251 tests in 7.92 seconds. The current 823-file
+measurement is `f35c89016994f5470e24b50e56c7bb180f12d79334251f4ac012ac60d2ab836a`.
+
+The final x86_64 Linux gate also passes in the independently provisioned replacement container
+`hb-linux-static2-20260916`, using the same published base and versions. Core build succeeds and both
+Cabal components record `Pass`; the core executable enumerates 2,552 cases. Demo build and the focused
+151-case component pass, then the full workspace passes its demo and provider-live components plus
+2,552/2,552 core cases in 211.42 seconds. Python checks pass and all 251 Python cases pass in
+2.92 seconds. Linux covered-source bytes match the final Windows measurement above. These are shared
+static gate results; the incomplete earlier live phase prevents later acceptance phases from closing.
+The updated documentation validator passes 11/11 on Windows in 4.81 seconds and on Linux in
+3.44 seconds. Independent digest measurements on both hosts agree for all deferred phase path sets.
+After validation, the temporary Linux container and its dedicated WSL distribution are removed, and
+the idle WSL utility VM is shut down.
+
 #### Remaining Work
 
-The native Windows gate remains owed. The x86_64 Linux row also needs
-dated current-source evidence for § JJ's `demo/` leg; a Windows visit can supply an x86_64 Linux
-gate host through WSL2 without requiring another machine. The complete macOS and arm64 Linux gates
-are recorded.
+The operator
+supplies complete macOS and arm64 Linux runs on those machines afterward.
 
 ## Remaining Work
 
-**Sprint 28.5** owns the remaining native Windows run and recorded current-source confirmation of
-the x86_64 Linux demo leg. The complete macOS and arm64 Linux gates are current.
+**Sprint 28.5** owns the current-source macOS and arm64 Linux runs, which the operator supplies on
+those machines. Native Windows and x86_64 Linux are current.
 
 ## Documentation Requirements
 

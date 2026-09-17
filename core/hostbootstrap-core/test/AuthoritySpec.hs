@@ -1927,7 +1927,77 @@ recoveryCases =
 
 closeCases :: [TestTree]
 closeCases =
-    [ testCase "the session-completeness proof refuses while any session is open" $
+    [ testCase "Harness short-close refuses a session opened after its no-effect proof" $
+        withStore $ \store ->
+            Fixture.withFixtureInstalledProject $ \project -> do
+                outcome <- withFreshHarnessRoot store project $ \root -> do
+                    let unbound = harnessRootUnboundLease root
+                    _ <- expectRight =<< persistPlanSnapshot unbound 1 "spec-1" closePlanDigest
+                    verifyPlanSnapshot unbound $ \snapshot -> do
+                        bound <- expectRight =<< bindRunLease unbound snapshot pure
+                        preEffect <- expectRight =<< verifyBoundRunHasNoProjectResourcesAcquired bound
+                        _ <- withProtectedEntry' store $ \session -> do
+                            permit <- expectRight =<< openProjectJournal session closePlanDigest
+                            _ <-
+                                expectRight
+                                    =<< openOperationSession
+                                        session
+                                        (projectModeLeaseEpoch (harnessRootModeLease root))
+                                        closePlanDigest
+                                        "late-session"
+                                        permit
+                            pure (Right ())
+                        before <- protectedStoreImage store
+                        refused <- withProtectedEntry' store $ \session ->
+                            closeHarnessRun
+                                session
+                                project
+                                (currentHarnessCloseRoot root)
+                                (harnessRootModeLease root)
+                                preEffect
+                        case refused of
+                            Left (ModeSessionFailure (SessionStillOpen _)) -> pure ()
+                            other -> assertFailure ("expected an open-session refusal, got " <> show other)
+                        after <- protectedStoreImage store
+                        after @?= before
+                        pure (Right ())
+                outcome @?= Right ()
+    , testGroup
+        "Harness short-close refuses a record added after its no-effect proof"
+        [ testCase label $
+            withStore $ \store ->
+                Fixture.withFixtureInstalledProject $ \project -> do
+                    outcome <- withFreshHarnessRoot store project $ \root -> do
+                        let unbound = harnessRootUnboundLease root
+                        _ <- expectRight =<< persistPlanSnapshot unbound 1 "spec-1" closePlanDigest
+                        verifyPlanSnapshot unbound $ \snapshot -> do
+                            bound <- expectRight =<< bindRunLease unbound snapshot pure
+                            preEffect <- expectRight =<< verifyBoundRunHasNoProjectResourcesAcquired bound
+                            effectKey <- expectKey (keyText (installedProjectName project) (runIdText (harnessRootRunId root)))
+                            _ <-
+                                expectRight
+                                    =<< withProtectedEntry
+                                        store
+                                        (\session -> compareAndSwapProtectedRecord session effectKey ExpectAbsent "created")
+                            before <- protectedStoreImage store
+                            refused <- withProtectedEntry' store $ \session ->
+                                closeHarnessRun
+                                    session
+                                    project
+                                    (currentHarnessCloseRoot root)
+                                    (harnessRootModeLease root)
+                                    preEffect
+                            refused @?= Left (ModeEffectsRecorded (recordKeyText effectKey))
+                            after <- protectedStoreImage store
+                            after @?= before
+                            pure (Right ())
+                    outcome @?= Right ()
+        | (label, keyText) <-
+            [ ("legacy effect", \project run -> "effect." <> project <> "." <> run <> ".vm")
+            , ("canonical resource", \_ _ -> "resource." <> closePlanDigest <> ".late")
+            ]
+        ]
+    , testCase "the session-completeness proof refuses while any session is open" $
         withStore $ \store ->
             Fixture.withFixtureInstalledProject $ \project -> do
                 outcome <-

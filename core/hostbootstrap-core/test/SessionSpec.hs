@@ -2737,6 +2737,58 @@ admissionTests =
             map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= ["session-a"]
             map manifestSessionOperations (manifestSessions manifest) @?= [["op-1", "op-2"]]
             manifestOperationCount manifest @?= 2
+    , testGroup
+        "namespaced operation recovery"
+        [ testCase (Text.unpack sessionName) $
+            withStore $ \store -> do
+                _ <-
+                    expect
+                        =<< inEntry
+                            store
+                            ( \s -> withEpoch s $ \epoch -> do
+                                permit <- expect' =<< openProjectJournal s plan
+                                (sess, opened) <- expect' =<< openOperationSession s epoch plan sessionName permit
+                                first <- expect' =<< registerOperationIntent s sess "core:deploy-vm/core:copy-source/guest-alias" NoHistory opened
+                                second <- expect' =<< registerOperationIntent s sess "project:ensure-vm-provider" NoHistory first
+                                _ <- expect' =<< registerOperationIntent s sess "vendor:thing.v2" NoHistory second
+                                pure (Right ())
+                            )
+                reopened <- reopenStore store
+                manifest <- expect =<< inEntry reopened (\s -> verifySessionManifest s plan)
+                map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= [sessionName]
+                let operations = ["core:deploy-vm/core:copy-source/guest-alias", "project:ensure-vm-provider", "vendor:thing.v2"]
+                map manifestSessionOperations (manifestSessions manifest) @?= [operations]
+                fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+                oldPermitsFencedOperations fenced @?= operations
+                interpreted <- expect =<< inEntry reopened interpretHere
+                map sessionIdText (interpretedRecoverySessions interpreted) @?= [sessionName]
+                interpretedRecoveryOperations interpreted
+                    @?= map (\name -> OperationAbandonedPreCall name "IntentRecorded") operations
+                closed <- inEntry reopened (\s -> verifyAllSessionsClosed s plan)
+                assertBool "recovered namespaced operations leave the session closed" (isRight closed)
+        | sessionName <- ["session-a", "vendor:session.v2/child"]
+        ]
+    , testCase "operation enumeration refuses a payload naming another session" $
+        withStore $ \store -> do
+            _ <-
+                expect
+                    =<< inEntry
+                        store
+                        ( \s -> withOpenSession s $ \_ sess permit -> do
+                            _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
+                            key <- expect' (either (Left . SessionStoreFailure) Right (mkRecordKey ("op." <> planKeyDigest <> ".session-a.op-1")))
+                            observed <- readProtectedRecord s key
+                            case observed of
+                                Right (Just record) -> do
+                                    changed <- compareAndSwapProtectedRecord s key (ExpectVersion (protectedRecordVersion record)) (encodeFields ["IntentRecorded", "session-other", "0"])
+                                    _ <- expect' (either (Left . SessionStoreFailure) Right changed)
+                                    pure (Right ())
+                                other -> assertFailure ("missing operation: " <> show other) >> pure (Right ())
+                        )
+            manifested <- inEntry store (\s -> verifySessionManifest s plan)
+            case manifested of
+                Left (SessionRecordCorrupt _) -> pure ()
+                other -> assertFailure ("expected inconsistent record ownership refusal, got " <> show other)
     , testCase "a zero-operation Open session is still a required manifest member" $
         withStore $ \store -> do
             _ <- inEntry store $ \s ->

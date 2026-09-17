@@ -985,8 +985,7 @@ abandonBoundRunWithResources store project snapshot records = do
             (harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure False))
             proof
             ( \harnessRoot -> do
-                let run = harnessRootRunId harnessRoot
-                    unbound = harnessRootUnboundLease harnessRoot
+                let unbound = harnessRootUnboundLease harnessRoot
                 persisted <- persistCanonicalPlanSnapshot unbound 1 snapshot
                 case persisted of
                     Left failure -> pure (Left failure)
@@ -1002,9 +1001,7 @@ abandonBoundRunWithResources store project snapshot records = do
                             Left failure -> pure (Left failure)
                             Right () -> inModeEntry store $ \session -> do
                                 written <- mapM (writeCanonicalResource session) records
-                                case sequence_ written of
-                                    Left failure -> pure (Left failure)
-                                    Right () -> recordRunEffect session project run
+                                pure (sequence_ written)
             )
     either (assertFailure . show) pure outcome
   where

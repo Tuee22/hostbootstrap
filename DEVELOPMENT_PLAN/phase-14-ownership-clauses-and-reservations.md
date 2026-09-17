@@ -6,7 +6,9 @@ Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-12 ; x86_64 Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
+GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-show-details=direct --test-options=--hide-successes`
+from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Define the four Locked-Origin Identity Ownership clauses once, supply the one seam that
 > holds them, and supply the platform rows beneath it.
@@ -390,10 +392,15 @@ durability. `CoverageManifest` reported all four declared families at their exac
 `poetry run python -m hostbootstrap.check_code` passed; and
 `poetry run python -m hostbootstrap.test_all` passed 231.
 
+On 2026-09-16, native x86_64 Windows 11 Home 10.0.26200 with GHC 9.12.4 and Cabal 3.16.1.0
+compiles the unavailable POSIX row with its explicit `EmptyCase` extension. The row's declared refusal
+cases pass in the complete core suite: 2,541/2,541 in 370.93 seconds (528.74 seconds including
+component compilation). The complete host static gate also passes: the demo workspace's 151/151 demo
+cases and 2,541/2,541 core cases, the Python code check, and 251/251 Python tests.
+
 #### Remaining Work
 
-None. The row is POSIX primitives; the Windows kernel that fills the same seam and the selector between
-the two rows are the next sprint's, and the owners that consume both are the last sprint of this phase.
+None.
 
 ### Sprint 14.9: The Windows ownership row [Done]
 
@@ -452,10 +459,14 @@ cases, two encoding cases, two selector cases, and two source-shape cases. Canon
 `poetry run python -m hostbootstrap.check_code` passed; and
 `poetry run python -m hostbootstrap.test_all` passed 231.
 
+On 2026-09-16, the same native Windows gate compiles the selector's textual manifest refusal with
+its explicit `OverloadedStrings` extension. The Windows ownership families exercise the Win32 kernel;
+unavailable POSIX rows assert their declared refusals. The complete core suite passes 2,541/2,541,
+and every leg of the host static gate passes as recorded in Sprint 14.8.
+
 #### Remaining Work
 
-None. Both kernels fill the seam and one selector chooses between them; the three host-local owners'
-adoption of that seam is the last sprint of this phase.
+None.
 
 ### Sprint 14.10: Re-entering an object this project already owns [Done]
 
@@ -845,15 +856,26 @@ share one word reader" asserts each imports the shared reader and no longer impo
 
 Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0): the phase gate below.
 
+On 2026-09-16, the shipped decoder imports the shared little-endian reader on every host, including
+native Windows. `cabal build all` from `core/` passes; the complete core gate passes 2,541/2,541
+in 370.93 seconds. From `demo/`, `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes`
+passes 151/151 demo cases in 5.47 seconds and 2,541/2,541 core cases in 368.57 seconds;
+the full workspace command takes 703.01 seconds. Both workspaces compile and run the provider-live
+component with its declared no-request `Unsupported` outcome. The repository Python code check passes,
+and `poetry run python -m hostbootstrap.test_all` passes 251/251 in 4.01 seconds. These runs use
+Poetry 2.4.1 and repository-venv Python 3.14.7 on the native Windows gate host.
+
+After recording the phase closure and the acceptance work still owed, the focused `DocValidatorSpec`
+gate passes 11/11 in 4.82 seconds. It checks the phase table, sprint status, governed documentation,
+and evidence against the working tree. `git diff --check` passes.
+
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 
-None. The four clauses, the seam that holds them, the two platform rows beneath it, and the one record
-tape every owner publishes through are all in place, and each host-local object this project owns holds
-its clauses through them.
+None.
 
 ## Documentation Requirements
 

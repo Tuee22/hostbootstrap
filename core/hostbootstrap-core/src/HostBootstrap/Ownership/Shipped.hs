@@ -141,8 +141,8 @@ import HostBootstrap.Protected (
     recordKeyText,
     withProtectedEntry,
  )
-#ifndef mingw32_HOST_OS
 import HostBootstrap.Wire.LittleEndian (word32LE)
+#ifndef mingw32_HOST_OS
 import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
 #ifdef darwin_HOST_OS
 import Foreign.C.Error (throwErrnoIfMinus1_)

@@ -276,18 +276,161 @@ over a tree nothing re-tested. That visit also carries the Windows gate host, an
 
 #### Validation
 
-The phase's own gate, on its own hardware. Re-recording the digest without the run is the one thing
-this sprint may not do.
+The 2026-09-16 visit is on native x86_64 Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G,
+NVIDIA GeForce RTX 3090 driver 616.64, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, and
+repository-venv Python 3.14.7. The repository Poetry environment is resolved from `pyproject.toml`.
+The Python code check passes, and the Python suite passes 251/251 in 4.50 seconds.
+
+The pristine preflight finds no demo build, protected state, test-data root, running daemon, or installed
+WSL distribution. The original `.wslconfig` measures SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`.
+The 211 covered source files measure
+`cbbaa6b6e13052bd9e4adb981b64b0de86a34b2d10c0bd0797118b1720e1165b` before the run.
+The repository bootstrapper's `test init` entry begins a cold native dependency build. Initialization
+is stopped before any live infrastructure is created when the native core preflight exposes ownership
+compilation defects. The live matrix and terminal audit have not run; the recorded preflight digest
+precedes those source corrections.
+
+The ownership phase then closes on the complete native Windows static gate, recorded in Sprint 28.5.
+The corrected 211-file tree measures
+`8da152c4d873b944b38e6edde69f838150ff75ad0e3f2218970bba2d4c5da689`.
+Initialization resumes its isolated dependency cache through the harness-owned WMI durable launcher
+on 2026-09-16 at 16:29:57 UTC and succeeds in 677.81 seconds. The resulting operator test config
+declares 6 CPUs, 10 GiB memory, 80 GiB storage, and both stable variants; its SHA-256 is
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The complete matrix starts at 16:41:14 UTC and fails at 17:25:09 UTC after 2,634.63 seconds.
+It does not produce a passing matrix result.
+
+The first `hello-world` generation (`run-5e9e819c7984`) takes wall fence 27 and installs Ubuntu
+24.04.5 LTS on Linux 6.18.33.2-microsoft-standard-WSL2. Read-only guest observations report 6 CPUs,
+10,184,824 kB total memory, and a 79 GiB formatted root filesystem from the declared 80 GiB VHD.
+The applied wall carries both 21,600,000 ms idle timeouts, 6 processors, 10 GB memory, and 10 GB swap.
+Its native Linux bootstrap succeeds and Docker pulls published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8` before building the
+derived project image.
+The in-image Haskell quality gate and warning-clean component build pass. The following `spago build`
+step crashes with exit 139 after fetching the web dependencies. The guest kernel identifies the faulting
+process as Node's `V8Worker`, on Node 24.21.0 with Spago 1.0.4 and PureScript 0.15.16; no out-of-memory
+kill is reported, and the guest has ample free memory. The retained guest is used to isolate that failure
+before any acceptance retry. No image, browser, durable-readback, or terminal-cleanup success is claimed.
+Three isolated cold `spago build` attempts then pass against copies of the same web source in fresh
+containers from that exact base, with no source, toolchain, or runtime-flag changes. The diagnostic
+containers are removed. The observed crash is not reproduced; a complete matrix retry is still required,
+and these diagnostic builds do not replace any acceptance assertion.
+Immediate matrix retries correctly refuse the retained guest through the production-state safety
+precondition. The failed run's lease is closed at epoch 2, its generated config is absent, and its
+test-data parent is empty. Recovery verifies the guest was created by this run, restores the exact
+recorded wall through `restoreCurrentUserGlobalWall` with the demo's own identities and managed body,
+confirms the original wall hash and absence of an active wall record, unregisters only
+`hostbootstrap-demo-vm`, and then shuts down WSL. This restores the disposable starting state before
+the full matrix is retried; it is recovery from a failed attempt, not terminal acceptance evidence.
+The fresh matrix starts at 17:32:52 UTC with `hello-world` run `run-616fb00242bc`, wall fence 28,
+and a new guest. Its Haskell quality gate, web build, and exported-image verification pass; the image
+is `sha256:a6cd16913128d4f4de2d40b490bcb257ddf47c79f48e52295c561b5ce956ccd9`.
+Cluster, MinIO, and registry startup pass, but `kind load docker-image` fails while containerd extracts
+base layer `sha256:38a805fdab2cdb3d77d236a7bb01c6474779819896dce79d04de3a017ab17e5d`, reporting
+that its content digest is absent. This guest uses Docker 29.1.3 and containerd 2.2.1 from Ubuntu.
+The failed variant's teardown removes its guest and restores the wall. The same matrix proceeds to
+`hello-universe`, run `run-63fb0aa62f0c`, wall fence 29.
+An isolated image-import probe in that guest uses the same published base, Docker's containerd image
+store, Kind 0.33.0, Kubernetes 1.37.0, and node containerd 2.3.4. A new derived image retaining every base
+layer loads successfully through the unmodified `kind load docker-image` command into a fresh probe
+cluster. The previously missing layer is present, no disk-pressure event is observed, and at least
+28 GiB remains free. The probe cluster, client container, and derived-image tag are removed. This does
+not reproduce the project-image failure or establish an export workaround; no image-loading source
+change is made on that evidence.
+The actual `hello-universe` image is
+`sha256:aeffc3237f399ee61235090501040b64d02b8f5caa912ccbb68f8ed50348d584`. Its unmodified import
+also succeeds at 19:02:44 UTC. Inspection of the completed archive finds every referenced manifest and
+layer, and the previously missing digest is observed in the node's content store both before and after
+extraction. The guest retains 23 GiB free at import completion. Registry push, web exposure, and hidden
+native Windows daemon launch then succeed. The first variant's failure still prevents this attempt
+from satisfying the complete matrix gate; no source workaround is inferred from the successful retry.
+The variant reaches its durable-readback recreation: teardown deletes the guest and restores the
+original wall before a new guest takes wall fence 30.
+That generation builds image
+`sha256:9e5047540574a932bdaec49f28555a40fd48388040d8088a69abf6504facd769`; its unmodified cold import
+succeeds at 19:57:05 UTC, and durable readback passes. The matrix finishes at 19:58:01 UTC after
+8,709.16 seconds with exit 1 and `5/11 passed`: all five `hello-universe` cases pass, while the failed
+`hello-world` bring-up produces five `BROKEN` rows and one `LEAKED?` teardown row naming open session
+`chain-3-c37c8e1e7f3b`. The generated config and run data are absent, the original wall hash is restored,
+and the three attempt leases are closed at epochs 2, 4, and 8. The open failed-run session nevertheless
+remains recorded. Focused regression tests then confirm that the short close accepts a retained
+no-effect proof after either a session opens or an effect appears. The recursive-lifecycle phase owns
+the current-state recheck; these results do not establish current-source Windows acceptance.
+
+A separate native process probe links the built ownership library and uses the daemon's exact
+`hostbootstrap-demo.accelerator.owner` key and `hostbootstrap-demo/accelerator-daemon\n` payload
+in a temporary protected store. A live holder excludes a competing entry. After `Stop-Process -Force`
+kills the holder without running its bracket finalizer, a successor immediately acquires the entry,
+observes the unchanged store identity and owner bytes, refuses an `ExpectAbsent` overwrite, and removes
+the owner only with its observed version. All assertions pass. This is evidence for the native claim
+primitives used by the daemon; the complete demo suite separately verifies those are its two claim
+implementations. It does not claim a live daemon was killed during the acceptance matrix.
+
+The protected short-close correction then passes the complete native Windows and independent x86_64
+Linux static gates, recorded in Sprint 28.5. The worked demo's complete Production sequence also passes
+on Windows through WSL2, including an unmodified image import, native daemon startup, and terminal wall
+restoration. The new 211-file covered-source measurement is
+`4e2da7028532e4bfc2b87064e4ea19ebe2342c2ac6d53473e763757ced5fdd0f`.
+The complete current-source matrix runs through the durable Windows launcher from 21:26:26 UTC to
+22:08:19 UTC, with `hello-world` run `run-6e2eb13b6da4` and wall fence 32. It exits 1 after
+2,512.69 seconds, reporting `0/12 passed`. Native bootstrap, image build, web build, exported-runtime
+verification, and cluster/registry startup pass. Image
+`sha256:ee491414a6ade98ed91c0562a84193bf71102177ebc425a86cefc5ea5b197b95` then fails the unmodified
+Kind import: containerd reports `archive/tar: invalid tar header` while extracting base layer
+`sha256:b65cecff0b9ba303a7fadf8f2fdf7b90ea54565c130af48a22ce518fceed8b09`.
+This differs from the earlier missing-content error. Teardown removes the guest and restores the exact
+original wall, but session `chain-12-180a75c05484` remains open. The new short-close check refuses the
+old generation-12 close authority after teardown advanced the bound lease and mode to generation 13.
+Those records remain recoverable, and all five `hello-universe` cases are refused because prior cleanup
+is unresolved. No passing acceptance or clean terminal ownership audit is claimed.
+The ordinary recovery retry at 22:11:32 UTC exits 1 with `0/10 passed` before creating a guest. It
+misparses `project:ensure-vm-provider` as an operation of session `project`, exposing the session-key
+enumeration defect now owned by Sprint 10.5. That correction expires the preceding source measurements.
+Independent inspection of the exact failing layer downloaded from Docker Hub verifies its SHA-256,
+gzip CRC, and all 16,895 tar entries; this does not identify the local extraction failure's cause.
+
+Isolation outside the project reproduces extraction failures in a newly provisioned Ubuntu 24.04
+WSL distribution using Docker 29.1.3, containerd 2.2.1, and pigz 2.8 with zlib 1.3. Two ordinary pulls
+of the published CPU/amd64 base fail on different layers: one reports an invalid tar header and the
+other an `unpigz` CRC32 mismatch. Restarting the otherwise idle WSL utility VM permits the exact base
+digest to pull successfully. A fresh standalone Kind cluster subsequently fails its first cold import
+of that base; the probe cluster is removed. No project image-loading or host configuration change is
+made to hide these failures.
+
+The second failing compressed layer, downloaded independently, has the expected SHA-256. Three
+`unpigz` passes and one GNU gzip pass each validate all 16,088 tar entries. Separately, HLint in the
+base container segfaults once and the identical command passes on retry. These observations establish
+intermittent failures outside the project but do not identify a kernel, hardware, or decompressor cause.
+Separate one-pass memory tests of 512 MiB and 2 GiB pass; they are not a complete hardware assessment.
+
+The settled-source recovery retry runs through the repository Python bootstrapper and durable launcher
+from 23:01:51 UTC to 23:02:18 UTC, exits 1 after 26.52 seconds, and reports `0/10 passed`, all
+`REFUSED`. The corrected session parser permits recovery to close `chain-12-180a75c05484` at generation
+16. The canonical resource check then correctly refuses a pre-effect close: the provider and share
+records remain `owned`, and the Harness mode and bound lease remain at generation 17. The ordinary
+command installs the refusing recovery executor, and this retry does not establish a settled resource
+forest. No record is manually rewritten or deleted to admit another run.
+
+No project guest or generated project config remains, `.test_data` is empty, the operator test config
+retains its exact hash, and the original `.wslconfig` hash is restored with no active wall record.
+Production durable data remains. This is a failed-run audit, not a clean terminal ownership audit:
+the unresolved Harness lease still excludes Production and subsequent Harness runs. The final
+211-file source measurement is
+`a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`.
 
 #### Remaining Work
 
-The run is owed at the next visit to this hardware. It is taken once no other phase carries open
-work, because any earlier source change re-owes it.
+Resolve the preserved run's canonical provider/share ownership through verified recovery, establish a
+stable image-import substrate, and run the full matrix through the durable Windows launcher. Record
+`10/10`, image identities, duration, and a clean terminal ownership audit against the measured source.
 
 ## Remaining Work
 
-The Windows and WSL2 acceptance is owed against the current tree. **Sprint 27.5** owns
-the re-run, at the next visit to the hardware this phase declares.
+**Sprint 27.5** owns the complete Windows matrix and terminal audit. The final-source retry closes the
+abandoned session but refuses the remaining canonical resource ownership. A verified settlement of that
+run and a stable image-import substrate are prerequisites to the owed complete matrix.
 
 ## Documentation Requirements
 

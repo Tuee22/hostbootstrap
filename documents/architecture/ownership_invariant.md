@@ -105,6 +105,10 @@ native validation lives.
   if missing and never owned, a directory the run merely found is preserved, and a confirmed generation's
   content is cleared *after* clause 4's re-observation and before the seam removes the directory itself.
   This was the first production route on the invariant.
+  The enclosing Harness short close re-observes its lease epoch, legacy effect markers, canonical
+  resource namespace, and bound-plan session set under the same protected entry as closure. A retained
+  proof cannot discard an open session's recovery path or release mode after a later ownership record
+  appears. Released resource tombstones still require settled recovery rather than a no-resource close.
 - `HostBootstrap.Harness.GeneratedConfig` holds all four clauses for the run's generated sibling
   `<project>.dhall` **through the same seam**, and is **live** on the same bracket. It is the same
   protocol over a file: the canonical `OriginRecord`, whose file case names the recorded absence *and the

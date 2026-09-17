@@ -357,6 +357,12 @@ session. The Closing branch
 can resume only the close plan. Only after all are closed does a protected empty-set
 compare-and-swap mint `ClosedAbandonedHarnessRuns`; `withHarnessRoot` consumes that versioned proof
 atomically with fresh allocation. A new run ID or a concurrent sweep cannot bypass an abandoned run.
+The bound no-resource proof checks both legacy effect markers and the exact plan's canonical resource
+namespace. A canonical record, including a released tombstone, requires the settled-recovery path rather
+than proving that no resource was acquired. The Harness short close repeats that check and verifies the
+persisted lease epoch inside the protected entry that closes the lease. A bound run also requires its
+complete session set to be Closed. An earlier proof cannot bypass a later session or ownership record;
+refusal preserves the lease and mode so the abandoned-run sweep can still reach the work.
 Production and Harness use disjoint authority/broker lease namespaces but contend on one project-wide
 mode record. `harnessPreconditions` derives its total probe from the installed project identity;
 `withHarnessRoot` rechecks it while acquiring Harness mode. Production therefore cannot slip between

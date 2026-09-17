@@ -7191,55 +7191,68 @@ verifyBoundRunHasNoProjectResourcesAcquired ::
     BoundRunLease scope specDigest planDigest brokerGeneration ->
     IO (Either ModeError (ProjectClosureEvidence scope))
 verifyBoundRunHasNoProjectResourcesAcquired bound =
-    verifyLeaseLocationHasNoEffects
-        (boundRunLeaseLocation bound)
-        (runIdentityKey (boundRunLeaseIdentity bound))
+    case isBoundOwnershipKeyForPlan (leaseLocationProjectName location) run (boundRunLeasePlanDigest bound) of
+        Left failure -> pure (Left failure)
+        Right isOwned -> verifyLeaseLocationHasNoRecords location isOwned
+  where
+    location = boundRunLeaseLocation bound
+    run = runIdentityKey (boundRunLeaseIdentity bound)
 
 verifyLeaseLocationHasNoUnboundOwnership ::
     LeaseLocation ->
     RunKey ->
     IO (Either ModeError (ProjectClosureEvidence scope))
-verifyLeaseLocationHasNoUnboundOwnership =
-    verifyLeaseLocationHasNoRecords isUnboundOwnershipKeyForLease
-
-verifyLeaseLocationHasNoEffects ::
-    LeaseLocation ->
-    RunKey ->
-    IO (Either ModeError (ProjectClosureEvidence scope))
-verifyLeaseLocationHasNoEffects =
-    verifyLeaseLocationHasNoRecords isEffectKeyForLease
+verifyLeaseLocationHasNoUnboundOwnership location run =
+    verifyLeaseLocationHasNoRecords location (isUnboundOwnershipKeyForLease location run)
 
 verifyLeaseLocationHasNoRecords ::
-    (LeaseLocation -> RunKey -> RecordKey -> Bool) ->
     LeaseLocation ->
-    RunKey ->
+    (RecordKey -> Bool) ->
     IO (Either ModeError (ProjectClosureEvidence scope))
-verifyLeaseLocationHasNoRecords isOwned location runKey = do
+verifyLeaseLocationHasNoRecords location isOwned = do
     entered <-
         withProtectedEntry (leaseLocationStore location) $ \session -> do
-            checked <- withOrdinaryProjectAdmissionForName session (leaseLocationProjectName location) $ do
-                keys <- listProtectedRecords session
-                pure $ case keys of
-                    Left failure -> Left (ModeStoreFailure failure)
-                    Right present -> case filter (isOwned location runKey) present of
-                        [] -> Right (ProjectClosureEvidence PreEffectRefusalClose)
-                        record : _ -> Left (ModeEffectsRecorded (recordKeyText record))
+            checked <-
+                withOrdinaryProjectAdmissionForName session (leaseLocationProjectName location) $
+                    verifyNoProjectRecords session isOwned
             pure (Right checked)
     pure $ case entered of
         Left failure -> Left (ModeStoreFailure failure)
         Right result -> result
 
+verifyNoProjectRecords ::
+    ProtectedSession session ->
+    (RecordKey -> Bool) ->
+    IO (Either ModeError (ProjectClosureEvidence scope))
+verifyNoProjectRecords session isOwned = do
+    keys <- listProtectedRecords session
+    pure $ case keys of
+        Left failure -> Left (ModeStoreFailure failure)
+        Right present -> case filter isOwned present of
+            [] -> Right (ProjectClosureEvidence PreEffectRefusalClose)
+            record : _ -> Left (ModeEffectsRecorded (recordKeyText record))
+
 isUnboundOwnershipKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
-isUnboundOwnershipKeyForLease location run key =
-    isEffectKeyForLease location run key || isAcquisitionKeyForLease location run key
+isUnboundOwnershipKeyForLease location =
+    isUnboundOwnershipKeyForName (leaseLocationProjectName location)
 
-isEffectKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
-isEffectKeyForLease location =
-    hasRunRecordPrefix "effect." (leaseLocationProjectName location)
+isUnboundOwnershipKeyForName :: Text -> RunKey -> RecordKey -> Bool
+isUnboundOwnershipKeyForName project run key =
+    hasRunRecordPrefix "effect." project run key || hasRunRecordPrefix "acquisition." project run key
 
-isAcquisitionKeyForLease :: LeaseLocation -> RunKey -> RecordKey -> Bool
-isAcquisitionKeyForLease location =
-    hasRunRecordPrefix "acquisition." (leaseLocationProjectName location)
+-- Canonical resource records are ownership even when no legacy effect marker
+-- exists. Released tombstones likewise require the settled-recovery path;
+-- their existence cannot prove that the run acquired nothing.
+isBoundOwnershipKeyForPlan :: Text -> RunKey -> Text -> Either ModeError (RecordKey -> Bool)
+isBoundOwnershipKeyForPlan project run plan = do
+    prefix <-
+        either
+            (Left . ModeMalformedRecord . ("resource record prefix: " <>))
+            Right
+            (resourceRecordPrefixKernel plan)
+    pure $ \key ->
+        hasRunRecordPrefix "effect." project run key
+            || Text.isPrefixOf prefix (recordKeyText key)
 
 {- | The settled-destroy half of 'ProjectClosureEvidence' (the recursive-lifecycle-command phase).
 
@@ -8486,13 +8499,56 @@ closeHarnessRun session project closeRoot modeLease evidence =
             SettledDestroyClose ->
                 pure (Left (ModeClosureMismatch "pre-effect refusal" "settled destroy"))
             PreEffectRefusalClose -> do
-                closed <- closeLeaseForKey session project runKey
-                case closed of
+                checked <- verifyHarnessShortClose session project runKey (brokerEpochWord (projectModeLeaseEpoch modeLease))
+                case checked of
                     Left failure -> pure (Left failure)
-                    Right () -> releaseMode session project (WireHarness runKey)
+                    Right () -> do
+                        closed <- closeLeaseForKey session project runKey
+                        case closed of
+                            Left failure -> pure (Left failure)
+                            Right () -> releaseMode session project (WireHarness runKey)
   where
     run = harnessCloseRootRun closeRoot
     runKey = runIdentityKey (HarnessRunIdentity run)
+
+-- A previously obtained no-effect proof is not a snapshot of the close entry.
+-- Recheck the current lease and ownership before its close removes the run from
+-- the abandoned-run sweep. Session opening and this check share the store entry.
+verifyHarnessShortClose ::
+    ProtectedSession session ->
+    InstalledProjectIdentity projectId ->
+    RunKey ->
+    Word64 ->
+    IO (Either ModeError ())
+verifyHarnessShortClose session project run expectedEpoch =
+    withOrdinaryProjectAdmission session project $
+        withRecordKey (leaseKeyForRunKey project run) $ \key -> do
+            observed <- readProtectedRecord session key
+            case observed of
+                Left failure -> pure (Left (ModeStoreFailure failure))
+                Right Nothing -> pure (Left (ModeLeaseMissing (runKeyText run)))
+                Right (Just record) -> case decodeLease (protectedRecordBytes record) of
+                    Nothing -> pure (Left (ModeMalformedRecord (recordKeyText key)))
+                    Just state
+                        | leaseEpoch state /= expectedEpoch ->
+                            pure (Left (ModeEpochMismatch expectedEpoch (leaseEpoch state)))
+                    Just LeaseUnbound{} ->
+                        fmap (fmap (const ())) $
+                            verifyNoProjectRecords session (isUnboundOwnershipKeyForName projectName run)
+                    Just (LeaseBound _ _ planDigest) ->
+                        case isBoundOwnershipKeyForPlan projectName run planDigest of
+                            Left failure -> pure (Left failure)
+                            Right isOwned -> do
+                                absent <- verifyNoProjectRecords session isOwned
+                                case absent of
+                                    Left failure -> pure (Left failure)
+                                    Right _ -> do
+                                        closed <- verifyAllSessionsClosed session planDigest
+                                        pure (either (Left . ModeSessionFailure) (const (Right ())) closed)
+                    Just LeaseClosed{} -> pure (Right ())
+                    Just other -> pure (Left (ModeLeaseNotBindable (runKeyText run) (leaseStateName other)))
+  where
+    projectName = installedProjectName project
 
 -- Abandoned-run recovery -------------------------------------------------------------------
 

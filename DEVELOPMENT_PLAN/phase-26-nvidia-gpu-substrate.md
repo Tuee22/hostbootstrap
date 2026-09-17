@@ -1,6 +1,6 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -493,9 +493,42 @@ as this phase's evidence: the worked demo's live gate found a repair under this 
 `**Evidence covers**` after each of them, and § G admits only a run against the tree the row measures.
 The three durations are within 4% of each other, which is the useful thing they say together.
 
+### Sprint 26.8: NVIDIA acceptance of the current ownership rows [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Confirm the complete NVIDIA matrix against the current covered tree, including the ownership rows
+that compile on every supported host.
+
+#### Deliverables
+
+- Run the phase's complete declared gate on a native Linux/NVIDIA host.
+- Observe accelerator placement and audit terminal ownership and resource cleanup.
+- Record the dated host, commands, outcome, and newly measured covered-source digest.
+
+#### Validation
+
+The 2026-09-16 Windows visit identifies compilation defects in the shared ownership modules and a
+protected short-close gap, followed by namespaced session-key enumeration and canonical resource closure
+defects. Their corrections expire this phase's covered-source evidence. The corrected 211-file source
+measures `a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`;
+this is a source measurement, not gate evidence. No native Linux/NVIDIA connection is
+configured for this visit and no new NVIDIA run is recorded. The operator supplies this run on the native
+Linux/NVIDIA machine after the available Windows visit finishes; the Windows result cannot replace it.
+
+#### Remaining Work
+
+Run the full NVIDIA matrix and terminal audit against the settled source tree on the hardware this
+phase declares, then record current evidence.
+
 ## Remaining Work
 
-None.
+**Sprint 26.8** owns the current-tree NVIDIA matrix, accelerator observation, and terminal audit.
 
 ## Documentation Requirements
 

@@ -5,7 +5,7 @@
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-09 ; x86_64 Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Give an invocation a versioned session inside a single-writer project journal, and give a
 > crashed invocation a durable fence that stops its old permits from being mistaken for live ones.
@@ -206,6 +206,44 @@ Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4
 passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
 1,951/1,951 in 237.07 seconds, plus `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at 231 passed.
+
+#### Remaining Work
+
+None.
+
+### Sprint 10.5: Recover complete namespaced operation identities [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Recover operation identities without treating namespace and relation-path separators as the boundary
+between a session and its operation. A failed Windows run exposes the defect when its ordinary recovery
+sweep mistakes `project:ensure-vm-provider` for an operation owned by session `project`.
+
+#### Deliverables
+
+- Read the operation record's persisted session identity and validate its exact encoded key prefix.
+- Decode and validate the complete operation suffix, including namespaces, dotted tokens, and paths.
+- Refuse disagreement between the record payload and its key rather than guessing an owner.
+- Add focused regressions for real namespaced operations and inconsistent persisted ownership.
+- Keep the existing record encoding; the sprint adds no type and budgets 80 production lines in one module.
+
+#### Validation
+
+On 2026-09-16, both namespaced-operation regressions fail against the preceding parser with
+`SessionManifestOrphanOperation`. After the correction, `cabal test hostbootstrap-core-test
+--test-show-details=direct --test-options='-p SessionSpec --hide-successes'` passes all 107 session
+cases on native Windows in 14.43 seconds. These include complete enumeration and recovery for plain
+and namespaced/path session identities, plus refusal of a payload naming a different owner.
+Fourmolu 0.20.1.0 checks both changed Haskell files, HLint 3.10 reports no hints in the production
+module, and `git diff --check` passes. The complete declared phase gate then passes 2,546/2,546 core
+tests in 379.89 seconds, with the provider-live component's declared no-request result. The full Cabal
+command exits 0 in 409.15 seconds. The following lifecycle phase owns recovery's resource-closure check.
 
 #### Remaining Work
 

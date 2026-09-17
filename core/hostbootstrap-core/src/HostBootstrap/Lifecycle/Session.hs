@@ -3611,7 +3611,7 @@ enumerateOperationRecords session planDigest = do
   where
     step (Left failure) _ = pure (Left failure)
     step (Right acc) raw = do
-        observed <- readOperationRecordAt session raw
+        observed <- readOperationRecordAt session planDigest raw
         pure $ case observed of
             Left failure -> Left failure
             Right Nothing -> Right acc
@@ -3627,45 +3627,41 @@ operationKeyNamespace planDigest = do
     let digest = sha256Hex (TextEncoding.encodeUtf8 planDigest)
     pure ("op." <> digest <> ".")
 
-{- | Read one operation record by its raw store key, recovering the session and
-operation components from the key itself.
+{- | Read one operation record by its raw store key and persisted owner.
 
-An operation key is @op.\<digest\>.\<session\>.\<operation\>@, so the two
-components are the last two segments. A key that does not have them is not an
-operation record this plan owns and is skipped rather than guessed at.
+Record-name components may themselves contain dots: namespaces use @.@ and
+relation paths use @..@. The payload's session identity determines the exact
+prefix; the whole remaining suffix denotes the operation. Re-encoding both
+identities must reproduce the observed key before either is admitted.
 -}
 readOperationRecordAt ::
     ProtectedSession session ->
     Text ->
+    Text ->
     IO (Either SessionError (Maybe (OperationDisposition, Text, Text)))
-readOperationRecordAt session raw = case splitOperationKey raw of
-    Nothing -> pure (Right Nothing)
-    Just (sid, opKey) -> case keyFor raw of
-        Left failure -> pure (Left failure)
-        Right key -> do
-            observed <- readTransactionRecord session key
-            pure $ case observed of
-                Left failure -> Left (transactionFailure failure)
-                Right Nothing -> Right Nothing
-                Right (Just record) ->
-                    Right
-                        ( Just
-                            ( classifyRecordedPhase (phaseTextOf (transactionRecordPayload record))
-                            , opKey
-                            , sid
-                            )
-                        )
-
-{- | Split @op.\<digest\>.\<session\>.\<operation\>@ into its session and
-operation identities.
-
-Both components come back through 'recordIdentity', so a namespaced record name
-and the identity it denotes agree with what 'operationKeyFor' would have built.
--}
-splitOperationKey :: Text -> Maybe (Text, Text)
-splitOperationKey raw = case reverse (Text.splitOn "." raw) of
-    (opKey : sid : _rest@(_ : _ : _)) -> Just (recordIdentity sid, recordIdentity opKey)
-    _ -> Nothing
+readOperationRecordAt session planDigest raw = case keyFor raw of
+    Left failure -> pure (Left failure)
+    Right key -> do
+        observed <- readTransactionRecord session key
+        pure $ case observed of
+            Left failure -> Left (transactionFailure failure)
+            Right Nothing -> Right Nothing
+            Right (Just record) -> do
+                let payload = transactionRecordPayload record
+                (sid, opKey) <- identities payload
+                Right (Just (classifyRecordedPhase (phaseTextOf payload), opKey, sid))
+  where
+    corrupt = SessionRecordCorrupt ("operation ownership at " <> raw)
+    identities payload = case decodeFields payload of
+        _phase : sid : _ -> do
+            prefix <- operationPrefixFor planDigest (SessionId sid)
+            suffix <- maybe (Left corrupt) Right (Text.stripPrefix prefix raw)
+            let opKey = recordIdentity suffix
+            expected <- operationKeyFor planDigest (SessionId sid) opKey
+            if recordKeyText expected == raw
+                then Right (sid, opKey)
+                else Left corrupt
+        _ -> Left corrupt
 
 {- | One session as the manifest observed it, with the operation set the /store/
 holds for it rather than the set the session record claims.

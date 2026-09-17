@@ -121,6 +121,11 @@ Each operation records its durable unknown state before an effect whose answer c
 then settles that same operation, fence, generation, and journal version. A delayed result cannot settle a
 newer attempt. Unknown outcomes remain recoverable rather than being guessed as success or absence.
 
+Recovery enumerates session and operation records independently, then checks their exact membership.
+An operation record's persisted session identity determines its encoded key prefix; the complete suffix
+is decoded as the operation identity. Namespaces, dotted tokens, and relation paths remain intact, and
+re-encoding must reproduce the observed key. A payload/key disagreement refuses recovery.
+
 Reverse-journal and cursor helpers retain the enclosing scope, plan, broker generation, and result type
 across GADT branches. Explicit local result signatures make those index relationships compiler-independent.
 The reverse-root intent codec likewise fixes its field-list, unsigned-integer, and reverse-verb guard result

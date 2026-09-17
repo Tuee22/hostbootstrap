@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {- | The primitives a POSIX kernel supplies to the ownership seam, once.

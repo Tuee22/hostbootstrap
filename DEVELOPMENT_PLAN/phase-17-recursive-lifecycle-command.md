@@ -7,7 +7,9 @@ budgets, and cordoning)
 **Gate**: `cabal test all` from `core/`, including the real local
 process-boundary recursive-lifecycle tests
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all` and `cabal test all` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
+GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all` and
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Interpret one project plan recursively under a single root coordinator, execute each remote
 > frame through a storeless child executor, and unwind the same plan child-first for reverse verbs and failed
@@ -2832,10 +2834,11 @@ host-static gate passed.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
-`core/hostbootstrap-core/test/HarnessSpec.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Production modules**: `HostBootstrap.Harness.Ownership.Internal`,
-`HostBootstrap.Harness.Ownership` (2; cap 3)
-**Sprint budget**: no new named type and one close-fallback rearm adoption; at most 160 production Haskell
+`HostBootstrap.Harness.Ownership`, `HostBootstrap.Lifecycle.Mode` (3; cap 3)
+**Sprint budget**: no new named type and one close-fallback rearm adoption; at most 240 production Haskell
 lines.
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`,
@@ -2843,7 +2846,8 @@ lines.
 
 #### Objective
 
-Keep the Harness ownership finalizer bound to the current generation after a same-run restart.
+Keep the Harness ownership finalizer bound to the current generation after a same-run restart, and
+revalidate the exact short-close state inside the protected entry that releases its lease.
 
 #### Deliverables
 
@@ -2854,17 +2858,33 @@ Keep the Harness ownership finalizer bound to the current generation after a sam
 - Pre-effect finalization verifies no project resource was acquired under that exact current bound lease and
   closes with the matching current root and mode. Settled terminal authorization remains generation-erased only
   after the protected kernel has validated the current tuple.
+- A retained no-effect proof cannot close a run after resource effects or an open session appear. The
+  short close rechecks the exact lease, current effect records, and complete session set before mutation;
+  refusal retains lease and mode for recovery.
 - Binding, pending, settled, and consumed states keep their existing fail-closed monotonicity.
 
 #### Validation
 
 The command-level same-run fixture exercises the rearmed fallback and final settled close; source guards retain
-the control behind the private component. Run `HarnessSpec` and the complete core gate.
+the control behind the private component. `AuthoritySpec` exercises a retained proof against a subsequently
+opened session and a subsequently recorded effect, and verifies the refused close preserves ownership.
+
+The 2026-09-16 Windows live attempt reports an open operation session after an image-import failure while
+its run lease is closed. Both regressions fail against that implementation because the short close returns
+success. With the protected recheck, both pass on native Windows in 0.09 seconds and the broader
+`AuthoritySpec` run passes. Fourmolu accepts both changed modules and HLint reports no hints for the
+changed production module. The complete native Windows host static gate passes on the host the header
+names: core build plus 2,543/2,543 tests in 413.56 seconds; demo build, focused 151/151 tests in
+5.52 seconds, and the complete demo workspace at 151/151 plus 2,543/2,543 core cases in 439.78 seconds;
+the Python code check and 251/251 Python tests in 6.42 seconds. The combined core build/test command
+takes 463.50 seconds; the demo build/focused/full sequence takes 634.09 seconds. Both workspaces
+report the provider-live component's declared no-request result. The same source also passes the
+complete independent x86_64 Linux gate recorded in Sprint 28.5: 2,548/2,548 core cases in each workspace,
+151/151 demo cases, the Python code check, and 251/251 Python tests.
 
 #### Remaining Work
 
-None. On 2026-08-24 the warning-clean build, command-level restart fixture, focused 45-case Harness gate, and
-complete 2,454/2,454 core host-static gate passed.
+None.
 
 ### Sprint 17.58: The process route names its interactivity [Done]
 
@@ -3011,6 +3031,46 @@ refused with `Error: Instance is not running`.
 #### Remaining Work
 
 None.
+
+### Sprint 17.61: Canonical resource records refuse the short close [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/harness_workflow.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Make the no-resource proof observe the canonical resource records ordinary execution writes. The
+preserved Windows run owns provider and share records without a legacy `effect.*` marker, while the
+recovery fixture currently adds that marker to make the no-resource proof refuse.
+
+#### Deliverables
+
+- Demonstrate resource recovery with the existing canonical fixture and no additional effect marker.
+- Refuse the bound short-close proof and its final recheck while any record remains in the exact plan's
+  canonical resource namespace; settled recovery consumes that resource set through its existing path.
+- Preserve backend-refusal retry and released-tombstone behavior in the recovery tests.
+- Add no type; budget 80 production lines in one module.
+
+#### Validation
+
+On 2026-09-16, removing the extra effect marker from the canonical resource fixture makes its existing
+acquired-resource test fail: the expected backend call is absent even though the successor is admitted.
+After the correction, all 46 `HarnessSpec` tests pass on native Windows in 6.66 seconds, including
+backend-refusal retry and released-tombstone recovery. The retained-proof close test also covers a later
+canonical resource record. Fourmolu 0.19.0.1 checks the changed files; HLint reports no hints on retry
+after one isolated Linux process segfault. The complete native Windows phase gate passes: `cabal build
+all` followed by `cabal test all --test-show-details=direct --test-options=--hide-successes` from
+`core/` exits 0, with 2,547/2,547 core cases in 511.60 seconds and the provider-live component's
+declared no-request result. The complete command takes 529.45 seconds. The repository Python code
+check and 251/251 Python tests also pass (7.92 seconds).
+
+#### Remaining Work
+
+None. The worked-demo phase owns live confirmation against the preserved run.
 
 ## Remaining Work
 

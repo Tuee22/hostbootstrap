@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -2732,23 +2732,17 @@ argument and which the base image puts on `PATH`; the third named a GHCup layout
 owned in one place, the demo no longer restates it in a second language, and the verb now runs on a host
 that has the three tools as well as inside the image. The demo suite passed 151/151.
 
-### Sprint 24.45: The worked-demo gate against the current tree [Done]
+### Sprint 24.45: The worked-demo gate against the current tree [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
 
-Sprints 24.43 and 24.44 changed the consumer's daemon claims, its cluster template set and its
-code-check tool resolution, and the reachability algebra's admitted port and the repository-wide
-reformat reached everything under this phase's `**Evidence covers**`. The recorded run names a tree that
-no longer exists.
-
-The run needs a host that realizes `linux-cpu`, which is the substrate this phase declares. A machine
-carrying NVIDIA markers classifies as `linux-gpu` and takes the Direct chain instead, so it exercises a
-different lane and cannot stand in for this one.
+Record the complete worked-demo gate against the current covered tree. The host realizes the universal
+`linux-cpu` baseline through its supported provider; a Direct Linux GPU run exercises a different lane.
 
 #### Deliverables
 
@@ -2761,9 +2755,8 @@ different lane and cannot stand in for this one.
 
 The phase's own gate. It brings up real provider, Docker and cluster state on the host that runs it.
 
-#### Remaining Work
-
-None. The gate ran in full on 2026-09-14, on the gate host the row above names.
+The gate ran in full on 2026-09-14, on the gate host the row above names. Its recorded source digest
+precedes the current lifecycle short-close correction, so a complete new run is owed.
 
 The `linux-cpu` gate host is a guest VM, because this machine reports `/dev/nvidiactl` and
 `/proc/driver/nvidia/version` and therefore realizes `linux-gpu` on metal. The guest was created with no
@@ -2812,6 +2805,63 @@ The terminal audit is clean: `incus list` reports no instance, the generated
 `kind` and `docker` are absent from the gate host's own `PATH`, which is correct for this lane: both live
 inside the guest the run created and deleted.
 
+On 2026-09-16, the complete native Windows static gate passes against the short-close correction:
+`cabal build all` and `cabal test all` from `core/` (2,543/2,543), `cabal build all`,
+`cabal test hostbootstrap-demo-test` (151/151), and `cabal test all` from `demo/`
+(151/151 plus 2,543/2,543 core cases), plus the repository Python code check and 251/251
+Python tests. The host and command options are recorded in Sprint 17.57. The post-closure documentation
+validator passes 11/11 in 6.19 seconds. Production initialization through the repository Python
+bootstrapper and harness-owned durable Windows launcher succeeds at 20:33:23 UTC in 27.64 seconds.
+Its generated Production config measures SHA-256
+`5ec0092759c6818db0879c97399f5f33f345062781adf06d5e8214378fbb0a22` and declares 6 CPUs,
+10 GiB memory, and 80 GiB storage. The independently provisioned Linux host also passes every static
+gate leg, as recorded in Sprint 28.5, and is removed before Production bring-up begins.
+The same durable launcher runs the repository Python bootstrapper's complete Production sequence:
+
+| Command | Result | Duration |
+|---------|--------|----------|
+| `project up` | exit 0 | 2,618.06 s |
+| `project down` | exit 0 | 15.38 s |
+| `project destroy` | exit 0 | 9.82 s |
+
+Up runs from 20:39:44 UTC to 21:23:22 UTC. It creates a fresh WSL2 guest at wall fence 31, pulls
+published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, and builds image
+`sha256:11755765a487337268d3fa68d63fc48711672570b96f2c531507bddda6e4a3ef`.
+The image quality gate, web build, exported-runtime verification, unmodified Kind import, registry
+push, and web exposure pass. The hidden native Windows accelerator daemon becomes ready at a
+loopback-only endpoint. Down restores the original wall before stopping the guest; destroy removes
+the stopped guest and exits at 21:23:47 UTC.
+
+The terminal Production lease is `closed` at epoch 11 and no project mode remains. The daemon and WSL
+distribution are absent, no active wall record remains, and the original `.wslconfig` hash is restored.
+The operator test config retains its exact hash. Production durable data remains, as `destroy` intends.
+The runbook's disposable Production-config removal is performed only after its original hash is checked;
+the idle WSL utility VM is then shut down before the complete Harness matrix begins.
+The complete matrix starts at 21:26:26 UTC with `hello-world` run `run-6e2eb13b6da4`, wall fence 32.
+It exits 1 at 22:08:19 UTC after 2,512.69 seconds with `0/12 passed`: an invalid tar header during
+Kind image extraction causes failed bring-up, and the corrected close check preserves the unresolved
+run instead of releasing its mode. Sprint 27.5 records the image, layer, retained lease, and wall audit.
+
+The final session-journal and canonical-resource corrections pass the complete Windows static gate,
+recorded in Sprint 28.5: core 2,547/2,547, demo 151/151 plus 2,547/2,547 core cases, Python code
+checks, and 251/251 Python cases. The independent x86_64 Linux gate also passes: 2,552 core cases,
+151 demo cases, both Python legs, and the complete demo workspace. The focused demo gate passes
+all 151 cases on both platforms. The 46 covered
+files now measure `281a2cd1e6247562ae90d3edb1738daa0b498b6c9072c6a382b296ab31e63f5c`.
+The normal harness recovery retry at 23:01:51 UTC closes the abandoned session but retains its
+unsettled canonical provider/share ownership and Harness mode. It exits 1 with `0/10 passed`, all
+refused, after 26.52 seconds. That retained mode also excludes a fresh Production cycle. No complete
+current-source live gate is claimed; the previous Production pass predates these corrections.
+
+#### Remaining Work
+
+Settle the preserved run through verified resource recovery, resolve the intermittent image-import
+failures, and repeat the complete Production cycle and `10/10` matrix against the settled source.
+Record a clean terminal ownership audit and remeasure the covered-source digest. Current native
+Windows and independent x86_64 Linux static validation pass; the earlier Production pass does not
+cover the final corrections.
+
 ### Sprint 24.46: The consumer's provider opens on every lane it stops [Done]
 
 **Status**: Done
@@ -2856,7 +2906,8 @@ which this phase does not claim.
 
 ## Remaining Work
 
-None.
+**Sprint 24.45** owns verified recovery of the preserved run, the complete current-source live gate,
+terminal audit, and evidence refresh. Unsettled Harness ownership currently prevents a fresh live run.
 
 ## Documentation Requirements
 

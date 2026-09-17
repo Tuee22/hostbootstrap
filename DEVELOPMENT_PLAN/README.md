@@ -61,33 +61,28 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | recovery and live gate |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | acceptance re-run |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | acceptance re-run |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | acceptance re-run |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | recovery and live gate |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | macOS and arm64 Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Two phases are `Active`. The table above says which and what each owes; this section says how
-they relate, and nothing here overrides a row there.
+The next phase in numerical order is the worked demo. The Windows compilation, namespaced-operation
+parser, and canonical resource short-close corrections close phases 14, 10, and 17 on their complete
+gates. The final source passes the complete native Windows and independent x86_64 Linux static gates.
 
-What is left is hardware acceptance. The Apple Silicon and NVIDIA acceptances are current; the Windows
-acceptance awaits its native host. In the host-portability matrix, the macOS and arm64 Linux gates are
-current, and the Windows gate is owed. The x86_64 Linux core and Python evidence is current;
-its demo leg needs a dated record. The Windows visit can supply the remaining evidence, including an
-x86_64 Linux gate host through WSL2. No open phase is waiting on a typed boundary, a duplicated workflow, a gate that
-has not reached the sources it was written for, or anything a machine with the right hardware would not
-simply run.
+Phase 24's live gate remains blocked. Repeated image extraction failures occur both in the demo and
+in independent Docker/Kind probes. The final-source recovery retry closes the abandoned session but
+retains the provider/share ownership and Harness lease, which prevent a fresh Production or Harness
+run. The earlier Production pass predates the final corrections; no current live pass is claimed.
+[Sprint 27.5](phase-27-windows-and-wsl2-substrate.md) records the failed attempts and preserved state.
 
-The worked demo's own live gate is closed, and closing it was not a formality: it found three defects no
-earlier run could reach, all in the lifecycle of a provider the chain installs itself. The descent
-resolved its host tool against a configuration measured before the chain's own `ensure` step installed
-that provider; the reverse driver ticked its pre-descent reachability step without reaching anything, so
-`destroy` descended into a stopped frame; and the consumer's provider reverse answered that reachability
-action on neither of its backends, one of them by stopping. Each is repaired by the phase that owns the
-surface, each carries a case that fails without the repair, and the same live run confirms all three.
+The operator supplies native Linux/NVIDIA, macOS, and arm64 Linux runs on those machines after this
+visit. Their older evidence remains explicitly expired. The Apple substrate acceptance covers a
+narrower path set and remains current.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would
@@ -104,18 +99,6 @@ rather than as an unclosed phase.
 The documentation reconciliation phase was last for the same reason in reverse: it corrects governed
 prose against the source those phases change, and its validator checks are what keep the two aligned
 afterwards. Reconciling first would have reconciled to a tree that was about to move.
-
-Closed and not reopened: the Python pre-binary floor, the Haskell core scaffolding, host tools and
-substrate detection, the protected store, installed identity and the authority kernels, canonical
-quantities and reconcile results, Dhall configuration and the generic project model, the ensure
-reconcilers, the step algebra and the project plan, lifecycle modes and run leases, sessions and fences, prepared operations, authenticated
-handoff and child admission, the four ownership clauses and host-local reservations, host providers and
-the self-reference lift, cluster lifecycle and cordoning, the recursive lifecycle command, recovery and
-migration, the test harness and its exclusive run ownership, the `test`/`context` command semantics, the
-composition and network algebra, the service runtime, base image publication with its opportunistic warm
-store, the worked demo, the Apple Silicon and NVIDIA acceptances, and the documentation reconciliation with its drift
-guards. Their covered paths are outside the open work, and their gate evidence still
-measures the tree it names.
 
 ## Validation policy
 

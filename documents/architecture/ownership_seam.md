@@ -254,6 +254,9 @@ made rather than a rendering of one. A transaction a frame cannot read is answer
 rather than a closed pipe, so a caller learns that the far side declined instead of inferring it from a
 stream that ended.
 
+The shipped codec is platform-neutral: its shared `HostBootstrap.Wire.LittleEndian` reader is available
+on Windows as well as POSIX. A kernel-specific refusal does not remove the request or outcome decoder.
+
 An empty frame stack addresses this machine, which is how a local transaction that must outlive its
 launcher's own bracket is expressed — a supervised child whose group is killed when the owning process
 disappears cannot be an ordinary bounded run, because the launcher's cleanup is exactly what a hard kill
