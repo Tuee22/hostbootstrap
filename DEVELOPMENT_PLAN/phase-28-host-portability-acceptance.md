@@ -14,12 +14,12 @@ Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 
 from `core/`, `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
 from the repository root ; pass ; covers d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9
-**Gate evidence**: 2026-09-16 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
-GHC 9.12.4, Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all`
+**Gate evidence**: 2026-09-17 ; native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G,
+15.87 GiB, GHC 9.12.4, Cabal 3.16.1.0, repository-venv Python 3.14.7, Poetry 2.4.1 ; `cabal build all`
 from `core/`, `cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/`,
 `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-from the repository root ; pass ; covers f35c89016994f5470e24b50e56c7bb180f12d79334251f4ac012ac60d2ab836a
+from the repository root ; pass ; covers d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9
 **Gate evidence**: 2026-09-16 ; `hb-linux-static2-20260916`, x86_64 Ubuntu 24.04.4 LTS container
 with a reaping init, Linux 6.18.33.2-microsoft-standard-WSL2, manually provisioned through
 `hostbootstrap-portability-amd64-20260916b` on the Windows gate host, GHC 9.12.4, Cabal 3.16.1.0,
@@ -501,15 +501,58 @@ no-request provider-live component. Python code checks pass and 251 tests pass i
 The 823-file digest is `d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`.
 This is shared static evidence from the earlier phases, not closure of the remaining acceptance work.
 
+On 2026-09-17, the Windows visit records the complete header gate host-native on the gate host its
+row names: native x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G with 15.87 GiB, GHC 9.12.4,
+Cabal 3.16.1.0, Poetry 2.4.1, and repository-venv Python 3.14.7. The substrate detector classifies the
+host `windows-gpu` (amd64) and the fail-fast host minimums pass. The Poetry environment is resolved
+from `pyproject.toml` on this gate host rather than replaying another family's lock, which is what
+makes the Python leg evidence about this family's own resolved toolchain.
+
+- From `core/`, `cabal build all` passes warning-clean in 138.97 seconds, and the header's complete
+  test command passes 2,547/2,547 in 402.70 seconds (435.10 seconds for the complete Cabal command).
+- From `demo/`, the header's complete workspace command passes its 151-case demo component in
+  5.45 seconds and 2,547/2,547 core cases in 395.64 seconds; the complete command takes
+  437.03 seconds.
+- Both workspaces compile and run the `hostbootstrap-provider-live-linux-cpu` component, which
+  reports its declared no-request `Unsupported` result. The core suite likewise reports its
+  direct-Colima lane as not requested.
+- From the repository root, `poetry run python -m hostbootstrap.check_code` passes in 8.82 seconds
+  and `poetry run python -m hostbootstrap.test_all` passes 251/251 in 3.95 seconds.
+
+The native Windows ownership and host-wall cases exercise the Win32 kernel, while the POSIX-only
+rows assert their declared refusals. The core total is five cases below the 2,552 the x86_64 Linux
+row reports, which is exactly the source selection enumerated in Sprint 28.1 rather than a difference
+this run introduced. The 823 covered files measure
+`d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`, byte-identical to the native
+x86_64 Linux row above, so the two families are current against one measured tree. The focused
+`DocValidatorSpec` run passes 11/11 on this gate host in 6.16 seconds.
+
+The first `cabal build all --enable-tests` attempt in `demo/` aborted with the GHC RTS internal error
+`evacuate: strange closure type -1570714288`, and the identical command passed on immediate retry
+with no source, toolchain, or flag change. That is the same intermittent-corruption signature
+Sprint 27.5 records on this host from a different program, and it is named here so the next visit
+does not read it as a source defect. Every gate leg above is a clean pass.
+
+Separately, `hostbootstrap --help` from the repository Poetry environment aborts on this gate host
+with `UnicodeEncodeError` writing U+2192 to a cp1252 stdout, on a Python whose `sys.stdout.encoding`
+is the console code page. This is a native-Windows defect in the Python bootstrapper's help
+rendering rather than a platform limit, and no gate leg invokes it. It is recorded rather than
+repaired here because no phase owns it yet and a source change would expire the completion evidence
+of the `Done` deferred phases whose covers sets name `hostbootstrap`.
+
 #### Remaining Work
 
-The ownership replacement fixture corrections change the covered test tree. Repeat the Windows,
-macOS, and arm64 Linux gates against the measured current tree; native x86_64 Linux is current.
+Repeat the macOS and arm64 Linux gates against the measured current tree
+`d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`; native x86_64 Linux and native
+Windows are current. Neither remaining family is reachable from the Windows gate host this visit
+convened, so both are named as owed rather than inferred from the two current cells.
 
 ## Remaining Work
 
-**Sprint 28.5** owns current-source Windows, macOS, and arm64 Linux static runs. The replacement
-fixture corrections expire their earlier evidence; the 2026-09-17 native x86_64 Linux row is current.
+**Sprint 28.5** owns the current-source macOS and arm64 Linux static runs. The 2026-09-17 native
+x86_64 Linux and native Windows rows are current against
+`d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`; the macOS and arm64 Linux rows
+still carry the pre-correction tree and are re-owed at the next Apple visit.
 
 ## Documentation Requirements
 

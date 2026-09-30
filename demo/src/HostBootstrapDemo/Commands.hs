@@ -82,7 +82,7 @@ module HostBootstrapDemo.Commands (
     demoRegistryPlan,
     registryConfigYaml,
     registryEndpoint,
-    minioClusterEndpoint,
+    objectStoreClusterEndpoint,
     parseBlobRouteAnswer,
     uploadSessionUrl,
     canaryBlobDigest,
@@ -837,7 +837,7 @@ foldDemoOperationRole identity provider cluster workload service assertion =
             | projectIdentity == demoStepId "deploy-accelerator-daemon" -> Right service
             | otherwise -> Left ("demo plan slices: unclassified project operation " ++ show projectIdentity)
   where
-    workloadIdentities = map demoStepId ["deploy-minio", "deploy-registry", "push-image"]
+    workloadIdentities = map demoStepId ["deploy-object-store", "deploy-registry", "push-image"]
 
 {- | Join the exact retained provider/cluster topology, digest-check the demo
 configuration, and return five plan-indexed role slices.  Each role member is
@@ -920,7 +920,7 @@ recursively (§ Y; @project up --dry-run@ renders it). It descends three frames 
 full fractal): the metal host-orchestrator provisions the VM and builds the pb (#2) +
 the project image (#3); the in-VM @vm-orchestrator-1@ mints the project-container child
 config and hands off; the in-container @vm-project-container-2@ stands up the persistent
-stack (@deploy-kind@ → @deploy-minio@ → @deploy-registry@ → @push-image@ →
+stack (@deploy-kind@ → @deploy-object-store@ → @deploy-registry@ → @push-image@ →
 @deploy-chart@ → @expose-port@), ending at a live webservice on the NodePort. The two
 chains differ ONLY in how the accelerator daemon is placed (host-resident vs.
 in-cluster), appended after this stack.
@@ -965,8 +965,8 @@ demoVmBackedStackAt providerContext cfg =
         (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame (changed contextInitAnnounce))
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
       deployKindStep "deploy the persistent kind cluster (cordon #2, at the run's own profile)" demoContainerFrame (changed (deployKindAction cfg))
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoContainerFrame (changed (deployMinioAction cfg))
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoContainerFrame (changed (deployRegistryAction cfg))
+    , demoProjectStep "deploy-object-store" "install the in-cluster S3 backing store + create the registry bucket" demoContainerFrame (changed (deployObjectStoreAction cfg))
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), backed by the S3 store" demoContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (changed (pushImageAction cfg))
     , declaredChartStep cfg demoContainerFrame
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (changed (exposeAction cfg))
@@ -1072,8 +1072,8 @@ demoLinuxGpuChainAt durableBind descriptor cfg =
     , reversedBy
         (demoDirectClusterReverseAt (clusterProfileOf cfg) descriptor)
         (deployKindStep "deploy the persistent nvkind cluster (at the run's own profile)" demoDirectContainerFrame (changed (deployKindAction cfg)))
-    , demoProjectStep "deploy-minio" "install the in-cluster MinIO (S3) backing store + create the registry bucket" demoDirectContainerFrame (changed (deployMinioAction cfg))
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), S3-backed by MinIO" demoDirectContainerFrame (changed (deployRegistryAction cfg))
+    , demoProjectStep "deploy-object-store" "install the in-cluster S3 backing store + create the registry bucket" demoDirectContainerFrame (changed (deployObjectStoreAction cfg))
+    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), backed by the S3 store" demoDirectContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into nvkind + push it to the in-cluster registry" demoDirectContainerFrame (changed (pushImageAction cfg))
     , declaredChartStep cfg demoDirectContainerFrame
     , exposePortStep "verify the web NodePort (30080) is reachable" demoDirectContainerFrame (changed (exposeAction cfg))
@@ -1428,7 +1428,7 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
         now = preparedGateJournalVersion gate
         nonce = "deploy-cluster-" <> T.pack (show now)
         clusterSlice = [(stepExecutionConfigDigest execution, stepExecutionFrame execution)]
-        workload = ["project:deploy-minio", "project:deploy-registry", "project:push-image", "core:deploy-chart"]
+        workload = ["project:deploy-object-store", "project:deploy-registry", "project:push-image", "core:deploy-chart"]
     unless (providerKey `elem` stepExecutionDependencyKeys execution) $
         failLifecycle "cluster reconcile: the exact provider is absent from the cluster node's admitted prefix"
     unless (direct || shareKey `elem` stepExecutionDependencyKeys execution) $
@@ -1604,28 +1604,22 @@ registryImage :: String
 registryImage = "registry:2"
 
 -- ---------------------------------------------------------------------------
--- MinIO (S3) backing store for the in-cluster registry.
+-- S3 backing store for the in-cluster registry.
 -- ---------------------------------------------------------------------------
 
-{- | The MinIO (S3-compatible) object store image the registry's storage backend
-targets. Single-binary and natively multi-arch (like @registry:2@), so it runs on
-every substrate with no per-component override.
-
-It is named by registry host on purpose. On 2026-09-13 the Docker Hub
-@minio/minio@ repository stopped resolving — MinIO archived the open-source
-server, client and KES projects, and @dl.min.io@ answers @410 Gone@ for every
-community release — while the same AGPL builds remain published on Quay. An
-unqualified name would have silently meant the repository that is gone.
+{- | A versioned multi-architecture S3 gateway image with a persistent POSIX
+backend. The registry's storage driver uses the same S3 protocol on every
+substrate, while the backing PVC survives pod restarts.
 -}
-minioImage :: String
-minioImage = "quay.io/minio/minio"
+objectStoreImage :: String
+objectStoreImage = "ghcr.io/versity/versitygw:v1.7.0"
 
-{- | The stable cluster-internal MinIO NodePort. The runtime exposure operation
+{- | The stable cluster-internal S3 NodePort. The runtime exposure operation
 maps this target to an independently assigned loopback endpoint before the
 container-frame client creates the registry bucket.
 -}
-minioNodePort :: Int
-minioNodePort = 30900
+objectStoreNodePort :: Int
+objectStoreNodePort = 30900
 
 {- | The registry's stable cluster-internal NodePort. The Service and semantic
 exposure intent both derive from it; only the runtime-owned relay supplies the
@@ -1644,12 +1638,12 @@ source.
 The topology is the interesting part: the client is host-local (a Docker client
 dialing a runtime-resolved loopback exposure) and the blob store is cluster-only. There is **no**
 'HostBootstrap.Network.Reachability' constructor for that pair, because a
-host-local client genuinely cannot resolve @minio.default.svc@. So
+host-local client genuinely cannot resolve @object-store.default.svc@. So
 'hostServedRegistryPlan' can only produce 'ProxyBlobs' — proxying is selected by
 construction, not by remembering to set a flag.
 
 The rendered @storage@ stanza therefore disables redirects: a blob response
-cannot send the host-local client to @minio.default.svc:9000@, which exists only
+cannot send the host-local client to @object-store.default.svc:9000@, which exists only
 in the cluster domain.
 -}
 demoRegistryPlan :: ResolvedExposure lifecycleScope planId clusterId service -> RegistryPlan 'HostLocal 'ClusterOnly lifecycleScope planId clusterId service
@@ -1658,7 +1652,7 @@ demoRegistryPlan = registryPlanFromExposure . resolvedHostExposure
 registryPlanFromExposure :: Exposure 'HostLocal lifecycleScope planId clusterId service -> RegistryPlan 'HostLocal 'ClusterOnly lifecycleScope planId clusterId service
 registryPlanFromExposure exposure =
     builtInPlan "demo registry plan" $ do
-        store <- first RegistryNetworkError (clusterOnlyEndpoint "minio.default.svc:9000")
+        store <- first RegistryNetworkError (clusterOnlyEndpoint "object-store.default.svc:9000")
         first RegistryPlanFailure (hostServedRegistryPlan hostLocalClient exposure store 1)
 
 -- | Construction failures for the demo's own plan assembly.
@@ -1670,33 +1664,33 @@ data DemoRegistryPlanError
 builtInPlan :: String -> Either DemoRegistryPlanError a -> a
 builtInPlan label = either (error . (("invalid " ++ label ++ ": ") ++) . show) id
 
-{- | The in-cluster DNS the registry pod reaches MinIO's S3 API on (same
+{- | The in-cluster DNS the registry pod reaches the store's S3 API on (same
 namespace) — a projection of the plan's store endpoint, never assembled
 separately.
 -}
-minioClusterEndpoint :: String
-minioClusterEndpoint =
+objectStoreClusterEndpoint :: String
+objectStoreClusterEndpoint =
     T.unpack . endpointAuthority $
-        builtInPlan "demo MinIO cluster endpoint" (first RegistryNetworkError (clusterOnlyEndpoint "minio.default.svc:9000"))
+        builtInPlan "demo object-store cluster endpoint" (first RegistryNetworkError (clusterOnlyEndpoint "object-store.default.svc:9000"))
 
 {- | The bucket the registry stores all its blobs/manifests in. Created idempotently
-by @deploy-minio@ before the registry starts — the s3 driver requires it to
+by @deploy-object-store@ before the registry starts — the s3 driver requires it to
 pre-exist.
 -}
 registryBucket :: String
 registryBucket = "registry"
 
-{- | Fixed demo-internal MinIO root credentials — also the S3 credentials the
-registry authenticates with. They live only in the in-cluster @minio-credentials@
+{- | Fixed demo-internal S3 root credentials — also the credentials the
+registry authenticates with. They live only in the in-cluster @object-store-credentials@
 Secret and the bucket-init @MC_HOST_local@ env, never in Dhall, @argv@, or a
 persisted host file. These are NOT the host Docker Hub credential
 "HostBootstrap.Registry" governs, so that credential doctrine does not apply.
 -}
-minioAccessKey :: String
-minioAccessKey = "hostbootstrap"
+objectStoreAccessKey :: String
+objectStoreAccessKey = "hostbootstrap"
 
-minioSecretKey :: String
-minioSecretKey = "hostbootstrap-demo-secret"
+objectStoreSecretKey :: String
+objectStoreSecretKey = "hostbootstrap-demo-secret"
 
 {- | The registry's @config.yml@ storage stanza — the @s3@ driver ONLY. Stock
 @registry:2@ ships a default config carrying a @filesystem@ driver; layering
@@ -1717,7 +1711,7 @@ registryConfigYaml plan =
         -- to get wrong: the boolean is output, never input (§ GG).
         ++ map T.unpack (renderStorageRedirect plan)
         ++ [ "  s3:"
-           , "    regionendpoint: http://" ++ minioClusterEndpoint
+           , "    regionendpoint: http://" ++ objectStoreClusterEndpoint
            , "    region: us-east-1"
            , "    bucket: " ++ registryBucket
            , "    forcepathstyle: true"
@@ -1727,13 +1721,13 @@ registryConfigYaml plan =
            ]
 
 {- | The in-cluster registry manifest: a @registry:2@ Deployment plus a NodePort
-Service on 30500, now S3-backed by MinIO. The registry image stays single-binary
-and multi-arch; storage is externalized to MinIO so the pushed blobs survive a
-registry pod restart (see 'minioManifest'). Anonymous + HTTP — the resolved
+Service on 30500, now backed by the S3 store. The registry image stays
+single-binary and multi-arch; storage is externalized so the pushed blobs
+survive a registry pod restart (see 'objectStoreManifest'). Anonymous + HTTP — the resolved
 loopback exposure is insecure-by-default in Docker, so @push-image@ needs no
 @docker login@ and no TLS. The s3 storage stanza is supplied by the @registry-config@ ConfigMap
 ('registryConfigYaml') mounted over the image's default @config.yml@; only the two
-S3 secrets come from the @minio-credentials@ Secret via env.
+S3 secrets come from the @object-store-credentials@ Secret via env.
 -}
 registryManifest :: RegistryPlan 'HostLocal 'ClusterOnly lifecycleScope planId clusterId service -> String
 registryManifest plan =
@@ -1762,14 +1756,14 @@ registryManifest plan =
                , "        - name: registry"
                , "          image: " ++ registryImage
                , "          imagePullPolicy: IfNotPresent"
-               , -- The two S3 secrets come from the minio-credentials Secret (env-over-
+               , -- The two S3 secrets come from the object-store-credentials Secret (env-over-
                  -- config merge into storage.s3), never the ConfigMap. The non-secret s3
                  -- params live in the mounted config.yml.
                  "          env:"
                , "            - name: REGISTRY_STORAGE_S3_ACCESSKEY"
-               , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: accesskey } }"
+               , "              valueFrom: { secretKeyRef: { name: object-store-credentials, key: accesskey } }"
                , "            - name: REGISTRY_STORAGE_S3_SECRETKEY"
-               , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: secretkey } }"
+               , "              valueFrom: { secretKeyRef: { name: object-store-credentials, key: secretkey } }"
                , -- Gate the Service endpoints on the registry actually serving GET /v2/, so
                  -- push-image cannot race a scheduled-but-not-yet-listening registry (a
                  -- NodePort Service routes only to Ready pods). A generous failureThreshold
@@ -1796,29 +1790,28 @@ registryManifest plan =
                , "    - { port: 5000, targetPort: 5000, nodePort: " ++ show registryNodePort ++ " }"
                ]
 
-{- | The in-cluster MinIO (S3) deployment the registry's @s3@ storage driver
-targets: a @minio-credentials@ Secret, a @minio-data@ PVC (bound to kind's default
-@local-path@ StorageClass, so the store survives registry/MinIO POD restarts — the
-persistence win — though not @project destroy@), a single @minio server@ Deployment
-(@Recreate@ strategy, since a RWO PVC cannot attach to two pods at once), and a
-NodePort Service exposing only the S3 API (9000) for bucket-init.
+{- | The in-cluster S3 deployment the registry's @s3@ storage driver targets:
+an @object-store-credentials@ Secret, an @object-store-data@ PVC (bound to
+kind's default @local-path@ StorageClass, so blobs survive pod restarts but
+not @project destroy@), one VersityGW POSIX-backed Deployment with @Recreate@
+strategy for the RWO PVC, and a NodePort Service exposing its S3 API on 9000.
 -}
-minioManifest :: String
-minioManifest =
+objectStoreManifest :: String
+objectStoreManifest =
     unlines
         [ "apiVersion: v1"
         , "kind: Secret"
         , "metadata:"
-        , "  name: minio-credentials"
+        , "  name: object-store-credentials"
         , "type: Opaque"
         , "stringData:"
-        , "  accesskey: " ++ minioAccessKey
-        , "  secretkey: " ++ minioSecretKey
+        , "  accesskey: " ++ objectStoreAccessKey
+        , "  secretkey: " ++ objectStoreSecretKey
         , "---"
         , "apiVersion: v1"
         , "kind: PersistentVolumeClaim"
         , "metadata:"
-        , "  name: minio-data"
+        , "  name: object-store-data"
         , "spec:"
         , "  accessModes: [ ReadWriteOnce ]"
         , "  resources: { requests: { storage: 10Gi } }"
@@ -1826,34 +1819,34 @@ minioManifest =
         , "apiVersion: apps/v1"
         , "kind: Deployment"
         , "metadata:"
-        , "  name: minio"
-        , "  labels: { app: minio }"
+        , "  name: object-store"
+        , "  labels: { app: object-store }"
         , "spec:"
         , "  replicas: 1"
         , "  strategy: { type: Recreate }"
-        , "  selector: { matchLabels: { app: minio } }"
+        , "  selector: { matchLabels: { app: object-store } }"
         , "  template:"
-        , "    metadata: { labels: { app: minio } }"
+        , "    metadata: { labels: { app: object-store } }"
         , "    spec:"
         , "      containers:"
-        , "        - name: minio"
-        , "          image: " ++ minioImage
+        , "        - name: object-store"
+        , "          image: " ++ objectStoreImage
         , "          imagePullPolicy: IfNotPresent"
-        , "          args: [ \"server\", \"/data\", \"--console-address\", \":9001\" ]"
         , "          env:"
-        , "            - name: MINIO_ROOT_USER"
-        , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: accesskey } }"
-        , "            - name: MINIO_ROOT_PASSWORD"
-        , "              valueFrom: { secretKeyRef: { name: minio-credentials, key: secretkey } }"
-        , "          ports: [ { containerPort: 9000 }, { containerPort: 9001 } ]"
+        , "            - name: ROOT_ACCESS_KEY"
+        , "              valueFrom: { secretKeyRef: { name: object-store-credentials, key: accesskey } }"
+        , "            - name: ROOT_SECRET_KEY"
+        , "              valueFrom: { secretKeyRef: { name: object-store-credentials, key: secretkey } }"
+        , "            - { name: VGW_PORT, value: ':9000' }"
+        , "            - { name: VGW_BACKEND, value: posix }"
+        , "            - { name: VGW_BACKEND_ARGS, value: /data }"
+        , "          ports: [ { containerPort: 9000 } ]"
         , "          readinessProbe:"
-        , "            httpGet: { path: /minio/health/ready, port: 9000 }"
+        , "            tcpSocket: { port: 9000 }"
         , "            periodSeconds: 5"
         , "            failureThreshold: 30"
-        , -- The registry streams the project image's multi-GiB layers through
-          -- MinIO as S3 multipart uploads; a 512Mi cap OOM-kills MinIO mid-upload
-          -- (its ClusterIP then refuses the connection and the registry surfaces
-          -- a generic "unknown error"). Size MinIO to sustain a large-image push.
+        , -- The registry streams multi-GiB project image layers through this
+          -- S3 endpoint, so the store must have room for multipart uploads.
           "          resources:"
         , "            requests: { cpu: 250m, memory: 1Gi }"
         , "            limits: { cpu: \"2\", memory: 4Gi }"
@@ -1861,29 +1854,29 @@ minioManifest =
         , "            - { name: data, mountPath: /data }"
         , "      volumes:"
         , "        - name: data"
-        , "          persistentVolumeClaim: { claimName: minio-data }"
+        , "          persistentVolumeClaim: { claimName: object-store-data }"
         , "---"
         , "apiVersion: v1"
         , "kind: Service"
         , "metadata:"
-        , "  name: minio"
+        , "  name: object-store"
         , "spec:"
         , "  type: NodePort"
-        , "  selector: { app: minio }"
+        , "  selector: { app: object-store }"
         , "  ports:"
-        , "    - { name: api, port: 9000, targetPort: 9000, nodePort: " ++ show minioNodePort ++ " }"
+        , "    - { name: api, port: 9000, targetPort: 9000, nodePort: " ++ show objectStoreNodePort ++ " }"
         ]
 
 -- Phantom readiness tags (empty marker types, § Tier-2): each names a dependency
 -- whose readiness a 'Ready' witness proves. They are distinct types, so a witness
 -- minted at one boundary cannot be passed where another is required — "push before
--- the registry serves /v2/", "build #3 before dockerd", "bucket before MinIO Ready",
+-- the registry serves /v2/", "build #3 before dockerd", "bucket before the S3 store is Ready",
 -- and "network probe before the VM answers" become type errors, not comments.
 data VMReady
 
 data DockerDaemon
 
-data MinioReady
+data ObjectStoreReady
 
 data RegistryServing
 
@@ -1929,62 +1922,62 @@ pollRolloutOrDie cfg pol retryNote failMsg probe = do
     outcome <- pollUntilReadyWith pol failMsg (const (putStrLn retryNote)) probe cfg
     either (const (die failMsg)) (\out -> unless (null out) (putStr out)) outcome
 
-{- | @deploy-minio@ (the demo's contributed workload step, ordered BEFORE
-@deploy-registry@): stand up the MinIO S3 backing store, wait for it Ready, and
+{- | @deploy-object-store@ (the demo's contributed workload step, ordered BEFORE
+@deploy-registry@): stand up the S3 backing store, wait for it Ready, and
 create the registry bucket idempotently. The @s3@ driver requires the bucket to
 pre-exist, so this completes fully before the registry pod schedules.
 -}
-deployMinioAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-deployMinioAction stepCfg execution = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \ctx -> do
+deployObjectStoreAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
+deployObjectStoreAction stepCfg execution = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
     let kubeconfig = demoClusterKubeconfigPath stepCfg ctx
-    withDemoServiceExposure stepCfg execution "deploy-minio" "minio" $ \exposure -> do
-        runOrDieStdin cfg Kubectl (kubectlWith kubeconfig ["apply", "-f", "-"]) minioManifest
-        minioReady <- waitMinioRollout cfg kubeconfig
-        ensureRegistryBucket minioReady cfg (T.unpack (endpointAuthority (exposureEndpoint exposure)))
+    withDemoServiceExposure stepCfg execution "deploy-object-store" "object-store" $ \exposure -> do
+        runOrDieStdin cfg Kubectl (kubectlWith kubeconfig ["apply", "-f", "-"]) objectStoreManifest
+        objectStoreReady <- waitObjectStoreRollout cfg kubeconfig
+        ensureRegistryBucket objectStoreReady cfg (T.unpack (endpointAuthority (exposureEndpoint exposure)))
         putStrLn
-            ( "deploy-minio: MinIO ready at "
-                ++ minioClusterEndpoint
+            ( "deploy-object-store: S3 store ready at "
+                ++ objectStoreClusterEndpoint
                 ++ "; registry bucket '"
                 ++ registryBucket
                 ++ "' present"
             )
 
-{- | Poll @kubectl rollout status deployment/minio@ to Ready with backoff (the peer
-of 'waitRegistryRollout'), tolerating a slow first @minio/minio@ pull.
+{- | Poll @kubectl rollout status deployment/object-store@ to Ready with backoff
+(the peer of 'waitRegistryRollout'), tolerating a slow first image pull.
 -}
-waitMinioRollout :: HostConfig -> FilePath -> IO (ObservedReady MinioReady)
-waitMinioRollout cfg kubeconfig = do
+waitObjectStoreRollout :: HostConfig -> FilePath -> IO (ObservedReady ObjectStoreReady)
+waitObjectStoreRollout cfg kubeconfig = do
     outcome <-
         awaitObservedReadyWith
             rolloutPoll
-            "deploy-minio"
-            (const (putStrLn "deploy-minio: minio not Ready yet (kubelet still pulling minio/minio); retrying"))
-            (stdoutProbe Kubectl (kubectlWith kubeconfig ["rollout", "status", "deployment/minio", "--timeout=60s"]))
+            "deploy-object-store"
+            (const (putStrLn "deploy-object-store: S3 store not Ready yet; retrying"))
+            (stdoutProbe Kubectl (kubectlWith kubeconfig ["rollout", "status", "deployment/object-store", "--timeout=60s"]))
             cfg
-    either (const (die "deploy-minio: minio deployment did not become Ready")) pure outcome
+    either (const (die "deploy-object-store: S3 store deployment did not become Ready")) pure outcome
 
-{- | Create the registry bucket in MinIO with @mc mb --ignore-existing@ (idempotent,
+{- | Create the registry bucket through S3 with @mc mb --ignore-existing@ (idempotent,
 so a re-run of @project up@ is safe). Runs from the container frame — the
-base-derived project image ships @mc@ — reaching MinIO over the loopback NodePort,
+base-derived project image ships @mc@ — reaching the store over the loopback NodePort,
 the same idiom @push-image@ uses for the registry. The credentials travel in the
 @MC_HOST_local@ env (mc auto-registers the alias from it), never in @argv@. Bounded
-retry covers the window between MinIO pod-Ready and its S3 endpoint accepting a
+retry covers the window between pod-Ready and its S3 endpoint accepting a
 MakeBucket.
 -}
-ensureRegistryBucket :: ObservedReady MinioReady -> HostConfig -> String -> IO ()
-ensureRegistryBucket _minioReady cfg endpoint = do
+ensureRegistryBucket :: ObservedReady ObjectStoreReady -> HostConfig -> String -> IO ()
+ensureRegistryBucket _objectStoreReady cfg endpoint = do
     setEnv
         "MC_HOST_local"
-        ("http://" ++ minioAccessKey ++ ":" ++ minioSecretKey ++ "@" ++ endpoint)
-    -- The @Ready MinioReady@ witness proves MinIO rolled out before we make the
+        ("http://" ++ objectStoreAccessKey ++ ":" ++ objectStoreSecretKey ++ "@" ++ endpoint)
+    -- The @Ready ObjectStoreReady@ witness proves the store rolled out before we make the
     -- bucket, so the @s3@ driver's "bucket must pre-exist" invariant is a type
     -- dependency here, not a comment.
     pollRolloutOrDie
         cfg
         rolloutPoll
-        "deploy-minio: MinIO S3 endpoint not ready for bucket create; retrying"
-        "deploy-minio: could not create the registry bucket in MinIO"
+        "deploy-object-store: S3 endpoint not ready for bucket create; retrying"
+        "deploy-object-store: could not create the registry bucket"
         (stdoutProbe Mc ["mb", "--ignore-existing", "local/" ++ registryBucket])
 
 {- | @deploy-registry@ (the demo's contributed workload step): stand up the
@@ -2031,6 +2024,27 @@ waitRegistryRollout cfg kubeconfig =
         "deploy-registry: registry deployment did not become Ready"
         (stdoutProbe Kubectl (kubectlWith kubeconfig ["rollout", "status", "deployment/registry", "--timeout=60s"]))
 
+loadProjectImageIntoKind :: Bool -> HostConfig -> String -> IO ()
+loadProjectImageIntoKind wslGuest cfg name =
+    if wslGuest
+        then attempt (3 :: Int)
+        else runOrDie cfg Kind args
+  where
+    args = ["load", "docker-image", demoProjectImage, "--name", name]
+    attempt remaining = do
+        result <- runToolWithStdin cfg Kind args ""
+        case result of
+            Right (ExitSuccess, out, _) -> unless (null out) (hPutStr stderr out)
+            Right (ExitFailure n, out, err) -> do
+                hPutStr stderr ("kind image import failed (exit " ++ show n ++ ", attempts remaining " ++ show (remaining - 1) ++ "):\n")
+                unless (null out) (hPutStr stderr out)
+                unless (null err) (hPutStr stderr err)
+                hFlush stderr
+                if remaining > 1
+                    then attempt (remaining - 1)
+                    else throwIO (LifecycleFailure ("kind load docker-image failed (exit " ++ show n ++ ")"))
+            Left failure -> throwIO (LifecycleFailure failure)
+
 pushImageAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 pushImageAction stepCfg execution = demoContext stepCfg Context.ProjectCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
@@ -2042,7 +2056,8 @@ pushImageAction stepCfg execution = demoContext stepCfg Context.ProjectCommand [
     withDemoServiceExposure stepCfg execution "push-image" "registry" $ \exposure -> do
         let plan = registryPlanFromExposure exposure
             endpoint = registryEndpoint plan
-        runOrDie cfg Kind ["load", "docker-image", demoProjectImage, "--name", clusterName (containerPlan (clusterProfileOf stepCfg) ctx)]
+            wslGuest = any ((== Context.Wsl2VMProvider) . Context.topologyProvider) (Context.topologyFrames ctx)
+        loadProjectImageIntoKind wslGuest cfg (clusterName (containerPlan (clusterProfileOf stepCfg) ctx))
         let ref = endpoint ++ "/library/hostbootstrap-demo:demo"
         -- Poll GET /v2/ on the registry NodePort from this frame, minting the
         -- `Ready RegistryServing` witness `pushImageBlob` requires: the tag-and-push
@@ -2287,19 +2302,19 @@ pushImageBlob _route cfg ref = do
     emitProgress out = unless (null out) (putStr out)
 
 {- | TEMP DIAGNOSTIC (the worked-demo phase): on a push failure, dump the in-cluster
-registry/MinIO pod state and logs so the generic "unknown error" the registry
+registry/object-store pod state and logs so the generic "unknown error" the registry
 returns is backed by its real cause.
 -}
 dumpPushDiagnostics :: HostConfig -> IO ()
 dumpPushDiagnostics cfg = do
-    putStrLn "push-image: DIAGNOSTIC — in-cluster registry/MinIO state and logs:"
+    putStrLn "push-image: DIAGNOSTIC — in-cluster registry/object-store state and logs:"
     mapM_ dump probes
   where
     probes =
         [ ("get pods", ["get", "pods", "-o", "wide"])
         , ("describe registry", ["describe", "pod", "-l", "app=registry"])
         , ("registry logs", ["logs", "-l", "app=registry", "--tail=100"])
-        , ("minio logs", ["logs", "-l", "app=minio", "--tail=60"])
+        , ("object-store logs", ["logs", "-l", "app=object-store", "--tail=60"])
         , ("df on registry", ["exec", "deploy/registry", "--", "df", "-h"])
         ]
     dump (label, args) = do
@@ -3846,11 +3861,11 @@ resolveAcceleratorE2E cfg frame node =
     -- present) + the tiny worker build + the WebSocket connect.
     acceleratorReadyAttempts = 60
 
-{- | The @registry-persistence@ case — the MinIO-backing proof. Confirm the pushed
+{- | The @registry-persistence@ case — the S3-backing proof. Confirm the pushed
 image's @tags/list@ is reachable (200), delete the registry pod and wait its
 rollout, then confirm @tags/list@ is reachable AGAIN. With the old ephemeral
 pod-filesystem storage the restarted registry would be empty (@tags/list@ 404, which
-'reachLeaf'\'s @curl -f@ reports as unreachable); MinIO-backed, the new pod re-reads
+'reachLeaf'\'s @curl -f@ reports as unreachable); S3-backed, the new pod re-reads
 the blobs from the bucket and it stays 200. Reuses the VM-frame lift so the probe and
 the @kubectl@ restart both run where the NodePort is published. Runs last in the case
 matrix and leaves a healthy registry pod (it waits the new rollout Ready).
@@ -4514,6 +4529,43 @@ verifyVmProjectImage cfg provider = do
     runInDemoVM cfg provider $ dockerCommand ["run", "--rm", "--entrypoint", "/bin/sh", demoProjectImage, "-ec", exportedProjectImageProbe]
     runInDemoVM cfg provider $ dockerCommand ["run", "--rm", demoProjectImage, "--help"] ++ " >/dev/null"
     putStrLn "pristine-bootstrap: verified the exported project runtime, config, public keys, and web bundle"
+
+{- | Docker can report a successful WSL2 pull and build while a local overlay2
+layer's recorded tar-split checksum no longer matches its file bytes. Running
+the image proves the runtime but does not read every file in the base; a Kind
+import or registry push will later export the whole image and fail. Export to
+@/dev/null@ here, before Kind exists, to make that failure recoverable inside
+the pristine guest rather than inside a protected child handoff.
+-}
+probeVmProjectImageArchive :: HostConfig -> SubstrateProvider -> IO (Either String ())
+probeVmProjectImageArchive cfg provider =
+    case demoGuestShellArgs provider ["bash", "-lc", dockerCommand ["save", demoProjectImage] ++ " > /dev/null"] of
+        Left refusal -> pure (Left ("guest image-export route is unsupported: " ++ show refusal))
+        Right (tool, args) -> do
+            result <- runToolWithStdin cfg tool args ""
+            pure $ case result of
+                Right (ExitSuccess, _, _) -> Right ()
+                Right (ExitFailure n, out, err) -> Left ("docker save failed (exit " ++ show n ++ "): " ++ out ++ err)
+                Left failure -> Left ("docker save could not run: " ++ failure)
+
+{- | Only a project-owned, pre-Kind WSL2 guest with no Docker containers may
+discard its image cache. Do not remove volumes or touch an occupied daemon.
+The next pull is pinned and checked again by 'resolvePublishedBaseInVM'.
+-}
+discardCorruptWslProjectImages :: HostConfig -> SubstrateProvider -> String -> IO ()
+discardCorruptWslProjectImages cfg provider baseTag =
+    runInDemoVM
+        cfg
+        provider
+        ( "test -z \"$(docker ps -aq)\" && "
+            ++ dockerCommand ["image", "rm", "--force", demoProjectImage]
+            ++ " && "
+            ++ dockerCommand ["image", "rm", "--force", baseTag]
+            ++ " && "
+            ++ dockerCommand ["builder", "prune", "--all", "--force"]
+            ++ " && "
+            ++ dockerCommand ["image", "prune", "--all", "--force"]
+        )
 
 verifyDirectProjectImage :: HostConfig -> IO ()
 verifyDirectProjectImage cfg = do
@@ -5270,9 +5322,13 @@ resolvePublishedBaseInVM ::
     IO String
 resolvePublishedBaseInVM cfg provider mAuth tag = do
     let pull = dockerCommand ["pull", tag]
-    case mAuth of
-        Nothing -> runBuildImageReporting cfg provider pull ""
-        Just auth -> runBuildImageReporting cfg provider (dockerAuthStdinWrapper pull) (T.unpack (registryConfigPayload auth))
+        (script, input) = case mAuth of
+            Nothing -> (pull, "")
+            Just auth -> (dockerAuthStdinWrapper pull, T.unpack (registryConfigPayload auth))
+        attempts = if providerKind provider == ProviderWsl2 then (3 :: Int) else 1
+    case demoGuestShellArgs provider ["bash", "-lc", script] of
+        Left refusal -> die ("published-base pull: guest route is unsupported: " ++ show refusal)
+        Right (tool, args) -> pullWithRetry attempts tool args input
     observed <-
         captureInVMStdout
             cfg
@@ -5283,6 +5339,20 @@ resolvePublishedBaseInVM cfg provider mAuth tag = do
         maybe (die "the pulled VM base has no repository digest") pure (find (isInfixOf "@sha256:") (lines observed))
     let digest = drop 1 (dropWhile (/= '@') repositoryDigest)
     either die pure (pinnedBaseReference tag digest)
+  where
+    pullWithRetry remaining tool args input = do
+        result <- runToolWithStdin cfg tool args input
+        case result of
+            Right (ExitSuccess, out, _) -> unless (null out) (putStr out)
+            Right (ExitFailure n, out, err) -> do
+                putStrLn ("published-base pull failed (exit " ++ show n ++ ", attempts remaining " ++ show (remaining - 1) ++ "); captured output follows:")
+                unless (null out) (putStr out)
+                unless (null err) (putStr err)
+                hFlush stdout
+                if remaining > 1
+                    then pullWithRetry (remaining - 1) tool args input
+                    else die ("published-base pull failed (exit " ++ show n ++ ")")
+            Left e -> die ("published-base pull could not run: " ++ e)
 
 {- | Stage the repository's committed style contract beside the two source
 trees.
@@ -5428,7 +5498,16 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
         cfg
         provider
         "install Docker in the VM (install + start the daemon) — prerequisite for build #3"
-        "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq docker.io docker-buildx acl && sudo systemctl enable --now docker && sudo setfacl -m u:$(id -un):rw /var/run/docker.sock"
+        ( "export DEBIAN_FRONTEND=noninteractive; sudo -E apt-get update -qq && sudo -E apt-get install -y -qq docker.io docker-buildx acl"
+            ++ ( if providerKind provider == ProviderWsl2
+                    then
+                        " && sudo install -d -m 0755 /etc/docker && sudo install -m 0644 "
+                            ++ shellQuoteArg (vmRepoRoot ++ "/demo/docker/wsl2-daemon.json")
+                            ++ " /etc/docker/daemon.json && sudo systemctl enable docker && sudo systemctl restart docker"
+                    else " && sudo systemctl enable --now docker"
+               )
+            ++ " && sudo setfacl -m u:$(id -un):rw /var/run/docker.sock"
+        )
     -- Poll `docker info` to Ready in Haskell (§ C) rather than assuming the
     -- daemon/socket is instant. The retry lives here, NOT as an inline shell `for`
     -- loop: a loop with a single-quoted `echo` mangles through the Windows
@@ -5436,18 +5515,38 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
     -- probe stays a simple `docker info >/dev/null 2>&1` — the same shape
     -- `waitVMNetwork`/`substrateWait` use safely.
     dockerReady <- waitDockerReady cfg provider
+    when (providerKind provider == ProviderWsl2) $ do
+        imageStore <- captureInVMStdout cfg provider "docker info --format {{.Driver}}"
+        case imageStore of
+            Right driver
+                | words driver == ["overlay2"] ->
+                    putStrLn "pristine-bootstrap: WSL2 Docker image store is overlay2"
+            other -> die ("pristine-bootstrap: WSL2 Docker image store is not overlay2: " ++ show other)
     let repoRootCfg =
             parentCfg{dockerfile = "demo/" <> dockerfile parentCfg}
     pinnedBase <- resolvePublishedBaseInVM cfg provider mAuth (demoBaseImage cfg)
     cwd <- getCurrentDirectory
     withAuthenticatedVmBuildSecrets parentCfg cfg provider (repoRootOfProjectRoot cwd) $ \guestBuildContext secretArgs -> do
-        let baseArgs = dockerBuildArgsWithVerificationKey repoRootCfg pinnedBase verificationKeyHex activationVerificationKeyHex
-            buildImageScript =
-                "cd "
-                    ++ shellQuoteArg guestBuildContext
-                    ++ " && "
-                    ++ dockerCommand (init baseArgs <> ["--no-cache"] <> secretArgs <> [last baseArgs])
-        buildProjectImage dockerReady cfg provider mAuth buildImageScript
+        let buildAndCheck remaining base = do
+                let baseArgs = dockerBuildArgsWithVerificationKey repoRootCfg base verificationKeyHex activationVerificationKeyHex
+                    buildImageScript =
+                        "cd "
+                            ++ shellQuoteArg guestBuildContext
+                            ++ " && "
+                            ++ dockerCommand (init baseArgs <> ["--no-cache"] <> secretArgs <> [last baseArgs])
+                buildProjectImage dockerReady cfg provider mAuth buildImageScript
+                when (providerKind provider == ProviderWsl2) $ do
+                    archive <- probeVmProjectImageArchive cfg provider
+                    case archive of
+                        Right () -> putStrLn "pristine-bootstrap: WSL2 project image archive integrity verified"
+                        Left failure
+                            | "file integrity checksum failed" `isInfixOf` map toLower failure && remaining > (1 :: Int) -> do
+                                putStrLn ("pristine-bootstrap: local Docker image integrity failed; clearing the unused image cache and rebuilding (attempts remaining " ++ show (remaining - 1) ++ "): " ++ failure)
+                                discardCorruptWslProjectImages cfg provider (demoBaseImage cfg)
+                                repulled <- resolvePublishedBaseInVM cfg provider mAuth (demoBaseImage cfg)
+                                buildAndCheck (remaining - 1) repulled
+                            | otherwise -> die ("pristine-bootstrap: WSL2 project image archive integrity failed: " ++ failure)
+        buildAndCheck (if providerKind provider == ProviderWsl2 then 3 else 1) pinnedBase
     verifyVmProjectImage cfg provider
     putStrLn "pristine-bootstrap: done (build #2 host-native + build #3 project image, in the VM)"
   where

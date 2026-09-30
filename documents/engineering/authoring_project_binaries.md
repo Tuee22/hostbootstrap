@@ -121,7 +121,7 @@ deploy-VM       host-orchestrator-0 (metal)        -- launch/start the provider 
 build-pb        host-orchestrator-0 (metal)        -- pristine-bootstrap: build the binary host-native (#2) + the project image (#3) in the VM
 context-init    vm-orchestrator-1 (vm)             -- announcing frame anchor; handoff carries the projected child config
 deploy-kind     vm-project-container-2 (container) -- bring up the persistent kind cluster (cordon #2, config-selected run profile)
-deploy-minio    vm-project-container-2 (container) -- install MinIO and create the registry's S3 bucket
+deploy-object-store    vm-project-container-2 (container) -- install the S3 store and create the registry's bucket
 deploy-registry vm-project-container-2 (container) -- install the in-cluster registry and settle its runtime exposure
 push-image      vm-project-container-2 (container) -- load the project image into kind and push it to the in-cluster registry
 deploy-chart    vm-project-container-2 (container) -- apply the exact projected ConfigMap, then deploy the web pod
@@ -134,7 +134,7 @@ demo binary host-native (build #2), and builds the project image FROM the publis
 in the VM. The descent `contextInitStep` declares carries the project-container child
 `<project>.dhall`, the handoff streams it, and that step's action body only announces the boundary. The container steps
 stand up the persistent stack: `deployKindStep` brings up the cordoned kind cluster on the VM's Docker,
-`projectStep "deploy-minio"` establishes registry backing, and `projectStep "deploy-registry"` /
+`projectStep "deploy-object-store"` establishes registry backing, and `projectStep "deploy-registry"` /
 `projectStep "push-image"` are the demo's own workload kinds in the same
 list, `deployChartStep` applies the binary-rendered child config and deploys the web pod; the exact mounted
 bytes carry `message` and are rollout-hashed (the `serveWeb` handler reads them and the SPA renders `message` into

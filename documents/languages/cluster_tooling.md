@@ -33,12 +33,12 @@ Stable Kubernetes Service/NodePort values are cluster-internal routing targets. 
 the provider/host namespace. The target Kind/nvkind config therefore contains no host-side mappings. After
 cluster readiness, hostbootstrap starts an identity-owned relay on the exact cluster network and asks Docker
 to publish its declared listeners on `127.0.0.1` without supplying host-port numbers. Docker chooses and binds
-them atomically; exact inspection supplies the resolved registry, MinIO, web, and optional accelerator
+them atomically; exact inspection supplies the resolved registry, S3 store, web, and optional accelerator
 endpoints to their clients.
 
 The fixed source mappings currently present in demo YAML/Haskell are tracked in the
 [legacy-deletion ledger](../../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md). They are not defaults to copy
-or move into Dhall. The registry remains anonymous HTTP, and the demo's MinIO root/S3 values remain fixed
+or move into Dhall. The registry remains anonymous HTTP, and the demo's S3 root credentials remain fixed
 source constants rendered into a Kubernetes Secret. Treat every resolved endpoint as a development-demo
 service, not an authenticated production boundary. See
 [in_cluster_registry.md](../engineering/in_cluster_registry.md).

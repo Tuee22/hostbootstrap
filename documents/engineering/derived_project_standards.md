@@ -49,7 +49,7 @@ an opaque `StepPlan`
 (see [composition methodology](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
 host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
-(deploy-minio, deploy-registry, push-image, accelerator-daemon placement, …). Current `project up`
+(deploy-object-store, deploy-registry, push-image, accelerator-daemon placement, …). Current `project up`
 interprets the resolved plan's exact current-frame segment and fails closed at a nested entry; the target
 authenticates and hands off `pb project up` into the next frame. `project up --dry-run` renders the chain plan without
 executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
@@ -125,7 +125,7 @@ substrate-selected lift as a single `[Step]`: VM-backed lanes use host→VM→co
 build pb + image in the VM, then carry the project-container child config on the descent the in-VM
 `context-init` step declares), while native Linux GPU uses a two-frame host→direct-container→nvkind
 path.
-Both continue through MinIO, registry, image push, chart, runtime-owned exposure, and accelerator placement as selected
+Both continue through S3 store, registry, image push, chart, runtime-owned exposure, and accelerator placement as selected
 for that lane. `project up` interprets the chosen current-frame segment; `context` visualizes the
 composition. For each test config, `test run all` retains its exact Harness plan and directly wraps the
 common current-frame forward/reverse boundaries around `demoTestSuite` assertions — reusing the plan

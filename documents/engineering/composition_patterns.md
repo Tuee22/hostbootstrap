@@ -41,7 +41,7 @@ declared child boundary; authenticated child admission and cross-frame continuat
    Incus on Linux, WSL2 on Windows) → deploy-VM (launch/start the provider VM; sizing is
    creation-time for Lima/Incus and utility-VM-global for WSL CPU/memory) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
-   VM) → context-init announcing frame anchor in the VM → deploy-kind → deploy-minio → deploy-registry → push-image →
+   VM) → context-init announcing frame anchor in the VM → deploy-kind → deploy-object-store → deploy-registry → push-image →
    deploy-chart → expose-port → accelerator-daemon placement —
    that stands up a live, persistent stack ending at a web service. See
    [single representation](#single-representation-the-chain-is-the-representation).
@@ -119,7 +119,7 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 | Origin | Step kinds (examples) |
 |---|---|
 | Core (host-management) | `deploy-vm`, optional `ensure-<tool>` row, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port`, `post-handoff-<name>` |
-| Project (workload) | `deploy-minio`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
+| Project (workload) | `deploy-object-store`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
 
 The current demo does not use `ensureStep`; it calls `runEnsure` inside composite
 provider/build/accelerator actions. Its `context-init` action body is also a no-op announcement: VM
@@ -148,7 +148,7 @@ summary for shape 2:
 
 - The shape-2 plan declares one persistent-stack descent: the metal segment provisions the VM and
   rebuilds the binary + project image in it, the in-VM segment reaches its `context-init` anchor and
-  declares the project-container handoff, and the in-container segment runs deploy-kind → deploy-minio
+  declares the project-container handoff, and the in-container segment runs deploy-kind → deploy-object-store
   → deploy-registry → push-image → deploy-chart → expose-port and places the accelerator daemon. The
   target authenticated interpreter reaches the live web service through those segments; the current
   public boundary executes only the admitted current-frame segment.

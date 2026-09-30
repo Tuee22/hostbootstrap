@@ -117,7 +117,7 @@ tests =
             projectedReplicas @?= 1
             projectedPublic @?= publicPort (webServiceConfig hostCfg)
             projectedAccelerator @?= acceleratorPort (webServiceConfig hostCfg)
-            projectedTargets @?= [("registry", 30500), ("web", 30080), ("minio", 30900), ("accelerator", 30081)]
+            projectedTargets @?= [("registry", 30500), ("web", 30080), ("object-store", 30900), ("accelerator", 30081)]
             projectedRoot @?= "/workspace/demo/.data"
             assertBool
                 "a digest-mismatched config projection was accepted"

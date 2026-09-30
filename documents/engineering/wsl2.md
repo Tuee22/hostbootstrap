@@ -44,6 +44,36 @@ its refusal reads in and the argument vector for a name the guard has already ad
 the project's namespace refuses, and so do the two degenerate inputs that make the guard vacuous — an empty
 prefix, which is a prefix of every name, and an empty distro name.
 
+The demo's WSL2 bootstrap installs `demo/docker/wsl2-daemon.json` before starting Docker and
+checks that `docker info` reports the classic `overlay2` image store before pulling the
+published base image. The daemon downloads one layer at a time, and a WSL2 published-base
+pull gets at most three attempts. Each successful pull still has its repository digest
+inspected and pinned before the derived build. Docker Engine 29 defaults fresh installations to the containerd image
+store; on the Windows acceptance host, that store intermittently failed to extract valid
+published layers with tar-header or CRC errors. A later `overlay2` pull also intermittently
+reported a layer/configuration mismatch; a retry of that exact digest succeeded. Serial
+downloads and the bounded retry mitigate these observed transient failures but do not
+establish their lower-level cause. The WSL-only choice leaves the other guest
+providers' Docker setup unchanged. The [Windows acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md)
+records the failed pulls and focused `overlay2` pull and Kind-import probes; its full gate
+remains the authority for acceptance.
+
+The WSL project image import into Kind also permits at most three attempts.
+Each failed attempt writes captured Kind output to stderr before retrying, so
+an import failure in a nested lifecycle child remains visible to the outer
+Harness run. The import targets the same image and cluster on each attempt;
+the complete Windows matrix still decides whether this recovery is sufficient.
+
+Before Kind starts, WSL2 bootstrap exports the newly built project image to
+`/dev/null` with `docker save`. This checks every local layer, including base
+files outside the runtime smoke test. If Docker reports the observed
+`file integrity checksum failed` corruption, bootstrap requires an empty
+container inventory, removes the guest's unused images and builder cache,
+re-pulls the published base with digest verification, and rebuilds. The path
+is bounded to three builds and leaves other export failures visible. A
+successful export establishes local image integrity at that point; it does
+not explain the lower-level cause of intermittent WSL2 image-store corruption.
+
 The unused `wslImportArgs`/cached-rootfs builder was deleted. `wslInstallArgs` is now the sole
 registration builder and has both a production consumer and tests.
 

@@ -468,7 +468,7 @@ canonicalDemoConfigProjection retainedDigest cfg
             , haReplicasNat (haReplicas (deploy cfg))
             , publicPort (webServiceConfig cfg)
             , acceleratorPort (webServiceConfig cfg)
-            , [("registry", 30500), ("web", 30080), ("minio", 30900), ("accelerator", 30081)]
+            , [("registry", 30500), ("web", 30080), ("object-store", 30900), ("accelerator", 30081)]
             , foldl (Posix.</>) (T.unpack (Context.sourceRoot (context cfg))) (profileDataSegments (clusterProfileOf cfg))
             )
   where

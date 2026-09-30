@@ -120,8 +120,8 @@ helper is configured**:
 
 > **Scope note.** This doctrine governs the **host Docker Hub credential** forwarded
 > down the lift. It does **not** govern an in-cluster application secret — e.g. the
-> `hostbootstrap-demo` `minio-credentials` Kubernetes Secret (the MinIO root / S3
-> credentials the `registry:2` s3 driver authenticates with). A k8s Secret is an
+> `hostbootstrap-demo` `object-store-credentials` Kubernetes Secret (the root
+> S3 credentials the `registry:2` s3 driver authenticates with). A k8s Secret is an
 > in-cluster runtime resource rather than a `<project>.dhall` field. The demo currently
 > hardcodes both values in `demo/src/HostBootstrapDemo/Commands.hs` and renders them into
 > a manifest; Kubernetes Secret encoding does not make those source constants secret. See

@@ -1,6 +1,6 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -561,9 +561,44 @@ The post-closure `DocValidatorSpec` check passes 11/11 in 2.64 seconds.
 
 None.
 
+### Sprint 26.9: Revalidate NVIDIA after shared guest bootstrap stabilization [Active]
+
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` `demo/docker/wsl2-daemon.json`
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/wsl2.md`
+
+#### Objective
+
+The Windows acceptance investigation requires an explicit WSL-only Docker image store
+selection in the shared demo bootstrap source. That source lies in this deferred phase's
+`Evidence covers` set, so the earlier native NVIDIA acceptance no longer proves the
+resulting tree. Re-run this phase's complete NVIDIA gate after the change settles.
+
+#### Deliverables
+
+- The WSL-only guest setup is implemented and host static checks pass.
+- The declared native NVIDIA matrix and terminal ownership audit pass against the
+  resulting tree.
+- This phase's covered-source digest and gate evidence are refreshed.
+
+#### Validation
+
+The WSL-only guest setup is implemented. Windows host-static verification of
+the changed tree passes `cabal build all` and `cabal test all` from `core/`
+(2,547 tests), `cabal build all` from `demo/`, and the repository Python code
+check and test suite (251 tests); the demo's own suite passes 151 tests. The
+declared native NVIDIA matrix and terminal audit remain pending.
+
+#### Remaining Work
+
+Run the complete native NVIDIA gate and record its terminal audit and
+covered-source digest.
+
 ## Remaining Work
 
-None.
+**Sprint 26.9** owns revalidation of the native NVIDIA acceptance after the
+shared demo bootstrap change.
 
 ## Documentation Requirements
 

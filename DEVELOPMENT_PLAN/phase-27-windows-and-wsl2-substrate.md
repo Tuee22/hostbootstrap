@@ -4,7 +4,8 @@
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
-reporting `10/10 passed` on a native Windows host, followed by the terminal ownership and WSL wall audit
+reporting a complete pass on a native Windows host (12/12 in the 2026-09-23 matrix), followed by the
+terminal ownership and WSL wall audit
 **Gate kind**: deferred
 **Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, 15.87 GiB,
 NVIDIA GeForce RTX 3090 driver 616.64, WSL 2.7.10.0 (kernel 6.18.33.2-2), GHC 9.12.4, Cabal 3.16.1.0,
@@ -426,17 +427,256 @@ have been supplied. The preserved Windows resource forest cannot be inspected or
 host. No recovery mutation, new Windows run, or refreshed Windows acceptance claim is made. The
 Linux CPU and NVIDIA successes do not substitute for this phase's native Windows gate.
 
+On 2026-09-23, a native Windows visit finds a different preserved Harness run,
+`run-a3ff86b86ff8`, with a bound lease, an open session, and an owned
+`core:deploy-vm` provider resource record. The named WSL distribution is stopped.
+The repository Python bootstrapper's complete-matrix command is launched through
+the harness-owned durable Windows launcher. After a native dependency rebuild,
+it exits 1 and reports `0/10 passed`: every case is `REFUSED` because recovery
+finds `core:build-pb` at `EffectOutcomeUnknown` and the session classifier reports
+that phase as unrecognised. No matrix case reaches a fresh provider bring-up.
+This run supplies failure evidence only; it does not satisfy the gate or authorize
+manual deletion of the protected records.
+
+On 2026-09-23, an operator-approved reset follows direct guest inspection: the stopped
+`hostbootstrap-demo-vm` has the expected staged and installed binary hashes, no demo image or
+containers, and no active build process. The preserved run record lacks a WSL instance GUID, so
+automatic recovery cannot prove guest identity retrospectively. The generated run state and wall
+records are archived at `C:\Users\Matt\AppData\Local\Temp\hb-recovery-archive-20260923`.
+`restoreCurrentUserGlobalWall` succeeds; the active wall record disappears and `.wslconfig`
+matches its recorded original SHA-256. The named guest is then unregistered successfully, and
+WSL reports no installed distributions. The live run state and generated project config are moved
+into the archive. A fresh complete matrix is launched through the durable Windows launcher with
+label `phase27-reset-20260923`. It exits 1 at 18:07 local time with `4/12 passed`. The fresh
+guest completes pristine bootstrap, pulls base image digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, and passes
+`hello-world` web build, end-to-end tabs, and registry persistence. At the same-run restart,
+the preserved lifecycle records identify the first child failure as
+`kind load docker-image hostbootstrap-demo:local --name hostbootstrap-demo-test-run-59079834b964`
+exiting 1 during `project:push-image`. The parent reports this as
+`handoff relay: lifecycle acknowledgement failed at terminal callback after acknowledgement`:
+the completion callback acknowledges a failed child report and returns a failure, which the relay
+renders as that generic message. The guest's detailed Kind stderr was not retained by the parent,
+so this run alone does not establish the image import's lower-level cause. Failed-Up unwind retains
+`project:deploy-registry`, `project:deploy-minio`,
+`core:deploy-kind`, `core:context-init`, `core:copy-source`, and `core:deploy-vm`. The
+`hello-world` durable-readback case is broken; teardown and mode close cannot prove the remaining
+ownership settled, and all `hello-universe` cases are refused. The gate did not pass. The guest
+was unregistered and the global WSL wall restored, but protected run records remain for analysis.
+An independent `hostbootstrap-image-probe` Ubuntu 24.04.5 WSL distro then installs the same Docker
+29.1.3/containerd 2.2.1 family, with Docker's containerd image store enabled. It pulls the exact
+published base digest above, creates a fresh Kind 0.33.0/Kubernetes 1.37.0 cluster, and imports
+that digest under `hb-probe:local` through unmodified `kind load docker-image` successfully. The
+tag is confirmed in the Kind node's `k8s.io` image store. This one successful base import does not
+reproduce or explain the failed project-image import in the deleted guest, and it does not prove a
+stable substrate across a complete matrix.
+On the same Windows host, the host static gate is rechecked against unchanged production source.
+`cabal test all` from `core/` passes 2,547 core tests; the first plain `cabal test all` from
+`demo/` reports a failed demo suite while its core suite passes, without retaining the failed
+assertion in Cabal's summary. The focused demo suite then passes 151/151. A serial rerun of the
+complete demo gate with successful cases hidden passes its core, provider-live refusal, and demo
+suites. `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` pass, the latter 251/251. This static result does not
+replace the failed live matrix or establish that the first demo-suite failure cannot recur.
+The 134 protected records of `run-59079834b964` are archived outside the working tree at
+`C:\Users\Matt\AppData\Local\Temp\hb-recovery-archive-20260923\failed-run-59079834b964.hostbootstrap`
+after confirming the active mode names that Harness run, no project distro or wall exists, and no
+hostbootstrap process is running. A fresh complete Windows matrix starts through the durable
+launcher as `phase27-retry-20260923b`; its result and terminal audit are pending.
+Its first `hello-world` generation completes the previously failing Kind image import and
+opens the live assertions. The matrix then releases that generation's WSL wall and starts a
+fresh guest for the next lifecycle leg; this partial progress is not gate evidence.
+That generation also completes its project-image Kind import and second `hello-world`
+assertion leg, then releases its WSL wall. The matrix advances to `hello-universe` in a
+third guest at fence 38. This attempt exits 1 with `5/12 passed`: all five `hello-world`
+checks pass, including durable readback, but the first `hello-universe` bootstrap fails
+while Docker 29.1.3/containerd 2.2.1 extracts the published base image layer
+`sha256:8203887b604f75d2e85df1b0682e7298d1dd26ca2a584940d8115ed5389a3421`
+(`archive/tar: invalid tar header`). The remaining `hello-universe` checks are broken;
+reverse lifecycle and mode close report unsettled ownership. The guest remains installed
+for diagnosis, while `.wslconfig` already matches its original SHA-256 and the guest has
+67 GiB free disk and 9.0 GiB available memory. This is a failed gate, not acceptance evidence.
+The named 285,923,733-byte registry blob is fetched directly in that guest: its complete SHA-256
+matches `8203887b604f75d2e85df1b0682e7298d1dd26ca2a584940d8115ed5389a3421`, and
+Python's gzip-tar reader traverses all 227 members. A diagnostic pull of the exact published
+base digest into the same retained Docker 29.1.3/containerd 2.2.1 image store then succeeds,
+including extraction of that layer. The repeated failure is intermittent in the guest's
+Docker pull/extraction path; these observations do not isolate its lower-level mechanism or
+replace a complete passing matrix.
+The failed `hello-universe` run's active wall record is archived outside the repository,
+then `restoreCurrentUserGlobalWall` with the demo's exact owner, spec, reservation,
+receipt, and seven managed lines returns `Right ()`. The active wall record disappears
+and `.wslconfig` retains its original SHA-256. The protected run state (171 files) is
+archived at `C:\Users\Matt\AppData\Local\Temp\hb-recovery-archive-20260923\failed-run-6be03db596ac.hostbootstrap`.
+The only WSL registration is confirmed as `hostbootstrap-demo-vm`, GUID
+`{e864ddf5-1f31-416d-9d3b-fe873f2a3ebb}`, created during fence 38 and carrying the
+run's staged config and source. The previously approved operator-assisted reset
+unregisters that guest; WSL reports no installed distributions. This is recovery from
+a failed attempt, not a gate pass.
+A fresh complete matrix against the unchanged source tree starts through the durable Windows
+launcher as `phase27-retry-20260924c`. It exits 1 at the first `hello-world` bootstrap
+with `0/12 passed`: Docker 29.1.3/containerd 2.2.1 fails while extracting base layer
+`sha256:4da9167f168f4bb4d18535a77fa2bdbe9a9ab6124dfc557d002b63b582af71b3`
+(`unpigz: ... crc32 mismatch`). The teardown again leaves protected guest ownership and
+the remaining variant is refused. The failure moved to a different layer from the
+prior attempt, so repeating the full matrix without changing the guest pull path is
+not yet evidence of a stable substrate.
+The named 887,369,571-byte registry layer downloads directly into the retained guest
+with its exact SHA-256; `unpigz -t` succeeds and Python reads all 25,437 tar members.
+The published blob is sound. A diagnostic switch of the retained, otherwise idle guest
+from Docker 29's default containerd image store (`overlayfs`) to the supported classic
+`overlay2` store permits one cold pull of the exact published base digest to finish.
+After removing the diagnostic image and pruning the otherwise empty guest Docker store,
+a second cold `overlay2` pull of the same digest also passes. A fresh Kind 0.33.0 /
+Kubernetes 1.37.0 cluster then imports the pulled image through `kind load docker-image`;
+its `sha256:5abcea513adc79b4363cd590444b39de10bc860635eb1144b1f52e3d200fa877`
+image ID is present in the node's `k8s.io` store. The probe cluster is deleted.
+These diagnostic passes isolate a promising store choice, but they do not establish
+a complete matrix pass or an automated stable setup for each fresh guest.
+The demo bootstrap now installs a WSL-only Docker daemon configuration selecting
+the classic `overlay2` image store before the first published-base pull and checks
+the reported driver after Docker becomes ready. The changed tree passes the
+Windows core build and 2,547 core tests, demo build and 151 demo tests, and the
+Python code check and 251 Python tests. The failed run's active wall record was
+archived outside the repository, `restoreCurrentUserGlobalWall` returned
+`Right ()`, and `.wslconfig` regained its original SHA-256
+`2986099D4E292ABED1BACBF7B7CB514188BAD4304F930800803A85470EE4E694`.
+Its 34 protected records were moved to
+`C:\Users\Matt\AppData\Local\Temp\hb-recovery-archive-20260923\failed-run-6e15a374616c.hostbootstrap`.
+The sole WSL registration was independently checked as `hostbootstrap-demo-vm`,
+GUID `{8a808235-cc0a-4f6b-984f-517b1b9e9948}`; the approved operator-assisted
+reset unregistered it and left zero WSL registrations. A fresh live gate is still owed.
+The first new WSL guest on the changed tree was created under wall fence 40;
+its pristine bootstrap installed `/etc/docker/daemon.json` and reported
+`pristine-bootstrap: WSL2 Docker image store is overlay2` before starting the
+published CPU/amd64 base pull. This is an in-progress phase-24 live run, not
+terminal Windows acceptance evidence.
+The pull finishes with published digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`,
+and build #3 starts. Its in-image `check-code` stops on Fourmolu's guarded-case
+layout for the new driver check. The source is formatted to Fourmolu's exact
+suggestion and the base image's Fourmolu check passes against the host tree.
+The incomplete image prevents `project down` from reversing the failed up.
+The active wall record and 35 protected production records are archived outside
+the repository; `restoreCurrentUserGlobalWall` returns `Right ()`, and
+`.wslconfig` matches its original SHA-256. The sole WSL registration is
+independently checked as `hostbootstrap-demo-vm`, GUID
+`{79471a9c-7c16-4805-94d0-9c87c511235c}`, with this run's staged source
+and Docker configuration, then the approved reset unregisters it and leaves
+zero registrations. The formatted tree still owes a fresh complete live run.
+The phase-24 full Windows run against the formatted source reaches both
+`hello-world` generations and passes their five checks, then fails at the
+first fresh `hello-universe` base pull with `5/12 passed`. Docker 29.1.3
+reports classic `overlay2` but ends the pull with `layers from manifest don't
+match image configuration` after downloading all published layers. The
+retained guest's diagnostic retry of that exact tag succeeds and reports
+digest `sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`.
+Moby's pull implementation raises this error when unpacked layer DiffIDs
+disagree with the image config. The repeat success leaves the lower-level
+cause unproven; a complete passing matrix and ownership audit remain owed.
+In the retained guest, two cold pulls of the exact published digest then pass
+with `max-concurrent-downloads=1` under `overlay2`. The source WSL2 daemon
+configuration now applies that setting before the first pull, and the guest
+published-base pull has at most three attempts. This is a bounded mitigation;
+the source of the intermittent DiffID mismatch remains unproven. The revised
+Haskell source builds with `-Werror` and passes Fourmolu; complete gate
+validation is pending.
+The next fresh production guest at wall fence 45 supplies a stronger check:
+its first serialized published-base pull again fails with the same
+layer/configuration mismatch, while the second attempt succeeds at the
+expected repository digest and reaches the derived build. Serial downloads
+alone therefore do not prevent the failure on this host; the bounded retry
+recovers this occurrence. The live run and full matrix still need terminal
+results.
+That production `project up` exits 0 after build #3 verifies the exported
+runtime and Kind imports the derived image. `project down` and
+`project destroy` both exit 0; the post-production audit shows no WSL
+registration, active wall or mode, or hostbootstrap process, and the original
+`.wslconfig` hash is restored. The full Windows Harness matrix is now running
+against the same source and remains the acceptance gate.
+That matrix exits 1 with `4/12 passed`. Its first `hello-world` generation
+passes its assertions and cleans up. The second reaches build #3 after the
+first published-base pull fails and the second succeeds at the expected digest.
+Its same-run restart then fails because `kind load docker-image
+hostbootstrap-demo:local --name hostbootstrap-demo-test-run-81e58c02e998`
+exits 1 in `project:push-image`. The retained lifecycle child record gives
+this command as the first failure; the parent only reports a terminal callback
+failure after acknowledgement. Detailed Kind stderr is absent, leaving the
+lower-level import cause unproven. Failed-Up unwind leaves protected ownership,
+so later cases refuse. The guest is unregistered, the WSL wall and original
+`.wslconfig` are restored, and 240 run-state files are archived outside the
+repository. The WSL image import now has three bounded attempts and emits
+captured output on stderr to preserve diagnostics on the next run; complete
+gate validation remains owed.
+The next production attempt at WSL wall fence 48 exits before Docker during
+GHCup's pinned GHC 9.12.4 installation. The installer logs stop while
+`gmake install` copies libraries without a reported make error; the retained
+guest has ample disk and memory, and its kernel log contains no OOM event.
+Hyper-V Worker Admin records a guest-reported CPU Machine Check Exception
+and fatal local machine-check kernel panic at 07:07 local time. The approved
+reset archives its wall, 22 protected records, and generated config outside
+the repository; wall restoration succeeds and the verified WSL GUID is
+unregistered. The next fresh production attempt at fence 49 fails at the
+same GHCup step. Its extracted GHC profiling archive is 595,591,168 bytes,
+but the matching member in the verified download is 617,432,916 bytes;
+`ranlib` fails on the extracted copy with `State.p_o: file truncated` and
+passes on the complete tar member. Hyper-V records more guest-reported
+machine-check panics at 07:18, 07:20, and 07:25, including during a direct
+diagnostic extraction. Neither attempt reaches the Kind change. The deeper
+physical or virtualization fault is unidentified; this host cannot supply
+reliable live gate evidence until its WSL guest stops panicking. The approved
+reset archived the fence-49 wall record, 22 protected-state files, and
+generated config outside the repository. Wall restoration returned `Right ()`,
+the verified sole guest GUID `{9c5cb108-819c-4992-85bb-83a7e81090ff}` was
+unregistered, zero WSL registrations remain, and `.wslconfig` retains its
+original SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`.
+All four Hyper-V fatal events carry the same machine-check status word
+`b200000080060001`; the Windows System log has no WHEA-Logger event in the
+same two-day window. This host runs WSL 2.7.10.0, kernel 6.18.33.2-2, and
+Windows build 26200.9457. A [Microsoft WSL issue](https://github.com/microsoft/WSL/issues/41649)
+reports the same guest status word on another host across later WSL and kernel
+versions. That report does not establish this host's underlying cause or a fix.
+The saved Windows Resource-Exhaustion-Detector events coincide with all four
+panics: system commit is 63.62–63.76 GiB against a 63.87 GiB limit, with
+the attached Windows `psmux` client `tmux.exe` accounting for 44.24–45.77
+GiB. A later fence-50 Production retry outside that client's process tree
+passes the previously failing GHC install and reaches Docker build #3 with
+no new machine-check event. The live `psmux` client still hosts this Codex
+session and grows from 0.07 to 1.67 GiB during the retry; the attempt is
+stopped before Windows commit reaches its 23.347 GiB limit. The wall and
+35 protected files are archived, wall restoration returns `Right ()`, and
+the verified sole guest GUID `{41d9da26-9ecd-412f-9c64-9183a67a1d6d}`
+is unregistered. The result does not replace the complete Windows matrix.
+After resetting `tmux`, a fresh fence-51 Production retry again passes GHC
+installation and reaches Docker build #3 on `overlay2` with the published
+CPU/amd64 base at the expected digest. No Hyper-V machine-check or Windows
+resource-exhaustion event occurs. The image's `check-code` step exits 1 because
+GHC segfaults while building `test:hostbootstrap-core-test`; guest `dmesg`
+identifies a `ghc_worker` general protection fault in the GHC 9.12.4 shared
+library. Windows commit last measures 18.011 of 19.745 GiB and guest memory
+afterward has 9.1 GiB available, with no OOM kill. This compiler failure is
+not a reproduced WSL kernel panic, and its underlying cause is undetermined.
+Normal `project down` and `project destroy` cannot finish the incomplete image
+and reverse-root snapshot. The 22 protected files, generated config, and wall
+record are archived outside the repository with matching hashes; the wall is
+restored and the verified sole WSL guest GUID
+`{fdafab47-5988-4be8-9038-4724a34ea5c0}` is unregistered. Zero guests and
+no active wall remain; `.wslconfig` matches its original SHA-256. The complete
+Windows matrix is still owed.
+
 #### Remaining Work
 
-Resolve the preserved run's canonical provider/share ownership through verified recovery, establish a
-stable image-import substrate, and run the full matrix through the durable Windows launcher. Record
-`10/10`, image identities, duration, and a clean terminal ownership audit against the measured source.
+Run the complete Windows matrix against the automated WSL image-store selection
+and record a full pass, image identities, duration,
+and a clean terminal ownership audit against the measured source.
 
 ## Remaining Work
 
-**Sprint 27.5** owns the complete Windows matrix and terminal audit. The final-source retry closes the
-abandoned session but refuses the remaining canonical resource ownership. A verified settlement of that
-run and a stable image-import substrate are prerequisites to the owed complete matrix.
+**Sprint 27.5** owns the complete Windows matrix and terminal audit. The earlier preserved run was
+settled by an operator-approved reset after guest inspection and an external state archive. The fresh
+matrix reaches the demo but fails during same-run restart at `kind load docker-image`, leaving
+protected records. A stable import, full passing matrix, and terminal audit remain owed.
 
 ## Documentation Requirements
 

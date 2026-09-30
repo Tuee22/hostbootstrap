@@ -106,7 +106,7 @@ segment is:
 
 ```text
 deploy-kind
-  -> deploy-minio
+  -> deploy-object-store
   -> deploy-registry
   -> push-image
   -> deploy-chart
@@ -117,7 +117,7 @@ deploy-kind
 The direct Linux GPU lane skips the provider VM, builds the CUDA project image on the host, enters that
 container with GPU access, creates nvkind, and deploys the in-cluster GPU daemon.
 
-`deploy-minio` is not optional narrative detail: it creates the S3 backing and bucket used by the
+`deploy-object-store` is not optional narrative detail: it creates the S3 backing and bucket used by the
 registry. Linux CPU/GPU deploy an in-cluster daemon after the web service; Apple Silicon/Windows GPU start
 a host daemon after the private ingress is reachable.
 

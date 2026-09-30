@@ -30,7 +30,7 @@ provides:
 - a closed `BackendProbeKey resource dependency` relation. Constructing a backend probe requires the
   exact `PlannedResource` from the finalized lifecycle plan and positive generation, phase, and
   observation versions;
-- resource families for provider, durable share, Docker, MinIO, registry, and cluster readiness;
+- resource families for provider, durable share, Docker, S3 store, registry, and cluster readiness;
 - tests that obtain a real planned resource, drive the polling transition, reject invalid versions, and
   exercise compile-time opacity rather than injecting a forged witness; and
 - `ObservedReady dependency` for compatibility call paths. This value is intentionally non-authorizing and is

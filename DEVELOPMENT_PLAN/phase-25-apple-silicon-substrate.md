@@ -1,6 +1,6 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -343,9 +343,34 @@ evidence against the tree. `git diff --check` passes.
 
 None.
 
+### Sprint 25.6: Revalidate Apple Silicon against the portable S3 store [Active]
+
+**Status**: Active
+**Implementation**: none — the shared worked-demo store implementation changed
+**Substrates**: apple-silicon
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Run this phase's declared Apple Silicon gate after the worked-demo phase closes
+on the portable S3 store, so the acceptance result covers the current consumer.
+
+#### Deliverables
+
+- The full `10/10` matrix and focused direct-Colima lane pass on Apple Silicon.
+- Terminal ownership, ambient-state restoration, and covered-source digest are recorded.
+
+#### Validation
+
+Pending.
+
+#### Remaining Work
+
+Run the declared gate and record its terminal audit and digest.
+
 ## Remaining Work
 
-None.
+Sprint 25.6 owes Apple Silicon acceptance against the changed demo tree.
 
 ## Documentation Requirements
 

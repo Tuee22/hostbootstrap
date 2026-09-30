@@ -59,8 +59,8 @@ tests =
         , exposureIntentTargetHost intent
         , portNumber (exposureIntentTargetPort intent)
         )
-    kindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("minio", "hostbootstrap-demo-control-plane", 30900), ("accelerator", "hostbootstrap-demo-control-plane", 30081)]
-    nvkindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("minio", "hostbootstrap-demo-control-plane", 30900)]
+    kindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("object-store", "hostbootstrap-demo-control-plane", 30900), ("accelerator", "hostbootstrap-demo-control-plane", 30081)]
+    nvkindExpected = [("registry", "hostbootstrap-demo-control-plane", 30500), ("web", "hostbootstrap-demo-control-plane", 30080), ("object-store", "hostbootstrap-demo-control-plane", 30900)]
     kindGolden =
         ByteStringChar8.pack . unlines $
             [ "kind: Cluster"

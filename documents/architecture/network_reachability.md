@@ -16,7 +16,7 @@ cluster-internal target, the container runtime atomically assigns a loopback por
 and authenticated inspection of that exact relay produces the endpoint clients consume. The selected port is
 never a Dhall value or a canonical Kind/nvkind input.
 Redirect delivery is constructible only with proof that the client can reach the backing endpoint.
-When a host-local Docker client reaches a published registry backed by cluster-only MinIO, the only legal
+When a host-local Docker client reaches a published registry backed by a cluster-only S3 store, the only legal
 delivery is `proxyThroughRegistry`, and the renderer necessarily emits `redirect: disable: true`.
 
 The two owning modules are
@@ -36,10 +36,10 @@ service indices. Route settlement compares the exact service, runtime-selected p
 generation, and ownership operation. Compile-fail fixtures pin the forbidden constructions and role coercions.
 
 **The demo registry delivery and application clients use the resolved-endpoint boundary.** Its finalized
-registry plan selects proxy delivery, so generated registry configuration disables redirects to cluster-only MinIO.
+registry plan selects proxy delivery, so generated registry configuration disables redirects to the cluster-only S3 store.
 The cluster backend removes host publication from Kind/nvkind rendering, creates one owned relay on the
 cluster container network, lets the container runtime assign its loopback host ports, and is the only producer
-of authenticated resolved exposures. The worked demo carries those values lexically to MinIO initialization,
+of authenticated resolved exposures. The worked demo carries those values lexically to store initialization,
 registry deployment and image push, web readiness, and host-resident accelerator ingress; none reconstructs
 an endpoint from a number.
 
@@ -75,7 +75,7 @@ substring. A client spelling of `localhost` is also not proof that the listener 
 `hostLocalClient`, `vmLocalClient`, and `clusterOnlyClient`. `clientScope` reads it back.
 
 For the worked demo, the pure cluster renderer declares registry, web, accelerator where applicable, and
-MinIO as semantic services with stable cluster-internal targets. It emits no host-side port number and no
+S3 store as semantic services with stable cluster-internal targets. It emits no host-side port number and no
 Kind/nvkind `extraPortMappings`. VM-backed rendering retains the selected writable durable mount; Direct
 nvkind rendering adds only its GPU worker topology and invents no VM/share layer.
 
@@ -170,7 +170,7 @@ the constructor is simply unavailable for that pair. `blobDeliveryStrategy` proj
 `DeliveryStrategy`, either `ProxyBlobs` or `RedirectBlobs` carrying the store authority and the scope
 it resolves in.
 
-Therefore a host Docker client cannot be paired with redirect delivery to cluster-only MinIO.
+Therefore a host Docker client cannot be paired with redirect delivery to the cluster-only S3 store.
 
 ## The finalized registry plan
 
@@ -205,10 +205,10 @@ storage:
   redirect:
     disable: true
   s3:
-    regionendpoint: http://minio.default.svc:9000
+    regionendpoint: http://object-store.default.svc:9000
 ```
 
-The boolean is serialized output, not a DSL choice. Registry exposure and the MinIO endpoint are
+The boolean is serialized output, not a DSL choice. Registry exposure and the S3 store endpoint are
 rendered from the same plan, so separately supplied manifests cannot disagree about scope or identity.
 
 ## Runtime admission
@@ -264,10 +264,10 @@ Closure requires:
 - constructor/property tests covering all supported reachability pairs;
 - golden tests proving rendering is uniquely derived from delivery strategy;
 - negative runtime tests where `/v2/` is Ready but blob `HEAD` returns an illegal `307`;
-- a live host-client to resolved relay exposure to internal NodePort registry to cluster-only MinIO push,
+- a live host-client to resolved relay exposure to internal NodePort registry to cluster-only S3 store push,
   repeated push, pull, registry-pod
   restart, and tag lookup;
-- assertions that proxy mode exposes no cluster-only MinIO URL to the client.
+- assertions that proxy mode exposes no cluster-only S3 store URL to the client.
 
 See [in-cluster registry](../engineering/in_cluster_registry.md) for the demo topology and
 [composition methodology](composition_methodology.md) for integration into the single project plan.

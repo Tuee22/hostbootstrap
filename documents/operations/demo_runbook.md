@@ -28,7 +28,7 @@
   role manifest, relays it to the root-only activation signer, installs the signed immutable revision under the
   durable data root, and gives Helm only that revision basename. The pod verifies the revision with the
   independently installed public key before selecting or acquiring its closed service program.
-- The chain includes MinIO before the registry and places the accelerator daemon after the workload.
+- The chain includes the S3 store before the registry and places the accelerator daemon after the workload.
 - Before lifecycle adapters consume that chain, the pure exact-slice projection classifies its typed operations
   into provider, cluster, workload, service, and assertion roles. VM and Direct plans retain distinct provider
   prefixes but both require one immediate provider-to-cluster edge and cluster-local workload suffix. The
@@ -62,7 +62,7 @@
 
 ## Current Status
 
-The host-native binary, frame handoff, provider folds, project-image build, kind/nvkind lifecycle, MinIO
+The host-native binary, frame handoff, provider folds, project-image build, kind/nvkind lifecycle, S3 store
 and registry deployment, chart, web/accelerator services, and compiled harness cases exist. Static tests
 cover many pure builders and failure paths. Current native-hardware closure, exact test totals, and dated
 evidence belong only in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
@@ -176,7 +176,7 @@ The workload segment is ordered:
 
 ```text
 deploy-kind or nvkind
-  -> deploy-minio
+  -> deploy-object-store
   -> deploy-registry
   -> push-image
   -> deploy-chart
@@ -221,13 +221,13 @@ refuses before the service program acquires a listener.
 
 | Driver | Runtime-exposed services |
 |---|---|
-| Kind | registry, web, accelerator ingress, MinIO |
-| nvkind | registry, web, MinIO |
+| Kind | registry, web, accelerator ingress, S3 store |
+| nvkind | registry, web, S3 store |
 
 Stable Kubernetes Service/NodePort targets remain cluster-internal. They are not copied into host publication.
 After cluster readiness, Docker assigns a distinct host port to every relay listener while binding it to
 `127.0.0.1`; hostbootstrap inspects the exact relay identity and passes those resolved endpoints to the
-registry push, web probes, MinIO setup, accelerator ingress, and harness assertions. Duplicate services,
+registry push, web probes, S3 store setup, accelerator ingress, and harness assertions. Duplicate services,
 wildcard inspection, missing/additional mappings, wrong targets, identity replacement, digest mismatch, or
 noncanonical input refuses. No operator chooses a port and no retry loop scans candidates.
 
@@ -243,7 +243,7 @@ manifest and receive a signed activation grant without retaining a child service
 key. Exposure observation and activation signing are therefore separate fresh checks: one returns only a
 loopback port, and the other returns only a signed grant.
 
-MinIO creates the S3 backing and bucket before the registry. The accelerator daemon is in-cluster for
+The object-store step creates the S3 bucket before the registry. The accelerator daemon is in-cluster for
 Linux CPU/GPU and host-native after private ingress for Apple Silicon/Windows GPU. An in-cluster daemon mounts
 the same revision and authority directories as the web workload, reads its own pod UID and exact daemon-container
 restart count, and invokes `service run`. A host daemon instead measures the copied executable, installs its
@@ -509,9 +509,9 @@ audit belong in
 ## Safe Operating Guidance
 
 - Do not run the long harness on a machine carrying production demo state.
-- Treat every runtime-resolved web, registry, MinIO, and accelerator endpoint as a development-only listener.
+- Treat every runtime-resolved web, registry, S3 store, and accelerator endpoint as a development-only listener.
   The target relay binds only `127.0.0.1`; do not publish it on a wildcard address, persist its selected port in
-  Dhall, or construct a localhost URL independently. The registry is still anonymous HTTP, and MinIO uses
+  Dhall, or construct a localhost URL independently. The registry is still anonymous HTTP, and the store uses
   fixed source credentials rendered into a Kubernetes Secret.
 - Treat a wrong or occupied durable alias as a conflict; do not delete it by pathname alone.
 - Do not point a derived build at a locally rebuilt base. Pull the published tag; the host-native lane

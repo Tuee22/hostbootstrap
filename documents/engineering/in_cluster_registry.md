@@ -11,9 +11,9 @@
 
 ## Current Status
 
-The demo uses a finalized proxy-delivery plan for a host client and cluster-only MinIO store. It renders
+The demo uses a finalized proxy-delivery plan for a host client and a cluster-only S3 store. It renders
 `storage.redirect.disable: true`, so repeated blob requests stay on the reachable registry endpoint rather
-than redirecting the host client to `minio.default.svc:9000`.
+than redirecting the host client to `object-store.default.svc:9000`.
 
 The contract is the typed plan in
 [network reachability](../architecture/network_reachability.md): core owns the generic endpoint,
@@ -70,18 +70,18 @@ contributed chain step (`deployRegistryAction` in
 own resource step, but the target API requires it to construct that step from core's opaque registry
 plan rather than independently choosing endpoint strings and redirect flags.
 
-## Persistent storage: MinIO-backed
+## Persistent storage: S3-backed
 
 The `registry:2` pod is stateless, and its storage is externalized to an in-cluster
-**MinIO** (S3) bucket rather than the pod's ephemeral filesystem. This is the demo's
-contributed `deploy-minio` chain step (`deployMinioAction`), ordered **before**
-`deploy-registry`: a `minio/minio` Deployment + a `minio-data` PVC (bound to kind's
-default `local-path` StorageClass) + a `minio-credentials` Secret, followed by
+**VersityGW** bucket rather than the pod's ephemeral filesystem. This is the demo's
+contributed `deploy-object-store` chain step (`deployObjectStoreAction`), ordered **before**
+`deploy-registry`: a `ghcr.io/versity/versitygw:v1.7.0` Deployment + an `object-store-data` PVC (bound to kind's
+default `local-path` StorageClass) + an `object-store-credentials` Secret, followed by
 `mc mb --ignore-existing` to create the `registry` bucket. The bucket-init runs from
-the container frame reusing the base image's `mc` client through the exact resolved MinIO exposure. A client
+the container frame reusing the base image's `mc` client through the exact resolved store exposure. A client
 spelling of localhost is not itself listener or ownership proof; the relay inspection supplies both. The registry's storage
 stanza is supplied by a mounted `registry-config` ConfigMap declaring only the `s3`
-driver pointing at `minio.default.svc:9000`; the two S3 credentials are layered in by
+driver pointing at `object-store.default.svc:9000`; the two S3 credentials are layered in by
 env from the Secret. Those Secret values are currently hardcoded source constants
 (`hostbootstrap` / `hostbootstrap-demo-secret`) in
 `demo/src/HostBootstrapDemo/Commands.hs`; Kubernetes Secret encoding is not secret generation or
@@ -89,7 +89,7 @@ at-rest encryption. This is suitable only for the worked local demo. (Env-only S
 stock `registry:2` ships a
 default `config.yml` with a `filesystem` driver, so `REGISTRY_STORAGE_S3_*` env alone
 yields two drivers and the registry refuses to start — hence the ConfigMap replaces
-the whole config file.) The `deploy-minio` step is ordered first because the s3
+the whole config file.) The `deploy-object-store` step is ordered first because the s3
 driver requires the bucket to pre-exist.
 
 Distribution's default storage redirect is illegal for the host-client/cluster-only-store topology. The
@@ -103,22 +103,19 @@ and verified by the cluster backend; spelling a client address as `localhost` al
 
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.
-S3-backed, the restarted pod can re-read the blobs from MinIO and the pushed tag
+S3-backed, the restarted pod can re-read the blobs from the store and the pushed tag
 survives. The `registry-persistence` harness case proves exactly this: push → delete the registry pod →
 the tag is still served. The phase's live gate must additionally confirm the initial and repeated pushes on
-the current native substrate. The MinIO PVC lives on the kind node's
+the current native substrate. The S3 store PVC lives on the kind node's
 `local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
 which deletes the cluster (the in-VM cluster is ephemeral by design; the registry's
 durable state lives inside the cluster, and the demo mirrors none of it back to the
 host — see [../architecture/durable_state.md](../architecture/durable_state.md)).
 
-**The design trade.** The original rationale above for `registry:2` was a
-*single-binary, not a multi-pod stack* store — minimal moving parts. MinIO-backing
-keeps the registry **image** single-binary and multi-arch (as is MinIO's), so the
-no-emulation property survives; but the *stack* is deliberately no longer single-pod:
-it carries a stateful MinIO Deployment, a PVC, a Secret, and a ConfigMap. That is a
-real complexity cost, accepted in exchange for durability across registry pod
-restarts.
+**The design trade.** The registry and store use separate single-binary,
+multi-architecture images. The stack includes a stateful VersityGW Deployment,
+a PVC, a Secret, and a ConfigMap, which provides durability across registry pod
+restarts while remaining portable across the supported node architectures.
 
 ## Recommended convention: arch-explicit tags only
 
@@ -171,9 +168,9 @@ The registry topology is closed only when one live supported host proves all of 
 the same finalized plan:
 
 1. the exact host Docker client reaches the exact published registry exposure;
-2. the registry reaches the exact MinIO endpoint and bucket;
+2. the registry reaches the exact S3 store endpoint and bucket;
 3. an initial push and a repeated push of the same image both complete;
-4. blob responses expose no cluster-only MinIO URL to the host client;
+4. blob responses expose no cluster-only S3 store URL to the host client;
 5. a pull and tag lookup succeed after deleting and recreating the registry pod;
 6. compile-fail and golden tests prove the illegal redirect topology and an independent raw redirect
    flag cannot be constructed.

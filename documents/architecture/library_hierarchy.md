@@ -220,12 +220,12 @@ describes, exercised end-to-end on real hardware:
   substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
   `demo/src/HostBootstrapDemo/Commands.hs`. The core ships
   the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
-  deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-minio, deploy-registry,
+  deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-object-store, deploy-registry,
   push-image, accelerator-daemon placement)
   into the same ordered `[Step]`. Every binary surfaces the same fixed tree — `project`, `test`,
   `service`, `context`, and `check-code` — and adds no verbs; the demo contributes its `web` and
   `accelerator` service variants and its VM/provider IO as chain steps. A single `project up` on Incus/Linux stands up the live
-  persistent stack — deploy-kind → deploy-minio → deploy-registry → push-image → deploy-chart →
+  persistent stack — deploy-kind → deploy-object-store → deploy-registry → push-image → deploy-chart →
   expose-port, followed by the selected accelerator-daemon placement. Current native validation status
   belongs in the development plan. Its public representation rejects empty/noncontiguous plans and
   duplicate identities, and requires exactly one declared descent per frame that has a successor;

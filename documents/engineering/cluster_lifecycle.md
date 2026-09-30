@@ -14,7 +14,7 @@ The demo's workload segment is:
 
 ```text
 deploy-kind or nvkind
-  -> deploy-minio
+  -> deploy-object-store
   -> deploy-registry
   -> push-image
   -> deploy-chart
@@ -22,12 +22,12 @@ deploy-kind or nvkind
   -> accelerator-daemon placement where selected
 ```
 
-`deploy-minio` is required before the registry because the registry uses the MinIO bucket as its S3
+`deploy-object-store` is required before the registry because the registry uses its bucket as the S3
 backend. Linux CPU/GPU append an in-cluster accelerator-daemon deployment; Apple Silicon and Windows GPU
 start a host daemon after the web and private daemon ingress are reachable.
 
 The current registry wait proves only Deployment readiness and can be followed by `/v2/` success while
-blob `HEAD` redirects the host client to cluster-only MinIO. The target chain requires the exact
+blob `HEAD` redirects the host client to cluster-only S3 store. The target chain requires the exact
 `ReadyBlobRoute` derived from the finalized registry plan before `push-image`; see
 [network reachability](../architecture/network_reachability.md).
 
@@ -390,5 +390,5 @@ gate above.
 - [durable state](../architecture/durable_state.md) — `.data`, the stable alias, and persistence gate.
 - [harness workflow](../architecture/harness_workflow.md) — test DSL and profile defects.
 - [resource budgeting](resource_budgeting.md) — applied and missing resource walls.
-- [in-cluster registry](in_cluster_registry.md) — MinIO, registry, and image-push ordering.
+- [in-cluster registry](in_cluster_registry.md) — S3 store, registry, and image-push ordering.
 - [accelerator daemon](accelerator_daemon.md) — substrate-selected daemon placement.

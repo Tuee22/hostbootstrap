@@ -2844,7 +2844,7 @@ client→exposure and registry→store paths, rejects an out-of-scope redirect, 
 revision-/plan-/registry-/store-indexed `ReadyBlobRoute`. A bare `/v2/` response cannot satisfy an image
 operation precondition. the composition-and-network-algebra phase owns the generic reachability and delivery algebra, the canonical-quantities-and-reconcile-results phase owns the
 identity-bound readiness/precondition machinery, and the worked-demo phase owns the demo renderer and live
-host-client→NodePort→cluster-only-MinIO proof. The canonical architecture is
+host-client→NodePort→cluster-only-S3-store proof. The canonical architecture is
 [network_reachability](../documents/architecture/network_reachability.md).
 
 ### HH. Unrepresentable Illegal State

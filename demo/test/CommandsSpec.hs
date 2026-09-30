@@ -80,7 +80,7 @@ import HostBootstrapDemo.Commands (
     hostClusterStateDirectory,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
-    minioClusterEndpoint,
+    objectStoreClusterEndpoint,
     nvidiaAllocatableProbeResult,
     readHostAcceleratorDaemonPid,
     renderActivationConfig,
@@ -209,7 +209,7 @@ tests =
         , testCase "application-facing host clients open only their semantic resolved exposure" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let adopters =
-                    [ ("deployMinioAction stepCfg execution", "deploy-minio", "minio")
+                    [ ("deployObjectStoreAction stepCfg execution", "deploy-object-store", "object-store")
                     , ("deployRegistryAction stepCfg execution", "deploy-registry", "registry")
                     , ("pushImageAction stepCfg execution", "push-image", "registry")
                     , ("exposeAction stepCfg execution", "expose-port", "web")
@@ -595,7 +595,7 @@ tests =
                     && "observedRuntimeIdentity = exposureRuntimeIdentity exposure" `isInfixOf` commandsSource
                     && "settleBlobRoute plan observation" `isInfixOf` commandsSource
                 )
-            minioClusterEndpoint @?= "minio.default.svc:9000"
+            objectStoreClusterEndpoint @?= "object-store.default.svc:9000"
         , testCase "the upload session Location is resolved absolute or relative" $ do
             -- registry:2 answers absolute, but the API permits relative, so a
             -- relative Location is resolved against the dialled endpoint.
@@ -618,7 +618,7 @@ tests =
                     , "build-image"
                     , "context-init"
                     , "deploy-kind"
-                    , "deploy-minio"
+                    , "deploy-object-store"
                     , "deploy-registry"
                     , "push-image"
                     , "deploy-chart"

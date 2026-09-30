@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -1926,7 +1926,7 @@ Confirm the proof-complete recursive lifecycle command through the real Producti
 - Fresh Production `project up` traverses every declared frame through Phase 17's root-coordinated storeless
   frame executor and reaches exact provider, cluster, workload, service readiness, and read-only endpoint
   assertions.
-- One exact demo owner receives distinct runtime-assigned loopback ports for its registry, web, MinIO, and
+- One exact demo owner receives distinct runtime-assigned loopback ports for its registry, web, S3 store, and
   host-accelerator listeners without candidate scanning, retry-on-collision, or operator configuration. Every
   probe uses the endpoint resolved for its own exact service and generation. The lower cluster-lifecycle phase's
   live gate separately proves concurrent same-listener allocation in one Docker namespace.
@@ -2942,9 +2942,393 @@ through the frame it reopened, and exited 0 where the same sequence had previous
 `Error: Instance is not running`. The Lima and WSL2 branches remain confirmed by their own acceptances,
 which this phase does not claim.
 
+### Sprint 24.47: Revalidate the worked demo after shared guest setup changes [Active]
+
+**Status**: Active
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Config.hs`,
+`demo/test/` — the shared guest setup and S3 store image changed during live revalidation
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+The WSL-only Docker image-store choice and the portable S3 store deployment
+change paths covered by this deferred phase. The earlier live worked-demo gate
+no longer proves the resulting tree. Re-run this phase's complete declared gate
+on a supported outer host before advancing the later acceptance phases.
+
+#### Deliverables
+
+- The static core and demo legs of this phase's gate pass against the changed tree.
+- Production up, down, and destroy plus the full Harness matrix pass in the
+  universal `linux-cpu` realization.
+- The terminal ownership audit and this phase's covered-source digest are recorded.
+
+#### Validation
+
+The changed tree passes `cabal build all` from `demo/`, `cabal build all` and
+`cabal test all` from `core/` (2,547 tests), and the demo's
+`hostbootstrap-demo-test` (151 tests). The repository Python code check and
+test suite also pass (251 tests). The live phase gate and covered-source
+digest remain pending. The first fresh Windows/WSL2 `project up` run reached
+Docker after a guest-native Haskell build and reported `overlay2` before its
+published-base pull. That exact published digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`
+pulled successfully. The project image then failed `check-code` because
+Fourmolu required a different guarded-case layout in the new WSL driver check.
+The source was formatted exactly as suggested and the published base image's
+Fourmolu check passed against the host worktree. `project down` could not
+reverse the failed up because build #3 had not produced `hostbootstrap-demo:local`.
+The uniquely identified production guest and its protected state were archived
+and reset; the live gate must be rerun on the formatted source.
+After the formatting edit, `cabal build all` and `cabal test all` pass from
+`core/` (2,547 tests), `cabal build all` and `cabal test all -j1` pass from
+`demo/` (151 demo tests and 2,547 core tests), and the repository Python
+code check and all 251 Python tests pass. This re-establishes the static
+portion of the gate; the live legs remain pending.
+The fresh production `project up` on Windows/WSL2 wall fence 41 exits 0:
+the published CPU/amd64 base digest is pulled under `overlay2`, build #3
+verifies its exported runtime and web bundle, Kind imports the project image,
+the local registry push completes, and the host accelerator daemon reports
+ready. `project down` also exits 0, releases the WSL2 wall, restores the
+original `.wslconfig`, and stops the guest. `project destroy` exits 0 and
+unregisters that guest. The post-production audit finds no active wall,
+no WSL registrations or hostbootstrap processes, no active protected mode,
+and `.wslconfig` at its original SHA-256. The full Harness matrix remains
+pending.
+The first matrix invocation refuses `0/10` before guest creation because the
+generated production `.build/hostbootstrap-demo.dhall` from `project init`
+still occupies the Harness output path. After confirming no active project
+process or WSL registration, that generated config is archived outside the
+repository at `C:\Users\Matt\AppData\Local\Temp\hb-recovery-archive-20260923\production-config-fence41.dhall`
+with matching SHA-256; the operator test config remains present. The matrix
+must be rerun with that output path free.
+The rerun starts against the unchanged formatted source. Both fresh
+`hello-world` generations reach assertions, then destroy their guest and
+release the wall; the second leaves the harness ready to open
+`hello-universe` under fence 44. This is partial progress, not the complete
+`10/10` gate result.
+The matrix then exits 1 with `5/12 passed`: all five `hello-world` checks
+pass, but the first `hello-universe` guest's Docker 29.1.3 classic `overlay2`
+pull of the published base fails after downloading every layer with
+`layers from manifest don't match image configuration`. Its assertions are
+broken and reverse teardown leaves protected ownership. A diagnostic retry
+of the same `docker pull` in that retained guest succeeds at the exact
+published digest. The error is in Docker's intermittent pull/unpack path;
+this result does not close the phase.
+Two further cold pulls of that digest pass after limiting the retained WSL2
+guest to one concurrent layer download. The WSL2 daemon config now carries
+that setting, and published-base pulls in WSL2 guests have a three-attempt
+bound. The changed Haskell source compiles with `-Werror` and passes Fourmolu;
+the complete static gate then passes on this tree: `cabal build all` and
+`cabal test all -j1` from `demo/` (151 demo and 2,547 core tests),
+`cabal build all` and `cabal test all` from `core/` (2,547 tests), the
+repository Python code check, and all 251 Python tests. The failed guest's
+274 protected-state files and wall record are archived outside the repository,
+the wall restores to its original `.wslconfig` hash, and its uniquely
+identified WSL registration is removed. The live gate remains owed.
+The next fresh production `project up` reaches Docker `overlay2` at WSL wall
+fence 45. Its first serialized published-base pull still fails with
+`layers from manifest don't match image configuration`; the new bounded
+retry reports the pull failure accurately and its second attempt succeeds
+at digest `sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`.
+The run proceeds to build #3; its terminal result and the matrix remain owed.
+Production `project up` then exits 0. Build #3 verifies the exported runtime,
+config, public keys, and web bundle; Kind imports the derived image and the
+host daemon reaches ready. `project down` and `project destroy` also exit 0.
+The audit finds no WSL registration, active wall, protected mode, or
+hostbootstrap process, and `.wslconfig` matches its original SHA-256
+`2986099D4E292ABED1BACBF7B7CB514188BAD4304F930800803A85470EE4E694`.
+The generated production config is archived outside the repository with its
+hash intact so the full Harness matrix can use the output path. That matrix
+remains the open live leg.
+The full matrix's first fresh `hello-world` guest (fence 46) pulls the
+published digest on its first attempt, completes build #3 and assertions,
+then destroys the guest and releases the wall. Its second fresh guest
+(fence 47) reaches `overlay2`; its first published-base pull again fails
+with the layer/configuration mismatch, while the bounded second attempt
+succeeds at the same digest and proceeds to build #3. The matrix terminal
+report exits 1 with `4/12 passed`. The second guest completes build #3 and
+starts same-run restart, but `kind load docker-image hostbootstrap-demo:local`
+exits 1 inside `project:push-image`. The parent reports a terminal callback
+failure after acknowledgement; the retained lifecycle child record exposes
+the actual Kind command refusal. Kind's detailed stderr is absent from the
+record, so the lower-level import failure is unproven. Failed-Up unwind leaves
+the child chain open; teardown and mode close cannot settle its protected
+records, and `hello-universe` is refused. The failed guest was unregistered
+and the wall restored; 240 protected-state files were archived outside the
+repository after verifying the run identity. The WSL-only Kind image load
+now has three bounded attempts and emits captured output on stderr for each
+failed attempt. This source change compiles with `-Werror`; the full gate is
+owed again.
+The WSL-only Kind retry passes Fourmolu 0.19.0.1 with the repository style
+contract, `cabal build all` from `demo/`, and `cabal test all -j1` from
+`demo/` (151 demo tests and 2,547 core tests). The repository Python code
+check and all 251 Python tests also pass. The separate core gate and fresh
+live legs are in progress. The separate `cabal test all` from `core/` then
+exits 0, including the core test suite and the expected skipped native
+provider-live lane. The fresh production `project up` has acquired WSL wall
+fence 48; its terminal result is pending.
+The fence-48 production run exits 1 before Docker: GHCup's pinned GHC 9.12.4
+installation exits 1 while `gmake install` copies libraries. Its generated
+`make.log` and `ghcup.log` stop during installation without a reported make
+error; the guest reports 68 GiB free disk and 9.2 GiB available memory, and
+the kernel log contains no OOM kill. Subsequent Hyper-V Worker Admin event
+inspection identifies a guest-reported CPU Machine Check Exception and
+`Kernel panic - not syncing: Fatal local machine check` at 07:07 local time.
+This explains the abruptly stopped installer. The physical or virtualization
+fault beneath the reported machine check is not identified. This run never
+exercises the new Kind import code and cannot serve
+as live gate evidence. Its guest and protected records require the approved
+reset before another pristine run.
+The approved reset archives the fence-48 wall record, 22 protected-state
+files, and the generated production config outside the repository; the wall
+restore returns `Right ()`, the verified sole WSL GUID is unregistered, and
+`.wslconfig` matches its original SHA-256. A new production attempt is
+launched on the unchanged source.
+That fence-49 production attempt also exits during GHCup installation, before
+Docker. Its extracted GHC profiling archive is 595,591,168 bytes, whereas
+the matching member in GHCup's digest-verified download is 617,432,916
+bytes; `ranlib` on the extracted archive reproduces `State.p_o: file
+truncated`, while the complete tar member passes `ranlib`. Hyper-V Worker
+Admin records further guest-reported CPU Machine Check Exceptions and fatal
+local machine-check panics at 07:18, 07:20, and 07:25 local time, including
+during a direct diagnostic extraction. The run cannot validate the code;
+further pristine WSL gates on this host need a stable host/virtualization
+environment. The approved operator reset archived the fence-49 wall record,
+22 protected-state files, and generated production config outside the
+repository. Wall restoration returned `Right ()`, the verified sole guest GUID
+`{9c5cb108-819c-4992-85bb-83a7e81090ff}` was unregistered, zero WSL
+registrations remain, and `.wslconfig` retains its original SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`.
+All four Hyper-V fatal events carry the same machine-check status word
+`b200000080060001`; the Windows System log has no WHEA-Logger event in the
+same two-day window. The host runs WSL 2.7.10.0, kernel 6.18.33.2-2, and
+Windows build 26200.9457. A [Microsoft WSL issue](https://github.com/microsoft/WSL/issues/41649)
+reports the same guest status word on another host across later WSL and kernel
+versions; it does not establish this machine's underlying cause or a fix.
+The previously used `matt-junction` Linux host is reachable but rejects the
+available SSH identity with `Permission denied (publickey)`, so its `hb-linux-cpu`
+guest cannot be used for the owed gate from this workspace.
+
+The four saved panic dumps and matching Windows Resource-Exhaustion-Detector
+events show a concrete host condition at each crash: system commit was
+63.62–63.76 GiB against a 63.87 GiB limit. The Windows `psmux` client
+`tmux.exe` (PID 11040) accounted for 44.24–45.77 GiB, while `vmmemWSL`
+accounted for 7.49–8.63 GiB. The page file is automatically managed; its
+limit had grown during the earlier runs. The dumps also contain an earlier
+WSLg `Xwayland`/`dxgkrnl` warning. Commit exhaustion is established, but the
+mechanism that reports it as a guest machine check is not proved.
+
+A controlled fence-50 Production retry starts through the durable WMI launcher
+outside the `psmux` process tree, with ten-second Windows commit and `psmux`
+samples. The current Codex process itself runs in an attached `psmux` pane,
+so that client cannot be restarted during this session. `project init`
+passes. Fresh `project up` installs GHC 9.12.4, builds and installs the guest
+binary, pulls base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`,
+and reaches Docker build #3. No new guest machine-check or Windows
+resource-exhaustion event appears. The attempt is deliberately interrupted
+while the image's `check-code` runs: commit reached 23.008 GiB against a
+23.347 GiB limit, and `psmux` private commit had grown from 0.07 to 1.67
+GiB. Thus it establishes progress beyond the earlier GHC failure, not a
+passing Production gate or an isolated no-`psmux` result. Normal `project down`
+cannot enter the unfinished image, and `project destroy` refuses the
+remaining reverse state. The run's 35 protected files, generated config,
+and wall record are archived outside the repository. Wall restoration
+returns `Right ()`; verified sole guest GUID
+`{41d9da26-9ecd-412f-9c64-9183a67a1d6d}` is unregistered; zero WSL
+registrations remain; and `.wslconfig` retains its original SHA-256 above.
+The same attached `psmux` client continues growing after the WSL guest is
+unregistered, reaching 2.13 GiB while system commit is 12.94 GiB of a
+22.34 GiB limit. Its growth is independent of this live WSL guest.
+
+After the operator resets `tmux`, a fresh fence-51 Production `project init`
+passes and `project up` starts through the detached WMI launcher. The new
+`tmux` client still hosts Codex and grows during the run. Guest GHC installation
+and project-binary compilation pass; Docker starts with the WSL-only `overlay2`
+store, pulls the published CPU/amd64 base at the digest above, and enters
+image build #3. There is no new Hyper-V machine-check event or Windows
+resource-exhaustion event. At the build's end, however, Cabal reports that
+building `test:hostbootstrap-core-test` segfaulted. Guest `dmesg` records
+`ghc_worker` signal 11 and a general protection fault in
+`libHSghc-9.12.4-5301-ghc9.12.4.so`. The last sampled Windows commit is
+18.011 GiB of 19.745 GiB, with the new `tmux` client at 1.935 GiB; guest
+memory after failure has 9.1 GiB available and no OOM kill is recorded. This
+attempt therefore fails at a compiler crash without reproducing the earlier
+WSL kernel panic. The cause of that compiler crash remains unproven, and the
+Production gate has not passed. `project down` cannot enter the unfinished
+image; `project destroy` refuses `ModeReverseRootInProgress`. The 22
+protected-state files, generated config, and wall record are archived outside
+the repository under `failed-production-post-tmux-reset-fence51` with matching
+counts and SHA-256 hashes. The core wall restore removes the active record;
+the verified sole guest GUID `{fdafab47-5988-4be8-9038-4724a34ea5c0}` is
+unregistered. Zero WSL registrations remain and `.wslconfig` retains its
+original SHA-256 above. After recording this failure, `cabal test all -j1`
+from `core/` passes all 2,547 core tests, including `DocValidatorSpec`; the
+native provider-live lane takes its declared skip. `git diff --check` passes.
+
+With the attached `psmux` client detached, the next fresh Production
+`project init` passes and `project up` proceeds through guest GHC installation,
+the project-binary build, the published CPU/amd64 base pull at digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`,
+and the in-image `check-code` step that had segfaulted at fence 51. Windows
+commit remains about 16.4 GiB of 19.745 GiB during the image build, with no
+new machine-check or resource-exhaustion event. The run then exits 1 during
+Kind rollout. The live pod is in `ImagePullBackOff`: Quay returns HTTP 401 for
+the demo's `quay.io/minio/minio:latest` image. Direct pulls of a pinned MinIO
+release from Quay and Docker Hub also fail. The parent reports a terminal
+callback acknowledgement failure, but the pod event identifies the immediate
+deployment failure. This run does not establish that `psmux` caused the earlier
+GHC crash or WSL machine checks. Normal `project down` and `project destroy`
+both exit 0; the audit finds zero WSL registrations, no active wall, and the
+original `.wslconfig` SHA-256. The 99 generated protected-state records and
+production config are archived outside the repository under
+`failed-production-detached-client-20260924`, leaving their worktree paths free
+for another run. The unavailable image dependency requires a portable S3 store;
+the full live gate remains owed.
+After recording this attempt, `cabal test all -j1` from `core/` exits 0,
+including `DocValidatorSpec`; `git diff --check` also passes.
+The demo now renders a versioned VersityGW POSIX-backed S3 Deployment in place
+of the unavailable MinIO image. `docker manifest inspect` confirms that
+`ghcr.io/versity/versitygw:v1.7.0` publishes linux/amd64 and linux/arm64
+manifests. `cabal build all` from `demo/` passes with `-Werror`. The full
+static and live gates must run against this new tree.
+On 2026-09-24, the first Production run with that store passes `project init`,
+`project up`, `project down`, and `project destroy` on native Windows/WSL2.
+The guest pulls published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`,
+passes the in-image code check and export verification, and brings up
+VersityGW `v1.7.0` and the registry as Ready Kind Deployments. The 16.3 GB
+project image loads into Kind and pushes through the S3-backed registry;
+the pushed manifest digest is
+`sha256:81366613bb1b80ecd325e304cca4a3511a3a03643d06012d1ec3be9fdf00ccf5`.
+The web endpoint and hidden Windows host daemon reach readiness. With no
+attached `psmux` client, sampled Windows commit remains below 16.8 GiB of a
+19.745 GiB limit during the build. Teardown releases the WSL wall, restores
+the original `.wslconfig` SHA-256, and unregisters the sole guest. The 108
+generated protected-state files and production config (SHA-256
+`5EC0092759C6818DB0879C97399F5F33F345062781ADF06D5E8214378FBB0A22`)
+are archived outside the repository under `production-versity-20260924` to
+leave the Harness output path free. The complete matrix remains owed.
+The complete Windows host static gate then passes against this source tree:
+`cabal build all` and `cabal test all` from `demo/` (151 demo and 2,547
+core tests), `cabal build all` and `cabal test all` from `core/` (2,547 tests,
+including `DocValidatorSpec`), the repository Python code check, and all 251
+Python tests. `git diff --check` passes. The full live matrix remains owed.
+The fresh full Windows/WSL2 matrix started on 2026-09-24 and exited 1 on
+2026-09-25 with `4/12 passed`. Its first `hello-world` generation (wall fence
+54) built and deployed the image and passed the initial assertions. The
+same-run restart for `durable-readback` created a second fresh guest (fence
+55); that guest pulled the exact published CPU/amd64 base digest, completed
+both project builds, and verified the exported runtime, config, keys, and web
+bundle. Its `kind load docker-image` first failed while extracting layer
+`sha256:593011a328f7a4180421214f7ebcaf88b70debf94326a0e3b0700c708f32daea`
+because the node content store could not find that digest. Both bounded
+retries then failed at `docker save` with `file integrity checksum failed for
+"usr/lib/x86_64-linux-gnu/libclang-19.so.19"`. Thus the retained local Docker
+image could not be exported; repeating Kind import of that same image did not
+repair it. The lower-level cause of the fresh guest's local image corruption
+is unproven. Failed-Up unwind left the child chain and protected effect record
+unsettled, so teardown and mode close reported leaks and `hello-universe` was
+refused. The guest was already destroyed, the global wall released, and the
+original `.wslconfig` restored. With no WSL registration or hostbootstrap
+process remaining, all 137 protected-state files were archived intact outside
+the repository under `failed-versity-matrix-fence55-20260925.hostbootstrap`;
+`wsl --shutdown` cleared the lingering utility VM. The final audit finds no
+WSL registration, hostbootstrap process, active wall, generated run config, or
+protected mode, and the `.wslconfig` SHA-256 is again
+`2986099D4E292ABED1BACBF7B7CB514188BAD4304F930800803A85470EE4E694`.
+The complete live gate remains owed.
+
+The WSL2 bootstrap now checks the derived image with `docker save` redirected
+to `/dev/null` before Kind or the registry exists. This reads every archived layer,
+including base files that the runtime smoke test does not execute. On the
+observed file-integrity-checksum class, it first refuses to clear an occupied
+Docker daemon, then removes the guest's unused images and builder cache,
+re-pulls the published base with digest verification, and
+rebuilds. The repair is bounded to three builds in a project-owned WSL2
+guest; other export failures retain their diagnostic and fail. This is a
+recovery for the observed local image corruption, not a claim that its
+lower-level cause has been identified. The revised source passes the native
+Windows static gate: `cabal build all` and `cabal test all` in both `demo/`
+and `core/` (151 demo, 2,547 core, and the native provider-live skip),
+the Python code check and all 251 Python tests, Fourmolu 0.19.0.1 on the
+changed module, and HLint 3.10 with no hints. A fresh Production run and the
+complete live matrix remain owed on this changed tree.
+
+The first fresh Production `project up` on the checksum-recovery change
+stopped before Kind because its preflight used `docker save -o /dev/null`.
+Docker refuses that character device as an output file. In the retained guest,
+`docker save hostbootstrap-demo:local > /dev/null` completed successfully,
+proving this attempt's image was exportable. The preflight now uses that
+redirection, and `cabal build all` in `demo/` passes. Normal `project down`
+released the WSL wall and restored the original `.wslconfig`, but `project
+destroy` stopped because the guest's durable alias path was a directory where
+its ownership record expected a symbolic link. Recovery and the full live gate
+remain owed.
+The sole WSL registration matched the demo guest and GUID
+`{b11e094b-84b6-4aab-8dc8-8e68e22b87b6}`; 84 protected-state files,
+both generated configs, and the generated keys were archived intact outside
+the repository under `failed-integrity-preflight-20260925`. The approved
+operator reset unregistered that guest and shut WSL down. The terminal audit
+shows no registered distribution, and `.wslconfig` still hashes to
+`2986099D4E292ABED1BACBF7B7CB514188BAD4304F930800803A85470EE4E694`.
+
+The next fresh Windows/WSL2 Production sequence on the corrected preflight
+passed `project init`, `project up`, `project down`, and `project destroy`.
+The guest pulled the published CPU/amd64 base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`;
+`docker save` over the entire derived image and the exported-runtime probe
+both passed. Kind's first import failed with a missing containerd content
+digest `sha256:9f522cd6153474e0565bf0d2dd54e8b52ab08c80d6b1a64487f523fe3a866fc6`.
+The declared retry recovered: the image loaded, the in-cluster push returned
+manifest digest
+`sha256:449768998ad08b5bd2db741d9719adc3bcdc15bf62ff54f2405dd22b74efd19d`,
+and the web service and host daemon reached readiness. `project down`
+released wall fence 57 and restored the original `.wslconfig`; `project
+destroy` unregistered the sole guest. The host has no WSL registration or
+hostbootstrap-demo process, and `.wslconfig` again hashes to
+`2986099D4E292ABED1BACBF7B7CB514188BAD4304F930800803A85470EE4E694`.
+The 108 protected-state files, generated Production config (SHA-256
+`5EC0092759C6818DB0879C97399F5F33F345062781ADF06D5E8214378FBB0A22`),
+and generated keys were archived intact outside the repository under
+`production-integrity-redir-20260925` to leave the Harness output path
+pristine. The full Harness matrix remains owed.
+The complete Windows/WSL2 Harness matrix was launched durably at
+2026-09-24 23:20 EDT under `phase24-integrity-redir-matrix-20260925`.
+Its first `hello-world` generation is `run-1a4ccab22128` and acquired wall
+fence 58. The Python host checks on this tree pass (`ruff`, Black, mypy,
+251 tests), as do `cabal build all` in `core/`,
+`cabal test hostbootstrap-demo-test` in `demo/` (151 tests), and
+`git diff --check`. `cabal test all` in `core/` also exits 0, including
+the core suite and native provider-live refusal. The matrix outcome remains
+pending.
+The matrix's first guest at fence 58 pulled the expected published base,
+passed the full derived-image archive check, loaded and pushed the image
+(manifest `sha256:f87877ead41b6002af4776b1677d2484c027a3a21e23ce379a3b1b6e7a37fe23`),
+and reached web and daemon readiness. The Harness opened `hello-world`
+assertions, destroyed that guest, restored the WSL wall, and began its
+same-run restart at fence 59. The complete matrix result is still pending.
+After the README frontier update, `cabal test all` from `demo/` passed again:
+151 demo tests and the 2,547-case core suite, including `DocValidatorSpec`.
+The second matrix guest at wall fence 59 passed the WSL2 project-image archive
+and exported-runtime checks. Its first Kind image import reported missing
+containerd content digest
+`sha256:9f58ca9c5ce6715bba03208cd6974205b75a52ec2485e10a402153262859a28a`;
+the declared retry recovered. The web service and host daemon reached readiness,
+the Harness opened the restarted `hello-world` assertions, and normal destroy
+released the wall. The same matrix then began its third fresh guest at fence 60
+for `hello-universe`; the complete result remains pending.
+
+#### Remaining Work
+
+Run every declared gate leg, audit terminal ownership, and refresh the covered-source
+digest and gate evidence.
+
 ## Remaining Work
 
-None.
+**Sprint 24.47** owns the complete worked-demo revalidation against the changed tree.
 
 ## Documentation Requirements
 

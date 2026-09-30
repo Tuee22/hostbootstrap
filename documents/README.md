@@ -230,7 +230,7 @@ and acceptance evidence are linked from [architecture/durable_state.md](architec
 [architecture/lifecycle_state_model.md](architecture/lifecycle_state_model.md).
 
 - **The chain is the current forward representation.** Cluster bring-up runs through `deploy-kind`,
-  `deploy-minio`, `deploy-registry`, `push-image`, `deploy-chart`, and runtime-owned exposure; the
+  `deploy-object-store`, `deploy-registry`, `push-image`, `deploy-chart`, and runtime-owned exposure; the
   substrate-specific accelerator daemon then runs in-cluster or on the host. In the current demo,
   `context-init`'s action body is a no-op announcement; VM projection/delivery happens inside the
   composite `build-pb` action and container projection/delivery happens through the descent that

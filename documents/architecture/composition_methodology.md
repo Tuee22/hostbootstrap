@@ -75,7 +75,7 @@
   `.dhall` carries only parameters, context, and witnesses.
 - **The Step algebra is the reuse unit.** The core ships host-management step kinds (`deploy-vm`,
   `ensure-X`, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`,
-  `expose-port`, `post-handoff`); the project contributes workload step kinds (`deploy-minio`,
+  `expose-port`, `post-handoff`); the project contributes workload step kinds (`deploy-object-store`,
   `deploy-registry`, `push-image`, accelerator-daemon placement, …) into the *same* `[Step]`. Host and workload steps interleave freely — this is the
   workload-extension seam.
 - **The VM producer is exact through Ready.** The demo's one `deploy-vm` adopter selects the closed Incus or
@@ -104,7 +104,7 @@
   inference/training pipeline" are the same kind of composition over durable external stores at different
   altitudes; both are steps in the one chain.
 - **Fractal bootstrap.** The Python bootstrapper is the **metal-frame instance** of the descent pattern,
-  and the descent reaches the container `pb` running the `deploy-kind`/`deploy-minio`/
+  and the descent reaches the container `pb` running the `deploy-kind`/`deploy-object-store`/
   `deploy-registry`/`push-image`/`deploy-chart`/`expose-port` and daemon-placement steps. See
   [§ Fractal Bootstrap](#fractal-bootstrap).
 

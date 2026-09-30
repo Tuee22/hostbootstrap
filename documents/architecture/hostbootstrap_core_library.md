@@ -17,7 +17,7 @@
   the demo's VM setup, image build, and direct-host preparation, and contributes them as steps.
 - The core surface a project extends is the **`Step` algebra**. Core ships host-management step kinds
   (deploy-VM, ensure-X, copy-source, build-pb, build-image, context-init, deploy-kind, deploy-chart,
-  expose-port); a project contributes its own step kinds (for the demo, deploy-minio, deploy-registry,
+  expose-port); a project contributes its own step kinds (for the demo, deploy-object-store, deploy-registry,
   push-image, and accelerator-daemon placement)
   into the same ordered validated `StepPlan`. That value is the authoring and validation input admitted
   into one `ProjectPlan scope specDigest planId configId cfg`; host and workload steps interleave freely.
@@ -337,7 +337,7 @@ composable unit the recursive interpreter runs and reports. `hostbootstrap-core`
 - `deploy-kind` / `deploy-chart` — cluster and Helm-release lifecycle leaves;
 - `expose-port` — settle and verify the exact runtime-owned local exposure for an in-cluster service.
 
-A project contributes its **own** step kinds (for the demo: `deploy-minio`, `deploy-registry`,
+A project contributes its **own** step kinds (for the demo: `deploy-object-store`, `deploy-registry`,
 `push-image`, and accelerator-daemon placement) into the same ordered plan. Host steps and workload steps
 interleave freely; `addSteps` appends checked contributions before finalization. This is the
 workload-extension seam.
