@@ -117,7 +117,7 @@ The demo's config includes its own resources, deploy settings, context, and mess
 Host exposure is intentionally not another Dhall setting. Project config names semantic services and their
 stable cluster-internal targets; after cluster readiness, the container runtime atomically assigns
 loopback-only host ports to an owned relay. Only authenticated inspection of that exact runtime resource
-produces the resolved endpoints used by registry, web, MinIO, accelerator, and test clients. See
+produces the resolved endpoints used by registry, web, object-store, accelerator, and test clients. See
 [network reachability](documents/architecture/network_reachability.md).
 
 `SecretRef scope` makes plaintext constructible only with matching
@@ -196,13 +196,13 @@ pipx install --force /path/to/hostbootstrap
 ## Demo
 
 [`demo/`](demo/) is the worked `hostbootstrap-core` consumer. Its chain provisions the selected provider,
-builds the project image, creates kind/nvkind, deploys MinIO and the anonymous HTTP in-cluster registry,
+builds the project image, creates kind/nvkind, deploys an S3 store and the anonymous HTTP in-cluster registry,
 pushes the image, deploys the web and accelerator services, and verifies exposure. Automatic host exposure is
 runtime-owned: host-port numbers are absent from Dhall and Kind/nvkind rendering, the container runtime
 atomically selects loopback ports for identity-owned relays, and application clients consume only the
 authenticated resolved endpoints. Stable Kubernetes Service/NodePort values remain internal targets.
 The registry route binds client scope, exposure, backend, and delivery in one opaque plan, so the host
-Docker client cannot be redirected to cluster-only MinIO. See
+Docker client cannot be redirected to the cluster-only S3 store. See
 [network reachability](documents/architecture/network_reachability.md) and the
 [in-cluster registry guide](documents/engineering/in_cluster_registry.md).
 

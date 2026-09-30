@@ -61,37 +61,35 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | live gate revalidation |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | current-tree gate revalidation |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | native gate revalidation |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | live gate |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | macOS and arm64 Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-The lowest active phase is worked-demo revalidation after a shared demo bootstrap change. On 2026-09-17, phase 24's
-complete baseline gate passes in `hb-linux-cpu`: Production up/down/destroy and the `10/10` Harness
-matrix, followed by a clean terminal audit. Phase 26 then passes its complete native NVIDIA matrix
-`10/10`, with observed GPU pod placement and a clean terminal audit. Shared demo source has since
-changed, so those two earlier live gates no longer close phases 24 and 26.
+Every phase below the acceptance phases is Done. On 2026-09-30 the worked demo's complete baseline gate
+passes against the changed demo tree: the host static legs on the x86_64 Linux gate host `matt-junction`,
+and, in its `hb-linux-cpu` guest, the Production `init`/`up`/`down`/`destroy` sequence and the `10/10`
+Harness matrix on the portable S3 store, followed by a clean terminal audit.
+[Sprint 24.47](phase-24-worked-demo.md) records the run and the Windows WSL2 attempts that preceded it.
 
-The native x86_64 Linux and Windows host-static gates pass for phase 28's covered core and Python
-tree. Its macOS and arm64 Linux rows remain owed. The Apple substrate acceptance covers a narrower
-path set and remains current.
+The same Linux/NVIDIA visit closes the [NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md): its native
+`10/10` matrix passes with accelerator placement observed and a clean terminal audit, and the visit's host
+static gate is the current x86_64 Linux gate-host row.
 
-[Sprint 24.47](phase-24-worked-demo.md) records the current attempt to revalidate the changed demo
-on Windows WSL2 as the available universal `linux-cpu` realization. Earlier
-attached-client resource exhaustion, GHC failures, and same-run Kind import
-failures are recorded in the sprint and [Sprint 27.5](phase-27-windows-and-wsl2-substrate.md).
-The current tree uses WSL-only `overlay2`, bounded image-pull and Kind-import
-retries, and a full derived-image export check before Kind. A fresh Production
-`init`/`up`/`down`/`destroy` sequence passes: the image export succeeds, Kind
-recovers an initial missing-content import on retry, the web service and daemon
-reach readiness, and the WSL wall is restored with no guest remaining. The
-Windows host-static gate passes. A complete Harness matrix is now running
-from pristine state; phase 24 remains Active until it and the terminal audit
-pass. Phases 25 through 28 remain open in numerical order behind that gate.
+The three remaining acceptance phases are each owed at a visit to the hardware they declare. The lowest,
+[Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), owes its matrix and direct-Colima lane
+against the changed demo tree at the next Apple visit. The
+[Windows acceptance](phase-27-windows-and-wsl2-substrate.md) owes its complete matrix and the terminal
+ownership and WSL wall audit at the next Windows visit. That visit first records the result of the worked
+demo's Harness matrix `phase24-integrity-redir-matrix-20260925`, which the previous Windows visit left
+running at WSL wall fence 60 ([Sprint 24.47](phase-24-worked-demo.md)), and settles its guest, wall, and
+protected state. The
+[host-portability acceptance](phase-28-host-portability-acceptance.md) owes its macOS and arm64 Linux rows
+at the next Apple visit, while its x86_64 Linux and Windows rows are current.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would

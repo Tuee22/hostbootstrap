@@ -1,18 +1,19 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-17 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
-Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1, Kind 0.32.0,
+**Gate evidence**: 2026-09-30 ; `matt-junction`, native x86_64 Ubuntu 24.04.5 LTS,
+Linux 7.0.0-31-generic, NVIDIA GeForce RTX 5090 on driver 595.91.07, Docker 29.8.1, Kind 0.32.0,
 kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pulled published
 base `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
 repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test init` then
-`poetry run hostbootstrap run --project-root demo test run all` ; pass ;
-covers a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90
+`poetry run hostbootstrap run --project-root demo test run all`, the second of two complete matrices with
+accelerator placement observed ; pass ;
+covers 6882a9eda28dbac49323d4bf8c4e406d413cee4639e26fe4df839723922f0e34
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
@@ -561,9 +562,9 @@ The post-closure `DocValidatorSpec` check passes 11/11 in 2.64 seconds.
 
 None.
 
-### Sprint 26.9: Revalidate NVIDIA after shared guest bootstrap stabilization [Active]
+### Sprint 26.9: Revalidate NVIDIA after shared guest bootstrap stabilization [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` `demo/docker/wsl2-daemon.json`
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/wsl2.md`
@@ -587,18 +588,61 @@ resulting tree. Re-run this phase's complete NVIDIA gate after the change settle
 The WSL-only guest setup is implemented. Windows host-static verification of
 the changed tree passes `cabal build all` and `cabal test all` from `core/`
 (2,547 tests), `cabal build all` from `demo/`, and the repository Python code
-check and test suite (251 tests); the demo's own suite passes 151 tests. The
-declared native NVIDIA matrix and terminal audit remain pending.
+check and test suite (251 tests); the demo's own suite passes 151 tests.
+
+On 2026-09-30, the native Linux/NVIDIA visit to `matt-junction` runs this phase's gate after the
+worked-demo phase closes on the same source; the 212 covered files measure
+`6882a9eda28dbac49323d4bf8c4e406d413cee4639e26fe4df839723922f0e34`. Preflight confirms the RTX 5090 on
+driver 595.91.07, `doctor` reporting `substrate: linux-gpu (amd64)`, a satisfied nvkind runtime probe,
+no hostbootstrap container, and no demo `.build`, `.hostbootstrap`, or `.test_data` state. The machine
+carries unrelated ambient work throughout: another session's `jitml-linux-cpu` Kind cluster and lane
+container, and the `hb-linux-cpu` gate VM, none of which the run touches. That VM is stopped except from
+about 08:09 to 08:15 UTC, during the first `test init`, when it is started only to copy out the worked
+demo's gate logs; it stays stopped through both recorded matrices. The repository Python
+bootstrapper's `test init` writes the operator test config at
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b` in 1,177.84 seconds, most of it the
+cold host-native build.
+
+The first complete `test run all` starts at 08:28:29 UTC and exits 0 with `test report: 10/10 passed` in
+4,717.15 seconds, for `hello-world` (`run-2b98812d0cff`) and `hello-universe` (`run-2dd490509a89`), and
+its terminal audit is clean. Its placement watcher stopped before the first accelerator pod existed, so
+that run shows placement only through rollout, which the runbook does not accept. The matrix therefore
+runs again from 12:02:39 UTC on the preserved operator test config with the watcher running throughout,
+and exits 0 with `test report: 10/10 passed` in 4,771.81 seconds. `hello-world` (`run-37495739f690`) and
+`hello-universe` (`run-398bd945bedb`) pass `pristine-bootstrap`, `web-build`, `e2e-tabs`,
+`registry-persistence`, and `durable-readback`. Every generation of both matrices reports
+`ensure cuda: present (no-op)`, builds from published CUDA base
+`sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a`, reconciles the NVIDIA device
+plugin to an allocatable GPU before the accelerator workload, and pushes through the S3-backed registry.
+Direct inspection of each variant's cluster during the second matrix observes the placement:
+
+| Observed (UTC) | Running pod | RuntimeClass | `nvidia.com/gpu` request / limit | Node, allocatable GPU |
+|----------------|-------------|--------------|----------------------------------|-----------------------|
+| 12:25:03 | `accelerator-daemon-7776d8f85b-z6cwv` | `nvidia` | 1 / 1 | `hostbootstrap-demo-test-run-37495739f690-worker`, 1 |
+| 13:01:59 | `accelerator-daemon-846667858f-4jzn9` | `nvidia` | 1 / 1 | `hostbootstrap-demo-test-run-398bd945bedb-worker`, 1 |
+
+| Variant and run | Generation | Pushed manifest digest |
+|-----------------|------------|------------------------|
+| `hello-world`, `run-37495739f690` | 1 | `sha256:4b74f5167299249610e86c8585ec6d4ef9ae72a3e29427ea4254c7a0d6627e11` |
+| `hello-world`, `run-37495739f690` | 2 | `sha256:5e35fb50242b4084309b52c0229cedf3622fbe6bdeb804b9bf22c9a04e52adb9` |
+| `hello-universe`, `run-398bd945bedb` | 1 | `sha256:6246183d889e49a2fa5439d50bf38978f761dc4e94376f23d00f012c865958cf` |
+| `hello-universe`, `run-398bd945bedb` | 2 | `sha256:a2edcd4c3903a9ab15d3b280d47faf8ba17404a787bd355b54abe87f8536175b` |
+
+The terminal audit at 13:22:11 UTC finds no hostbootstrap-named container and no demo Kind cluster; the
+ambient `jitml-linux-cpu` cluster and its containers are untouched and the `hb-linux-cpu` VM remains
+stopped. All four Harness leases encode `closed` at generations 4, 8, 12, and 16, and all four profiles
+encode `available` at generations 3, 7, 11, and 15. No mode, generated-config ownership, or data-root
+ownership record remains. The generated project config is absent, `.test_data` is empty, the operator
+test config retains its exact hash, and no project process remains. The 212 covered files remeasure to
+the header digest. The same visit's complete host static gate is recorded in phase 28.
 
 #### Remaining Work
 
-Run the complete native NVIDIA gate and record its terminal audit and
-covered-source digest.
+None.
 
 ## Remaining Work
 
-**Sprint 26.9** owns revalidation of the native NVIDIA acceptance after the
-shared demo bootstrap change.
+None.
 
 ## Documentation Requirements
 

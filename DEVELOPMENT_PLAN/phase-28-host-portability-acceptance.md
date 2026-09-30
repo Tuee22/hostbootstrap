@@ -8,8 +8,8 @@
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-17 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS,
-Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ;
+**Gate evidence**: 2026-09-30 ; `matt-junction`, native x86_64 Ubuntu 24.04.5 LTS,
+Linux 7.0.0-31-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1 ;
 `cabal build all` and `cabal test all --test-show-details=direct --test-options=--hide-successes`
 from `core/`, `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
@@ -540,6 +540,17 @@ rendering rather than a platform limit, and no gate leg invokes it. It is record
 repaired here because no phase owns it yet and a source change would expire the completion evidence
 of the `Done` deferred phases whose covers sets name `hostbootstrap`.
 
+On 2026-09-30, the native Linux/NVIDIA visit records the complete header gate on `matt-junction` again,
+now on Ubuntu 24.04.5 LTS and Linux 7.0.0-31-generic with GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and
+Poetry 2.4.1. From `core/`, `cabal build all` passes and the complete test command passes 2,552/2,552 in
+216.68 seconds. From `demo/`, `cabal build all` and the focused 151-case component pass, and the complete
+workspace command passes 151/151 demo cases in 0.83 seconds and 2,552/2,552 core cases in 204.28 seconds.
+Both workspaces run the provider-live component to its declared no-request refusal. The Python code
+check passes, and 251/251 Python tests pass in 1.55 seconds. The 823 covered files measure
+`d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`, the tree the native Windows row
+records, so both rows remain current against one measured tree. The same visit closes the NVIDIA
+acceptance.
+
 #### Remaining Work
 
 Repeat the macOS and arm64 Linux gates against the measured current tree
@@ -549,8 +560,8 @@ convened, so both are named as owed rather than inferred from the two current ce
 
 ## Remaining Work
 
-**Sprint 28.5** owns the current-source macOS and arm64 Linux static runs. The 2026-09-17 native
-x86_64 Linux and native Windows rows are current against
+**Sprint 28.5** owns the current-source macOS and arm64 Linux static runs. The 2026-09-30 native
+x86_64 Linux and 2026-09-17 native Windows rows are current against
 `d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`; the macOS and arm64 Linux rows
 still carry the pre-correction tree and are re-owed at the next Apple visit.
 

@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,20 +11,21 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-17 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
+**Gate evidence**: 2026-09-30 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
 x86_64, 16 vCPU and 32 GiB, reused with an empty nested provider inventory under Incus 6.0.0 on `matt-junction`
-(x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic) with nested virtualization, running GHC 9.12.4,
+(x86_64 Ubuntu 24.04.5 LTS, Linux 7.0.0-31-generic) with nested virtualization, running GHC 9.12.4,
 Cabal 3.16.1.0, Poetry 2.4.3 and Python 3.12.3, where `doctor` reports `substrate: linux-cpu (amd64)` ;
 repository Python bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
 `poetry run hostbootstrap run --project-root demo project up`,
 `poetry run hostbootstrap run --project-root demo project down`,
-`poetry run hostbootstrap run --project-root demo project destroy`, then
-`poetry run hostbootstrap run --project-root demo test run all` using the preserved operator test config, with
-`cabal build all`, `cabal test hostbootstrap-demo-test`, and `cabal test all` from `demo/` and
+`poetry run hostbootstrap run --project-root demo project destroy`,
+`poetry run hostbootstrap run --project-root demo test init`, then
+`poetry run hostbootstrap run --project-root demo test run all` from a pristine demo state, with
+`cabal build all`, `cabal test hostbootstrap-demo-test`, and `cabal test all -j1` from `demo/` and
 `cabal build all` and `cabal test all` from `core/` plus
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-on the x86_64 Linux gate host ; pass ;
-covers 281a2cd1e6247562ae90d3edb1738daa0b498b6c9072c6a382b296ab31e63f5c
+on the x86_64 Linux gate host `matt-junction` ; pass ;
+covers 04d0e9d3f27226ba03e1546b3bc6ea9b631dd2443e18f64e965bcf4037184d8e
 **Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -2942,9 +2943,9 @@ through the frame it reopened, and exited 0 where the same sequence had previous
 `Error: Instance is not running`. The Lima and WSL2 branches remain confirmed by their own acceptances,
 which this phase does not claim.
 
-### Sprint 24.47: Revalidate the worked demo after shared guest setup changes [Active]
+### Sprint 24.47: Revalidate the worked demo after shared guest setup changes [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/src/HostBootstrapDemo/Config.hs`,
 `demo/test/` — the shared guest setup and S3 store image changed during live revalidation
 **Substrates**: linux-cpu
@@ -3321,14 +3322,80 @@ the Harness opened the restarted `hello-world` assertions, and normal destroy
 released the wall. The same matrix then began its third fresh guest at fence 60
 for `hello-universe`; the complete result remains pending.
 
+On 2026-09-30 UTC the native x86_64 Linux visit to `matt-junction` (Ubuntu 24.04.5 LTS, Linux
+7.0.0-31-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1) runs this phase's complete
+gate against the covered source the Windows visit left, which measures
+`04d0e9d3f27226ba03e1546b3bc6ea9b631dd2443e18f64e965bcf4037184d8e`. The host static legs pass on
+`matt-junction`: from `core/`, `cabal build all` and `cabal test all` (2,552/2,552 in 216.68 seconds);
+from `demo/`, `cabal build all`, `cabal test hostbootstrap-demo-test` (151/151), and `cabal test all -j1`
+(151/151 demo cases in 0.83 seconds and 2,552/2,552 core cases in 204.28 seconds); and from the repository root,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+(251/251 in 1.55 seconds). Both Cabal workspaces run the provider-live component to its declared
+no-request refusal. Fourmolu 0.19.0.1 and HLint 3.10 report no change and no hint over `demo/src` and
+`demo/app`, the scope of the image's own `check-code`. The live legs run in the existing `hb-linux-cpu`
+guest from a pristine demo state: the 2026-09-17 tree and its `.build`, `.hostbootstrap`, `.data`, and
+`.test_data` are archived outside the repository, the nested provider inventory is empty, and the guest's
+tree measures the same covered digest as the host's. The guest reaches its package mirrors only after
+non-persistent `DOCKER-USER` accept rules on `matt-junction` let `incusbr0` traffic past Docker's
+`FORWARD DROP` policy; that host firewall state is outside the repository and the gate. The guest runs Ubuntu 24.04.5 LTS on Linux 6.8.0-139-generic with
+16 vCPU and 32 GiB, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.3, and Python 3.12.3, and
+`doctor` reports `substrate: linux-cpu (amd64)`.
+
+The repository Python bootstrapper's Production sequence passes in that guest:
+
+| Command | Result | Duration |
+|---------|--------|----------|
+| `project init` | exit 0 | 1,123.17 s |
+| `project up` | exit 0 | 2,539.68 s |
+| `project down` | exit 0 | 22.69 s |
+| `project destroy` | exit 0 | 35.09 s |
+
+`project init`'s duration is the cold host-native build of the project binary inside the guest; the
+sibling config it writes measures `b949ceb3c943ec9b04206b4cbdd2fcf8d2a80da03236745450556c60ae2dcae1`.
+Up provisions the nested Incus guest, builds the binary there, pulls published CPU/amd64 base
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, and verifies the derived
+image's exported runtime, config, public keys, and web bundle before descending into it. The VersityGW
+store reports ready at `object-store.default.svc:9000` with its `registry` bucket, the registry rolls out
+behind a runtime-assigned loopback exposure, the image loads into Kind and pushes as manifest
+`sha256:a6dfd7e7403ab260f2babe1521168e9b9fc98d74ab6b27f508da58679ff13c50`, the web service answers at its
+resolved endpoint, and the in-cluster accelerator daemon rolls out. Down stops the guest through its
+retained ownership record; destroy starts it so its retained children can be reached, then deletes it
+through that record. The Production audit finds an empty nested provider inventory, the Production lease
+`closed`, its reverse root terminal, and no mode record; Production durable data remains, as `destroy`
+intends. The
+generated Production config is archived outside the repository with its hash intact, and `test init`
+writes the operator test config at `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+
+The complete `test run all` starts at 05:04:02 UTC and exits 0 with `test report: 10/10 passed` in
+10,976.15 seconds (3 hours 2 minutes 56 seconds). Both `hello-world` (`run-59b4fb85ecb`) and
+`hello-universe` (`run-a52709f83c4`) pass `pristine-bootstrap`, `web-build`, `e2e-tabs`,
+`registry-persistence`, and `durable-readback`, the last across a settled destruction and a fresh
+same-run recreation. Each of the four pristine generations pulls the published CPU/amd64 base digest
+above, verifies the derived image's exported runtime, config, public keys, and web bundle, brings up the
+VersityGW store with its `registry` bucket, loads the image into Kind and pushes it through the
+S3-backed registry, and deletes its guest through the retained ownership record:
+
+| Variant and run | Generation | Pushed manifest digest |
+|-----------------|------------|------------------------|
+| `hello-world`, `run-59b4fb85ecb` | 1 | `sha256:eca2b198af87aae1480557c87bc227d07f3d45305ed4f9ffa9e52da27bbf3c39` |
+| `hello-world`, `run-59b4fb85ecb` | 2 | `sha256:4ef4cfdac1a76cef29d8b76f50ec3634485bb74cd39512feea463afdbab151a3` |
+| `hello-universe`, `run-a52709f83c4` | 1 | `sha256:4623b1b7fc253d00b566139b7b614b5044a43ad819c0ed8975b30c23149d51b9` |
+| `hello-universe`, `run-a52709f83c4` | 2 | `sha256:b059c25f9ef369335c7659fbaeac593b4f0ea4857dbf67322b7f81007e66dcde` |
+
+The terminal audit at 08:06:58 UTC finds no nested Incus instance, both Harness leases `closed` at
+generations 7 and 11, both profiles `available` at generations 6 and 10, and no mode, generated-config
+ownership, or data-root ownership record. The generated config is absent, `.test_data` exists and is
+empty, the operator test config retains its exact hash, and no project process remains. The 47 covered
+files remeasure to the digest in the header on both the gate host and `matt-junction`. The current-source
+baseline gate is complete.
+
 #### Remaining Work
 
-Run every declared gate leg, audit terminal ownership, and refresh the covered-source
-digest and gate evidence.
+None.
 
 ## Remaining Work
 
-**Sprint 24.47** owns the complete worked-demo revalidation against the changed tree.
+None.
 
 ## Documentation Requirements
 

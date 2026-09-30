@@ -667,8 +667,10 @@ Windows matrix is still owed.
 
 #### Remaining Work
 
-Run the complete Windows matrix against the automated WSL image-store selection
-and record a full pass, image identities, duration,
+Record the result of the worked demo's Harness matrix `phase24-integrity-redir-matrix-20260925`, which the
+previous Windows visit left running at WSL wall fence 60, and settle its guest, wall, and protected state so
+the gate host is pristine. Then run the complete Windows matrix against the automated WSL image-store
+selection and record a full pass, image identities, duration,
 and a clean terminal ownership audit against the measured source.
 
 ## Remaining Work
@@ -676,7 +678,9 @@ and a clean terminal ownership audit against the measured source.
 **Sprint 27.5** owns the complete Windows matrix and terminal audit. The earlier preserved run was
 settled by an operator-approved reset after guest inspection and an external state archive. The fresh
 matrix reaches the demo but fails during same-run restart at `kind load docker-image`, leaving
-protected records. A stable import, full passing matrix, and terminal audit remain owed.
+protected records. The next visit first records and settles the worked demo's Harness matrix the previous
+visit left running at WSL wall fence 60. A stable import, full passing matrix, and terminal audit remain
+owed.
 
 ## Documentation Requirements
 
