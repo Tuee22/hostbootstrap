@@ -34,7 +34,7 @@ filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 ## CUDA updates
 
 CUDA updates are intentional rolling behavior: each rebuild discovers the current compatible parent,
-then the operator publishes, pulls, and compatibility-smokes the affected native tag. The selected
+then an agent publishes, pulls, and compatibility-smokes the affected native tag as required. The selected
 parent is observable in that build's output and resulting image, but is not committed as a replay lock.
 The internal Python build API retains a `base_image_override` test seam.
 

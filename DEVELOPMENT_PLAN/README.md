@@ -62,10 +62,10 @@ its row here.
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
-| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | current-tree gate revalidation |
+| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | live gate |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | macOS and arm64 Linux runs |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Done | — | — |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
@@ -80,16 +80,19 @@ The same Linux/NVIDIA visit closes the [NVIDIA acceptance](phase-26-nvidia-gpu-s
 `10/10` matrix passes with accelerator placement observed and a clean terminal audit, and the visit's host
 static gate is the current x86_64 Linux gate-host row.
 
-The three remaining acceptance phases are each owed at a visit to the hardware they declare. The lowest,
-[Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), owes its matrix and direct-Colima lane
-against the changed demo tree at the next Apple visit. The
+On 2026-10-14 the Apple visit closes the [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md)
+against the changed demo tree: the native Lima matrix passes `10/10` on the portable S3 store, the focused
+direct-Colima lane passes, and the terminal ownership audit is clean with the ambient Colima and Docker state
+unchanged. The same visit records the macOS and arm64 Linux host static gates, so the
+[host-portability acceptance](phase-28-host-portability-acceptance.md) holds all four gate-host rows against
+one measured covered tree.
+
+The one remaining acceptance is owed at a visit to the hardware it declares. The
 [Windows acceptance](phase-27-windows-and-wsl2-substrate.md) owes its complete matrix and the terminal
 ownership and WSL wall audit at the next Windows visit. That visit first records the result of the worked
 demo's Harness matrix `phase24-integrity-redir-matrix-20260925`, which the previous Windows visit left
 running at WSL wall fence 60 ([Sprint 24.47](phase-24-worked-demo.md)), and settles its guest, wall, and
-protected state. The
-[host-portability acceptance](phase-28-host-portability-acceptance.md) owes its macOS and arm64 Linux rows
-at the next Apple visit, while its x86_64 Linux and Windows rows are current.
+protected state.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would
@@ -99,9 +102,12 @@ still schedule nothing on its own: the deleting phase's own sprint does that.
 in a lower phase re-owes their runs, and re-running them before the rest of the plan settles records
 evidence the next sprint expires. That is not hypothetical here: the NVIDIA acceptance passed `10/10`
 three times on one day, and only the third run is its evidence, because each of the first two was
-overtaken by a repair landing under its covered paths. Each acceptance is owed at the next visit to the
-hardware it declares, and § G names that state as the honest reading of a portability claim between runs
-rather than as an unclosed phase.
+overtaken by a repair landing under its covered paths. An acceptance is owed again at the next visit to the
+hardware it declares whenever a path it covers has changed, and § G names that state as the honest reading
+of a portability claim between runs rather than as an unclosed phase. The Apple Silicon and host-portability
+runs recorded on 2026-10-14 are likewise current only against the tree they measured: a repair made at the
+Windows visit under a path they cover re-owes them, and those phases are reopened before such a repair
+rather than after.
 
 The documentation reconciliation phase was last for the same reason in reverse: it corrects governed
 prose against the source those phases change, and its validator checks are what keep the two aligned

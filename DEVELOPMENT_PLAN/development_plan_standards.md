@@ -622,7 +622,7 @@ bootstrap, and each chain descent repeats provision → build the pb in the fram
 `pb project up`.
 
 The explicit pipx `update` surface and repository-maintainer `base`/check/test command set are separate
-distribution operations. An operator may ask Python to update the installed application or build/publish
+distribution operations. An operator or an agent may ask Python to update the installed application or build/publish
 a base image, but those commands do not enter the project lifecycle and do not move Dhall, provider,
 project-image, cluster, service, test-run, or teardown ownership out of Haskell.
 

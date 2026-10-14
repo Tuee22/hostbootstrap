@@ -22,6 +22,10 @@ Staging, committing, and pushing are reserved for the human user. An assistant m
 read-only Git commands (`git status`, `git diff`, `git log`, `git blame`), and propose commit
 messages or PR descriptions in chat — but it must not perform the staging or commit itself.
 
+"Pushing" here means `git push`. Building and publishing the base container images to Docker Hub is a
+separate registry operation, not a git operation, and assistants perform it as required (see the base-image
+section below).
+
 If a workflow step appears to require a commit (for example, a CI check that runs against `HEAD`
 rather than the working tree), stop and ask the user to perform the commit. Do not work around the
 rule.
@@ -221,6 +225,12 @@ versions; it is not required to replay a committed input lock.
   [documents/engineering/base_image.md](documents/engineering/base_image.md) and
   [documents/engineering/build_release.md](documents/engineering/build_release.md).
 
-Republishing pushes to the user's Docker Hub namespace — an outward-facing publish an assistant performs
-**only when the user directs it**. It is a container-registry push, **not** a git operation, so it is
-outside the git-history boundary above.
+**Assistants build and publish the base images to Docker Hub as required.** This is standing authority, not
+a request to repeat: when the base inputs change, or a published base tag a task depends on no longer matches
+the repository, an assistant runs the canonical command itself on a native host of that architecture, then
+pulls the republished tag and records the pulled digest as dated evidence. It publishes only the affected
+tags, uses the host's existing `docker login`, and never prints, copies, or writes the credential. It reports
+an architecture with no native host in the session as outstanding instead of emulating it, and reports which
+rolling tags changed if one flavor fails after another was pushed. Publishing is a container-registry push,
+**not** a git operation, so it is outside the git-history boundary above: `git add`, `git commit`, and
+`git push` stay forbidden.

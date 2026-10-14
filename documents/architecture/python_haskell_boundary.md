@@ -41,7 +41,7 @@ For `doctor`/`build`/`run`, Python owns only work that must happen before a proj
 
 The installed distribution also owns the explicit `update` command. In a source checkout, the
 maintainer-only command set additionally exposes base-image build/publish and repository check/test
-wrappers. Those operator-invoked distribution tasks are outside the project handoff described above:
+wrappers. Those operator- or agent-invoked distribution tasks are outside the project handoff described above:
 they neither initialize project config nor perform provider, project-image, cluster, service, test-run,
 or teardown lifecycle work.
 

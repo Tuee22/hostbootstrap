@@ -76,7 +76,7 @@ cache exists only inside the Linux image. That difference does not require diffe
 
 1. Add the dependency alphabetically to the most descriptive manifest package.
 2. Validate the single warm-store project and the normal consumer project.
-3. With operator authorization, rebuild and publish the affected rolling native tags.
+3. Rebuild and publish the affected rolling native tags; agents do this as required.
 4. Pull the published tag and run the dedicated real-consumer compatibility smoke. That smoke resolves a
    consumer package it writes itself, not this manifest: resolving the manifest would re-resolve the
    description whose resolution produced the store, which proves nothing about a project that builds
@@ -120,8 +120,8 @@ misses.
 
 Focused tests enforce one consumer project, absence of project swapping/base freeze imports, and absence
 of forced offline solving. The normal Python and fast core/demo Haskell gates validate source and solver
-compatibility. A registry publication/live compatibility smoke remains an explicit operator workflow,
-not a synthetic offline proof.
+compatibility. A registry publication/live compatibility smoke remains a deliberate live workflow that
+agents run as required, not a synthetic offline proof.
 
 ## See also
 
