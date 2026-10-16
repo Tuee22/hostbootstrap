@@ -11,22 +11,24 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-30 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
-x86_64, 16 vCPU and 32 GiB, reused with an empty nested provider inventory under Incus 6.0.0 on `matt-junction`
-(x86_64 Ubuntu 24.04.5 LTS, Linux 7.0.0-31-generic) with nested virtualization, running GHC 9.12.4,
-Cabal 3.16.1.0, Poetry 2.4.3 and Python 3.12.3, where `doctor` reports `substrate: linux-cpu (amd64)` ;
-repository Python bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
+**Gate evidence**: 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
+AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, Python 3.14.7,
+with Ubuntu 24.04.5 LTS/WSL2 6.18.33.2, 6 CPUs, 10 GiB memory and 80 GiB VHD ;
+`cabal build all` and `cabal test all --test-options=--hide-successes` from `core/`,
+`cabal build all --builddir=.build/host-static` and
+`cabal test all --builddir=.build/host-static --test-options=--hide-successes` and
+`cabal test hostbootstrap-demo-test --builddir=.build/host-static --test-show-details=direct --test-options=--hide-successes`
+from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the root, plus repository-bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
 `poetry run hostbootstrap run --project-root demo project up`,
 `poetry run hostbootstrap run --project-root demo project down`,
 `poetry run hostbootstrap run --project-root demo project destroy`,
-`poetry run hostbootstrap run --project-root demo test init`, then
-`poetry run hostbootstrap run --project-root demo test run all` from a pristine demo state, with
-`cabal build all`, `cabal test hostbootstrap-demo-test`, and `cabal test all -j1` from `demo/` and
-`cabal build all` and `cabal test all` from `core/` plus
-`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-on the x86_64 Linux gate host `matt-junction` ; pass ;
-covers 04d0e9d3f27226ba03e1546b3bc6ea9b631dd2443e18f64e965bcf4037184d8e
-**Evidence covers**: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`
+`poetry run hostbootstrap run --project-root demo test init`, and
+`poetry run hostbootstrap run --project-root demo test run all` (`10/10 passed`, exit 0),
+followed by the terminal ownership/WSL wall audit ; pass ;
+covers 25747980e634fb9c9e40bb61d7d28a1479c784607f30fb93a37dd7c70691db19
+**Evidence covers**: `.dockerignore` `.hlint.yaml` `core/cabal.project` `core/hostbootstrap-core/app` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/src` `core/hostbootstrap-core/test` `demo/app` `demo/cabal.project` `demo/chart` `demo/docker` `demo/hostbootstrap-demo.cabal` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/src` `demo/test` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `fourmolu.yaml` `hostbootstrap` `pyproject.toml` `tests`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
 > plan, config vocabulary, test component, and service variants.
@@ -2893,7 +2895,7 @@ verification and the unmodified Kind import:
 The terminal audit at 04:10:38 UTC finds no nested Incus instance, both current Harness leases
 `closed` at generations 18 and 22, both profiles `available`, and no mode, generated-config ownership,
 or data-root ownership record. The generated config is absent, `.test_data` is empty, and the operator
-test config retains its exact hash. The 46 covered files remeasure to the digest in the header.
+test config retains its exact hash. The 46 covered files remeasure to that dated run's original digest.
 The current-source baseline gate is complete; the preserved Windows run remains owned by phase 27.
 The post-closure `DocValidatorSpec` check passes 11/11 in 2.66 seconds.
 
@@ -3386,8 +3388,208 @@ The terminal audit at 08:06:58 UTC finds no nested Incus instance, both Harness 
 generations 7 and 11, both profiles `available` at generations 6 and 10, and no mode, generated-config
 ownership, or data-root ownership record. The generated config is absent, `.test_data` exists and is
 empty, the operator test config retains its exact hash, and no project process remains. The 47 covered
-files remeasure to the digest in the header on both the gate host and `matt-junction`. The current-source
+files remeasure to that dated run's original digest on both the gate host and `matt-junction`. The current-source
 baseline gate is complete.
+
+#### Remaining Work
+
+None.
+
+### Sprint 24.48: Teardown verifies the current protected ownership stores [Done]
+
+**Status**: Done
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Make the Harness's terminal ownership assertion inspect the protected daemon claims and WSL wall
+receipt used by the current lifecycle, so obsolete paths cannot admit a false clean teardown.
+
+#### Deliverables
+
+- The daemon assertion takes the current protected operation entry and refuses a retained owner or PID.
+- The Windows assertion inspects the current protected global-wall active record.
+- Regression cases exercise retained current records, a held operation, and released ownership.
+
+#### Validation
+
+On 2026-10-15, the correction passes the complete native Windows host static gate. The audit finds
+`verifyHarnessTeardown` checking removed daemon owner/operation directories and `global-wall.record`
+instead of the current daemon `.claims` and per-user `global-wall` protected stores. The assertion
+now observes the daemon's existing owner record and the production wall-location API under their
+protected entries. Windows profile selection uses `USERPROFILE`, matching the wall backend.
+
+The retained fence-61 wall is settled through `restoreCurrentUserGlobalWall`, invoked through
+`cabal exec -- ghci` with the demo's exact owner, specification, reservation, receipt, and managed
+body. This typed recovery restores the original file identity and hash, clears the active wall and
+retained origin pathname, and preserves the monotonic fence. Eight observer regressions exercise
+retained current records, held entries, PID-only residue, released records, never-used stores, and
+failed store opens. Fourmolu 0.19.0.1 and HLint 3.10 pass over both edited files;
+`git diff --check` passes.
+
+The first demo workspace attempt exits 1 because two new specs treat the compare-and-swap result
+as a record rather than the record version it returns. Both specs now pass that version directly
+to `ExpectVersion`. Its passing 2,547-case core component in 404.83 seconds does not establish a
+passing composed gate; the final complete workspace pass below includes the corrected specs.
+
+The final native gate passes all declared legs:
+
+- From `core/`, `cabal build all` passes warning-clean, followed by
+  `cabal test all --test-options=--hide-successes` at 2,547/2,547 in 403.76 seconds after resolution
+  of the newer compatible dependency graph. The initial core run also passes 2,547/2,547 in
+  535.81 seconds, including `DocValidatorSpec`.
+- From `demo/`, `cabal build all --builddir=.build/host-static` passes warning-clean, and
+  `cabal test all --builddir=.build/host-static --test-options=--hide-successes` exits 0 with
+  159/159 demo cases in 5.60 seconds and 2,547/2,547 core cases in 384.59 seconds. The isolated
+  build directory keeps this gate separate from the concurrent bootstrapper's executable build.
+- Both Cabal workspaces pass the provider-live component's declared no-request refusal.
+- From the repository root, `poetry run python -m hostbootstrap.check_code` passes, and
+  `poetry run python -m hostbootstrap.test_all` passes 251/251 in 11.29 seconds.
+
+No production source changes follow the final passing gate.
+
+#### Remaining Work
+
+None.
+
+### Sprint 24.49: Validate the corrected teardown in the complete worked demo [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`, `documents/engineering/wsl2.md`,
+`documents/architecture/durable_state.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Run the phase's complete declared gate after correcting its terminal ownership assertions.
+
+#### Deliverables
+
+- Production up, down, and destroy pass through the supported Windows/WSL2 baseline realization.
+- The complete Harness matrix passes with a terminal ownership and wall audit.
+- Gate evidence records the actual commands and the remeasured covered-source digest.
+
+#### Validation
+
+Completed on 2026-10-16 UTC after the 2026-10-15 Windows visit: the corrected tree passes the
+complete native Windows and x86_64 Linux static gates, the supported Windows/WSL2 Production
+`init`/`up`/`down`/`destroy` sequence, and the complete Harness matrix at `10/10 passed` with exit 0.
+Both the Production and final Harness ownership/wall audits pass.
+
+The phase's 29 roots cover 862 authored files: the full live gate's compiled core/consumer components,
+package/project and bootstrap metadata, chart/browser/SPA and style/build-context inputs, plus the
+static gate's source, tests, schemas, and inspected cluster fixtures. They measure
+`25747980e634fb9c9e40bb61d7d28a1479c784607f30fb93a37dd7c70691db19`.
+The post-gate measurement on 2026-10-16 is identical; source and authored fixture bytes remain
+unchanged throughout the live runs. The earlier 47-file
+subset measurement `cbafd88a0d75bfa414560f90c2a7fb4265db1fbf835ac1d29a3ee56ff4d564f1` retains
+its narrower provenance.
+
+The final Windows static gate passes core build and 2,547/2,547 core cases in 403.76 seconds;
+the isolated demo build and full workspace pass 159/159 demo cases in 5.60 seconds and 2,547/2,547
+core cases in 384.59 seconds. Python code checks and 251/251 tests in 11.29 seconds pass.
+Sprint 24.48 records the exact commands and the corrected first spec compilation failure.
+The first closure documentation check refuses a row that records the complete workspace test but
+omits the separately named `cabal test hostbootstrap-demo-test` leg. That exact target is rerun with
+`--builddir=.build/host-static --test-show-details=direct --test-options=--hide-successes` and passes
+159/159 in 5.55 seconds; the evidence row now records both actual commands.
+The closure `DocValidatorSpec` rerun passes 11/11 in 5.43 seconds, checking status harmony,
+complete gate-command evidence, and the current covered-source digest.
+The complete Linux gate in the Production guest exits 0 at 21:41:23 UTC after 1,214.41 seconds:
+core build and 2,552/2,552 cases in 327.64 seconds; the complete demo workspace at 159/159 in
+2.08 seconds plus 2,552/2,552 core cases in 326.72 seconds; Python code checks and 251/251 tests
+in 3.31 seconds. Both workspaces on both hosts report the provider-live component's declared
+no-request result. The 857-file portability subset matches between Windows and Linux before and
+after the gate; Sprint 28.5 records its digest, commands, and cache configuration.
+
+All live commands use this checkout's repository Python bootstrapper,
+`poetry run hostbootstrap run --project-root demo`, on `DESKTOP-R6BTBVS`.
+`project init` exits 0 at 20:30 UTC and writes the Production sibling config with SHA-256
+`5ec0092759c6818db0879c97399f5f33f345062781adf06d5e8214378fbb0a22`.
+The source-built executable retains SHA-256
+`b0a46ea3e9090221811bc925e0e280c365b34845032210d763f2868e90d1458f`;
+the operator test config retains SHA-256
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+
+Production `project up` starts at 20:31 UTC through the harness-owned WMI durable launcher, label
+`phase24-production-up-20261015`, and exits 0 at 21:19:07 UTC after approximately 47 minutes 42 seconds.
+It acquires wall fence 62 and creates `hostbootstrap-demo-vm`, Ubuntu 24.04.5 LTS on kernel
+6.18.33.2-microsoft-standard-WSL2. Observed allocation is six CPUs, 10,184,824 kB memory, and an
+83,955,703,808-byte formatted filesystem from the declared 80 GiB VHD; the managed wall sets
+six processors, 10 GB memory, 10 GB swap, and both 21,600,000 ms idle timeouts.
+Docker uses `overlay2` and pulls published CPU/amd64 base
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`.
+The derived image is `sha256:b6c94394b6d0efc4ee9e21e5733275f15be2262be6d4e158837c6127a1a0225f`.
+Its code checks, archive integrity, and exported runtime/config/public-key/web-bundle verification
+pass; Kind imports it and all three application deployments become ready. Requests through the
+runtime-assigned relay prove CUDA arithmetic and Float32 rounding. Sprint 27.5 records the native
+Windows worker and loopback placement observations.
+
+Production `project down`, durable label `phase24-production-down-20261015`, exits 0 at 21:44:23 UTC
+and restores the wall before stopping the guest. `project destroy` exits 0 at 21:45:10 UTC and
+unregisters that exact guest. The verified Production sibling config is removed through the
+runbook's operator step before Harness admission.
+The 21:46 UTC audit finds the Production lease closed (record version 5, epoch 3), its consumed
+profile retained, no ephemeral mode/config/data-root records, no daemon PID/current protected owner
+or native worker, and no WSL registration. The wall is inactive at fence 62 and the original
+`.wslconfig` hash and Windows file ID are restored. The operator test config is unchanged,
+`.test_data` is empty, and Production `.data` is preserved. Governed durable-state, WSL2, and runbook
+prose reflects the managed-alias and restore-before-shutdown contracts; focused documentation
+checks pass on Windows and Linux.
+
+The complete `poetry run hostbootstrap run --project-root demo test run all` matrix starts at
+2026-10-15 21:46:23.514 UTC through WMI durable label `phase24-matrix-20261015`, PID 31600.
+Both `hello-world` generations belong to `run-6b565ce5808`:
+
+- Fence 63 publishes image `sha256:cb897da5442f89b4d45d9ac028e6bf265a4414cfa66f01aebdf51e6b8759eff1`,
+  first observed through its verified public web activation manifest at 22:32:48.056 UTC.
+- Its engine-owned reconstruction at fence 64 publishes
+  `sha256:0bf2239bf5dbe15736c82cd75ed5fc94f6fc35d54c0789dc9403b984bd659294`,
+  first observed at 23:19:31.672 UTC.
+
+After world teardown restores the wall, `hello-universe` starts as `run-bcec61e1608` at fence 65,
+with WSL GUID `{b7955e79-55ea-46e9-9e16-9700c92cd8ea}` observed at 23:20:14.528 UTC.
+Both universe generations complete, with the final recreation at fence 66. The matrix exits 0 at
+2026-10-16 00:53:07.207 UTC after 11,203.69 seconds (3 hours 6 minutes 43.69 seconds), reporting
+`10/10 passed`: pristine bootstrap, web build, end-to-end tabs, registry persistence, and durable
+readback all pass for both variants. Sprint 27.5 holds all four exact image IDs, guest identities,
+verified public manifests, and actual published-base pulls.
+
+The final read-only audit passes at 00:55:51 UTC. Both Harness leases are Closed at record version 6
+(epochs 7 and 11); their retained Available profiles are record version 3, epochs 6 and 10, with
+forward lease version 4. The final destroy invocation advances the lease generation, and terminal
+close advances its version again; Sprint 27.5 records the audit helper's corrected comparison.
+There are no ephemeral mode/config/data-root records, generated project config, daemon PID/current
+protected owner, native worker, or WSL registration. `.test_data` is empty, Production `.data` is
+preserved, and the operator test config hash is unchanged. The wall is inactive at fence 66, with
+original SHA-256 `2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`
+and Windows file ID `0x00000000000000000061000000023bde` restored. After wall restoration and
+an empty WSL inventory, the supported `wsl.exe --shutdown` exits 0; host process observation confirms
+the empty utility VM is stopped.
+The Harness itself proves protected-entry release through the corrected production observer; the
+external audit does not claim an independent entry-lock probe.
+
+The preceding baseline pass retains its original narrower scope: `demo/src` `demo/app` `demo/test` `demo/docker` `core/hostbootstrap-core/src/HostBootstrap/Lifecycle` `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan`.
+Its dated evidence and original digest remain unchanged:
+
+- 2026-09-30 ; `hb-linux-cpu`, an Ubuntu 24.04.5 LTS guest, Linux 6.8.0-139-generic
+  x86_64, 16 vCPU and 32 GiB, reused with an empty nested provider inventory under Incus 6.0.0 on `matt-junction`
+  (x86_64 Ubuntu 24.04.5 LTS, Linux 7.0.0-31-generic) with nested virtualization, running GHC 9.12.4,
+  Cabal 3.16.1.0, Poetry 2.4.3 and Python 3.12.3, where `doctor` reports `substrate: linux-cpu (amd64)` ;
+  repository Python bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
+  `poetry run hostbootstrap run --project-root demo project up`,
+  `poetry run hostbootstrap run --project-root demo project down`,
+  `poetry run hostbootstrap run --project-root demo project destroy`,
+  `poetry run hostbootstrap run --project-root demo test init`, then
+  `poetry run hostbootstrap run --project-root demo test run all` from a pristine demo state, with
+  `cabal build all`, `cabal test hostbootstrap-demo-test`, and `cabal test all -j1` from `demo/` and
+  `cabal build all` and `cabal test all` from `core/` plus
+  `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+  on the x86_64 Linux gate host `matt-junction` ; pass ;
+  covers 04d0e9d3f27226ba03e1546b3bc6ea9b631dd2443e18f64e965bcf4037184d8e
 
 #### Remaining Work
 

@@ -18,8 +18,10 @@ operation keys, reverse policies, and declared callbacks come from that same pla
 are omitted for both verbs. Production dispatch retains or reconstructs the exact plan/current-frame pair
 and consumes this projection directly. It grants no receipt, journal, exact teardown command, or effect
 authority. The core provider route now has opaque managed provider/share/alias authority and a
-crash-recoverable four-clause guest-alias backend, but the demo still uses its compatibility pathname
-call site. The plan still has to carry all guest, container, kind-node, and pod path projections.
+crash-recoverable four-clause guest-alias backend. The demo's `copy-source` action adopts that managed
+route through `runExactVmShare` in
+[HostBootstrapDemo.Commands](../../demo/src/HostBootstrapDemo/Commands.hs). The plan still has to carry
+all guest, container, kind-node, and pod path projections.
 The workload `.data` carry is distinct from lifecycle authority storage. In the target rooted runtime, one
 root coordinator process owns
 the only lifecycle `ProtectedStore`, global lease/snapshot/acquisition, recursive `RootedPlanCatalog`, and
@@ -107,7 +109,10 @@ clears the matching terminal receipt through guarded lease admission.
 - `HostBootstrap.Substrate.Provider.Alias` consumes that managed share together with the exact opaque
   managed Running provider. Its `prepared`, `managed`, and version-fenced `releasing` records recover
   origin publication, alias publication, and conditional release crash windows without adopting an
-  exact-looking pathname.
+  exact-looking pathname. The demo's `runExactVmShare` retains both managed authorities inside
+  `withProviderShareSettlement`, derives a fresh provider capability, and narrows it through
+  `discoverStrongAliasBackend` for `reconcileNodeGuestAlias` before registering the share's runtime
+  dependency.
 - Provider and direct-host paths create the host durable root. Provider guests establish
   `/var/tmp/hostbootstrap-demo-data`; the direct-host Docker handoff consumes the typed canonical path.
 - Root lifecycle frame/teardown callbacks receive `CanonicalProjectRoot scope rootId` separately from

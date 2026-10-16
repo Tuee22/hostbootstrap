@@ -1,19 +1,19 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
-reporting a complete pass on a native Windows host (12/12 in the 2026-09-23 matrix), followed by the
+reporting a complete pass of the configured matrix on a native Windows host, followed by the
 terminal ownership and WSL wall audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, 15.87 GiB,
-NVIDIA GeForce RTX 3090 driver 616.64, WSL 2.7.10.0 (kernel 6.18.33.2-2), GHC 9.12.4, Cabal 3.16.1.0,
-Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
-`poetry run hostbootstrap run --project-root demo test run all`, launched through the harness-owned
-durable Windows launcher ; pass ; covers
-dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
-**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
+**Gate evidence**: 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
+AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090 driver 617.42, CUDA 13.3, WSL 2.7.10.0,
+GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all`, launched through the WMI durable
+runner, followed by the terminal ownership and WSL wall audit and `wsl.exe --shutdown` ; pass ;
+covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
 > realization of the universal `linux-cpu` substrate, and confirm the additional Windows behavior.
@@ -253,9 +253,9 @@ The terminal 208-file source measurement still matches the in-run
 None. This run confirms the Windows-only wall, ownership, and accelerator behavior; the
 [worked-demo phase](phase-24-worked-demo.md) owns the same run's universal `linux-cpu` matrix claim.
 
-### Sprint 27.5: The Windows and WSL2 acceptance against the current tree [Active]
+### Sprint 27.5: The Windows and WSL2 acceptance against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: windows
 **Docs to update**: `documents/engineering/testing.md`
@@ -276,6 +276,28 @@ over a tree nothing re-tested. That visit also carries the Windows gate host, an
 - Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
 
 #### Validation
+
+The live gate's scope includes the core and consumer components compiled by the in-image
+`check-code`, package/project and bootstrap metadata, authored chart, browser and SPA inputs, and
+committed style and Docker-context contracts. A change to those inputs can change the declared gate
+without changing provider code. Generated bridges, caches, runtime state, and external toolchains
+remain outside this authored-source set.
+The 25 roots contain 845 files and remeasure unchanged after the gate on 2026-10-16 as
+`cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b`.
+The source and authored fixture bytes remain unchanged throughout `phase24-matrix-20261015`.
+The completed native static gate, Production sequence, complete passing matrix, and terminal audit
+establish this expanded Windows acceptance.
+The 212-file measurements below retain their original narrower subset meaning.
+
+The earlier Windows pass retains its original narrower scope: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`.
+Its dated result and original digest are preserved without restamping:
+
+- 2026-09-11 ; x86_64 Windows 11 Home 10.0.26200, AMD Ryzen 7 5700G, 15.87 GiB,
+  NVIDIA GeForce RTX 3090 driver 616.64, WSL 2.7.10.0 (kernel 6.18.33.2-2), GHC 9.12.4, Cabal 3.16.1.0,
+  Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
+  `poetry run hostbootstrap run --project-root demo test run all`, launched through the harness-owned
+  durable Windows launcher ; pass ; covers
+  dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
 
 The 2026-09-16 visit is on native x86_64 Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G,
 NVIDIA GeForce RTX 3090 driver 616.64, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, and
@@ -665,22 +687,148 @@ restored and the verified sole WSL guest GUID
 no active wall remain; `.wslconfig` matches its original SHA-256. The complete
 Windows matrix is still owed.
 
+On 2026-10-16, the fresh native Windows/CUDA matrix exits 0 with `10/10 passed`: all five cases
+(`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and `durable-readback`) pass
+for both `hello-world` and `hello-universe`. The repository Python bootstrapper runs
+`poetry run hostbootstrap run --project-root demo test run all` through the WMI durable runner,
+label `phase24-matrix-20261015`, PID 31600, from `2026-10-15T21:46:23.5140587Z` to
+`2026-10-16T00:53:07.2073503Z`: 11,203.69 seconds, or 3 hours 6 minutes 43.69 seconds. Its
+read-only terminal ownership and WSL wall audit passes at 00:55:51 UTC.
+
+The host is `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457, with an AMD Ryzen 7
+5700G, 63.87 GiB visible memory, RTX 3090 driver 617.42, and native CUDA 13.3. `doctor` classifies
+it as `windows-gpu (amd64)`. The toolchain is GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1,
+repository-venv Python 3.14.7, and WSL 2.7.10.0. Before the live sequence, the complete native
+Windows static gate passes: 2,547 core cases, 159 demo cases including eight new protected-state
+observer regressions, all 251 Python tests, and the Python code check (`ruff`, Black, and mypy).
+The durable `test init`, label `phase27-init-20261015`, exits 0 at 2026-10-15 20:22:24 UTC after
+about 26 minutes 56 seconds of cold dependency and executable builds. The source-built sibling
+executable measures SHA-256
+`b0a46ea3e9090221811bc925e0e280c365b34845032210d763f2868e90d1458f`.
+
+This visit first recovers the historical failed run's fence-61 wall through the production
+`restoreCurrentUserGlobalWall` entry point, invoked against the built current core with the demo's
+exact owner/spec/reservation/receipt and managed body. It clears the active record and retained
+origin pathname while preserving the monotonic fence and restoring both original bytes and Windows
+file identity. The retained 2026-09-30 inspection transcript records the older
+`phase24-integrity-redir-matrix-20260925` result as exit 1 and `9/12 passed`, with a GHC 9.12.4 panic
+and SIGSEGV during `hello-universe` recreation at fence 61. Its original external output and exit
+files are unavailable, so that is recovered historical failure evidence. Removal provenance for its
+absent demo run store remains unavailable, and no closed-lease audit of that historical run is claimed.
+The worked-demo phase's protected-state observer correction passes the static gate before this fresh
+acceptance; no WSL registration or active wall remains before Production starts.
+
+The fresh Production `project up`, launched durably as `phase24-production-up-20261015`, exits 0
+at 2026-10-15 21:19:07.880 UTC after approximately 47 minutes 42 seconds. Its derived image ID is
+`sha256:b6c94394b6d0efc4ee9e21e5733275f15be2262be6d4e158837c6127a1a0225f`, and all three
+deployments report 1/1 ready. Direct host requests through the observed web relay at
+`http://127.0.0.1:32769` return `3.75` for `phase27-cuda-observe` (`1.5 + 2.25`) and
+`16777216` for `phase27-cuda-precision` (`16777216 + 1`). Both responses identify backend
+`windows-gpu` and artifact `fc76cd884d2539b8`.
+
+Native process observation finds daemon PID 11280 running
+`demo/.build/accelerator-daemon/hostbootstrap-demo.exe` and its child PID 23200 running
+`demo/.build/accelerator/windows-gpu/fc76cd884d2539b8/accelerator-worker.exe`;
+`nvidia-smi` also lists worker PID 23200. The worker executable measures SHA-256
+`12dddf385e9b20e805c4466b10c6b1aa6a0a618ae9d184f62c540faa45a953df`. The daemon's established
+connection is `127.0.0.1:52564` to `127.0.0.1:32771`. The exact Docker relay
+`hostbootstrap-exposure-f711f2f057711fac5cd1128de8bf0948`, identity
+`1328772a4c1d4698077f2dccdcd323247075d83aeee43d9de95a8eafa4f0bacd`, maps its accelerator
+listener 20003 to `hostbootstrap-demo-control-plane:30081` and publishes it only at
+`127.0.0.1:32771`; its web listener 20001 targets the same node's port 30080 and publishes at
+`127.0.0.1:32769`. These observations establish the Production host-native CUDA worker and
+loopback exposure.
+
+The supported Production `project down`, launched at 2026-10-15 21:44:07.533 UTC, exits 0 at
+21:44:23.240 UTC after 15.707 seconds. `project destroy` then exits 0 at 21:45:10.833 UTC. After
+Destroy, the generated Production config is hash-verified and removed according to the runbook's
+operator sequence before the Harness starts. The 21:46:02 UTC Production terminal audit passes:
+the sole lease is `closed` at record version 5 and epoch 3, while its historical profile remains
+`consumed` at record version 2, epoch 1, and lease-version field 1. No ephemeral ownership, generated
+config, live accelerator process, WSL registration, or active wall remains; `.test_data` is empty,
+Production `.data` is preserved, and fence 62 is retained with the original wall bytes and file identity.
+
+The host-only image observer verifies that the expected and received public web manifests match and
+that each directory's SHA-256 digest matches that manifest, without issues. The complete Harness
+runs use four fresh guest generations and four derived images:
+
+| Variant | Run | Generation | Wall fence | WSL GUID | Image | Public web manifest | First observed UTC |
+|---|---|---|---|---|---|---|---|
+| `hello-world` | `run-6b565ce5808` | 1 | 63 | `{c98af45f-7a97-4bfb-b2a6-5a6254e52a8d}` | `sha256:cb897da5442f89b4d45d9ac028e6bf265a4414cfa66f01aebdf51e6b8759eff1` | `c85786891f529f9cd68481cc2f84fdb2fbfcb3f2cba214b7766122ea9ee6a38c` | `2026-10-15T22:32:48.056Z` |
+| `hello-world` | `run-6b565ce5808` | 2 | 64 | `{d113accb-f472-49cd-a85c-ee982461d5ab}` | `sha256:0bf2239bf5dbe15736c82cd75ed5fc94f6fc35d54c0789dc9403b984bd659294` | `5b631345bb0ef437f201954a9a4e30abc11578e1ef00dcd72623596fcad7c3b6` | `2026-10-15T23:19:31.672Z` |
+| `hello-universe` | `run-bcec61e1608` | 1 | 65 | `{b7955e79-55ea-46e9-9e16-9700c92cd8ea}` | `sha256:232d438c24a5d89ac555291117cc5d7022af79b4695c01b333c10a813de45501` | `ce4d14d79c344c05807557398886d2757029500bf39f33783d075ad344ee31ad` | `2026-10-16T00:05:53.415Z` |
+| `hello-universe` | `run-bcec61e1608` | 2 | 66 | `{5c16edd9-5b5d-453f-9d33-d98db04338c1}` | `sha256:473c3a84b5163084780c1e96b9ded9300342dc68bca3cc068066dc812bce1e7a` | `1f643329131f5c26edcda491211f835ccc55324e4eea471d8f853183d36545a1` | `2026-10-16T00:52:55.070Z` |
+
+Both variants perform the engine-owned same-run destroy/recreate before their durable readback.
+The host observes the second `hello-world` guest at fence 64 at 22:33:35.822 UTC, its Ready native
+daemon PID 17912 at 23:19:44 UTC, and then teardown and wall restoration. The first `hello-universe`
+guest is observed at fence 65 at 23:20:14.528 UTC, its native bootstrap finishes at 23:41:41 UTC,
+and Docker reports ready with `overlay2` at 23:42:35 UTC. Its Ready native daemon PID 6516 and open
+assertions are observed at 2026-10-16 00:06:02.761 UTC. Both observed Harness daemons use
+`ws://127.0.0.1:32771/api/accelerator/daemon`.
+
+The `hello-universe` same-run destroy/recreate restores the wall, then acquires fence 66 at
+2026-10-16 00:06:43.855 UTC. Its final fresh GUID is first observed at 00:07:24.795 UTC; native
+bootstrap has completed and Docker reports ready with `overlay2` at 00:29:15.932 UTC. Every fresh
+generation's published-base pull reports the same actual digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`:
+
+| Variant | Generation | Wall fence | Base pull observed UTC |
+|---|---|---|---|
+| `hello-world` | 1 | 63 | `2026-10-15T22:11:19.668Z` |
+| `hello-world` | 2 | 64 | `2026-10-15T22:58:16.831Z` |
+| `hello-universe` | 1 | 65 | `2026-10-15T23:44:26.324Z` |
+| `hello-universe` | 2 | 66 | `2026-10-16T00:31:09.481Z` |
+
+The final image is captured at 00:52:55.070 UTC. At 00:53:07.131 UTC, host observation confirms
+final deletion and wall restoration, no WSL registration or active wall record, and retained fence 66.
+The wrapper then reports the complete `10/10` pass and exit 0 at 00:53:07.2073503 UTC.
+
+The 00:55:51 UTC terminal audit reads these exact retained lease and profile facts:
+
+| Kind | Run | Lease state / record version / epoch | Profile state / record version / epoch / lease-version field |
+|---|---|---|---|
+| Production | `production` | `closed` / 5 / 3 | `consumed` / 2 / 1 / 1 |
+| Harness | `run-6b565ce5808` | `closed` / 6 / 7 | `available` / 3 / 6 / 4 |
+| Harness | `run-bcec61e1608` | `closed` / 6 / 11 | `available` / 3 / 10 / 4 |
+
+The external read-only helper's 00:53:32 UTC observation initially reports four false profile
+comparisons: it assumed the profile epoch matched the final closed lease and its lease-version field
+preceded the final record by one. Source review independently confirms
+that the command's `withFreshHarnessDestroyInvocation` advances the broker epoch and lease once
+without reinitializing the profile, then `finalizeHarnessClose` advances the lease again. For this
+fresh serial matrix, the verified relationships are `profile epoch + 1 == closed lease epoch` and
+`profile lease-version + 2 == closed lease record version`. Correcting those external helper
+assertions makes the audit pass; no project source or protected record is changed, and no matrix
+rerun is needed. Production retains its original consumed profile. The external helper observes
+state without probing protected-entry exclusivity; the Harness executes its supported protected-state
+teardown observer.
+
+No project mode, generated-config, or data-root origin record remains. The generated project config,
+daemon PID, and current protected daemon owner are absent; no host daemon or native worker remains.
+The operator test config is unchanged at SHA-256
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`; `.test_data` is empty and
+Production `.data` is preserved. HKCU's WSL registration inventory is empty. The wall has no active
+record and retains monotonic fence 66; `.wslconfig` has its original SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694` and Windows file ID
+`0x00000000000000000061000000023bde`. Supported `wsl.exe --shutdown` exits 0 after wall restoration
+and the empty registration inventory have been verified. The utility VM is already off at the
+corrected 00:55:51 UTC audit, with no `vmmemWSL` process. The phase's complete 845-file
+covers digest is remeasured after the gate and remains unchanged at
+`cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b`.
+
+After phase 24 closes and this evidence is recorded, the native documentation check
+`cabal test hostbootstrap-core-test --test-show-details=direct --test-options="-p DocValidatorSpec"`
+from `core/` passes 11/11 in 5.69 seconds. It validates status harmony, complete gate evidence,
+and the current covered-source digests. `git diff --check` passes, and changed text files retain LF.
+
 #### Remaining Work
 
-Record the result of the worked demo's Harness matrix `phase24-integrity-redir-matrix-20260925`, which the
-previous Windows visit left running at WSL wall fence 60, and settle its guest, wall, and protected state so
-the gate host is pristine. Then run the complete Windows matrix against the automated WSL image-store
-selection and record a full pass, image identities, duration,
-and a clean terminal ownership audit against the measured source.
+None.
 
 ## Remaining Work
 
-**Sprint 27.5** owns the complete Windows matrix and terminal audit. The earlier preserved run was
-settled by an operator-approved reset after guest inspection and an external state archive. The fresh
-matrix reaches the demo but fails during same-run restart at `kind load docker-image`, leaving
-protected records. The next visit first records and settles the worked demo's Harness matrix the previous
-visit left running at WSL wall fence 60. A stable import, full passing matrix, and terminal audit remain
-owed.
+None.
 
 ## Documentation Requirements
 

@@ -59,6 +59,7 @@ module HostBootstrapDemo.Commands (
     hostDaemonLifecycleStateConsistent,
     hostDaemonIdentityMatches,
     readHostAcceleratorDaemonPid,
+    verifyHarnessHostArtifacts,
     acceleratorDaemonManifest,
     acceleratorHelmValuesForContext,
     renderActivationConfig,
@@ -339,6 +340,7 @@ import HostBootstrap.Protected (
     openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
+    tryProtectedEntry,
     withProtectedEntry,
  )
 import HostBootstrap.Readiness (
@@ -527,7 +529,10 @@ import HostBootstrap.Wsl2.GlobalWall.Host (
     CurrentUserWallRequest,
     HostWallError (HostWallNoActiveRecord),
     appliedWslConfigRecord,
+    hostWallActiveRecordKey,
+    hostWallProtectedStore,
     mkCurrentUserWallRequest,
+    openHostWallLocation,
  )
 import HostBootstrap.Wsl2.GlobalWall.Windows (applyCurrentUserGlobalWall, restoreCurrentUserGlobalWall)
 import HostBootstrapDemo.Accelerator (backendName)
@@ -569,13 +574,13 @@ import HostBootstrapDemo.Web.Bridge (writeBridge)
 import HostBootstrapDemo.Web.Server (serveWebWithConfig)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getCurrentDirectory, getHomeDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeFile, setPermissions, withCurrentDirectory)
-import System.Environment (getEnvironment, getExecutablePath, setEnv)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getCurrentDirectory, getPermissions, getTemporaryDirectory, listDirectory, makeAbsolute, removeFile, setPermissions, withCurrentDirectory)
+import System.Environment (getEnv, getEnvironment, getExecutablePath, setEnv)
 import System.Exit (ExitCode (..), die)
 import System.FilePath (normalise, takeDirectory, takeFileName, (</>))
 import qualified System.FilePath.Posix as Posix
 import System.IO (hFlush, hPutStr, stderr, stdout)
-import System.IO.Error (tryIOError)
+import System.IO.Error (isDoesNotExistError, tryIOError)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 
@@ -3714,15 +3719,8 @@ verifyHarnessTeardown :: ClusterProfile -> IO ()
 verifyHarnessTeardown profile = do
     cfg <- resolveHostConfig
     root <- getCurrentDirectory
-    let daemonDir = root </> ".build" </> "accelerator-daemon"
-        daemonPid = daemonDir </> "hostbootstrap-demo.accelerator.pid"
-        daemonOwner = daemonDir </> "hostbootstrap-demo.accelerator.owner"
-        daemonOperation = daemonDir </> "hostbootstrap-demo.accelerator.operation"
-    pidRemaining <- doesFileExist daemonPid
-    ownerRemaining <- doesDirectoryExist daemonOwner
-    operationRemaining <- doesDirectoryExist daemonOperation
-    when (pidRemaining || ownerRemaining || operationRemaining) $
-        die "test teardown: host accelerator daemon ownership/PID/operation state remains after project destroy"
+    windowsHome <- if isWindows (hcSubstrate cfg) then Just <$> getEnv "USERPROFILE" else pure Nothing
+    verifyHarnessHostArtifacts root windowsHome
     provider <- demoProvider cfg
     foldExistsProbe
         ( do
@@ -3737,12 +3735,60 @@ verifyHarnessTeardown profile = do
                 die "test teardown: the provider probe is unavailable, so VM deletion cannot be proven"
             remaining <- substrateExists cfg provider
             when remaining (die ("test teardown: managed VM still exists after project destroy: " ++ providerVmId provider))
-            when (isWindows (hcSubstrate cfg)) $ do
-                home <- getHomeDirectory
-                journalRemaining <- doesFileExist (home </> ".hostbootstrap" </> "global-wall.record")
-                when journalRemaining (die "test teardown: the global WSL2 wall journal remains; the wall was never released")
         )
         (providerExistsProbe provider)
+
+{- | Assert absence through the same protected state the host lifecycle owns.
+
+The optional home names the Windows wall's user profile; other hosts have no
+wall. A never-used store is absent, while a live exclusive entry, retained
+record, or failed observation refuses the teardown proof. Existing scaffolding
+and a released wall's monotonic fence do not mean a resource remains owned.
+-}
+verifyHarnessHostArtifacts :: FilePath -> Maybe FilePath -> IO ()
+verifyHarnessHostArtifacts root windowsHome = do
+    let ctx = Context.hostOrchestratorContext (T.pack demoProject) (T.pack demoProject) (T.pack root)
+        assertNoPid = do
+            present <- pathPresent (hostAcceleratorDaemonPath ctx "accelerator.pid")
+            when present (die "test teardown: host accelerator daemon PID remains after project destroy")
+    daemonStorePresent <- pathPresent (hostAcceleratorDaemonDir ctx </> ".claims")
+    if daemonStorePresent
+        then withHostAcceleratorDaemonStore ctx $ \store ->
+            assertReleased "host accelerator daemon" store $ \session -> do
+                assertNoPid
+                hostAcceleratorDaemonOwned session
+        else assertNoPid
+    case windowsHome of
+        Nothing -> pure ()
+        Just home -> do
+            let stateDirectory = home </> ".hostbootstrap" </> "global-wall"
+            wallStorePresent <- pathPresent stateDirectory
+            when wallStorePresent $ do
+                opened <- openHostWallLocation (home </> ".wslconfig") stateDirectory
+                location <- either (die . ("test teardown: cannot inspect the global WSL2 wall: " ++) . show) pure opened
+                assertReleased "global WSL2 wall" (hostWallProtectedStore location) $ \session -> do
+                    observed <- readProtectedRecord session (hostWallActiveRecordKey location)
+                    either (die . T.unpack . protectedErrorMessage) (pure . isJust) observed
+  where
+    pathPresent path = do
+        observed <- tryIOError (getPermissions path)
+        case observed of
+            Right _ -> pure True
+            Left failure
+                | isDoesNotExistError failure -> pure False
+                | otherwise -> throwIO failure
+    assertReleased ::
+        String ->
+        ProtectedStore ->
+        (forall session. ProtectedSession session -> IO Bool) ->
+        IO ()
+    assertReleased resource store observe = do
+        entered <- tryProtectedEntry store (\session -> Right <$> observe session)
+        case entered of
+            Left failure -> die ("test teardown: cannot inspect " ++ resource ++ ": " ++ T.unpack (protectedErrorMessage failure))
+            Right Nothing -> die ("test teardown: " ++ resource ++ " lifecycle operation remains active after project destroy")
+            Right (Just True) -> die ("test teardown: " ++ resource ++ " ownership remains after project destroy")
+            Right (Just False) -> pure ()
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
 up. Every case runs in the **VM frame** (the frame where the NodePort is

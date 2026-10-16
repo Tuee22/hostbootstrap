@@ -39,6 +39,16 @@ import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedStore,
+    RecordKey,
+    compareAndDeleteProtectedRecord,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    openProtectedStore,
+    withProtectedEntry,
+ )
 import HostBootstrap.Readiness (ProbeConflict (ProbeConflict), ProbeResult (..))
 import HostBootstrap.Reconcile (ConflictDetail (ConflictDetail), FailureDetail (FailureDetail), ReconcileError (Conflict, Failure), RecoveryDisposition (ReprobeBeforeRetry))
 import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn), declaredEffectList)
@@ -52,6 +62,7 @@ import HostBootstrap.Service (
 import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations, stepServiceActivationDeclarations)
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
+import HostBootstrap.Wsl2.GlobalWall.Host (hostWallActiveRecordKey, hostWallProtectedStore, openHostWallLocation)
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
@@ -80,8 +91,8 @@ import HostBootstrapDemo.Commands (
     hostClusterStateDirectory,
     hostDaemonIdentityMatches,
     hostDaemonLifecycleStateConsistent,
-    objectStoreClusterEndpoint,
     nvidiaAllocatableProbeResult,
+    objectStoreClusterEndpoint,
     readHostAcceleratorDaemonPid,
     renderActivationConfig,
     renderRetainedDaemonOutput,
@@ -90,6 +101,7 @@ import HostBootstrapDemo.Commands (
     serviceConfigMapManifest,
     uploadSessionUrl,
     validateAcceleratorReplicaCount,
+    verifyHarnessHostArtifacts,
  )
 import HostBootstrapDemo.Config (
     Port,
@@ -114,11 +126,12 @@ import HostBootstrapDemo.Container (
  )
 import HostBootstrapDemo.Web.Bridge (writeBridge)
 import Numeric.Natural (Natural)
-import System.Directory (canonicalizePath, createDirectory, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
+import System.Directory (canonicalizePath, createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeFile, removePathForcibly)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, (</>))
 import System.IO (hClose, hPutStr, openTempFile)
 import System.Info (os)
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -625,7 +638,7 @@ tests =
                     , "expose-port"
                     , "deploy-accelerator-daemon"
                     ]
-            assertBool "direct chain names nvkind" (isInfixOf "nvkind" (renderChainPlan plan))
+            assertBool "direct chain names nvkind" ("nvkind" `isInfixOf` renderChainPlan plan)
         , testCase "validated direct context keeps nvkind even if the inner host detects CPU" $ do
             let directCtx = Context.deriveLinuxGpuContainerContext (context hostCfg) "/workspace/demo"
                 vmCtx = Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo"
@@ -1213,6 +1226,81 @@ tests =
             hostDaemonLifecycleStateConsistent True True @?= True
             hostDaemonLifecycleStateConsistent True False @?= False
             hostDaemonLifecycleStateConsistent False True @?= False
+        , testCase "host teardown accepts never-used stores without creating them" $
+            withCommandsTempDirectory $ \root -> do
+                verifyHarnessHostArtifacts root (Just root)
+                doesDirectoryExist (root </> ".build") >>= (@?= False)
+                doesDirectoryExist (root </> ".hostbootstrap") >>= (@?= False)
+        , testCase "host teardown refuses a retained PID without an ownership store" $
+            withCommandsTempDirectory $ \root -> do
+                let daemonDirectory = root </> ".build" </> "accelerator-daemon"
+                createDirectoryIfMissing True daemonDirectory
+                writeFile (daemonDirectory </> "hostbootstrap-demo.accelerator.pid") "1234\n"
+                assertHostTeardownRefused root Nothing
+        , testCase "host teardown refuses the current daemon owner without obsolete claims or PID" $
+            withCommandsTempDirectory $ \root -> do
+                (store, key) <- openTeardownDaemonStore root
+                claimed <- withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord session key ExpectAbsent "hostbootstrap-demo/accelerator-daemon\n"
+                _ <- either (assertFailure . show) pure claimed
+                let daemonDirectory = root </> ".build" </> "accelerator-daemon"
+                doesFileExist (daemonDirectory </> "hostbootstrap-demo.accelerator.pid") >>= (@?= False)
+                doesDirectoryExist (daemonDirectory </> "hostbootstrap-demo.accelerator.owner") >>= (@?= False)
+                doesDirectoryExist (daemonDirectory </> "hostbootstrap-demo.accelerator.operation") >>= (@?= False)
+                assertHostTeardownRefused root Nothing
+        , testCase "host teardown refuses a held daemon lifecycle entry and accepts its release" $
+            withCommandsTempDirectory $ \root -> do
+                (store, _) <- openTeardownDaemonStore root
+                held <- withProtectedEntry store $ \_ -> do
+                    assertHostTeardownRefused root Nothing
+                    pure (Right ())
+                either (assertFailure . show) pure held
+                verifyHarnessHostArtifacts root Nothing
+        , testCase "host teardown accepts a released daemon owner in the retained store" $
+            withCommandsTempDirectory $ \root -> do
+                (store, key) <- openTeardownDaemonStore root
+                released <- withProtectedEntry store $ \session -> do
+                    claimed <- compareAndSwapProtectedRecord session key ExpectAbsent "hostbootstrap-demo/accelerator-daemon\n"
+                    case claimed of
+                        Left failure -> pure (Left failure)
+                        Right version -> compareAndDeleteProtectedRecord session key (ExpectVersion version)
+                either (assertFailure . show) pure released
+                verifyHarnessHostArtifacts root Nothing
+        , testCase "host teardown refuses the current wall receipt and accepts its release" $
+            withCommandsTempDirectory $ \root -> do
+                opened <- openHostWallLocation (root </> ".wslconfig") (root </> ".hostbootstrap" </> "global-wall")
+                location <- either (assertFailure . show) pure opened
+                let store = hostWallProtectedStore location
+                    key = hostWallActiveRecordKey location
+                claimed <- withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord session key ExpectAbsent "retained-wall-receipt"
+                version <- either (assertFailure . show) pure claimed
+                doesFileExist (root </> ".hostbootstrap" </> "global-wall.record") >>= (@?= False)
+                assertHostTeardownRefused root (Just root)
+                removed <- withProtectedEntry store $ \session ->
+                    compareAndDeleteProtectedRecord session key (ExpectVersion version)
+                either (assertFailure . show) pure removed
+                verifyHarnessHostArtifacts root (Just root)
+        , testCase "host teardown refuses a held wall entry even without an active receipt" $
+            withCommandsTempDirectory $ \root -> do
+                opened <- openHostWallLocation (root </> ".wslconfig") (root </> ".hostbootstrap" </> "global-wall")
+                location <- either (assertFailure . show) pure opened
+                held <- withProtectedEntry (hostWallProtectedStore location) $ \_ -> do
+                    assertHostTeardownRefused root (Just root)
+                    pure (Right ())
+                either (assertFailure . show) pure held
+                verifyHarnessHostArtifacts root (Just root)
+        , testCase "host teardown does not mistake failed store opens for absent ownership" $
+            withCommandsTempDirectory $ \root -> do
+                let daemonDirectory = root </> ".build" </> "accelerator-daemon"
+                    wallDirectory = root </> ".hostbootstrap"
+                createDirectoryIfMissing True daemonDirectory
+                writeFile (daemonDirectory </> ".claims") "not a store directory"
+                assertHostTeardownRefused root Nothing
+                removeFile (daemonDirectory </> ".claims")
+                createDirectory wallDirectory
+                writeFile (wallDirectory </> "global-wall") "not a store directory"
+                assertHostTeardownRefused root (Just root)
         , testCase "host accelerator pid read releases the file before teardown removal" $ do
             tmp <- getTemporaryDirectory
             (pidPath, handle) <- openTempFile tmp "hostbootstrap-accelerator.pid"
@@ -1241,7 +1329,7 @@ tests =
             hostDaemonIdentityMatches False "/repo/daemon" (Right (ExitSuccess, "/repo/daemon project up\n", "")) @?= False
             hostDaemonIdentityMatches False "/repo/daemon" (Right (ExitSuccess, "/repo/daemon-old service run\n", "")) @?= False
         , testCase "web bridge maps Haskell Float into the PureScript numeric primitive" $
-            withBridgeTempDirectory $ \dir -> do
+            withCommandsTempDirectory $ \dir -> do
                 writeBridge dir
                 generated <- readFile (dir </> "HostBootstrapDemo" </> "Web" </> "Api.purs")
                 assertBool "Float fields use PureScript Number" ("result :: Number" `isInfixOf` generated)
@@ -1498,8 +1586,23 @@ tests =
                     demoImageBuildSpecDigest @?= projectCodecSpecDigest codec
         ]
 
-withBridgeTempDirectory :: (FilePath -> IO a) -> IO a
-withBridgeTempDirectory = bracket create removePathForcibly
+openTeardownDaemonStore :: FilePath -> IO (ProtectedStore, RecordKey)
+openTeardownDaemonStore root = do
+    opened <- openProtectedStore (root </> ".build" </> "accelerator-daemon" </> ".claims")
+    store <- either (assertFailure . show) pure opened
+    key <- either (assertFailure . show) pure (mkRecordKey "hostbootstrap-demo.accelerator.owner")
+    pure (store, key)
+
+assertHostTeardownRefused :: FilePath -> Maybe FilePath -> IO ()
+assertHostTeardownRefused root windowsHome = do
+    result <- timeout 5000000 (try (verifyHarnessHostArtifacts root windowsHome) :: IO (Either ExitCode ()))
+    case result of
+        Nothing -> assertFailure "host teardown waited on a live lifecycle entry instead of refusing it"
+        Just (Right ()) -> assertFailure "host teardown accepted retained or unobservable host state"
+        Just (Left failure) -> failure @?= ExitFailure 1
+
+withCommandsTempDirectory :: (FilePath -> IO a) -> IO a
+withCommandsTempDirectory = bracket create removePathForcibly
   where
     create = do
         tmp <- getTemporaryDirectory

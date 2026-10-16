@@ -6,12 +6,7 @@
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on an Apple Silicon host, plus a focused live exact-plan direct-Colima adapter lane
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-16 ; `MacBookPro`, arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
-Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ;
-repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
-from the repository root, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
-from `core/` ; pass ; covers d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2
-**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs` `core/hostbootstrap-core/src/HostBootstrap/Lima.hs` `core/hostbootstrap-core/internal/colima-backend` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider` `core/hostbootstrap-core/internal/effect`
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
 > realization of universal `linux-cpu`, and confirm the additional Apple behavior.
@@ -244,7 +239,7 @@ From `core/`,
 passed **33/33** in **41.51 seconds**. The live case took 38.18 seconds, derived profile `h-c2a539`,
 refused the incompatible same-name acquisition, and reported exact profile/context/data cleanup with
 ambient `default` unchanged. No managed `h-*` profile remains. The 31-file covers measurement matched
-before and after both lanes; the header records that digest.
+before and after both lanes; the dated run retains that original digest.
 
 The supporting native macOS static gate also passed: `cabal build all --ghc-options=-Werror` and
 `cabal test all --ghc-options=-Werror --test-show-details=direct` from `core/`, with **2,497/2,497**
@@ -331,7 +326,7 @@ is absent, `.test_data` is empty, and `.data` remains absent. No Lima instance o
 remains. The ambient Docker context, both Colima profiles and their budgets, and empty ambient
 container set match preflight; the focused lane's temporary Colima profile is absent.
 
-The post-run measurement of the 31 covered files matches the pre-run measurement and the header's
+The post-run measurement of the 31 covered files matches the pre-run measurement and the original
 `d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2`. No covered source changes
 were needed. The same visit's complete macOS and arm64 Linux host static gates, including both
 Cabal workspaces, are recorded in [phase 28, Sprint 28.5](phase-28-host-portability-acceptance.md).
@@ -362,7 +357,29 @@ on the portable S3 store, so the acceptance result covers the current consumer.
 
 #### Validation
 
-Pending.
+The live gate's scope includes the core and consumer components compiled by the in-image
+`check-code`, package/project and bootstrap metadata, authored chart, browser and SPA inputs, and
+committed style and Docker-context contracts. A change to those inputs can change the declared gate
+without changing provider code. Generated bridges, caches, runtime state, and external toolchains
+remain outside this authored-source set.
+The included core test root also covers `ColimaSpec.hs`, its registration in `Spec.hs`, and the
+fixture helpers used by the focused native exact-plan lane, so both declared gate legs are covered.
+The 25 roots contain 845 files and measure
+`cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b` on 2026-10-15.
+This source measurement establishes no new Apple acceptance; both native lanes remain owed.
+
+The earlier Apple pass retains its original narrower scope: `core/hostbootstrap-core/src/HostBootstrap/Ensure/AppleMetal.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Lima.hs` `core/hostbootstrap-core/src/HostBootstrap/Lima.hs` `core/hostbootstrap-core/internal/colima-backend` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider` `core/hostbootstrap-core/internal/effect`.
+Its dated result and original digest are preserved without restamping:
+
+- 2026-09-16 ; `MacBookPro`, arm64 macOS 26.6.2 (build 25G83), Apple M1 Max,
+  Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, Poetry 2.3.2 ;
+  repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
+  from the repository root, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
+  from `core/` ; pass ; covers d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2
+
+On 2026-10-15, the available gate host is native x86_64 Windows 11 with an NVIDIA RTX 3090.
+It cannot execute the native Apple Silicon matrix or direct-Colima lane. Both remain owed on
+Apple hardware; the Windows visit records only the cells its hardware can produce (§ JJ).
 
 #### Remaining Work
 

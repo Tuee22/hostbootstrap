@@ -228,6 +228,14 @@ the command independently verifies preceded project-resource acquisition becomes
 skips reverse; a late refusal is classified as refused but still tears down. The demo generates two
 project-config variants with different messages and runs the selected compiled cases against each.
 
+The demo's post-reverse assertion checks the host daemon through its current protected claim store,
+taking the lifecycle entry before observing the owner record and PID. A held entry, retained record,
+or failed observation refuses a clean teardown; empty retained store scaffolding is allowed. On Windows,
+the same assertion checks the global wall's active record through the production wall-location API.
+The wall's monotonic fence remains after release and is not active ownership. These checks supplement
+the exact provider or direct-cluster absence probe. Behavior tests publish current protected records
+and hold their entries in temporary stores, so checking obsolete paths cannot make the tests pass.
+
 The [test-harness-and-run-ownership
 phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) owns both this assertion engine and
 the Harness command consumer that supplies its opaque lifecycle. The shared exact-plan/Chain foundation

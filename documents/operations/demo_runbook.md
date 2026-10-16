@@ -310,9 +310,10 @@ The host `.data` root and marker survive both verbs.
 On Apple and Linux, `project down` returns the provider VM's CPU and memory to the host. On Windows it
 first restores the journalled `.wslconfig` origin, including an absent origin, and then invokes the
 global `wsl --shutdown`. That ordering makes the next cold boot read the restored configuration; the
-shutdown stops every distro and releases the shared utility VM's memory balloon. The earlier Windows
-gate proves this wall-release observable, not the current full recursive-teardown and durable-readback
-hardware acceptance.
+shutdown stops every distro and releases the shared utility VM's memory balloon. The
+[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md)
+records dated wall-release observations, recursive teardown and durable-readback gate evidence, and the
+required terminal ownership audit; its status and remaining work describe current acceptance coverage.
 
 The managed six-hour idle timeouts are a backstop only when a run is interrupted before teardown. In
 that case an operator can run `wsl --shutdown` manually, after accounting for its disclosed effect on

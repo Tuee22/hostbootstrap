@@ -236,11 +236,20 @@ in `managed`. Conditional release first persists the observation-version-fenced 
 then removes only that exact identity. Crash retries recover each durable state rather than adopting an
 exact-looking pathname.
 
-The worked demo still has to adopt this route in place of its legacy pathname call; that call site cannot
-supply an identity-authoritative cleanup receipt. Direct-host builds use the canonical host path and
-create no alias. All lanes also lack the required destroy/up/readback proof. See
-[durable state](../architecture/durable_state.md) and the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+The worked demo adopts this route in its `copy-source` node through `runExactVmShare` in
+[HostBootstrapDemo.Commands](../../demo/src/HostBootstrapDemo/Commands.hs). It prepares and settles the
+exact provider share, keeps the managed provider and share authorities inside
+`withProviderShareSettlement`, and derives a fresh provider capability. `discoverStrongAliasBackend`
+narrows that capability for `reconcileNodeGuestAlias`. Mount validation and alias settlement complete
+before that continuation registers the share's runtime dependency. Direct-host builds use the canonical
+host path and create no alias.
+
+The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the shared implementation
+and baseline destroy/up/readback gate. Dated hardware acceptance and remaining work belong to the
+[Apple Silicon](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md),
+[NVIDIA](../../DEVELOPMENT_PLAN/phase-26-nvidia-gpu-substrate.md), and
+[Windows and WSL2](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md) phases. See
+[durable state](../architecture/durable_state.md) for the ownership contract.
 
 ## Lifecycle caveat
 
@@ -251,15 +260,12 @@ the concrete reverse and durable-readback gate.
 
 ## Validation
 
-The current Windows `project up`/`project down` gate exercised the wall-release observable: the
-managed wall was active during bring-up, teardown restored an absent `.wslconfig` origin exactly, and
-the following global shutdown left neither a running distro nor a resident utility VM. Dated command
-and test detail belongs in the
-[Windows-and-WSL2-substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
-
-That earlier result does not close the current WSL2 hardware acceptance. Existing-VHDX reconciliation,
-fresh verification of recursive teardown and durable readback, and the remaining native provider matrix stay
-open in their owning phase.
+The [Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md)
+owns the complete recursive teardown and durable-readback matrix and its terminal ownership audit. It
+records dated native command results and wall-release and recovery observations; its gate evidence and
+remaining work state the current acceptance coverage. The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns validation of the shared
+implementation.
 
 Phase status belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 

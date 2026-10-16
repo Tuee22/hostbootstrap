@@ -1,20 +1,12 @@
 # Phase 26 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on a native Linux host with an NVIDIA GPU, followed by the terminal ownership audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-30 ; `matt-junction`, native x86_64 Ubuntu 24.04.5 LTS,
-Linux 7.0.0-31-generic, NVIDIA GeForce RTX 5090 on driver 595.91.07, Docker 29.8.1, Kind 0.32.0,
-kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pulled published
-base `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
-repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test init` then
-`poetry run hostbootstrap run --project-root demo test run all`, the second of two complete matrices with
-accelerator placement observed ; pass ;
-covers 6882a9eda28dbac49323d4bf8c4e406d413cee4639e26fe4df839723922f0e34
-**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`
+**Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the GPU realizations — the accelerator-capable cluster driver and the CUDA worker — and
 > confirm the whole build on that substrate.
@@ -555,7 +547,7 @@ The terminal audit at 05:19:23 UTC finds no Docker container and no Kind cluster
 `closed` at generations 4 and 8, and both profiles encode `available` at generations 3 and 7. No mode,
 generated-config ownership, or data-root ownership record remains. The generated project config is
 absent, `.test_data` is empty, and the operator test config retains its exact hash. The unrelated
-pre-existing `hb-linux-cpu` VM remains stopped. All 211 covered files remeasure to the header digest.
+pre-existing `hb-linux-cpu` VM remains stopped. All 211 covered files remeasure to that dated run's original digest.
 The post-closure `DocValidatorSpec` check passes 11/11 in 2.64 seconds.
 
 #### Remaining Work
@@ -634,15 +626,64 @@ stopped. All four Harness leases encode `closed` at generations 4, 8, 12, and 16
 encode `available` at generations 3, 7, 11, and 15. No mode, generated-config ownership, or data-root
 ownership record remains. The generated project config is absent, `.test_data` is empty, the operator
 test config retains its exact hash, and no project process remains. The 212 covered files remeasure to
-the header digest. The same visit's complete host static gate is recorded in phase 28.
+the original digest retained in this run's dated evidence. The same visit's complete host static gate is recorded in phase 28.
 
 #### Remaining Work
 
 None.
 
+### Sprint 26.10: Revalidate the current protected-store teardown assertions [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Re-establish native NVIDIA acceptance after the shared demo's terminal ownership assertions change.
+
+#### Deliverables
+
+- The complete declared matrix passes with observed accelerator placement and a terminal ownership audit.
+- Gate evidence records the actual native Linux/NVIDIA run and refreshed covered-source digest.
+
+#### Validation
+
+The live gate's scope includes the core and consumer components compiled by the in-image
+`check-code`, package/project and bootstrap metadata, authored chart, browser and SPA inputs, and
+committed style and Docker-context contracts. A change to those inputs can change the declared gate
+without changing provider code. Generated bridges, caches, runtime state, and external toolchains
+remain outside this authored-source set.
+The 25 roots contain 845 files and measure
+`cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b` on 2026-10-15.
+The corrected seven-root subset previously measured
+`7d460b28ebfe1bd26d84d3e276ba18bb3f6e2482737dbf67a744c2b1a258ccce`; that remains subset
+provenance rather than a measurement of the expanded live gate. Native NVIDIA acceptance remains owed.
+
+The earlier native NVIDIA pass retains its original narrower scope: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`.
+Its dated result and original digest are preserved without restamping:
+
+- 2026-09-30 ; `matt-junction`, native x86_64 Ubuntu 24.04.5 LTS,
+  Linux 7.0.0-31-generic, NVIDIA GeForce RTX 5090 on driver 595.91.07, Docker 29.8.1, Kind 0.32.0,
+  kubectl 1.37.0, Helm 3.16.3, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1, against the pulled published
+  base `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
+  repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test init` then
+  `poetry run hostbootstrap run --project-root demo test run all`, the second of two complete matrices with
+  accelerator placement observed ; pass ;
+  covers 6882a9eda28dbac49323d4bf8c4e406d413cee4639e26fe4df839723922f0e34
+
+On 2026-10-15 this phase is reopened before changing its covered demo source. The available Windows
+RTX 3090 host exercises the Windows CUDA lane; it does not substitute for this native Linux/NVIDIA gate.
+The 2026-09-30 result remains historical evidence for its recorded tree.
+
+#### Remaining Work
+
+Run the declared gate on native Linux/NVIDIA hardware after the shared demo correction settles.
+
 ## Remaining Work
 
-None.
+Sprint 26.10 owns native Linux/NVIDIA revalidation of the corrected shared terminal assertions.
 
 ## Documentation Requirements
 

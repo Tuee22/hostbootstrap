@@ -63,33 +63,33 @@ its row here.
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | current-tree gate revalidation |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | live gate |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | revalidation after shared teardown correction |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
 | 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | macOS and arm64 Linux runs |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Every phase below the acceptance phases is Done. On 2026-09-30 the worked demo's complete baseline gate
-passes against the changed demo tree: the host static legs on the x86_64 Linux gate host `matt-junction`,
-and, in its `hb-linux-cpu` guest, the Production `init`/`up`/`down`/`destroy` sequence and the `10/10`
-Harness matrix on the portable S3 store, followed by a clean terminal audit.
-[Sprint 24.47](phase-24-worked-demo.md) records the run and the Windows WSL2 attempts that preceded it.
+Phases 0–24, 27, and 29 are Done. The 2026-10-15/16 Windows visit corrects the Harness teardown
+assertion to inspect the current protected stores, passes both complete Windows and x86_64 Linux
+static gates, and completes the Production sequence and full `10/10` Harness matrix with clean
+terminal audits. [Sprint 24.49](phase-24-worked-demo.md) records the complete worked-demo gate
+against its expanded 862-file source set. [Sprint 27.5](phase-27-windows-and-wsl2-substrate.md)
+records Windows/WSL2 acceptance against its expanded 845-file set, including observed native CUDA
+placement, all four fresh guest/image identities, closed run leases, and exact WSL wall restoration.
+The preceding baseline and Windows attempts retain their original dates, results, and scopes.
 
-The same Linux/NVIDIA visit closes the [NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md): its native
-`10/10` matrix passes with accelerator placement observed and a clean terminal audit, and the visit's host
-static gate is the current x86_64 Linux gate-host row.
+The lowest open phase is [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), which owes
+its complete matrix and direct-Colima lane on the changed tree at the next Apple visit.
+[NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md) is also reopened before the shared teardown
+correction; Sprint 26.10 owns its next native Linux/NVIDIA run. Its 2026-09-30 hardware pass remains
+historical evidence for that source. Windows CUDA and the WSL2 CPU baseline do not replace those
+hardware-specific gates.
 
-The three remaining acceptance phases are each owed at a visit to the hardware they declare. The lowest,
-[Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), owes its matrix and direct-Colima lane
-against the changed demo tree at the next Apple visit. The
-[Windows acceptance](phase-27-windows-and-wsl2-substrate.md) owes its complete matrix and the terminal
-ownership and WSL wall audit at the next Windows visit. That visit first records the result of the worked
-demo's Harness matrix `phase24-integrity-redir-matrix-20260925`, which the previous Windows visit left
-running at WSL wall fence 60 ([Sprint 24.47](phase-24-worked-demo.md)), and settles its guest, wall, and
-protected state. The
-[host-portability acceptance](phase-28-host-portability-acceptance.md) owes its macOS and arm64 Linux rows
-at the next Apple visit, while its x86_64 Linux and Windows rows are current.
+[Host-portability acceptance](phase-28-host-portability-acceptance.md) has current native Windows
+and x86_64 Linux evidence against its expanded 857-file source set, including the changed demo.
+Its macOS and arm64 Linux gates remain owed at the next Apple visit. All three open phases retain
+their remaining work; no previous hardware pass is restamped for the current tree.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would
