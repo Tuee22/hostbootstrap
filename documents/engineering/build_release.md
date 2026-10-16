@@ -10,7 +10,7 @@
 
 ## Workflow
 
-Maintainers publish one native architecture at a time:
+Agents and maintainers publish one native architecture at a time:
 
 ```sh
 poetry run hostbootstrap base build-and-push --arch amd64
@@ -115,11 +115,12 @@ that the warm store is complete or the build is offline.
 ## Local inspection versus publication
 
 `hostbootstrap base build` may build a local image for inspection. Derived validation of the published
-source of truth follows an operator-authorized `build-and-push`, explicit pull, and real-consumer smoke.
+source of truth follows a `build-and-push`, explicit pull, and real-consumer smoke.
 Do not silently substitute a same-named local base.
 
-Publishing mutates Docker Hub and requires explicit user authorization. A requested documentation/code
-change alone does not authorize it.
+Publishing mutates Docker Hub, and agents perform it as required: the rebuild → republish → pull rule is
+standing authority, described under [publication authority](base_image.md#publication-authority). A change
+that leaves the base inputs untouched does not call for a publication.
 
 ## Evidence and partial failure
 

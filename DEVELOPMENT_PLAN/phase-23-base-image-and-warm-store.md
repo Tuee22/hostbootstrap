@@ -394,7 +394,7 @@ repository that describes it until the pipeline is re-run end to end.
 
 #### Validation
 
-The phase's own gate. It is an outward-facing publication and runs only on the operator's direction.
+The phase's own gate. It is an outward-facing publication that agents run as required.
 
 #### Remaining Work
 

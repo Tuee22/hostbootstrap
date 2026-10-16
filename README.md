@@ -85,8 +85,8 @@ cluster, deploy services, or tear them down. Those are Haskell/project-binary re
 [prerequisites](documents/engineering/prerequisites.md).
 
 Two explicit distribution/maintainer surfaces sit outside that project-runtime boundary:
-`hostbootstrap update` updates the pipx application, and the repository-only `base` command builds or
-publishes base images when an operator requests it. Neither surface becomes a child lifecycle step or
+`hostbootstrap update` updates the pipx application, and the repository-only `base` command builds and
+publishes base images, which agents do as required. Neither surface becomes a child lifecycle step or
 gives Python ownership of project config, providers, images, clusters, services, or teardown.
 
 The rolling base image contains the container-build toolchain and an opportunistic Cabal store; it does
@@ -94,7 +94,7 @@ not contain the host-native project binary. Builds discover current compatible u
 host/container consumers use one ordinary `cabal.project` with online cache misses allowed. Published
 `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the derived-build source of
 truth. Base Dockerfile or warm-store changes require rebuilding and republishing the affected tag before
-consumers pull it; publication/live compatibility smoke requires explicit operator authorization. See
+consumers pull it; agents run the publication and live compatibility smoke as required. See
 [base image](documents/engineering/base_image.md).
 
 ## Configuration

@@ -79,8 +79,14 @@ records Windows/WSL2 acceptance against its expanded 845-file set, including obs
 placement, all four fresh guest/image identities, closed run leases, and exact WSL wall restoration.
 The preceding baseline and Windows attempts retain their original dates, results, and scopes.
 
-The lowest open phase is [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), which owes
-its complete matrix and direct-Colima lane on the changed tree at the next Apple visit.
+The incoming 2026-10-14 Apple visit completes the Lima matrix at `10/10`, the focused direct-Colima
+lane, and the macOS and arm64 Linux static gates. Those results retain their original 31-file Apple
+and 823-file portability scopes and digests. The subsequent shared teardown change and expanded
+covers sets require fresh Apple runs; merging the earlier evidence does not validate those new inputs.
+
+The lowest open phase is [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md). Sprint 25.6
+records the October 14 pass; Sprint 25.7 owns the complete matrix and direct-Colima lane against the
+changed tree, including the affected CPU/arm64 base publication on a native arm64 host.
 [NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md) is also reopened before the shared teardown
 correction; Sprint 26.10 owns its next native Linux/NVIDIA run. Its 2026-09-30 hardware pass remains
 historical evidence for that source. Windows CUDA and the WSL2 CPU baseline do not replace those

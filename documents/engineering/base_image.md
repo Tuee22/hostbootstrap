@@ -58,8 +58,9 @@ rolling tag. The dated publications and their digests belong to the
 
 Published tags are the source of truth for derived projects. When
 [`docker/basecontainer.Dockerfile`](../../docker/basecontainer.Dockerfile) or the cache-population inputs
-under [`core/warm-deps/`](../../core/warm-deps/) change, an operator rebuilds and republishes the affected
-native tag with `hostbootstrap base build-and-push`. Consumers pull the republished tag. A same-named
+under [`core/warm-deps/`](../../core/warm-deps/) change, the affected native tag is rebuilt and republished
+with `hostbootstrap base build-and-push`, which agents do as required (see
+[publication authority](#publication-authority)). Consumers pull the republished tag. A same-named
 local image must not stand in for that published copy.
 
 Before pushing, the workflow cold-builds
@@ -166,8 +167,29 @@ This is build-resource and publication-identity management, separate from projec
 
 `base build` is a local inspection build. `base build-and-push` first resolves the fresh local image ID
 and proves the compatibility consumer against that immutable local artifact, then mutates Docker Hub
-and verifies the pulled digest; it is run only with explicit operator authorization. A registry-backed
+and verifies the pulled digest. A registry-backed
 rolling tag is not sufficient for the pre-publish check because BuildKit may resolve it from the
 registry even when `--pull` is absent, and BuildKit interprets a bare image ID in `FROM` as a repository
 name. The pre-publish smoke therefore uses the classic builder for exact daemon-local ID resolution. See
 [build and release](build_release.md) for ordering and evidence.
+
+Agents build and publish the base images to Docker Hub as required. Publication is a standing part of the
+rebuild → republish → pull rule, so an agent runs `build-and-push` itself, without waiting for fresh
+direction, whenever the base inputs change or a published tag that a task depends on no longer matches the
+repository. The repository-environment gate on the `base` commands is a capability check, which an agent
+passes by running them through `poetry run` from the repository checkout, and not a separate authorization.
+The limits are the workflow's own and the credential policy's:
+
+- only the affected native tags are published, one architecture per native host. The CLI refuses a
+  request, host, and engine architecture disagreement before any Docker work, and an architecture with no
+  native host in the session is reported as outstanding rather than emulated;
+- the source preflight and the pre-publish consumer smoke run first, and any failure stops before registry
+  mutation;
+- the host's existing Docker Hub login supplies the credential, which is never printed, copied, or written
+  (see [registry credential forwarding](registry_credentials.md));
+- after the push the tag is pulled, its digest resolved, and the post-publish smoke run, and the dated
+  publication and digest are recorded in the owning development-plan sprint;
+- a partial failure reports which rolling tags changed, because there is no multi-tag transaction.
+
+Publishing is a registry operation and not a git operation, so the git-history boundary in
+[AGENTS.md](../../AGENTS.md) and [CLAUDE.md](../../CLAUDE.md) is unchanged.
