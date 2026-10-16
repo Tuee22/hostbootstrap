@@ -14,8 +14,8 @@ module TeardownSpec (tests) where
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.Maybe (isNothing)
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -1282,6 +1282,7 @@ hostConfigFixture = unsafePerformIO (detect >>= either fail pure >>= buildHostCo
 {- | The demo's own shape: an ensure step that preserves on reverse, the VM
 launch, the in-VM build, and the in-container cluster and chart.
 -}
+
 {- | The demo shape with a reverse effect actually declared on the provider, so
 the reachability step has something to carry.
 -}

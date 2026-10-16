@@ -421,7 +421,7 @@ dated host, versions, run IDs, durations, and image digests belong in
 
 ### Apple Silicon pristine acceptance
 
-Run the Apple acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated
+Run the standalone Apple acceptance from a disposable demo state with no `.build`, `.hostbootstrap`, generated
 `hostbootstrap-demo.dhall`, `.test_data`, or Lima instance. Preserve tracked sources and any unrelated ambient
 Colima profile. From the repository root:
 
@@ -429,6 +429,13 @@ Colima profile. From the repository root:
 poetry run hostbootstrap run --project-root demo test init
 poetry run hostbootstrap run --project-root demo test run all
 ```
+
+For a combined worked-demo and Apple visit, begin the whole visit pristine and use the Production-to-Harness
+sequence above. After Production destroy and its terminal audit, preserve the installed binary and identities,
+terminal ownership records, and Production `.data`; remove only the verified generated Production sibling
+config before test init. The same complete Apple matrix supplies the worked-demo phase's universal floor and
+the Apple phase's matrix leg against unchanged inputs. Validate the worked-demo phase first, then record the
+shared run under the Apple phase's own evidence scope and complete its separate Colima leg below.
 
 The complete matrix performs four fresh Lima bring-ups and four terminal destroys. Allow at least two hours
 for the matrix, plus the initial cold host-native build; the acceptance phase records measured durations.
@@ -439,7 +446,18 @@ After success, verify both run leases encode `closed`; no project mode, generate
 remains; `.build/hostbootstrap-demo.dhall` is gone while `.build/hostbootstrap-demo.test.dhall` remains;
 `.test_data` exists and is empty; no accelerator daemon is live; and `limactl list` reports no demo instance.
 The shared Docker context and any pre-existing Colima `default` profile are ambient state and must remain
-unchanged. The dated host, versions, run IDs, duration, image digests, and audit belong in
+unchanged. In a combined visit, compare the full retained Production `.data` tree with its post-Production
+audit fingerprint as well.
+
+After the worked-demo phase validates, complete the Apple phase's focused native direct-Colima leg from `core/`:
+
+```text
+HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct
+```
+
+The opted-in lane must acquire its exact native profile, refuse the conflicting plan, and clean up its owned
+profile, context, and data while preserving ambient state. A no-request `Unsupported` result does not satisfy
+this live leg. The dated host, versions, run IDs, durations, image digests, both gate legs, and audits belong in
 [Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
 
 ### Linux/NVIDIA pristine acceptance

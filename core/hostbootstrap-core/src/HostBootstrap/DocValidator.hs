@@ -2137,14 +2137,14 @@ checkEntryDocAgreement root = do
             pure
                 ( lengthViolation
                     ++ [ Violation
-                        (rrel root claude)
-                        ( "line "
-                            ++ show n
-                            ++ " does not follow from AGENTS.md under the declared audience mapping; expected "
-                            ++ show expected
-                            ++ " but found "
-                            ++ show actual
-                        )
+                            (rrel root claude)
+                            ( "line "
+                                ++ show n
+                                ++ " does not follow from AGENTS.md under the declared audience mapping; expected "
+                                ++ show expected
+                                ++ " but found "
+                                ++ show actual
+                            )
                        | (n, expected, actual) <- take 5 mismatches
                        ]
                 )

@@ -1,5 +1,7 @@
 {-# LANGUAGE CPP #-}
+#if defined(mingw32_HOST_OS)
 {-# LANGUAGE EmptyCase #-}
+#endif
 {-# LANGUAGE OverloadedStrings #-}
 
 {- | The primitives a POSIX kernel supplies to the ownership seam, once.

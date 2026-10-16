@@ -642,6 +642,8 @@ None.
 #### Objective
 
 Re-establish native NVIDIA acceptance after the shared demo's terminal ownership assertions change.
+The same native Linux hardware visit also collects its x86_64 Linux host-static evidence, owned
+separately by the host-portability phase (§ JJ); this phase closes on its own NVIDIA gate.
 
 #### Deliverables
 
@@ -661,6 +663,14 @@ The corrected seven-root subset previously measured
 `7d460b28ebfe1bd26d84d3e276ba18bb3f6e2482737dbf67a744c2b1a258ccce`; that remains subset
 provenance rather than a measurement of the expanded live gate. Native NVIDIA acceptance remains owed.
 
+On 2026-10-16, minimal formatting and lint corrections change shared covered inputs. The selected
+source preflight uses compatible Fourmolu 0.19.0.1 and HLint 3.10, with a demo formatting spelling
+also accepted by Fourmolu 0.21. The 25-root, 845-file scope now measures
+`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582`. This measurement establishes
+no native NVIDIA gate pass. The current Apple matrix and arm64 Linux static results establish
+only their exercised lanes; they do not substitute for this phase's native Linux/NVIDIA gate.
+The earlier measurements above retain their original source provenance.
+
 The earlier native NVIDIA pass retains its original narrower scope: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`.
 Its dated result and original digest are preserved without restamping:
 
@@ -677,13 +687,30 @@ On 2026-10-15 this phase is reopened before changing its covered demo source. Th
 RTX 3090 host exercises the Windows CUDA lane; it does not substitute for this native Linux/NVIDIA gate.
 The 2026-09-30 result remains historical evidence for its recorded tree.
 
+On 2026-10-16, the native Apple visit completes the worked-demo gate and then both Apple
+acceptance legs before reaching this phase. This is the first gate in numerical order that the
+available hardware cannot validate: `MacBookPro` has an Apple M1 Max and no native Linux/NVIDIA
+host is available in the session. The successful Metal matrix and arm64 Linux static gate provide
+no native NVIDIA acceptance. This phase stays Active; no current-tree NVIDIA pass or refreshed gate
+evidence is claimed. The 845-file source scope still measures
+`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582` after the Apple runs.
+
 #### Remaining Work
 
-Run the declared gate on native Linux/NVIDIA hardware after the shared demo correction settles.
+Run the complete declared gate on native Linux/NVIDIA hardware against the corrected shared
+observer and minimal source corrections. The expanded 845-file scope currently measures
+`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582`. Record observed accelerator
+placement directly: a Running accelerator pod uses `runtimeClassName: nvidia`, requests and limits
+one `nvidia.com/gpu`, and the node advertises allocatable GPU capacity. Record the terminal
+ownership and ambient-state audits, actual commands, native host/GPU/toolchain, run and image
+identities, and fresh before/after source measurements only after the complete matrix reports
+`10/10 passed`.
 
 ## Remaining Work
 
-Sprint 26.10 owns native Linux/NVIDIA revalidation of the corrected shared terminal assertions.
+Sprint 26.10 owns complete native Linux/NVIDIA revalidation of the corrected shared terminal
+assertions and minimal source corrections, with placement observations, terminal audit, and fresh
+source evidence.
 
 ## Documentation Requirements
 

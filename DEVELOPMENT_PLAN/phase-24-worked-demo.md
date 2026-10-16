@@ -11,23 +11,23 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
-AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, Python 3.14.7,
-with Ubuntu 24.04.5 LTS/WSL2 6.18.33.2, 6 CPUs, 10 GiB memory and 80 GiB VHD ;
-`cabal build all` and `cabal test all --test-options=--hide-successes` from `core/`,
-`cabal build all --builddir=.build/host-static` and
-`cabal test all --builddir=.build/host-static --test-options=--hide-successes` and
-`cabal test hostbootstrap-demo-test --builddir=.build/host-static --test-show-details=direct --test-options=--hide-successes`
-from `demo/`,
-`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-from the root, plus repository-bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
+**Gate evidence**: 2026-10-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, 64 GiB memory, Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0,
+Fourmolu 0.19.0.1, HLint 3.10, Python 3.14.3, Poetry 2.3.2 ;
+`cabal build all` and `cabal test all --test-show-details=direct --test-options=--hide-successes`
+from `core/`, `cabal build all --ghc-options=-Werror`, `cabal test all --ghc-options=-Werror`,
+and `cabal test hostbootstrap-demo-test --test-show-details=direct --test-options=--hide-successes`
+from `demo/`, `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root, plus repository
+Python-bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
 `poetry run hostbootstrap run --project-root demo project up`,
 `poetry run hostbootstrap run --project-root demo project down`,
 `poetry run hostbootstrap run --project-root demo project destroy`,
 `poetry run hostbootstrap run --project-root demo test init`, and
-`poetry run hostbootstrap run --project-root demo test run all` (`10/10 passed`, exit 0),
-followed by the terminal ownership/WSL wall audit ; pass ;
-covers 25747980e634fb9c9e40bb61d7d28a1479c784607f30fb93a37dd7c70691db19
+`poetry run hostbootstrap run --project-root demo test run all` reporting `10/10 passed`
+through the native Lima/aarch64 universal `linux-cpu` realization, followed by terminal ownership,
+Production-data preservation, ambient-state, and source-digest audits ; pass ;
+covers 82fe6ef5ab04aee2488bf374f13f178cac1f0f8df0c170ee802aea243adfb042
 **Evidence covers**: `.dockerignore` `.hlint.yaml` `core/cabal.project` `core/hostbootstrap-core/app` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/src` `core/hostbootstrap-core/test` `demo/app` `demo/cabal.project` `demo/chart` `demo/docker` `demo/hostbootstrap-demo.cabal` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/src` `demo/test` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `fourmolu.yaml` `hostbootstrap` `pyproject.toml` `tests`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -3590,6 +3590,203 @@ Its dated evidence and original digest remain unchanged:
   `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
   on the x86_64 Linux gate host `matt-junction` ; pass ;
   covers 04d0e9d3f27226ba03e1546b3bc6ea9b631dd2443e18f64e965bcf4037184d8e
+
+The exact 2026-10-16 gate-evidence row is retained for the source that run exercised.
+The later formatter update does not restamp this result:
+
+- 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
+AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, Python 3.14.7,
+with Ubuntu 24.04.5 LTS/WSL2 6.18.33.2, 6 CPUs, 10 GiB memory and 80 GiB VHD ;
+`cabal build all` and `cabal test all --test-options=--hide-successes` from `core/`,
+`cabal build all --builddir=.build/host-static` and
+`cabal test all --builddir=.build/host-static --test-options=--hide-successes` and
+`cabal test hostbootstrap-demo-test --builddir=.build/host-static --test-show-details=direct --test-options=--hide-successes`
+from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the root, plus repository-bootstrapper `poetry run hostbootstrap run --project-root demo project init`,
+`poetry run hostbootstrap run --project-root demo project up`,
+`poetry run hostbootstrap run --project-root demo project down`,
+`poetry run hostbootstrap run --project-root demo project destroy`,
+`poetry run hostbootstrap run --project-root demo test init`, and
+`poetry run hostbootstrap run --project-root demo test run all` (`10/10 passed`, exit 0),
+followed by the terminal ownership/WSL wall audit ; pass ;
+covers 25747980e634fb9c9e40bb61d7d28a1479c784607f30fb93a37dd7c70691db19
+
+#### Remaining Work
+
+None.
+
+### Sprint 24.49a: Meet the compatible Haskell formatter contract [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/DocValidatorSpec.hs`,
+`core/hostbootstrap-core/test/TeardownSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/languages/haskell.md`, `documents/engineering/testing.md`
+
+#### Objective
+
+Let the base-publication source preflight pass the compatible formatter without changing runtime
+behavior. This sprint owns three production source modules and their affected specs.
+
+#### Deliverables
+
+- Apply Fourmolu 0.19.0.1 import ordering and indentation to the affected core source and specs.
+- Express the demo chart values through local `valueLines`, preserving the exact generated text and
+  satisfying both Fourmolu 0.19.0.1 and 0.21.
+- Validate the source-only change with the host static gate; Sprint 24.50 separately owns live confirmation.
+
+#### Validation
+
+On 2026-10-16, the canonical publication preflight passes all formatter roots with Fourmolu 0.19.0.1
+and all linter roots with HLint 3.10; the demo source/app roots also pass Fourmolu 0.21. The native
+macOS core build and complete demo workspace build/test pass, including 159/159 demo cases in
+5.51 seconds and its core component. After the source edits settle,
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` exits 0 with
+2,552/2,552 in 453.84 seconds plus the provider-live component's declared no-request result.
+`poetry run python -m hostbootstrap.check_code` passes, and
+`poetry run python -m hostbootstrap.test_all` passes 251/251 in 1.89 seconds. The existing governed
+Haskell style and testing pages describe this policy accurately and need no contract change.
+
+#### Remaining Work
+
+None.
+
+### Sprint 24.49b: Scope extension pragmas to the branches that use them [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Posix.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Row.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/languages/haskell.md`, `documents/engineering/testing.md`
+
+#### Objective
+
+Keep the Windows refusal branches' required language extensions while allowing the POSIX lint
+preflight to reject unused pragmas. This sprint owns two production source modules.
+
+#### Deliverables
+
+- Guard `EmptyCase` in the POSIX ownership module with the existing Windows CPP condition, retaining
+  the extension required by its Windows empty cases.
+- Guard `OverloadedStrings` in the ownership-row selector with the Windows condition that uses it.
+- Validate the source-only change with the host static gate; native Windows confirmation remains
+  owned by Phases 27 and 28, and Sprint 24.50 separately owns the live worked-demo confirmation.
+
+#### Validation
+
+On 2026-10-16, both modules pass focused Fourmolu 0.19.0.1 and HLint 3.10 checks. The finalized
+pragmas compile in the native macOS core build and complete demo workspace build/test; its core
+component and 159/159 demo cases pass. The subsequent native
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` exits 0 with
+2,552/2,552 in 453.84 seconds plus the provider-live component's declared no-request result.
+Both Python host-static commands pass, with 251/251 tests in 1.89 seconds. The same current source
+also passes the complete arm64 Linux static gate recorded in Phase 28. These are POSIX-host
+confirmations; the reopened Windows acceptance retains its own required native run. The governed
+style and testing contracts remain accurate.
+
+#### Remaining Work
+
+None.
+
+### Sprint 24.50: Revalidate the worked demo after source formatting [Done]
+
+**Status**: Done
+**Implementation**: none — this sprint records a run
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
+
+#### Objective
+
+Re-establish this phase's complete gate after the routine formatter and conditional-pragma changes
+owned by Sprints 24.49a and 24.49b, preserving the architecture and runtime contract.
+
+#### Deliverables
+
+- The complete host static gate, core build, demo build, and focused demo suite pass against the formatted tree.
+- Production init, up, down, and destroy pass through a supported universal `linux-cpu` realization,
+  followed by the complete Harness matrix reporting `10/10 passed`.
+- Terminal ownership, Production-data preservation, and ambient-state restoration are audited, and
+  dated gate evidence records every declared leg and a fresh measurement over this phase's evidence paths.
+
+#### Validation
+
+On 2026-10-16 the complete declared gate passes on `MacBookPro`, native arm64 macOS 26.6.2
+(build 25G83), Apple M1 Max, 64 GiB memory, with the toolchain and commands in the header row.
+The phase was reopened before the covered source edits; Sprint 24.49 retains its preceding Windows
+pass, original source scope, and digest. The current 29-root, 862-file scope measures
+`82fe6ef5ab04aee2488bf374f13f178cac1f0f8df0c170ee802aea243adfb042` before and after the live run.
+
+The compatible publication preflight passes every Fourmolu 0.19.0.1 and HLint 3.10 root; focused
+checks also pass both finalized Windows-only pragma guards. The demo source/app roots additionally
+pass Fourmolu 0.21. The core build and full demo workspace build/test pass, including 159/159 demo
+cases in 5.51 seconds and its core component. The separately declared demo test target passes
+159/159 in 5.45 seconds. A final native `cabal test all` refresh against the settled source exits 0
+with 2,552/2,552 in 453.84 seconds and the provider-live component's declared no-request
+`Unsupported` result. Both Python host-static commands pass; the final runner passes 251/251 in
+1.89 seconds. A separate coverage run passes 251/251 in 1.65 seconds with 100% over 1,413 statements.
+`poetry run hostbootstrap doctor` reports `apple-silicon (arm64)` and passes its prerequisites.
+
+The canonical CPU/arm64 base publication exits 0 at 15:14 UTC after source preflight, native build,
+local-image consumer smoke, publication, explicit pull, and published-image consumer smoke.
+Phase 23 records the dated publication. Production and all four Harness guests explicitly pull
+`docker.io/tuee22/hostbootstrap@sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`.
+The derived-image bootstrap verifies the exported runtime, configuration, public keys, and web bundle
+before descent. The observed Lima guest is Ubuntu 24.04.4 LTS, aarch64 Linux 6.8.0-117-generic,
+with Cabal 3.16.1.0; the native `vz` realization carries 6 CPUs, 10 GiB memory, and 80 GiB disk.
+No architecture emulation or nested virtualization is used.
+
+Production init exits 0 at 14:59 UTC. Its installed executable measures
+`68c15238abe4700e7a270c1e4d5b424ee5ba3d2efd4fb0ffe6f5283460ee5abf` and its generated config
+`6d5fdb277fbf7a775689f22686c987c5efa923a4611ce7b418d9b4ec9ca06990`.
+Production up runs approximately 15:15–15:48 UTC and exits 0 with the web service and host daemon
+Ready; the exposed web root independently returns HTTP 200. Its guest machine identity is
+`b9fe9529e3fe44499db3586fab5ea88a`, and its derived image is
+`sha256:d7b5986a56cbf99bc8b098ebefebe514070e0f458300e669b37168253d68d60b`.
+Down exits 0 at 15:48 UTC. Destroy exits 0 at 15:49 UTC after restarting the stopped VM to release
+retained children and deleting it. The read-only audit observes Production lease Closed epoch 3/
+version 5, profile Consumed epoch 1/version 2, reverse-root Terminal Destroy version 6, and journal
+Closed at transaction sequence 22/version 2. An initial audit-decoder assertion is resolved by
+unwrapping the journal's nested transaction envelope; no stored state or source changes.
+
+After verifying the generated Production config's regular-file identity and exact digest, only that
+sibling config is removed through the prescribed operator step. Test init exits 0 and writes the
+operator test config, measuring `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The complete matrix runs approximately 15:51–17:59 UTC (about 129 minutes), exits 0, and reports
+`10/10 passed`. Each variant passes `pristine-bootstrap`, `web-build`, `e2e-tabs`,
+`registry-persistence`, and `durable-readback`. The engine performs four fresh Lima bring-ups and
+four terminal destroys, including one same-run recreation per variant. A separate read-only observer
+captures these identities before automatic teardown and exits 0:
+
+| Generation | Variant / run | Guest machine identity | Derived image SHA-256 |
+|---|---|---|---|
+| 1 | hello-world / `run-2b855a179ead0` | `90d244c12ff24ff496ad9419957f8b9f` | `183b4a3cf451d60c2b8e40be2ccd182c97e057e1ffdc1089740ffa9d5a36e03b` |
+| 2 | hello-world / `run-2b855a179ead0` | `34a3b8414d6b4ab29821357252960c62` | `84ffdb54b49064ce44acc6f2e3a9361b3cdf441c9e3300ec4109d94939a4c1b8` |
+| 3 | hello-universe / `run-2bbd549fc29c0` | `8d94d8f28325443ea634cc02b36dc305` | `ec32ccc193e55ca8f8a28308a3dc3a84c78eaf345b24523098c8a5006fbc798c` |
+| 4 | hello-universe / `run-2bbd549fc29c0` | `f0b143a362b8495c8a40ad431fde4408` | `bb88b4bfbcfce681ff1df55d9f5e7eabcda5e493e7bfc75975070d19d9487767` |
+
+The 18:00 UTC read-only terminal audit passes without discrepancies. Both Harness leases are
+Closed at version 6, epochs 7 and 11; profiles are Available at version 3, epochs 6 and 10,
+with forward lease version 4. Production closure records remain exactly unchanged. No ephemeral
+mode/config/data-root ownership record, live demo daemon/worker, daemon protected owner, or
+PID/ready/shutdown/output witness remains. Lima is empty, the generated Production sibling config
+is absent, the operator test config is unchanged, and `.test_data` exists and is empty.
+
+The complete retained Production `.data` tree matches its post-Production fingerprint exactly:
+`4b1bb49a369f2ce3680822979fdbe2c1994b9a5e29763e6ab95fd11a5d0504b8`, 39 entries
+(15 directories and 24 regular files), 10,508 file bytes, no symlinks, and unchanged root device
+16777230/inode 470616174/mode 0755. Descriptor-relative no-follow streaming verifies the full tree.
+The installed binary bytes/identity and all five 32-byte mode-0600 identity-file metadata remain
+unchanged. The ambient Docker context, Colima profile listings/configuration hashes, and Docker
+credential hash match the visit's initial snapshot. Unrelated workloads are left in place; their
+container IDs are not claimed stable during concurrent external work. The separate Phase 28 static
+container remains temporarily for final documentation validation and its own cleanup.
+
+The runbook now states the combined pristine-visit Production-to-Harness sequence and the separate
+native direct-Colima leg. No runtime contract changes. The unchanged-source Apple matrix also supplies
+Phase 25's matrix leg; that phase separately owns Metal/direct-Colima acceptance and its 845-file digest.
 
 #### Remaining Work
 

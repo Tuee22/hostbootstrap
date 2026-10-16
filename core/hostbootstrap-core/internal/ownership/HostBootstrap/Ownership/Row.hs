@@ -1,5 +1,7 @@
 {-# LANGUAGE CPP #-}
+#if defined(mingw32_HOST_OS)
 {-# LANGUAGE OverloadedStrings #-}
+#endif
 
 {- | Which ownership row this host runs.
 

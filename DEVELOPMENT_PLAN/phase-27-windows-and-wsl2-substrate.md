@@ -1,18 +1,12 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting a complete pass of the configured matrix on a native Windows host, followed by the
 terminal ownership and WSL wall audit
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
-AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090 driver 617.42, CUDA 13.3, WSL 2.7.10.0,
-GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
-`poetry run hostbootstrap run --project-root demo test run all`, launched through the WMI durable
-runner, followed by the terminal ownership and WSL wall audit and `wsl.exe --shutdown` ; pass ;
-covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
@@ -822,13 +816,58 @@ After phase 24 closes and this evidence is recorded, the native documentation ch
 from `core/` passes 11/11 in 5.69 seconds. It validates status harmony, complete gate evidence,
 and the current covered-source digests. `git diff --check` passes, and changed text files retain LF.
 
+The exact 2026-10-16 gate-evidence row is retained for the source that run exercised.
+The later formatter update does not restamp this result:
+
+- 2026-10-16 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home 10.0.26300.9457,
+AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090 driver 617.42, CUDA 13.3, WSL 2.7.10.0,
+GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7 ; repository Python bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all`, launched through the WMI durable
+runner, followed by the terminal ownership and WSL wall audit and `wsl.exe --shutdown` ; pass ;
+covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
+
 #### Remaining Work
 
 None.
 
+### Sprint 27.6: Revalidate Windows acceptance after source formatting [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: windows
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Re-establish native Windows/WSL2 acceptance after shared Haskell source formatting.
+
+#### Deliverables
+
+- The repository Python bootstrapper's complete configured matrix passes on native Windows.
+- The terminal ownership and WSL wall audit confirms released run state and restored ambient state.
+- Dated gate evidence records the actual native run and a fresh measurement over this phase's evidence paths.
+
+#### Validation
+
+On 2026-10-16, the base-publication quality preflight selects compatible Fourmolu 0.19.0.1 and
+HLint 3.10 for minimal source corrections. These include formatter findings in shared sources and
+specs, a demo `valueLines` spelling accepted by Fourmolu 0.19.0.1 and 0.21, Windows-only guards for the
+`EmptyCase` and `OverloadedStrings` pragmas used by those branches. This phase was
+reopened before those covered inputs changed. No Windows run against the changed tree is claimed.
+Sprint 27.5 preserves the complete preceding pass, terminal audit, and original 845-file source scope
+and digest.
+
+#### Remaining Work
+
+On native Windows, run the repository Python bootstrapper's
+`poetry run hostbootstrap run --project-root demo test run all` to a complete configured-matrix pass,
+then perform the terminal ownership and WSL wall audit. Record the dated native host/toolchain,
+actual command, matrix and audit results, and freshly measured covers digest after the gate passes.
+
 ## Remaining Work
 
-None.
+Sprint 27.6 owns the complete native Windows matrix, terminal ownership and WSL wall audit,
+and fresh source evidence after shared source formatting.
 
 ## Documentation Requirements
 

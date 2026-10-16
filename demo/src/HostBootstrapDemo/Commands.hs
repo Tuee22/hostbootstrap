@@ -2428,25 +2428,25 @@ declaredChartStep cfg frame =
 
 chartValues :: ProjectConfig configScope -> BS.ByteString
 chartValues cfg =
-    TextEncoding.encodeUtf8 $
-        T.unlines $
-            [ "image:"
-            , "  identity: \"hostbootstrap-demo:local\""
-            , "haReplicas: " <> T.pack (show (haReplicas (deploy cfg)))
-            , "service:"
-            , "  currentFrame: \"" <> serviceFrame <> "\""
-            , "  configHash: \"" <> projectConfigSnapshotHash (configMapMountedText serviceConfig) <> "\""
-            , "  port: " <> T.pack (show publicPort)
-            , "  nodePort: 30080"
-            , "  accelerator:"
-            , "    type: " <> T.pack (ingressServiceType ingress)
-            , "    port: " <> T.pack (show (ingressServicePort ingress))
-            , "    targetPort: " <> T.pack (show (ingressServicePort ingress))
-            ]
-                <> maybe [] (\nodePort -> ["    nodePort: " <> T.pack (show nodePort)]) (ingressNodePort ingress)
-                <> ["serviceConfig: |"]
-                <> map ("  " <>) (T.lines serviceConfig)
+    TextEncoding.encodeUtf8 (T.unlines valueLines)
   where
+    valueLines =
+        [ "image:"
+        , "  identity: \"hostbootstrap-demo:local\""
+        , "haReplicas: " <> T.pack (show (haReplicas (deploy cfg)))
+        , "service:"
+        , "  currentFrame: \"" <> serviceFrame <> "\""
+        , "  configHash: \"" <> projectConfigSnapshotHash (configMapMountedText serviceConfig) <> "\""
+        , "  port: " <> T.pack (show publicPort)
+        , "  nodePort: 30080"
+        , "  accelerator:"
+        , "    type: " <> T.pack (ingressServiceType ingress)
+        , "    port: " <> T.pack (show (ingressServicePort ingress))
+        , "    targetPort: " <> T.pack (show (ingressServicePort ingress))
+        ]
+            <> maybe [] (\nodePort -> ["    nodePort: " <> T.pack (show nodePort)]) (ingressNodePort ingress)
+            <> ["serviceConfig: |"]
+            <> map ("  " <>) (T.lines serviceConfig)
     rootContext = context cfg
     (serviceConfig, serviceFrame) = renderServiceConfigForContext cfg rootContext
     WebServiceConfig publicPortValue acceleratorPortValue = either (error . ("chart values: " <>)) id (validatedWebServiceConfigForContext cfg rootContext)

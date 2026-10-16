@@ -10,14 +10,14 @@ import HostBootstrap.DocValidator (
     checkAcceptanceTerminal,
     checkArchitectureDrift,
     checkEntryDocAgreement,
+    checkGateEvidence,
     checkGateEvidenceLegs,
     checkIdentifierResolution,
+    checkImplementationPaths,
     checkLinkAnchors,
     checkPhaseHeaderFields,
-    checkRootDocStatus,
-    checkGateEvidence,
-    checkImplementationPaths,
     checkPhaseOrdering,
+    checkRootDocStatus,
     checkSubstrateBudget,
     findRepoRoot,
     renderViolation,
@@ -382,7 +382,7 @@ identifierCase = withSystemTempDirectory "hb-identifier" $ \root -> do
     -- A page naming only things that exist, plus one allowlisted abbreviation.
     writeUtf8
         (root </> "documents" </> "architecture" </> "clean.md")
-        (unlines
+        ( unlines
             [ "# Clean"
             , ""
             , "`RealType` is produced by `realProducer`, and `HostBootstrap.Example` owns both."
@@ -408,7 +408,7 @@ identifierCase = withSystemTempDirectory "hb-identifier" $ \root -> do
         ("the refusal names the allowlist as the reviewed escape: " ++ unlines messages)
         (any ("identifierAllowlist" `isInfixOf`) messages)
 
-{- | A root document that repeats the table's status is compared against it. -}
+-- | A root document that repeats the table's status is compared against it.
 rootStatusCase :: IO ()
 rootStatusCase = withSystemTempDirectory "hb-root-status" $ \root -> do
     createDirectoryIfMissing True (root </> "DEVELOPMENT_PLAN")
@@ -439,7 +439,7 @@ rootStatusCase = withSystemTempDirectory "hb-root-status" $ \root -> do
         ("the refusal names both statuses: " ++ unlines messages)
         (any (\m -> "Active" `isInfixOf` m && "Done" `isInfixOf` m) messages)
 
-{- | A one-sided edit to either entry document is a violation. -}
+-- | A one-sided edit to either entry document is a violation.
 entryDocCase :: IO ()
 entryDocCase = withSystemTempDirectory "hb-entry-docs" $ \root -> do
     writeUtf8 (root </> "AGENTS.md") (unlines ["# Agent Instructions", "", "An agent may read AGENTS.md.", "Agents must not commit."])
@@ -451,7 +451,7 @@ entryDocCase = withSystemTempDirectory "hb-entry-docs" $ \root -> do
         ("the one-sided edit is reported: " ++ unlines messages)
         (any ("line 4" `isInfixOf`) messages)
 
-{- | A fragment that names no heading is a dead link even though its path resolves. -}
+-- | A fragment that names no heading is a dead link even though its path resolves.
 anchorCase :: IO ()
 anchorCase = withSystemTempDirectory "hb-anchors" $ \root -> do
     createDirectoryIfMissing True (root </> "documents")
@@ -465,7 +465,7 @@ anchorCase = withSystemTempDirectory "hb-anchors" $ \root -> do
         ("the refusal names the fragment: " ++ unlines messages)
         (any ("renamed-away" `isInfixOf`) messages)
 
-{- | An invented phase-header field is a violation even when it reads plausibly. -}
+-- | An invented phase-header field is a violation even when it reads plausibly.
 headerFieldCase :: IO ()
 headerFieldCase = withSystemTempDirectory "hb-header-fields" $ \root -> do
     createDirectoryIfMissing True (root </> "DEVELOPMENT_PLAN")
@@ -493,7 +493,7 @@ headerFieldCase = withSystemTempDirectory "hb-header-fields" $ \root -> do
         ("the refusal names the invented field: " ++ unlines messages)
         (any ("Current sprint" `isInfixOf`) messages)
 
-{- | A composed gate with half its legs recorded is a violation. -}
+-- | A composed gate with half its legs recorded is a violation.
 gateLegCase :: IO ()
 gateLegCase = withSystemTempDirectory "hb-gate-legs" $ \root -> do
     createDirectoryIfMissing True (root </> "DEVELOPMENT_PLAN")

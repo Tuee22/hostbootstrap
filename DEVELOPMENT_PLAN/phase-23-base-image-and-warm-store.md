@@ -13,6 +13,15 @@ Python 3.12.3 ; repository-local Python-bootstrapper `poetry run hostbootstrap b
 `basecontainer-cpu-amd64@sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8` and
 `basecontainer-cuda-amd64@sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` ;
 pass ; covers 01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0
+**Gate evidence**: 2026-10-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, Colima 0.10.3, Docker client 29.3.0 / engine 29.2.1, GHC 9.12.4,
+Cabal 3.16.1.0, Fourmolu 0.19.0.1, HLint 3.10, Poetry 2.3.2, Python 3.14.3 ;
+repository Python-bootstrapper `poetry run hostbootstrap base build-and-push --flavor cpu --arch arm64`,
+including complete source preflight, native build, local-image real-consumer smoke, rolling-tag
+publication, explicit pull, and pulled-image real-consumer smoke,
+`docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` pulled as
+`docker.io/tuee22/hostbootstrap@sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf` ;
+pass ; covers 01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0
 **Evidence covers**: `docker/basecontainer.Dockerfile` `docker/compatibility-smoke.Dockerfile`
 `core/warm-deps` `hostbootstrap/base_image.py` `hostbootstrap/cli.py`
 `hostbootstrap/docker_ops.py`
@@ -455,6 +464,15 @@ for the host and for the VM guest. § FF is amended to say so.
 The phase's own gate: the full publication pipeline for both flavors. The Dockerfile's own
 `grep -Fx` fails the build in place if GHCup hands back another version. The published image is then
 observed to carry the pinned compiler and a store keyed to it.
+
+On 2026-10-16, the native Apple visit republishes the CPU/arm64 rolling tag as the prerequisite for
+Sprint 25.7. The canonical command above exits 0 at 15:14 UTC after its complete source preflight,
+native Docker build, local-image consumer smoke, push, explicit pull, and published-image consumer
+smoke. The pulled image is Linux/arm64, supplies GHC 9.12.4 and Cabal 3.16.1.0, and selects
+Fourmolu 0.19.0.1 and HLint 3.10. Its warm store uses the image's `ghc-9.12.4-bc61` ABI directory.
+Only `basecontainer-cpu-arm64` is republished during this visit; the historical amd64 CPU/CUDA
+publication above is retained. The unchanged 13-file publication scope independently remeasures to
+`01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0`.
 
 #### Remaining Work
 
