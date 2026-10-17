@@ -830,7 +830,7 @@ covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
 
 None.
 
-### Sprint 27.6: Revalidate Windows acceptance after source formatting [Active]
+### Sprint 27.6: Revalidate Windows acceptance against shared source [Active]
 
 **Status**: Active
 **Implementation**: none — this sprint records a run
@@ -839,7 +839,8 @@ None.
 
 #### Objective
 
-Re-establish native Windows/WSL2 acceptance after shared Haskell source formatting.
+Re-establish native Windows/WSL2 acceptance after shared Haskell source formatting and assertion-frame
+durable-root projection.
 
 #### Deliverables
 
@@ -857,6 +858,11 @@ reopened before those covered inputs changed. No Windows run against the changed
 Sprint 27.5 preserves the complete preceding pass, terminal audit, and original 845-file source scope
 and digest.
 
+On 2026-10-16, the shared assertion-frame durable-root adoption changes covered demo source.
+The 25-root, 845-file scope now measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
+This measurement establishes no native Windows gate pass.
+
 #### Remaining Work
 
 On native Windows, run the repository Python bootstrapper's
@@ -867,7 +873,7 @@ actual command, matrix and audit results, and freshly measured covers digest aft
 ## Remaining Work
 
 Sprint 27.6 owns the complete native Windows matrix, terminal ownership and WSL wall audit,
-and fresh source evidence after shared source formatting.
+and fresh source evidence after shared formatting and assertion-frame durable-root projection.
 
 ## Documentation Requirements
 

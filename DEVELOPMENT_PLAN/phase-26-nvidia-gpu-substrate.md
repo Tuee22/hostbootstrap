@@ -695,22 +695,77 @@ no native NVIDIA acceptance. This phase stays Active; no current-tree NVIDIA pas
 evidence is claimed. The 845-file source scope still measures
 `8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582` after the Apple runs.
 
+On 2026-10-16, native NVIDIA revalidation begins on `matt-caledon-desktop`, x86_64 Ubuntu
+24.04.5 LTS, Linux 7.0.0-38-generic, with an RTX 3090 on driver 595.99.02 and Docker 29.9.0.
+The repository Python bootstrapper's `doctor` reports `substrate: linux-gpu (amd64)`.
+The pristine demo has no `.build`, `.hostbootstrap`, `.test_data`, or `.data`; Docker has no
+containers. The stopped Incus VM `hostbootstrap-demo-vm`, created on 2026-06-22 with UUID
+`a62c4700-1bd7-45a1-9497-4b165a60ee91`, predates this run and is preserved as ambient state;
+the Direct lane creates no VM. The before-run measurement over all 25 roots and 845 files matches
+`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582`. The Poetry environment
+is resolved and installed locally. The first `test init` encounters dependency-resolution refusal on the
+host's selected GHC 9.14.1; selecting the required installed GHC 9.12.4 lets the complete cold
+build and `test init` pass without source changes. The test config measures
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+After the corrected native static checks finish, the original metal GHC 9.14.1 default is restored
+at 21:05 UTC; the independent CPU gate host retains its own GHC 9.12.4 selection.
+The published CUDA/amd64 tag is explicitly pulled at
+`sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a`.
+The complete repository-bootstrapper `test run all` starts at 19:14:01 UTC with the direct
+placement watcher already running. Its outcome and diagnostics are recorded below.
+
+The complete matrix finishes at 20:05:51.750 UTC, exit 1, after 3,110.439 seconds
+(51 minutes 50.439 seconds), reporting `test report: 8/10 passed`. Both `hello-world`
+(`run-27b70329098`) and `hello-universe` (`run-3e27e69fa8e`) pass `pristine-bootstrap`,
+`web-build`, `e2e-tabs`, and `registry-persistence`. Both `durable-readback` rows fail while
+reading `/var/tmp/hostbootstrap-demo-data/web/marker`; that VM-only alias is absent on the
+Direct host. Their diagnostics show the marker in the node's actual bind of each exact host run
+root. At 20:05:39.392 UTC, independent read-only observation also confirms the second run's
+regular nonsymlink host marker contains `hostbootstrap-destroy-up-v1`, while the alias remains absent.
+The assertion therefore skips both same-run restarts; this run supplies no acceptance pass.
+
+Both generated images pass in-image quality checks, runtime export verification, Kind loading,
+and registry delivery. Their exact identities and observed accelerator placement are:
+
+| Variant | Local derived image ID | Pushed manifest digest | Running/Ready accelerator pod, observed UTC |
+|---|---|---|---|
+| `hello-world` | `sha256:9ef51549c0503e5ee438e642ebdc26c7460a814cedd48ef7d02bfcf4340bbe10` | `sha256:931627e11960b1515d54afc61dd1d87aacdd3b3274f56eb74c1a30502c9866af` | `accelerator-daemon-d4cc67685-x4zqt`, 19:39:25 |
+| `hello-universe` | `sha256:e51202b4f3020c568c3d7f33fa2a68195fe983b55043d70f0597e786121eaad0` | `sha256:b9300ef772530fc29e4101aa560f383ed9e3a61b599779c2d1c448fcece99020` | `accelerator-daemon-5cdcc8bf8d-qth7j`, 20:05:21 |
+
+Each pod selects RuntimeClass `nvidia`, requests and limits `nvidia.com/gpu: 1`, and runs on
+its exact run's worker advertising one allocatable GPU. The image supplies GHC 9.12.4,
+Cabal 3.16.1.0, Fourmolu 0.19.0.1, HLint 3.10, Kind 0.33.0, kubectl 1.37.0, and Helm 4.3.0.
+The authored 845-file scope still measures the run's original
+`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582` during terminal teardown;
+source changes begin only after the failed matrix exits.
+
+The independent 20:06:52 UTC physical/ownership audit finds no Docker container, project mode,
+generated-config ownership, or data-root ownership record. Both leases encode `closed` at record
+version 4 and epochs 2/4. Both profiles retain their expected `consumed` state at version 2,
+epochs 1/3, lease-version field 1: the failed-before-restart matrix has no later profile initialization.
+The generated project config is absent, `.test_data` exists empty, and the operator test config
+retains its exact hash. Only the ambient Xorg and GNOME GPU processes remain. The pre-existing
+stopped Incus VM retains its UUID; the separately owned CPU gate VM is running for the worked-demo
+validation. The read-only watchers stop cleanly at 20:07:01 UTC.
+
+Sprint 24.38 owns the assertion-frame path projection, and both affected completed phases are
+reopened before its source changes. The corrected 25-root, 845-file scope measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
+No native NVIDIA gate pass against that corrected tree is claimed.
+
 #### Remaining Work
 
-Run the complete declared gate on native Linux/NVIDIA hardware against the corrected shared
-observer and minimal source corrections. The expanded 845-file scope currently measures
-`8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582`. Record observed accelerator
-placement directly: a Running accelerator pod uses `runtimeClassName: nvidia`, requests and limits
-one `nvidia.com/gpu`, and the node advertises allocatable GPU capacity. Record the terminal
-ownership and ambient-state audits, actual commands, native host/GPU/toolchain, run and image
-identities, and fresh before/after source measurements only after the complete matrix reports
-`10/10 passed`.
+Run the complete declared native Linux/NVIDIA gate against the corrected assertion-frame durable-root
+projection. The 25-root, 845-file scope measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
+Record both same-run restarts, directly observed accelerator placement, the terminal ownership and
+ambient-state audits, actual commands, host/toolchain, run/image identities, and fresh source evidence
+only after the complete matrix reports `10/10 passed`.
 
 ## Remaining Work
 
-Sprint 26.10 owns complete native Linux/NVIDIA revalidation of the corrected shared terminal
-assertions and minimal source corrections, with placement observations, terminal audit, and fresh
-source evidence.
+Sprint 26.10 owns complete native Linux/NVIDIA revalidation of the assertion-frame durable-root
+projection, both same-run restarts, placement observations, terminal audit, and fresh source evidence.
 
 ## Documentation Requirements
 

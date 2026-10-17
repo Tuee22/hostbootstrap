@@ -286,7 +286,9 @@ Cluster teardown omits the configured data path from its removal set. The `durab
 declares `AssertAcrossRestart`: its `BeforeRestart` callback writes and reads the marker, the Harness engine
 performs a settled reverse, rotates to a fresh protected invocation, rebinds the exact retained plan, and
 forwards again, then its `AfterRestart` callback reads the same bytes. Project-owned assertion code receives
-only the phase and has no lifecycle authority. See
+only the phase and has no lifecycle authority. Each phase reads the marker from the exact profile root
+projected into its assertion frame: the canonical host root on Direct Linux, or that root's provider share
+projection inside the VM guest. The run identity and selected provider determine that path. See
 [durable state](../architecture/durable_state.md).
 
 ## Down and Destroy

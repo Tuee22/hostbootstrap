@@ -1,19 +1,11 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on an Apple Silicon host, plus a focused live exact-plan direct-Colima adapter lane
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
-Apple M1 Max, 64 GiB memory, Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0,
-Python 3.14.3, Poetry 2.3.2 ; repository Python-bootstrapper
-`poetry run hostbootstrap run --project-root demo test run all` from the repository root reporting
-`10/10 passed`, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
-from `core/` reporting `33/33 passed`, followed by terminal ownership, Production-data preservation,
-ambient-state, and source-digest audits ; pass ;
-covers 8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
@@ -479,17 +471,17 @@ of the evidence scope; these dated Apple results remain intact.
 
 None. Both live lanes, the terminal audit, and the matching evidence measurement are complete.
 
-### Sprint 25.7: Revalidate the corrected teardown against the expanded live scope [Done]
+### Sprint 25.7: Revalidate the corrected teardown against the expanded live scope [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: apple-silicon
 **Docs to update**: `documents/engineering/testing.md`
 
 #### Objective
 
-Re-establish Apple Silicon acceptance after Sprint 24.48 corrects the shared terminal observer, with
-both native gate legs measured against the full authored inputs they consume.
+Re-establish Apple Silicon acceptance for the shared terminal observer and provider-projected durable
+readback, with both native gate legs measured against the full authored inputs they consume.
 
 #### Deliverables
 
@@ -500,6 +492,17 @@ both native gate legs measured against the full authored inputs they consume.
   settling the Dockerfile/publication drift recorded in Sprint 25.6; its pulled digest is recorded.
 
 #### Validation
+
+The preceding native Apple run retains its actual commands and source provenance:
+
+-  2026-10-16 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, 64 GiB memory, Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0,
+Python 3.14.3, Poetry 2.3.2 ; repository Python-bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all` from the repository root reporting
+`10/10 passed`, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
+from `core/` reporting `33/33 passed`, followed by terminal ownership, Production-data preservation,
+ambient-state, and source-digest audits ; pass ;
+covers 8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582
 
 **2026-10-16 — passed.** Both declared legs run on `MacBookPro`, native arm64 macOS 26.6.2
 (build 25G83), Apple M1 Max with 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3,
@@ -592,13 +595,22 @@ Its dated result and original digest are preserved without restamping:
   from the repository root, plus `HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
   from `core/` ; pass ; covers d0f43dfbf6dc47459720e424ceb7ca73855905990313b028c10cc47c9bdd3ca2
 
+On 2026-10-16, the shared assertion-frame durable-root adoption expires the preceding Apple
+completion evidence. The 25-root, 845-file source now measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
+This is a source measurement, with no new native Apple gate pass. The native Linux CPU and
+NVIDIA observations cannot supply either native Apple gate leg.
+
 #### Remaining Work
 
-None.
+Run both declared native Apple gate legs after the shared assertion-frame durable-root adoption,
+with terminal ownership and ambient-state audits and a fresh measurement over all evidence paths.
+The available native Linux/NVIDIA host cannot supply Apple/Metal or native direct-Colima evidence.
 
 ## Remaining Work
 
-None.
+Sprint 25.7 owns complete native Apple matrix and direct-Colima revalidation, terminal audits,
+and fresh source evidence after the shared assertion-frame durable-root adoption.
 
 ## Documentation Requirements
 

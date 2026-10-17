@@ -70,6 +70,7 @@ import HostBootstrapDemo.Commands (
     clusterReadinessProbeResult,
     containerPlan,
     demoArtifacts,
+    demoAssertionDurableRoot,
     demoBaseImageFor,
     demoChainFor,
     demoDirectParentJoin,
@@ -1043,6 +1044,29 @@ tests =
             nvidiaAllocatableProbeResult (Right (ExitFailure 1, "", "API unavailable"))
                 @?= Unavailable "kubectl exited 1: API unavailable"
             nvidiaAllocatableProbeResult (Left "kubectl missing") @?= Unavailable "kubectl missing"
+        , testCase "assertions retain the exact canonical durable profile on Direct, Lima, and Incus" $
+            withCommandsTempDirectory $ \root -> do
+                let projectDirectory = root </> "demo project"
+                createDirectory projectDirectory
+                canonicalRoot <- canonicalizePath projectDirectory
+                forM_
+                    [Substrate LinuxGpu Amd64, Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64]
+                    ( \sub -> do
+                        demoAssertionDurableRoot sub Production canonicalRoot
+                            @?= Right (canonicalRoot </> ".data")
+                        demoAssertionDurableRoot sub (TestCase "run-123") canonicalRoot
+                            @?= Right (canonicalRoot </> ".test_data" </> "run-123")
+                        demoAssertionDurableRoot sub (TestCase "run-456") canonicalRoot
+                            @?= Right (canonicalRoot </> ".test_data" </> "run-456")
+                    )
+        , testCase "assertions project the exact Windows durable profile into WSL2" $
+            forM_ [Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64] $ \sub -> do
+                demoAssertionDurableRoot sub Production "D:\\repo\\demo project"
+                    @?= Right "/mnt/d/repo/demo project/.data"
+                demoAssertionDurableRoot sub (TestCase "run-123") "C:\\Users\\Matt\\demo project"
+                    @?= Right "/mnt/c/Users/Matt/demo project/.test_data/run-123"
+                demoAssertionDurableRoot sub (TestCase "run-456") "C:/Users/Matt/demo project"
+                    @?= Right "/mnt/c/Users/Matt/demo project/.test_data/run-456"
         , testCase "Direct durable bind selects one exact Docker-visible source for the run profile" $ do
             directContainerCandidates
                 (Right (ExitSuccess, "0123456789ab\nabcdef012345\n", ""))

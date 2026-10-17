@@ -45,6 +45,7 @@ module HostBootstrapDemo.Commands (
     demoForwardChildPlan,
     containerPlan,
     demoTestFrameContext,
+    demoAssertionDurableRoot,
     demoProviderReverse,
     demoArtifacts,
     demoCheckCode,
@@ -3522,14 +3523,13 @@ withWsl2SwapStorage r = do
     let store = gibibytes (budgetStorageBytes b) + gibibytes (budgetMemoryBytes b)
     mkResources (cpu r) (quantityText (memory r)) (T.pack (show store ++ "GiB"))
 
-{- | A case's live environment: the resolved host config, the **VM frame** lift
-context (so every assertion reaches the live persistent stack @project up@ brought
-up by folding its probe into the frame where the NodePort is published — the VM —
-correct on both Lima and Incus via the self-reference lift, § U), and the active
-variant's expected @message@ (the worked-demo phase), which the polymorphic Playwright
-asserts the SPA renders.
+{- | A case's live environment: the resolved host config, the assertion-frame
+lift context where the NodePort is published, the active variant's expected
+@message@, its cluster node, and its exact durable root projected into that
+same assertion frame. Direct assertions run on the host; VM-backed assertions
+run in the provider guest (§ U).
 -}
-data CaseEnv = CaseEnv AssertionPhase HostConfig LiftContext T.Text String
+data CaseEnv = CaseEnv AssertionPhase HostConfig LiftContext T.Text String FilePath
 
 {- | The demo's assertion-only test suite (development_plan_standards § W, § Z).
 
@@ -3686,6 +3686,16 @@ directDurableMountSource profile destinationPath result = case result of
         [] -> Left "direct nvkind durable bind: the admitted child destination is absent"
         _ -> Left "direct nvkind durable bind: the admitted child destination is duplicated"
 
+{- | Project the admitted host root's exact profile into the assertion frame.
+The provider's share projection retains native paths for Direct, Lima, and
+Incus, and maps Windows drive paths into the WSL2 guest.
+-}
+demoAssertionDurableRoot :: Substrate -> ClusterProfile -> FilePath -> Either String FilePath
+demoAssertionDurableRoot sub profile root =
+    hpsGuestPath <$> first show (planProviderShare provider (profileDataPath profile root))
+  where
+    provider = selectProviderKind (providerKindForSubstrate sub) demoVMHandles
+
 {- | Resolve the assertion environment after the command-owned exact forward
 interpreter has brought this Harness variant up.  The variant identity is
 threaded into reporting by the engine; the expected served message comes from
@@ -3698,7 +3708,13 @@ demoOpenAssertions phase ident = do
     cfgPath <- siblingProjectConfigPath (T.pack demoProject)
     projectCfg <- decodeProjectConfigFile cfgPath
     let node = clusterName (containerPlan (clusterProfileOf projectCfg) (context projectCfg)) ++ "-control-plane"
-    pure (CaseEnv phase cfg (demoTestFrameContext (hcSubstrate cfg)) (message projectCfg) node)
+    durableRoot <-
+        either die pure $
+            demoAssertionDurableRoot
+                (hcSubstrate cfg)
+                (clusterProfileOf projectCfg)
+                (T.unpack (Context.sourceRoot (context projectCfg)))
+    pure (CaseEnv phase cfg (demoTestFrameContext (hcSubstrate cfg)) (message projectCfg) node durableRoot)
 
 {- | Prove the command-owned exact reverse projection left no live test stack.
 
@@ -3791,19 +3807,17 @@ verifyHarnessHostArtifacts root windowsHome = do
             Right (Just False) -> pure ()
 
 {- | The per-case assertions against the live persistent stack @project up@ brought
-up. Every case runs in the **VM frame** (the frame where the NodePort is
-published), folded there by the self-reference lift (§ U): the reachability checks
-probe via 'reachLeaf' and the Playwright e2e via a raw @bash -lc@ leaf. Because the
-frame is the VM on every provider, all three pass on both Lima and Incus without
-any provider-specific assertion code.
+up. Every case runs where the NodePort is published: the Direct host or the
+provider guest, reached through the same lift (§ U). The assertion environment
+also carries the run's durable root projected into that frame.
 -}
 demoAssert :: CaseEnv -> Case -> IO CaseResult
-demoAssert (CaseEnv phase cfg frame expectedMessage node) c = case caseIdText (caseId c) of
+demoAssert (CaseEnv phase cfg frame expectedMessage node durableRoot) c = case caseIdText (caseId c) of
     "pristine-bootstrap" -> assertReachable cfg frame node 30080 "/api/budget" "the in-cluster webservice"
     "web-build" -> assertReachable cfg frame node 30080 "/app.js" "the esbuild SPA bundle"
     "e2e-tabs" -> assertE2EInVM cfg frame node expectedMessage
     "registry-persistence" -> assertRegistrySurvivesRestart cfg frame node
-    "durable-readback" -> assertDurableReadback phase cfg frame node
+    "durable-readback" -> assertDurableReadback phase cfg frame node durableRoot
     other -> pure (Fail ("unknown demo case: " ++ T.unpack other))
 
 {- | Reachability assertion: poll the endpoint from @frame@ (the VM frame, where
@@ -3942,10 +3956,12 @@ root. The assertion remains lifecycle-free: it proves the configured case and
 leaves the later same-run destroy/recreate acceptance cycle to the harness
 engine that owns lifecycle interpretation.
 -}
-assertDurableReadback :: AssertionPhase -> HostConfig -> LiftContext -> String -> IO CaseResult
-assertDurableReadback phase cfg frame node = do
+assertDurableReadback :: AssertionPhase -> HostConfig -> LiftContext -> String -> FilePath -> IO CaseResult
+assertDurableReadback phase cfg frame node durableRoot = do
     let url = "http://" ++ node ++ ":30080/api/durable/marker"
         marker = "hostbootstrap-destroy-up-v1"
+        webRoot = durableRoot Posix.</> "web"
+        markerPath = webRoot Posix.</> "marker"
         request = case phase of
             BeforeRestart ->
                 "docker run --rm --network kind --entrypoint curl "
@@ -3963,21 +3979,21 @@ assertDurableReadback phase cfg frame node = do
                 ++ ")\" = "
                 ++ shellQuoteArg marker
                 ++ " && test \"$(cat "
-                ++ shellQuoteArg (durableDockerHostPath ++ "/web/marker")
+                ++ shellQuoteArg markerPath
                 ++ ")\" = "
                 ++ shellQuoteArg marker
         diagnostics =
             "status=$?; printf '%s\\n' 'durable-readback diagnostics:' >&2; "
-                ++ "printf 'alias-target=' >&2; readlink -f "
-                ++ shellQuoteArg durableDockerHostPath
+                ++ "printf 'durable-root=' >&2; readlink -f "
+                ++ shellQuoteArg durableRoot
                 ++ " >&2 || true; "
                 ++ "ls -ld "
-                ++ shellQuoteArg durableDockerHostPath
+                ++ shellQuoteArg durableRoot
                 ++ " "
-                ++ shellQuoteArg (durableDockerHostPath ++ "/web")
+                ++ shellQuoteArg webRoot
                 ++ " >&2 || true; "
-                ++ "printf 'alias-marker=' >&2; cat "
-                ++ shellQuoteArg (durableDockerHostPath ++ "/web/marker")
+                ++ "printf 'durable-marker=' >&2; cat "
+                ++ shellQuoteArg markerPath
                 ++ " >&2 || true; "
                 ++ "docker exec "
                 ++ shellQuoteArg node
