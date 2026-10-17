@@ -601,16 +601,71 @@ completion evidence. The 25-root, 845-file source now measures
 This is a source measurement, with no new native Apple gate pass. The native Linux CPU and
 NVIDIA observations cannot supply either native Apple gate leg.
 
+**2026-10-17 — native Apple revalidation in progress.** `MacBookPro`, arm64 macOS 26.6.2
+(build 25G83), Apple M1 Max, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.3.2, and
+repository-venv Python 3.14.3. `poetry run hostbootstrap doctor` passes. Before bootstrap,
+all four demo state roots and the Lima listing are absent/empty. Ambient Colima profiles,
+Docker context, containers/images, and configuration hashes are captured without credential
+contents. The 25-root, 845-file live scope measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`;
+the publication scope remains `01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0`.
+Explicit `docker pull docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64` returns the
+published digest `sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`.
+The existing dated build-and-push prerequisite therefore remains satisfied. Python code
+checks pass, and the supported Python runner passes 251/251 in 2.24 seconds. Native `cabal build all` passes. Plain `cabal test all` from `core/` passes
+2,552/2,552 in 640.66 seconds (810.93 seconds including component compilation).
+The opted-in native Colima command above then passes 33/33 in 57.78 seconds (64.24 seconds
+for the command), deriving isolated profile `h-5badba`, refusing the conflict, and proving
+exact profile/context/data cleanup with ambient `default` unchanged. The standalone
+`test init` passes after approximately 29 minutes of cold host-native bootstrap. Binary,
+operator test config, and five installed identity artifacts are fingerprinted for the closing
+comparison. The complete matrix starts at 16:36:49 UTC against the unchanged 845-file source
+scope. It exits 1 at 16:39:02 UTC after 133.16 seconds with **0/12 passed**. Run
+`run-3096b80fd8548` (`hello-world`) refuses the declared 80-GiB disk budget against 29 GiB
+free before provider creation. Its five cases are `BROKEN`; two additional `LEAKED?` rows report
+unsettled teardown and mode close; all five `hello-universe` cases are `REFUSED` because prior
+variant ownership is unresolved. No derived project image or accelerator computation is validated.
+
+Reverse reachability creates a default 4-CPU/4-GiB/100-GiB Lima guest after the capacity refusal.
+The guest has neither `/usr/local/bin/hostbootstrap-demo` nor the durable alias, so child teardown
+refuses and the protected mode-close attempt reports broker generation 2 versus recorded 1.
+The confirmed absent-provider reverse defect is owned by Sprint 24.46; the generation refusal
+is recorded as an observed consequence, without claiming a separately diagnosed kernel defect.
+After independently establishing that the guest was created by this exact attempt and carries
+no project binary or durable alias, `limactl stop --force hostbootstrap-demo-vm` and
+`limactl delete --force hostbootstrap-demo-vm` remove only that guest at 16:39–16:40 UTC.
+
+The operator test config and installed identities are preserved. Generated sibling config and
+`.data` are absent; `.test_data` is empty, and no accelerator daemon was launched. The protected
+store retains `lease.hostbootstrap-demo.run-3096b80fd8548` at record version 3, Bound epoch 2;
+`mode.hostbootstrap-demo` at version 2, Harness epoch 2; and the consumed profile at version 2,
+epoch 1. These records are retained for supported recovery. There is no standalone sweep-only
+Harness command; the next selected `test run` attempts recovery before allocating a new run.
+No terminal ownership pass or Apple phase closure is claimed.
+
+The read-only post-attempt audit confirms the installed binary, test config, and all five
+identity artifacts match the post-init snapshot, including SHA-256, device/inode, owner,
+mode, size, and modification/change timestamps. Both ambient Colima profile states and
+budgets, the Docker context, and profile/credential-configuration hashes match preflight.
+No Lima instance remains after the exact guest deletion at 16:40:09 UTC. Fresh nonblocking
+exclusive opens of the protected-store and run-liveness locks succeed; the retained mode is
+protected state, with no live owning process. Both live-source
+measurements remain `08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`;
+this unchanged-source observation does not convert the failed matrix into acceptance.
+
 #### Remaining Work
 
-Run both declared native Apple gate legs after the shared assertion-frame durable-root adoption,
-with terminal ownership and ambient-state audits and a fresh measurement over all evidence paths.
-The available native Linux/NVIDIA host cannot supply Apple/Metal or native direct-Colima evidence.
+Re-run both native Apple gate legs after absent-provider reverse admission, with terminal ownership,
+ambient-state audits, and fresh source evidence. The current direct-Colima leg passes against the
+unchanged source; the full matrix requires at least 80 GiB free. The failed attempt measured
+29 GiB, and available storage remains below the declared budget.
+The retained bound Harness run must settle through supported recovery before fresh admission.
 
 ## Remaining Work
 
-Sprint 25.7 owns complete native Apple matrix and direct-Colima revalidation, terminal audits,
-and fresh source evidence after the shared assertion-frame durable-root adoption.
+Sprint 25.7 owns complete native Apple matrix and direct-Colima revalidation, supported recovery
+of the retained Harness run, terminal audits, and fresh source evidence. The current matrix fails
+its 80-GiB storage precondition (29 GiB free at the attempt) and does not establish terminal ownership.
 
 ## Documentation Requirements
 

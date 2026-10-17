@@ -15,6 +15,23 @@ Poetry 1.8.2, repository-venv Python 3.12.3 ; `cabal build all` and plain `cabal
 `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
 from the repository root ; pass ;
 covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+**Gate evidence**: 2026-10-17 ; `hostbootstrap-portability-arm64-20261017`, aarch64 Ubuntu
+24.04.5 LTS container, Linux 6.8.0-100-generic, carried by `MacBookPro` through Colima,
+capped at 4 CPUs and 10 GiB memory with no swap, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
+Poetry 2.5.1 ; `cabal build all -j1` and
+`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `core/`,
+`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+from the repository root, inheriting `CABAL_DIR=/opt/cache/cabal` ; pass ;
+covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+**Gate evidence**: 2026-10-17 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.3.2,
+repository-venv Python 3.14.3 ; `cabal build all` and plain `cabal test all` from `core/`,
+`cabal build all -j1`, plain `cabal test all`, and
+`cabal test hostbootstrap-demo-test --test-show-details=direct --test-options=--hide-successes`
+from `demo/`, `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
+covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/playwright.config.ts` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
@@ -356,6 +373,60 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 - Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
 
 #### Validation
+
+**2026-10-17 — complete native macOS gate passed.** The current header row records the
+native gate host and actual commands. Core build passes; a final timed `cabal build all`
+refresh is up to date in 1.36 seconds. Plain core `cabal test all` passes 2,552/2,552 in
+640.66 seconds, taking 810.93 seconds including component compilation. Demo build passes
+in 181.78 seconds; plain demo `cabal test all` passes its full workspace in 680.75 seconds,
+including 2,552/2,552 core cases in 568.87 seconds and the complete demo component.
+The exact unfiltered focused demo command then confirms 161/161 in 5.44 seconds. Python
+code checks pass in 2.48 seconds; the supported runner passes in 4.16 seconds, with
+251/251 tests in 2.25 seconds. The six timed command components total 1,681.46 seconds;
+the separately measured focused demo suite is additional.
+
+Both workspaces run the provider-live component to its declared no-request result. The
+ordinary static core runs do not request native Colima; Sprint 25.7 separately records its
+33/33 opted-in pass. All 17 fixed coverage-manifest rows are present: POSIX ownership,
+process, and guest-alias rows exercise the Darwin kernel, while Windows-only rows assert
+their declared refusal. No cases are skipped. Independent before/after measurements agree
+over all 24 roots and 857 files at
+`1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`.
+No covered source changes during the visit. These are host-static results, alongside the
+failed live Apple capacity/cleanup attempt recorded in Sprint 25.7; they make no live
+acceptance claim. Windows static revalidation remains owed against this source.
+
+**2026-10-17 — complete arm64 Linux gate passed.** The gate host and exact commands are
+recorded in the current header row. The isolated, init-enabled container uses the published
+CPU/arm64 base `sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`,
+root-owned `/workspace`, real checkout metadata, and copied tracked/untracked nonignored
+working-tree inputs. It has no bind mounts, Docker socket, or registry credential. The
+in-project Poetry install takes 4.90 seconds and imports `/workspace/hostbootstrap`.
+
+The five-command gate runs from 16:07:42.889 to 16:32:43.633 UTC in 1,500.74 seconds:
+
+- Core build passes in 494.82 seconds; the complete core test command passes in 450.13 seconds,
+  including component compilation, with 2,552/2,552 core cases in 274.43 seconds.
+- The complete demo workspace command passes in 549.99 seconds, including 2,552/2,552 core
+  cases in 168.57 seconds and 161/161 demo cases in 1.28 seconds.
+- Python code checks pass in 2.91 seconds; the supported runner passes in 2.89 seconds,
+  including 251/251 tests in 2.02 seconds.
+
+Both provider-live components report their declared no-request `Unsupported` result, and the
+native direct-Colima lane is not requested. All 17 coverage-manifest rows retain their fixed
+case counts: 12 exercise Linux kernel behavior and five assert Windows-only refusal. No cases
+are skipped. Independent host/container measurements before and after agree over all 24 roots
+and 857 files at `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`.
+This is the Apple visit's available hardware evidence, collected while the lower Apple live
+matrix remains owed. The same visit's native macOS complete gate is recorded above; Windows static revalidation
+remains owed. The updated five-file documentation snapshot passes native `DocValidatorSpec`
+11/11 in 3.12 seconds and the arm64 Linux focused command
+`cabal test hostbootstrap-core-test -j1 --test-show-details=direct --test-options='--pattern DocValidatorSpec'`
+11/11 in 3.33 seconds (6.59 seconds wall), ending 16:56:13 UTC. The repository's actual Haskell
+`measurePathSetDigest` independently confirms the unchanged phase scope afterward. The exact owned
+container is removed at 16:56:40 UTC, and independent inspection proves it absent. Ambient Docker
+images/containers, context, and profile/credential-configuration hashes are preserved.
+`git diff --check` passes.
 
 The corrected source passes the full native x86_64 Linux gate on `matt-caledon-desktop` on
 2026-10-16, with the actual commands and toolchain in the current header row. Core build and
@@ -859,16 +930,16 @@ and final evidence-wording corrections, the native focused `DocValidatorSpec` pa
 
 #### Remaining Work
 
-Run the complete declared gate against the corrected durable readback assertions on native macOS,
-Windows, and arm64 Linux gate hosts: the core build and all four host-static commands. Record
+Run the complete declared gate against the corrected durable readback assertions on a native
+Windows gate host: the core build and all four host-static commands. Record
 dated complete commands/results and fresh measurements over the 857-file source scope. The native
 x86_64 Linux gate passes at `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`;
 earlier rows retain their original source provenance.
 
 ## Remaining Work
 
-**Sprint 28.5** owns native macOS, Windows, and arm64 Linux static revalidation of the corrected
-assertions. The current x86_64 Linux complete gate and its fresh source measurement are recorded.
+**Sprint 28.5** owns native Windows static revalidation of the corrected assertions. Current
+macOS, x86_64 Linux, and arm64 Linux complete gates and fresh source measurements are recorded.
 
 ## Documentation Requirements
 

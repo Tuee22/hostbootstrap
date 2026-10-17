@@ -439,6 +439,12 @@ config before test init. The same complete Apple matrix supplies the worked-demo
 the Apple phase's matrix leg against unchanged inputs. Validate the worked-demo phase first, then record the
 shared run under the Apple phase's own evidence scope and complete its separate Colima leg below.
 
+Before starting the matrix, verify that free storage on the canonical host root's filesystem satisfies
+`testResources.storage` in the generated test config. A capacity refusal currently can leave retained
+Harness authority: the [worked-demo plan](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the provider
+reverse's absent-instance admission. Preserve the protected store after such a refusal. Harness recovery
+runs at the next selected `test run`; `project destroy` is a Production command.
+
 The complete matrix performs four fresh Lima bring-ups and four terminal destroys. Allow at least two hours
 for the matrix, plus the initial cold host-native build; the acceptance phase records measured durations.
 Every bring-up installs/builds inside a pristine guest, pulls the published base, and

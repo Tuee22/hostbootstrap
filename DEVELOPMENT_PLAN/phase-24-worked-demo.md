@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -2927,30 +2927,29 @@ The post-closure `DocValidatorSpec` check passes 11/11 in 2.66 seconds.
 
 None.
 
-### Sprint 24.46: The consumer's provider opens on every lane it stops [Done]
+### Sprint 24.46: The consumer's provider opens on every lane it stops [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: two branches on an action this consumer already receives; at most 25 production
 Haskell lines and no new type.
 **Substrates**: linux-cpu
+**Docs to update**: `documents/operations/demo_runbook.md`
 
 #### Objective
 
-The recursive lifecycle command's reachability step hands a provider node its own declared reverse and
-asks it to open the frame. This consumer's provider reverse answered that on neither of its two backends:
-the Incus branch had no case for it, and the other branch — Lima on Apple, WSL2 on Windows — fell through
-its catch-all to **stop**. A provider asked to become reachable and stopped instead leaves the destroy
-that follows unwinding nothing, which is the shape the live gate caught on the Incus lane and which the
-other two lanes would have reproduced.
+The recursive lifecycle command's reachability step asks the provider reverse to reopen an existing
+managed frame so retained children can settle. A reverse opens only a provider the run reached and
+retained; a provider that was never created admits no guest descent, guest cleanup, or provisioning.
 
 #### Deliverables
 
 - The Incus branch opens through the retained ownership record, with no caller-supplied generation or
   owner, exactly as its stop and delete peers do.
-- The Lima/WSL2 branch opens through the plan's own reboot-ready effects and then waits on the same
-  readiness probe the forward path waits on.
+- The Lima/WSL2 branch admits a present managed instance before using the plan's reboot-ready
+  effects and the forward path's readiness probe; an absent instance never reaches a start effect.
+- A failed forward before provider creation performs no guest descent or guest cleanup.
 - Neither branch can reach the stop effect while answering a reachability step.
 
 #### Validation
@@ -2961,13 +2960,21 @@ confirmed by the [Apple Silicon](phase-25-apple-silicon-substrate.md) and
 [Windows and WSL2](phase-27-windows-and-wsl2-substrate.md) acceptances, each on its own hardware; this
 phase does not claim them.
 
+**2026-10-17 — absent-provider refusal exposes open work.** The standalone native Apple
+matrix refuses its unchanged 80-GiB storage budget against 29 GiB free before forward provider
+creation. Reverse then starts an absent `hostbootstrap-demo-vm`, provisioning a default
+4-CPU/4-GiB/100-GiB guest rather than reopening retained work. Guest child admission and alias
+cleanup fail because that guest has no installed project binary or durable alias. The matrix
+reports `0/12 passed`, with unresolved teardown and mode closure. The gate-created guest is
+stopped and deleted after its ownership and lack of project state are independently established;
+the bound Harness lease and mode are preserved. Sprint 25.7 records the exact failed run.
+
 #### Remaining Work
 
-None. The 2026-09-14 run recorded in Sprint 24.45 confirms the Incus branch: `project destroy` reported
-`starting hostbootstrap-demo-vm so its retained children can be reached`, settled every retained child
-through the frame it reopened, and exited 0 where the same sequence had previously refused with
-`Error: Instance is not running`. The Lima and WSL2 branches remain confirmed by their own acceptances,
-which this phase does not claim.
+Admit only a present managed provider before reverse reachability; a never-created provider must
+not provision a VM or enter guest cleanup. Add meaningful regression coverage for the pre-provider
+capacity-refusal path and run the complete host static gate. Sprint 24.50 owns the full phase gate
+after this call-site adoption. The failed attempt measured 29 GiB free against the declared 80-GiB budget.
 
 ### Sprint 24.47: Revalidate the worked demo after shared guest setup changes [Done]
 
@@ -3715,9 +3722,9 @@ style and testing contracts remain accurate.
 
 None.
 
-### Sprint 24.50: Revalidate the worked demo after source formatting [Done]
+### Sprint 24.50: Revalidate the worked demo against the complete authored source [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
@@ -3725,11 +3732,12 @@ None.
 #### Objective
 
 Re-establish this phase's complete gate after the formatter and conditional-pragma work owned by
-Sprints 24.49a and 24.49b and the assertion-frame durable-root adoption owned by Sprint 24.38.
+Sprints 24.49a and 24.49b, the assertion-frame durable-root adoption owned by Sprint 24.38,
+and the absent-provider reverse admission owned by Sprint 24.46.
 
 #### Deliverables
 
-- The complete host static gate, core build, demo build, and focused demo suite pass against the formatted tree.
+- The complete host static gate, core build, demo build, and focused demo suite pass against the complete authored tree.
 - Production init, up, down, and destroy pass through a supported universal `linux-cpu` realization,
   followed by the complete Harness matrix reporting `10/10 passed`.
 - Terminal ownership, Production-data preservation, and ambient-state restoration are audited, and
@@ -3973,11 +3981,18 @@ The post-cleanup 29-root, 862-file source measurement still matches
 
 #### Remaining Work
 
-None.
+Run the complete declared phase gate after Sprint 24.46's provider-reverse adoption: both Cabal
+workspaces, Python checks, Production init/up/down/destroy, the complete `10/10` Harness matrix,
+and terminal ownership/data/ambient audits with a fresh source measurement. Available host storage remains below the live gate's declared 80-GiB budget; the failed attempt
+measured 29 GiB free. Earlier dated passes
+retain their original commands, results, source scopes, and hashes.
 
 ## Remaining Work
 
-None.
+Sprint 24.46 owns absent-provider reverse admission and its host-static regression validation.
+Sprint 24.50 owns the complete phase gate and terminal/source audits after that adoption. Live
+validation requires the declared 80-GiB storage budget; available storage remains below that
+threshold (29 GiB at the failed attempt).
 
 ## Documentation Requirements
 
