@@ -63,15 +63,18 @@ its row here.
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
-| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | full matrix after durable-root assertion |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | revalidation after shared source changes |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | native Windows and x86_64 Linux static gates |
+| 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | native Windows matrix and WSL wall audit |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | native Windows static gate |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Phases 0–25 and 29 are Done. Phase 26 is the lowest Active phase and requires native Linux
-with a real NVIDIA GPU and working CUDA/container runtime, unavailable in this Apple session.
+Phases 0–26 and 29 are Done. Phase 27 is the lowest Active phase and requires a native
+Windows/WSL2 host. The 2026-10-21 visit on `matt-caledon-desktop` supplies native Linux/NVIDIA
+acceptance and the x86_64 Linux static gate; it cannot supply the native Windows gate, so
+execution stops at phase 27. Sprint 27.6 retains that matrix and terminal ownership/WSL wall audit.
+
 [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), Sprint 25.7, passes both
 native gate legs on 2026-10-20: the unchanged-source shared matrix reports `10/10`, and
 the separate live direct-Colima lane reports `33/33`, with terminal and ambient audits passing.
@@ -87,12 +90,14 @@ removed records is claimed.
 
 The same Apple visit records complete native macOS and arm64 Linux host static gates for
 [host-portability acceptance](phase-28-host-portability-acceptance.md), Sprint 28.5, against
-the current source. Native Windows and x86_64 Linux revalidation remain owed.
+the current source. The 2026-10-21 NVIDIA visit adds the complete native x86_64 Linux static
+gate on `matt-caledon-desktop`. Native Windows static revalidation remains owed.
 
-[NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md), Sprint 26.10, retains its native
-`matt-caledon-desktop` RTX 3090 matrix's `8/10` result; full NVIDIA acceptance remains owed against
-the corrected source. Sprint 27.6 owns the complete native Windows matrix and terminal
-ownership/WSL wall audit. Neither hardware lane is supplied by this native Apple session.
+[NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md), Sprint 26.10, passes `10/10` on
+2026-10-21 against the current source on `matt-caledon-desktop` with an RTX 3090.
+Both variants complete their same-run restarts; all four generations have directly observed
+GPU placement, and terminal ownership/config/data/process and ambient-state audits pass.
+The 845-file source digest is unchanged. Earlier dated results remain in the owning sprint.
 
 [The legacy ledger](legacy_tracking_for_deletion.md) is empty, which § I names as its healthy end state.
 Were a row to reappear it would name the phase whose completion deletes the shape, and the ledger would

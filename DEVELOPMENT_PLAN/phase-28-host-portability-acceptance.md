@@ -27,6 +27,13 @@ from `demo/`, `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root,
 inheriting `CABAL_DIR=/opt/cache/cabal` ; pass ;
 covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
+**Gate evidence**: 2026-10-21 ; `matt-caledon-desktop`, native x86_64 Ubuntu 24.04.5 LTS,
+Linux 7.0.0-38-generic, GHC 9.12.4, Cabal 3.16.1.0, Poetry 1.8.2,
+repository-venv Python 3.12.3 ; `cabal build all` and plain `cabal test all` from `core/`,
+`cabal build all` and plain `cabal test all` from `demo/`,
+`poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
+covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/playwright.config.ts` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
@@ -368,6 +375,21 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 - Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
 
 #### Validation
+
+**2026-10-21 — complete native x86_64 Linux gate passed.** The current header row records
+all six commands against the same provider-admission source as the macOS and arm64 Linux rows.
+On `matt-caledon-desktop`, the core build passes and plain core `cabal test all` passes
+2,553/2,553 in 181.65 seconds; the command starts at 19:13:03 UTC and is observed complete
+at 19:18:28 UTC after compilation. The demo build passes; plain demo `cabal test all` starts
+at 19:29:38 UTC and is observed complete at 19:35:07 UTC after compilation, passing
+164/164 demo cases in 1.31 seconds and
+2,553/2,553 core cases in 185.00 seconds. Both workspaces' provider-live components pass
+their declared no-request `Unsupported` result, and the core suites report the native
+direct-Colima lane's expected no-request `Unsupported` result. Python code checks pass;
+the supported Python runner passes 251/251 in 2.06 seconds. The post-gate measurement at
+19:35:07 UTC covers all 24 roots and 857 files at
+`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`, matching the pre-gate
+measurement. No covered source changes during the checks. Native Windows revalidation remains owed.
 
 **2026-10-20 — complete native macOS and arm64 Linux gates passed.** Both current header
 rows record their actual gate hosts and complete command sets against the provider-admission
@@ -1012,16 +1034,17 @@ and final evidence-wording corrections, the native focused `DocValidatorSpec` pa
 
 #### Remaining Work
 
-Run the complete declared gate against the provider-admission source on native Windows and
-x86_64 Linux: the core build and all four host-static commands, with dated complete commands/results
+Run the complete declared gate against the provider-admission source on native Windows:
+the core build and all four host-static commands, with dated complete commands/results
 and fresh measurements over the 857-file source scope. The 2026-10-20 native macOS and arm64 Linux
-gates pass at `b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
+gates and 2026-10-21 native x86_64 Linux gate pass at
+`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
 Earlier rows retain their original source provenance.
 
 ## Remaining Work
 
-**Sprint 28.5** owns native Windows and x86_64 Linux static revalidation of the 2026-10-20
-provider-admission source. Complete native macOS and arm64 Linux gates and their current source
+**Sprint 28.5** owns native Windows static revalidation of the 2026-10-20 provider-admission
+source. Complete native macOS, arm64 Linux, and x86_64 Linux gates and their current source
 measurements are recorded.
 
 ## Documentation Requirements

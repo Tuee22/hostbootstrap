@@ -871,6 +871,14 @@ This is a source measurement, with no new native Windows/WSL2 gate pass. The ava
 host cannot supply this phase's native Windows/WSL2 gate. Earlier dated runs retain their original
 scopes, measurements, and outcomes.
 
+On 2026-10-21, the native Linux/NVIDIA visit on `matt-caledon-desktop` completes the
+preceding NVIDIA acceptance and the native x86_64 Linux host static gate. Execution reaches
+this phase in numerical order and stops: the available session is native Linux with an RTX 3090,
+and cannot exercise the native Windows/WSL2 matrix or global WSL wall. No native Windows pass
+or refreshed gate evidence is claimed. The unchanged 25-root, 845-file scope remeasures to
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+Sprint 27.6 remains Active for its declared native Windows gate.
+
 #### Remaining Work
 
 On native Windows, revalidate the shared provider reachability admission and covered core/demo
