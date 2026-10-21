@@ -840,7 +840,7 @@ None.
 #### Objective
 
 Re-establish native Windows/WSL2 acceptance after shared Haskell source formatting and assertion-frame
-durable-root projection.
+durable-root projection, provider reachability admission, and core/demo regression changes.
 
 #### Deliverables
 
@@ -863,9 +863,21 @@ The 25-root, 845-file scope now measures
 `08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
 This measurement establishes no native Windows gate pass.
 
+On 2026-10-20, Sprint 24.46 adds shared provider reachability admission: an absent provider returns
+a failed teardown outcome before any start effect or guest descent. The covered core and demo
+regression sources also change. The 25-root, 845-file scope now measures
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+This is a source measurement, with no new native Windows/WSL2 gate pass. The available Apple M1 Max
+host cannot supply this phase's native Windows/WSL2 gate. Earlier dated runs retain their original
+scopes, measurements, and outcomes.
+
 #### Remaining Work
 
-On native Windows, run the repository Python bootstrapper's
+On native Windows, revalidate the shared provider reachability admission and covered core/demo
+regressions along with the earlier formatting and assertion-frame durable-root changes. The current
+25-root, 845-file scope measures
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+Run the repository Python bootstrapper's
 `poetry run hostbootstrap run --project-root demo test run all` to a complete configured-matrix pass,
 then perform the terminal ownership and WSL wall audit. Record the dated native host/toolchain,
 actual command, matrix and audit results, and freshly measured covers digest after the gate passes.
@@ -873,7 +885,8 @@ actual command, matrix and audit results, and freshly measured covers digest aft
 ## Remaining Work
 
 Sprint 27.6 owns the complete native Windows matrix, terminal ownership and WSL wall audit,
-and fresh source evidence after shared formatting and assertion-frame durable-root projection.
+and fresh source evidence after shared formatting, assertion-frame durable-root projection,
+provider reachability admission, and covered core/demo regression changes.
 
 ## Documentation Requirements
 

@@ -8,30 +8,25 @@
 host-native on a Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate
 host, each recorded with its own dated evidence
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-16 ; `matt-caledon-desktop`, native x86_64 Ubuntu 24.04.5 LTS,
-Linux 7.0.0-38-generic, AMD Ryzen 7 5700G, 62 GiB memory, GHC 9.12.4, Cabal 3.16.1.0,
-Poetry 1.8.2, repository-venv Python 3.12.3 ; `cabal build all` and plain `cabal test all` from `core/`,
-`cabal build all`, plain `cabal test all`, and `cabal test hostbootstrap-demo-test` from `demo/`,
-`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-from the repository root ; pass ;
-covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
-**Gate evidence**: 2026-10-17 ; `hostbootstrap-portability-arm64-20261017`, aarch64 Ubuntu
-24.04.5 LTS container, Linux 6.8.0-100-generic, carried by `MacBookPro` through Colima,
-capped at 4 CPUs and 10 GiB memory with no swap, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
-Poetry 2.5.1 ; `cabal build all -j1` and
-`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `core/`,
-`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
-`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
-from the repository root, inheriting `CABAL_DIR=/opt/cache/cabal` ; pass ;
-covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
-**Gate evidence**: 2026-10-17 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+**Gate evidence**: 2026-10-20 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
 Apple M1 Max, 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.3.2,
 repository-venv Python 3.14.3 ; `cabal build all` and plain `cabal test all` from `core/`,
 `cabal build all -j1`, plain `cabal test all`, and
 `cabal test hostbootstrap-demo-test --test-show-details=direct --test-options=--hide-successes`
 from `demo/`, `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
-covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
+**Gate evidence**: 2026-10-20 ; `hostbootstrap-portability-arm64-20261020-335fac`, aarch64 Ubuntu
+24.04.5 LTS container, Linux 6.8.0-100-generic, carried by `MacBookPro` through Colima,
+capped at 4 CPUs and 10 GiB memory with no swap, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
+Poetry 2.5.1 ; `cabal build all -j1` and
+`cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `core/`,
+`cabal build all -j1`, `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes`,
+and `cabal test hostbootstrap-demo-test -j1 --test-show-details=direct --test-options=--hide-successes`
+from `demo/`, `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root,
+inheriting `CABAL_DIR=/opt/cache/cabal` ; pass ;
+covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/playwright.config.ts` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore`
 
 > **Purpose**: Confirm on real machines that the sources § N builds host-native everywhere do in fact build
@@ -374,7 +369,94 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 
 #### Validation
 
-**2026-10-17 — complete native macOS gate passed.** The current header row records the
+**2026-10-20 — complete native macOS and arm64 Linux gates passed.** Both current header
+rows record their actual gate hosts and complete command sets against the provider-admission
+source. Phase status remains Active; native Windows and x86_64 Linux revalidation remain owed.
+These host-static results do not establish the worked-demo phase's live gate or advance its closure.
+
+On `MacBookPro`, core build passes and plain core `cabal test all` passes 2,553/2,553 in
+553.83 seconds. Demo build passes; plain demo `cabal test all` passes 2,553/2,553 core cases
+in 552.81 seconds and 164/164 demo cases in 6.25 seconds. The exact focused demo command
+passes 164/164 in 5.86 seconds. Python code checks pass and the supported runner passes
+251/251 in 2.45 seconds. The native source measurement is the 16:36:28 UTC pre-live snapshot,
+after those static commands: all 24 evidence roots and 857 files measure
+`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
+That snapshot and the later post-gate host measurement agree; no covered edit is observed between them.
+
+The native arm64 Linux gate uses the explicitly pulled CPU/arm64 base
+`docker.io/tuee22/hostbootstrap@sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`.
+The 13 publication inputs retain their independent
+`01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0` measurement.
+The init-enabled container has no host bind mounts, Docker socket, or copied registry credential.
+Its cgroups report `cpu.max = 400000 100000`, `memory.max = 10737418240`, and
+`memory.swap.max = 0`. It contains 977 copied tracked/untracked nonignored working-tree files
+and real Git metadata under root-owned `/workspace`; generated runtime, identity, and store trees
+are excluded. The in-project Poetry environment imports `/workspace/hostbootstrap`.
+Fourmolu 0.19.0.1 accepts all three changed Haskell files and HLint 3.10 reports no hints.
+
+The seven-command gate runs from 16:21:10.501 to 16:40:47.766 UTC in 1,177.25 seconds:
+
+- Core build passes; the complete core test command passes in 287.41 seconds including
+  compilation, with 2,553/2,553 core cases in 172.76 seconds.
+- Demo build passes in 243.57 seconds. The complete demo workspace command passes in
+  314.33 seconds, with 164/164 demo cases in 1.68 seconds and 2,553/2,553 core cases in
+  171.19 seconds.
+- The exact focused demo command passes in 3.86 seconds, including 164/164 cases in 1.88 seconds.
+- Python code checks pass in 2.95 seconds; the supported runner passes in 2.98 seconds,
+  including 251/251 cases in 2.08 seconds.
+
+Both Linux workspaces run the provider-live component to its declared no-request `Unsupported`
+result, and the native direct-Colima lane is not requested. The fixed coverage manifest retains
+all 17 rows; native POSIX rows exercise the Linux kernel and Windows-only rows assert their
+specified refusal. Independent host and container measurements before and after the complete
+Linux gate agree over all 24 roots and 857 files at
+`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
+The container filesystem ends with 54,942,324 KiB available, approximately 52.40 GiB; this is
+Colima's virtual-disk capacity, separate from the native host filesystem used by the live gate.
+After the final seven-document sync at 20:18:19 UTC, the focused Linux command
+`cabal test hostbootstrap-core-test -j1 --test-show-details=direct --test-options='--pattern DocValidatorSpec'`
+passes 11/11 in 3.42 seconds (6.34 seconds for the command), ending at 20:18:26 UTC.
+All seven synced documents are independently byte-identical to their host copies. Host and
+container measurements over every phase-23–28 covered-source scope still match their pre-gate
+values, including this phase's 857-file digest above.
+
+The owned container's exact ID, name, pinned base, ownership label, and empty mount list are
+reverified before cleanup. At 20:19:05 UTC, container
+`2bdf072af9b32499ce2d7fcbb3067190261ad4c82f88fc932122d86f9befce8a` is removed and independently
+confirmed absent. Exactly its ID leaves the 38-container pre-cleanup inventory; all 37 unrelated
+container identities, the image set, Docker context, Colima profile state, and profile/credential
+configuration hashes remain unchanged.
+
+Earlier dated gate-evidence rows retain their original commands and source measurements:
+
+- 2026-10-16 ; `matt-caledon-desktop`, native x86_64 Ubuntu 24.04.5 LTS,
+  Linux 7.0.0-38-generic, AMD Ryzen 7 5700G, 62 GiB memory, GHC 9.12.4, Cabal 3.16.1.0,
+  Poetry 1.8.2, repository-venv Python 3.12.3 ; `cabal build all` and plain `cabal test all` from `core/`,
+  `cabal build all`, plain `cabal test all`, and `cabal test hostbootstrap-demo-test` from `demo/`,
+  `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+  from the repository root ; pass ;
+  covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+
+- 2026-10-17 ; `hostbootstrap-portability-arm64-20261017`, aarch64 Ubuntu
+  24.04.5 LTS container, Linux 6.8.0-100-generic, carried by `MacBookPro` through Colima,
+  capped at 4 CPUs and 10 GiB memory with no swap, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3,
+  Poetry 2.5.1 ; `cabal build all -j1` and
+  `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `core/`,
+  `cabal test all -j1 --test-show-details=direct --test-options=--hide-successes` from `demo/`,
+  `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+  from the repository root, inheriting `CABAL_DIR=/opt/cache/cabal` ; pass ;
+  covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+
+- 2026-10-17 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+  Apple M1 Max, 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.3.2,
+  repository-venv Python 3.14.3 ; `cabal build all` and plain `cabal test all` from `core/`,
+  `cabal build all -j1`, plain `cabal test all`, and
+  `cabal test hostbootstrap-demo-test --test-show-details=direct --test-options=--hide-successes`
+  from `demo/`, `poetry run python -m hostbootstrap.check_code` and
+  `poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
+  covers 1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f
+
+**2026-10-17 — complete native macOS gate passed.** The corresponding dated row above records the
 native gate host and actual commands. Core build passes; a final timed `cabal build all`
 refresh is up to date in 1.36 seconds. Plain core `cabal test all` passes 2,552/2,552 in
 640.66 seconds, taking 810.93 seconds including component compilation. Demo build passes
@@ -397,7 +479,7 @@ failed live Apple capacity/cleanup attempt recorded in Sprint 25.7; they make no
 acceptance claim. Windows static revalidation remains owed against this source.
 
 **2026-10-17 — complete arm64 Linux gate passed.** The gate host and exact commands are
-recorded in the current header row. The isolated, init-enabled container uses the published
+recorded in the corresponding dated row above. The isolated, init-enabled container uses the published
 CPU/arm64 base `sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`,
 root-owned `/workspace`, real checkout metadata, and copied tracked/untracked nonignored
 working-tree inputs. It has no bind mounts, Docker socket, or registry credential. The
@@ -429,7 +511,7 @@ images/containers, context, and profile/credential-configuration hashes are pres
 `git diff --check` passes.
 
 The corrected source passes the full native x86_64 Linux gate on `matt-caledon-desktop` on
-2026-10-16, with the actual commands and toolchain in the current header row. Core build and
+2026-10-16, with the actual commands and toolchain in its retained dated row above. Core build and
 plain core `cabal test all` pass 2,552/2,552 in 231.98 seconds. Demo build passes in 22.12 seconds,
 and plain demo `cabal test all` passes 161/161 demo cases in 2.23 seconds and 2,552/2,552 core
 cases in 235.92 seconds; its complete workspace command takes 240.35 seconds. The exact
@@ -930,16 +1012,17 @@ and final evidence-wording corrections, the native focused `DocValidatorSpec` pa
 
 #### Remaining Work
 
-Run the complete declared gate against the corrected durable readback assertions on a native
-Windows gate host: the core build and all four host-static commands. Record
-dated complete commands/results and fresh measurements over the 857-file source scope. The native
-x86_64 Linux gate passes at `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`;
-earlier rows retain their original source provenance.
+Run the complete declared gate against the provider-admission source on native Windows and
+x86_64 Linux: the core build and all four host-static commands, with dated complete commands/results
+and fresh measurements over the 857-file source scope. The 2026-10-20 native macOS and arm64 Linux
+gates pass at `b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
+Earlier rows retain their original source provenance.
 
 ## Remaining Work
 
-**Sprint 28.5** owns native Windows static revalidation of the corrected assertions. Current
-macOS, x86_64 Linux, and arm64 Linux complete gates and fresh source measurements are recorded.
+**Sprint 28.5** owns native Windows and x86_64 Linux static revalidation of the 2026-10-20
+provider-admission source. Complete native macOS and arm64 Linux gates and their current source
+measurements are recorded.
 
 ## Documentation Requirements
 

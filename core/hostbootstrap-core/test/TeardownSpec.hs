@@ -700,6 +700,23 @@ forestTests =
             let afterReach = attempt forest TeardownReleased
             firstWork afterReach
                 @?= Just (OfferedDescent "host-orchestrator-0" "vm-orchestrator-1")
+    , testCase "failed provider reachability retains its children without offering guest descent" $
+        withDestroyForest $ \forest -> do
+            let failed = attempt forest (TeardownFailed "provider frame is absent")
+            teardownForestOutstanding failed
+                @?= [ "core:deploy-chart"
+                    , "core:deploy-kind"
+                    , "core:build-pb"
+                    , "core:deploy-vm"
+                    ]
+            teardownForestFailures failed
+                @?= [("core:deploy-vm", "provider frame is absent")]
+            teardownForestForeign failed @?= []
+            -- Retry work names only the same failed provider. The production
+            -- driver sees its failed key and stops before dispatching it.
+            -- No completed forest or guest continuation is exposed here.
+            firstWork failed
+                @?= Just (OfferedLocal "core:deploy-vm" DeleteFrame)
     , testCase "the pre-descent step runs the provider's own declared reverse, with ReachFrame" $ do
         -- The reachability step is not a marker the driver can tick: it carries
         -- the same callback the forward step declared, and the driver invokes it

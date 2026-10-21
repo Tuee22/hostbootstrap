@@ -76,6 +76,7 @@ import HostBootstrapDemo.Commands (
     demoDirectParentJoin,
     demoForwardChildPlan,
     demoImageBuildSpecDigest,
+    demoProviderReachAdmission,
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
@@ -166,7 +167,25 @@ tests :: TestTree
 tests =
     testGroup
         "CommandsSpec"
-        [ testCase "cluster config is derived only from the exact plan slices" $ do
+        [ testCase "provider reachability refuses an absent frame" $
+            demoProviderReachAdmission False
+                @?= Left (Step.TeardownFailed "provider reverse: managed provider frame is absent; retained children cannot be reached")
+        , testCase "provider reachability admits an existing frame for retained-child cleanup" $
+            demoProviderReachAdmission True @?= Right ()
+        , testCase "provider reverse admits reachability before entering either provider effect branch" $ do
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let reverseSource = maybe "" (`drop` commandsSource) (substringOffset "demoProviderReverse projectCfg cfg action = do" commandsSource)
+                admissionSource = maybe "" (`take` reverseSource) (substringOffset "    reversePresent provider = do" reverseSource)
+                admissionStages =
+                    [ "if action == ReachFrame"
+                    , "demoProviderReachAdmission <$> substrateExists cfg provider"
+                    , "either pure (const (reversePresent provider)) admission"
+                    ]
+            offsets <- maybe (assertFailure "provider reachability bypasses absent-frame admission") pure (traverse (`substringOffset` admissionSource) admissionStages)
+            assertBool "provider admission stages are out of order" (and (zipWith (<) offsets (drop 1 offsets)))
+            forM_ ["runEffectsBestEffort", "substrateWait", "discoverStrongProviderBackend"] $ \effect ->
+                assertBool ("provider effect precedes admission: " ++ effect) (not (effect `isInfixOf` admissionSource))
+        , testCase "cluster config is derived only from the exact plan slices" $ do
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
             let rendererSource =
                     maybe

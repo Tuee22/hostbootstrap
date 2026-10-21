@@ -1,6 +1,6 @@
 # Phase 24 — The worked demo
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 16 (provider, cluster, and guest lifecycle foundations), Phase 17 (proof-complete
 recursive lifecycle command), Phase 22 (service-runtime activation and `service run` semantics), Phase 23
 (base image publication and the opportunistic warm store)
@@ -11,11 +11,12 @@ core host-static gate from `core/`, plus live
 `hostbootstrap run -- project destroy`, and `hostbootstrap run -- test run all` reporting `10/10 passed`
 inside the universal `linux-cpu` realization on any supported outer host
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-17 ; `hostbootstrap-cpu-gate-20261016`, x86_64 Ubuntu
-24.04.5 LTS, Linux 6.8.0-147-generic, GHC 9.12.4, Cabal 3.16.1.0,
-Poetry 2.5.1, Python 3.12.3, complete gate executed 2026-10-16–17 UTC ;
+**Gate evidence**: 2026-10-20 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, 64 GiB memory, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.3.2, Python 3.14.3,
+live universal `linux-cpu` realized through native VZ/aarch64 Lima 2.1.2 guests ;
 `cabal build all` and `cabal test all` from `core/`,
-`cabal build all`, `cabal test all`, and `cabal test hostbootstrap-demo-test`
+`cabal build all -j1`, `cabal test all`, and
+`cabal test hostbootstrap-demo-test --test-show-details=direct --test-options=--hide-successes`
 from `demo/`, `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root,
 plus repository Python-bootstrapper
@@ -27,7 +28,7 @@ plus repository Python-bootstrapper
 `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed`, followed by terminal ownership,
 Production-data preservation, ambient-state, and covered-source audits ;
-pass ; covers 2270a6319a8e5bc12c64b9edf057f031f79ba673af2677a9cfcf001b3551d11b
+pass ; covers 0b27634921cf2e486ef70fcefcc27943206f30197760b685a60ec81d247f80e7
 **Evidence covers**: `.dockerignore` `.hlint.yaml` `core/cabal.project` `core/hostbootstrap-core/app` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/src` `core/hostbootstrap-core/test` `demo/app` `demo/cabal.project` `demo/chart` `demo/docker` `demo/hostbootstrap-demo.cabal` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/src` `demo/test` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `fourmolu.yaml` `hostbootstrap` `pyproject.toml` `tests`
 
 > **Purpose**: Be the real consumer that proves the library composes — a complete application with its own
@@ -2927,9 +2928,9 @@ The post-closure `DocValidatorSpec` check passes 11/11 in 2.66 seconds.
 
 None.
 
-### Sprint 24.46: The consumer's provider opens on every lane it stops [Active]
+### Sprint 24.46: The consumer's provider opens on every lane it stops [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: two branches on an action this consumer already receives; at most 25 production
@@ -2969,12 +2970,37 @@ reports `0/12 passed`, with unresolved teardown and mode closure. The gate-creat
 stopped and deleted after its ownership and lack of project state are independently established;
 the bound Harness lease and mode are preserved. Sprint 25.7 records the exact failed run.
 
+**2026-10-20 — admission and native validation pass.** Reachability probes provider
+existence before either provider branch. The pure admission decision returns `TeardownFailed` for
+an absent frame, keeping unobserved children outstanding without provisioning or entering a guest.
+`CommandsSpec` covers both decision values and guards their call-site order; `TeardownSpec` applies
+the real forest transition to the failed reachability observation and verifies retained child work
+with no guest descent.
+
+On `MacBookPro`, native arm64 macOS 26.6.2, GHC 9.12.4 and Cabal 3.16.1.0,
+`cabal build all` from `core/` and `cabal build all -j1` from `demo/` pass. Plain
+`cabal test all` passes in both workspaces: 2,553/2,553 core cases in 553.83 seconds from
+`core/`, then 2,553/2,553 in 552.81 seconds plus 164/164 demo cases in 6.25 seconds from
+`demo/`. The separately declared `cabal test hostbootstrap-demo-test --test-show-details=direct
+--test-options=--hide-successes` passes 164/164 in 5.86 seconds. Both provider-live components
+report their declared not-requested `Unsupported` result. Repository-root
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
+pass; the final Python runner reports 251/251 in 2.45 seconds. Fourmolu 0.19.0.1 and 0.21
+and HLint 3.10 accept all three changed Haskell files.
+
+The additional native negative probe uses `cabal repl exe:hostbootstrap-demo
+--repl-options=-ignore-dot-ghci` from `demo/`, real substrate detection and `buildHostConfig`,
+and the normal Production-default `projectConfigForRole`. Calling
+`demoProviderReverse pc cfg ReachFrame` returns the exact absent-frame `TeardownFailed`;
+the equality assertion passes and GHCi exits 0 at 16:35 UTC. Independent snapshots at
+16:34:47 and 16:35:36 UTC, with a half-second Lima/state monitor between them, observe
+no VM and unchanged absence of `.build`, `.hostbootstrap`, `.data`, `.test_data`, identities,
+and daemon state. This proves the actual absent-Lima callback without allocating a failed
+Harness lease; it does not claim full capacity-refusal recovery or a traced guest-command count.
+
 #### Remaining Work
 
-Admit only a present managed provider before reverse reachability; a never-created provider must
-not provision a VM or enter guest cleanup. Add meaningful regression coverage for the pre-provider
-capacity-refusal path and run the complete host static gate. Sprint 24.50 owns the full phase gate
-after this call-site adoption. The failed attempt measured 29 GiB free against the declared 80-GiB budget.
+None.
 
 ### Sprint 24.47: Revalidate the worked demo after shared guest setup changes [Done]
 
@@ -3722,9 +3748,9 @@ style and testing contracts remain accurate.
 
 None.
 
-### Sprint 24.50: Revalidate the worked demo against the complete authored source [Active]
+### Sprint 24.50: Revalidate the worked demo against the complete authored source [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`, `documents/operations/demo_runbook.md`
@@ -3744,6 +3770,208 @@ and the absent-provider reverse admission owned by Sprint 24.46.
   dated gate evidence records every declared leg and a fresh measurement over this phase's evidence paths.
 
 #### Validation
+
+**2026-10-20 — complete phase gate passes.** Sprint 24.46 records the complete native
+host static gate and actual absent-Lima callback probe. Before Production initialization, the
+29-root, 862-file source scope measures
+`0b27634921cf2e486ef70fcefcc27943206f30197760b685a60ec81d247f80e7`.
+All four demo generated-state roots are absent, as are installed identities and Lima instances.
+The fresh 16:36 UTC ambient baseline contains the running Colima `default` profile
+(9 CPUs, 32 GiB memory, 512 GiB disk), Docker context `colima`, and 38 Docker containers,
+including the separately owned arm64 Linux static-gate container. Unrelated workloads are
+preserved against this pre-live baseline. The explicit CPU/arm64 rolling-base pull resolves
+`sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`, and Phase 23's
+input digest remains unchanged. Repository Python-bootstrapper
+`poetry run hostbootstrap run --project-root demo project init` starts at 16:36:29 UTC;
+its cold local store resolves against Hackage index state `2026-10-20T12:40:44Z`.
+Initialization exits 0 at 17:02:09 UTC after 1,540.15 seconds. The installed binary measures
+`60ff3279b02f88ccce2e43e21a66270973528460946780fae49646d0bab682fe`, and the generated
+Production config measures `6d5fdb277fbf7a775689f22686c987c5efa923a4611ce7b418d9b4ec9ca06990`.
+The five installed identity artifacts are regular, single-link, 32-byte mode-0600 files;
+their hashes and file metadata are retained for subsequent comparison. At this checkpoint,
+test config, `.hostbootstrap`, `.data`, `.test_data`, and Lima instances are absent.
+
+Production `project up` runs from 17:03:15 to 17:36:29 UTC and exits 0 in
+1,994.18 seconds. The native VZ/aarch64 Lima guest has the declared 6 CPUs, 10 GiB memory,
+and 80 GiB disk; its machine identity is `a23a05228b31446f83194b64d7573d33`.
+Its staged source independently matches the pre-gate Phase 24 scope and the Apple live scope
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+The container quality gate and exported-runtime/configuration/public-key/web-bundle verification
+pass, producing derived image
+`sha256:57c4024a5140c161fcea49f7f3eaf4bd2f4da357749f21b6a03321de229adc76`.
+The command reports web readiness at `http://127.0.0.1:32769/` and host-daemon readiness at
+`ws://127.0.0.1:32771/api/accelerator/daemon`, PID 8118. An independent observation finds all
+12 pods Running and Ready and the daemon reparented to native host PID 1. The independent
+17:42:09 UTC application probes pass: the authenticated web exposure returns HTTP 200;
+`/api/budget` confirms the declared budget fits; accelerator addition of 1.5 and 2.25 returns
+3.75 with backend `apple-metal` and artifact fingerprint `a2d3bf4f0f5612bb`. The daemon launches
+a native arm64 Mach-O worker. Marker POST and GET both return `hostbootstrap-destroy-up-v1`,
+and the canonical `.data/web/marker` has SHA-256
+`05932ad6080575c3081d3870d02780bd1e2750c039f2e4cee37a69de1eeb1c21`.
+Binary, Production config, and all five identity artifacts exactly match the post-init metadata
+and hashes. The following Production reversal and Harness results complete the live gate.
+
+Canonical `project down` exits 0 at 17:47:05 UTC in 285.56 seconds, including a stale-index
+refresh to `2026-10-20T17:20:44Z` and its affected dependency rebuild. This rebuild legitimately
+replaces the installed executable bytes with SHA-256
+`dfbc5f5b798c54f32d3f46a55b91cd2c9d1146d06035fec711dad3649401ced2`;
+its inode and size remain the same, and all five identity artifacts and the Production config
+retain their complete post-init hashes and metadata. The provider is observed Stopped with
+the same directory identity and declared budget. Canonical `project destroy` starts at
+17:47:50 UTC to reopen the retained frame for terminal child release.
+
+`project destroy` exits 0 at 17:48:04 UTC in 14.04 seconds. The independent observer sees
+the original provider directory inode 480937611 transition Stopped → Running → absent;
+the command explicitly starts the stopped frame before releasing its retained children.
+The 17:48:26 UTC terminal audit passes: the actual Production lease is Closed at version 5,
+epoch 3; its profile remains Consumed at version 2, epoch 1; the project journal is Closed
+at version 2; the reverse root is Terminal Destroy at version 6; and the coordinator is Idle
+at version 45, sequence 22. No mode, config/data-root ownership, provider directory,
+daemon claim/witness, or project process remains. The complete retained `.data` tree has
+40 entries (15 directories and 25 regular files), 10,535 file bytes, no symlinks, and
+descriptor-relative no-follow fingerprint
+`85f63dc8237b2d735ad25ca14596d11b30097554d7b52b26be64194120374441`.
+The marker retains its content and inode 480945445. This complete tree and the terminal
+record hashes are the preservation baseline for the Harness leg.
+
+Only the verified generated Production sibling config is removed. Canonical `test init`
+exits 0 at 17:48:57 UTC in 2.32 seconds and writes the 236-byte operator test config,
+SHA-256 `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The installed executable and all five identity artifacts match the post-Production snapshot.
+The source scopes still match their pre-gate measurements; Lima is empty, and ambient
+Colima/Docker inventories and configuration hashes match the pre-live baseline. The matrix
+starts at 17:49:19 UTC with 652.25 GiB free, against its declared 6-CPU/10-GiB/80-GiB budget.
+The complete result and terminal preservation audits follow below.
+
+The first Harness generation is observed at 17:49:33 UTC for `hello-world`, run
+`run-3f91a394f28d8`: fresh machine identity `4b75e581ad5b42e1ac4cff747f75f799`,
+provider directory inode 480962371, and the declared 6-CPU/10-GiB/80-GiB budget.
+Its physical run root matches the protected data-root ownership, and both staged source
+scopes match the host at 17:49:44 UTC. It starts with no project binary, images, or containers.
+Its guest-native build is complete by 18:05:38 UTC, with 152 core and 11 demo object files.
+The explicit base pull returns the published CPU/arm64 digest, and the derived image passes
+the container quality gate and exported runtime/config/public-key/web-bundle verification
+by 18:16:39 UTC. The independently observed image is
+`sha256:5f26dabda263e1eb38e8c8041ea2ee244fb0522bd0b9943b59d9960f262093c1`.
+The first native daemon is Ready by 18:21:43 UTC and its Metal worker is observed at
+18:21:48 UTC. The engine then performs the same-run destroy/recreate. The independent
+18:23:18–31 UTC gap audit observes the exact marker under run-root inode 480962139,
+marker inode 480981023, with the expected bytes and SHA-256
+`05932ad6080575c3081d3870d02780bd1e2750c039f2e4cee37a69de1eeb1c21`.
+Its identity/content survive the first provider's removal and the replacement's startup,
+before that fresh guest has an application. Marker permissions change from 0644 to 0666
+during declared re-preparation; the run root remains 0700. The first daemon and worker
+are absent by 18:23:25 UTC. Generation 2 has fresh provider directory inode 480981109
+and machine identity `236d0aaf2f374bbfa09751e6d352f572`; it is up and staging the same
+run's source/config by 18:26:22 UTC.
+Both staged source scopes match again. Generation 2 completes its guest-native build by
+18:41:49 UTC, pulls the same published base, and passes the container quality gate and
+exported-runtime/config/public-key/web-bundle verification by 18:54:50 UTC. Its independently
+observed derived image is
+`sha256:4cf11e4f0b16002c2d2996a0b87e376585f397d17145becce289ad22c025cfb7`.
+Its application redeploys for the same-run after-restart assertions.
+At 18:52:04 UTC an independent mid-matrix audit confirms the entire Production `.data`
+fingerprint and metadata remain unchanged, as do its terminal lease/profile/reverse-root/
+journal/coordinator record hashes. The installed binary, all five identity artifacts, and
+operator test config also match their preservation snapshots. This checkpoint does not
+stand in for the still-running matrix or its final audit.
+
+Generation 2 reaches host-daemon readiness at 18:59:36 UTC, opens the same-run
+after-restart assertions, and completes terminal destroy before the next variant begins.
+At 19:01:00 UTC the first actual Harness lease is Closed at version 6, epoch 7; its profile
+is Available at version 3, epoch 6. Its generated-config/data-root ownership and physical
+run root are absent. Persisted Harness project journal rows remain Open with Idle
+coordinators, separately from the final Closed lease; no journal-closure claim is made.
+Generation 3 is observed at 18:59:57 UTC for `hello-universe`, run
+`run-3fcf16c002e28`: fresh machine identity `cf251fd0173744d79d28e0d1d4c557d3`,
+provider directory inode 481001533, declared 6-CPU/10-GiB/80-GiB budget, and exact owned
+data-root inode 481001489/mode 0700. Both staged-source scopes match at 19:00:07 UTC.
+This guest starts with no project binary, images, or containers; its cold bootstrap is
+complete by 19:15:19 UTC, with 152 core and 11 demo object files. Its explicit base pull
+returns the same published CPU/arm64 digest, and its derived image passes the container
+quality gate and exported-runtime/config/public-key/web-bundle verification by 19:27:41 UTC.
+The independently observed image is
+`sha256:0a5838e804c9ef9b5dfd335fabbdeeb186f58d984fddcdc3fab5fe4b97d1eedc`.
+Current-visit guest provenance is observed at 19:15:31 UTC: Ubuntu 24.04.4 LTS,
+aarch64 Linux 6.8.0-117-generic, GHC 9.12.4, Cabal 3.16.1.0, and Python 3.12.3.
+The subsequent rollout and same-run restart are recorded below.
+
+Generation 3 reaches native host-daemon readiness at 19:32:13 UTC, with its Metal worker
+observed at 19:32:17 UTC and all 12 pods Ready. During the second engine-owned same-run
+destroy/recreate, the 19:33:49–19:34:00 UTC gap audit captures the exact marker at inode
+481020405 and the expected bytes/SHA-256. These survive the old provider's removal and
+the replacement's Stopped → Running transition before the fresh application exists.
+Marker permissions change from 0644 to 0666; run-root inode 481001489 remains 0700.
+The old daemon and worker are absent by 19:33:56 UTC. Generation 4 is observed at
+19:34:11 UTC: fresh machine identity `77b0cf6eec8c4ae1be74f528cd20dc00`, provider
+directory inode 481020640, and the declared 6-CPU/10-GiB/80-GiB budget. It retains the
+exact same second-run root, lease/profile epoch 10, and matching staged source scopes
+at 19:34:21 UTC. It executes the final cold rebuild and after-restart assertions.
+Generation 4 completes its native build by 19:50:00 UTC, pulls the same published base,
+and passes the container quality gate and exported-runtime/config/public-key/web-bundle
+verification by 20:02:05 UTC. Its independently observed Linux/arm64 derived image is
+`sha256:1faf1813adbe5ea66a55b6a1874f92916ae4ffdbf7e068a0f3721b4750cb6cc5`.
+The retained marker still has inode 481020405 and the expected 27-byte content/hash before
+the final application assertions. The final deployment, assertions, and terminal audits
+complete below.
+
+The complete matrix exits 0 at 20:07:19.964 UTC in 8,280.90 seconds, reporting **10/10 passed**.
+Both variants pass `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`,
+and `durable-readback`, including both same-run assertion phases. All four fresh native
+providers and their source/image identities are independently observed:
+
+| Generation | Variant / run | Guest machine identity | Derived image SHA-256 |
+|---|---|---|---|
+| 1 | hello-world / `run-3f91a394f28d8` | `4b75e581ad5b42e1ac4cff747f75f799` | `5f26dabda263e1eb38e8c8041ea2ee244fb0522bd0b9943b59d9960f262093c1` |
+| 2 | hello-world / `run-3f91a394f28d8` | `236d0aaf2f374bbfa09751e6d352f572` | `4cf11e4f0b16002c2d2996a0b87e376585f397d17145becce289ad22c025cfb7` |
+| 3 | hello-universe / `run-3fcf16c002e28` | `cf251fd0173744d79d28e0d1d4c557d3` | `0a5838e804c9ef9b5dfd335fabbdeeb186f58d984fddcdc3fab5fe4b97d1eedc` |
+| 4 | hello-universe / `run-3fcf16c002e28` | `77b0cf6eec8c4ae1be74f528cd20dc00` | `1faf1813adbe5ea66a55b6a1874f92916ae4ffdbf7e068a0f3721b4750cb6cc5` |
+
+The final host daemon is Ready at 20:07:10 UTC. The independent terminal audit passes at
+20:07:38 UTC: all three actual leases are Closed (Production version 5/epoch 3;
+Harness version 6/epochs 7 and 11). Production's profile remains Consumed at version 2,
+epoch 1; Harness profiles are Available at version 3, epochs 6 and 10. Production's
+Closed journal/reverse-root and all retained terminal record hashes match the post-destroy
+baseline. Both Harness journals persist as Open at version 1; all three coordinators are
+Idle (Production sequence 22, Harness sequence 41 each). No project mode, config/data-root
+ownership, generated sibling config, Lima VM/directory, daemon claim/witness, or native
+owned process remains; `.test_data` exists and is empty.
+
+The entire Production `.data` tree exactly retains its 40-entry, 10,535-byte fingerprint
+`85f63dc8237b2d735ad25ca14596d11b30097554d7b52b26be64194120374441` and metadata.
+The post-Production executable `dfbc5f5b798c54f32d3f46a55b91cd2c9d1146d06035fec711dad3649401ced2`,
+all five identity artifacts, and operator test config retain their exact metadata and hashes.
+The native post-matrix source measurement still matches all pre-gate scopes, including Phase 24's
+29 roots/862 files at `0b27634921cf2e486ef70fcefcc27943206f30197760b685a60ec81d247f80e7`.
+Ambient Colima profile/budget/configuration, Docker context, all 38 pre-live container identities,
+all 11 image entries, and credential-configuration hashes are unchanged; Docker image listing
+order differs, with no image-set change. All three owned observers stop with exit 0 at
+20:08:08 UTC, and their exact PIDs are absent. The separately owned Linux static-gate
+container is retained through final documentation validation, then removed at 20:19:05 UTC;
+Phase 28 records its 11/11 Linux documentation check and unchanged ambient-state audit.
+The native closing `DocValidatorSpec` command passes 11/11 in 3.56 seconds at
+20:14:47 UTC (301.80 seconds including the refreshed dependency/project/test build),
+before the next phase's separate live Colima gate starts.
+
+The preceding x86_64 gate row retains its original commands and provenance:
+
+- 2026-10-17 ; `hostbootstrap-cpu-gate-20261016`, x86_64 Ubuntu
+24.04.5 LTS, Linux 6.8.0-147-generic, GHC 9.12.4, Cabal 3.16.1.0,
+Poetry 2.5.1, Python 3.12.3, complete gate executed 2026-10-16–17 UTC ;
+`cabal build all` and `cabal test all` from `core/`,
+`cabal build all`, `cabal test all`, and `cabal test hostbootstrap-demo-test`
+from `demo/`, `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root,
+plus repository Python-bootstrapper
+`poetry run hostbootstrap run --project-root demo project init`,
+`poetry run hostbootstrap run --project-root demo project up`,
+`poetry run hostbootstrap run --project-root demo project down`,
+`poetry run hostbootstrap run --project-root demo project destroy`,
+`poetry run hostbootstrap run --project-root demo test init`, and
+`poetry run hostbootstrap run --project-root demo test run all`
+reporting `10/10 passed`, followed by terminal ownership,
+Production-data preservation, ambient-state, and covered-source audits ;
+pass ; covers 2270a6319a8e5bc12c64b9edf057f031f79ba673af2677a9cfcf001b3551d11b
 
 The preceding native Apple run retains its actual commands and source provenance:
 
@@ -3981,18 +4209,11 @@ The post-cleanup 29-root, 862-file source measurement still matches
 
 #### Remaining Work
 
-Run the complete declared phase gate after Sprint 24.46's provider-reverse adoption: both Cabal
-workspaces, Python checks, Production init/up/down/destroy, the complete `10/10` Harness matrix,
-and terminal ownership/data/ambient audits with a fresh source measurement. Available host storage remains below the live gate's declared 80-GiB budget; the failed attempt
-measured 29 GiB free. Earlier dated passes
-retain their original commands, results, source scopes, and hashes.
+None.
 
 ## Remaining Work
 
-Sprint 24.46 owns absent-provider reverse admission and its host-static regression validation.
-Sprint 24.50 owns the complete phase gate and terminal/source audits after that adoption. Live
-validation requires the declared 80-GiB storage budget; available storage remains below that
-threshold (29 GiB at the failed attempt).
+None.
 
 ## Documentation Requirements
 

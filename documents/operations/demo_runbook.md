@@ -440,9 +440,10 @@ the Apple phase's matrix leg against unchanged inputs. Validate the worked-demo 
 shared run under the Apple phase's own evidence scope and complete its separate Colima leg below.
 
 Before starting the matrix, verify that free storage on the canonical host root's filesystem satisfies
-`testResources.storage` in the generated test config. A capacity refusal currently can leave retained
-Harness authority: the [worked-demo plan](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the provider
-reverse's absent-instance admission. Preserve the protected store after such a refusal. Harness recovery
+`testResources.storage` in the generated test config. If forward work refuses before creating the provider,
+reverse reachability reports the absent frame as a failure and leaves its children outstanding. It neither
+starts a default guest nor attempts guest cleanup. A capacity refusal can therefore leave retained Harness
+authority; preserve the protected store after such a refusal. Harness recovery
 runs at the next selected `test run`; `project destroy` is a Production command.
 
 The complete matrix performs four fresh Lima bring-ups and four terminal destroys. Allow at least two hours

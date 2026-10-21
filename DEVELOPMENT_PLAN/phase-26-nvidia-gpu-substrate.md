@@ -641,7 +641,8 @@ None.
 
 #### Objective
 
-Re-establish native NVIDIA acceptance after the shared demo's terminal ownership assertions change.
+Re-establish native NVIDIA acceptance after the shared demo's terminal ownership assertions,
+assertion-frame durable-root projection, and provider reachability admission change.
 The same native Linux hardware visit also collects its x86_64 Linux host-static evidence, owned
 separately by the host-portability phase (§ JJ); this phase closes on its own NVIDIA gate.
 
@@ -753,11 +754,20 @@ reopened before its source changes. The corrected 25-root, 845-file scope measur
 `08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
 No native NVIDIA gate pass against that corrected tree is claimed.
 
+On 2026-10-20, Sprint 24.46 adds shared provider reachability admission: an absent provider returns
+a failed teardown outcome before any start effect or guest descent. The covered core and demo
+regression sources also change. The 25-root, 845-file scope now measures
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+This is a source measurement, with no new native Linux/NVIDIA gate pass. The available Apple M1 Max
+host cannot supply this phase's native Linux/NVIDIA hardware. Earlier dated runs retain their
+original scopes, measurements, and outcomes.
+
 #### Remaining Work
 
 Run the complete declared native Linux/NVIDIA gate against the corrected assertion-frame durable-root
-projection. The 25-root, 845-file scope measures
-`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
+projection, shared provider reachability admission, and core/demo regressions. The current 25-root,
+845-file scope measures
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
 Record both same-run restarts, directly observed accelerator placement, the terminal ownership and
 ambient-state audits, actual commands, host/toolchain, run/image identities, and fresh source evidence
 only after the complete matrix reports `10/10 passed`.
@@ -765,7 +775,8 @@ only after the complete matrix reports `10/10 passed`.
 ## Remaining Work
 
 Sprint 26.10 owns complete native Linux/NVIDIA revalidation of the assertion-frame durable-root
-projection, both same-run restarts, placement observations, terminal audit, and fresh source evidence.
+projection and shared provider reachability admission, including the covered core/demo regressions,
+both same-run restarts, placement observations, terminal audit, and fresh source evidence.
 
 ## Documentation Requirements
 

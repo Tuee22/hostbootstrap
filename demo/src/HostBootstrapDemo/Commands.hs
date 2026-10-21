@@ -47,6 +47,7 @@ module HostBootstrapDemo.Commands (
     demoTestFrameContext,
     demoAssertionDurableRoot,
     demoProviderReverse,
+    demoProviderReachAdmission,
     demoArtifacts,
     demoCheckCode,
     demoCases,
@@ -5948,6 +5949,14 @@ demoGuestAliasReverse projectCfg cfg _action = do
                                 Right ShippedObjectGivenBack -> Step.TeardownReleased
                                 other -> Step.TeardownFailed ("guest alias release refused: " <> show other)
 
+{- | An absent provider cannot admit descent into unobserved guest children.
+Keep their work outstanding instead of inventing terminal observations.
+-}
+demoProviderReachAdmission :: Bool -> Either TeardownOutcome ()
+demoProviderReachAdmission True = Right ()
+demoProviderReachAdmission False =
+    Left (Step.TeardownFailed "provider reverse: managed provider frame is absent; retained children cannot be reached")
+
 {- | The reverse effect of the demo's @deploy-vm@ step (§ W).
 
 It is declared on that step with 'reversedBy', so the node that launched the VM
@@ -5959,7 +5968,8 @@ host-owned and merely shared through that VM, so deleting the frame removes the
 guest mount/alias but not the durable target; the @.data@ step preserves on
 reverse and never enters either projection at all (§ Y).
 
-Idempotent: a missing or already-stopped VM is reported and skipped.
+Reachability refuses an absent VM without starting or entering it; retained
+child work remains outstanding. Stop and delete keep their idempotent behavior.
 -}
 demoProviderReverse ::
     ProjectConfig configScope ->
@@ -5968,78 +5978,85 @@ demoProviderReverse ::
     IO TeardownOutcome
 demoProviderReverse projectCfg cfg action = do
     provider <- demoProvider cfg
-    let name = providerVmId provider
-        -- Teardown consumes the same envelope the launch did, because a
-        -- substrate whose wall is global must release exactly the wall
-        -- it applied rather than any same-shaped one.
-        envelope = envelopeOfResources (resources projectCfg)
-    if providerKind provider == ProviderIncus
-        then do
-            projectRoot <- makeAbsolute =<< getCurrentDirectory
-            durableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
-            let configured = resources projectCfg
-                IncusVM instanceName image = demoVM
-                cpuNatural = cpu configured
-                stateRoot = durableRoot </> ".provider-state"
-            if cpuNatural > fromIntegral (maxBound :: Word64)
-                then pure (Step.TeardownFailed "provider reverse: CPU quantity exceeds Word64")
-                else case mkIncusBackendSpec
-                    instanceName
-                    image
-                    demoGuardPrefix
-                    cfg
-                    stateRoot
-                    (fromIntegral cpuNatural)
-                    (T.unpack (quantityText (memory configured)))
-                    (T.unpack (quantityText (storage configured))) of
-                    Left failure -> pure (Step.TeardownFailed (show failure))
-                    Right backendSpec -> do
-                        putStrLn
-                            ( case action of
-                                DeleteFrame -> "project destroy: deleting " ++ name ++ " through its retained ownership record"
-                                ReachFrame -> "project destroy: starting " ++ name ++ " so its retained children can be reached"
-                                _ -> "project down: stopping " ++ name ++ " through its retained ownership record"
-                            )
-                        reconciled <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
-                            case action of
-                                DeleteFrame -> runRetainedProviderDelete backend
-                                ReachFrame -> runRetainedProviderReady backend
-                                _ -> runRetainedProviderStop backend
-                        pure $ case reconciled of
-                            Left failure -> Step.TeardownFailed (show failure)
-                            Right (Left failure) -> Step.TeardownFailed (show failure)
-                            Right (Right ()) -> Step.TeardownReleased
-        else case action of
-            DeleteFrame -> case planProviderDelete provider envelope of
-                Left err -> pure (Step.TeardownFailed (show err))
-                Right effs -> do
-                    runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
-                    remaining <- substrateExists cfg provider
-                    pure $
-                        if remaining
-                            then Step.TeardownFailed ("managed VM still exists after deletion: " ++ name)
-                            else Step.TeardownReleased
-            -- The reachability step opens a frame a `down` stopped, so it is the
-            -- one action here that must not fall through to the stop branch: a
-            -- provider asked to become reachable and stopped instead leaves the
-            -- destroy that follows unwinding nothing, which is the shape the
-            -- worked demo's live gate caught on the Incus lane.
-            ReachFrame -> case planProviderRebootReady provider of
-                Left err -> pure (Step.TeardownFailed (show err))
-                Right reboot -> do
-                    runEffectsBestEffort
+    admission <-
+        if action == ReachFrame
+            then demoProviderReachAdmission <$> substrateExists cfg provider
+            else pure (Right ())
+    either pure (const (reversePresent provider)) admission
+  where
+    reversePresent provider = do
+        let name = providerVmId provider
+            -- Teardown consumes the same envelope the launch did, because a
+            -- substrate whose wall is global must release exactly the wall
+            -- it applied rather than any same-shaped one.
+            envelope = envelopeOfResources (resources projectCfg)
+        if providerKind provider == ProviderIncus
+            then do
+                projectRoot <- makeAbsolute =<< getCurrentDirectory
+                durableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
+                let configured = resources projectCfg
+                    IncusVM instanceName image = demoVM
+                    cpuNatural = cpu configured
+                    stateRoot = durableRoot </> ".provider-state"
+                if cpuNatural > fromIntegral (maxBound :: Word64)
+                    then pure (Step.TeardownFailed "provider reverse: CPU quantity exceeds Word64")
+                    else case mkIncusBackendSpec
+                        instanceName
+                        image
+                        demoGuardPrefix
                         cfg
-                        ("project destroy: starting " ++ name ++ " so its retained children can be reached")
-                        (rebootStartEffects reboot)
-                    -- The same readiness probe the forward path waits on; it
-                    -- refuses rather than returning a guest that does not answer.
-                    _ <- substrateWait cfg provider
-                    pure Step.TeardownReleased
-            _ -> case planProviderStop provider envelope of
-                Left err -> pure (Step.TeardownFailed (show err))
-                Right effs -> do
-                    runEffectsBestEffort cfg ("project down: stopping " ++ name) effs
-                    pure Step.TeardownReleased
+                        stateRoot
+                        (fromIntegral cpuNatural)
+                        (T.unpack (quantityText (memory configured)))
+                        (T.unpack (quantityText (storage configured))) of
+                        Left failure -> pure (Step.TeardownFailed (show failure))
+                        Right backendSpec -> do
+                            putStrLn
+                                ( case action of
+                                    DeleteFrame -> "project destroy: deleting " ++ name ++ " through its retained ownership record"
+                                    ReachFrame -> "project destroy: starting " ++ name ++ " so its retained children can be reached"
+                                    _ -> "project down: stopping " ++ name ++ " through its retained ownership record"
+                                )
+                            reconciled <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
+                                case action of
+                                    DeleteFrame -> runRetainedProviderDelete backend
+                                    ReachFrame -> runRetainedProviderReady backend
+                                    _ -> runRetainedProviderStop backend
+                            pure $ case reconciled of
+                                Left failure -> Step.TeardownFailed (show failure)
+                                Right (Left failure) -> Step.TeardownFailed (show failure)
+                                Right (Right ()) -> Step.TeardownReleased
+            else case action of
+                DeleteFrame -> case planProviderDelete provider envelope of
+                    Left err -> pure (Step.TeardownFailed (show err))
+                    Right effs -> do
+                        runEffectsBestEffort cfg ("project destroy: deleting " ++ name) effs
+                        remaining <- substrateExists cfg provider
+                        pure $
+                            if remaining
+                                then Step.TeardownFailed ("managed VM still exists after deletion: " ++ name)
+                                else Step.TeardownReleased
+                -- The reachability step opens a frame a `down` stopped, so it is the
+                -- one action here that must not fall through to the stop branch: a
+                -- provider asked to become reachable and stopped instead leaves the
+                -- destroy that follows unwinding nothing, which is the shape the
+                -- worked demo's live gate caught on the Incus lane.
+                ReachFrame -> case planProviderRebootReady provider of
+                    Left err -> pure (Step.TeardownFailed (show err))
+                    Right reboot -> do
+                        runEffectsBestEffort
+                            cfg
+                            ("project destroy: starting " ++ name ++ " so its retained children can be reached")
+                            (rebootStartEffects reboot)
+                        -- The same readiness probe the forward path waits on; it
+                        -- refuses rather than returning a guest that does not answer.
+                        _ <- substrateWait cfg provider
+                        pure Step.TeardownReleased
+                _ -> case planProviderStop provider envelope of
+                    Left err -> pure (Step.TeardownFailed (show err))
+                    Right effs -> do
+                        runEffectsBestEffort cfg ("project down: stopping " ++ name) effs
+                        pure Step.TeardownReleased
 
 {- | The reverse effect of the direct Linux GPU lane's @deploy-kind@ step.
 

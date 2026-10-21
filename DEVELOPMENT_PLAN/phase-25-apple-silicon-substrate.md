@@ -1,11 +1,20 @@
 # Phase 25 — Apple Silicon substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: apple-silicon
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting `10/10 passed` on an Apple Silicon host, plus a focused live exact-plan direct-Colima adapter lane
 **Gate kind**: deferred
+**Gate evidence**: 2026-10-20 ; `MacBookPro`, native arm64 macOS 26.6.2 (build 25G83),
+Apple M1 Max, 64 GiB memory, Lima 2.1.2, Colima 0.10.3, GHC 9.12.4, Cabal 3.16.1.0,
+Python 3.14.3, Poetry 2.3.2 ; repository Python-bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all` from the repository root
+reporting `10/10 passed`, plus
+`HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
+from `core/` reporting `33/33 passed`, followed by terminal ownership, Production-data
+preservation, ambient-state, and source-digest audits ; pass ;
+covers ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Apple-only Metal accelerator realization, exercise Lima/Colima as the Apple-host
@@ -471,9 +480,9 @@ of the evidence scope; these dated Apple results remain intact.
 
 None. Both live lanes, the terminal audit, and the matching evidence measurement are complete.
 
-### Sprint 25.7: Revalidate the corrected teardown against the expanded live scope [Active]
+### Sprint 25.7: Revalidate the corrected teardown against the expanded live scope [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: apple-silicon
 **Docs to update**: `documents/engineering/testing.md`
@@ -492,6 +501,55 @@ readback, with both native gate legs measured against the full authored inputs t
   settling the Dockerfile/publication drift recorded in Sprint 25.6; its pulled digest is recorded.
 
 #### Validation
+
+**2026-10-20 — both native gate legs pass.**
+The complete repository Python-bootstrapper
+`poetry run hostbootstrap run --project-root demo test run all` runs on native `MacBookPro`,
+arm64 macOS 26.6.2 (build 25G83), Apple M1 Max/64 GiB, GHC 9.12.4, Cabal 3.16.1.0,
+Poetry 2.3.2, Python 3.14.3, and Lima 2.1.2. It runs 17:49:19–20:07:19 UTC,
+exits 0 in 8,280.90 seconds, and reports **10/10 passed**. Both variants pass all five
+cases, including Metal arithmetic/backend/source-fingerprint assertions and durable
+same-run destroy/recreate readback. Phase 24 validates its complete gate first; this
+unchanged-source run also supplies the Apple matrix leg under this phase's own scope.
+
+The 25-root, 845-file source scope is independently measured before staging, in all five
+actual guests (Production plus four Harness generations), and after the matrix at
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
+Sprint 24.50 records each fresh machine/image identity and both independent restart-gap
+proofs, where each exact marker retains its inode, bytes, and hash before the recreated
+application exists. All guests use native VZ/aarch64 with the declared 6 CPUs, 10 GiB memory,
+and 80 GiB disk. The host has 652 GiB free before the matrix. Each guest explicitly pulls
+the published CPU/arm64 base
+`sha256:c5bedce2f8cc9bcdc82d46eedfda9bb10bbb2837b64d59258a777a18988590cf`.
+Phase 23's publication inputs remain unchanged at `01f1270d3cbc657325290f425e77e9492fa6ceef4e577a69891a2d1450e065b0`;
+the previous native build-and-push prerequisite remains satisfied without a new publication.
+
+The independent 20:07:38 UTC terminal audit passes: both actual Harness leases are Closed
+at version 6, epochs 7 and 11; profiles are Available at version 3, epochs 6 and 10.
+No mode/config/data-root ownership, generated sibling config, VM/directory, daemon claim/
+witness, or native owned process remains; `.test_data` exists empty. Persisted Harness
+journals remain Open at version 1 with Idle coordinators, separately from the final Closed
+leases. The complete Production data tree and terminal records, post-Production executable,
+all five identities, and operator test config are unchanged. Ambient Colima `default`, its
+budget/configuration, Docker context, 38 container identities, 11 image entries, and
+credential-configuration hashes match the fresh pre-live baseline. All three owned observers
+stop cleanly at 20:08:08 UTC. Phase 28 records this visit's complete native macOS and arm64
+Linux static gates. The 2026-10-17 lane below retains its original date and source provenance.
+
+After Phase 24's closing native `DocValidatorSpec` passes 11/11 at 20:14:47 UTC,
+the separate opted-in native command
+`HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='--pattern Colima' --test-show-details=direct`
+runs from `core/` at 20:15:06–20:16:16 UTC. It exits 0 in 70.02 seconds, with
+**33/33 passed** in 65.71 seconds; its actual live case takes 61.74 seconds. Exact profile
+`h-05493d` is acquired, the conflicting plan is refused, and its profile/context/data are
+cleaned without activating the shared default. The independent 20:16:31 UTC post-Colima
+audit confirms its profile/Lima directories are absent and contexts contain only `colima`
+and `default`. Ambient default profile, budget, configuration/credential hashes, Docker
+context, all 38 container identities, and all 11 image entries are unchanged. All 379
+protected records are enumerated; terminal authority, complete Production tree, installed
+artifacts, operator test config, and absence of ephemeral project state remain unchanged.
+The post-Colima 25-root/845-file measurement still matches
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
 
 The preceding native Apple run retains its actual commands and source provenance:
 
@@ -655,17 +713,11 @@ this unchanged-source observation does not convert the failed matrix into accept
 
 #### Remaining Work
 
-Re-run both native Apple gate legs after absent-provider reverse admission, with terminal ownership,
-ambient-state audits, and fresh source evidence. The current direct-Colima leg passes against the
-unchanged source; the full matrix requires at least 80 GiB free. The failed attempt measured
-29 GiB, and available storage remains below the declared budget.
-The retained bound Harness run must settle through supported recovery before fresh admission.
+None.
 
 ## Remaining Work
 
-Sprint 25.7 owns complete native Apple matrix and direct-Colima revalidation, supported recovery
-of the retained Harness run, terminal audits, and fresh source evidence. The current matrix fails
-its 80-GiB storage precondition (29 GiB free at the attempt) and does not establish terminal ownership.
+None.
 
 ## Documentation Requirements
 

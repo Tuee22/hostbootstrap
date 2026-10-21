@@ -61,32 +61,33 @@ its row here.
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Done | linux-cpu | — |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Done | linux-cpu | — |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Done | linux-cpu | — |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | absent-provider reverse admission and live revalidation |
-| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Active | **apple-silicon** | storage refusal; full matrix and terminal recovery owed |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
+| 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Active | **nvidia** | full matrix after durable-root assertion |
 | 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | revalidation after shared source changes |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | native Windows static revalidation |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | native Windows and x86_64 Linux static gates |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Phases 0–23 and 29 are Done. Phase 24 is the lowest Active phase. The 2026-10-17 native
-Apple acceptance attempt exposes an absent-provider reverse defect in Sprint 24.46: after the
-unchanged 80-GiB storage budget refuses a host with 29 GiB free, reverse reachability provisions
-an uninitialized Lima guest. Sprint 24.46 owns exact absent-provider admission;
-Sprint 24.50 owns complete phase revalidation after that adoption. Prior dated passes retain
-their original source provenance.
+Phases 0–25 and 29 are Done. Phase 26 is the lowest Active phase and requires native Linux
+with a real NVIDIA GPU and working CUDA/container runtime, unavailable in this Apple session.
+[Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), Sprint 25.7, passes both
+native gate legs on 2026-10-20: the unchanged-source shared matrix reports `10/10`, and
+the separate live direct-Colima lane reports `33/33`, with terminal and ambient audits passing.
 
-[Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), Sprint 25.7, records the exact
-`0/12` failed matrix and the passing `33/33` live direct-Colima lane. The gate-created guest is
-removed after ownership is independently established. Generated config and Production `.data`
-are absent, `.test_data` is empty, and the bound Harness lease, held mode, and consumed profile
-are preserved for supported recovery. No terminal ownership pass is claimed. Numerical
-advancement stops here: this host cannot supply the live gates' declared 80-GiB storage budget.
+Sprint 24.46 validates absent-provider admission with the full native host static gate and
+an actual absent-Lima callback probe. Sprint 24.50 then passes the complete worked-demo
+gate: both Cabal workspaces, Python checks, Production init/up/down/destroy, the full
+four-generation Harness matrix, and terminal ownership/data/identity/ambient audits.
+The matrix runs with 652 GiB free against its declared 80-GiB budget. All three actual leases
+are Closed; retained Production data and records are unchanged. The earlier failed capacity
+attempt and dated passes retain their original source provenance; no recovery of externally
+removed records is claimed.
 
 The same Apple visit records complete native macOS and arm64 Linux host static gates for
-[host-portability acceptance](phase-28-host-portability-acceptance.md), Sprint 28.5. These
-hardware results do not close or advance past the lower live gate. Corrected-source x86_64 Linux evidence already exists; Windows revalidation remains owed.
+[host-portability acceptance](phase-28-host-portability-acceptance.md), Sprint 28.5, against
+the current source. Native Windows and x86_64 Linux revalidation remain owed.
 
 [NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md), Sprint 26.10, retains its native
 `matt-caledon-desktop` RTX 3090 matrix's `8/10` result; full NVIDIA acceptance remains owed against
