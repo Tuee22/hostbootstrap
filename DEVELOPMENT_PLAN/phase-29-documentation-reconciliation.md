@@ -5,6 +5,10 @@
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all` from `core/`
 **Gate kind**: self-verifying
+**Gate evidence**: 2026-10-22 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home
+10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` ;
+pass ; covers in-gate
 **Gate evidence**: 2026-09-14 ; `matt-junction`, native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: After the narrative is fully built, reconcile the governed `documents/` suite, comments, and help
@@ -61,6 +65,17 @@ The 2026-09-05 source audit confirms that receiver admission introduces scope on
 selection. `Handoff.Process.Route.sanitizedLaunch` derives its dispatch from `Lift.foldLeaf`. Their
 corresponding ledger shapes are absent. The service-handler and root-closure owners have also deleted
 their listed shapes, leaving the ledger empty.
+
+On 2026-10-22, a further source/document read-through reconciles the Apple demo's Lima
+selection with the separately accepted direct-Colima adapter, removes stale completed-phase
+and prerequisite-gap claims, and narrows the cluster phase's downstream adoption statement.
+Sprint 15.32's stale owed-coverage prose is replaced with the completion already recorded in
+Sprints 15.33 and 15.36 and held by the current `ProviderSpec` record-tape guard. Windows
+run-duration and idle-timeout prose is aligned with the measured 4-hour acceptance.
+Completed phase documents also gain the missing phase-level Remaining Work sections,
+and older completed-sprint markers are normalized to the required `None.` spelling.
+No source implementation changes. The complete native Windows core gate passes 2,548/2,548,
+including `DocValidatorSpec`; the final plan carries both completed Windows evidence rows.
 
 #### Remaining Work
 

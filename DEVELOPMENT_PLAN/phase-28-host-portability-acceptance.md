@@ -1,6 +1,6 @@
 # Phase 28 — Host-portability acceptance
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: `cabal build all` from `core/`, plus all four commands of the
@@ -32,6 +32,13 @@ Linux 7.0.0-38-generic, GHC 9.12.4, Cabal 3.16.1.0, Poetry 1.8.2,
 repository-venv Python 3.12.3 ; `cabal build all` and plain `cabal test all` from `core/`,
 `cabal build all` and plain `cabal test all` from `demo/`,
 `poetry run python -m hostbootstrap.check_code` and
+`poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
+covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
+**Gate evidence**: 2026-10-22 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home
+10.0.26300.9457, AMD Ryzen 7 5700G, 63.87 GiB, GHC 9.12.4, Cabal 3.16.1.0,
+Poetry 2.4.1, repository-venv Python 3.14.7 ; `cabal build all` from `core/`,
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from both
+`core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root ; pass ;
 covers b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/dhall` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `tests` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/playwright.config.ts` `demo/kind.yaml` `demo/nvkind-in-cluster.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore`
@@ -352,9 +359,9 @@ than for an earlier draft of it.
 None. Every cell this sprint owns has current-source evidence. Any further host-portable source change
 expires all four and requires fresh coverage from each.
 
-### Sprint 28.5: The host-portability acceptance against the current tree [Active]
+### Sprint 28.5: The host-portability acceptance against the current tree [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: none
 **Docs to update**: `documents/engineering/testing.md`
@@ -375,6 +382,36 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 - Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
 
 #### Validation
+
+**2026-10-22 — complete native Windows gate passed.** Phase 27 completes its live
+matrix, terminal ownership/WSL audit, and closure documentation check before this sprint
+begins. On `DESKTOP-R6BTBVS`, every declared native Windows command passes:
+
+- `cabal build all` from `core/` passes in 0.82 seconds at 18:15:22 UTC.
+- `poetry run python -m hostbootstrap.check_code` passes Ruff, Black, and mypy in
+  1.98 seconds at 18:15:23 UTC.
+- `poetry run python -m hostbootstrap.test_all` passes 251/251 in 3.67 seconds of
+  pytest execution, 5.42 seconds for the runner, at 18:15:27 UTC.
+- `cabal test all --test-show-details=direct --test-options=--hide-successes` from
+  `core/` runs from 18:15:40.883 to 18:22:00.779 UTC and exits 0 in 379.90 seconds.
+  The core component passes 2,548/2,548 in 369.94 seconds; the provider-live component
+  passes its declared no-request `Unsupported` result.
+- The same complete test command from `demo/` runs from 18:15:40.896 to
+  18:24:29.954 UTC and exits 0 in 529.06 seconds, including compilation. The demo
+  component passes 164/164 in 5.68 seconds, its core component passes 2,548/2,548 in
+  361.83 seconds, and the provider-live component passes without a live-provider request.
+
+Both core suites report the direct-Colima lane's expected no-request `Unsupported` result.
+The five-case difference from the macOS/Linux core total follows the explicit platform
+conditions enumerated in Sprint 28.1; no new exclusion or weakened gate is introduced.
+These are native Windows static results; the preceding phase separately records the
+live Windows/WSL2 acceptance.
+
+The 18:24:42 UTC post-gate measurement covers all 24 roots and 857 files at
+`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`, matching the
+pre-gate measurement and the three existing current macOS, arm64 Linux, and x86_64 Linux
+rows. No covered source changes during these checks. All four gate-host cells now have
+complete current-source evidence, closing Sprint 28.5 and this phase.
 
 **2026-10-21 — complete native x86_64 Linux gate passed.** The current header row records
 all six commands against the same provider-admission source as the macOS and arm64 Linux rows.
@@ -1034,18 +1071,11 @@ and final evidence-wording corrections, the native focused `DocValidatorSpec` pa
 
 #### Remaining Work
 
-Run the complete declared gate against the provider-admission source on native Windows:
-the core build and all four host-static commands, with dated complete commands/results
-and fresh measurements over the 857-file source scope. The 2026-10-20 native macOS and arm64 Linux
-gates and 2026-10-21 native x86_64 Linux gate pass at
-`b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`.
-Earlier rows retain their original source provenance.
+None.
 
 ## Remaining Work
 
-**Sprint 28.5** owns native Windows static revalidation of the 2026-10-20 provider-admission
-source. Complete native macOS, arm64 Linux, and x86_64 Linux gates and their current source
-measurements are recorded.
+None.
 
 ## Documentation Requirements
 

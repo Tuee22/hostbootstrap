@@ -300,6 +300,10 @@ same-epoch refusal before snapshot persistence, and all 123 public compile-fail 
 
 None.
 
+## Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

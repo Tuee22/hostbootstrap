@@ -1,12 +1,19 @@
 # Phase 27 — Windows and WSL2 substrate
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
 reporting a complete pass of the configured matrix on a native Windows host, followed by the
 terminal ownership and WSL wall audit
 **Gate kind**: deferred
+**Gate evidence**: 2026-10-22 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 Home
+10.0.26300.9457, AMD Ryzen 7 5700G, 63.87 GiB, RTX 3090 driver 617.42, CUDA 13.3,
+WSL 2.7.10.0, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, repository-venv Python 3.14.7 ;
+repository Python bootstrapper `poetry run hostbootstrap run --project-root demo test run all`,
+launched through the WMI durable runner, followed by the terminal ownership and WSL wall audit
+and `wsl.exe --shutdown` after verified wall restoration ; pass ;
+covers ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
 > **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
@@ -830,9 +837,9 @@ covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
 
 None.
 
-### Sprint 27.6: Revalidate Windows acceptance against shared source [Active]
+### Sprint 27.6: Revalidate Windows acceptance against shared source [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none — this sprint records a run
 **Substrates**: windows
 **Docs to update**: `documents/engineering/testing.md`
@@ -879,22 +886,92 @@ or refreshed gate evidence is claimed. The unchanged 25-root, 845-file scope rem
 `ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
 Sprint 27.6 remains Active for its declared native Windows gate.
 
+On 2026-10-22, native Windows host `DESKTOP-R6BTBVS` completes the declared acceptance.
+`poetry run hostbootstrap doctor` reports `windows-gpu (amd64)`; the RTX 3090 is available
+and the initial demo state has no WSL registration, active wall record, Production `.data`,
+or Harness `.test_data`. The baseline wall fence is 66. Approximately 225 GiB is free
+against the operator test config's 80-GiB storage budget; it also declares 6 CPUs and
+10 GiB memory. Repository Python code checks and all 251 Python cases pass as preflight.
+
+The durable `phase27-init-20261022` native demo build and `test init` exit 0 at
+14:08:32 UTC, following the 13:47:07 UTC launch. The source-built executable measures
+SHA-256 `a65e3c244a3e57c904f115e38a654d8ce93c56d66971edee3ebb10cd6010801e`.
+The complete repository-bootstrapper matrix starts at 14:09:26.662849 UTC as
+`phase27-matrix-20261022`, PID 11272 parented by `WmiPrvSE.exe`, outside the agent process
+tree. It reports `10/10 passed` and exits 0 at 18:12:35.2032018 UTC, after approximately
+14,588.54 seconds (4 hours 3 minutes 9 seconds). Both `hello-world` and `hello-universe`
+pass `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and
+`durable-readback`. Each variant completes its engine-owned same-run destroy/recreate and
+terminal destroy. No gate restart or source repair is needed.
+
+The host-only observer verifies four distinct image/public-web revisions, with matching
+expected and received manifests and directory SHA-256 digests, and zero verification issues:
+
+| Variant | Run | Generation | Wall fence | WSL GUID | Image | Public web manifest | First observed UTC |
+|---|---|---|---|---|---|---|---|
+| `hello-world` | `run-2d77e1e156f0` | 1 | 67 | `{95644321-66aa-4a00-9fe3-57bd3f53290c}` | `sha256:0d12e00e26770d12fe1acca2c920aff781c8cbfcf1de052fab93352c57394136` | `8084b8642b8bc407795b40cea18f2995855f42d16f0fc116f6f63cb751be54d0` | `2026-10-22T15:06:25.551Z` |
+| `hello-world` | `run-2d77e1e156f0` | 2 | 68 | `{bb86ce2c-75fe-477c-9f75-b542b0db5e3c}` | `sha256:4106cbd44842b8083bdbb3beb155cff62eb38da7ea27e7a1370eb7f20bd86ae1` | `8a658c3e92e00d1f7dbd93495fc39a76c289a06a96922947c2302ab87bc868c7` | `2026-10-22T16:15:05.268Z` |
+| `hello-universe` | `run-345533167db4` | 1 | 69 | `{04f26b2f-2f51-4386-87c7-ca000cedc665}` | `sha256:84d6127d1bf0bb5c91e63fdb8d2d10c69a5e3e0df8420a7954dc90feb27897c3` | `2c18c32105162e6c5c4b82390dbd4637f39cde3e7664c3a943ca89aecc51702c` | `2026-10-22T17:14:54.769Z` |
+| `hello-universe` | `run-345533167db4` | 2 | 70 | `{25a24444-e45f-46f9-acc3-613b67ba4eaa}` | `sha256:6062fbe1b99f7e8dd03adb36d1b978cbf4e865858c299fd49a5e39e646d466d5` | `f61b786e1f09048492eafe51d7565a400834172e4040ced9f58f31052018da25` | `2026-10-22T18:12:19.793Z` |
+
+Every guest uses Docker's `overlay2` image store and pulls the published CPU/amd64 base
+at `sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`.
+The fourth native bootstrap is observed complete by 17:47:47 UTC, Docker is ready by
+17:48:52 UTC, and its base pull finishes by 17:50:51 UTC. Its archive integrity and
+runtime/config/public-key/web-bundle export verification pass by 18:04:39 UTC.
+
+Both variants directly observe their native CUDA worker through Win32 process inventory
+and `nvidia-smi`: `hello-world` worker PID 29640, child of daemon 23016, at
+15:07:07.697 UTC; `hello-universe` worker PID 29168, child of daemon 16488, at
+17:15:13.029 UTC. Both use
+`demo/.build/accelerator/windows-gpu/fc76cd884d2539b8/accelerator-worker.exe`.
+All four native daemons are observed: PIDs 23016, 13632, 16488, and 23628, in generation
+order. Each connects through the resolved local-only exposure
+`ws://127.0.0.1:32771/api/accelerator/daemon`; the final established connection is
+`127.0.0.1:55644` to `127.0.0.1:32771`. No worker observation is claimed for the two
+restart generations.
+
+The 18:12:51 UTC read-only terminal ownership and WSL wall audit passes with these exact
+retained records:
+
+| Kind | Run | Lease state / record version / epoch | Profile state / record version / epoch / lease-version field |
+|---|---|---|---|
+| Harness | `run-2d77e1e156f0` | `closed` / 6 / 4 | `available` / 3 / 3 / 4 |
+| Harness | `run-345533167db4` | `closed` / 6 / 8 | `available` / 3 / 7 / 4 |
+
+No mode, generated-config, or data-root ownership record remains. The generated project
+config, daemon PID, and protected daemon owner are absent, and no native daemon or worker
+process remains. The operator test config retains SHA-256
+`8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`.
+The `.test_data` parent exists and is empty; Production `.data` remains absent. The
+external helper reads records without probing protected-entry exclusivity; the Harness
+runs its supported teardown assertions.
+
+HKCU's WSL registration inventory is empty. There is no active wall record or managed wall
+sidecar; the monotonic fence is 70, exactly four acquisitions beyond baseline 66.
+The restored `.wslconfig` retains its original SHA-256
+`2986099d4e292abed1bacbf7b7cb514188bad4304f930800803a85470ee4e694`
+and Windows file ID `0x00000000000000000061000000023bde`. Only after confirming that
+restoration and empty registration inventory, supported `wsl.exe --shutdown` exits 0 at
+18:12:58–18:13:01 UTC. No `vmmemWSL` process remains, and 55.2 GiB of physical memory is free.
+
+The post-gate 18:13:01 UTC measurement covers all 25 roots and 845 files at
+`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`, matching the
+pre-gate and 16:41 UTC measurements. No covered source changes during the run. This closes
+Sprint 27.6 and the Windows acceptance before native Windows host-static validation begins.
+
+After recording the complete evidence and Done statuses, native
+`cabal test hostbootstrap-core-test --test-options="--pattern DocValidator" --test-show-details=direct`
+from `core/` passes 11/11 in 6.62 seconds. This verifies documentation, status harmony,
+complete gate evidence, and covered-source currency before phase 28 begins.
+
 #### Remaining Work
 
-On native Windows, revalidate the shared provider reachability admission and covered core/demo
-regressions along with the earlier formatting and assertion-frame durable-root changes. The current
-25-root, 845-file scope measures
-`ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
-Run the repository Python bootstrapper's
-`poetry run hostbootstrap run --project-root demo test run all` to a complete configured-matrix pass,
-then perform the terminal ownership and WSL wall audit. Record the dated native host/toolchain,
-actual command, matrix and audit results, and freshly measured covers digest after the gate passes.
+None.
 
 ## Remaining Work
 
-Sprint 27.6 owns the complete native Windows matrix, terminal ownership and WSL wall audit,
-and fresh source evidence after shared formatting, assertion-frame durable-root projection,
-provider reachability admission, and covered core/demo regression changes.
+None.
 
 ## Documentation Requirements
 

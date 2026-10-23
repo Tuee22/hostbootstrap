@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [documents index](../README.md), [WSL2](wsl2.md), [testing](testing.md), [../../CLAUDE.md](../../CLAUDE.md), [../../AGENTS.md](../../AGENTS.md)
 
-> **Purpose**: Explain why a long agent-driven run (the ~25–50 min demo gate) gets killed on Windows
+> **Purpose**: Explain why an agent-driven long-running demo gate gets killed on Windows
 > under a Claude Code / agentic-CLI session, give the Windows-only procedure that makes it survive, and
 > state what a surviving run keeps holding after the session ends.
 
@@ -15,8 +15,8 @@
   gate: they run foreground as ordinary Windows processes and are expected to pass there, exactly as on
   macOS and Linux — iterate on them normally, with no WSL2 distro and no durable launcher involved. See
   [testing](testing.md#gate-kinds). Only the long demo gate
-  (`hostbootstrap run -- test run all` / `project up`, ~25–50 min) needs the procedure below, because it
-  is a live gate that drives WSL2, Docker, and a real cluster.
+  (`hostbootstrap run -- test run all` / `project up`), whose Windows matrix can run for hours, needs
+  the procedure below because it drives WSL2, Docker, and a real cluster.
 - **Root cause (source-proven).** Claude Code launches a `run_in_background` shell as a *descendant of
   `claude.exe`*, and its own idle/lifecycle reaper terminates it on Windows with
   `taskkill /PID <pid> /T /F` — a grace-less kill of the whole descendant tree, which severs the

@@ -355,7 +355,7 @@ Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 8.9: One accelerator probe [Done]
 
@@ -386,7 +386,7 @@ Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `co
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 

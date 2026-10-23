@@ -30,7 +30,7 @@ generic plan-indexed budget algebra comes from Phase 12, and the worked demo lat
 workload, overhead, partition, and slice projection.
 
 Two boundaries are worth naming because they sit close to this phase's own. Recursive and demo call-site
-adoption of these consumers belongs to the
+adoption of the cluster consumers belongs to the
 [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) and the
 [worked-demo phase](phase-24-worked-demo.md), not here. And the direct-Colima driver's *static* coverage
 closes on any POSIX gate host once its classification is pure, so no sprint here waits on Apple hardware;
@@ -2643,7 +2643,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 16.53: Accelerator ingress is a closed sum [Done]
 
@@ -2684,7 +2684,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 16.54: One prepared-gate commitment [Done]
 
@@ -2732,7 +2732,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 16.55: The resolved cluster plan retains one state directory [Done]
 
@@ -2771,7 +2771,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 16.56: The cluster gate against the port-carrying tree [Done]
 

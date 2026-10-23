@@ -1312,18 +1312,9 @@ ten-case lifecycle family this sprint's driver carries.
 
 #### Remaining Work
 
-None for this sprint's own subject. Two coverage items are **owed** and are not this sprint's to close:
-
-- The partial-write, partial-fsync, and partial-unlink crash windows the retired interpreter program
-  was patchable at have no instruction point in this driver, because durability is now the protected
-  store's. The store's own durability contract is
-  [phase 14](phase-14-ownership-clauses-and-reservations.md)'s and is covered by `AuthoritySpec`; what
-  is owed is a statement in that phase's terms that the provider driver inherits it, rather than a
-  reintroduced patch point here.
-- Two rechecks a suite once asserted are not held by this driver and are not claimed: a share does not
-  re-observe the *instance* after its device readback, and a delete does not distinguish the same
-  identity from a replacement anywhere except after the destructive command. The second is closed by
-  Sprint 15.33; the first is named as owed there.
+None. Sprint 15.33 closes the share-readback and delete-identity rechecks. Sprint 15.36
+records inherited protected-store durability; the current `ProviderSpec` guard follows
+publications through the shared ownership record tape.
 
 ### Sprint 15.33: The share, stop, and delete drivers [Done]
 
@@ -1710,7 +1701,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 15.39: One runtime-dependency coordinate opener [Done]
 
@@ -1751,7 +1742,7 @@ package` suite passed 10/10, and the phase gate below.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 15.40: The retained provider opens as well as closes [Done]
 

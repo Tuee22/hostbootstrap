@@ -1909,7 +1909,7 @@ GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
-None beyond the phase's own. The cluster-side adoption is owned by the cluster-lifecycle phase.
+None. The cluster-side adoption is owned by the cluster-lifecycle phase.
 
 ## Remaining Work
 

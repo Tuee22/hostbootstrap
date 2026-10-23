@@ -211,7 +211,7 @@ vocabulary did not change when the mechanics did. Dated evidence: `ruff`/`black`
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 1.7: The bootstrapper's detection is the one the binary uses [Done]
 
@@ -242,7 +242,7 @@ fallback and nothing regresses.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 

@@ -191,11 +191,11 @@ irreducible host floor the pre-binary work depends on. The consolidated host min
 ## Current Status
 
 The pre-binary minimum and binary-owned reconciliation split above describes the current boundary.
-Remaining gaps—such as weak provider probes and recursive-plan integration of the prepared Colima
-adapter—have exact owners and closure criteria in the development plan. The Linux `curl` floor and GHCup download integrity are
-closed. This
-page defines what belongs on each side of the boundary; it does not independently declare those phases
-closed.
+Probe strengths and platform install coverage vary as described in
+[ensure reconcilers](ensure_reconcilers.md). The Apple demo uses Lima, while Apple acceptance exercises
+the prepared direct-Colima adapter in a separate native lane. The Linux `curl` floor and GHCup download
+integrity are closed. This page defines what belongs on each side of the boundary; current acceptance
+evidence belongs in the development plan.
 
 ## See also
 

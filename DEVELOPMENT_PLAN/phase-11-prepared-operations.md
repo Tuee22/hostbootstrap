@@ -145,6 +145,10 @@ cross-plan refusal, and the injectivity guard that refuses a plain component sha
 
 None.
 
+## Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

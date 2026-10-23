@@ -422,7 +422,7 @@ the unparseable pair in turn.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 

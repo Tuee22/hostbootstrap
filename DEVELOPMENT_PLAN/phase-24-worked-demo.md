@@ -2704,7 +2704,7 @@ to this sprint.
 
 #### Remaining Work
 
-None, beyond the behavioural confirmation this sprint does not own. The lifecycle *operation* is now
+None. The lifecycle *operation* is now
 `withProtectedEntry` over a store in the daemon's own directory: an OS-released exclusive lock spanning
 the whole bracket, so a hard kill releases it in the kernel and the next run proceeds rather than
 refusing with a directory name for an operator to delete. The *ownership* claim outlives the process —

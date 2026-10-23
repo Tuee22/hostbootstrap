@@ -21,7 +21,7 @@ The active lower-boundary separation assigns pure `Wsl2VM` target data and the i
 `wsl -d <distro> -- ...` renderer to `HostBootstrap.Lift.Context`. `HostBootstrap.Wsl2` reexports them and
 owns distro/lifecycle builders. For compatibility it reexports prerequisite helpers whose implementations
 — diagnostics, output normalization, virtualization classification, and `bcdedit` rendering — are owned by
-`HostBootstrap.Ensure.Wsl2`. The active
+`HostBootstrap.Ensure.Wsl2`. The
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 and [ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) pin that dependency
 direction.
@@ -203,9 +203,10 @@ effects.
 The managed body uses finite idle timeouts: six hours in milliseconds for
 `[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`, derived from
 the single `managedWslIdleTimeoutHours` constant in `HostBootstrap.Cluster.Cordon.Foundation` (and
-reexported by the configuration facade). Six hours is an order of magnitude beyond the longest lifecycle
-this project runs, so no run can be idle-stopped in the gaps between its `wsl -d` steps. These finite
-timeouts are an interrupted-run backstop: normal teardown does not wait for either timeout to expire.
+reexported by the configuration facade). The six-hour ceiling exceeds the observed acceptance duration
+recorded in the [Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md),
+allowing the observed gaps between its `wsl -d` steps. These finite timeouts are an interrupted-run
+backstop: normal teardown does not wait for either timeout to expire.
 
 `project down` emits `ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing: the
 utility VM re-reads the file on its next cold boot, so releasing *after* shutdown would publish the

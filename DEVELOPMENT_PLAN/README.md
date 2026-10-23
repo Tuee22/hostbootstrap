@@ -64,16 +64,20 @@ its row here.
 | 24 | [The worked demo](phase-24-worked-demo.md) | Done | linux-cpu | — |
 | 25 | [Apple Silicon substrate](phase-25-apple-silicon-substrate.md) | Done | **apple-silicon** | — |
 | 26 | [NVIDIA GPU substrate](phase-26-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
-| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Active | **windows** | native Windows matrix and WSL wall audit |
-| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Active | — | native Windows static gate |
+| 27 | [Windows and WSL2 substrate](phase-27-windows-and-wsl2-substrate.md) | Done | **windows** | — |
+| 28 | [Host-portability acceptance](phase-28-host-portability-acceptance.md) | Done | — | — |
 | 29 | [Documentation reconciliation](phase-29-documentation-reconciliation.md) | Done | — | — |
 
 ## The current frontier
 
-Phases 0–26 and 29 are Done. Phase 27 is the lowest Active phase and requires a native
-Windows/WSL2 host. The 2026-10-21 visit on `matt-caledon-desktop` supplies native Linux/NVIDIA
-acceptance and the x86_64 Linux static gate; it cannot supply the native Windows gate, so
-execution stops at phase 27. Sprint 27.6 retains that matrix and terminal ownership/WSL wall audit.
+All phases 0–29 are Done. The 2026-10-22 native Windows visit closes the remaining
+acceptances in numerical order. Sprint 27.6 passes the complete repository-bootstrapper
+matrix `10/10` in 4 hours 3 minutes; both variants directly observe native CUDA, and the
+terminal ownership and WSL wall audit passes. Both leases are Closed, both profiles
+Available, all guests and accelerator processes are gone, and the original wall bytes
+and Windows file identity are restored before supported shutdown. Sprint 28.5 then
+passes the core build and all four host-static commands natively on Windows. Both source
+scopes remain unchanged; there is no open work in the plan.
 
 [Apple Silicon acceptance](phase-25-apple-silicon-substrate.md), Sprint 25.7, passes both
 native gate legs on 2026-10-20: the unchanged-source shared matrix reports `10/10`, and
@@ -91,7 +95,8 @@ removed records is claimed.
 The same Apple visit records complete native macOS and arm64 Linux host static gates for
 [host-portability acceptance](phase-28-host-portability-acceptance.md), Sprint 28.5, against
 the current source. The 2026-10-21 NVIDIA visit adds the complete native x86_64 Linux static
-gate on `matt-caledon-desktop`. Native Windows static revalidation remains owed.
+gate on `matt-caledon-desktop`. The 2026-10-22 native Windows static gate completes all four
+gate-host cells against that same 857-file source scope.
 
 [NVIDIA acceptance](phase-26-nvidia-gpu-substrate.md), Sprint 26.10, passes `10/10` on
 2026-10-21 against the current source on `matt-caledon-desktop` with an RTX 3090.

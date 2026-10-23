@@ -175,6 +175,10 @@ passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
 
 None.
 
+## Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Architecture docs to create/update:**

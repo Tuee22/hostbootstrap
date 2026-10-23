@@ -353,7 +353,7 @@ passed 522 cases in 83.11 seconds with every case stating its expected phrase.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 5.11: The session testing seam leaves the public surface [Done]
 
@@ -384,7 +384,7 @@ fixture reporting the seam as a member of the hidden `lifecycle-transaction-inte
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 5.12: Coordinate types at the prepared-gate boundary [Done]
 
@@ -427,7 +427,7 @@ x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` f
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 

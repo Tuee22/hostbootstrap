@@ -367,7 +367,7 @@ agreeing exactly with the 153 module files under `src` and `internal/cluster-bac
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ## Remaining Work
 

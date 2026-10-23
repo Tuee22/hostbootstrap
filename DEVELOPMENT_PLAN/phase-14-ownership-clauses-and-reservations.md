@@ -787,7 +787,7 @@ suite that covered this code is the one named.
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 14.16: The harness owners adopt the record tape [Done]
 
@@ -827,7 +827,7 @@ Dated 2026-09-12 validation evidence (x86_64-linux, GHC 9.12.4, Cabal 3.16.1.0):
 
 #### Remaining Work
 
-None beyond the phase's own.
+None.
 
 ### Sprint 14.17: The remaining publishers adopt the tape, and one reader decodes the wire [Done]
 
