@@ -11,12 +11,13 @@
 ## TL;DR
 
 - **Windows only.** macOS and Linux are unaffected; run the gate normally there.
-- **Two tiers of tests.** The fast suites (`hostbootstrap.test_all`, `cabal test`) are the host static
-  gate: they run foreground as ordinary Windows processes and are expected to pass there, exactly as on
-  macOS and Linux — iterate on them normally, with no WSL2 distro and no durable launcher involved. See
-  [testing](testing.md#gate-kinds). Only the long demo gate
-  (`hostbootstrap run -- test run all` / `project up`), whose Windows matrix can run for hours, needs
-  the procedure below because it drives WSL2, Docker, and a real cluster.
+- **Two tiers of tests.** The host static gate — the four commands in
+  [§ JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness),
+  including `check_code` and the `demo/` Cabal leg — runs foreground as ordinary Windows processes and is
+  expected to pass there, exactly as on macOS and Linux; iterate on it normally, with no WSL2 distro and no
+  durable launcher involved. See [testing](testing.md#gate-kinds). Only the long demo gate
+  (`test run all` / `project up` through the Python bootstrapper), whose Windows matrix can run for hours,
+  needs the procedure below because it drives WSL2, Docker, and a real cluster.
 - **Root cause (source-proven).** Claude Code launches a `run_in_background` shell as a *descendant of
   `claude.exe`*, and its own idle/lifecycle reaper terminates it on Windows with
   `taskkill /PID <pid> /T /F` — a grace-less kill of the whole descendant tree, which severs the
@@ -61,29 +62,40 @@ admin (the child is parented to `WmiPrvSE.exe`).
 
 ## The procedure (Windows)
 
-1. **Launch out of the tree.** Run the harness-owned `Start-DurableRun.ps1` as a normal foreground
+1. **Initialize the test config.** From the repository root, run
+   `poetry run hostbootstrap run --project-root demo test init` as an ordinary foreground call. It is
+   short, the guard does not match it, and `test run all` fails fast at pre-flight without the config it
+   writes.
+
+2. **Launch out of the tree.** Run the harness-owned `Start-DurableRun.ps1` as a normal foreground
    tool call (it returns immediately after spawning):
 
    ```powershell
    & "$env:USERPROFILE\.claude\hostbootstrap\Start-DurableRun.ps1" `
-       -Command 'hostbootstrap run -- test run all' `
-       -Label 'gate-testrun' -WorkingDirectory 'C:\Users\Matt\hostbootstrap\demo' `
+       -Command 'poetry run hostbootstrap run --project-root demo test run all' `
+       -Label 'gate-testrun' -WorkingDirectory '<repository root>' `
        -OutputDir '<session scratchpad dir>'
    ```
 
-   It prints a JSON line: `{ "pid", "label", "out", "exit", "method" }`. All run output (streams
-   merged) goes to `<label>.out`; the integer exit code is written to `<label>.exit` when the run
-   finishes. Output goes to the scratchpad, never the repository tree (no `.log` files in the tree).
+   The spawned process does not inherit the agent shell's environment: it runs with the user's stored
+   environment, so `poetry` must be on the user's persistent `PATH`. The launcher prints a JSON line:
+   `{ "pid", "label", "out", "exit", "method" }`. All run output (streams merged) goes to `<label>.out`;
+   the integer exit code is written to `<label>.exit` when the run finishes. Output goes to the
+   scratchpad, never the repository tree (no `.log` files in the tree). Right after launch, record the
+   process's identity:
+   `Get-CimInstance Win32_Process -Filter "ProcessId=<pid>" | Select-Object CreationDate, CommandLine`.
 
-2. **Poll with `ScheduleWakeup`.** Schedule a wake-up sized to the expected runtime, and on each wake
+3. **Poll with `ScheduleWakeup`.** Schedule a wake-up sized to the expected runtime, and on each wake
    do a stateless check: if `<label>.exit` exists, read the exit code and tail `<label>.out`; otherwise
-   confirm the pid is still alive (`Get-Process -Id <pid>`) and reschedule. **Do not** launch a
-   `run_in_background` sleep-loop "waiter" — the waiter is itself a `claude.exe` descendant, so it is
-   exactly what the reaper kills, and each reap produces a spurious "killed" notification that looks
-   like the test dying when it is not.
+   confirm that a process with that pid exists *and* has the recorded creation date and command line
+   (Windows reuses pids, so a bare `Get-Process -Id <pid>` can report an unrelated process), then
+   reschedule. **Do not** launch a `run_in_background` sleep-loop "waiter" — the waiter is itself a
+   `claude.exe` descendant, so it is exactly what the reaper kills, and each reap produces a spurious
+   "killed" notification that looks like the test dying when it is not.
 
-3. **A genuine kill is still detectable.** If the pid is gone and no `<label>.exit` was written, the run
-   was actually killed or crashed — distinct from a clean non-zero exit.
+4. **A genuine kill is still detectable.** If the recorded process is gone, check `<label>.exit` once
+   more: the run may have written it and exited between the two checks. Only if the process is gone and
+   `<label>.exit` is still absent was the run killed or crashed — distinct from a clean non-zero exit.
 
 ## Guardrail
 
@@ -112,9 +124,17 @@ What travels with the repository is this document. To install on a fresh Windows
    `{ "pid", "label", "out", "exit", "method" }`. The launcher merges every stream into `<label>.out`
    and writes the integer exit code to `<label>.exit` when the run finishes.
 3. Author `guard-durable-run.ps1` there: it reads the `PreToolUse` payload as JSON on stdin, allows
-   everything on non-Windows and everything not matching
-   `hostbootstrap(-demo)?(\.exe)?…(test run all|project up)`, allows anything already mentioning
-   `Start-DurableRun`, and otherwise writes the redirect message to stderr and exits 2.
+   everything on non-Windows, every tool other than `Bash` and `PowerShell`, and every command that does
+   not match the case-insensitive pattern
+
+   ```text
+   (hostbootstrap(-demo)?(\.exe)?)\b[^\r\n]*\b(test\s+run\s+all|project\s+up)\b
+   ```
+
+   and otherwise writes the redirect message to stderr and exits 2. Before that match it allows any
+   command whose text contains `Start-DurableRun` anywhere. That allowance is a deliberate bypass, not a
+   check: a command that merely mentions the launcher name passes the guard even if it also launches the
+   gate directly.
 4. Register the hook in `~/.claude/settings.json` under `hooks.PreToolUse` for the `Bash|PowerShell`
    matcher, `uname`-gated to Windows and filtered to commands mentioning `hostbootstrap`.
 
@@ -136,9 +156,10 @@ the project's full CPU and memory budget, walled into the shared WSL2 utility VM
 
 A run that reaches normal `project down` restores the journalled `.wslconfig` origin and then invokes
 global `wsl --shutdown`; the order ensures the next cold boot reads the restored configuration. Shutdown
-stops every distro and releases the shared utility VM's memory balloon. The current Windows gate proves
-that wall-release observable from the
-[lifecycle-modes-and-run-leases phase](../../DEVELOPMENT_PLAN/phase-9-lifecycle-modes-and-run-leases.md).
+stops every distro and releases the shared utility VM's memory balloon. The
+[Windows and WSL2 substrate phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md) records
+this release order and its observed effect on a live utility VM. `project destroy` differs: it releases
+the file without a `wsl --shutdown` (see [WSL2 wall release](wsl2.md#wall-release)).
 
 An interrupted detached run is different: if its orchestrator dies before teardown, neither restoration
 nor shutdown is guaranteed to execute. The managed six-hour idle timeouts are the eventual-recovery
@@ -150,15 +171,20 @@ Before treating the host as free, check the run rather than the UI:
 
 ```powershell
 Get-Content <scratchpad>\<label>.exit -ErrorAction SilentlyContinue   # sentinel: present = finished
-Get-Process vmmem* -ErrorAction SilentlyContinue                       # expect nothing when released
+Get-Process vmmem* -ErrorAction SilentlyContinue                       # see below
 [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB, 2)
 ```
 
-`wsl --shutdown` reclaims the balloon immediately and is non-destructive — the utility VM restarts on
-next use and re-reads the restored configuration. It is already a disclosed global part of the
-provider's own lifecycle.
+The vmmem check reads as "released" only when no other WSL distro and no other Hyper-V VM is running:
+expect no vmmemWSL process when no other WSL distro runs, and treat any other vmmem process as belonging
+to whichever workload owns it.
 
-## Verification
+`wsl --shutdown` reclaims the balloon immediately. It deletes no distro and no data, but it terminates
+every running distro, including ones unrelated to this project; the utility VM restarts on next use and
+re-reads the restored configuration. It is already a disclosed global part of the provider's own
+lifecycle.
+
+## Validation
 
 The mechanism was confirmed empirically: a `Start-DurableRun.ps1`-launched process shows
 `ParentProcessId` → `WmiPrvSE.exe` → `services.exe`, entirely outside `claude.exe`'s tree, with the

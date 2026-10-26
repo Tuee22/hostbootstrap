@@ -46,7 +46,8 @@ The command surface is summarized in [Command Surface](#command-surface).
   exact-witness checks, the implemented lower installed/store/root/reservation authority boundary, and the
   proof-complete command gates that prevent callers from widening their own capabilities.
 - [architecture/python_haskell_boundary.md](architecture/python_haskell_boundary.md) — what the
-  thin Python bootstrapper owns versus `hostbootstrap-core`, and the default-to-Haskell rule.
+  thin Python bootstrapper owns versus `hostbootstrap-core`: Python owns only the work that must happen
+  before a project binary exists, the host-statement seam it hands the binary, and nothing after it.
 - [architecture/build_and_run_model.md](architecture/build_and_run_model.md) — the host-native
   build/run model, the headless host-build pattern (CUDA-on-Windows), `./.build/`, and why the binary
   (not the bootstrapper) builds the project container.
@@ -134,9 +135,10 @@ The command surface is summarized in [Command Surface](#command-surface).
   Silicon for a real pristine Linux VM, with the same deploy/stop/destroy VM lifecycle steps.
 - [engineering/wsl2.md](engineering/wsl2.md) — the Windows WSL2 host-provider VM, the peer of
   Lima (Apple Silicon) and Incus (native Linux): `ensure wsl2` prepares WSL2 platform readiness, then the
-  project chain registers its own named `Ubuntu-24.04` distro and the same `deploy-VM` / `project down`
-  (stop-without-delete) / `project destroy` lifecycle steps drive it; includes the honest WSL2 resource
-  cordon (the global `.wslconfig` ceiling vs. the per-distro VHDX cap).
+  project chain registers its own named `Ubuntu-24.04` distro and the same `deploy-vm` / `project down`
+  (stop-without-delete) / `project destroy` lifecycle steps drive it; includes the WSL2 cordon — the
+  global `.wslconfig` CPU/memory wall on the shared utility VM — and why the per-distro VHDX storage cap
+  is a separate limit.
 - [engineering/durable_windows_runs.md](engineering/durable_windows_runs.md) — why the long demo gate must
   be detached from the Codex/Claude process tree on Windows, the durable launcher and exit-sentinel
   protocol, and why macOS/Linux runs remain ordinary foreground commands.
@@ -154,10 +156,12 @@ The command surface is summarized in [Command Surface](#command-surface).
   Docker Hub login down the lift to authenticate nested pulls, with the credential excluded from Dhall,
   intended durable project/image state, and `argv` while process-memory, environment, inspection, and
   interrupted-cleanup risks remain explicit.
-- [engineering/testing.md](engineering/testing.md) — the standardized `runMatrix` harness, the
-  `test init` / `test run <case-id>|all` surface, compiled case ownership, unenforced root-gate claim,
-  exact Harness-plan command boundary, independent profile/root consumer gap, supported fast-suite entry points, and authority-kernel
-  compile-fail/import/concurrency evidence.
+- [engineering/testing.md](engineering/testing.md) — the four gate kinds (the host static gate,
+  the `linux-cpu` substrate gate, the container `check-code` gate, and the live demo gate) and what each
+  proves, harness portability, what counts
+  as evidence, the supported fast-suite entry points, the demo's `test init` / `test run <case-id>|all`
+  surface over compiled cases and one exact Harness-scoped plan per variant, the current safety
+  boundaries, and the live gate contract.
 - [engineering/in_cluster_registry.md](engineering/in_cluster_registry.md) — the in-cluster registry a downstream project pushes to.
 - [engineering/derived_project_standards.md](engineering/derived_project_standards.md) — the rules
   every derived project follows, including the extension-stream contract whose stream 1 is the lift chain.
@@ -199,19 +203,37 @@ which sense it means.
 The header field is a **hardware-context declaration**, not the code enumeration: `nvidia` and `windows`
 are context names that no `SubstrateName` constructor spells, and a phase declaring `windows` is naming
 the context it accepts rather than a detected outer host. `linux-cpu` is the one token all three
-vocabularies share, and it is the baseline every phase targets.
+vocabularies share, and it is the baseline every phase targets. A behaviour that differs by outer host
+does not route on the five detected tags; it routes on the three host frames they collapse to (the
+host-frame sense of **Frame** below).
 
-**Frame.** A frame is one process's place in the composed topology. The closed code kind is
-`ContextKind` in [`HostBootstrap.Context`](../core/hostbootstrap-core/src/HostBootstrap/Context.hs), with
-eight constructors — `HostOrchestrator`, `VMOrchestrator`, `VMProjectContainer`, `ImageBuildContainer`,
-`ClusterService`, `Daemon`, `OneShotJob`, and `TestHarness`. Plan-level frame *identities* are separate:
-a `ProjectFrame` names one node of an admitted plan and is carried as opaque text, so "frame" in a plan
-or lifecycle context means that identity rather than the kind. Where a page means the kind, it names a
-constructor.
+**Frame.** The word has three senses. The first is the default; a page that means another says which.
 
-**Cordon.** In `hostbootstrap` a cordon **applies the plan's resource wall** to each bound cluster-node
-container — the CPU and memory ceiling the budget renderer produced. It does not mark a node
-unschedulable. This is the opposite of the Kubernetes term: `kubectl cordon` makes a node refuse new
+| Sense | What a frame is | Where it lives |
+|---|---|---|
+| **topology** (the default) | one process's place in the composed topology. The closed *kind* of place is `ContextKind`, with eight constructors — `HostOrchestrator`, `VMOrchestrator`, `VMProjectContainer`, `ImageBuildContainer`, `ClusterService`, `Daemon`, `OneShotJob`, `TestHarness`; one node of the descriptive topology is a `TopologyFrame`; one node of an admitted plan is a `ProjectFrame`, an *identity* carried as opaque text | [`HostBootstrap.Context`](../core/hostbootstrap-core/src/HostBootstrap/Context.hs), [`HostBootstrap.ProjectPlan.Frame`](../core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Frame.hs) |
+| **host frame** (the host-frame axis) | the outer-host family a behaviour is written once per. `HostFrame` has three constructors — `LinuxFrame`, `AppleFrame`, `WindowsFrame` — and `substrateFrame` is the one place the five `SubstrateName` tags collapse to them: `LinuxCpu` and `LinuxGpu` are both `LinuxFrame`, `WindowsCpu` and `WindowsGpu` both `WindowsFrame`, because an accelerator is a capability *of* a frame rather than a frame of its own. `isLinux`, `isWindows` and `isAppleSilicon` are derived from it | [`HostBootstrap.Substrate`](../core/hostbootstrap-core/src/HostBootstrap/Substrate.hs) |
+| **frame table** (a provider's frame) | a way to reach a context (the machine a `LiftContext` addresses, whose kernel answers for the objects there) plus the closed table of facts that context differs by: the host tool and its argument shape, the path grammar, the sizing renderer, the ownership-primitive row, and the file-transfer and share primitives. A provider adds a *row* to this table, never a copy of a workflow. "The frame that interprets a path" is this sense: a host path is read by the current machine's own grammar, a guest path by the POSIX grammar of the frame it is handed to | [§ LL](../DEVELOPMENT_PLAN/development_plan_standards.md#ll-the-frame-table-the-substrate-axis-is-a-lift-not-a-fork) and [§ MM](../DEVELOPMENT_PLAN/development_plan_standards.md#mm-a-path-belongs-to-the-frame-that-interprets-it) |
+
+In a plan or lifecycle context, an unqualified "frame" means the `ProjectFrame` identity rather than the
+`ContextKind` kind; where a page means the kind, it names a constructor. A page that routes on the outer
+host says "host frame", and a page about a provider's reach, paths, sizing or ownership row says "frame
+table" or "the frame that interprets" it.
+
+A **crossing** (a "frame crossing") is one step of the lift from a frame-table frame into the next: the
+near side derives the argument vector that launches this same binary in the target frame from the lift's
+own fold (`foldLeaf`) and nowhere else, and the two sides then speak only over the authenticated handoff
+channel. The lifecycle-child and frame-child entries in
+[Entries before the parser](architecture/hostbootstrap_core_library.md#entries-before-the-parser) are the
+far side of a crossing.
+
+**Cordon.** In `hostbootstrap` a cordon **applies the plan's resource wall** at the boundary the
+realization supports: the declared sizing of a provider VM (Incus, Lima, a direct Colima profile, or the
+global CPU/memory wall on the shared WSL2 utility VM) and the CPU and memory ceiling of each bound
+cluster-node container, both rendered from the one admitted budget. A storage cap that the realization
+does not enforce is reported as unsupported rather than called a cordon; the per-substrate table is in
+[resource budgeting](engineering/resource_budgeting.md#cordoning-per-substrate). A cordon never marks a
+node unschedulable. This is the opposite of the Kubernetes term: `kubectl cordon` makes a node refuse new
 pods and changes no resource limit. A reader who knows Kubernetes will otherwise read every cordon
 sentence in [cluster lifecycle](engineering/cluster_lifecycle.md) backwards.
 
@@ -219,9 +241,11 @@ sentence in [cluster lifecycle](engineering/cluster_lifecycle.md) backwards.
 
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
 and `check-code`. `ensure` is a reconciler library, not a command, and a project adds no verb. The
-canonical statement — including the one internal marker that lets a binary recognize it is the process on
-the far side of a frame crossing, and the bounds that keep that marker from being a command — is
-[architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md).
+canonical statement is [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md).
+It includes the five core entries `runCLI` tests before the parser runs (installed identity, exposure
+relay, Colima command transaction, lifecycle child, frame child), none of which is in the command tree,
+and which of them stay within the bounds of an internal marker; that list is
+[Entries before the parser](architecture/hostbootstrap_core_library.md#entries-before-the-parser).
 `project up` recursively interprets one opaque validated plan. The root owns all durable lifecycle state
 and launches each declared child through the fixed authenticated lifecycle-child entry; the child executes
 only root-selected grants. `project down` and `project destroy` traverse the same plan child-first using

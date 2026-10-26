@@ -25,6 +25,12 @@ The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns dated eviden
 
 A descriptive frame tag cannot widen a command's authority. Root entry joins executable-bound installed
 identity, protected-store origin, root liveness, exact scope/plan/frame, closed verb, and one-use admission.
+The command-reservation kernel in
+[Authority.Kernel](../../core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs) records each
+invocation identity once: the first writer wins and a conflicting record refuses. A consumed record refuses a
+second delivery with one exception, `reverseRootReplayEligible`: a root `project down` or `project destroy`
+reservation in the Teardown phase whose stored record is byte-identical re-delivers authority under that
+record's version instead of refusing. Every other verb and phase stays strictly one-use.
 Child entry independently verifies the installed key, authenticated root scope, exact payload and edge, and
 catalog-selected grant. Service entry verifies the independently installed activation and measured instance.
 
@@ -125,8 +131,12 @@ cooperating-interpreter ancestry; it does not claim identity against a malicious
 
 ## The `context` Command: Read-Only Introspection
 
-`context inspect` reads the sibling config and marks the current frame in the rendered composition.
-`context show [FILE]` reads the selected or default file. `context path` prints the canonical config path.
+The [command surface inventory](hostbootstrap_core_library.md#surfaced-commands) is canonical for the
+`context` subcommands and their flags; [Dhall topology](../engineering/dhall_topology.md) covers the
+Dhall side. In summary: `context inspect` reads the executable-sibling config and marks the current frame
+in the rendered composition. `context show [FILE]` reads the selected file; its default is the bare
+`<project>.dhall` filename, resolved against the current directory. `context path` prints the canonical
+config filename (`<project>.dhall`), not a path; the canonical file lives beside the executable.
 `context schema` and `context render` inspect the static `ConfigArtifact` registry, not the project-local
 service schema. `service schema` prints that separate service vocabulary.
 
@@ -144,10 +154,30 @@ refuses an existing output. Explicit role/output/write-policy flags remain suppo
 asking for both does not parse rather than being resolved by a precedence rule. Role additions still pass the
 closed compatibility validator. A written description is not installed authority.
 
-Writing that root config at the executable's own sibling path is also what provisions the installed handoff,
-build, and activation identities, and the decision is taken on the **parsed role**. `--role` accepts aliases
-and normalises case and separators, so `host`, `host-orchestrator`, and `HOST_Orchestrator` name one role and
-provision alike; an alternate output path or any other role provisions nothing.
+Two routes provision the installed identity, and both call `provisionInstalledIdentity` in
+[Identity.Install](../../core/hostbootstrap-core/src/HostBootstrap/Identity/Install.hs) for the running
+executable:
+
+1. The Python builder invokes the binary's private `--hostbootstrap-install-identity` entry immediately
+   after copying a newly built binary to its stable path. That entry is listed with the other
+   [entries before the parser](hostbootstrap_core_library.md#entries-before-the-parser).
+2. `project init` provisions when the **parsed role** is its default (host orchestrator) and the output
+   resolves to the executable's own sibling `<project>.dhall`. The decision does not depend on a write:
+   `--if-missing` over an existing sibling config preserves the file and still provisions, while the
+   default refuse policy over an existing file fails before provisioning. `--role` accepts aliases and
+   normalises case and separators, so `host`, `host-orchestrator`, and `HOST_Orchestrator` name one role
+   and provision alike; an alternate output path or any other role provisions nothing.
+
+Provisioning installs or validates five sibling artifacts: the handoff signing seed and its public half
+(`<executable>.handoff.key`, `<executable>.handoff.pub`), the distinct build signing seed
+(`<executable>.build.key`), and the distinct activation signing seed and its public half
+(`<executable>.activation.key`, `<executable>.activation.pub`). It is idempotent: existing valid
+identities are retained across rebuilds and a missing public half is repaired from its retained seed,
+but a public key without its secret, or a mismatched pair, is refused rather than replaced.
+
+`service init` is the third writer of a project-local `<project>.dhall`. It takes the same flags and
+`ExistingOutputPolicy` as `project init`, defaults to the cluster-service role, and never provisions
+installed identity.
 
 `test init` writes the thin test configuration. The Harness assembles each exact run configuration under its
 own generative authority and owns the generated sibling file. Service deployment projects a narrowed role
@@ -208,6 +238,15 @@ and signed service runtime are implemented. Pure context and wire values remain 
 they are consumed beside independently verified authority, not promoted into it. Exact signatures live in
 `Authority`, `ProjectPlan`, `Handoff`, `Command.LifecycleEntry`, `Service`, `Activation`, and `RoleLifecycle`.
 
+`context inspect` and `context show` decode the selected file with the binary's one Production
+`ProjectCodec`, the only project codec a command obtains without a run's `HarnessConfigAuthority`. The
+rendered composition is a `BinaryContext`, which carries no scope, so the output asserts none: a
+Harness-written config whose wire is also a valid Production wire renders, and one carrying a Harness-only
+value fails the decode. Today a service role wire also fails as a generic decode diagnostic. Refusing a role
+wire through the first-stage envelope check before any decode, and naming the Production codec in the
+decode-failure line, are owed by the
+[`test`-and-`context`-commands phase](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md).
+
 ## Validation
 
 Run `cabal test all` from `core/`. Configuration and CLI cases verify schema, selection,
@@ -226,4 +265,8 @@ refusal and retain their declared case counts. See [testing](../engineering/test
 - [Lifecycle state model](lifecycle_state_model.md)
 - [Composition methodology](composition_methodology.md)
 - [Dhall generation](dhall_generation.md)
+- [Dhall topology](../engineering/dhall_topology.md) — the Dhall-side topology, generated child configs,
+  and the configuration set
+- [hostbootstrap core library](hostbootstrap_core_library.md#surfaced-commands) — the canonical command
+  inventory, including the `context` subcommands
 - [Unrepresentable state](unrepresentable_state.md)

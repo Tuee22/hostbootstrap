@@ -32,8 +32,9 @@ type index, `Reachability` is a closed GADT with no host-local-to-cluster-only c
 `BlobDelivery` constructor takes that witness, `RegistryPlan` is opaque behind topology-specific
 constructors, and the `storage.redirect` stanza is derived from the delivery rather than chosen beside it.
 `Exposure`, `RegistryPlan`, and `ReadyBlobRoute` retain nominal lifecycle-scope, plan, cluster, and
-service indices. Route settlement compares the exact service, runtime-selected port, relay identity, cluster
-generation, and ownership operation. Compile-fail fixtures pin the forbidden constructions and role coercions.
+service indices. Route settlement compares an observation's service, published port, relay identity, cluster
+generation, ownership operation, and revision with the plan's. Compile-fail fixtures pin the forbidden
+constructions and role coercions.
 
 **The demo registry delivery and application clients use the resolved-endpoint boundary.** Its finalized
 registry plan selects proxy delivery, so generated registry configuration disables redirects to the cluster-only S3 store.
@@ -43,12 +44,31 @@ of authenticated resolved exposures. The worked demo carries those values lexica
 registry deployment and image push, web readiness, and host-resident accelerator ingress; none reconstructs
 an endpoint from a number.
 
+**Three bindings are weaker than this page's target contract.**
+
+- The demo's blob-route observation carries runtime information only in its status and in whether a
+  `Location` was issued. `parseBlobRouteAnswer` copies the service, port, runtime identity, and revision
+  from the plan, so the identity comparisons in settlement always pass, and nothing in the registry's
+  answer identifies the registry, store, plan, or revision (see [Runtime admission](#runtime-admission)).
+- The demo renders the registry's S3 `regionendpoint` from `objectStoreClusterEndpoint`, a second mint of
+  the same literal the plan's store endpoint is minted from, not from `registryPlanStore`. The plan and the
+  rendered registry configuration therefore agree by convention only.
+- Core refuses only a zero revision and does not generate revisions; the demo builds every registry plan at
+  revision `1`. A replacement plan at the same revision is not distinguished from its predecessor.
+
 The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
-owns the generic reachability/delivery algebra and finalized registry plan. The
+owns the core side of all three gaps: an observation producer that takes the dialled exposure from a fresh
+relay inspection and the status and `Location` from the probe's answer, a store-address renderer that reads
+`registryPlanStore`, and the revision rule. The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the demo's adoption of the first two.
+
+The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the generic reachability/delivery algebra, the finalized registry plan, and the blob-route observation
+that `settleBlobRoute` consumes, which is the route proof an image push requires. The demo's `/v2/`
+readiness witness (`ObservedReady` over `RegistryServing`) only orders the route probe after the registry
+answers; it is not evidence that the route works. The
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the demo renderer, adoption, and live
-proof. The [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
-and [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) supply the
-identity-bound runtime observation consumed by the push operation.
+proof.
 
 ## Scopes
 
@@ -66,9 +86,12 @@ producer would be a definition-only surface. `ScopeName` is the term-level tag a
 carries so it can report its own index, and `scopeNameOf` projects it.
 
 `Endpoint` is indexed by the scope its authority resolves in and is opaque. `endpointAuthority` and
-`endpointScope` read it; `clusterOnlyEndpoint` is the one mint, and it validates the authority as a
-bare `host:port` — rejecting empty, whitespace-bearing, scheme-bearing, and path-bearing text with
-`InvalidEndpointAuthority`. Code must not infer scope by searching for `.svc`, `localhost`, or an IP
+`endpointScope` read it. `clusterOnlyEndpoint` is the only mint from text; host-local and VM-local
+endpoints exist only inside an exposure (see [Exposure identity](#exposure-identity)). The text mint strips
+surrounding whitespace and refuses empty, whitespace-bearing, scheme-bearing (`://`), and path-bearing
+(`/`) text with `InvalidEndpointAuthority`. It does not parse a host or a port: `object-store`, `a:b:c`,
+and `svc:99999` are all admitted, so a consumer that needs a valid port holds a `Port` rather than relying
+on the authority text. Code must not infer scope by searching for `.svc`, `localhost`, or an IP
 substring. A client spelling of `localhost` is also not proof that the listener is loopback-only.
 
 `NetworkClient` is indexed by the scope it dials *from*, with one value per scope:
@@ -102,8 +125,9 @@ The absent case is the point of the module: there is no constructor taking a `Ho
 `ClusterOnly` endpoint, because a host-local client genuinely cannot resolve an in-cluster Service
 name. The bad redirect is not a runtime error to be checked; it is unrepresentable.
 `reachabilityClientScope` and `reachabilityEndpointScope` project the indices, and `reachableFrom`
-is the term-level view of the same relation for rendering and diagnostics — it agrees with the GADT
-by construction, because every `True` pair has a constructor.
+is the term-level view of the same relation for rendering and diagnostics. It is written separately, not
+derived from the GADT: `RegistryPlanSpec` pins the agreement by checking every scope pair against the
+four constructors' pairs, so adding a constructor requires changing both the function and that test.
 
 A future provider may add a reachability proof only when it can verify a real route; it must not add
 a coercion or a string-based escape hatch.
@@ -134,8 +158,8 @@ exposure rows a runtime dependency package renders and verifies.
 ## Exposure identity
 
 An exposure is how a scope is *made* reachable; it does not by itself grant reachability from another
-scope. `Exposure` is opaque and carries five indices beyond its scope — the network scope, then the
-nominal lifecycle scope, plan, cluster, and service — so a value minted for one plan or cluster
+scope. `Exposure` is opaque and carries five indices — its network scope, then the nominal lifecycle
+scope, plan, cluster, and service — so a value minted for one plan or cluster
 generation cannot be spent against another. `exposureEndpoint`, `exposurePort`, `exposureService`,
 and `exposureRuntimeIdentity` are its readers; a `localhost` authority supplied as text cannot become
 one, because the only mints are the two below.
@@ -175,17 +199,20 @@ Therefore a host Docker client cannot be paired with redirect delivery to the cl
 ## The finalized registry plan
 
 `RegistryPlan` is opaque, indexed by client scope, store scope, and the nominal lifecycle scope, plan,
-cluster and service indices. It is reachable only through a topology-specific constructor, so no
-caller can assemble a registry endpoint and a store endpoint independently and pair them by
-convention.
+cluster and service indices. It is reachable only through a topology-specific constructor, which pairs
+one exposure with one caller-supplied store endpoint and fixes the delivery from the topology, so no caller
+can re-pair them after construction or choose a delivery beside them. The store endpoint itself carries no
+plan, cluster, or service index: the constructor accepts any `Endpoint 'ClusterOnly` the caller mints, and
+nothing ties it to the exposure beyond being passed to the same constructor.
 
 | Constructor | Topology | Delivery it fixes |
 |---|---|---|
 | `hostServedRegistryPlan` | a registry published on the host or VM loopback, blobs in a cluster-only store | `proxyThroughRegistry`, by construction |
 | `inClusterRegistryPlan` | clients inside the cluster | `redirectToStore`, from the witness the caller supplies |
 
-Both refuse a zero revision with `InvalidRegistryRevision`; a revision is strictly positive and
-generative. `registryPlanClient`, `registryPlanExposure`, `registryPlanEndpoint`, `registryPlanStore`,
+Both refuse a zero revision with `InvalidRegistryRevision`. Core enforces only that the revision is
+positive; it does not generate revisions, so a fresh revision for each replacement plan is the caller's
+obligation. `registryPlanClient`, `registryPlanExposure`, `registryPlanEndpoint`, `registryPlanStore`,
 `registryPlanDelivery`, and `registryPlanRevision` read the finalized value. There is no independent
 redirect boolean, no raw store-authority field, and no post-construction setter.
 
@@ -198,7 +225,9 @@ redirect boolean, no raw store-authority field, and no post-construction setter.
 | `ProxyBlobs` | `redirect:` / `disable: true` |
 | `RedirectBlobs` | nothing — Distribution's own redirecting default stands |
 
-For the demo topology the storage section reads:
+For the demo topology the storage section reads as follows, abridged: the demo's `registryConfigYaml`
+also renders a `cache` line before `redirect`, and `region`, `bucket`, `forcepathstyle`, and `secure`
+under `s3`.
 
 ```yaml
 storage:
@@ -208,13 +237,15 @@ storage:
     regionendpoint: http://object-store.default.svc:9000
 ```
 
-The boolean is serialized output, not a DSL choice. Registry exposure and the S3 store endpoint are
-rendered from the same plan, so separately supplied manifests cannot disagree about scope or identity.
+The boolean is serialized output, not a DSL choice: the redirect stanza is rendered from the plan's
+delivery, so it cannot disagree with the plan's scopes. The demo's `regionendpoint` line is rendered from
+`objectStoreClusterEndpoint`, which mints the same literal as the plan's store endpoint but is not read
+from the plan; see [Current Status](#current-status).
 
 ## Runtime admission
 
-Types prove the declared topology is coherent; runtime observations prove the deployed topology matches
-the declaration. Before image push, the interpreter verifies:
+Types prove the declared topology is coherent; a runtime observation checks the deployed blob route
+before image push. The target contract is that, before image push, the interpreter verifies:
 
 1. the exact client can reach the registry exposure;
 2. the registry workload can reach the exact object-store endpoint and bucket;
@@ -222,52 +253,93 @@ the declaration. Before image push, the interpreter verifies:
    out-of-scope redirect;
 4. the response identifies the expected registry, store, plan, and deployment revision.
 
-The observation is a `BlobRouteObservation`, carrying the `BlobProbe` that was issued, the service and
-`Port` dialled, the runtime identity triple, the status, any `Location` authority with the scope it
-resolves in, and the revision. `settleBlobRoute` mints a `ReadyBlobRoute` from it, and refuses in
-order: an `ApiVersionProbe` rather than a `BlobHeadProbe` is `BlobRouteNotABlobProbe`, because a bare
-`GET /v2/` proves only that the registry HTTP process is serving; a revision other than the plan's is
-`BlobRouteStaleRevision`; and a different service, runtime identity, port, or delivery outcome is a
-`BlobRouteMismatch`. A redirect is acceptable only for a plan whose delivery is `RedirectBlobs`.
-`readyBlobRouteRevision` reads the settled revision back, and the witness cannot be reused across a
-replacement revision.
+The demo meets the first three and not the fourth. Its probe dials the resolved exposure, uploads a canary
+blob through the registry (which succeeds only if the registry can write to its store), and then issues a
+non-following blob `HEAD`. It reads two facts from the answer: the HTTP status, and whether a `Location`
+was issued. `parseBlobRouteAnswer` builds the `BlobRouteObservation` from those two facts and from fields
+copied from the plan: the service, `Port`, and runtime identity triple from `registryPlanExposure`, the
+revision from `registryPlanRevision`, and, for any `Location`, the scope of `registryPlanStore`, by
+assumption rather than by resolving the authority.
 
-The prepared push adapter requires that exact readiness value through the plan-owned precondition set.
+`settleBlobRoute` mints a `ReadyBlobRoute` from an observation and refuses, in order: an
+`ApiVersionProbe` rather than a `BlobHeadProbe` is `BlobRouteNotABlobProbe`, because a bare `GET /v2/`
+proves only that the registry HTTP process is serving; a revision other than the plan's is
+`BlobRouteStaleRevision`; and a different service, runtime identity, port, or delivery outcome is a
+`BlobRouteMismatch`. A redirect is acceptable only for a plan whose delivery is `RedirectBlobs`, and only
+to the planned authority in the planned scope; a proxying plan needs a `2xx` status and no `Location`.
+Against the demo's observation the service, identity, port, and revision comparisons always pass, because
+both sides come from the plan; the comparisons that carry runtime information are the status and the
+presence of a `Location`.
+
+`readyBlobRouteRevision` reads the settled revision back. The witness holds only that revision; its type
+indices name the client and store scopes, the lifecycle scope, plan, cluster, and service, not the store
+endpoint. The revision is compared once, at settlement, and the consumer does not re-check it.
+
+The demo's `pushImageBlob` takes the `ReadyBlobRoute` as an argument, so a push cannot be written without a
+settled witness carrying the same type indices; it does not read the witness's value. The pushed image
+reference is a plain string the push step builds from `registryEndpoint` of the same plan, so the binding
+between the proved route and the pushed endpoint is held by that step's code, not by a type.
 
 The probe sequence is rendered by four additive Lift leaves with fixed argv: upload-session `POST`,
 octet-stream `PATCH`, digest-completing `PUT`, and non-following blob `HEAD`. Tests pin every argument,
-including timeouts, headers, payload position, and status/redirect output. Registry authentication remains
-higher policy: `HostBootstrap.Registry` consumes the generic Lift and its quoting rule. Authenticated
-descent and the sanitized lifecycle route likewise delegate crossing argv to `foldLeaf`; no registry or
-route module owns a competing provider renderer. The registry policy folds the container invocation first,
-then folds its provider crossing around a leaf which reads the credential from stdin into the transient
-forwarding environment. Neither fold receives the credential payload; the existing stdin runner supplies
-it only when executing the plan. Incus, Lima and WSL2 share this path, and unsupported layer shapes return
-no authenticated plan.
+including timeouts, headers, payload position, and status/redirect output. Authenticated descent and the
+sanitized lifecycle route likewise delegate crossing argv to `foldLeaf`; no registry or route module owns a
+competing provider renderer.
+
+The demo's in-cluster registry is anonymous over HTTP, so this blob route carries no credential. The
+separate Docker Hub credential that `HostBootstrap.Registry` forwards to nested image pulls is a different
+boundary: its stdin-delivered Lift plan exists only for a container reached directly through one Incus,
+Lima, or WSL2 VM, and every other lift shape runs without it. See
+[registry credentials](../engineering/registry_credentials.md).
 
 ## Invalid states
 
 These states have no public constructor:
 
-- a host-local client plus a cluster-only backend plus redirects;
+- a host-local client plus a cluster-only backend plus redirect delivery;
 - endpoint text substituted across host/VM/cluster scopes;
-- registry exposure and object-store endpoint assembled from different plans;
-- raw redirect booleans that contradict delivery strategy;
-- readiness based only on `/v2/` while the blob route is broken;
-- a readiness observation reused after registry, store, revision, or route replacement.
+- a raw redirect boolean that contradicts the delivery strategy;
+- a `ReadyBlobRoute` minted other than by `settleBlobRoute`, or spent where a different scope, plan,
+  cluster, or service index is required.
+
+These states are constructible and refused at runtime by `settleBlobRoute`:
+
+- readiness based only on `/v2/`: an `ApiVersionProbe` observation is publicly constructible and is
+  refused with `BlobRouteNotABlobProbe`;
+- an observation at a revision other than the plan's, refused with `BlobRouteStaleRevision`;
+- a proxying plan whose registry issued a `Location`, refused with `BlobRouteMismatch`.
+
+These states are not excluded:
+
+- a registry exposure paired with a store endpoint minted for a different deployment, because the plan
+  constructor accepts any cluster-only endpoint (see [The finalized registry plan](#the-finalized-registry-plan));
+- a witness reused after a store or route replacement that keeps the revision, because the witness carries
+  only the revision.
 
 ## Validation
 
-Closure requires:
+These rules are pinned by:
 
-- compile-fail tests rejecting every invalid combination above;
-- constructor/property tests covering all supported reachability pairs;
-- golden tests proving rendering is uniquely derived from delivery strategy;
-- negative runtime tests where `/v2/` is Ready but blob `HEAD` returns an illegal `307`;
-- a live host-client to resolved relay exposure to internal NodePort registry to cluster-only S3 store push,
-  repeated push, pull, registry-pod
-  restart, and tag lookup;
-- assertions that proxy mode exposes no cluster-only S3 store URL to the client.
+- `RegistryPlanSpec`: port admission; every scope pair against `reachableFrom`; endpoint scope, path,
+  empty, and whitespace refusals; runtime-identity retention on a resolved exposure; the host-served plan's
+  proxy delivery and rendered `redirect: disable: true`, the in-cluster plan's empty rendering, and that
+  delivery alone determines the rendering; the zero-revision refusal; and every `settleBlobRoute` outcome —
+  a `/v2/` observation, a proxying plan that answers an illegal `307` or an error, a replacement revision, a
+  redirect to the wrong target, a redirecting plan that serves the blob itself, and a different port,
+  service, relay, generation, or operation;
+- `CompileFailSpec` fixtures for the forbidden constructions: `HostLocalClusterRedirect`,
+  `EndpointScopeSubstitution`, `ConstructRawHostEndpoint`, `ConstructRawLocalExposure`,
+  `ForgeResolvedExposure`, `ImportClusterExposureInternal`, `CoerceExposureAuthorityRoles`,
+  `RawRegistryPlan`, and `ForgeReadyBlobRoute`;
+- `RegistrySpec`: the exact argv of the four blob-probe Lift leaves;
+- the worked demo's live gate: its push step settles the blob route through the resolved relay exposure
+  before every push, and `assertRegistrySurvivesRestart` reads the pushed image's tag list through the
+  registry NodePort on a cluster node, deletes the registry pod, and reads it again. The
+  [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) records the runs.
+
+Not covered: a pull of the pushed image through the relay exposure (the web workload runs the image loaded
+into the Kind nodes), a repeated push as a separate case, and a registry answer that identifies the
+registry, store, plan, or revision (see [Runtime admission](#runtime-admission)).
 
 See [in-cluster registry](../engineering/in_cluster_registry.md) for the demo topology and
 [composition methodology](composition_methodology.md) for integration into the single project plan.

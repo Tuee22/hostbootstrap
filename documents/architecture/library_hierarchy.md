@@ -23,6 +23,10 @@
   noun verb: the core ships host-management step kinds and the project contributes its own step kinds
   into the same ordered `[Step]`, and registers service handlers behind the fixed `service` verb.
 - `addSteps`, `addArtifacts`, `addAssemblyInputs`, and `addServices` append without erasure.
+  `addAssemblyInputs` declares the read-only input allowlist available to the project's `psAssemble`; it
+  is a configuration-assembly input, not an extension stream. `addForwardChildPlan` installs the one
+  project-specific forward-child projector, the builder's only single-assignment seam: finalization refuses
+  a builder that installs it zero times or more than once.
   There is no lifecycle slot beside the plan: an acquiring step declares the effect that releases it
   with `reversedBy`. Raw `ProjectSpec`/`Step` constructors are hidden; plan validation
   enforces disjoint core/project identities, exact contiguous frame order, explicit reverse policy,
@@ -49,9 +53,9 @@ layer. The cross-repo levels are referenced by absolute URL, not relative link:
 [infernix](https://github.com/Tuee22/infernix), and
 [mcts](https://github.com/Tuee22/mcts).
 
-Inside the L0 package, `harness-lifecycle-internal` is a private Cabal component rather than another
-extension level. It exposes `HostBootstrap.Harness.Lifecycle.Internal` only to the main library and its
-own test suite. The component owns the opaque `HarnessLifecycle` constructor: command code packages the
+Inside the L0 package, `harness-lifecycle-internal` is one of several private Cabal components rather than
+another extension level. It exposes `HostBootstrap.Harness.Lifecycle.Internal` only to the main library and
+the package's `hostbootstrap-core-test` suite. The component owns the opaque `HarnessLifecycle` constructor: command code packages the
 common forward/reverse actions retained from one exact Harness plan, while engine tests can construct a
 controlled fixture. A downstream package cannot depend on that private component or manufacture a second
 lifecycle path.
@@ -64,17 +68,20 @@ generic project `ENTRYPOINT`. The command surface itself is fixed and is never a
 ## The Extension Streams
 
 A level is intended to compose on the level below through five parallel streams. Each target stream has
-one additive merge idiom. Additive streams append; teardown is a named checked single-assignment slot,
-while each frame's descent is declared on the plan node that owns the boundary. The sections below state current enforcement.
+one additive merge idiom. Additive streams append. Each step declares its own reverse effect with
+`reversedBy`, and each frame's descent is declared on the plan node that owns the boundary; the one
+single-assignment seam beside the streams is the forward-child projector installed by `addForwardChildPlan`.
+The sections below state current enforcement.
 
 ### Stream 1 — The Lift Chain
 
-The first stream is the project's lift **plan**: ordered `cfg -> [Step]` fragments validated into the
-opaque `StepPlan` whose current-frame projection Chain interprets and whose recursive
-`project up` interpreter walks frame by frame. `addSteps`
+The first stream is the project's lift **plan**: ordered fragments, each a function of the admitted
+`CanonicalProjectRoot` and the project's `cfg scope` returning `[Step]`, validated into the opaque
+`StepPlan` authoring kernel. `withProjectPlan` admits that kernel as the exact `ProjectPlan`, and the
+current-frame Chain and the recursive `project up` interpreter both consume that admitted plan. `addSteps`
 contributes new step kinds while preserving lower fragments; the core's
-host-management step kinds (deploy-VM, `ensure`-X, copy-source, build-pb, build-image, context-init,
-deploy-kind, deploy-chart, expose-port) stay in scope unchanged, and host and workload steps
+host-management step kinds (deploy-vm, `ensure`-X, copy-source, build-pb, build-image, context-init,
+deploy-kind, deploy-chart, expose-port, post-handoff) stay in scope unchanged, and host and workload steps
 interleave freely in one chain. This Step algebra is the reuse unit and the workload-extension seam.
 The chain is the canonical model — its shape, the recursive/fractal interpreter, and the
 fractal-bootstrap descent are owned by [composition_methodology](composition_methodology.md); this
@@ -82,7 +89,9 @@ stream describes only the additive merge.
 
 Two shapes at the bottom of that fold are types rather than conventions. A raw command leaf names an
 executable and its arguments separately, so the empty vector that would dispatch the empty-string
-executable — the bare-command-name shape § K makes unrepresentable one layer down — has no spelling;
+executable — the bare-command-name shape
+[development_plan_standards § K](../../DEVELOPMENT_PLAN/development_plan_standards.md) makes
+unrepresentable one layer down — has no spelling;
 a caller holding a list narrows it at its own boundary. And a self-reference carries two distinct
 newtypes, the local path and the in-guest path, with a package-private constructor and no field
 selectors: the two cannot be transposed at construction, and a handed value cannot be re-pointed by
@@ -100,17 +109,36 @@ owns provider lifecycle realizations, and the
 adds reachability/blob/registry helpers above the generic fold. A project adds steps to the plan; it does
 not replace any of those dispatch layers.
 
-The chain is threaded into the generic entrypoint through `ProjectSpec`:
+The chain is threaded into the generic entrypoint through the finalized `ProjectSpec`. The worked demo's
+`main` (in `demo/app/Main.hs`) builds the opaque `ProjectSpecBuilder`, finalizes it, and only then runs
+the CLI:
 
 ```haskell
-runHostBootstrapCLI progName projectSpec
+let builder =
+        addForwardChildPlan
+            demoForwardChildPlan
+            ( addSteps
+                (demoChainFor substrate)
+                ( addServices
+                    demoServices
+                    (projectSpec demoTestSuite demoCheckCode demoArtifacts testConfigCodec demoTestInit demoAssemble)
+                )
+            )
+spec <- either (die . show) pure (finalizeProjectSpec builder)
+runHostBootstrapCLI "hostbootstrap-demo" spec
 ```
+
+`projectSpec` returns an unfinished builder; `runHostBootstrapCLI` accepts only the `ProjectSpec` that
+`finalizeProjectSpec` returns.
 
 The core command surface (`project init|up|down|destroy`, `test init|run`, `service init|schema|run`,
 `context`, `check-code`) shares one parser and dispatch shape between the bare `hostbootstrap` binary and
-project binaries. Behavior is intentionally different: the bare entrypoint supplies minimal empty/no-op
-project behavior. A project entrypoint must finalize a non-empty test suite and step contribution and
-one teardown projection; artifacts, inputs, typed step identities, and
+project binaries. Behavior is intentionally different. The bare entrypoint (`runBareHostBootstrapCLI`)
+has no Production steps, so `project up` refuses its plan as empty (`EmptyStepPlan`), and it ships one
+core-owned `cluster-live` Harness case: `test run all` on the bare binary creates a run-scoped Kind cluster
+on the host (a 2 CPU, 2 GiB memory, 8 GiB storage envelope), observes it read-only, and deletes it on
+reverse. A project entrypoint must finalize a non-empty test suite, at least one step contribution, and
+exactly one forward-child projector (`addForwardChildPlan`); artifacts, inputs, typed step identities, and
 services are duplicate-checked, and the plan must declare exactly one descent per frame that has a
 successor. See
 [hostbootstrap_core_library](hostbootstrap_core_library.md) for the entrypoint signature. A project can
@@ -148,13 +176,10 @@ static/context/generated Dhall model and the three-vocabulary layering.
 ### Stream 3 — Schema-Gen Registry
 
 The schema-generation stream is assembled by core concatenating `coreArtifacts` with the project
-artifact **delta** passed to `projectSpec`:
-
-```haskell
-addArtifacts
-  [artifactOf "projectWidget" projectWidgetCodec sampleProjectWidget]
-  (projectSpec projectSuite projectCheckCode [] testConfigCodec projectTestInit projectAssemble)
-```
+artifact **delta** passed to `projectSpec` and appended by `addArtifacts`. The worked demo passes its
+delta `demoArtifacts`, a list of `artifactOf` entries, as `projectSpec`'s artifact argument (see the
+entrypoint example above); a higher layer appends further entries with `addArtifacts` rather than
+replacing them.
 
 The read-only `context` surface then prints the transitive union of the in-scope schemas and
 materializes static example renders from the same registry. `ConfigArtifact` construction is opaque:
@@ -164,8 +189,9 @@ this registry and is currently split among the composite bootstrap, the plan-dec
 deployment seams. See
 [config_generation](../engineering/config_generation.md).
 
-- **WRONG**: a project passes `coreArtifacts ++ projectArtifacts` as its `ProjectSpec` argument. This
-  is wrong because `HostBootstrap.Command` already prepends `coreArtifacts`, producing duplicates.
+- **WRONG**: a project passes `coreArtifacts` plus its own artifacts as its `ProjectSpec` argument. This
+  is wrong because core already prepends `coreArtifacts`, so `finalizeProjectSpec` rejects the spec with
+  `CoreArtifactShadowing` before dispatch.
 - **RIGHT**: pass only the project artifact delta. Core performs the one concatenation, and each delta is
   built through an opaque validated codec so its printed schema cannot be unrelated text.
 
@@ -212,15 +238,16 @@ statement of the contract lives in
 The reusable surface is the chain stream and the recursive `project` interpreter this document
 describes, exercised end-to-end on real hardware:
 
-- Stream 1 is the ordered set of additive step fragments resolved to one opaque `StepPlan`, consumed by
-  the current-frame Chain and intended for the recursive `project up` interpreter, and threaded through
-  finalized `ProjectSpec`. Under the generic model
-  (§ BB), fragments are `cfg -> [Step]` over
-  a project's own config type `cfg`; the demo instantiates `cfg = ProjectConfig` through the
-  substrate-selected `demoChainFor :: Substrate -> ProjectConfig -> [Step]` in
+- Stream 1 is the ordered set of additive step fragments validated into one opaque `StepPlan` kernel,
+  threaded through finalized `ProjectSpec`; `withProjectPlan` admits it as the exact `ProjectPlan` that
+  the current-frame Chain and the recursive `project up` interpreter consume. Under the generic model
+  ([development_plan_standards § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md)), each fragment
+  receives the admitted `CanonicalProjectRoot` and a project's own config `cfg scope`; the demo
+  instantiates `cfg = ProjectConfig` through the substrate-selected
+  `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]` in
   `demo/src/HostBootstrapDemo/Commands.hs`. The core ships
-  the host-management step kinds (deploy-VM, the project-init lifecycle, context-init, deploy-kind,
-  deploy-chart, expose-port) and the demo interleaves its own step kinds (deploy-object-store, deploy-registry,
+  the host-management step kinds (deploy-vm, `ensure`-X, copy-source, build-pb, build-image, context-init,
+  deploy-kind, deploy-chart, expose-port, post-handoff) and the demo interleaves its own step kinds (deploy-object-store, deploy-registry,
   push-image, accelerator-daemon placement)
   into the same ordered `[Step]`. Every binary surfaces the same fixed tree — `project`, `test`,
   `service`, `context`, and `check-code` — and adds no verbs; the demo contributes its `web` and
@@ -228,10 +255,12 @@ describes, exercised end-to-end on real hardware:
   persistent stack — deploy-kind → deploy-object-store → deploy-registry → push-image → deploy-chart →
   expose-port, followed by the selected accelerator-daemon placement. Current native validation status
   belongs in the development plan. Its public representation rejects empty/noncontiguous plans and
-  duplicate identities, and requires exactly one declared descent per frame that has a successor;
-  teardown is still a checked single-assignment slot, and receipt-driven reverse traversal remains
-  with the
-  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+  duplicate identities, and requires exactly one declared descent per frame that has a successor.
+  Each step carries its own reverse effect through `reversedBy`, and receipt-driven reverse traversal is
+  implemented and owned by the
+  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
+  [composition_methodology](composition_methodology.md#the-recursive-project-up-interpreter) is its
+  canonical description.
 - Streams 2, 3, and 4 realize as described: the `Core.dhall` vocabulary import-and-extend idiom, the
   `coreArtifacts` registry concatenation, and the standardized assertion-only `TestSuite`. Stream 3's
   static renders surface through the read-only `context` command; child runtime projection is not a

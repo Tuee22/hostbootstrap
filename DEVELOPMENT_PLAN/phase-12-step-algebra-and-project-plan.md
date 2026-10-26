@@ -1,6 +1,6 @@
 # Phase 12 — The step algebra and the single project plan
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 5 (installed identity, operator verification, and authority kernels), Phase 7
 (Dhall configuration and the generic project model), Phase 8 (ensure reconcilers and the generic Lift),
 Phase 9 (lifecycle modes and run leases), Phase 11 (prepared operations)
@@ -55,7 +55,8 @@ The public surface is split into one pure facade and three evidence leaves:
   lease, journal, and live frame cursor before invoking the lower one-use reservation kernel.
 
 `HostBootstrap.CLI` retains the static `ProjectSpec cfg tcfg` authoring surface. Its scope-finalization
-function passes the static plan builder, static service registry, and scope-correct codec to the lower
+function passes the static plan builder, static service registry, forward-child projector
+(`psForwardChildPlan`; the bare binary passes `refuseForwardChildPlan`), and scope-correct codec to the lower
 finalizer; the lower module therefore does not import `HostBootstrap.CLI`.
 
 The dependency direction is:
@@ -114,10 +115,11 @@ snapshot leaf can consume it. It is absent from the public facade; `StablePlanSn
 non-authorizing byte projection.
 
 The static project specification remains independent of lifecycle scope and every generative identity.
-`HostBootstrap.CLI` passes its static service registry and rank-2 plan builder to the lower component
+`HostBootstrap.CLI` passes its static service registry, rank-2 plan builder, and rank-2 forward-child
+projector (`psForwardChildPlan`; the bare binary passes `refuseForwardChildPlan`) to the lower component
 finalizer; the test-config family remains solely on `ProjectSpec cfg tcfg`. Scope finalization reuses the
-service-registry continuation and retains the exact codec, services, and identity-parametric builder in one
-wrapper:
+service-registry continuation and retains the exact codec, services, identity-parametric builder, and
+forward-child projector in one wrapper:
 
 ```haskell
 withFinalizedProjectSpec
@@ -128,6 +130,12 @@ withFinalizedProjectSpec
         CanonicalProjectRoot planScope rootId
         -> cfg planScope
         -> Either StepPlanError StepPlan)
+  -> (forall planScope.
+        cfg planScope
+        -> Text
+        -> Text
+        -> LiftContext
+        -> Either String (FilePath, cfg planScope, StepPlan))
   -> (forall specDigest.
         FinalizedProjectSpec scope specDigest cfg
         -> result)
@@ -440,9 +448,9 @@ state-machine traversal.
 
 ## Sprints
 
-### Sprint 12.1: Step identity and node-definition validation [Done]
+### Sprint 12.1: Step identity and node-definition validation [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/test/StepSpec.hs`
 **Substrates**: linux-cpu
@@ -457,28 +465,54 @@ authored node must satisfy.
 
 - `CoreStepId` is closed and `ProjectStepId` is validated, so core and project identities are disjoint.
 - `StepFrame` carries a semantic identity and a presentation label; validation rejects inconsistent labels.
-- Each node declares its dependencies, frame, stable operation key, implementation revision, and reverse
-  policy together.
+- Each node declares its dependencies, frame, stable operation key, implementation revision, reverse-adapter
+  revision, and reverse policy together. Every constructor starts both revisions at 1, and attaching a reverse
+  effect with `reversedBy` leaves an already declared reverse-adapter revision unchanged.
 - Each frame with a successor declares exactly one descent, and the innermost frame declares none.
-- An acquiring node declares its reverse effect; a preserved resource carries an explicit preserve policy.
+- A node declares at most one reverse effect (`DuplicateStepReverse`), and a preserved node declares none
+  (`ReverseOnPreservedStep`). A managed node that declares none is legal: its reverse records
+  `TeardownForeignRetained` ("the node acquired nothing this frame must release"), which the demo's direct
+  host-provider `deployVMStep` relies on.
 - Root-sensitive fragments are rank-2 in `CanonicalProjectRoot`, so authored paths arise from admitted root
   authority.
 
 #### Validation
 
-`StepSpec` covers identity disjointness, identity validation, frame validation, descent structure, stable
-operation keys, and preserve policy.
+`StepSpec` covers identity disjointness, frame validation, descent structure, stable operation keys,
+`ReverseOnPreservedStep`, and `DuplicateStepReverse`. No case drives `projectStepId` or the `mkStepPlan`
+refusals `EmptyFrameId`, `EmptyStepLabel`, and `PostHandoffForUnknownFrame` to `Left`. "Post-handoff hooks
+form only a final suffix" matches `PostHandoffBeforeDescentComplete _` without its index. "Every constructor
+starts at explicit revision one" samples only `deployKindStep`, and no case orders `reverseAdapterAt` before
+`reversedBy`. The sprint closes when the Remaining Work cases exist and pass under `cabal test all` from
+`core/`.
 
 #### Remaining Work
 
-None.
+- `StepSpec` identity-validation cases, each asserting the exact `Left`: `projectStepId ""` yields
+  `Left "project step identity must not be empty"`; `projectStepId "a/b"`, `projectStepId "a:b"`, and
+  `projectStepId "é"` each yield `Left ("project step identity is not a stable token: " ++ show raw)`.
+- `StepSpec` `mkStepPlan` refusal cases with exact payloads: a step whose frame id is `""` yields
+  `EmptyFrameId 1`; a step whose label is `""` yields `EmptyStepLabel 1`; a plan whose post-handoff hook names
+  a frame no normal step declared yields `PostHandoffForUnknownFrame <1-based index> <frame id>`; and in
+  "post-handoff hooks form only a final suffix" replace the `_` with `PostHandoffBeforeDescentComplete 2`, the
+  1-based position of the normal step that follows the hook.
+- `reversedByAt` in `core/hostbootstrap-core/src/HostBootstrap/Step.hs` sets the revision only when the caller
+  names one: `reversedBy` appends the effect and keeps the step's current `internalStepReverseAdapterRevision`.
+  `StepSpec` case: `reversedBy f (reverseAdapterAt r3 s)` and `reverseAdapterAt r3 (reversedBy f s)` both have
+  `stepReverseAdapterRevisionNumber` 3.
+- `StepSpec` "every constructor starts at explicit revision one" asserts both revision numbers for every core
+  smart constructor and for one `projectStep`.
+- Correct the `ReversePolicy` Haddock in `Step.hs`, which says `mkStepPlan` "checks the two agree". State the
+  two rules it checks (at most one reverse effect; none on a preserved node) and that a managed node with no
+  reverse effect records `TeardownForeignRetained`. `StepSpec` case: `mkStepPlan [deployVMStep "a" metal noop]`
+  is `Right`.
 
-### Sprint 12.2: Plan-independent step observations [Done]
+### Sprint 12.2: Plan-independent step observations [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
-`core/hostbootstrap-core/test/ChainSpec.hs`
+`core/hostbootstrap-core/test/ChainSpec.hs`, `core/hostbootstrap-core/test/StepSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -503,16 +537,27 @@ Represent what a node observes without granting ownership or plan authority to i
 `StepSpec` covers the observation vocabulary. `ChainSpec` covers result conversion, fail-closed dependency
 ordering, the durable protected sequence, terminal settlement, and unknown-state retention.
 
+Two cases are weaker than their names. `ChainSpec` "the unknown phase is durable before the effect, and the
+entry is free while it runs" probes the store with the blocking `withProtectedEntry`, so an interpreter that
+held the entry during the effect hangs the suite instead of failing the case. `StepSpec` "an action's
+observation is what runStep returns" never calls `runStep`; it asserts only the label it passed in. The
+sprint closes when the Remaining Work items land and `cabal test all` from `core/` passes.
+
 #### Remaining Work
 
-None.
+- `ChainSpec` "the unknown phase is durable before the effect, and the entry is free while it runs": the probe
+  calls `tryProtectedEntry` instead of `withProtectedEntry` and calls `assertFailure "the interpreter held the
+  protected entry during the effect"` on `Right Nothing`, so a held entry fails the case rather than blocking.
+- `StepSpec` "an action's observation is what runStep returns": delete the case. The observation-row check it
+  names lives in `ChainSpec` `observationCases` (Sprint 12.28).
 
-### Sprint 12.3: Projected-operation declarations [Done]
+### Sprint 12.3: Projected-operation declarations [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/test/StepSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -523,6 +568,9 @@ Let a node act through operation keys that its own validated definition projects
 #### Deliverables
 
 - A projected key names an ordered dependency prefix, the declaring node, and a non-empty suffix.
+- Every operation key is a sequence of `/`-free segments: the free-text payloads of `EnsureToolId` and
+  `PostHandoffId` are validated like `projectStepId` (non-empty, no `/` or `:`), so the projection scan
+  consumes each dependency key unambiguously.
 - A projected key is unique across the graph and disjoint from every node's primary operation key.
 - The interpreter registers a node and all its declared projections in one protected entry.
 - A node action can take its primary gate and each declared projection gate at most once.
@@ -532,15 +580,29 @@ Let a node act through operation keys that its own validated definition projects
 #### Validation
 
 `StepSpec` covers key shape and uniqueness. `ChainSpec` covers registration, exact gate access, single use,
-settlement, and close refusal for an incomplete declaration.
+settlement, and close refusal for an incomplete declaration. `ensureStep` and `postHandoffStep` accept any
+`String`, so `mkStepPlan` admits `[ensureStep "z" …, ensureStep "z/core:copy-source" …]`, whose second key
+extends the first across a `/`, and the scan comment in `mkStepPlan` ("the scan is unambiguous") does not
+hold. The sprint closes when the Remaining Work items land and `cabal test all` from `core/` and `demo/`
+passes.
 
 #### Remaining Work
 
-None.
+- `mkStepPlan` in `core/hostbootstrap-core/src/HostBootstrap/Step.hs` refuses a core step whose `EnsureToolId`
+  or `PostHandoffId` payload is empty or contains a character outside the `projectStepId` token set, with a
+  new `StepPlanError` constructor `InvalidCoreStepName StepIdentity`.
+  - `StepSpec` cases: `mkStepPlan [ensureStep "z/core:copy-source" "ensure" metal noop]` yields
+    `Left (InvalidCoreStepName (CoreStepIdentity (EnsureToolId "z/core:copy-source")))`;
+    `postHandoffStep ""` yields the matching refusal for `PostHandoffId ""`; `ensureStep "ghc"` still
+    validates.
+- Correct the `StepAction` Haddock in `Step.hs`. It says a prepare gate's values "are index-carrying" so the
+  pairing "is checked by the type checker", but `stepExecutionPreparedGate` returns an un-indexed
+  `PreparedGate` that `acknowledgeOutcome` in `Lifecycle/Session.hs` pairs by comparing its plan and session
+  text at runtime (`SessionPreparedGateMismatch`). State that runtime check.
 
-### Sprint 12.4: Carried managed resources [Done]
+### Sprint 12.4: Carried managed resources [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
@@ -559,24 +621,45 @@ Carry an acquired managed resource to later dependent nodes within one interpret
 #### Deliverables
 
 - One `ResourceCarrier scope planId` is threaded through the full interpretation.
-- `carryManagedResource` accepts only a `Managed` handle produced by a completed prepared operation.
+- `carryManagedResourceSettlement` and `carryManagedResourcePhaseSettlement` accept only a `Managed` handle
+  produced by a completed prepared operation, together with its matching `OwnershipReceipt`, and carry the
+  canonical durable settlement member beside it.
 - A repeated key carries the newest managed identity observed by that interpretation.
 - `withCarriedManagedResource` reopens a handle under fresh generative indices.
-- A node can read only a key in its exact ordered dependency prefix.
-- An unavailable dependency yields a typed reprobe failure.
+- A node can read only its own operation key or a key in its exact ordered dependency prefix, so a relation
+  the node performs can name the resource the node itself just acquired; any other key is refused with a
+  `Conflict`.
+- An unavailable dependency yields a typed `ReprobeBeforeRetry` failure.
 
 #### Validation
 
 `ChainSpec` carries a managed resource from an acquisition node to its dependent, checks identity and
-observation version, and covers unavailable and out-of-prefix reads.
+observation version, and covers unavailable and out-of-prefix reads. Its helper `summarizeError` renders
+every `Failure` as `"failure"`, so "a dependency nobody carried is a reprobe failure, not an empty success"
+cannot tell `ReprobeBeforeRetry` from `DoNotRetry`. `withCarriedManagedResource` and
+`withCarriedManagedResourceReceipt` refuse a key outside `nodeResources execution`, but
+`withCarriedManagedResourceOfKind` in `Reconcile.hs` checks only the plan digest, which the shared `planId`
+index already fixes, and returns the carried handle for any same-plan `PlannedResource`, including one the
+node declared no edge to. The sprint closes when the Remaining Work items pass under `cabal test all` from
+`core/`.
 
 #### Remaining Work
 
-None.
+- `ChainSpec` "a dependency nobody carried is a reprobe failure, not an empty success": match the adoption
+  result as `Left (Failure (FailureDetail "adopt carried dependency" _ ReprobeBeforeRetry))` instead of
+  comparing the `summarizeError` text.
+- `withCarriedManagedResourceOfKind` in `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs` refuses a
+  `plannedResourceKey planned` outside `map fst (nodeResources execution)` with the same `Conflict` its two
+  sibling openers return, and drops the redundant plan-digest comparison.
+  - `ReconcileSpec` case: build `StepExecution`s for an early node A and the later cluster node on one
+    `ResourceCarrier` (through the test seam Sprint 12.27 leaves for the runtime constructors), carry the
+    cluster node's managed handle through its own execution, then call `withCarriedManagedResourceOfKind`
+    with A's execution and the plan-level cluster `PlannedResource`. It gets `Left (Conflict _)` and the
+    continuation never runs.
 
-### Sprint 12.5: Node-local descriptor views [Done]
+### Sprint 12.5: Node-local descriptor views [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/test/ChainSpec.hs`
@@ -594,20 +677,41 @@ Give an action the exact planned resources and operations of its own node withou
 - `withNodeResourceOfKind` resolves only the node or a member of its ordered dependency prefix.
 - `withNodeObservedResource` checks the descriptor's stable plan digest before pairing an observation.
 - `plannedNodeOperation` derives the node's own resource operation from its ordered resource-bearing edges.
-- The guest-alias projection requires the provider to precede the durable share in plan order.
+- The guest-alias projection requires the provider to precede the durable share in plan order: the
+  plan-level `withProviderGuestAliasProjection` requires the provider node among the share node's
+  dependencies, the node-level `withPlannedStepGuestAliasProjection` requires the provider to precede the
+  share in the node's resource prefix, and both refuse otherwise with
+  `PlanDependencyEdgeMissing <share key> <provider key>`.
 
 #### Validation
 
-`ChainSpec` exercises node-local resource narrowing and operation planning through a real interpretation;
-`ProviderAliasSpec` covers the corresponding plan-level relation.
+`ChainSpec` exercises node-local resource narrowing and operation planning through a real interpretation.
+`ProjectPlanSpec` covers the plan-level relation: "a PlannedStep reaches only its own resource and dependency
+prefix" (the node-level alias projection succeeds and a later resource is `PlanNodeResourceOutsidePrefix`),
+"provider guest alias projection requires the share node declaration" (`PlanProjectedOperationMissing`), and
+"resource projection refuses wrong kinds, absent keys, and reversed edges" (a reversed `withPlannedEdge` is
+`PlanDependencyEdgeMissing`). The sprint closes when the two precedence-refusal cases named in Remaining Work
+exist and pass under `cabal test all` from `core/`.
 
 #### Remaining Work
 
-None.
+- Add a `ProjectPlanSpec` case "provider guest alias projection refuses a share that does not depend on the
+  provider": admit a fixture plan in which the durable-share node (`core:copy-source`) does not list the
+  provider node (`core:deploy-vm`) among its dependencies (and so cannot declare the guest-alias projection;
+  the dependency check precedes the projection check), project both resources with `withPlannedResourceOfKind`, call
+  `withProviderGuestAliasProjection plan provider share`, and assert
+  `Left (PlanDependencyEdgeMissing "core:copy-source" "core:deploy-vm")`.
+- In a fixture whose plan order places the durable-share node before the provider node and whose later
+  cluster node (`core:deploy-kind`) depends on both, project both resources through that cluster node's
+  `PlannedStep` with `withPlannedStepResourceOfKind`, call `withPlannedStepGuestAliasProjection` from it, and
+  assert `Left (PlanDependencyEdgeMissing "core:copy-source" "core:deploy-vm")`. In the same case, passing
+  the plan-level resources (from `withPlannedResourceOfKind`) to the share node's own `PlannedStep` refuses
+  earlier with
+  `Left (PlanNodeResourceOutsidePrefix "core:deploy-vm")`, because the provider is outside that prefix.
 
-### Sprint 12.6: Verb-indexed reverse scheduling substrate [Done]
+### Sprint 12.6: Verb-indexed reverse scheduling substrate [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
@@ -628,18 +732,60 @@ Define the reverse policies and constructive child-first scheduler shared by the
 - A provider frame stops for `down` and releases for `destroy`; an ephemeral cluster releases for both.
 - A preserved resource enters neither destructive projection.
 - The scheduler offers children before their parent and exposes a provider reachability step before descent.
-- Every attempted node returns a successor state, and one failed branch does not starve independent siblings.
+- Every attempted node returns a successor state, and one failed branch does not starve independent siblings:
+  `nextTeardownWork` searches a `FreshWork` pass before a `RetryWork` pass, so a failed node is offered again
+  only after every unattempted node, and its parent stays blocked.
 - Foreign and refused observations settle distinctly from backend failures.
 - Destroy settlement checks that the completed traversal covers every projected node.
 
 #### Validation
 
-`TeardownSpec` covers per-verb effects, preserve policy, three-frame child-first ordering, pre-descent
-reachability, constructive failure, independent siblings, and complete traversal settlement.
+`TeardownSpec` covers per-verb effects, preserve policy on the destroy projection, three-frame child-first
+ordering, destroy's pre-descent reachability step, constructive failure on a single chain ("a failed
+descent blocks the exact child continuation as a unit" asserts the recorded failure list), and complete
+traversal settlement. Its forest fixtures are linear chains, so no case yet has independent
+siblings. Five cases are weaker than their names:
+
+- "every attempt returns a successor forest, including a failure" checks only that the outstanding list keeps
+  four keys, which holds whether the failure is recorded or dropped, and its `assertBool` message ("the failed
+  node is no longer outstanding") states the opposite of its predicate.
+- "a node that keeps failing keeps the forest from ever completing" fails the node once and checks one
+  `nextTeardownWork`.
+- "a preserve-on-reverse step is in neither projection" opens only the destroy forest.
+- "down never offers a pre-descent step" checks only the first offer, under a comment ("the deepest frame's own
+  step is first") that describes a different property.
+- "foreign and refused observations settle without being torn down" applies only `TeardownForeignRetained`.
+
+The sprint closes when the Remaining Work cases exist and pass under `cabal test all` from `core/`.
 
 #### Remaining Work
 
-None.
+- Add a `TeardownSpec` case "a failed branch does not starve an independent sibling": build a destroy forest
+  from a fixture plan with two reverse-bearing sibling nodes in one frame that do not depend on each other.
+  Attempt the first offered sibling with `TeardownFailed`, then assert that `nextTeardownWork` offers the
+  other sibling's local work next, not the failed node. After that sibling settles with `TeardownReleased`,
+  assert the failed node is offered again (the `RetryWork` pass), their shared parent is never offered, and the
+  forest never reaches `ProgressCompleted`.
+- Correct the `nextTeardownWork` Haddock in `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`. It says
+  "A failed node is not re-offered — it is terminal for this forest", but the `RetryWork` pass offers a
+  `SelfFailed` node again after all fresh work. The Haddock should state that two-pass behaviour.
+- `TeardownSpec` "every attempt returns a successor forest, including a failure": assert
+  `teardownForestFailures failed @?= [("core:deploy-chart", "boom"), ("core:deploy-kind", "boom"),
+  ("core:build-pb", "boom")]` and `teardownForestFailures reached @?= []`, and change the `assertBool` message
+  to "the failed node stays outstanding".
+- `TeardownSpec` "a node that keeps failing keeps the forest from ever completing": after the first failure,
+  attempt the re-offered descent with `TeardownFailed "boom"` three more times. After each attempt assert that
+  `nextTeardownWork` takes the work branch, never the completed branch, and that `teardownForestFailures` still
+  equals the three-entry list.
+- `TeardownSpec` "a preserve-on-reverse step is in neither projection": also open the `ProjectDown` forest and
+  assert `notElem "project:ensure-vm-provider" (teardownForestOutstanding downForest)`.
+- `TeardownSpec` "down never offers a pre-descent step": replace the comment with "a down stops the provider
+  and never reaches across it first", and assert that `drainOrder` of the down forest contains no
+  `OfferedPreDescent` entry.
+- `TeardownSpec` "foreign and refused observations settle without being torn down": after the foreign chart
+  attempt, attempt the offered `core:deploy-kind` work with `TeardownRefused "operator-held cluster"`. Assert
+  `teardownForestForeign` is `[("core:deploy-chart", "an operator's release"), ("core:deploy-kind",
+  "operator-held cluster")]` and `teardownForestFailures` stays `[]`.
 
 ### Sprint 12.7: Scope- and specification-indexed plan drafts [Done]
 
@@ -672,12 +818,15 @@ substitution.
 
 None.
 
-### Sprint 12.8: The non-empty project draft stream [Done]
+### Sprint 12.8: The non-empty project draft stream [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
+`core/hostbootstrap-core/test/CLISpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/authoring_project_binaries.md`
 
@@ -691,7 +840,10 @@ under the matching root and validated configuration.
 - Static `ProjectSpec cfg tcfg` remains independent of scope, specification digest, and runtime project or run
   identity.
 - `withFinalizedProjectSpec` produces opaque `FinalizedProjectSpec scope specDigest cfg` from the exact
-  scope-correct codec, finalized service registry, and static plan builder.
+  scope-correct codec, finalized service registry, static rank-2 plan builder, and rank-2 forward-child
+  projector
+  `forall planScope. cfg planScope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg planScope, StepPlan)`.
+  `HostBootstrap.CLI` passes `psForwardChildPlan`; the bare binary passes `refuseForwardChildPlan`.
 - Its typed codec and finalized-service projections retain that same `scope` and `specDigest`.
 - `projectPlanDrafts` has the target `Either PlanError (NonEmpty ...)` signature; its root, validated config,
   and drafts share one `scope` and `specDigest`.
@@ -706,13 +858,45 @@ under the matching root and validated configuration.
 
 #### Validation
 
-`CLISpec` and `SchemaSpec` cover static fragment presence, concrete non-emptiness, exact
-root/configuration scope, and Production/Harness finalization. Compile-fail fixtures cover cross-scope and
-cross-specification draft assembly.
+`CLISpec` ("a spec with no step contribution cannot be finalized", `MissingStepPlan`) covers static fragment
+presence. `ProjectPlanSpec` covers exact root/configuration scope ("the draft builder receives the exact root
+and validated value") and Production/Harness finalization ("Production and exact Harness runs jointly finalize
+one static project definition", including distinct specification digests). Compile-fail fixtures cover
+cross-scope and cross-specification draft assembly. No case yet drives `projectPlanDrafts` to its empty-stream
+refusal: every call in the suite expects `Right`. The Production/Harness case builds both specifications from
+the one-step `singletonPlan` and compares only their digests, so a Harness finalization that substituted
+another one-step builder would pass. The public `planDraftsFromValidatedBuilder` (exported by
+`HostBootstrap.ProjectPlan` and re-exported by `HostBootstrap.ProjectPlan.Construct`) accepts any rank-1
+builder, and `AuthoritySpec` uses it to build alternate-builder drafts, while its Haddock says the finalized
+specification layer supplies the builder. The `CLI.hs` module header says finalization validates "step identities, frames", but `finalizeProjectSpec`
+checks only that a step fragment exists; `mkStepPlan` validates identities and frames at concrete projection.
+No `CLISpec` case produces `DuplicateProjectCaseIds`, `CoreArtifactShadowing`, or
+`DuplicateProjectArtifacts`. The sprint closes when the Remaining Work items land and pass under
+`cabal test all` from `core/`.
 
 #### Remaining Work
 
-None.
+- Add a `CLISpec` case "a config-dependent fragment that yields no step refuses concrete projection". Build a
+  `ProjectSpec` whose single step fragment returns `[]` for the fixture configuration, so the fragment is
+  present and static finalization does not refuse with `MissingStepPlan`. Finalize it with `withFinalizedProjectSpec`, call
+  `projectPlanDrafts finalizedSpec root config`, and assert `Left (InvalidProjectPlan EmptyStepPlan)`.
+- `ProjectPlanSpec` "Production and exact Harness runs jointly finalize one static project definition":
+  finalize with a builder of at least two distinctly labelled steps, and have `exerciseFinalizedSpec` also
+  return the drafts' step identities and labels. Assert the Production and Harness lists are equal, beside the
+  existing distinct-digest assertion.
+- Correct the `planDraftsFromValidatedBuilder` Haddock in
+  `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`: any caller may supply the builder; the drafts
+  take their specification and configuration indices from the `ValidatedConfig`, and nothing ties the step
+  graph to the specification digest except the canonical snapshot bytes that recovery compares.
+- Correct the `core/hostbootstrap-core/src/HostBootstrap/CLI.hs` module header: finalization checks a
+  non-empty test suite, unique test cases, artifacts, assembly inputs, and services, and the presence of at
+  least one step fragment and exactly one forward-child projector; step identities, frames, descent, reverse
+  rules, and a non-empty step list are validated by `mkStepPlan` when the plan is projected under a root and
+  validated config.
+- `CLISpec` finalization-refusal cases, each asserting the exact `Left` from `finalizeProjectSpec`: a suite
+  with two cases under one case id yields `DuplicateProjectCaseIds [<that id>]`; `addArtifacts` with an
+  artifact named like an entry of `coreArtifacts` yields `CoreArtifactShadowing [<that name>]`; two project
+  artifacts with one name yield `DuplicateProjectArtifacts [<that name>]`.
 
 ### Sprint 12.9: The opaque indexed project plan [Done]
 
@@ -746,12 +930,12 @@ cross-specification, cross-plan, and cross-configuration use.
 
 None.
 
-### Sprint 12.10: Authoritative fresh plan admission [Done]
+### Sprint 12.10: Authoritative fresh plan admission [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/StepSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -766,20 +950,37 @@ non-empty draft stream.
 - The hidden plan retains the lifecycle profile's exact installed-project name, protected-store identity,
   and broker epoch so later persistence can validate the admission origin before any write.
 - Admission verifies the root binding carried by every root-sensitive draft.
-- Admission rejects missing parents, duplicate node/frame/resource identities, invalid handoff order, and a
-  mutating node without a reverse policy.
+- Admission rejects missing parents, duplicate node/frame/resource identities, and invalid handoff order.
+- A node without a reverse policy is unrepresentable rather than rejected: every `Step` constructor
+  (`coreStep`, `projectStep`, and the core smart constructors) takes a mandatory `ReversePolicy`.
 - The validated configuration supplies the exact specification and configuration identities used by the
   snapshot.
 - Raw configuration bytes and caller-supplied digest text never enter plan admission.
 
 #### Validation
 
-`ProjectPlanSpec` covers every admission error, root mismatch, deterministic acceptance, and fresh local plan
-identity. Compile-fail fixtures prove the generated identity cannot escape its continuation.
+`ProjectPlanSpec` covers every admission error, root mismatch, and fresh local plan identity. Compile-fail
+fixtures prove the generated identity cannot escape its continuation. Three cases are weaker than their
+names: "fresh admission accepts the same authoritative graph deterministically" checks only that two
+admissions return `Right ()`; "admission rejects drafts from another validated config identity" matches
+`PlanDraftConfigurationMismatch _ _`; and `StepSpec` "every smart constructor retains an explicit reverse
+policy" maps `stepReversePolicy` over only `ensureStep`, `deployVMStep`, and one `projectStep`, never a
+`CoreManagedReverse` constructor. The sprint closes when the Remaining Work cases pass under `cabal test all`
+from `core/`.
 
 #### Remaining Work
 
-None.
+- `ProjectPlanSpec` "fresh admission accepts the same authoritative graph deterministically": each admission's
+  continuation returns `stablePlanSnapshotBytes (renderSnapshot plan)`, and the case asserts both are `Right`
+  and equal.
+- `ProjectPlanSpec` "admission rejects drafts from another validated config identity": assert
+  `Left (PlanDraftConfigurationMismatch (validatedConfigDigest otherConfig) (validatedConfigDigest config))`,
+  the admitted configuration's digest first and the drafts' digest second.
+- `StepSpec` "every smart constructor retains an explicit reverse policy": map `stepReversePolicy` over all ten
+  core smart constructors (`ensureStep`, `deployVMStep`, `copySourceStep`, `buildPbStep`, `buildImageStep`,
+  `contextInitStep`, `deployKindStep`, `deployChartStep`, `exposePortStep`, `postHandoffStep`) plus one
+  `projectStep`, and compare with the full expected list, including `CoreManagedReverse` for the kind, chart,
+  and port steps.
 
 ### Sprint 12.11: The indexed forward projection [Done]
 
@@ -818,7 +1019,7 @@ None.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
-`core/hostbootstrap-core/test/LiftContextSpec.hs`
+`core/hostbootstrap-core/test/ChainSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/dhall_topology.md`
 
@@ -836,16 +1037,21 @@ Expose the plan's exact frame graph as `DerivedTopology scope planId`.
 
 #### Validation
 
-`ProjectPlanSpec` and `LiftContextSpec` cover frame order, parent/descent agreement, label consistency, and
-cross-plan compile failure.
+`ProjectPlanSpec` ("topology retains ordered membership and matching parent/descent edges") covers frame
+order, parent/descent agreement, and label lookup. `ChainSpec` covers the Lift-side consumer that queries only
+a `DerivedTopology scope planId`: `nextFrameAfter (topology plan)` yields the exact child frame and
+`LiftContext` for each descending frame and `Nothing` for the innermost and an absent frame, and
+`handoffDispatch` renders the handoff from that context. The compile-fail fixtures `ForgeDerivedTopology`,
+`CoerceDerivedTopologyPlan`, `CrossPlanColimaConsumer`, and `CrossPlanClusterConsumer` reject a forged
+topology and a topology from another plan.
 
 #### Remaining Work
 
 None.
 
-### Sprint 12.13: The root-bound stable plan snapshot [Done]
+### Sprint 12.13: The root-bound stable plan snapshot [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
@@ -868,27 +1074,47 @@ bytes and digest.
 
 - `renderSnapshot` has the target signature.
 - The hidden `IndexedPlanSnapshot scope specDigest planId configId` is stored in the plan and is available
-  only to the snapshot leaf; the public stable view erases its indices without granting authority.
-- Canonical format version 3 length-frames the exact canonical root as big-endian 32-bit `Char` code points,
+  only to the snapshot leaf; the public stable view erases its indices without granting authority. The kernel
+  exports the type abstractly, as it does `PlanDigestBinding` and `BoundPlanSnapshot`, so no kernel importer
+  can relabel the brand.
+- The canonical format (`canonicalPlanSnapshotFormatVersion`, version 7, whose standalone-activation field
+  the worked-demo phase owns) length-frames the exact canonical root as a big-endian 64-bit byte count followed
+  by big-endian 32-bit `Char` code points,
   length-frames all other variable-width values, explicitly counts collections, and binds the specification
   identity, validated-config digest, topology, stable operation keys, implementation revisions, resource
   graph, and reverse policies.
 - Fresh plan admission supplies the root only from `CanonicalProjectRoot`; a public descriptive projection
   reports the root retained by the stable snapshot.
 - Existing-snapshot structural admission bounds and exactly decodes the non-empty root, rejects NUL,
-  partial, oversized, and out-of-range code-point payloads, and accepts only an absolute path or the reserved
-  compatibility sentinel. Version 2 is unsupported rather than interpreted as root-bound evidence.
-- The current `Reconcile.LifecyclePlan` compatibility encoder uses one explicit reserved sentinel root and
-  does not masquerade that compatibility graph as a canonically rooted `ProjectPlan`.
+  partial, oversized, and out-of-range code-point payloads, and accepts only an absolute path. Every format
+  version other than `canonicalPlanSnapshotFormatVersion` is refused as unsupported rather than interpreted as
+  root-bound evidence.
+- Snapshot bytes come only from an admitted `ProjectPlan`: no compatibility encoder renders an unrooted graph,
+  and no reserved sentinel root exists.
 - Executable callbacks, secrets, and raw configuration bytes are absent from the snapshot.
 - Snapshot rendering is the sole canonical encoder for plan persistence and digest derivation.
 
 #### Validation
 
 Golden and property tests cover deterministic bytes, exact root sensitivity (including coordinated
-root-and-draft substitution), field sensitivity, callback insensitivity, list framing, format version,
-parser refusal, digest derivation, the compatibility sentinel, and the absence of an indexed public snapshot
-constructor or coercion. The exact phase gate validates all downstream snapshot consumers.
+root-and-draft substitution), field sensitivity, format version, parser refusal, digest derivation, and the
+absence of an indexed public snapshot constructor or coercion. Callback absence holds by type:
+`renderSnapshot` is pure and the snapshot holds no function, so "executable callbacks are absent from stable
+snapshot bytes" documents that property rather than testing it. The exact phase gate validates all
+downstream snapshot consumers.
+
+Three gaps remain. The `Reconcile.LifecyclePlan` compatibility encoder and its sentinel root
+`compatibilityLifecyclePlanRoot` still stand, and snapshot admission accepts that sentinel; Sprint 12.27
+deletes them. "Length framing separates delimiter-shaped labels" uses `framedLabelPlanA` and
+`framedLabelPlanB`, whose differing fields (step label and frame label) are separated by the frame id in the
+encoding, so the two byte strings differ even without length framing and the case cannot fail for the defect
+it names. `Lifecycle/Plan.hs` exports `IndexedPlanSnapshot (..)`, so any kernel importer can relabel the
+brand. Two root-codec cases in `LifecycleSpec` do not test the rule they name. The oversized-root case
+passes `ByteString.replicate 131076 0`, so the NUL check in `decodeCanonicalRoot` refuses it before the size
+limit matters, and no case admits a root at exactly the 131072-byte limit. "canonical-root code points
+preserve surrogate and replacement-character identity" compares two payloads the test spliced itself with
+its own `encodedRootPayload`, so it never observes what the production decoder returns. The sprint closes
+when the Remaining Work items land and `cabal test all` from `core/` passes.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1266/1266. This included all 27 indexed
@@ -897,14 +1123,39 @@ cases, and both governed-documentation validator cases.
 
 #### Remaining Work
 
-None.
+- `ProjectPlanSpec` "length framing separates delimiter-shaped labels": replace the fixtures with two
+  one-step plans whose differing fields are adjacent in the encoding and collide under plain concatenation:
+  frame id `"f|x"` with frame label `"L"` against frame id `"f"` with frame label `"x|L"`, same step label.
+  Assert the snapshot bytes differ, and assert that the frame id is preceded in the bytes by its big-endian
+  64-bit length.
+- `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs` exports `IndexedPlanSnapshot` without
+  `(..)`. `ProjectPlanSpec` source guard: the export list of `Lifecycle/Plan.hs`, read with
+  `SourceGuard.moduleExportTokens`, contains `IndexedPlanSnapshot` and not the token sequence
+  `IndexedPlanSnapshot ( .. )`.
+- `LifecycleSpec` oversized canonical root: build the payload as `/` followed by `a` code points to 131076
+  bytes (each code point four big-endian bytes, none NUL, all in range), so only the size guard in
+  `decodeCanonicalRoot` can refuse it. Add a boundary case whose root payload is exactly 131072 bytes of the
+  same shape, recomputes the plan digest the same way, and is admitted. The refusal row asserts the kernel
+  reason `"the canonical project root exceeds the size limit"` through the reason-carrying refusal Sprint 12.18
+  adds.
+- `LifecycleSpec` "canonical-root code points preserve surrogate and replacement-character identity": rename
+  it "a canonical root holding a lone surrogate code point is admitted", which is what it observes. Add a
+  `ProjectPlanSpec` case that admits one plan under each of two canonical roots, `<tmp>/r\xDC80` and
+  `<tmp>/r\xFFFD`, created with `createDirectory` and opened with `withCanonicalProjectRoot`. It asserts that
+  the two `stablePlanSnapshotBytes` and `stablePlanSnapshotDigest` values differ and that the first root frame
+  holds the big-endian code point `0x0000DC80`, so an encoder that passes the root through `Text` fails. On a
+  host whose filesystem refuses the `\xDC80` name, the case asserts that `createDirectory` refusal and reports
+  the row unsupported on that host instead of passing.
+- The absolute-root-only admission and the absence of a compatibility encoder land with Sprint 12.27's
+  deletion of the `LifecyclePlan` family and `compatibilityLifecyclePlanRoot`; this sprint closes after it.
 
-### Sprint 12.14: The plan-local current frame [Done]
+### Sprint 12.14: The plan-local current frame [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Frame.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -930,16 +1181,21 @@ topology.
 
 #### Validation
 
-`ContextSpec` and `ProjectPlanSpec` cover every context/topology mismatch and show that admission performs no
-protected-store transition. Compile-fail fixtures reject cross-plan and cross-frame evidence.
+`ContextSpec` and `ProjectPlanSpec` cover every context/topology mismatch. Compile-fail fixtures reject
+cross-plan and cross-frame evidence. Admission performs no protected-store transition by type:
+`withCurrentFrame` is pure, returns `Either FrameError result`, and never receives a `ProtectedStore`. The
+`ContextSpec` case "admission performs no protected-store transition" compares store observations around that
+pure call, so it cannot fail. The sprint closes when the Remaining Work item lands and `cabal test all` from
+`core/` passes.
 
 Dated focused evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the library built with `-Werror`, all 10
-plan-local current-frame tests passed (including a complete protected-record before/after comparison), and
-all 110 public compile-fail boundary fixtures passed.
+plan-local current-frame tests passed, and all 110 public compile-fail boundary fixtures passed.
 
 #### Remaining Work
 
-None.
+- `ContextSpec` "admission performs no protected-store transition": drop the `observeProtectedStore`
+  before/after comparison and the store fixture, keep the `Right "host-orchestrator-0"` assertion, and rename
+  the case "admission yields the exact current frame id".
 
 ### Sprint 12.15: The plan-digest binding [Done]
 
@@ -1011,9 +1267,9 @@ their intended boundary, and all 118 public compile-fail boundary fixtures passe
 
 None.
 
-### Sprint 12.17: Fresh snapshot persistence and lease binding [Done]
+### Sprint 12.17: Fresh snapshot persistence and lease binding [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
@@ -1056,6 +1312,14 @@ strict opaque-witness forcing, and the absence of prepared or effect work before
 write. `AuthoritySpec` checks retained Production and Harness profile origins. Compile-fail fixtures cover all
 five nominal `NormalActiveRecovery` axes.
 
+"a real protected snapshot read failure leaves the lease unbound" blocks only the snapshot record path. The
+two cases in `snapshotFilesystemFailureCases` instead rename the whole `records` directory away with
+`withBlockedRecordsPath`, so every protected read and write fails, the lease's included; the name "a blocked
+protected snapshot path leaves the lease unbound" promises a snapshot-path failure the fixture does not
+isolate. On `mingw32` a CPP branch defines `snapshotFilesystemFailureCases = []`, so the Windows leg of the
+host static gate drops both cases without a row. The sprint closes when the Remaining Work items land and
+`cabal test all` from `core/` passes on Linux and on Windows.
+
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1194/1194. This included 12/12 persisted-snapshot
 protocol cases, 26/26 indexed project-plan cases, both profile-origin cases, and all 123 public compile-fail
@@ -1064,16 +1328,24 @@ boundaries; the library and test target built with `-Werror`, `DocValidatorSpec`
 
 #### Remaining Work
 
-None.
+- `core/hostbootstrap-core/test/LifecycleSpec.hs`: delete the `#ifdef mingw32_HOST_OS` branch that defines
+  `snapshotFilesystemFailureCases = []`, so both cases run on every host. If renaming the `records` directory
+  fails on Windows while the store is open, `withBlockedRecordsPath` blocks it there by another mechanism that
+  makes every protected read and write under `records` fail, and the case keeps its assertions.
+- Rename "a blocked protected snapshot path leaves the lease unbound" to "an unavailable records directory
+  before the snapshot write leaves the lease unbound", which is the whole-store outage it exercises. The
+  isolated snapshot-path failure stays covered by "a real protected snapshot read failure leaves the lease
+  unbound".
 
-### Sprint 12.18: Protected admission of an existing Production snapshot [Done]
+### Sprint 12.18: Protected admission of an existing Production snapshot [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
-`core/hostbootstrap-core/test/LifecycleSpec.hs`
+`core/hostbootstrap-core/test/LifecycleSpec.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -1084,8 +1356,11 @@ identity.
 
 #### Deliverables
 
-- `withBoundPlanSnapshot` has the target signature and is the one public existing-Production admission
-  contract.
+- `withBoundPlanSnapshot` has the target signature and is the one existing-Production admission that a
+  caller outside the package can use. The same exposed module also exports
+  `withReauthorizedBoundPlanSnapshotKernel`, the Down/Destroy reauthorization admission that the lifecycle
+  entry uses. It takes the package-private `ExistingBoundSnapshotAdmission` token and forces it before any
+  verb or effect, so no caller outside the package can apply it.
 - The opener starts from `ProtectedStore` and `InstalledProjectIdentity`; it obtains the exact `ProjectUp`
   root, active Production mode lease, already-bound run lease, immutable verified snapshot, and exact
   recorded/allocated broker generation itself. It accepts no `UnboundRunLease` or caller-selected snapshot.
@@ -1108,11 +1383,26 @@ identity.
 `LifecycleSpec` covers the terminal close-key-only branch, all three Open revision classifications, exact
 Open admission and re-entry, protected-record byte/version preservation, broker/lease/snapshot/authority
 drift, missing records, unsupported envelope and canonical versions, malformed close keys and canonical
-bytes, coordinated inner/outer identity drift, recomputed-digest structural corruption, single-identity
+bytes, coordinated inner/outer identity drift, a recomputed digest over a whole-record change (relative
+root, config or specification relabel, trailing byte, changed step count), single-identity
 propagation, and callback failure after unlock. Compile-fail fixtures and the public-signature guard reject
 constructor forging, the hidden lower admission token and scope-only observation, `UnboundRunLease`,
 caller-selected snapshots, terminal snapshot access, local-plan-identity escape, and cross-scope,
 cross-specification, cross-digest, cross-plan, and cross-broker substitution.
+
+No case changes a field inside one encoded step and recomputes the digest, so the per-field sub-decoders of
+`admitPersistedCanonicalPlanSnapshotKernel` are unpinned. The existing-bound path in `Lifecycle/Mode.hs`
+maps every kernel `Left` to `ModeMalformedRecord (recordKeyText snapshotKey)` and discards the reason, and
+every canonical-snapshot row accepts any `ModeMalformedRecord _`, so a row passes whenever any check refuses
+its bytes. Two rows are masked that way: "canonical content-digest drift is refused" appends a trailing byte,
+which the trailing-bytes check refuses before the digest comparison, and "rootless version-2 canonical plan
+is refused" keeps the stale plan digest, which the digest check refuses if the version check is removed.
+"two Open admissions preserve durable bytes and mint isolated local identities" observes no identity; the
+rank-2 `planId` and the compile-fail fixtures carry that property. `AuthoritySpec` "a hostile canonical frame
+length is rejected before allocation" declares a `maxBound` frame length, which still refuses through the
+length-equality check if the limit check is deleted (`splitAt (-1)` yields an empty slice), and it cannot
+observe allocation. The sprint closes when the Remaining Work items land in `existingBoundRefusalCases` and
+`AuthoritySpec` and pass under `cabal test all` from `core/`.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1230/1230. The final-tree replay included
@@ -1121,11 +1411,40 @@ Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 
 #### Remaining Work
 
-None.
+- `LifecycleSpec` `existingBoundRefusalCases`: add one `refusalCase` per intra-step field, each built like
+  "a recomputed digest cannot bless a structurally corrupt canonical step stream". Each case changes exactly
+  one field inside the first encoded step of `stablePlanSnapshotBytes`. It recomputes the plan digest with
+  `canonicalPlanDigestForTest`, rewrites the bound lease and snapshot records, and expects the
+  `ModeMalformedCanonicalSnapshot` refusal below with its sub-decoder's reason. The fields are: an unknown reverse-policy text, a mount read-only tag byte of `2`,
+  implementation revision `0`, an unknown lift-layer kind, and an unknown provider-resource target tag. If a
+  case is admitted, fix the matching sub-decoder of `admitPersistedCanonicalPlanSnapshotKernel` in
+  `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`.
+- `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`: the existing-bound admission maps a kernel
+  `Left reason` to a new `ModeError` constructor `ModeMalformedCanonicalSnapshot Text Text` carrying the
+  snapshot record key text and the kernel reason, instead of `ModeMalformedRecord` with the key alone.
+  - Every canonical-snapshot row of `existingBoundRefusalCases` (config-digest drift, embedded-spec relabel,
+    corrupt step count, the five root-parser rows, and the intra-step rows above) asserts
+    `ModeMalformedCanonicalSnapshot (recordKeyText (snapshotKey project unbound)) <exact kernel reason>`.
+    Rows refused outside the kernel assert `ModeMalformedRecord` with the exact snapshot, lease, invocation,
+    or migration key their mutation targets.
+- `LifecycleSpec` "canonical content-digest drift is refused": change one character of a step label inside
+  the canonical bytes without changing any length, keep the stable plan digest, and assert the reason
+  `"the canonical plan digest does not match its bytes"`.
+- `LifecycleSpec` "rootless version-2 canonical plan is refused": recompute the plan digest with
+  `canonicalPlanDigestForTest specDigest changedBytes`, rewrite the bound lease and snapshot records with it,
+  and assert the reason `"the canonical plan version is unsupported"`.
+- Rename `LifecycleSpec` "two Open admissions preserve durable bytes and mint isolated local identities" to
+  "two Open admissions preserve durable bytes and are re-enterable".
+- `AuthoritySpec` "a hostile canonical frame length is rejected before allocation": rename it "a canonical
+  frame length over the text bound is refused". Beside the `maxBound` row, write a well-formed snapshot record
+  (magic, version 1, revision 1, a spec-digest frame, a one-byte plan-digest frame, canonical tag 0) whose
+  spec-digest frame declares and carries 1048577 bytes, and assert `verifyPlanSnapshot` refuses it with
+  `ModeMalformedRecord (recordKeyText key)`. The same record with a 1048576-byte spec-digest frame passes
+  `decodePlanSnapshotRecord`, so `verifyPlanSnapshot` does not refuse it with `ModeMalformedRecord`.
 
-### Sprint 12.19: The indexed recovered Production profile [Done]
+### Sprint 12.19: The indexed recovered Production profile [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -1155,10 +1474,18 @@ Open the exact recovered Production profile already named by indexed Open admiss
 
 #### Validation
 
-`LifecycleSpec` covers exact profile admission, retained protected-store identity revalidation,
-single-identity propagation, repeatability, existing-binding enforcement, and drift in root, mode, lease,
-stable bytes, digest, recovery origin, or broker. Compile-fail fixtures reject Harness, teardown authority,
-a freshly quantified recovery identity, and mismatched indexed evidence.
+`LifecycleSpec` covers exact profile admission, single-identity propagation, existing-binding enforcement,
+and drift in root, mode, lease, stable bytes, digest, and recovery origin. Compile-fail fixtures reject
+Harness, teardown authority, a freshly quantified recovery identity, and mismatched indexed evidence.
+Purity holds by type: `withRecoveredProductionLifecycleProfile` returns `Either ModeError result`.
+
+Three checks are weaker than their names. "the exact seven-value Open package refines without selecting
+another plan identity" checks the profile's store identity only for non-emptiness. "pure profile refinement
+is repeatable and leaves every protected record unchanged" returns one pure value twice, so it cannot fail.
+"broker generation drift is refused" substitutes only the recovery evidence, as the recovery-origin row
+does; no row drifts the root or mode-lease epoch, and every foreign package is installed under the fixture's
+one project name, so the project-name checks never see a mismatch. The sprint closes when the Remaining Work
+items land and `cabal test all` from `core/` passes.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1256/1256. This included 13/13 recovered
@@ -1167,11 +1494,19 @@ Production-profile cases, all 124 `LifecycleSpec` cases, and all 147 public comp
 
 #### Remaining Work
 
-None.
+- `LifecycleSpec` "the exact seven-value Open package refines without selecting another plan identity":
+  replace the non-empty check with `profileStore @?= protectedStoreIdentityText (protectedStoreIdentity store)`.
+- Delete `LifecycleSpec` "pure profile refinement is repeatable and leaves every protected record unchanged".
+- `recoveredProductionProfileDriftCases`: rename "broker generation drift is refused" to "recovery broker
+  generation drift is refused", and add two drift constructors whose foreign package is created with
+  `initialForeignCounter (Just 1)`: `RecoveredRootEpochDrift` substitutes the foreign root and
+  `RecoveredModeEpochDrift` the foreign mode lease, each expecting `ModeEpochMismatch 1 2`. Add a third row
+  whose foreign package is installed under a different project name and substitutes its root at the same
+  epoch, expecting `ModeEvidenceMismatch "root project" _ _`.
 
-### Sprint 12.20: Exact recovered Production plan reconstruction [Done]
+### Sprint 12.20: Exact recovered Production plan reconstruction [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
@@ -1211,11 +1546,21 @@ identity.
 #### Validation
 
 `ProjectPlanSpec` covers coercion-free restart reconstruction through an independently finalized candidate,
-origin and byte agreement, purity, one-identity propagation, and drift in finalized specification, validated
+origin and byte agreement, one-identity propagation, and drift in finalized specification, validated
 config bytes, regenerated builder drafts, root, direct configuration/drafts, verified or bound snapshot,
-digest binding, or profile. Compile-fail fixtures reject the hidden config kernel, validated-config
-construction, Harness inputs, a freshly quantified recovery identity, cross-candidate finalization/config,
-and mismatched recovered config, bound snapshot, binding, or plan evidence.
+digest binding, or profile. Purity holds by type: `withRecoveredProductionProjectPlan` and
+`withRecoveredProductionProjectPlanInputs` return a pure `Either PlanError a`. Compile-fail fixtures reject
+the hidden config kernel, validated-config construction, Harness inputs, a freshly quantified recovery
+identity, cross-candidate finalization/config, and mismatched recovered config, bound snapshot, binding, or
+plan evidence.
+
+The drift cases check the refusal through `assertRecoveryMismatch`, which compares only the subject text of
+`PlanRecoveryEvidenceMismatch` and discards the expected and observed digests, so a refusal that reported
+swapped or wrong digests passes. The recovery cases also snapshot the protected store around these pure calls
+and compare two evaluations of one pure expression, assertions no mutation of the function under test can
+break. The `withRecoverySpecReindexKernel` Haddock says the kernel mints authority only when the recovered
+profile and the finalized codec agree, a provenance a function of two `Text` values cannot check. The sprint
+closes when the Remaining Work items land and `cabal test all` from `core/` passes.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1291/1291. This included all 38
@@ -1224,11 +1569,30 @@ boundaries, and 2/2 `DocValidatorSpec` cases.
 
 #### Remaining Work
 
-None.
+- `ProjectPlanSpec` gains `assertRecoveryMismatchExact subject expected observed`, which matches all three
+  fields of `PlanRecoveryEvidenceMismatch`. Use it where the case knows both digests:
+  - "a different independently finalized specification is refused before refinement" asserts
+    `"finalized specification"` with `recoveredProductionProfileSpecDigest profile` as expected and the
+    candidate codec's `projectCodecSpecDigest` as observed.
+  - "different independently validated config bytes are refused before refinement" asserts
+    `"validated configuration digest"` with `recoveredProductionProfileConfigDigest profile` as expected and
+    `validatedConfigDigest driftedConfig` as observed.
+- Remove the `readAllProtectedRecords` before/after comparisons that wrap only pure calls
+  (`recoverProjectPlan`, `withRecoveredProductionProjectPlanInputs`) and the `second @?= first` comparison in
+  "exact reconstruction retains one admitted plan identity and is pure"; rename that case "exact
+  reconstruction retains one admitted plan identity". Store-invariance checks stay only where the subject
+  runs in `IO`.
+- Correct the `withRecoverySpecReindexKernel` Haddock in
+  `core/hostbootstrap-core/src/HostBootstrap/Config/Schema/Internal.hs`. The kernel compares two
+  caller-supplied `Text` digests and mints a `RecoverySpecReindex targetSpecDigest` at whatever phantom the
+  continuation's use fixes; it cannot see where either text came from. State that each caller owns the
+  binding: `withRecoveredProductionProjectPlanInputs` in `ProjectPlan/Construct.hs` passes the recovered
+  profile's `recoveredProductionProfileSpecDigest`, and the profile's own `specDigest` index fixes the target
+  phantom.
 
-### Sprint 12.21: The plan-bound acquisition journal [Done]
+### Sprint 12.21: The plan-bound acquisition journal [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
@@ -1276,6 +1640,18 @@ record while ignoring another run's record, and the bound cleanup control proves
 remains pre-resource. Compile-fail fixtures reject construction, index coercion, cross-plan/cross-broker use,
 hidden admission access, and treating a journal as command authority.
 
+The refusal rows pass through `assertLifecycleRefusalNoMutation`, which accepts any `LifecycleError` with a
+non-empty message, so no row shows which guard fired; the "zero lease version" and "zero broker epoch" rows
+also disagree with the live lease and root, so the binding comparison refuses them even without the
+decoder's zero rule. No test produces the `SessionAcquisitionBindingMismatch` refusal of
+`validateBoundRunLeaseAcquisitionJournal`, which `authorizeRootProject` and the reverse-root path call;
+`ProjectPlanSpec` pins its call sites as source text only. `withAcquisitionJournal` and
+`validateBoundRunLeaseAcquisitionJournal` pass eleven positional `Text`/`Word64` coordinates to
+`openAcquisitionJournalKernel` and `validateAcquisitionJournalBindingKernel`, so a consistent transposition on
+both sides compiles and validates. `Lifecycle/Session.hs` exports `reopenExistingAcquisitionCursorKernel` and
+`reopenExistingReverseAcquisitionJournalKernel` with no production caller. The sprint closes when the
+Remaining Work items land and `cabal test all` from `core/` passes.
+
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1314/1314. This included all 11
 plan-bound acquisition-journal cases, the unbound normal/sweep refusal and adjacent-run controls, the bound
@@ -1283,11 +1659,38 @@ journal-only pre-resource control, all 169 public compile-fail boundaries, and 2
 
 #### Remaining Work
 
-None.
+- `SessionSpec` `assertLifecycleRefusalNoMutation` takes an expected-refusal predicate
+  `LifecycleError -> Bool` and fails with the observed error when the predicate rejects it. Every acquisition
+  row names its own refusal:
+  - the nine rows of "malformed, noncanonical, or extended records refuse without normalization", including
+    "zero lease version" and "zero broker epoch", expect `SessionRecordCorrupt "acquisition journal"`;
+  - each row of "key-excluded immutable binding drift collides and is never rewritten" expects
+    `SessionAcquisitionBindingMismatch` naming the field the row mutates;
+  - each row of "retained-evidence origin drift refuses before opening a record" and "live mode and broker
+    drift refuse without minting authority" expects the constructor and field of the one fact it changes.
+- `SessionSpec` case "a bound lease from another acquisition origin is refused by the journal binding": open
+  two acquisition fixtures in separate stores, call `validateBoundRunLeaseAcquisitionJournal` with fixture B's
+  bound lease (`unsafeCoerce`d to A's indices) and fixture A's journal, and assert
+  `Left (SessionAcquisitionBindingMismatch "protected store" _ _)`, the first field in the kernel's comparison
+  order that differs.
+- `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs` defines one record,
+  `AcquisitionBindingCoordinates`, with a named field per coordinate (stable scope, project, store identity,
+  snapshot digest, lease record key, lease version, run, specification digest, lease plan digest, broker
+  epoch, root verb). `Lifecycle/Mode.hs` builds it once from the bound lease and root, and both
+  `openAcquisitionJournalKernel` and `validateAcquisitionJournalBindingKernel` take that record in place of
+  positional arguments.
+- Delete `reopenExistingAcquisitionCursorKernel`, `reopenExistingReverseAcquisitionJournalKernel`, and their
+  private helpers `reopenExistingAcquisitionJournalInEntry`, `requireChildCursorPresence`, and
+  `childAcquisitionKey` from `Lifecycle/Session.hs`. Delete the `SessionSpec` case "reverse acquisition reopen
+  forces hidden admission before every recovery input", the fixture
+  `core/hostbootstrap-core/test/compile-fail/PassRawAdmissionToReverseAcquisitionJournal.hs`, and its
+  `CompileFailSpec` registration.
+- `SessionSpec` "reverse-root source records force hidden admission on partial application": catch
+  `ErrorCall` instead of `SomeException` and assert the message is `"forced reverse-root admission"`.
 
-### Sprint 12.22: The canonical same-broker cursor record [Done]
+### Sprint 12.22: The canonical same-broker cursor record [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Frame.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
@@ -1326,9 +1729,16 @@ granting command, recursive, or backend-effect authority.
 #### Validation
 
 `SessionSpec` pins the independently derived key, exact seven fields, unusual delimiter/Unicode frame bytes,
-4,096-byte frame bound, malformed/noncanonical/oversized rows, valid unequal collisions, and exact source
-pinning without normalization. Compile-fail fixtures reject construction and coercion of every role and
-pin every nominal role.
+malformed/noncanonical/oversized rows, valid unequal collisions, and exact source pinning without
+normalization. Compile-fail fixtures reject construction and coercion of every role and pin every nominal
+role.
+
+The frame bound is tested only from above: "a 4097-byte frame refuses before cursor store I/O" tries one
+over-limit frame, so a tighter limit or a `>=` comparison passes, and its helper compares store images, which
+cannot show the refusal precedes store I/O. "corrupt, colliding, and broker-mismatched cursor payloads never
+normalize" accepts any refusal per row, never reopens the cursor after restoring the canonical bytes, and
+asserts `retained /= canonical` after `retained @?= payload` has already fixed that answer. The sprint closes
+when the Remaining Work items land and `cabal test all` from `core/` passes.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the fresh exact phase gate
 `cabal test all --ghc-options=-Werror` from `core/` passed 1344/1344. This included all 12
@@ -1337,11 +1747,21 @@ same-broker lifecycle-cursor cases, all 187 public compile-fail boundaries, and 
 
 #### Remaining Work
 
-None.
+- `SessionSpec` frame bound: rename "a 4097-byte frame refuses before cursor store I/O" to "a 4097-byte frame
+  refuses with the frame-length bound" and assert `Left (SessionCursorBindingInvalid "frame length")`. Add a
+  case in which a 4096-byte frame (`Text.replicate 4096 "x"`) and a 2048-character `é` frame (4096 UTF-8
+  bytes) each open a cursor, and a 2049-character `é` frame (4098 bytes) refuses with
+  `SessionCursorBindingInvalid "frame length"`.
+- `SessionSpec` "corrupt, colliding, and broker-mismatched cursor payloads never normalize": each mutation row
+  names its expected refusal, `SessionRecordCorrupt "lifecycle cursor"` for a payload that does not decode
+  canonically and `SessionCursorBindingMismatch "durable binding" _ _` for one that decodes to a valid but
+  unequal binding, through the predicate `assertLifecycleRefusalNoMutation` takes (Sprint 12.21). Delete the
+  `retained /= canonical` assertion. After the loop restores the canonical bytes, reopen the cursor at
+  `Prepare` with a non-counting callback and assert `Right`.
 
-### Sprint 12.23: Lifecycle cursor admission and transitions [Done]
+### Sprint 12.23: Lifecycle cursor admission and transitions [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Frame.hs`,
@@ -1387,6 +1807,16 @@ and exception retry, and byte-identical refusal paths. Compile-fail fixtures rej
 verb/phase use, transition skipping, terminal advance, and treating a cursor as command or teardown authority.
 They also reject escaping the generated frame identity from its rank-2 opener.
 
+Four checks are weaker than their names. "callback exceptions preserve durable initial and successor phases
+for redelivery" accepts any exception from the initial open and then reads `"prepare"` back, which
+`withCurrentLifecycleCursor` reports from the acquisition seed even when no cursor row exists, so it cannot
+tell whether the initial row survived. "wrong verb and absent-seed phase refuse without writing a cursor" and
+"same-byte source ABA invalidates both reopen and retained-successor authority" accept any refusal. "legal
+successors are read back before unlocked delivery and acquisition stays the seed" and "a canonical non-Prepare
+acquisition seed starts the absent cursor at that phase" assert `withAcquisitionJournalPhase` of the fixture's
+immutable journal value, which later transitions cannot change. The sprint closes when the Remaining Work
+items land and `cabal test all` from `core/` passes.
+
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused runtime matrix passed 12/12 and
 the cursor-specific public compile-fail matrix passed 18/18. A separate fresh exact phase gate,
 `cabal test all --ghc-options=-Werror` from `core/`, then passed 1344/1344, including all 187 public
@@ -1394,14 +1824,31 @@ compile-fail boundaries and 2/2 `DocValidatorSpec` cases.
 
 #### Remaining Work
 
-None.
+- `SessionSpec` "callback exceptions preserve durable initial and successor phases for redelivery": match the
+  initial exception as an `IOError` whose message contains "initial cursor callback interruption", then
+  assert that `soleRecordWithPrefix store "cursor."` returns a row at record version 1 whose phase field is
+  `"prepare"`.
+- `SessionSpec` "wrong verb and absent-seed phase refuse without writing a cursor": the `ProjectDown` call
+  expects `SessionCursorVerbMismatch _ _` and the `Execute` call `SessionCursorPhaseMismatch _ _`, through
+  the predicate `assertLifecycleRefusalNoMutation` takes (Sprint 12.21). "same-byte source ABA invalidates
+  both reopen and retained-successor authority" expects
+  `SessionCursorBindingMismatch "source acquisition version" _ _` for both refusals.
+- `SessionSpec`: delete `sourceSeed` and its assertion from "legal successors are read back before unlocked
+  delivery and acquisition stays the seed", and the final `withAcquisitionJournalPhase journal` assertion from
+  "a canonical non-Prepare acquisition seed starts the absent cursor at that phase". The acquisition record
+  comparison and the reopened journal in those cases already check the seed.
 
 ### Sprint 12.24: Plan-owned resource projection [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`
+`core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
+`core/hostbootstrap-core/test/ReconcileSpec.hs`,
+`core/hostbootstrap-core/test/ProviderAliasSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -1419,9 +1866,9 @@ Make canonical whole-plan resources and dependency edges typed projections of th
 - Whole-plan edge and provider-guest-alias projections read the same validated dependency graph.
 - A `PlannedStep` exposes only its own resource and declared dependency prefix to a node action.
 - Callers provide neither plan digest nor frame text when constructing a resource view.
-- `Reconcile` reexports and consumes the opaque projection vocabulary without a whole-plan producer of its
-  own. Its live `StepExecution` node adapters delegate to the plan kernel; Sprint 12.27 binds descriptor
-  production to the exact `ProjectPlan` and matching `PlannedStep`.
+- `Reconcile` reexports and consumes the opaque projection vocabulary. Its live `StepExecution` node
+  adapters delegate to the plan kernel; Sprint 12.27 binds descriptor production to the exact `ProjectPlan`
+  and matching `PlannedStep` and deletes the remaining `LifecyclePlan` compatibility producer.
 
 #### Validation
 
@@ -1436,11 +1883,11 @@ compile-fail boundaries and 2/2 `DocValidatorSpec` cases.
 
 #### Remaining Work
 
-None.
+None. Deleting the `Reconcile.LifecyclePlan` whole-plan compatibility producer is Sprint 12.27's.
 
-### Sprint 12.25: Current-frame command-authority substrate [Done]
+### Sprint 12.25: Current-frame command-authority substrate [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
@@ -1486,10 +1933,14 @@ frame evidence.
 
 #### Validation
 
-`AuthoritySpec` covers every mismatched index, context placement, frame membership, stale cursor phase,
-journal and root broker agreement, live-evidence drift, and one-use reservation. Compile-fail fixtures cover
-cross-scope, cross-specification, cross-digest, cross-plan, cross-configuration, cross-frame, cross-broker,
-cross-verb, and cross-phase substitution.
+Compile-fail fixtures cover cross-scope, cross-specification, cross-digest, cross-plan, cross-configuration,
+cross-frame, cross-broker, cross-verb, and cross-phase substitution. `AuthoritySpec` pins the
+`authorizeRootProject` signature and the `HostBootstrap.Authority.ProjectPlan` surface as source text and
+never calls `authorizeRootProject` at runtime. The only runtime coverage of the reservation is the replay
+refusal of a consumed reservation through `ChainSpec` and `CLISpec`. The sprint closes when the runtime
+`AuthoritySpec` cases in Remaining Work exist and pass under `cabal test all` from `core/`. That makes
+cursor-frame agreement, stale cursor phase, live lease drift, one-use reservation, and the concurrent single
+winner regression-tested.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4),
 `cabal build hostbootstrap-core --ghc-options=-Werror` passed; the focused `AuthoritySpec` and `SessionSpec`
@@ -1500,7 +1951,19 @@ the focused governed-documentation check passed 2/2 again.
 
 #### Remaining Work
 
-None.
+- `AuthoritySpec`: add runtime cases that call the public `authorizeRootProject` with otherwise exact
+  evidence from one opened store. Each refusal case also asserts that the protected-store record set is
+  byte-identical before and after the call.
+  - A cursor whose frame differs from the root-refined `ValidatedLifecycleContext` frame yields
+    `Left (AuthorityMalformedBinding _)` naming `cursor frame`.
+  - A cursor advanced past its retained phase by `withLifecycleCursorSuccessor` before the call yields
+    `Left (AuthorityMalformedBinding _)` from `reserveCurrentLifecycleCommandKernel`.
+  - A bound run-lease record rewritten in the store after the evidence was opened (live lease drift) yields
+    `Left _`.
+- `AuthoritySpec`: a second `authorizeRootProject` call with the same evidence after a successful one yields
+  `Left (AuthorityInvocationConsumed _)`.
+- `AuthoritySpec`: two concurrent `authorizeRootProject` calls (`concurrently`) with identical evidence
+  yield exactly one `Right`. The other yields `AuthorityInvocationConsumed` or `AuthorityReservationConflict`.
 
 ### Sprint 12.26: Plan-derived reverse projection adoption [Done]
 
@@ -1569,9 +2032,9 @@ boundaries passed; and the exact phase gate, `cabal test all --ghc-options=-Werr
 
 None.
 
-### Sprint 12.27: Reconciliation and execution adoption [Done]
+### Sprint 12.27: Reconciliation and execution adoption [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
@@ -1590,8 +2053,9 @@ Make reconciliation descriptors and resource carriers consume the exact indexed 
 
 #### Deliverables
 
-- Reconciliation consumes `ProjectPlan`, `PlannedStep`, and plan-owned resource views through the public
-  facade.
+- Reconciliation consumes `ProjectPlan`, `PlannedStep`, and plan-owned resource views. The descriptor
+  producer reads the node's execution terms through the hidden kernel's `projectPlanExecutionTermsKernel`,
+  as one of the audited kernel importers Sprint 12.31 pins.
 - The exact descriptor producer is total over one admitted plan and its matching projected node:
 
   ```haskell
@@ -1603,10 +2067,14 @@ Make reconciliation descriptors and resource carriers consume the exact indexed 
     -> StepExecution scope planId
   ```
 
-- Each execution descriptor carries exact scope, plan, configuration, node, frame, and operation identity.
+- Each execution descriptor carries exact scope, plan, configuration, node, frame, and operation identity, and
+  `runPlannedStep` runs a node's callback only under that node's own descriptor. The hidden kernel exports
+  `PlannedStep` abstractly, so no other module constructs a node.
 - The `ResourceCarrier` uses the same `scope` and `planId` as the projected node.
-- Descriptor production has one plan-owned route.
-- Reconciliation has no plan, planned-resource, or canonical snapshot constructor.
+- Descriptor production has one plan-owned route: the interpreter's package-internal runtime constructors
+  feed `stepExecutionFor`, and no exposed module exports `newStepRuntime` or `newResourceCarrier`.
+- Reconciliation has no plan, planned-resource, or canonical snapshot constructor: the exposed
+  `HostBootstrap.Reconcile` exports no `LifecyclePlan` family and no settlement-free `carryManagedResource`.
 - Every phantom index on opaque reconciliation authority, evidence, typestate, execution, runtime, and
   carrier values has a nominal role; equal runtime representations cannot relabel an identity or state.
 
@@ -1616,6 +2084,20 @@ Make reconciliation descriptors and resource carriers consume the exact indexed 
 carrying, and cross-plan/configuration compile failure. Compile-fail and source guards cover the exact total
 producer, reject compatibility inputs at that boundary, and pin every nominal role.
 
+The exposed `HostBootstrap.Reconcile` still exports `LifecyclePlan`, `withLifecyclePlan`,
+`withLifecyclePlanForConfig`, `lifecyclePlanFromProjectPlan`, and `lifecyclePlanSteps`. Any consumer can
+use them to open a generative `planId` and canonical snapshot over an arbitrary `StepPlan`, or read an
+admitted plan's raw step list. Only tests call them. The exposed `HostBootstrap.Lifecycle.Execution`
+re-exports `newStepRuntime` and `newResourceCarrier`. With the public `stepExecutionFor`, that gives a
+downstream project a complete minting path for a `StepExecution` outside any interpretation, which the module
+header denies. `runPlannedStepKernel` forwards any same-plan descriptor to the callback. The hidden kernel
+exports the `PlannedStep` constructor, so a kernel importer can build a node at any `planId`. The `ChainSpec`
+case "a different plan mints a different digest for the same step kind" runs each plan under its own
+temporary root and config, so the digests differ whatever the steps are. Its last assertion compares the
+first observed digest with itself. The sprint closes
+when the Remaining Work items land, their named cases and compile-fail fixtures pass, and
+`cabal test all` from `core/` and `demo/` passes.
+
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4),
 `cabal build hostbootstrap-core --ghc-options=-Werror` passed; the focused `ReconcileSpec`, `SessionSpec`,
 and `ChainSpec` groups passed 39/39, 99/99, and 29/29; all 225 public compile-fail boundaries passed; and
@@ -1624,11 +2106,67 @@ including the 2/2 governed-documentation checks.
 
 #### Remaining Work
 
-None.
+- Delete the `LifecyclePlan` compatibility family from `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`:
+  the type, `withLifecyclePlan`, `withLifecyclePlanForConfig`, `lifecyclePlanFromProjectPlan`,
+  `lifecyclePlanDigest`, `lifecyclePlanSnapshot`, `lifecyclePlanSnapshotBytes`, `lifecyclePlanConfigDigest`,
+  `lifecyclePlanFrames`, `lifecyclePlanSteps`, and the `configFreeDigest` sentinel.
+  - `compatibilityLifecyclePlanRoot` and its acceptance branch in snapshot admission
+    (`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`) go with it. The `LifecycleSpec` case "the
+    shared compatibility sentinel passes structural snapshot admission" becomes a refusal case.
+  - The public functions that take a `LifecyclePlan` take the exact `ProjectPlan` instead:
+    `withObservedPlannedResource`, `renderResourceRecordBundle`, `verifyResourceRecordBundle`,
+    `withAdoptionAuthority`, `plannedOperation`, and `verifyPersistedJournalRecord`.
+    `verifyProjectChartResourceRecordBundle` reads the plan digest directly.
+  - Migrate `ReconcileSpec`, `AuthoritySpec`, `ClusterReconcileSpec`, `ProviderReconcileSpec`,
+    `ResourceRecordSpec`, and `SessionSpec` to admitted `ProjectPlan` fixtures. In `ReconcileSpec`'s
+    "canonical lifecycle plan snapshot" group, which renders through `withLifecyclePlanForConfig`, delete
+    "length framing separates delimiter-shaped field boundaries" (its content moves across the unchanged frame
+    id, so it cannot detect missing framing; Sprint 12.13 owns the adjacent-field fixture), "is deterministic
+    for the same closed plan vocabulary" (two evaluations of one pure function; `ProjectPlanSpec` "fixed
+    admitted input has golden canonical bytes under its exact root" pins the bytes), and "uses the reserved
+    non-absolute root for compatibility plans".
+  - Add a compile-fail fixture that imports `withLifecyclePlan` from `HostBootstrap.Reconcile` and fails with
+    "not exported".
+- Delete `carryManagedResource` from `Reconcile`. It has no caller. The entry it carries has no durable
+  settlement, and Chain refuses such an entry with "managed resource has no durable settlement".
+- Correct the `stepExecutionFor` Haddock in `Reconcile.hs`: the terms come from the hidden kernel's
+  `projectPlanExecutionTermsKernel`, not the public facade.
+- Remove `newStepRuntime` and `newResourceCarrier` from the export list of
+  `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`. Tests reach them through a private
+  test seam. Add a compile-fail fixture in which a module importing only exposed modules tries
+  `newResourceCarrier >>= newStepRuntime` and then `stepExecutionFor`. It fails because the two runtime
+  constructors are not in scope.
+- `runPlannedStepKernel` in `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs` compares the
+  descriptor's operation key and frame with the `PlannedStep`'s step key and frame. On mismatch it returns
+  `StepRefused` naming both operation keys, without running the callback. `ReconcileSpec` case: node A's
+  `PlannedStep` paired with node B's `StepExecution` from the same plan yields that refusal, and A's callback
+  counter stays 0.
+- `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs` exports `PlannedStep` abstractly, not
+  `PlannedStep (..)`. It adds a kernel accessor `plannedStepStepKernel :: PlannedStep scope planId configId
+  config -> Step`. `HostBootstrap.ProjectPlan` (`plannedStepIdentity` and its siblings) and
+  `HostBootstrap.Command.Child` (`plannedNode`) use that accessor instead of matching the constructor.
+  - `ProjectPlanSpec` source guard: the export list of `Lifecycle/Plan.hs`, read with
+    `SourceGuard.moduleExportTokens`, contains `PlannedStep` and does not contain the token sequence
+    `PlannedStep ( .. )`.
+- `ChainSpec` "a different plan mints a different digest for the same step kind": add a `withChainStore`
+  variant that takes an existing directory, so both step lists run under one canonical root and one sibling
+  config. Only the step list then differs, and the case asserts the two digests differ.
+  - Add the converse case: the same step list run twice under that one root yields equal digests.
+  - Delete the assertion that compares the first observed digest with `oneDigest`, which `runInnermost`
+    defines as that same value.
+- Correct two Haddocks in `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`:
+  - `CarriedResource` names its three users. `HostBootstrap.Reconcile` mints carried resources from `Managed`
+    handles and reads them back. `HostBootstrap.Handoff.Process` mints transferred evidence with
+    `mintTransferredCarriedResource`. `HostBootstrap.Chain` reads carried settlements to write durable
+    members.
+  - `StepRuntime`, and `stepExecutionTakeProjectedGate` in `Lifecycle/Execution.hs`, state both settlement
+    paths. On a successful return the interpreter settles only the projections the node took. When the
+    callback throws or returns a non-success observation, it terminalizes every projection it opened
+    (Sprint 12.28).
 
-### Sprint 12.28: Exact current-frame Chain foundation [Done]
+### Sprint 12.28: Exact current-frame Chain foundation [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
@@ -1666,11 +2204,18 @@ Interpret the current-frame `forward` projection of one already admitted and loc
 - Every descriptor, prepared operation, observation, and carried resource retains the same plan indices; each
   protected transition is reached through the matching broker-indexed cursor and authority, and the authority's
   retained store origin is checked before any record is opened in the supplied protected store.
-- Every synchronous action exception terminalizes the node and every gate it took, closes the exact operation
-  session, and only then propagates the original exception. `EffectOutcomeUnknown` therefore denotes an
-  interrupted process whose outcome genuinely needs recovery, not an ordinary callback failure.
+- Every synchronous action exception terminalizes the node and every gate it opened, closes the exact
+  operation session, and only then rethrows the original exception value, so `fromException` above the
+  interpreter recovers its type. A returned non-success observation (`StepRefused`, `StepConflict`,
+  `StepUnsupported`) terminalizes the same gates and reports the node's own observation.
+  `EffectOutcomeUnknown` therefore denotes an interrupted process whose outcome genuinely needs recovery, not
+  an ordinary callback failure.
+- Before acknowledging a gate, the interpreter publishes the carried settlement member for that gate's
+  operation. A node carries settlements only for its own operation and its declared projected operations.
 - The pure renderer and effectful interpreter observe the same ordered projection; plan validation requires
-  post-handoff nodes to follow recursive deepest-frame-to-root unwind order.
+  post-handoff nodes to follow recursive deepest-frame-to-root unwind order. The interpreter's
+  pre/post-descent partition and plan validation read the one post-handoff classifier `HostBootstrap.Step`
+  owns.
 - The current-frame interpreter queries `DerivedTopology` for descent boundaries; the
   [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) supplies authenticated
   recursive child entry and traversal proof. This current-frame foundation supplies no child admission.
@@ -1692,9 +2237,80 @@ warning-clean core gate passed; the complete gate reported 2,442/2,442 in 179.14
 include an untaken projected gate, proving that a synchronous callback failure leaves no ordinary
 `EffectOutcomeUnknown` operation behind.
 
+Five gaps remain open, besides the unused public `plannedStepRefusalObservation` and the dead
+`ChainSpec.interpretExactSteps` export named in Remaining Work.
+
+- The exception path throws a new `userError` carrying the original's `displayException`, and drops the
+  original when settlement or close fails.
+- A returned non-success observation settles with `settleNode False`. That leaves an untaken projected gate at
+  `EffectOutcomeUnknown`, so `closeOperationSession` refuses and the node's refusal row is lost.
+- `carryResourceSettlementAt` in `Reconcile.hs` accepts any key in the node's dependency prefix, but
+  `persistCarriedSettlement` publishes only the keys of gates this node settles. A dependency-key carry
+  therefore reports success and is never written.
+- No test produces any of the six `validateEvidence` refusals, or the settlement refusals "missing resource
+  settlement predecessor" and "conflicting resource settlement". `runFrom` collapses every failure to
+  `show ExitCode`, so "each non-success observation stops before the later node" checks only that the run
+  failed and one node ran. It cannot tell a conflict, an unsupported backend, and a refusal apart.
+- `plannedStepRunsAfterHandoff` in `ProjectPlan.hs` repeats `Step.isPostHandoffStep` on `StepIdentity`.
+  Both classify with a `_ -> False` wildcard. Chain partitions each frame with the first, and `mkStepPlan`
+  validates order with the second, so a new post-handoff identity can update one and compile without the
+  other.
+
+The sprint closes when the Remaining Work cases exist and pass under `cabal test all` from `core/` and
+`demo/`.
+
 #### Remaining Work
 
-None.
+- `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`: after terminal settlement and session close, rethrow
+  the caught `SomeException` with `throwIO`. When settlement or close fails, return a failure that carries
+  both the settlement error and the original exception's `displayException`.
+  - `ChainSpec` case: a step callback throws `SafetyRefusal "x"`. The exception that escapes the interpreter
+    satisfies `fromException @SafetyRefusal`, and the node's gates are terminal.
+- `Chain.hs`: settle a non-success returned observation with
+  `settleNode (not (plannedStepObservationSucceeded observation))`, so open projected gates are terminalized
+  as on the exception path.
+  - `ChainSpec` case: a node declared with `projectsOperation` returns `StepRefused "operator-owned state"`
+    without taking its projected gate. The run reports the node's `refused:` row, the session closes, and
+    no operation of the session remains at `EffectOutcomeUnknown`.
+- `carryResourceSettlementAt` in `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs` admits only the
+  node's own operation key and its declared projected operation keys, refusing any other key with `Conflict`.
+  Its Haddock and the `carryManagedResourceSettlement` Haddock state that rule.
+  - `ReconcileSpec` case: a node that depends on A calls `carryManagedResourcePhaseSettlement` with A's
+    carried handle and receipt. It gets `Left (Conflict _)`, and the carrier's entry for A is unchanged.
+- Give `ChainSpec` a runner that returns the interpreter's failure text instead of `show ExitCode`.
+  - Tighten "a conflicting stable member refuses the journal commit" and "a released tombstone refuses a
+    non-advancing ownership generation" to assert "conflicting resource settlement".
+  - Add a case that carries a phase settlement with expected predecessor bytes while the owned record is
+    absent. It asserts "missing resource settlement predecessor", and the phase stays `EffectOutcomeUnknown`.
+  - In `observationCases` "each non-success observation stops before the later node", each row asserts
+    that its failure text contains its own marker: `conflict:` for `StepConflict`, `unsupported:` for
+    `StepUnsupported`, and `refused:` for `StepRefused`. The runner treats a thrown `ExitSuccess` as a
+    test failure, not as a `Left`.
+- `Step.hs` exports one post-handoff classifier, and `plannedStepRunsAfterHandoff` in
+  `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs` applies it to the node's step instead of
+  matching `PostHandoffId` itself. The classifier names every `StepKind` and `CoreStepId` constructor with
+  no wildcard, so a new step kind is a compile error at that one site.
+  - `StepSpec` case: for every core smart constructor and a `projectStep`, the classifier answers `True`
+    only for the post-handoff step.
+  - `ProjectPlanSpec` source guard: `SourceGuard.countHaskellIdentifier "PostHandoffId"` over
+    `ProjectPlan.hs` is 0.
+- Move the `validateEvidence` checks of `runChainFromFrame` into a named function in a package-private module
+  that a private test sublibrary can import. Delete the verb and phase comparisons, which the types fix to
+  `VerbUp` and `ExecutePhase`.
+  - `ChainSpec` cases, one per remaining refusal: an authority minted against another opened store, mismatched
+    authority and cursor origins, mismatched frames, and a current frame outside the plan topology. Each
+    asserts its exact message, and the second store's record set stays byte-identical.
+  - `SessionSpec` case: `lifecycleCursorMatchesCommandAuthority` returns `False` for an authority from one
+    store paired with a cursor (`unsafeCoerce`d to its indices) opened in a second fixture store, and `True`
+    for the matching pair.
+- Delete `plannedStepRefusalObservation` from `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`. No
+  production code calls it; it ignores its `PlannedStep` argument and mints a `PlannedStepObservation` for any
+  node outside `runPlannedStep`, which the `PlannedStepObservation` Haddock denies. Drop its fragment from
+  the `ChainSpec` case "planned observations remain indexed from action through settlement", and add a
+  compile-fail fixture importing `plannedStepRefusalObservation` from `HostBootstrap.ProjectPlan` that fails
+  with "not exported".
+- `ChainSpec` exports `interpretExactSteps`, which no spec imports and which discards its `HostConfig` and
+  `SelfRef` arguments. Delete it and drop it from the module export list.
 
 ### Sprint 12.29: Production current-frame foundation [Done]
 
@@ -1738,9 +2354,9 @@ boundaries passed; the governed-documentation checks passed 2/2; and the fresh e
 
 None.
 
-### Sprint 12.30: Generic plan-indexed budget admission [Done]
+### Sprint 12.30: Generic plan-indexed budget admission [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/BudgetSpec.hs`,
@@ -1760,8 +2376,11 @@ projections.
   `DerivedTopology`, and the provider/cluster `PlannedResource` projections minted by that plan.
 - The entry accepts no `Reconcile.LifecyclePlan` compatibility value and no caller-supplied plan digest,
   frame, resource identity, or topology graph.
+- The plan's one `ValidatedBudget` is derived from the plan itself, so a caller cannot mint a second,
+  differently sized budget for the same plan (§ O: no independently editable copy).
 - `ValidatedBudget`, provider capability, workload-fit, partition, slice, reservation, prepared-call, and
-  live-wall values retain the source plan indices through the complete generic algebra.
+  live-wall values retain the source plan indices through the complete generic algebra. Workload fit,
+  partition, and slice requests refuse every dimension that exceeds its bound.
 - Raw backend observations remain deliberately plan-independent data. Only the prepared/settled observation
   package and the managed result or live-wall authority retain the exact source plan indices.
 - Core remains generic over `cfg`: this sprint supplies the exact plan-indexed budget boundary, while the
@@ -1771,9 +2390,17 @@ projections.
 
 #### Validation
 
-`BudgetSpec` covers exact plan/resource/topology admission, the complete generic budget lineage, and raw
-observation versus indexed settlement. A compile-fail fixture rejects a budget/resource/topology package whose
-members come from different project plans.
+`BudgetSpec` covers exact plan/resource/topology admission, the generic budget lineage on fitting fixtures,
+the CPU-only partition overflow, and raw observation versus indexed settlement. A compile-fail fixture
+rejects a budget/resource/topology package whose members come from different project plans.
+
+`withValidatedBudget` ignores its `ProjectPlan` argument and sizes the budget from a caller-supplied
+`ResourceEnvelope`. It can be called repeatedly for one plan. `WorkloadOverflow`, `InvalidWorkload`,
+`InvalidProviderPackage`, and `InvalidSlice` are asserted nowhere. `PartitionOverflow` is asserted for CPU
+only, and the provider-minimum case accepts any `Left`. `InvalidQuantity` is asserted nowhere, so a malformed
+quantity reaching admission as free text would pass. Every fit fixture fits with room to spare, so a no-op
+`verifyPlannedWorkloadFit` passes the suite. The sprint closes when the Remaining Work items land and their
+cases pass under `cabal test all` from `core/` and `demo/`.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), `BudgetSpec` passed 19/19, `ColimaSpec`
 passed 9/9, all 238 public compile-fail boundaries passed, and the fresh exact phase gate,
@@ -1782,14 +2409,38 @@ passed 9/9, all 238 public compile-fail boundaries passed, and the fresh exact p
 
 #### Remaining Work
 
-None.
+- `withValidatedBudget` in `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs` drops its
+  `ResourceEnvelope` parameter and reads the plan's own budget. Either `ProjectPlan` retains the canonical
+  `ResourceBudget` captured at promotion, or a class projection reads it from the retained validated `cfg`.
+  - `BudgetSpec` case: two calls for one plan yield equal `validatedBudgetValue`, equal to the budget the
+    plan's config declares.
+  - The public-signature guard pins that the function takes no `ResourceEnvelope`.
+- `BudgetSpec` workload-fit overflow, one case per dimension, using replicas > 1 so the replica multiplier
+  decides the outcome. Example: 9 replicas of 1 CPU against an 8-CPU budget yields
+  `Left (WorkloadOverflow "cpu" 9 8)`. Add the matching `"memory"` and `"storage"` cases.
+- `BudgetSpec` `mkWorkload` refusals for the cluster resource: 0 replicas yields
+  `Left (InvalidWorkload "core:deploy-kind: replicas must be positive")`, 0 CPU yields
+  `"...: CPU must be positive"`, and zero memory and zero storage yield their messages. A provider package
+  mismatch yields `Left (InvalidProviderPackage _)`.
+- `BudgetSpec` partition refusals: a memory-only overflow and a storage-only overflow each yield
+  `Left (PartitionOverflow "memory" _ _)` and `Left (PartitionOverflow "storage" _ _)`. A partition whose
+  slices plus overhead equal the effective budget exactly succeeds.
+- `BudgetSpec` provider-minimum cases, each below the minimum in exactly one dimension: assert
+  `Left (InvalidSlice "core:deploy-vm: CPU is below the provider minimum")` and the matching `memory` and
+  `storage` messages.
+- `BudgetSpec` closed quantity refusals through `withValidatedBudget`, each matching the full `InvalidQuantity`
+  value rather than `isLeft`: a memory quantity of `"0"` yields
+  `Left (InvalidQuantity (DimensionNotPositive BudgetMemory))` and `"8Qi"` yields
+  `Left (InvalidQuantity (QuantityUnknownUnit "Qi" "8Qi"))`. No case asserts `InvalidQuantity` today: the
+  constructor appears in `BudgetSpec` only inside the `mapBudgetError` helper.
 
-### Sprint 12.31: Public-surface and representation absence guards [Done]
+### Sprint 12.31: Public-surface and representation absence guards [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/SourceGuard.hs`,
 `core/hostbootstrap-core/test/DocValidatorSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
@@ -1801,12 +2452,17 @@ Make the single-plan boundary mechanically visible in the package and source tre
 #### Deliverables
 
 - Cabal exposes the pure facade and evidence leaves while keeping the representation kernel hidden.
-- The source-import allowlist matches the actual kernel boundary: `HostBootstrap.ProjectPlan`,
+- The source-import allowlist matches the actual kernel boundary. The `ProjectPlanSpec` case "exactly the
+  audited production modules import the plan kernel" owns the list, and a phase that adds a kernel importer
+  extends it there. This phase's importers are `HostBootstrap.ProjectPlan`,
   `HostBootstrap.ProjectPlan.Construct`, `HostBootstrap.ProjectPlan.Frame`,
-  `HostBootstrap.ProjectPlan.Snapshot`, `HostBootstrap.Authority.ProjectPlan`, and
-  `HostBootstrap.Lifecycle.Mode`, plus the audited transitional consumers
-  `HostBootstrap.Lifecycle.Session` and `HostBootstrap.Reconcile`. No other production module imports
-  `HostBootstrap.Lifecycle.Plan`.
+  `HostBootstrap.ProjectPlan.Snapshot`, `HostBootstrap.Authority.ProjectPlan`, `HostBootstrap.Lifecycle.Mode`,
+  `HostBootstrap.Lifecycle.Session`, and `HostBootstrap.Reconcile`. Later phases add
+  `HostBootstrap.ProjectPlan.Handoff.Internal`, `HostBootstrap.ProjectPlan.Projection.Internal`,
+  `HostBootstrap.Lifecycle.Context`, `HostBootstrap.Lifecycle.RootedPlan`, `HostBootstrap.Lifecycle.Recovery`,
+  `HostBootstrap.Command.Child`, `HostBootstrap.Command.LifecycleEntry`, `HostBootstrap.Teardown.Internal`,
+  `HostBootstrap.Cluster.Workload`, and `HostBootstrap.Cluster.Workload.Binding`. That makes eighteen
+  importers, and no other production module imports `HostBootstrap.Lifecycle.Plan`.
 - Static `ProjectSpec cfg tcfg` carries only its authoring families, while
   `FinalizedProjectSpec scope specDigest cfg` carries exactly the runtime scope/specification indices.
 - Of the snapshot family, the public pure `HostBootstrap.ProjectPlan` facade exposes only the
@@ -1831,13 +2487,27 @@ Make the single-plan boundary mechanically visible in the package and source tre
 #### Validation
 
 `ProjectPlanSpec` lexically checks the Cabal public/private surface (including inline field syntax), every
-exposed module's explicit export list, the exact kernel-import allowlist including the two audited transitional
-consumers, finalization phantoms, pure-facade snapshot visibility, the sole private canonical encoder,
+exposed module's explicit export list, the exact eighteen-module kernel-import allowlist, finalization phantoms, pure-facade snapshot visibility, the sole private canonical encoder,
 plan-owned resource construction, single Production command admission, typed frame boundary, and broker-index
 continuity. It checks the lower Lift-context and provider-realization import boundaries and permits full Lift
 only at Chain among the plan-foundation modules.
 `DocValidatorSpec` checks that the phase narrative and README status agree and that the governed
 documents retain constructive language. The complete phase gate passes.
+
+Three gaps keep these guards weaker than their names.
+
+- `readProductionSources` reads only `src/`. The main library also compiles `internal/cluster-backend`, whose
+  modules can import the hidden kernel without appearing in the importer allowlist or any absence guard.
+- In "exactly the audited production modules import the plan kernel", the branch for
+  `HostBootstrap.ProjectPlan.Child.Internal` can never run, because that module is not in the pinned
+  importer list. The fixed-runner check counts `runAuthorizedChildCursorKernel`, which occurs nowhere in the
+  source tree, so it passes for every tree.
+- `assertContains`, `assertFragmentsInOrder`, and `requiredSourceSection` match whitespace-normalised raw
+  text, comments included. A commented-out declaration such as
+  `-- type role ValidatedContext nominal nominal nominal` still satisfies its positive check.
+
+The sprint closes when the Remaining Work items land, their cases pass, and `cabal test all` from `core/`
+passes.
 
 Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `ProjectPlanSpec` passed 51/51;
 the exact phase gate, `cabal test all --ghc-options=-Werror` from `core/`, passed 1479/1479 cases, including
@@ -1845,7 +2515,26 @@ all 238 public compile-fail boundaries and 2/2 governed-documentation checks.
 
 #### Remaining Work
 
-None.
+- `readProductionSources` in `core/hostbootstrap-core/test/ProjectPlanSpec.hs` reads every `hs-source-dirs`
+  entry of the main library stanza, taken from `hostbootstrap-core.cabal` (`src` and
+  `internal/cluster-backend`), together with every `internal/*` sublibrary directory.
+  - `ProjectPlanSpec` case: the scanned directory set equals that expected set, and the scanned module
+    names include `HostBootstrap.Cluster.Backend.Internal`.
+- In "exactly the audited production modules import the plan kernel":
+  - Delete the dead `HostBootstrap.ProjectPlan.Child.Internal` branch, so only
+    `HostBootstrap.Command.LifecycleEntry` is required to import `HostBootstrap.Chain` and
+    `HostBootstrap.Lift`.
+  - Replace the `runAuthorizedChildCursorKernel` count with `runChainFromFrameWithDescentFailure`, the
+    runner that owns the authorized run. Assert that its callers outside `HostBootstrap.Chain` are
+    exactly `["HostBootstrap.Command.LifecycleEntry"]`, so the check cannot pass on an empty count.
+- `assertContains`, `assertFragmentsInOrder`, and `requiredSourceSection` strip Haskell comments before
+  matching. `SourceGuard` gains a function that removes line and block comments with the same lexer
+  `haskellTokens` uses, and the helpers apply it before `normalizeWhitespace`.
+  - `ProjectPlanSpec` self-check case: a synthetic source whose only occurrence of a fragment sits in a `--`
+    comment does not satisfy the matching predicate, and the same fragment on an indented code line does.
+  - Add `core/hostbootstrap-core/test/compile-fail/CoerceValidatedContextRoles.hs`, registered in
+    `CompileFailSpec`, which coerces a `ValidatedContext` across each of its three indices and expects the
+    "Couldn't match type" error from `coerce` for each.
 
 ### Sprint 12.32: A validated plan carries its non-emptiness [Done]
 
@@ -1871,8 +2560,9 @@ emptiness is decided, rather than a fact each consumer rebuilds and asserts agai
 
 #### Validation
 
-The host static gate, plus the new fixture. Every consumer of the accessor was a compile error until it
-was updated, which is the enumeration this change relies on. Dated evidence: on 2026-09-12, x86_64
+The phase gate, `cabal test all` from `core/`, plus the new fixture. Every consumer of the accessor is a
+compile error until it reads the non-empty sequence, which is the enumeration this change relies on; the
+demo consumer's `CommandsSpec` reads it through `NonEmpty.toList`. Dated evidence: on 2026-09-12, x86_64
 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed 2,521
 tests.
 
@@ -1880,9 +2570,9 @@ tests.
 
 None. The budget-admission contract is Sprint 12.33.
 
-### Sprint 12.33: Budget admission names every backend [Done]
+### Sprint 12.33: Budget admission names every backend [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
 `core/hostbootstrap-core/test/BudgetSpec.hs`
 **Substrates**: linux-cpu
@@ -1898,22 +2588,433 @@ seventh backend is a compile error at this site rather than a default answer.
 
 - Admission names every backend constructor; no wildcard absorbs the rest.
 - A backend for which the sizing check does not apply says so in its own case, with the reason: bare Linux has no wall to size against, and a kind node is cordoned in bytes.
-- The three guest-VM walls share one named whole-gibibyte check rather than repeating its two lines.
+- The four guest-VM walls (Colima, Lima, Incus, and WSL2) share one named whole-gibibyte check rather than
+  repeating its two lines; Colima also runs its own sizing renderer.
 - Adding a backend is a compile error at this site.
 
 #### Validation
 
-The host static gate. The budget suite states each backend's answer to one inexact budget, so the six
-answers are read rather than inherited. Dated evidence: on 2026-09-12, x86_64 Ubuntu 24.04.4 LTS with
-GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed.
+The phase gate, `cabal test all` from `core/`. The `BudgetSpec` case "every backend states its own answer
+to an inexact budget" states the answer of five backends exactly. For the kind node it asserts only that the result is not a
+`Left`. That case is the only test that sends a non-whole-GiB memory value into
+`kindNodeCordonArgsForBudget`, so an upward rounding there would pass. The sprint closes when the kind-node
+leg asserts the exact argv and `cabal test all` from `core/` passes. Dated evidence: on 2026-09-12, x86_64
+Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `core/` passed.
 
 #### Remaining Work
 
-None. The cluster-side adoption is owned by the cluster-lifecycle phase.
+- `BudgetSpec` "every backend states its own answer to an inexact budget": replace `isLeft node @?= False`
+  with an exact assertion that the `DockerNodeBackend` leg returns
+  `Right ["update", "--cpus", "8", "--memory", "17179869185", "--memory-swap", "34359738370", <fixture container name>]`,
+  so the byte value reaches `docker update` unrounded.
+
+### Sprint 12.34: The object-store resource kind names no product [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
+`core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The closed planned-resource family names the in-cluster S3 store by its role, not by a product, and its
+family key is the step identity the worked demo declares, `project:deploy-object-store`. The store-address
+examples in the registry and network module Haddocks are the composition phase's (Phase 21), which introduces
+those modules.
+
+#### Deliverables
+
+- `Lifecycle/Plan.hs` declares `ObjectStoreResource` and `ObjectStoreResourceKind`, whose family key is
+  `"project:deploy-object-store"` and whose kind name is `"object store"`; no `Minio` identifier remains in
+  the package sources.
+- `Readiness.hs` keys the store's rollout probe as `ObjectStoreRolloutProbe ::
+  BackendProbeKey ObjectStoreResource ObjectStoreRolloutReady`.
+
+#### Validation
+
+`ProjectPlanSpec`'s resource-family case expects `"project:deploy-object-store"` where it now expects
+`"project:deploy-minio"`, and its fixture step is `projectStepId "deploy-object-store"`. A `ProjectPlanSpec`
+source guard asserts that `SourceGuard.haskellTokens` of every production source yields no token containing
+`Minio`. `cabal test all` from `core/` and `demo/` passes.
+
+#### Remaining Work
+
+- Rename `MinioResource`, `MinioResourceKind`, `MinioRolloutProbe`, and `MinioRolloutReady` as the
+  Deliverables state, with every re-export in `HostBootstrap.ProjectPlan`, `HostBootstrap.Reconcile`, and
+  `HostBootstrap.Readiness`; change the family key and kind name in `plannedKindKey` and `plannedKindName`.
+- Update the `ProjectPlanSpec` family-key expectation and fixture step id, and add the `Minio` absence guard.
+
+### Sprint 12.35: Reconcile refusals and guards check what they name [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ReconcileSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Persisted journal verification binds every stable coordinate a record carries to the plan, plan-projection
+errors are classified constructor by constructor, and the `ReconcileSpec` guards over the descriptor producer
+can fail for the defects they name.
+
+#### Deliverables
+
+- `verifyPersistedJournalRecord` compares `persistedFrameKey` with the frame the exact plan assigns to the
+  handle's resource and refuses a mismatch with the same "frame key" `Conflict` shape it uses for the plan
+  digest.
+- `planProjectionError` names every `PlanError` constructor with no wildcard, so a new constructor is an
+  incomplete-pattern error under `-Werror`.
+- The `legalJournalTransition` Haddock states that repair and phase absence and foreign and unexpected
+  observations are terminal, while reservation, effect, and adoption absence retry only through their fenced
+  state.
+- The `ReconcileSpec` totality, nominal-role, package-boundary, and journal-mismatch cases fail when the
+  property they name is broken.
+
+#### Validation
+
+`ReconcileSpec` cases named in Remaining Work exist and pass, and `cabal test all` from `core/` passes.
+Today "the plan-owned producer is total over its exact forward projection" asserts only list length, which
+`forM` fixes and which forces no `StepExecution`. "every opaque reconciliation and execution index has a
+nominal role" compares existing `type role` lines with a list, so a new parameterized type with no role line
+passes. `assertPlanExecutionPackageBoundary` misses `import qualified HostBootstrap.Lifecycle.Plan` and
+checks the one-producer rule against `Command/Child.hs` alone. `journalMismatch` returns `True` for any
+failure, the fixture's own included.
+
+#### Remaining Work
+
+- `verifyPersistedJournalRecord` in `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs` (taking the
+  exact `ProjectPlan` after Sprint 12.27) compares `persistedFrameKey` with the plan frame of the handle's
+  resource. `ReconcileSpec` case: a record whose frame key names another frame of the same plan yields
+  `Left (Conflict (ConflictDetail "core:deploy-kind" ("frame key=" <> expected) ("frame key=" <> other) _))`.
+- `planProjectionError` replaces its `other ->` branch with one branch per remaining `PlanError` constructor
+  (`PlanDraftRootMismatch`, `PlanDraftSpecificationMismatch`, `PlanDraftConfigurationMismatch`,
+  `PlanProjectedRootInvalid`, `PlanRecoveryEvidenceMismatch`, `PlanHandoffEvidenceMismatch`,
+  and `InvalidProjectPlan`), keeping each one's present classification.
+- Reword the `legalJournalTransition` Haddock as the Deliverables state.
+- `ReconcileSpec` "the plan-owned producer is total over its exact forward projection": read every exported
+  `StepExecution` projection of each execution (`stepExecutionNodeIdentity`, `stepExecutionOperationKey`,
+  `stepExecutionFrame`, `stepExecutionDependencyKeys`, `stepExecutionProjectedOperations`,
+  `stepExecutionPlanDigest`, `stepExecutionSpecDigest`, `stepExecutionConfigDigest`) and compare each with
+  the matching `PlannedStep` or plan projection.
+- `ReconcileSpec` "every opaque reconciliation and execution index has a nominal role": list every `data` and
+  `newtype` declaration with at least one type parameter in `Reconcile.hs` and `Lifecycle/Execution/Internal.hs`
+  through `SourceGuard.haskellTokens`, and assert each has a matching `type role` line.
+- `assertPlanExecutionPackageBoundary`: match imports of `HostBootstrap.Lifecycle.Plan` in token form, so
+  `import qualified` and `{-# SOURCE #-}` imports count, and scan every module under `src/` for
+  `mintPlanExecutionPackage`, asserting the only occurrences are its definition in `Execution/Internal.hs` and
+  one call in `Reconcile.hs` outside the export list.
+- `journalMismatch` returns the `Either`; the case asserts
+  `Left (Conflict (ConflictDetail "core:deploy-kind" ("plan digest=" <> digest) "plan digest=other" _))` and
+  fails if `withObservedPlannedResource` refuses.
+
+### Sprint 12.36: The plan kernel hashes through Digest [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`
+**Substrates**: none
+**Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
+
+#### Objective
+
+`HostBootstrap.Digest` exports the lowercase-hex `sha256Hex`, and the plan kernel derives its snapshot digests
+and delivery digests with that export rather than with a byte-identical local copy, so a snapshot digest
+recomputed at verification cannot drift from the one the plan recorded.
+
+#### Deliverables
+
+- `Lifecycle.Plan` imports `sha256Hex` from `HostBootstrap.Digest` and defines no SHA-256 helper of its own.
+- Every snapshot digest and delivery digest the module derives keeps the bytes `ProjectPlanSpec` pins.
+
+#### Validation
+
+`ProjectPlanSpec` passes unchanged inside `cabal test all --ghc-options=-Werror` from `core/`, and the host
+static gate (§ JJ) passes.
+
+#### Remaining Work
+
+- Delete `sha256Hex` from `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs` and import it from
+  `HostBootstrap.Digest`.
+
+### Sprint 12.37: Coordinate types at the command-reservation boundary [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+§ HH says a coordinate carried across a sealed boundary is a type. Sprint 5.12 piloted this at the prepared
+gate. The command-reservation boundary takes adjacent coordinate roles as bare `Text`:
+`commandReservationKernel root frameName phase planDigest` compiles and consumes the one-use reservation under
+the wrong identity, and swapping the project and store arguments of `commandAuthorityOriginMatchesKernel`
+compiles and returns `False`. The kernel is Phase 5's; its callers in `Authority/ProjectPlan.hs` and
+`Lifecycle/Session.hs` exist from this phase, so the retyping lands here, where every file it touches exists.
+
+#### Deliverables
+
+- The plan digest, frame name, installed-project name, and protected-store identity are each a distinct newtype
+  wherever they appear: in the parameters of `commandReservationKernel` and `commandAuthorityOriginMatchesKernel`,
+  in the fields of `CommandReservation`, and in the arguments of `reservationIdentity`.
+- Callers in `Authority/ProjectPlan.hs` and `Lifecycle/Session.hs` wrap at the point where they read each value.
+- The runtime representation and durable bytes do not change: the canonical reservation encoding and invocation
+  key are byte-identical.
+
+#### Validation
+
+The host static gate (`cabal test all` from `core/`). The existing invocation-record cases in `CLISpec` and the
+Sprint 5.8 reservation cases pass unchanged, which shows that no durable byte moved. A source guard pins the new
+kernel signatures so that no two adjacent parameters share a type.
+
+#### Remaining Work
+
+- Introduce the four newtypes in `Authority/Kernel.hs`, rewrap the callers in `Authority/ProjectPlan.hs` and
+  `Lifecycle/Session.hs`, and add the signature source guard.
+
+### Sprint 12.38: The framework envelope codec reads its scope tag from the codec's index [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Fields.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/test/SchemaSpec.hs`,
+`demo/test/CommandsSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/generic_project_model.md`
+
+#### Objective
+
+The descriptive `ScopeKind` tag a framework envelope reports is derived from the codec's `scope` index through
+Phase 7's `KnownScopeKind scope` class (Sprint 7.12), so the runtime agreement check that authority-bearing
+dispatch performs compares a tag the type determined rather than one a caller chose. `frameworkEnvelopeCodec`
+is called from the demo's `CommandsSpec`, which exists from this phase, so dropping its argument lands here.
+
+#### Deliverables
+
+- `frameworkEnvelopeCodec :: (ProjectCfg cfg, KnownScopeKind scope) => ProjectCodec scope specDigest cfg ->
+  FrameworkEnvelopeCodec scope specDigest cfg` takes no `ScopeKind` argument.
+- `decodeRoleWire` refuses a non-`ServiceRoleWire` kind, a scope-kind disagreement, and a specification-digest
+  disagreement, each with its own message, and each refusal is asserted exactly.
+
+#### Validation
+
+The sprint closes when these pass under `cabal test all` from `core/` and from `demo/`:
+
+- demo `CommandsSpec`: `inspectFullConfig (frameworkEnvelopeCodec codec)` reports `ProductionScope` under
+  the Production codec, and a core `SchemaSpec` case reports `HarnessScope` under a fixture Harness codec.
+- demo `CommandsSpec`: a `FullProjectWire` framework validation rendered into a role wire is refused with
+  exactly `Left "role wire declares a non-service wire kind"`; the changed-digest wire with exactly
+  `Left "role wire specification digest disagrees with its selected codec"`; the changed-scope wire with
+  exactly `Left "role wire scope kind disagrees with its selected codec"`.
+
+#### Remaining Work
+
+- Drop the `ScopeKind` parameter from `frameworkEnvelopeCodec` in `Config/Fields.hs`, reading the tag from
+  `KnownScopeKind scope`, and update every caller: demo `CommandsSpec` and, where Sprint 7.15's full-config
+  route calls it, `Config/Schema.hs`.
+- Add the `FullProjectWire` refusal case and tighten the two existing `decodeRoleWire` refusals in demo
+  `CommandsSpec` to the exact messages; add the Harness-scope `SchemaSpec` case.
+
+### Sprint 12.39: Fence epochs are bound to their plan [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+A `FenceEpoch scope planId` names the plan whose fence it is, and the type checker enforces that (§ HH).
+`FenceEpoch` is a newtype over `Word64` with no role annotation, and `establishInitialFence`, `rotateFence`,
+`currentFence` and `fenceOldPermits` take the plan digest as free `Text` while returning a value at whatever
+`scope`/`planId` the caller instantiates; `coerce` can retag one. The only check is the runtime number
+comparison in `withPreparedGate`, so an epoch taken for plan A, for example the default epoch 1, is accepted
+for a session of plan B. This sprint makes the indices come from the plan's own witness. The fence kernels are
+Phase 10's, and their caller in `Chain.hs` exists from this phase, so the signature change lands here, where
+every file it touches exists.
+
+#### Deliverables
+
+- `type role FenceEpoch nominal nominal`, so `coerce` cannot move an epoch between scopes or plans.
+- `establishInitialFence`, `rotateFence`, `currentFence` and `fenceOldPermits` take the plan's indexed witness
+  (`ProjectPermit scope planId` or `OperationSession scope planId`) and read the digest from it, so the
+  returned `FenceEpoch` (and `OldPermitsFenced`) carries the witness's indices, never ones the caller picks.
+- `withPreparedGate` and `withStepPreparedGate` unify the fence's indices with the `OperationSession`'s, so a
+  witness-derived epoch for one plan cannot be presented for another plan's session.
+- The callers in `Chain.hs` and `Lifecycle/Mode.hs` pass the witness they already hold.
+
+#### Validation
+
+`cabal test all` from `core/`. A compile-fail fixture `CoerceFenceEpochAcrossPlans.hs` coerces a
+`FenceEpoch S PlanA` to `FenceEpoch S PlanB` and is pinned to GHC's
+`Couldn't match type 'PlanA' with 'PlanB' arising from a use of 'coerce'` phrase. A second fixture passes an
+epoch from one plan's witness to `withPreparedGate` for another plan's session, pinned to its type-mismatch
+phrase. Both are registered in `CompileFailSpec`. The existing fence cases in `SessionSpec` still pass.
+
+#### Remaining Work
+
+- Add the role annotation and the witness-taking signatures in `Session.hs`, and update the callers in
+  `Chain.hs` and `Lifecycle/Mode.hs` and the `SessionSpec` fixtures.
+- Add `test/compile-fail/CoerceFenceEpochAcrossPlans.hs` and the cross-plan `withPreparedGate` fixture, and
+  register both in `CompileFailSpec`.
+
+### Sprint 12.40: The prepare revalidates mode, lease, revision, verb, and frame [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`, `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+The prepare compare-and-swap refuses on any stale authority, not only on stale journal state: the gate is
+minted only inside the same protected entry that re-reads the project mode, the run lease, the active revision,
+and the command's verb and frame and finds them unchanged. The verb and frame it compares are this phase's
+command authority and lifecycle cursor, and its prepare callers are in this phase's `Chain.hs`, so the
+revalidating entry lands here, where every file it touches exists.
+
+#### Deliverables
+
+- Inside the one `ProtectedSession` entry that publishes the unknown phase, the prepare re-reads the live
+  project-mode record and refuses when its epoch differs from the `ProjectModeLease` epoch the command holds.
+- It re-reads the live broker generation rather than comparing the `BrokerEpoch` argument only with the
+  generation stored on the caller-held `OperationSession`, and refuses on a rotation.
+- It re-reads the bound run lease and refuses when the lease is absent, unbound, or at another record version
+  than the `BoundRunLease` the run holds.
+- It refuses when the active revision is not the one the lease bound, or a migration freeze
+  (`FrozenMigrationRunLease`) is recorded.
+- It refuses when the command authority's verb differs from the lifecycle cursor's or the step descriptor's
+  frame differs from the frame the authority was issued for.
+- Each refusal is a typed error returned before any write; the operation record stays at its prior version.
+  `Mode.hs` imports `Session.hs`, so the revalidating entry lives in `Mode.hs` and wraps `withStepPreparedGate`.
+
+#### Validation
+
+Cases in `LifecycleSpec` (which already exercises `BoundRunLease` and `FrozenMigrationRunLease`), one per
+refusal: a mode-epoch change, a broker-generation rotation, a released lease, a lease at a newer record version,
+a recorded migration freeze, a verb mismatch, and a frame mismatch. Each runs a prepare after the change,
+asserts the typed refusal, and reads back the operation record at its prior version. A positive case asserts
+the gate is minted when none changed. All pass under `cabal test all` from `core/`.
+
+#### Remaining Work
+
+- `withPreparedGate` (`Session.hs`) checks the broker epoch only against `sessionBrokerGeneration` and reads
+  no project-mode record, run lease, revision, migration freeze, verb, or frame, so a prepare succeeds after a
+  mode change, an authority-epoch rotation, lease loss, or a migration freeze. Add the revalidating entry to
+  `Mode.hs`, route both `Chain.hs` prepare calls (`withStepPreparedGate` in `runNode`, `withPreparedGate` in
+  `openProjections`) through it, and add the `LifecycleSpec` cases named in Validation.
+
+### Sprint 12.41: A phase advance has one producer [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
+`core/hostbootstrap-core/test/ReconcileSpec.hs`, `core/hostbootstrap-core/test/ChainSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+A `PhaseAdvance`, and the `Managed` handle at its target phase, exists only as the completion of a
+`PreparedPhaseTransition`, so no managed resource reaches `Stopped`, `Running`, or `Destroyed` without the
+prepared gate and its journaled `PhaseEffectOutcomeUnknown` record. One of the cases that call
+`verifyPhaseTransition` is in this phase's `ChainSpec`, so dropping the export lands here, where every file it
+touches exists.
+
+#### Deliverables
+
+- `completePreparedPhaseTransition` is the only producer of `PhaseAdvance`; `verifyPhaseTransition` is a
+  module-private helper of `HostBootstrap.Reconcile`, absent from its export list.
+- The `PreparedPhaseTransition` Haddock's claim that a caller cannot pair a prepared acquisition with a
+  stop/restart/delete observation holds because preparation is the only route to the advance.
+
+#### Validation
+
+The sprint closes when these exist and pass under `cabal test all` from `core/`: a `CompileFailSpec` fixture
+importing `verifyPhaseTransition` from `HostBootstrap.Reconcile`, with the diagnostic
+`Module 'HostBootstrap.Reconcile' does not export 'verifyPhaseTransition'`; and the `ReconcileSpec` and
+`ChainSpec` cases that call `verifyPhaseTransition` today, rewritten to reach their advance through
+`withPreparedPhaseTransition` and `completePreparedPhaseTransition`, passing.
+
+#### Remaining Work
+
+- `verifyPhaseTransition` is exported from `HostBootstrap.Reconcile` and returns a `PhaseAdvance` from a handle,
+  receipt, transition, and generation with no gate and no journaled unknown phase, so a caller can mint
+  `Managed Stopped` or `Managed Destroyed` authority without preparing. No module under `src/` calls it outside
+  `Reconcile.hs`; its callers are `test/ReconcileSpec.hs` (two cases) and `test/ChainSpec.hs` (one case). Drop it
+  from the export list, rewrite those three call sites through the prepared route, and add the compile-fail
+  fixture named in Validation.
 
 ## Remaining Work
 
-None.
+- Sprint 12.1: test `projectStepId` and the `mkStepPlan` refusals with exact payloads; keep the reverse-adapter
+  revision across `reversedBy`; correct the `ReversePolicy` Haddock.
+- Sprint 12.2: make the entry-free probe fail instead of hang; delete the `runStep` case that never runs a step.
+- Sprint 12.3: validate core step names so operation keys stay `/`-free; correct the `StepAction` Haddock.
+- Sprint 12.4: assert `ReprobeBeforeRetry` in the uncarried-dependency case; refuse an out-of-view key in
+  `withCarriedManagedResourceOfKind`.
+- Sprint 12.5: test the guest-alias precedence refusal (`PlanDependencyEdgeMissing`) at plan and node level.
+- Sprint 12.6: test that a failed branch does not starve an independent sibling; correct the
+  `nextTeardownWork` Haddock; make five `TeardownSpec` cases assert what they name.
+- Sprint 12.8: test that `projectPlanDrafts` refuses an empty config-dependent stream with
+  `InvalidProjectPlan EmptyStepPlan`; compare Production and Harness step identities; correct the
+  `planDraftsFromValidatedBuilder` Haddock; correct the `CLI.hs` header; test the three untested
+  finalization refusals.
+- Sprint 12.10: assert deterministic snapshot bytes, the exact configuration-mismatch digests, and every
+  smart constructor's reverse policy.
+- Sprint 12.13: replace the length-framing fixtures with colliding adjacent fields; export
+  `IndexedPlanSnapshot` abstractly; make the oversized-root and surrogate-root cases test the size guard and
+  the production encoder.
+- Sprint 12.14: drop the store comparison around pure frame admission.
+- Sprint 12.17: run the filesystem-failure snapshot cases on Windows; name the whole-store outage case for
+  what it exercises.
+- Sprint 12.18: add the intra-step snapshot corruption refusal cases; carry the kernel reason in a
+  `ModeMalformedCanonicalSnapshot` refusal and assert it per row; unmask the digest and version rows; bound
+  the snapshot text frame from both sides.
+- Sprint 12.19: compare the profile's store identity exactly; delete the tautological repeatability case;
+  drift the root and mode-lease epochs and the project name.
+- Sprint 12.20: assert exact recovery-mismatch digests; drop store and repeat checks around pure calls;
+  correct the `withRecoverySpecReindexKernel` Haddock.
+- Sprint 12.21: pin each acquisition refusal; test the lease-to-journal origin mismatch; pass one typed
+  acquisition binding record; delete the uncalled reopen kernels.
+- Sprint 12.22: test the cursor frame bound from both sides; pin each corrupt-payload refusal and reopen
+  after restoring.
+- Sprint 12.23: prove the initial cursor row survives a callback exception; pin the verb, phase, and ABA
+  refusals; drop the immutable-journal phase assertions.
+- Sprint 12.25: add runtime `authorizeRootProject` refusal, one-use, and concurrent-winner cases.
+- Sprint 12.27: delete the `LifecyclePlan` family with its snapshot cases, `carryManagedResource`, and the
+  public runtime minting path; check the exact node in `runPlannedStep`; export `PlannedStep` abstractly;
+  fix the digest case and three Haddocks.
+- Sprint 12.28: rethrow the original exception; terminalize gates on a refused observation; restrict
+  settlement carries; one post-handoff classifier; cover the evidence and settlement refusals; delete
+  `plannedStepRefusalObservation` and `interpretExactSteps`; test the cursor-authority origin predicate.
+- Sprint 12.30: derive the budget from the plan; add the overflow, workload, partition, slice, and exact
+  `InvalidQuantity` refusal cases.
+- Sprint 12.31: scan `internal/cluster-backend`; fix the dead and vacuous importer checks; strip comments in
+  the source-text helpers.
+- Sprint 12.33: assert the exact kind-node argv for an inexact budget.
+- Sprint 12.34: rename the MinIO resource kind and probe to the generic object store.
+- Sprint 12.35: bind the journal frame key to the plan; enumerate `planProjectionError`; make the
+  `ReconcileSpec` descriptor and journal guards fail for the defects they name.
+- Sprint 12.36: `Lifecycle.Plan` takes `sha256Hex` from `HostBootstrap.Digest`.
+- Sprint 12.37: give the command-reservation coordinates distinct newtypes.
+- Sprint 12.38: `frameworkEnvelopeCodec` reads its scope tag from `KnownScopeKind`, and every `decodeRoleWire`
+  refusal is asserted exactly.
+- Sprint 12.39: fence epochs carry nominal roles and witness-derived plan indices, with compile-fail fixtures.
+- Sprint 12.40: revalidate the project-mode epoch, live broker generation, bound lease, active revision and
+  migration freeze, verb, and frame inside the prepare's protected entry.
+- Sprint 12.41: drop `verifyPhaseTransition` from the export list so `completePreparedPhaseTransition` is the
+  only producer of `PhaseAdvance`.
 
 ## Documentation Requirements
 

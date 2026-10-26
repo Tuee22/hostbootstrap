@@ -71,14 +71,20 @@ Status describes the current repository state, not the intended future state.
 
 | Status | Meaning |
 |--------|---------|
-| `Done` | Implemented, and its own declared gate passes |
-| `Active` | Partially built; remaining work is listed explicitly |
-| `Planned` | Not started; every phase it depends on is `Done` |
+| `Done` | Implemented, its own declared gate passes, and (for a deferred phase) its evidence digest matches |
+| `Active` | Started and not `Done`: partially built, or built with work still owed in its scope — including a re-run owed because its evidence expired; remaining work is listed explicitly |
+| `Planned` | Not started; work on it begins once every phase it depends on is `Done` |
+
+Every situation therefore has exactly one status. A phase that meets the `Done` rule below is `Done`; a
+phase with no work begun is `Planned`, whatever the status of its predecessors; every other phase — work
+begun and unfinished, or built with anything still owed in its scope — is `Active`. Status is a property of the phase's own scope: a lower-numbered
+phase turning `Active` does not change a later phase's status, which changes only when that phase's own
+gate stops passing, its own evidence expires, or work in its own scope is found owed.
 
 There is deliberately no `Blocked` and no `Superseded`. Under § A a phase depends only on lower-numbered
-phases, so an unstarted phase whose predecessors are complete is `Planned` and one whose predecessors are
-not is simply not reached yet — nothing waits on a *later* phase, so nothing is blocked. And because the
-narrative is strictly additive, no phase is ever superseded by another; a wrong phase is rewritten.
+phases, so an unstarted phase whose predecessors are not all `Done` is `Planned` and is simply taken up
+later — nothing waits on a *later* phase, so nothing is blocked. And because the narrative is strictly
+additive, no phase is ever superseded by another; a wrong phase is rewritten.
 
 Rules:
 
@@ -86,10 +92,18 @@ Rules:
   remaining work in its scope.
 - `Active` requires a non-empty `## Remaining Work` section, spelled exactly that. One heading means a
   reader and a validator find the same thing in every phase.
-- **A phase closes on its own gate.** A phase never carries a closure obligation that needs hardware it
-  does not declare. Confirmation of a non-baseline host or accelerator dimension is owned by the acceptance
-  phase that runs it (§ II), which lists what it confirms; the universal `linux-cpu` gate itself remains
-  runnable through every supported host realization.
+- **A deferred phase whose evidence expires is `Active`.** When the digest over its `**Evidence covers**`
+  paths no longer matches (§ G), the phase is set `Active` in the same change that edits the covered path
+  — `checkGateEvidence` refuses a `Done` deferred phase whose digest does not match — and its
+  `## Remaining Work` names the sprint that owes the re-run. That is evidence expiry, not the design-error
+  reopening § A forbids: nothing in the phase is wrong, its claim is simply no longer about the current tree.
+- **A phase closes on its own gate.** A phase never carries a closure obligation that needs a substrate
+  or accelerator it does not declare in `**Substrates**`. Gate hosts are not substrates (§ II): a phase
+  that needs particular gate hosts — an operating system or architecture its static gate must run on —
+  names them in its `**Gate**` field, as the host-portability acceptance phase does. Confirmation of a
+  non-baseline host or accelerator dimension is owned by the acceptance phase that runs it (§ II), which
+  lists what it confirms; the universal `linux-cpu` gate itself remains runnable through every supported
+  host realization.
 - Statuses are **derived by checking the repository**, never inherited from an earlier version of the
   plan. When phase boundaries are re-cut, every status is re-verified against the code.
 - A phase's status must match its row in the [README](README.md) table, which is the sole cross-phase
@@ -131,6 +145,7 @@ DEVELOPMENT_PLAN/
 ├── 00-overview.md
 ├── system-components.md
 ├── rationale.md
+├── legacy_tracking_for_deletion.md
 ├── phase-0-governance-and-documentation-standards.md
 ├── phase-1-python-pre-binary-floor.md
 ├── phase-2-haskell-core-scaffolding.md
@@ -156,11 +171,11 @@ DEVELOPMENT_PLAN/
 ├── phase-22-service-runtime.md
 ├── phase-23-base-image-and-warm-store.md
 ├── phase-24-worked-demo.md
-├── phase-25-apple-silicon-substrate.md
-├── phase-26-nvidia-gpu-substrate.md
-├── phase-27-windows-and-wsl2-substrate.md
-├── phase-28-host-portability-acceptance.md
-└── phase-29-documentation-reconciliation.md
+├── phase-25-documentation-reconciliation.md
+├── phase-26-apple-silicon-substrate.md
+├── phase-27-nvidia-gpu-substrate.md
+├── phase-28-windows-and-wsl2-substrate.md
+└── phase-29-host-portability-acceptance.md
 ```
 
 The `phase-NN-*.md` set is **contiguous from 0 with no gaps and no duplicates**, and `NN` is the
@@ -169,10 +184,17 @@ expected rather than avoided; the same change updates this file, `README.md`, `0
 `system-components.md`. Documents outside this directory are unaffected, because they cite phases by
 name and link (§ J).
 
+Each file's `**Status**:` line takes one value from a closed set. `development_plan_standards.md`,
+`00-overview.md`, and `system-components.md` state contracts and carry `Authoritative source`. `README.md`
+carries `Governed orientation document`; its status table is the cross-phase status source of truth (§ J).
+`rationale.md` and `legacy_tracking_for_deletion.md` justify and list rather than bind, and carry
+`Non-normative`: the ledger schedules nothing on its own (§ I). Each phase file carries `Done`, `Active`, or
+`Planned` (§ G).
+
 Obsolete shapes do not belong in a phase narrative. A shape that is absent stays absent through a mechanical
 guard in the validator or tests; a still-standing unwanted shape appears only in
 [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md), with the deleting phase named in that
-phase's own Remaining Work (§ I).
+phase's own Remaining Work (§ I). The ledger is part of this layout whether or not its table holds rows.
 
 ### F. System Component Inventory
 
@@ -183,7 +205,8 @@ it lives:
 - the `ensure` reconcilers and their host applicability
 - the thin Python bootstrapper surface
 - the explicit pipx self-update surface for the Python bootstrapper
-- the optparse command tree that consuming project binaries extend
+- the fixed optparse command tree whose behavior consuming project binaries extend through typed
+  registries
 
 It **summarizes and links** for topics whose canonical home is a governed document: the project-local
 `<project>.dhall` schema belongs to
@@ -233,48 +256,43 @@ records **every leg the gate names** — a phase that names a composed gate and 
 claiming the whole — and `checkGateEvidenceLegs` compares the two.
 
 `**Gate kind**` says whether the run that validates this plan also re-executes this phase's gate.
-**Self-verifying** phases close on the host static gate, so the same `cabal test all` that reads this
-document re-establishes their currency; their `**Gate evidence**` records `covers in-gate` and carries no
-digest, because a stamp re-proved on every run protects nothing. **Deferred** phases declare something
-that run does not perform — a live provider, a realized host, a hardware acceptance, the Python suite —
-so their evidence is a claim about a tree nothing is currently re-testing. Those name the paths whose
+**Self-verifying** phases close on `cabal test all` from `core/` (or a spec inside it) — the one leg of
+the host static gate (§ JJ) that the run validating this plan re-executes — so the same `cabal test all`
+that reads this document re-establishes their currency; their `**Gate evidence**` records `covers in-gate`
+and carries no digest, because a stamp re-proved on every run protects nothing. **Deferred** phases
+declare something that run does not perform — a live provider, a realized host, a hardware acceptance,
+the Python suite, the `demo/` leg, or any other leg of § JJ beyond `cabal test all` from `core/` — so
+their evidence is a claim about a tree nothing is currently re-testing. Those name the paths whose
 change re-owes the run in `**Evidence covers**`, and their evidence carries a digest over exactly those
-paths. When the paths change the digest stops matching and the phase is refused until its gate is re-run
-and re-recorded.
+paths. When the paths change the digest stops matching and the phase is refused as `Done` — it is
+`Active` (§ C) — until its gate is re-run and re-recorded.
 
-That is the currency rule of [the plan index](README.md) made mechanical. It was prose before, and ten
-phases had to be reopened by hand to discover it had not been held. What it still cannot do is prove a
+That is the currency rule of [the plan index](README.md) made mechanical. What it cannot do is prove a
 run happened: the digest is recomputable without executing anything. It raises the cost of a stale claim
 from nothing to deliberately recording a result that was not obtained, and absent continuous integration
 that is the honest ceiling — so a `**Gate evidence**` row names its gate host and command, which is what
 a reader needs in order to judge the run this check cannot.
 
-There is a second limit, found on 2026-09-08 and recorded here because it is structural rather than a bug.
 **A covers digest cannot see the toolchain that drove the run.** `measurePathSetDigest` hashes repository
 bytes under the cited paths and nothing else, so two runs of the same gate — one driven by a current
-program, one by a month-stale install of it — produce byte-identical digests over an identical tree. The
-row's command field is not read mechanically either: `parseEvidenceRow` checks only that it contains a
-backtick. On that date the `hostbootstrap` CLI on the maintainer's PATH was found to be a pipx install
-dated 2026-08-05 that omitted both the `-j1` build serialization and the
-`--hostbootstrap-install-identity` call the current source makes unconditionally — so a gate naming that
-CLI had been exercising a program the repository no longer describes, invisibly to every check here.
+program, one by a stale install of it — produce byte-identical digests over an identical tree. The row's
+command field is read only by `checkGateEvidenceLegs`, which matches each `**Gate**` leg's non-flag tokens
+as a subsequence of a recorded command and does so only when an evidence row exists; nothing reads which
+program the command actually invoked. Two rules follow. A `**Gate evidence**` row whose command invokes a
+**separately installed** program is a weaker claim than one invoking `cabal`/`poetry` against the tree
+directly, because only the latter is guaranteed to exercise the source the digest measures, so a gate
+prefers the in-tree command. And because this repository ships two different programs both named
+`hostbootstrap` — the Python bootstrapper and the bare core executable (`hostbootstrap-core.cabal`) — a
+row naming it says **which**, or a reader cannot tell what ran.
 
-Two consequences follow. A `**Gate evidence**` row whose command invokes a **separately installed**
-program is a weaker claim than one invoking `cabal`/`poetry` against the tree directly, because only the
-latter is guaranteed to exercise the source the digest measures. And because this repository ships two
-different programs both named `hostbootstrap` — the Python bootstrapper and the bare core executable
-(`hostbootstrap-core.cabal`) — a row naming it must say **which**, or a reader cannot tell what ran.
+A gate written as a composition — a static suite *plus* a live run, a focused pattern *plus* the whole
+suite — is one claim, and a row naming only the cheaper half claims something the phase did not
+establish. Where a gate genuinely closes in two sittings, the phase records two rows rather than omitting
+one.
 
-A `**Gate evidence**` row records **every leg its `**Gate**` names**. A gate written as a composition —
-a static suite *plus* a live run, a focused pattern *plus* the whole suite — is one claim, and a row
-naming only the cheaper half claims something the phase did not establish. `parseEvidenceRow` checks
-only that the command field contains a backtick, so this is the rule a reader must apply until the check
-that compares the two fields exists. Where a gate genuinely closes in two sittings, the row says so with
-two entries rather than by omitting one.
-
-A three-family acceptance phase is expected to sit `Active` between runs: its covers set is the
-host-portable tree, so ordinary source change expires its claim. That is the honest reading of a
-portability claim rather than an unclosed phase.
+An acceptance phase (§ II) covers the host-portable tree, so ordinary source change expires its claim and
+it is `Active` until its next run (§ C). That is the honest reading of a portability claim between visits
+to its hardware rather than an unfinished build.
 
 Each sprint is nested one level deeper:
 
@@ -298,24 +316,31 @@ Each sprint is nested one level deeper:
 Additional sections (`Module Surface`, `Command Surface`, `Reconciler Contract`, `Objective boundary`) are
 encouraged when they clarify closure criteria.
 
+`#### Validation` names test cases that exist in the tree: each entry names the spec file and the case
+within it, so a reader can find and run exactly what the sprint claims. Coverage that runs only in a live
+or opt-in lane — a live provider test, a realized-host run, an accelerator lane — names that lane, so it is
+never mistaken for coverage the host static gate (§ JJ) executes on every run.
+
 Every sprint carries `#### Remaining Work`, including a `Done` one, where it begins with "None." — often
 followed by the boundary note saying which phase owns what this sprint does not. A `Done` sprint that
 declares work is not done, and one whose only outstanding item is a live confirmation is closed here with
-that confirmation listed by the acceptance phase declaring the hardware (§ II).
+that confirmation owned by a later sprint of the same phase (a live `linux-cpu` confirmation) or listed by
+the acceptance phase declaring the hardware (a non-baseline context, § II).
 
 **Sprint size budget.** A sprint is one working session. It lands **at most one new named
 contract/type, or one call-site adoption**, and stays within:
 
 - ≤ 8 deliverable bullets;
 - ≤ ~400 lines of production Haskell across ≤ 3 source modules, plus their specs;
-- closable by the **host static gate** alone (§ II) — `cabal test all` from
-  `core/`, `poetry run python -m hostbootstrap.check_code`, and
-  `poetry run python -m hostbootstrap.test_all`.
+- closable by the **host static gate** alone — all four commands of
+  [§ JJ](#jj-host-portable-static-gate-and-test-harness).
 
-A live-substrate confirmation is never in the same sprint as the change it confirms; it belongs to a
-substrate phase (§ II). A sprint whose `#### Remaining Work` has grown into a chronicle has exceeded the
-budget and must be split into further sprints, and its dated evidence recorded against the gate rather
-than narrated.
+A live confirmation is never in the same sprint as the change it confirms. A live `linux-cpu`
+confirmation — a run on a realized `linux-cpu` host or a live provider, cluster, or service run there — is a
+later sprint of the same baseline phase, whose `**Gate**` names it. A confirmation of a non-baseline
+hardware context belongs to that context's acceptance phase (§ II). A sprint whose `#### Remaining Work`
+has grown into a chronicle has exceeded the budget and must be split into further sprints, and its dated
+evidence recorded against the gate rather than narrated.
 
 Because a phase depends only on lower-numbered phases (§ A), a sprint has no `Blocked by` field: there is
 nothing later for it to wait on.
@@ -361,6 +386,11 @@ that is **still standing in the tree** — code the architecture does not want, 
 deletes when it completes. That is repository state, not narrative, and
 [legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md) is its one home.
 
+Dead code is the commonest such shape: an export, constructor, kernel, field, or module that no production
+path reaches. No contract requires it, it tells a reader the tree does something it does not, and an
+authority-bearing one is a producer the sealing rules (§ EE, § HH) never constrain. It is tracked in the
+ledger until the phase that introduced it removes it.
+
 The distinction is what keeps this from becoming the ledger the first paragraph forbids:
 
 - a **phase narrative** says what that phase builds, in present tense, and never mentions the shape;
@@ -379,8 +409,10 @@ The root `README.md` is the finished-shape orientation document. It must not cla
 implemented unless the plan marks the owning phase `Done`.
 
 - `DEVELOPMENT_PLAN/README.md` is the **single cross-phase status source of truth**. Its phase table is
-  the only place that summarizes every phase's status, and each cell is short — status plus the current
-  sprint. A phase document carries the matching local `**Status**`; `00-overview.md` and
+  the only place that summarizes every phase's status. Its columns are `#`, `Phase`, `Status`, `Substrate`,
+  and `Open`: the `Status` cell is exactly `Done`, `Active`, or `Planned` and nothing else, and the `Open`
+  cell names the sprint that owns the remaining work while the phase is `Active` and reads `—` otherwise.
+  A phase document carries the matching local `**Status**`; `00-overview.md` and
   `system-components.md` link to the table instead of maintaining another roll-up.
 - Exact test counts and real-run results are dated validation evidence, never a second “current suite”
   status. They live with the sprint whose gate produced them; orientation and inventory documents do not
@@ -420,10 +452,9 @@ project binary inside the Linux environment, and runs the baseline gate there.
 
 The plan therefore distinguishes two gates, and a phase says which one closes it:
 
-- the **host static gate** — `cabal test all` from `core/`,
-  `poetry run python -m hostbootstrap.check_code`, and `poetry run python -m hostbootstrap.test_all`,
-  each run as an ordinary process of the **outer host**. It proves the pure, typed, and lexical
-  contracts: type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections,
+- the **host static gate** — all four commands of
+  [§ JJ](#jj-host-portable-static-gate-and-test-harness), each run as an ordinary process of the
+  **outer host**. It proves the pure, typed, and lexical contracts: type boundaries, compile-fail diagnostics, codecs, source-shape guards, plan projections,
   and the documentation validator. Because § N builds every binary host-native, this gate must pass
   host-native on **every** supported outer host realization — macOS, Linux, and Windows alike (§ JJ);
 - the **`linux-cpu` substrate gate** — a gate whose gated process and its POSIX/container effects
@@ -457,26 +488,59 @@ This distinction is normative vocabulary throughout the plan:
   may add real capabilities beyond `linux-cpu`; neither may contradict the baseline contract.
 
 Every baseline phase that builds a contract targets the universal `linux-cpu` substrate, and its gate runs
-in one realization of that substrate or is pure-static. A hardware-context acceptance phase additionally
-targets the one context it declares.
+in one realization of that substrate or is pure-static; a phase whose gate is pure-static declares
+`none (static)`. A hardware-context acceptance phase additionally targets the one context it declares.
 
-- A phase declares `**Substrates**:` and may name **at most one** substrate beyond `linux-cpu`.
+- A phase declares `**Substrates**:` and may name **at most one** substrate beyond `linux-cpu`. Every
+  declaration — phase header and sprint alike — draws from a closed set that `checkSubstrateBudget`
+  enforces:
+
+  | Value | Meaning |
+  |---|---|
+  | `none (static)` | Phase header: the gate is pure-static and realizes no substrate |
+  | `none` | Sprint: the sprint's validation realizes no substrate |
+  | `linux-cpu` | The universal baseline substrate |
+  | `apple-silicon` | `linux-cpu` plus the Apple/Metal context; the detector class `AppleSilicon` |
+  | `nvidia` | `linux-cpu` plus the NVIDIA-accelerated Linux context; the detector class `LinuxGpu` |
+  | `windows` | `linux-cpu` plus the Windows/WSL2 context, including Windows-host CUDA; the detector classes `WindowsCpu` and `WindowsGpu` |
+
+  A non-baseline value always implies the `linux-cpu` baseline beside it. The detector's `LinuxCpu` class
+  names a Linux outer host without an accelerator, which is one realization of the `linux-cpu` substrate,
+  not the substrate itself.
 - Non-baseline hardware contexts and acceptance dimensions — Apple/Metal, NVIDIA acceleration, and
-  Windows-host CUDA — are each owned by exactly one **acceptance phase**, placed at the end of the narrative. An
-  acceptance phase adds any remaining host/provider- or accelerator-only realization and confirms both the
-  universal `linux-cpu` floor and the selected context's additional behavior on real hardware.
-- **Acceptance phases are terminal**: nothing depends on them. Lack of Apple, NVIDIA, or Windows hardware
-  prevents only that realization's acceptance; it never prevents a supported host from realizing and
-  validating the universal `linux-cpu` baseline through its own provider.
+  Windows-host CUDA — are each owned by exactly one **acceptance phase**. An acceptance phase adds any
+  remaining host/provider- or accelerator-only realization and confirms both the universal `linux-cpu`
+  floor and the selected context's additional behavior on real hardware.
+- The acceptance phases are exactly four: the three hardware-context acceptance phases —
+  [Apple Silicon](phase-26-apple-silicon-substrate.md), [NVIDIA GPU](phase-27-nvidia-gpu-substrate.md), and
+  [Windows and WSL2](phase-28-windows-and-wsl2-substrate.md), each declaring one non-baseline substrate —
+  and the [host-portability acceptance phase](phase-29-host-portability-acceptance.md), which declares
+  `none (static)` and names the gate hosts it needs in its `**Gate**` (§ C). They occupy the end of the
+  narrative, Phases 26 to 29, after the
+  [documentation reconciliation phase](phase-25-documentation-reconciliation.md) (Phase 25).
+- **Acceptance phases are terminal**: nothing depends on them. `checkAcceptanceTerminal` refuses a
+  dependency edge into a phase declaring a non-baseline substrate, and the host-portability acceptance
+  phase, as the highest-numbered phase, can have no dependent under § A. Lack of Apple, NVIDIA, or Windows
+  hardware prevents only that realization's acceptance; it never prevents a supported host from realizing
+  and validating the universal `linux-cpu` baseline through its own provider.
+- **Acceptance phases close last.** Each covers the host-portable tree (§ G), so any change to a lower
+  phase's sources re-owes their runs; they are closed once no lower phase carries open work.
 - An acceptance phase lists what it confirms, so a baseline phase closing on its static gate does not
   silently drop live coverage.
 
-Three limits are recorded here because they are easy to assume away. `fourmolu` and `hlint` run only inside
-the container `check-code`, so the host static gate is not the complete quality gate — the phase that owns
-the container gate owns those two. The long demo gate brings up real provider and cluster state under
-the project's own identity, so it runs on a disposable host, never a working one. And a host static gate
-run is evidence for the one outer host that ran it, so its dated evidence names that host and a passing
-run on one outer host is not a claim about another.
+Three limits are recorded here because they are easy to assume away. `fourmolu` and `hlint` run in the
+repository source gate that `base build` and `base build-and-push` run on the maintainer's host before any
+Docker build, in a derived image's `check-code`, and in the base image's tool smoke, but not in the host
+static gate, so the host static gate is not the complete quality gate — the
+[base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md) (Phase 23) owns those two (§ R),
+and [code_check_doctrine.md](../documents/engineering/code_check_doctrine.md#where-the-style-tools-run) is
+canonical for where they run. The long demo gate brings up real provider and cluster state under
+the project's own identity, so it runs on a disposable host: one carrying no production demo state, so
+that every provider, cluster, and data root the run touches is its own (the
+[demo runbook](../documents/operations/demo_runbook.md) names the state that must be absent).
+Disposability is a property of the host's state, not of the machine; a host carrying production demo state
+never runs it. And a host static gate run is evidence for the one outer host that ran it, so its dated
+evidence names that host and a passing run on one outer host is not a claim about another.
 
 ## hostbootstrap-Specific Contracts
 
@@ -494,14 +558,28 @@ earlier weaker version of it anywhere in the plan (§ A).
 
 ### K. Host-Tool Resolution Doctrine
 
-**Owning phase**: the [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md)
-owns the boundary; the [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md)
-owns the enumeration's membership.
+**Owning phase**: [the host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md)
+
+That phase owns the boundary; the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) ships the
+enumeration's exact membership pin.
 
 External tools use a closed package-owned resolver and are invoked by absolute path. The ordinary resolver is
 the closed `HostTool` enumeration in `hostbootstrap-core`; no library or project code calls
 `proc "<bare-command-name>"` against ambient `$PATH`, and ordinary invocations read their absolute path from
-typed host configuration.
+typed host configuration. Discovery is where the search path enters: `HostTool.discover` looks each bare
+name up on the process's ambient `PATH` (plus fixed Windows fallback paths) and admits only an absolute
+result, so the enumeration closes *which names* can be invoked, not *which directory* supplies them. Two
+further sites are discovery by design. `resolveInstalled` in `HostBootstrap.HostConfig` is the sanctioned
+re-measurement: it reads the typed configuration first and calls `discover` only for a tool absent from it,
+so a tool an `ensure` step installed mid-invocation resolves absolutely while a recorded path is never
+replaced. Substrate detection's GPU probe (`hasNvidiaGpu` in `HostBootstrap.Substrate`) is a discovery
+spawn: it runs before any typed host configuration exists, looks `nvidia-smi` up on ambient `PATH`, and runs
+the path that lookup returns. An install step delegated through the enumerated `Sudo` tool names its program (`apt-get`, `systemctl`,
+`nvidia-ctk`, `incus`) as an argument to `sudo`, which resolves it through its own `secure_path`, not
+through this resolver. The worked demo's `check-code` resolves `fourmolu`, `hlint`, and `cabal` from ambient
+`PATH` with its own lookup outside the enumeration; that is a gap against this contract, owed by the
+[worked-demo phase](phase-24-worked-demo.md).
 
 Two things are owned separately here, and conflating them is what makes the boundary look like it waits on
 its consumers. That the set is **closed** — that entry is by construction, that resolution is absolute, and
@@ -509,8 +587,8 @@ that a failure is a typed refusal — is a property of the boundary, settled whe
 **Which** tools are in the set is a description of what the binary drives, and that is settled by the phases
 that drive them; the enumeration narrows when the last driver stops driving a name, and the phase holding
 that driver ships the membership pin as its own absence guard (§ I). The enum names the external tools the binary drives — provider tools such as
-`incus`, cluster tools such as `kind` and `kubectl`, and the compilers and package managers the reconcilers
-reach. It does **not** name an interpreter or a locking front end: ownership is the binary's own typed
+`incus`, cluster tools such as `kind` and `kubectl`, the compilers the reconcilers reach, the package managers
+they invoke directly (`brew`, `ghcup`, `winget`), and `sudo` for the steps they delegate. It does **not** name an interpreter or a locking front end: ownership is the binary's own typed
 operation over one platform row (§ EE, § LL), so no clause is held by a resolved `python3`, `flock`, or
 `lockf`. A tool the enum names is one the project genuinely delegates to, not one it uses to reimplement
 something it already owns. A consumer-specific resolver is admissible only when its
@@ -521,11 +599,15 @@ owner/mode/device/inode, the complete namespace is fingerprinted and revalidated
 
 The direct-Colima adapter is the consumer-specific realization: its private Apple resolver admits only the
 fixed Python/Colima/Docker/Lima candidates (and Brew only while Colima is missing) and returns an opaque
-retained toolchain. A Cabal-private, non-nestable, thread-local fixture seam may substitute a fixture
-root/home/bootstrap identity and fresh bounded resolver execution for host-static integration tests; every
-discovery and revalidation still runs the strict decoder and opaque settlement path, the bracket clears the
-override, and no public module exposes it or a trusted-result constructor. Production never turns ambient
-`PATH`, `HOME`, cwd, Docker context, or caller output into authority. The in-VM tools a resolved provider
+retained toolchain. Host-static tests reach the resolver through its fixture-layout entry
+(`executeNativeResolverFixture`) and the pure settlement and revalidation functions, never through a branch
+production consults (§ NN). The tree still carries a Cabal-private, thread-local resolver override
+(`Resolver/Override.hs`, consulted by `resolveTrustedAppleToolchain` and `discoverDirectColimaBackendAt`)
+that substitutes a fixture root/home/bootstrap identity; it is an execution override § NN forbids, and
+Sprint 16.20 of the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) owes deleting
+it. No public module exposes it or a trusted-result constructor. The direct-Colima adapter never
+turns ambient `PATH`, `HOME`, cwd, Docker context, or caller output into authority. The in-VM tools a resolved provider
 dispatches to remain the VM's own `$PATH` binaries reached through that single absolute host-provider command
 (the VM is a separate machine — the doctrine governs host invocation).
 
@@ -538,36 +620,47 @@ expressed* — as a value in one closed vocabulary rather than as interpreter te
 ### L. Substrate and Ensure-Reconciler Contract
 
 **Owning phase**: [the ensure-reconcilers phase](phase-8-ensure-reconcilers.md)
+
 Substrate detection (`apple-silicon`, `linux-cpu`, `linux-gpu`, `windows-cpu`, `windows-gpu`) is owned
 by `hostbootstrap-core`.
 **The purpose of the `ensure` suite is that an absent dependency with a supported install plan is
 installed rather than treated as a manual prerequisite.** Context-free host dependencies are represented
-by probe-first `ensure` reconcilers — a host-applicability predicate plus a reconcile action. Each
+by probe-first `ensure` reconcilers — a per-frame `FrameTable` plus a reconcile action. Each table row is
+either `InstallHere` (the steps that install the dependency in that frame) or `ProvidedElsewhere` (the
+dependency is probed there, and an absent one is refused with the named owner); `appliesTo`, the
+`requirement` text of the wrong-host diagnostic, and each host's install plan are all derived from that one
+table, so applicability and the wrong-host refusal cannot disagree (§ LL). Each
 module contributes exactly one `reconciler` value (`HostBootstrap.Ensure.Docker.reconciler` and its
 peers for Lima, Cuda, CudaWin, Wsl2, Homebrew, Ghc, Incus, and the accelerator build stack
 AppleMetal); `allReconcilers` collects them and `runEnsure` applies one. They reach a chain as `ensure-*`
 step kinds. There is no per-dependency `ensureX` entry point, because a nine-name surface is nine places
 a new host dependency has to be registered instead of one. There is no
 top-level `ensure` command, and no reconciler is reachable as a verb. The command surface is exactly the
-tree § P fixes; the one internal marker § P admits is not a command and cannot reach a reconciler.
+tree § P fixes; the closed set of internal entries § P admits is not a command and cannot reach a reconciler.
 The reconcile action **installs** the
 dependency when its total probe reports absence and a plan exists, then re-probes; a satisfied capability
-is a verified, typed no-op. Current install-and-reprobe behavior is idempotent only to the strength of
-each probe or package-manager no-op path; several probes and raw `IO ()` results do not yet prove
-resource identity or retain a typed reconcile outcome. An absent-but-installable dependency is therefore
+is a verified no-op. The config-free reconcile action has type `HostConfig -> IO ()`: success is a passing
+probe or re-probe, failure exits, and no value distinguishes "already satisfied" from "installed". Its
+idempotence is only as strong as each probe or package-manager no-op path, and a probe does not prove
+resource identity. That is the accepted contract for config-free reconcilers; a managed resource transition
+that needs a typed outcome or exact identity goes through the indexed `ReconcileResult` algebra and prepared
+operations instead (§ EE). An absent-but-installable dependency is therefore
 installed rather than reported as a manual prerequisite. The Python wrapper's host minimums (§ M) are the only intentionally non-installing
 **pre-binary** prerequisite gate, not the system's only failure class. A reconciler fails closed on
 wrong-host applicability, an irreducible/non-installable precondition, a conflict or safety refusal, or
 failed post-install verification. NVIDIA device/driver visibility is part of
-substrate detection: without a working `nvidia-smi`, a host is not classified as `linux-gpu` or
-`windows-gpu`, so the GPU reconciler rejects that substrate rather than claiming it can install a driver
-for hardware it cannot yet identify. Once a GPU substrate is established, its installable toolchain
+substrate detection (`hasNvidiaGpu`): a host is a GPU substrate when an NVIDIA kernel marker
+(`/proc/driver/nvidia/version` or `/dev/nvidiactl`) exists, or, when neither exists, when `nvidia-smi -L`
+succeeds and lists a GPU. On Windows the kernel markers do not exist, so `windows-gpu` requires that
+`nvidia-smi` listing; a Linux host with a loaded driver is `linux-gpu` even when `nvidia-smi` is missing.
+A host with no driver evidence is not a GPU substrate, so the GPU reconciler rejects it rather than
+claiming it can install a driver for hardware it cannot yet identify. Once a GPU substrate is established, its installable toolchain
 dependencies are reconciled normally. `ensure incus` is explicitly applicable
 on **both** apple-silicon and linux — on Apple it prepares the Colima-backed Incus provider for explicit
 Incus workflows, and on Linux it initializes the native daemon that encapsulates a fresh linux host (§ U).
-It is not the first or only cross-substrate predicate: current `Ensure.Docker` declares
-`appliesTo = const True`, although its absent-daemon install plan is Linux-only and delegates/refuses
-elsewhere.
+It is not the only cross-substrate table: `Ensure.Docker` has three rows — `InstallHere` on Linux, and
+`ProvidedElsewhere` on Apple Silicon (the per-project Colima provider wall) and on Windows (the WSL2
+host-provider path) — so a reachable daemon is a verified no-op on every frame and only Linux installs one.
 Provider adapters that require validated project/config/plan authority are not config-free reconcilers
 and cannot appear in `allReconcilers`. In particular, direct Apple Colima consumes a plan-bound project
 profile plus the admitted wall/partition/reservation, installs the tool if absent, observes exact
@@ -592,6 +685,7 @@ config-free reconcilers retain the individual probe limits described in
 ### M. Python-Thin / Haskell-Core Boundary
 
 **Owning phase**: [the Python-pre-binary-floor phase](phase-1-python-pre-binary-floor.md)
+
 In the ordinary `doctor`/`build`/`run` project path, the Python bootstrapper does only the **minimum to
 build the project binary**: discover the single Cabal file and executable stanza, assert the fail-fast
 host minimums, ensure the host toolchain prerequisites needed to **build** the binary, then build the
@@ -642,6 +736,7 @@ freshness, or fail merely because the wrapper is not at the latest commit.
 ### N. Host-Native Binary Build
 
 **Owning phase**: [the Python-pre-binary-floor phase](phase-1-python-pre-binary-floor.md)
+
 Every project's binary is built **host-native** on every substrate — it is **not** built inside a Linux
 container and copied out, because a binary built in a Linux container cannot exec on a general host (e.g.
 Apple silicon). The universal pre-binary host dependency is therefore the **build toolchain**, not Docker.
@@ -661,7 +756,9 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
   cudawin` readies the CUDA Toolkit, MSVC VCTools, and LLVM clang; nvcc artifacts are produced on the bare
   Windows host and staged into the cluster, and no workload runs in a build VM. On
   native Windows GHC `System.Info.os` is `mingw32`, so the core's POSIX-only `unix` dependency is
-  conditionalized at its three call sites to build the binary host-native.
+  conditionalized to build the binary host-native: each Cabal component that needs it declares it under
+  `if !os(windows)`, and each module that imports `System.Posix` guards those imports and their uses with
+  CPP.
 - Inside a managed Linux VM (§ U) the same host-native build applies — Lima on Apple Silicon,
   native Incus on Linux. The VM is a fresh linux host: the pipx-installed `hostbootstrap` ensures the
   toolchain, builds the binary host-native, and hands off by POSIX `exec`; the binary then ensures Docker and builds the
@@ -672,6 +769,7 @@ Apple silicon). The universal pre-binary host dependency is therefore the **buil
 ### O. Resource Budget and Cordoning
 
 **Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
+
 The plan has one opaque validated per-project budget (`cpu`, `memory`, `storage`) and no independently
 editable copy. Admission rejects a declaration that the selected provider cannot represent exactly, so
 the byte-valued `EffectiveBudget` equals the user-visible `ValidatedBudget`; no builder may silently
@@ -699,9 +797,40 @@ WslGlobalWallLease scope planId wallSpecId wallEpoch fence
 Provider selection first yields only a pure `ProviderBudgetCapability`; it grants no ownership or
 mutation authority. Exact admission consumes that capability with the validated declaration and jointly
 mints a `ProviderWallSpec ... wallSpecId` plus an equal, exactly representable
-`EffectiveBudget ... wallSpecId`. `fitsBudget` consumes the same-index workload set and yields only the
-matching fit proof. Partition construction consumes those pure values and mints exact plan/frame resource
-slices before any provider-wall acquisition or reconciliation effect.
+`EffectiveBudget ... wallSpecId`. `verifyPlannedWorkloadFit` consumes that `EffectiveBudget` with the
+same-plan `PlannedWorkloadSet` and yields only the matching `VerifiedWorkloadFit`. Partition construction
+(`withBudgetPartition`) consumes those pure values and mints exact plan/frame resource slices before any
+provider-wall acquisition or reconciliation effect. (`fitsBudget` in `HostBootstrap.Cluster.Cordon` is a
+descriptive calculation over the Haskell mirrors (`HostBootstrap.Config.Vocab`) of the hand-written
+`Core.dhall` vocabulary; it takes no plan index and yields no proof.)
+
+**What runs today.** The proof chain from `ValidatedBudget` through `ProviderWallAuthority` and
+`WslGlobalWallLease` is built as opaque kernels with their producers and consumers, exercised by the core
+suites. No production lifecycle path mints a `ValidatedBudget` or derives a `PlannedWorkloadSet`,
+`VerifiedWorkloadFit`, or `BudgetPartition`: the worked demo's cluster step mints its `ResourceSlice` with
+`withActionResourceSlice` from the planned cluster resource and the cluster resources of its config
+projection, and the direct-Colima consumer that requires
+the full chain (`prepareColimaWallCall`) has no production caller; nor do the storage-wall kernels
+`prepareStorageWallCall` and `settleStorageWallCall` in `HostBootstrap.Cluster.Budget`, which the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) keeps as a
+target contract. `withValidatedBudget` ignores its `ProjectPlan` argument and sizes the budget from a
+caller-supplied `ResourceEnvelope`, so one plan can mint several differently sized budgets against the
+single-budget rule above; Sprint 12.30 of the step-algebra-and-project-plan phase owes deriving it from the
+plan. Production budget enforcement is the metal preflight (`preflightHostBudget`), the provider sizing
+renderers applied when a VM is created, the kind node cordon, and the WSL global wall through
+`HostBootstrap.Wsl2.GlobalWall` under the § EE clauses. The in-frame cluster-capacity preflight
+(`preflightBudget` over `verifyBudget`) runs only inside the compatibility `clusterCreate`, which only the
+bare binary's cluster-live gate reaches; the worked demo does not run it. Production adoption of the
+fit/partition chain is owed by the [worked-demo phase](phase-24-worked-demo.md). The canonical topic statement
+of which controls apply is
+[resource_budgeting.md § What runs today](../documents/engineering/resource_budgeting.md#what-runs-today).
+The owned-cluster kind
+backend applies that whole cluster slice to every node (`cordonOwnedCluster` renders one
+`kindNodeCordonLimits` set and applies it to each node), so an N-node cluster's aggregate cap is N times the
+slice, unlike `clusterNodeCordonArgs`, which divides it per node; that defect is owed by the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md). The
+reservation, settlement, partition, and three-ring paragraphs below state the target contract those kernels
+implement.
 
 Only after the proved `BudgetPartition` exists may a journaled wall-acquisition operation reserve the same
 `wallSpecId`. The only public reservation producer jointly consumes the exact `ProjectPlan`, its matching
@@ -737,8 +866,7 @@ zero, oversized, or floor-rounded “strictly smaller” cluster slice is unrepr
 never added to itself. Separately, the metal preflight requires
 `host RAM ≥ budget + 4 GiB host reserve`.
 
-The canonical-quantities phase provides the pure admission foundation, while provider adapters and
-complete workload projection remain owned by their dependent sprints:
+The current state of each budget element:
 
 - demo `ProjectConfig.resources` is the sole editable budget. `BinaryContext` contains placement and
   command-gating data but no resource-envelope copy; child projection preserves the already-refined
@@ -754,48 +882,61 @@ complete workload projection remain owned by their dependent sprints:
   `BudgetPartition`/`ResourceSlice`, journal-before-call `ProviderWallReservation`, backend-produced
   `ProviderWallSettlementPermit`, and `ProviderWallAuthority` are opaque. Successful WSL settlement returns
   its `WslGlobalWallLease` inseparably with the live authority;
-- the current demo interpreter receives a descriptive cluster slice rather than a `BudgetPartition` proof.
-  The complete plan-derived workload/slice projection is the worked-demo phase's work;
-- `verifyBudget` is wired as the cluster-capacity preflight. `fitsBudget` is only a helper/test/static
-  API calculation; lifecycle does not derive or check the exact non-empty concurrent workload set;
-- new Lima/Incus/WSL resources receive initial sizing, but existing VM/VHDX sizing is not uniformly
-  compared or reconciled. The direct-Colima consumer is one exact `ProjectPlan`, matching provider
+- the demo interpreter receives a descriptive cluster slice rather than a `BudgetPartition` proof (see
+  "What runs today" above);
+- `verifyBudget` is wired as the cluster-capacity preflight of the compatibility `clusterCreate`, which only
+  the bare cluster-live gate reaches. `fitsBudget` is a descriptive calculation used
+  by the demo web API and tests; lifecycle does not derive or check the exact non-empty concurrent workload
+  set;
+- a new Lima, Incus, or WSL resource is sized from the budget when it is created. An existing Lima or Incus
+  VM is started with the sizing it was created with: a changed declaration is neither compared, applied, nor
+  refused. An existing WSL distro keeps the VHDX size it was installed with. That silent retention is a gap against the "applied everywhere or typed refusal" ring below,
+  owed by the [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md);
+- the direct-Colima consumer is one exact `ProjectPlan`, matching provider
   resource/topology, matching budget/capability/wall/workload-fit/partition, and `PreparedGate`-derived
   reservation plus provider-start package. It rejects total storage at or below the fixed 20-GiB root disk;
   the canonical wall is `--root-disk 20 --disk (total-20)`, with both quantities observed and bound. One
   128-bit plan/lifecycle namespace key owns the isolated `COLIMA_HOME`, reusable global lock, isolated
   `DOCKER_CONFIG`, and a socket-safe local profile. The private fixed resolver and bounded process-group
-  runner feed a descriptor-held Python `fcntl.flock` transaction whose durable
-  `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` states bind the exact invocation,
+  runner feed one § EE ownership entry over the shared protected store
+  (`HostBootstrap.Ensure.Colima.Ownership`), whose durable
+  `reserved`/`home-staged`/`home-ready`/`context-staged`/`prepared`/`managed` stages bind the exact invocation,
   namespaces, root/data wall, machine/context identity, and complete artifact manifest. A profile present
   from `prepared` without a managed stage is outcome-unknown `Conflict`, never adoption. Only the hidden
   successful backend bridge may jointly settle the provider start and wall. Live Docker reuses the isolated
   context under the retained identity, and independently journaled `--force --data` cleanup enters
   `releasing` before mutation and conditionally releases the exact context, artifacts, namespaces, and origin.
-  Missing clauses are `Unsupported`; mismatches are `Conflict`. Production recursive and demo call-site
-  adoption remain open outside the completed Phase 16 boundary. Direct Linux GPU
-  outer build/container effects are uncapped; only the later nvkind nodes receive CPU/memory caps. Bare Linux
-  has no storage quota or image-GC wall;
+  Missing clauses are `Unsupported`; mismatches are `Conflict`. The consumer has no production caller (see
+  "What runs today" above);
+- direct Linux GPU outer build/container effects are uncapped and return no typed `Unsupported`; only the
+  later nvkind nodes receive CPU/memory caps. That is a gap against the "applied everywhere or typed refusal"
+  ring, owed by the
+  [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md). Bare Linux
+  has no storage quota or image-GC wall, and the cluster consumer receives that as the typed
+  unsupported-storage decision;
 - WSL2 has no per-distro CPU/memory cap. Its global `%UserProfile%\.wslconfig` affects every distro. The
-  production route now holds the four § EE clauses behind one host-wide lock: it writes a durable origin
+  production route holds the four § EE clauses behind one host-wide lock: it writes a durable origin
   record before mutation that distinguishes exact present bytes from absence, binds the managed target
   to its object identity and wall ownership, and re-observes under the same lock before conditional
-  restore so a foreign replacement is preserved as a conflict. An existing running distro/VHDX still
-  need not adopt a changed declaration;
-- the normal WSL2 `project down` route now releases the wall: teardown restores `.wslconfig` first and
+  restore so a foreign replacement is preserved as a conflict;
+- the normal WSL2 `project down` route releases the wall: teardown restores `.wslconfig` first and
   then runs `wsl --shutdown`, while the managed body derives finite six-hour VM and distribution idle
   timeouts from one constant rather than pinning them to `-1`. The
-  [Windows-and-WSL2-substrate phase](phase-27-windows-and-wsl2-substrate.md)'s native-Windows gate on
+  [Windows-and-WSL2-substrate phase](phase-28-windows-and-wsl2-substrate.md)'s native-Windows gate on
   2026-08-01 observed the durable record removed, the exact absent origin restored, the distro stopped,
-  and the WSL utility VM/memory balloon gone after `project down`. Lima and Incus continue to release
-  their walls on stop.
+  and the WSL utility VM/memory balloon gone after `project down`. Lima and Incus release their walls on
+  stop.
 
-The budget defense has three closed rings: promotion mints the sole provider-exact `ValidatedBudget`;
-plan preparation runs `verifyBudget` plus `fitsBudget` over the exact non-empty workload/effect set and
-constructs the proved `BudgetPartition` before its first dependent mutation; and runtime reconciliation
-first journal-acquires/revalidates the same `wallSpecId` and then either applies the matching
-`EffectiveBudget` everywhere or returns typed `Unsupported`/`Conflict`. Existing
-walls return typed unchanged/migrated/refused results. Lima and Incus own per-VM walls. WSL2 instead owns
+The target budget defense has three closed rings: promotion mints the sole provider-exact
+`ValidatedBudget`; plan preparation runs `verifyBudget` and `verifyPlannedWorkloadFit` over the exact
+non-empty workload/effect set and constructs the proved `BudgetPartition` (`withBudgetPartition`) before its
+first dependent mutation; and runtime reconciliation first journal-acquires/revalidates the same
+`wallSpecId` and then either applies the matching `EffectiveBudget` everywhere or returns typed
+`Unsupported`/`Conflict`. The wall kernel settles an existing wall as unchanged (`WallAlreadyExact`),
+migrated (`WallMigrated`), or refused. In production the first ring runs as the refined `Resources` and
+exact `parseQuantity` arithmetic rather than as a minted `ValidatedBudget`, followed by the capacity
+preflights; the second and third rings and the existing-wall settlement have no production caller (see
+"What runs today" above). Lima and Incus own per-VM walls. WSL2 instead owns
 one provider-effective shared utility-VM wall behind an exclusive, crash-recoverable global-state
 lease/CAS; each distro may own its VHDX slice, but incompatible concurrent wall declarations refuse
 rather than overwrite `%UserProfile%\.wslconfig`. The WSL wall mutation permit consumes/revalidates the
@@ -813,8 +954,8 @@ admission plus the workload/fit/partition/slice proof families from one `Project
 provider/cluster `PlannedResource`s, and its `DerivedTopology`. The
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) owns the
 exact cluster and direct-Colima consumer boundaries, including consumption of the lower typed bare-Linux
-unsupported-storage decision. Those source boundaries are implemented; Production recursive and concrete
-demo adoption remain downstream. The
+unsupported-storage decision. Those source boundaries are implemented; their production adoption is the
+gap "What runs today" names. The
 [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
 supplies the portable host-wall ownership protocol, while the
 [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) supplies the
@@ -823,9 +964,9 @@ overhead, partition, and slice projection, and the
 [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 owns the scope-indexed configuration input. The
 [step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md) owns the single finalized
-plan authority. A Dhall-native
-`Budget/fitsWithin` assertion is not attached to generated config because that config contains text
-quantities and no resolved pod set.
+plan authority. A Dhall-native `fitsWithin` assertion is not attached to the generated project config
+because that config contains text quantities and no resolved pod set; `deployConfigText` renders it only
+into a standalone deploy config that carries an explicit budget and pod list.
 
 Project budget interpretation remains Haskell-owned; Python does not size project VMs or clusters. On
 Linux, the maintainer-only `hostbootstrap base build` separately measures host CPU/RAM and caps the
@@ -837,23 +978,39 @@ build-phase limit is not an interpreter of `<project>.dhall`; see
 ### P. Fixed Command Surface And The Extension Streams
 
 **Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
+
 `hostbootstrap-core` exposes a **fixed** command surface plus a project entrypoint
 (`runHostBootstrapCLI progName projectSpec`). Every project binary — and the bare `hostbootstrap` binary —
 surfaces the **same** tree: the three DSL-driven commands `project init|up|down|destroy`,
 `test init|run`, and `service init|schema|run` (§ Y, § Z, § AA), plus the read-only `context`
 introspection command and `check-code`. There are **no per-project verbs**: `hostbootstrap-core` is a
 **library of composable tools** (step kinds, reconcilers, the self-reference lift, service handlers), not a
-CLI topology, so a project never adds a command.
+CLI topology, so a project never adds a command. The subcommands, flags, and per-command behavior are
+canonical in
+[hostbootstrap_core_library.md](../documents/architecture/hostbootstrap_core_library.md#surfaced-commands);
+this section fixes only the shape of the tree.
 
-**One internal marker is not a command.** A binary that crosses into a frame must be able to recognize
-that *it is* the process on the far side, and no verb can express that: a verb is something an operator
-types, and this is something only the lift fold produces. The marker is therefore classified out of argv
-before the parser runs, and it is bounded by what it cannot carry — no coordinates, no path, no authority,
-no caller-selected action, and no route to a `ProjectSpec` extension stream. It is absent from `--help`,
-it names nothing an operator could usefully type, and it refuses unless its standard input and output
-decode as the protocol channel. It carries a transaction the caller already holds and returns that
-transaction's outcome; it opens no second surface. Exactly one such marker exists, and a second would be
-a per-project verb wearing a different hat.
+**A closed set of internal entries is not a command.** A binary that crosses into a frame must be able
+to recognize that *it is* the process on the far side, and no verb can express that: a verb is something
+an operator types, and this is something only core's own launchers produce. `runCLI` therefore classifies a
+closed, ordered set of five core entries out of argv before the parser runs: the installed identity
+(`installedIdentityEntryArguments`), the exposure relay (`runExposureRelayEntry`), the Colima command
+transaction (`shippedCommandEntryArguments`), the lifecycle child (`lifecycleChildArguments`), and the frame
+child (`classifyFrameChild`). Each matches the whole argument vector or nothing, is absent from `--help`,
+names nothing an operator could usefully type, and opens no route to a `ProjectSpec` extension stream. The
+identity, lifecycle-child, and frame-child entries carry nothing on the vector — no coordinates, no path, no
+authority, no caller-selected action — and the frame child refuses unless its standard input and output
+decode as the protocol channel; it carries a transaction the caller already holds and returns that
+transaction's outcome. Two entries carry caller-selected work, confined by their launcher: the exposure
+relay's targets (validated for distinct services and listen ports; a malformed vector refuses rather than
+falling through to the parser) are written only by `HostBootstrap.Cluster.Backend` as the relay container's
+command, and the Colima command transaction's command arrives on standard input from the Colima backend's
+bounded runner; both owners are Cabal-hidden or private-sublibrary modules no project imports. The set is
+closed: a sixth entry is a change to this section, not to a module, and an entry a project's own `main`
+intercepts before `runHostBootstrapCLI` is a per-project verb wearing a different hat. The worked demo
+carries one such entry, which the [worked-demo phase](phase-24-worked-demo.md) owes deleting. The
+inventory, with each entry's launcher and payload, is canonical in
+[hostbootstrap_core_library.md](../documents/architecture/hostbootstrap_core_library.md#entries-before-the-parser).
 
 A project extends the core only through the
 **extension streams** finalized into opaque `ProjectSpec`: additive step fragments resolved to one
@@ -864,15 +1021,17 @@ inseparably binds identity, structural field projection, reflected role codec, a
 independent string selector. Registry finalization jointly binds the full `ProjectCodec`, role-wire
 `RoleCodec`s, and canonical `specDigest`. A parent/local admission projects only a role-specific
 descriptive wire; verification mints the opaque
-`ValidatedServiceRequest specDigest configId secretDigest fields service`. The sole selection gate consumes that request, exact
-leaf placement, inseparable revision/instance activation/projection package, and the finalized typed registry to
-produce an existential
-`SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-fields`. The package contains a matching
-`ServiceSelection scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-service effects` proof and handler
-program for the same `service` and authorized `effects`; the handler receives only the bundle's
-`RoleParams specDigest configId secretDigest fields service`, never the full config. The Dhall
+`ValidatedServiceRequest specDigest configId secretDigest fields service`. `service run` reaches the
+selection gate only through `runInstalledServiceProgram`, which first verifies the signed activation
+revision, the measured binary digest, and the concrete instance identity against the protected store and
+reindexes the finalized registry only when its retained digest equals the signed specification. The gate,
+`withDecodedServiceProgram`, selects the one finalized definition the activation names, decodes only the
+narrowed role wire through that definition's `RoleCodec`, and passes its continuation one existential
+package: the `RoleCodec`, the `ValidatedServiceRequest`, the declared effect row `DeclaredEffects effects`,
+and the `ServiceProgram payload service effects ()` built from the very `RoleParams` the request retains.
+The one-use request-indexed `RolePlan` and the `VerifiedServicePlacement` then authorize that declared
+effect row before the program is interpreted (§ AA). The handler receives only those `RoleParams specDigest configId secretDigest fields service`, never the
+full config. The Dhall
 `ServiceType` ADT lives in the project's `cfg`; it is not the handler registry. These
 streams sit alongside the project `check-code` action. Static finalization validates those extension
 points before parser construction: duplicate cases/artifacts/inputs/service identities and conflicting
@@ -887,6 +1046,7 @@ built like any project binary, not baked into the base image.
 ### Q. Configuration via Dhall
 
 **Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
+
 Configuration is typed Dhall in distinct roles:
 
 - the **local runtime config** `<project>.dhall`, generated by the built project binary, read from next to
@@ -903,27 +1063,28 @@ Configuration is typed Dhall in distinct roles:
   `context render` surface renders static registry examples; runtime deploy and child projections are
   emitted by commands that have already validated the active local config.
 
-The current project binary exposes two distinct schema surfaces and one default writer.
-`context schema` prints the in-scope static `ConfigArtifact` registry; `service schema` currently prints
-the validated-codec full project-local `cfg` shape; and `project init` writes a default full project
-config. The opaque lower-layer witness admits that schema only after the normalized `ToDhall`
+The project binary exposes two distinct schema surfaces and one default writer.
+`context schema` prints the in-scope static `ConfigArtifact` registry; `service schema` prints, in order, the
+registered service variant names, the validated-codec full project-local `cfg` schema (labelled as not a
+service-role wire), and the `Production` and `Harness` role-wire schema families; and `project init` writes
+a default full project config. The opaque lower-layer witness admits that schema only after the normalized `ToDhall`
 `declared` and `FromDhall` `expected` expressions are judgmentally equal; semantic round trips remain a
 separate test obligation.
 
 The command tree remains fixed while trust domains stay separate. Static authoring uses
 `ProjectSpec cfg tcfg`, with no lifecycle scope or specification phantom. Scope finalization computes one
-canonical `specDigest` and currently yields `FinalizedProjectSpec scope specDigest cfg`, retaining the
+canonical `specDigest` and yields `FinalizedProjectSpec scope specDigest cfg`, retaining the
 matching `ProjectCodec`, finalized service registry, and identity-parametric plan builder. Service field
 identity remains on the finalized service/runtime vocabulary rather than becoming a fourth
 `FinalizedProjectSpec` parameter. `ProjectCodec scope specDigest cfg` validates the full root/Harness
 config. Because the scope-indexed secret vocabularies differ, the full schema is an
 explicitly named `Production`/`Harness` `ConfigArtifact` family in the
-`context schema`/`context render` registry, never one scope-erased union. A jointly finalized project-owned
-`RoleCodec scope specDigest fields` derives the closed `RuntimeRoleWire fields service` family from the hidden
-consumer-indexed field schema and typed service registry. `service schema` prints that role-wire schema
-registry/union as explicitly named `Production` and `Harness` scope families, because their secret
+`context schema`/`context render` registry, never one scope-erased union. Each jointly finalized
+project-owned `RoleCodec scope specDigest fields service` carries the codec witness of its
+`RuntimeRoleWire fields`, derived from the hidden consumer-indexed field schema and typed service registry.
+The role-wire families `service schema` prints are named `Production` and `Harness`, because their secret
 vocabularies can differ; it never conflates them as one schema. Harness role schemas contain typed
-secret handles, not inline `TestPlaintext`; private run-scoped bundle bytes are a separate digest-bound
+secret handles, not an inline `ScopedTestPlaintext`; private run-scoped bundle bytes are a separate digest-bound
 channel. `service init` writes one selected
 Production role wire, while the harness assembler/projection writes Harness role wires internally. No
 schema output contains secret values or promotes Harness to Production. An explicitly empty service
@@ -939,38 +1100,60 @@ Python derives the project name from the Cabal file and has no Dhall-facing conf
 builds the host-native binary and invokes it using the platform-specific handoff above; the binary owns
 config creation (§ M). Python never reads or writes Dhall itself.
 
-`specDigest` remains on `ValidatedConfig`, `ProjectPlan`, plan drafts/bindings/frames, service
-requests/parameters/selection/programs, and build authority. An activation manifest additionally binds
+`specDigest` remains on `ValidatedConfig`, `ProjectPlan`, plan drafts/bindings/frames, the service
+codec, request, and parameters (`RoleCodec`, `ValidatedServiceRequest`, `RoleParams`), and build authority. An activation manifest additionally binds
 the measured `binaryDigest`, exact `configDigest`, and separate `secretDigest`. This document sometimes
 uses shorter type names in explanatory prose; those are readability abbreviations only, never permission
-to erase these indices. Same-shaped values from different finalizations, binaries, config bytes, or
-secret bundles cannot cross-pair.
+to erase these indices. Same-shaped values of an indexed type from different finalizations, binaries,
+config bytes, or secret bundles cannot cross-pair; the descriptive framework record below is checked at
+runtime instead.
 
-Full and role wires share one jointly derived, opaque
-`FrameworkEnvelopeCodec scope specDigest fields`, a closed wire-kind discriminator, and a closed
-descriptive Production/Harness scope-kind discriminator. It validates only the framework identity/context/topology fields needed before routing
-and yields `LocalContextView scope specDigest wireKind frame`; it cannot expose service parameters or mint command
-authority. Config-free `context inspect`/`context show` start from the installed project's scope-erased
-`FinalizedSchemaFamily`, select the one named Production/Harness envelope codec identified by that tag,
-require it to validate the same tag, and return a display-only scope witness. Missing/unknown,
-disagreeing, or structurally ambiguous scope evidence yields an explicit display error rather than a
-guessed witness. Authority-bearing dispatch gets scope only from its independently verified
-root/handoff/activation package and then requires the descriptive tag to agree. The view applies to
-either a full project wire or a
-cluster-service/daemon role wire. Existing-frame routing performs the same first-stage discrimination:
-project lifecycle and ordinary `check-code` require `FullProjectWire` before invoking `ProjectCodec`,
-while `service run` requires `RuntimeRoleWire` before invoking `RoleCodec`. Thus a valid role wire receives
-a structured wrong-command/authority refusal instead of being mislabeled malformed full config, and no
-route can choose the wrong second-stage decoder.
+One descriptive framework record, `FrameworkValidation`, describes a wire: a closed wire-kind discriminator
+(`FullProjectWire` or `ServiceRoleWire`), a closed Production/Harness scope-kind discriminator, the
+`specDigest` text, and an unindexed `LocalContextView` (project, binary, source root, context kind, role name,
+current frame). The full project wire carries no such record, so neither its scope nor its specification
+digest is on the wire. The opaque `FrameworkEnvelopeCodec scope specDigest cfg` serves the full wire only: it
+wraps the matching `ProjectCodec` with its scope kind, and `inspectFullConfig` projects a config that codec
+decoded to a record reporting `FullProjectWire` and the codec's scope kind and digest. A role wire carries the
+record on the wire: it is `RuntimeRoleWire fields`, the record plus the service fields, and `decodeRoleWire`
+decodes it with the selected `RoleCodec` and then refuses it unless its wire kind is `ServiceRoleWire` and its
+scope kind and specification digest equal that codec's. Those agreements are runtime comparisons of
+descriptive fields, not type indices: `LocalContextView` carries no scope, digest, wire-kind, or frame index,
+and it can neither expose service parameters nor mint command authority. Authority-bearing dispatch gets scope
+only from its independently verified root/handoff/activation package; on the role-wire route it then requires
+the wire's descriptive tag to agree.
+
+No route may choose the wrong second-stage decoder. `service run` reads its wire only from a verified
+activation, which selects the one `RoleCodec`, and admits it only through `decodeRoleWire`, so a full project
+wire there fails the role codec's schema decode. In the target, project lifecycle and ordinary `check-code` run
+a first-stage envelope check on the sibling config before invoking `ProjectCodec`: a file whose framework
+record declares `ServiceRoleWire` receives a structured wrong-command refusal instead of being mislabeled
+malformed full config, and a file without a framework record is a full project wire, which the second-stage
+`ProjectCodec` judges. Today they decode the sibling config directly through `ProjectCodec`, and
+`FrameworkEnvelopeCodec` has no production caller; the first-stage check and that caller are owed by
+Sprint 7.15 of the [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md).
+
+Config-free `context inspect`/`context show` hold no run, so they decode with the binary's one Production
+`ProjectCodec`; a Harness `ProjectCodec` exists only inside `withHarnessProjectCodec`, which takes a run's
+`HarnessConfigAuthority`. Because neither the full wire nor `BinaryContext` carries a scope, the rendered
+composition asserts none: a Harness-written config that is also a valid Production wire renders, and one that
+carries a Harness-only value fails the Production decode. Today a role wire fails there with the same one-line
+decode diagnostic as any file the Production codec cannot decode. Sprint 20.8 of the
+[`test`-and-`context`-commands phase](phase-20-test-and-context-commands.md) owes two changes: the Sprint 7.15
+check runs before that decode, so a role wire is refused as one and no decoder runs, and a decode failure
+names the Production codec it ran.
 
 ### R. Quality Gate Contract
 
 **Owning phase**: [the base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md)
+
 Static quality is a first-class requirement. The Haskell formatter is `ormolu`/`fourmolu` and
 `hlint` runs against supported source roots, both installed in the base image from current compatible
-upstream releases selected by the rolling build. Every image build, base
-or derived, gates on the project's canonical `check-code` — for a derived image, a single in-Dockerfile
-`RUN <project> check-code` stage whose body is project-defined. The standardized test harness's
+upstream releases selected by the rolling build. Every image build is gated, and the two gates differ. A
+derived image gates on the project's canonical `check-code` — a single in-Dockerfile
+`RUN <project> check-code` stage whose body is project-defined. The base image has no project binary and
+so no `check-code`: it gates on its warm-store build succeeding and on a `fourmolu --mode check` and
+`hlint` pass over the warm-store sample sources (`core/warm-deps`). The standardized test harness's
 `<project> test` report card is the project-level validation gate. The mechanical documentation
 validator (`HostBootstrap.DocValidator`) runs through the code-check. The plan
 distinguishes mechanically enforced gates from editor-only guidance, and § II from § JJ: the container
@@ -999,6 +1182,7 @@ leaving it to a test to find.
 ### S. Imported Practices and Explicit Non-Adoption
 
 **Owning phase**: [the governance-and-documentation-standards phase](phase-0-governance-and-documentation-standards.md)
+
 `hostbootstrap` borrows the governance shape (metadata blocks, phase plan structure, completion
 tracking, declarative current-state language) from the consumer projects. It does not adopt any
 consumer's product features, runtime surfaces, daemon-role model, or hardware-correctness
@@ -1010,19 +1194,22 @@ lifecycle plan rather than a parallel selector or Dhall literal (§ T).
 ### T. Library Hierarchy, Extension Streams, and Execution Shapes
 
 **Owning phase**: [the Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md)
+
 `hostbootstrap-core` is a **library of composable tools**, not a CLI topology; the command surface is
 fixed (§ P) and is **not** an extension point. The reusable surface is a three-level Cabal library
 hierarchy: `hostbootstrap-core` (L0) ◄ `daemon-substrate` (L1) ◄ `{jitML, infernix}` (L2); `mcts` consumes
 L0 directly. Each level adds only its delta to the **parallel extension streams**, one additive merge idiom
 each: additive **step fragments** retained by the identity-parametric static
 `ProjectSpec cfg tcfg`; the **Dhall vocabulary** (`let C = ./Core.dhall`, embedded, never redefined); the **schema-gen**
-`ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test-harness** `Seams`
-(threaded through a non-empty `TestSuite`); and the **service runtime seam** (an additive, possibly empty
+`ConfigArtifact` registry (concatenated across levels through `ProjectSpec`); the **test harness**, a
+five-field `TestSuite` (safety probe, assertion-environment opener, non-empty case list, per-case assertion,
+and post-reverse absence assertion; the per-case `Seams` are built internally by `HostBootstrap.Harness`);
+and the **service runtime seam** (an additive, possibly empty
 typed registry jointly finalized with the config/role codecs; the service-runtime phase adds the
-config/frame-indexed `SelectedService` execution package, § AA). A project integrates through a Cabal dependency
+activation-verified service program package that `withDecodedServiceProgram` yields, § AA). A project integrates through a Cabal dependency
 (`source-repository-package` with a full immutable commit `tag` for a remote consumer, or a local
 package in this repository) plus the `runHostBootstrapCLI` extension. A moving branch or omitted remote
-tag is not a governed input. Scope finalization currently yields
+tag is not a governed input. Scope finalization yields
 `FinalizedProjectSpec scope specDigest cfg`; its concrete root and `ValidatedConfig` project a non-empty
 draft sequence, and `withProjectPlan` admits one opaque
 `ProjectPlan scope specDigest planId configId cfg`. The plan's forward order, topology, stable snapshot,
@@ -1048,6 +1235,7 @@ single representation.
 ### U. Host-Provider Axis And The Self-Reference Lift
 
 **Owning phase**: [the ensure-reconcilers phase](phase-8-ensure-reconcilers.md)
+
 A project binary crosses an execution-context boundary by invoking its **own** subcommand in the nested
 context — the self-reference lift. Its dependency layers are constructive and one-way:
 
@@ -1066,8 +1254,10 @@ context — the self-reference lift. Its dependency layers are constructive and 
   Lima, WSL2, and direct-host lifecycle realizations. Each provider module consumes and reexports its lower
   target record/inner renderer and adds only lifecycle-specific probes and builders;
 - the [composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md) additively owns
-  `reachLeaf`, the four blob leaf smart constructors, and Registry's `liftSubcommandWithAuth`. Registry imports
-  lower Lift and its generic quoting helper; Lift never imports Registry.
+  `reachLeaf` and the four blob leaf smart constructors (`blobUploadSessionLeaf`, `blobUploadPatchLeaf`,
+  `blobUploadFinishLeaf`, `blobHeadLeaf`), which it adds to the ensure-reconcilers phase's `HostBootstrap.Lift`
+  module itself, and `liftSubcommandWithAuth`, which lives in `HostBootstrap.Registry`. Registry imports lower
+  Lift and its generic quoting helper; Lift never imports Registry.
 
 Contexts compose as provider-backed frames, outermost-first; the empty stack is the local host. The VM layer
 is provider-specific: Apple Silicon uses Lima (`limactl shell <instance> -- ...`) for the demo VM, native
@@ -1104,6 +1294,7 @@ bootstrapper (§ M) is the metal-frame instance. See
 ### V. Opportunistic Warm Store
 
 **Owning phase**: [the base-image-and-warm-store phase](phase-23-base-image-and-warm-store.md)
+
 The base image pre-builds a broad Cabal dependency set as a best-effort performance cache. The store is
 not a public version, freeze, or offline-build contract: consumers use their ordinary host-compatible
 `cabal.project` unchanged inside a derived container, do not import `/opt/basecontainer/...` project or
@@ -1115,6 +1306,7 @@ requirement.
 ### W. Single Representation And The Harness That Drives The Chain
 
 **Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
+
 An operation has exactly **one** representation. Sprints 12.7–12.26 provide an opaque
 `ProjectPlan scope specDigest planId configId cfg` constructed inside a rank-2 continuation from a
 lifecycle profile, `ValidatedConfig scope specDigest configId (cfg scope)`, and a non-empty validated
@@ -1152,8 +1344,11 @@ and Production current-frame foundation. Authenticated recursive child entry and
 [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md). The
 [test-harness-and-run-ownership phase](phase-19-test-harness-and-run-ownership.md) owns the Harness command
 consumer and assertion engine.
-The Production `LifecyclePlan` forward/reverse bridges and the public plan-only command-authority APIs are
-absent. Independently supplied plan, frame-context, and teardown interpretations violate this doctrine;
+No Production forward/reverse bridge over a `LifecyclePlan` and no public plan-only command-authority API
+exists. The `Reconcile.LifecyclePlan` compatibility family itself is still exported from
+`HostBootstrap.Reconcile` with only test callers, and the exposed `HostBootstrap.Lifecycle.Execution`
+re-exports `newStepRuntime`; Sprint 12.27 of the step-algebra-and-project-plan phase deletes that family and
+`carryManagedResource` and withdraws the public runtime constructors. Independently supplied plan, frame-context, and teardown interpretations violate this doctrine;
 the recursive-lifecycle-command phase owns proof-complete recursive authorization and forward/reverse
 traversal rather than another plan representation.
 There is no second hand-written orchestration path
@@ -1173,6 +1368,7 @@ and the in-frame assertions are built from).
 ### X. Binary Context Configuration And Command Gating
 
 **Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
+
 `sourceRoot` is descriptive configuration, never host-path authority. Root-config admission resolves it
 exactly once against the stable project-home anchor owned by the selected root config (never the
 caller's current working directory), verifies that it denotes the intended project tree, and
@@ -1229,14 +1425,15 @@ The current context shape is project-extensible and carries project/binary ident
 context** (primary context kind), local capabilities, allowed command classes, parent chain, topology
 frames, current frame, runtime witnesses, resource envelope, and child-context creation rules. A
 `<project>.dhall` may declare additional roles, but `addRole` cannot widen a leaf primary into an
-orchestration placement. `service run` additionally requires a primary `ClusterService`/`Daemon` leaf,
-while `project up|down|destroy` consult the closed `placementAllowsCommand` relation derived from the
+orchestration placement. `service run` reads no sibling config: it requires the framework context carried
+inside its activation-bound role wire to name a `ClusterService` or `Daemon` kind and the activation's
+frame (§ AA), while `project up|down|destroy` consult the closed `placementAllowsCommand` relation derived from the
 validated topology rather than trusting the declared command-class list. The
 [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
 owns that descriptive placement relation. The
 [installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
 supplies the independent lower root and reservation vocabulary. Sprint 12.14 supplies the pure plan/context
-admission, and Sprint 12.21 supplies the broker-indexed plan-bound acquisition journal. Sprints 12.22–12.26
+admission, and Sprint 12.21 supplies the broker-indexed plan-bound acquisition journal. Sprints 12.22–12.29
 supply the journal's canonical cursor record, same-broker frame-local admission/transitions, plan-owned
 resource projections, exact current-frame `project up` command-authority composition, the exact pure
 current-subtree reverse projection, exact Chain execution, and Production live-consumer adoption. The
@@ -1282,42 +1479,37 @@ dependency and operation coordinates through authenticated grants, rechecks them
 reconstructed projected plan, runs only the local probes and backend effect selected by that grant, and
 returns an observation. Only the root settles the durable row and advances the authoritative cursor. The safe
 `HostBootstrap.Authority` facade remains producer-free; callers receive neither the root reservation members
-nor any independently composable journal/cursor package. Service dispatch instead
-requires platform/manifest verification to jointly mint the inseparable
-`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId
-configDigest secretDigest service rolePlanDigest permittedEffects`. The manifest signs the immutable
-rollout revision and controller/template identity before a workload exists; platform verification pairs
-it with the concrete pod UID plus restart count or protected OS invocation nonce. Callers cannot
-cross-pair its `RuntimeActivationAuthority`, signed `VerifiedRuntimeRolePlanProjection`, or private-channel
-locator. The scope-correct project-owned `RoleCodec` verifies the actual mounted role-wire bytes, while
-the activation-bound secret-channel verifier separately produces the exact `VerifiedSecretBundle`;
-together they yield a fresh `VerifiedConfigWire`/`ValidatedServiceRequest`. The projection
-contains only the non-secret leaf slice plus a proof binding its `rolePlanDigest` and exact
-`configDigest` to the parent `planDigest`; a narrowed child never pretends to recompute the full
-lifecycle-plan digest. Before Prereq or acquisition, `verifyRolePlanDraft` validates the non-empty draft
-and signed role-plan digest without durable mutation. `withRoleLifecycleAdmission` then atomically
-reserves the instance's one-use durable lifecycle admission/journal with fresh
-`planId`/`invocationId`; if its independently complete predecessor manifest is non-empty it returns only
-typed recovery-required state. The activation-bound `admissionKey` moves only Reserved→Consumed; lost
-reservation acknowledgment yields `RoleLifecycleAdmissionUnknown` and the same opener/resume API
-rehydrates stored identities rather than allocating again. `withRuntimeRolePlan` linearly CAS-consumes
-the exact Reserved admission and verified draft and is fixed to that admission's `planId`; duplicate
-tokens have one winner and it cannot reserve or mint a second cursor. Commit-before-cursor-delivery
-yields `RolePlanOpenUnknown`; `resumeRuntimeRolePlanOpen` reconstructs only that same consumed
-plan/invocation and cursor. It constructs only
-`RolePlan scope specDigest planId configId secretDigest frame revision instanceId` plus
-`RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId` and
-`VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`
-from that projection, the verified request, and a project-owned role draft. It never rebuilds a lifecycle
-`ProjectPlan` or root authority. After the composition-and-network-algebra phase yields the exact Serve
-cursor, identity-indexed ready managed handles, and the inseparable retained receipt/lease package,
-`selectAndRunService` consumes that foundation with the plan/binding/placement, validated request,
-activation package, frame/context, and finalized runtime spec. It rechecks the exact workload-instance
-identity and always returns the Drain transition on selection rejection, run outcome, or catchable
-shutdown. It is internal to the sole public, core-owned masked run-to-Exit operation, so project callbacks
-never receive live cursors/receipts and cannot bypass Drain by throwing. Runtime Harness verification
-reads only the activation-bound private channel and mints no `HarnessConfigAuthority`; it does not replay
-a consumed edge handoff. Thus context
+nor any independently composable journal/cursor package.
+
+Service dispatch does not pass through that root admission. `verifyRuntimeRoleActivation` pairs a
+broker-signed `ActivationManifest` with what the starting process measures for itself — its executable
+digest, the role-wire and private-bundle digests, and its concrete instance (pod UID plus restart count, or
+a protected OS invocation nonce) — and yields one
+`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId`. Those
+seven indices are nominal, and the single private constructor holds the signed manifest, the
+`MeasuredInstance`, and the protected-store identity together. The config digest, secret digest, service,
+role-plan digest, effect ceiling, and private-channel locator are fields of that signed manifest, checked
+by value at each consumer rather than carried as type indices. The manifest signs the immutable rollout
+revision before a workload exists and never an instance identity. The project-owned `RoleCodec` decodes
+the measured role-wire bytes into a `ValidatedServiceRequest` under a fresh existential `configId`; the
+private bundle is measured against the signed secret digest and is not handed to the role. Before Prereq
+or acquisition, `verifyRolePlanDraft` checks the non-empty draft against the signed role-plan digest and
+effect ceiling without durable mutation. `withRoleLifecycleAdmission` then reserves the instance's one-use
+admission under a key derived from the plan digest, frame, revision, and measured instance; its total
+`RoleAdmissionOutcome` is Reserved, `RoleAdmissionOpenUnknown` (the matching row is already Consumed),
+`RoleAdmissionRecoveryRequired` (a contradictory predecessor row), `RoleAdmissionRefused` (another
+protected store), or `RoleAdmissionUnknown` (an unclassified store failure). `withRuntimeRolePlanForRequest`
+checks the decoded request against the activation, compare-and-swaps the exact Reserved row to Consumed, and
+mints `RolePlan scope specDigest planId configId secretDigest frame revision instanceId`,
+`RolePlanDigestBinding scope specDigest planDigest rolePlanDigest planId`,
+`VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects`, and
+the sole Prereq cursor in one rank-2 continuation; duplicate holders of one reservation have one winner.
+After `RoleAdmissionOpenUnknown`, `resumeRuntimeRolePlanOpenForRequest` reopens only that same consumed
+plan. The binding states that the signed `rolePlanDigest` belongs to the parent `planDigest`; a narrowed
+child never recomputes the full lifecycle-plan digest, never rebuilds a lifecycle `ProjectPlan`, and mints
+no root authority. `runRoleLifecycle` then drives Prereq through Exit (§ AA); project callbacks never
+receive a cursor or receipt and cannot skip Drain by throwing. Runtime verification mints no
+`HarnessConfigAuthority` and does not replay a consumed edge handoff. Thus context
 does not mint root authority, an `up` grant
 cannot authorize `down`/`destroy`, a stale phase or rollout revision/process instance cannot replay a verb, and another
 Production plan cannot substitute its context. Each opaque authority also has a one-use invocation
@@ -1343,7 +1535,12 @@ The exact current config-precondition matrix is:
   selected or default file;
 - the harness route: `test run` reads the test config, refuses an existing sibling project config, and
   generates its own project config;
-- existing-frame routes: `project up|down|destroy`, `service run`, and `check-code`.
+- existing-frame routes: `project up|down|destroy` and `check-code`;
+- the activation route: `service run` reads the absolute platform coordinates
+  `HOSTBOOTSTRAP_SERVICE_ACTIVATION` (one immutable installed activation revision),
+  `HOSTBOOTSTRAP_ACTIVATION_KEY` (the independently installed verification key), and
+  `HOSTBOOTSTRAP_AUTHORITY_STORE` (the protected store), plus its measured instance, and never the sibling
+  project config. A missing, relative, or ambiguous coordinate exits 1 before verification (§ AA).
 
 Existing-frame commands fail
 fast with exit code 1 when the context file is missing, fails to decode, names a different
@@ -1351,7 +1548,8 @@ project/binary, does not declare the required capabilities, or does not permit t
 existing-frame command also fails when the
 [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)'s
 required local witnesses cannot all be verified. A
-daemon/service command must refuse to start unless the context declares a daemon/service role;
+daemon/service command must refuse to start unless the context its role wire carries declares a
+daemon/service role;
 host-orchestrator commands must refuse to run inside a cluster-service pod; and a VM-scoped kind/test
 workflow must refuse to run directly on the host Docker daemon unless the Dhall declares a local
 test-harness frame.
@@ -1370,8 +1568,8 @@ Every context's `<project>.dhall` is **generated by the project binary from pass
 some supplied at the frame and some **forwarded from the parent context's `<project>.dhall`** — so a child
 config is generated rather than hand-authored. The finalized projector verifies the exact child frame,
 resource slice, payload, and execution digest. A service or daemon receives only its descriptive
-`RuntimeRoleWire fields service`, containing required framework-validation fields plus fields visible to
-that consumer. Its matching `RoleCodec` verifies those bytes and mints a fresh child-local `configId`;
+`RuntimeRoleWire fields`: the framework envelope (`FrameworkValidation`) plus that service's own field
+record. Its matching `RoleCodec` decodes those bytes and mints a fresh child-local `configId`;
 neither the parent's `configId` nor a `ValidatedServiceRequest` is serialized.
 
 The `context-init` action announces its declared frame boundary. Its descent and finalized child projector
@@ -1400,6 +1598,7 @@ there is no build-then-copy or config-mount path.
 ### Y. Project Lifecycle Command And The Step Chain
 
 **Owning phase**: [the step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md)
+
 A project's lifecycle is a pure, **opaque** `ProjectPlan scope specDigest planId configId cfg`, where
 `cfg :: Type -> Type`. Sprints 12.7–12.29 implement scope finalization, fresh non-empty plan admission, the
 plan's retained root/config/nodes, pure `PlannedStep` forward order, `DerivedTopology`, public stable
@@ -1420,7 +1619,8 @@ config even if both configs use only shared fields, and two Production plans can
 evidence. Reconciliation's exact descriptor route consumes the indexed plan directly and retains its
 stable plan/configuration/node/frame/operation projections. Production dispatch first attempts exact
 existing-bound reconstruction and otherwise admits one lawful fresh/unbound-retry plan. `--dry-run`
-renders that plan; effectful `up` persists/binds it, admits the root-refined lifecycle context, and enters the
+renders that plan through the same admission path (see the dry-run note under `project up` below);
+effectful `up` persists/binds it, admits the root-refined lifecycle context, and enters the
 Cabal-private root-Up `LifecycleEntry` producer/fixed interpreter. That producer alone derives the acquisition
 journal/current cursor and calls generic `authorizeRootProject` before reaching public Chain. `down` and
 `destroy` derive their
@@ -1431,12 +1631,14 @@ consumer for Harness: it retains the exact Harness-scoped plan across generated-
 interprets root Up through the same hidden fixed entry and retains the separate teardown route, and exposes no project-lifecycle
 callback through `TestSuite`.
 
-Stable snapshot format version 3 binds that exact canonical root into the canonical bytes and
+The current stable snapshot format (version 7, `canonicalPlanSnapshotFormatVersion`; the decoder refuses
+any other version) binds that exact canonical root into the canonical bytes and
 content-derived digest as a bounded, length-framed stream of big-endian 32-bit `Char` code points. The
 structural parser exactly decodes the root, rejects empty, partial, NUL, oversized, and out-of-range
 payloads, and accepts only an absolute root or the one shared non-absolute compatibility sentinel. The
 current `Reconcile.LifecyclePlan` encoder uses that sentinel because its compatibility constructor receives
-no `CanonicalProjectRoot`; an admitted `ProjectPlan` always uses its absolute canonical root.
+no `CanonicalProjectRoot`; an admitted `ProjectPlan` always uses its absolute canonical root. Sprint 12.27
+deletes that encoder and its sentinel, after which admission accepts only an absolute root.
 
 The bound-snapshot/recovery path preserves a single local identity. Existing-snapshot admission generates
 the sole local `planId`; `BoundInvocationRecovery`, the recovered Production profile, and plan reconstruction
@@ -1459,7 +1661,11 @@ teardownPlan
 `teardownPlan ... ProjectDown` and `teardownPlan ... ProjectDestroy` therefore have distinct result types,
 and the projection accepts neither an acquisition journal nor a caller-supplied frame name. A total
 `teardownPlan ... ProjectUp` retains that canonical verb/digest/frame but projects no reverse work;
-`openTeardownForest` returns `TeardownProjectUpHasNoReverse` before its empty-plan check. The pure plan and
+`openTeardownForest` returns `TeardownProjectUpHasNoReverse` before its empty-plan check. The one
+exception is the failed-`up` projection: `failedUpTeardownPlanKernel` keeps the `ProjectUp` verb, projects
+only the removable effects whose durable prepared gates that failed run reached (an ordered,
+duplicate-free subset of the plan's operations), and opens normally; it cannot be promoted to Destroy
+settlement. The pure plan and
 frame evidence themselves expose no cursor or command authority.
 
 The implemented `openTeardownForest` is the sole initial-forest producer and consumes the already
@@ -1498,8 +1704,9 @@ construction is a pure function of validated root parameters.
   passes through the
   [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)'s
   closed placement relation and validating `addRole` constructor; an incompatible primary/additional role
-  pair is refused during assembly. The current parser maps `--force` to replacement, `--if-missing` to
-  keeping an existing file, and gives `--force` precedence if both are supplied. The
+  pair is refused during assembly. `--force` (replace an existing output) and `--if-missing` (keep an
+  existing output) are mutually exclusive spellings of one `ExistingOutputPolicy`; supplying both is a
+  parse error (exit 1), and supplying neither refuses an existing output. The
   [installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
   contributes no init-request or role-selection constructor. Python builds
   and invokes the host-native binary using the platform-specific handoff in § M; it does not initialize
@@ -1519,9 +1726,18 @@ construction is a pure function of validated root parameters.
   cluster consumers, and the
   [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) owns recursive command
   consumption.
-  `--dry-run` renders the pure chain without acting.
+  `--dry-run` renders the admitted plan's chain and runs no step, but it is not side-effect free and
+  not outside Production. It skips installed-identity validation, then opens the authority store and
+  enters the same Production admission path as effectful `up`: existing-bound recovery, or
+  `withFreshProductionPlan`, whose `withProductionRoot` verifies the operator, acquires or retains
+  Production mode, and records an unbound run lease. After a successful render that bracket releases
+  neither, so a dry run leaves Production mode held with an unbound lease. A dry run that holds no mode,
+  records no lease, and writes nothing to the authority store is owed by the
+  [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md).
 - `project down` — child-first recursive stop across every acquired frame. VM frames use the
-  provider **stop** operation (incus/Lima **stop**, WSL2 `--terminate`; never destroy or unregister), so
+  provider **stop** operation (incus/Lima **stop**; WSL2 releases the global wall with
+  `ReleaseGlobalWslWall` and then runs the global `wsl --shutdown`, see
+  [wsl2.md § Wall release](../documents/engineering/wsl2.md#wall-release); never destroy or unregister), so
   the guest and its disk survive. At the kind-cluster frame, `down` deletes the kind cluster, because kind
   has no reliable stop/restart contract; its removal set is **empty**, so no filesystem path is removed.
   Cluster-local persistence (for example a PVC on kind's default `local-path` provisioner) lives **inside
@@ -1561,23 +1777,39 @@ forward/reverse entry. Live Production
 
 The `Preserve` rule applies to both ordinary project verbs in every scope. Harness terminal cleanup is a
 separate, plan-derived projection. A narrow `HarnessCloseRoot`, derived from either the live harness root
-or the exact abandoned-run recovery authority, combines the project-wide Harness mode lease, bound
-snapshot, `BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration`, exact versioned
-`ProjectOperationState ... OpenProject`, and same-version `ProjectClosureEvidence`.
-`authorizeHarnessClose` consumes the same exact Harness `ProjectClosureEvidence`, rejects its
-true-pre-effect branch, verifies every ordinary operation session Closed, and only then atomically changes
-Open to a fresh `ClosingProject` epoch while creating its close journal; persisted Closing therefore proves
-ordinary destroy had already settled, and a concurrent prepare and close cannot
-both win, and a retained proof from before destroy→up cannot close the new journal version. The sole
+or the exact abandoned-run recovery authority, names the project, run, close origin, and broker epoch.
+Harness close then takes two separate protected steps:
+
+1. `authorizeHarnessClose` checks that root against the exact Harness mode lease and
+   `BoundRunLease (Harness projectId runId) specDigest planDigest brokerGeneration`, requires the supplied
+   `VerifiedAllSessionsClosed` proof to name the bound lease's plan digest, rejects the true-pre-effect
+   branch of the supplied `ProjectClosureEvidence` (only settled-destroy evidence is accepted), and records
+   the fresh Harness Closing epoch in the run's invocation record. A persisted Closing epoch therefore
+   proves ordinary destroy had already settled.
+2. `beginClosingProject` then compare-and-swaps the project journal from `OpenProject` to that
+   `ClosingProject` epoch against the caller's exact permit version. Session opening advances the same
+   version, so a concurrent prepare and close have exactly one winner, and a permit retained from before
+   destroy→up cannot close the new journal version. Repeating it with the same persisted epoch is
+   idempotent; a different epoch is refused as a second close.
+
+If step 1 succeeds and step 2 does not, the run is not lost: recovery's `resumeHarnessClose` re-reads the
+persisted Closing epoch and yields the same close authorization without persisting a new epoch, and the
+idempotent step 2 completes. The sole
 `verifySubtreeSettled` producer checks the complete frame-bound plan projection against the exact ordered
 terminal observations, retaining released, foreign-retained, and refused distinctions while rejecting any
 failure or unresolved node. `verifyDestroySettled` then checks the exact plan digest, current frame, full-root
-terminal sequence, and unique topology root before minting unframed project-wide proof. The independently
-complete Closed session set and bound lease are joined later by `destroySettledClosure`. The sole
-`verifyNoProjectResourcesAcquired` producer checks the exact bound snapshot/revision/state tuple has no
-resource operation/prepare/fence/receipt/effect record and that every registered session is Closed and
-empty. Only their closed conversions mint `ProjectClosureEvidence`; unresolved partial ownership
-produces none.
+terminal sequence, and unique topology root before minting unframed project-wide proof.
+`ProjectClosureEvidence` has three producers, each recording which way closure was reached:
+
+- `verifyNoProjectResourcesAcquired` takes an `UnboundRunLease` and refuses if any effect-shaped or same-run
+  acquisition record exists for it;
+- `verifyBoundRunHasNoProjectResourcesAcquired` takes a `BoundRunLease` and refuses if any effect record or
+  canonical resource record (including a released tombstone) exists for its plan; it is separate so neither
+  lease state can be substituted for the other;
+- `destroySettledClosure` is a conversion, not a verifier: it joins the bound lease with
+  `VerifiedAllSessionsClosed` and `DestroySettled` after checking both name the lease's plan digest.
+
+Unresolved partial ownership produces none of them.
 
 The close projection releases the exact owned generated config and `.test_data/<runId>` generations
 through the same durable intent/unknown/reprobe/fence protocol, specialized to the Closing epoch. Every
@@ -1585,11 +1817,15 @@ terminal close observation returns `HarnessCloseAdvance` on success or typed fai
 yields the only successor close journal. A persisted Closing run resumes only its exact close
 authority/journal; it cannot remint Open, general Harness, or `ProjectUp` authority. After all close
 operations and sessions settle, one protected finalizer atomically records `ClosedProject`, closes the
-bound lease, and releases the exact Harness mode epoch last. Production mode release after settled
-destroy instead requires a closed `ProductionClosureAuthorization` made only from exact
-`ProjectDestroy` authority plus `DestroySettled`. Its other constructor accepts any exact Production verb
-only with `VerifiedNoProjectResourcesAcquired`, so a true pre-effect `up` refusal can close but partial
-`up`/`down` teardown cannot be relabeled as settled. The finalizer records Closed, closes its invocation
+bound lease, and releases the exact Harness mode epoch last. Production mode release instead requires a
+closed `ProductionClosureAuthorization` with two constructors. `SettledProductionClosure`, built only by
+`authorizeProductionDestroy`, holds four members: the exact `ProjectDestroy` root authority, the
+`BoundRunLease`, `VerifiedAllSessionsClosed`, and `DestroySettled`, and it checks the root against the
+lease's project, store, and epoch. `PreEffectProductionClosure` accepts the `ProductionRoot` of any
+Production verb and is minted only by `authorizeProductionPreEffect`, which rechecks inside a protected
+entry that the mode and unbound lease are the root's own, that no effect-shaped or same-run acquisition
+record exists, and that every session is Closed. A true pre-effect `up` refusal can therefore close, but
+partial `up`/`down` teardown cannot be relabeled as settled. The finalizer records Closed, closes its invocation
 lease, and clears its mode in one protected compare-and-swap, with no persisted mode-cleared Closing
 intermediate. Session opening advances and compare-and-swaps that same Open project-journal version, so
 it and Production finalization have exactly one winner.
@@ -1604,8 +1840,8 @@ journal is exposed. Only a protected empty-set compare-and-swap yields
 preserves durable data for destroy→up assertions within a variant without leaking it after terminal
 harness close.
 
-A normal root-frame `project up` failure runs the same receipt-driven delete teardown before it reports
-failure. Outcome classification is exhaustive and consistent: compatible but unowned state is
+A normal root-frame `project up` failure runs the receipt-driven failed-`up` teardown (the
+`failedUpTeardownPlanKernel` projection above) before it reports failure. Outcome classification is exhaustive and consistent: compatible but unowned state is
 `ForeignResult`; an incompatible/occupied identity or contradictory ownership claim is `Conflict`; a
 policy decision declining an otherwise authorized owned/absent transition is `SafetyRefusal`; a backend
 that cannot provide the required strong semantics is `Unsupported`; and an attempted operation failure
@@ -1614,7 +1850,7 @@ rollback set. A late policy refusal after journaled preparatory effects unwinds 
 it must not skip cleanup merely because its report label says refusal.
 
 The **Step algebra** is the reuse unit: `hostbootstrap-core` ships the host-management step kinds
-(deploy-VM, `ensure-*`, copy-source, build-pb, build-image, `context-init`, deploy-kind, deploy-chart,
+(`deploy-vm`, `ensure-*`, copy-source, build-pb, build-image, `context-init`, deploy-kind, deploy-chart,
 expose-port), and a project contributes its own step kinds into the same `[Step]` (the lift-chain stream,
 § T). Host and project steps interleave freely; a project's workload (a registry install, a web-serve, a
 role) is expressed as steps in the chain, not as separate top-level verbs.
@@ -1622,6 +1858,7 @@ role) is expressed as steps in the chain, not as separate top-level verbs.
 ### Z. Chain-Driven Test Surface And Context Introspection
 
 **Owning phase**: [the test-and-context-commands phase](phase-20-test-and-context-commands.md)
+
 The test surface consumes the project's real lifecycle rather than re-expressing bring-up (§ W). It is
 the one test engine. The command retains one exact Harness-scoped `ProjectPlan` through generated-config
 ownership and calls the shared current-frame forward/reverse interpreter directly. `TestSuite` owns only
@@ -1642,7 +1879,10 @@ consumer and the assertion engine described here; Harness call-site adoption is 
   explicit `--replace` authorizes replacement of the test config only.
 - `test run <case-id>|all` — runs one registered typed case or every registered case. Entry is
   root-only, fails fast without `<project>.test.dhall`, and rejects a non-root context before side
-  effects. For each **distinct test configuration**
+  effects. The root gate is not built: `testCommand` applies no binary-context root check to `test init` or
+  `test run`, and Sprint 20.7 of the
+  [test-and-context-commands phase](phase-20-test-and-context-commands.md) owes it. For each **distinct test
+  configuration**
   (cases sharing a config share one stack; a case needing different resources/secrets declares a different
   config) the harness: (a) writes a test-specific `<project>.dhall` (the test-config overrides projected
   into a normal project config) while retaining its exact Harness plan, (b) invokes that plan's common
@@ -1711,8 +1951,8 @@ Each one-use command/handoff invocation opens one durable versioned session only
 `CurrentBrokerSessionAdmission`. Clean activation mints that admission after proving no older broker
 session remains Open; abandoned-run activation instead uses the exact old-permit fence set and a
 verified manifest pairing the independent complete session set with its independently complete
-operation set. Registering an initial intent consumes the exact closed origin—sole no-prior-generation
-evidence or a released-reacquisition `FreshGeneration`—and atomically adds the operation/generation to
+operation set. Registering an initial intent consumes the exact closed `IntentOrigin`—`NoHistory` (no
+prior generation) or `ReleasedReacquisition`—and atomically adds the operation/generation to
 that exact session while advancing the session/project-journal versions; no orphan intent can be
 omitted and the caller cannot choose a generation. An intent may validly have no initial fence but cannot
 prepare. Recovery idempotently completes the stable initial-fence protocol and threads the sole
@@ -1729,22 +1969,30 @@ recovery cannot yield admission or open a new command session.
 Session open and close also advance that shared project-journal version and return the sole successor
 state/permit pair; opening rechecks permit-open/not-frozen state in the same protected transition used by
 migration freeze and terminal close.
-Before every child reservation/mutation/delete, the root
-verifies a prepare request naming the exact authority epoch,
-verb/phase/frame, session, journal/resource/generation/operation version, current authoritative fence,
-precondition-set identity, and call digest. The plan is the sole producer of the exact closed zero/one/
-many dependency snapshot and jointly indexed `OperationPreconditionSet`/verified backend call. It
-internally traverses the descriptor's complete edge set and runs the plan-owned probes; callers cannot
-supply retained readiness or omit an edge, and its private no-dependency branch prevents fabricated
-requirements. One protected
-compare-and-swap consumes that set, reruns every target/dependency probe and observation version,
-obtains conditional backend versions, and revalidates the active project mode, bound lease, active
-plan revision/no migration freeze, Open-project state, command/session/fence, readiness generation, and
-record phase, then records the exact operation-specific unknown state **before** returning the
-resource/generation/operation/precondition-set/call-digest/session/fence/attempt/journal-indexed
-`PreparedOperation` and matching fresh `PreparedPreconditions` required by the adapter together with the
-fresh-versioned successor Open-session, Open-project state, and
-revision-permit authority. Every adapter terminal observation returns `OperationAdvance` on success or
+
+Before every child reservation, mutation, or delete, the root prepares the operation in five ordered
+steps:
+
+1. **Verify the request.** The prepare request names the exact authority epoch, verb/phase/frame, session,
+   journal/resource/generation/operation version, current authoritative fence, precondition-set identity,
+   and call digest.
+2. **Derive the precondition set.** The plan is the sole producer of the exact closed zero/one/many
+   dependency snapshot and the jointly indexed `OperationPreconditionSet` and verified backend call. It
+   traverses the descriptor's complete edge set and runs the plan-owned probes; callers cannot supply
+   retained readiness or omit an edge, and its private no-dependency branch prevents fabricated
+   requirements.
+3. **Revalidate under one compare-and-swap.** One protected compare-and-swap consumes that set, reruns
+   every target/dependency probe and observation version, obtains conditional backend versions, and
+   revalidates the active project mode, bound lease, active plan revision (no migration freeze),
+   Open-project state, command/session/fence, readiness generation, and record phase.
+4. **Record unknown first.** That same transition records the exact operation-specific unknown state
+   **before** anything is returned.
+5. **Return the prepared pair and successor.** Only then does it return the
+   resource/generation/operation/precondition-set/call-digest/session/fence/attempt/journal-indexed
+   `PreparedOperation` and matching fresh `PreparedPreconditions` the adapter requires, together with the
+   fresh-versioned successor Open-session, Open-project state, and revision-permit authority.
+
+Every adapter terminal observation returns `OperationAdvance` on success or
 typed failure; its eliminator yields the result only with the sole next state/permit pair. An adapter
 accepts neither retained `Ready`/prerequisite data nor either half of the prepared pair. Initial fence
 creation and `FenceIntentRecorded → FenceOutcomeUnknown → FenceObserved` rotation persist and resume one
@@ -1753,8 +2001,8 @@ rejected or deduplicated. Terminal acknowledgment first
 verifies every registered outcome settled and then compare-and-swaps the exact Open-session version
 Closed, so a retained proof or concurrent prepare cannot win. Loss before prepare refuses, while loss
 after a prepared backend call leaves an explicit unknown state for total reprobe. Generative handles,
-`JournalEntry`, and receipts are never serialized. The token is never in Dhall, `argv`, an environment
-variable, or durable config; teardown gets a fresh token, and a harness broker cannot sign Production
+verified journal records (`VerifiedJournalRecord`; only the untrusted `PersistedJournalRecord` is
+stored), and receipts are never serialized. The token is never in Dhall, `argv`, an environment variable, or durable config; teardown gets a fresh token, and a harness broker cannot sign Production
 authority. Before allocating a new run, the root must recover/teardown any protected incomplete old
 harness lease under that exact old run scope.
 
@@ -1773,9 +2021,11 @@ the `context-init` action announces the descent bound to that same node (§ Y). 
 ### AA. Service Runtime Command
 
 **Owning phase**: [the service-runtime phase](phase-22-service-runtime.md)
+
 `service` is the third DSL-driven core command (alongside `project` and `test`). It runs a project's
-**long-running roles** — the `HostDaemon`/service run-model (§ T) — and is driven by a **service-configured**
-`<project>.dhall`:
+**long-running roles** — the `HostDaemon`/service run-model (§ T). `service init` writes a
+**service-configured** `<project>.dhall`; `service run` is driven by an installed, broker-signed activation
+revision that carries the narrowed role wire, never by the sibling config:
 
 - `service init` — writes one descriptive Production role wire from a selected service in the finalized
   registry, one legal `ClusterService` or `Daemon` placement, and role fields assembled/projected through
@@ -1787,183 +2037,113 @@ the `context-init` action announces the descent bound to that same node (§ Y). 
   finalized project-owned role-wire schema registry/union derived by `RoleCodec`, with separately named
   `Production` and `Harness` scope families; round-trip/anti-drift tests prove every runnable role wire
   agrees with the decoder for its exact scope (§ Q).
-- `service run` — loads the effective config and runs its selected role. There is no positional variant
-  argument. There is **no `service down`**: lifetime is owned by the enclosing Kubernetes controller or
-  host project lifecycle and torn down by `project down` / `project destroy` (§ Y).
+- `service run` — verifies the platform-installed activation coordinates (§ X) and runs the one role the
+  signed activation selects. There is no positional variant argument. There is **no `service down`**:
+  lifetime is owned by the enclosing Kubernetes controller or host project lifecycle and torn down by `project down` / `project destroy` (§ Y).
 
-`service run` is a **leaf-frame runtime command, never an orchestrator**. Core checks the primary kind is
-`ClusterService` or `Daemon`, canonically verifies one sibling snapshot, and structurally selects exactly
-one definition from the jointly finalized typed registry. The selected request and action share that
-snapshot; demo handlers do not reload config. The finalized project specification hides each
-project-declared role field type and jointly derives its full `ProjectCodec` and
-`RoleCodec scope specDigest fields`; callers cannot pair codecs or choose `fields`. A validated config can
-project a `RuntimeRoleWire fields service`, but not a request or handler parameters. At the runtime
-boundary, the signed manifest fixes an immutable rollout `revision`, while platform verification pairs it
-with a measured `instanceId` (pod UID plus restart count or protected OS invocation nonce) and yields one
-`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId
-configDigest secretDigest service rolePlanDigest permittedEffects`. Runtime role-wire/ConfigMap bytes
-contain Production pointers or Harness secret handles, never inline fixture bytes; the exact run-scoped
-private bundle is internally read and verified through the activation-bound channel, not accepted from a
-caller or gated by `HarnessConfigAuthority`. `withVerifiedRuntimeRoleWire` consumes the matching
-activation package, finalized runtime spec, verified secret bundle, and actual mounted bytes. Its private
-eliminator yields the local
-`VerifiedConfigWire` plus an existential opaque
-`ValidatedServiceRequest specDigest configId secretDigest fields service` under one fresh child-local `configId`. That request
-is an inseparable bundle of the typed request and
-`RoleParams specDigest configId secretDigest fields service`; neither member has a public independent constructor or projection,
-and neither crosses the process boundary. `fields` is built through a closed consumer-indexed schema algebra:
-`ProjectField (VisibleTo consumers) name a`, where the closed consumer tags include framework
-validation, a typed plan frame, Harness assembly, and `Service service`. Context/identity/request
-metadata can therefore be visible to framework validation without entering a handler, and build/deploy
-inputs can be limited to their plan frame rather than mislabeled as service or host data. Core owns the
-consumer/filter algebra but not the project field names or value types.
-`RuntimeRoleWire fields service` contains the union of the mandatory
-`FrameworkValidation` projection and fields tagged `Service service`; plan/build/deploy-only fields cross
-neither boundary. `RoleParams specDigest configId secretDigest fields service` is the narrower second filter: it can be
-constructed only from fields tagged `Service service` under that exact config identity, so
-framework-only metadata remains available to validation without entering the handler, and parameters
-from another validation cannot type-check. the composition-and-network-algebra phase's role engine first atomically reserves one durable
-lifecycle admission for the exact instance, then constructs the matching role plan/binding/placement.
-The signed placement's `permittedEffects` ceiling conservatively derives the acquisition plan and closed
-lease disposition before Acquire: a ceiling that permits any exclusive/mutating effect requires the live
-fenced lease, while only a ceiling that prohibits all such effects can yield the no-lease proof. The
-engine then acquires managed listener/connection/worker handles and probes those exact identities. Partial
-acquisition or readiness failure yields only Drain plus every owned/unknown receipt; success yields
-`ReadyServiceHandles` and the unique Serve cursor. Serve has no handler-visible open/bind/spawn escape
-hatch. A restartable worker's ready identity is a stable supervisor handle; only a core-owned,
-journal-prepared supervisor transition may replace a child, and it must reprobe that child before another
-request. The sole effectful `selectAndRunService` operation then jointly consumes those values, the whole
-local request bundle, inseparable activation/projection package, and finalized runtime spec. Registry
-lookup reveals the exact handler effect row. A private
-`EffectAuthorization scope specDigest planId frame revision instanceId service effects` is constructible only when
-the opaque `VerifiedServicePlacement ... permittedEffects` permits that row; `DurableStore` additionally
-requires `DurablePlacementAuthority scope specDigest planId frame revision instanceId service`, derived from
-verified durable placement rather than decoded context. The gate atomically reserves a one-use
-`ServiceCommandAuthority scope specDigest planId configId secretDigest frame revision instanceId
-ServePhase service effects` and transfers it
-directly into one existential package:
+`service run` is a **leaf-frame runtime command, never an orchestrator**. Its only inputs are the platform
+coordinates § X lists and a measured instance: `HOSTBOOTSTRAP_POD_UID` with
+`HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT`, or exactly one `HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE`. It hashes
+its own executable and hands everything to `runInstalledServiceProgram`, which takes these steps in order:
 
-```text
-SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase fields
-  = exists service effects.
-      ServiceSelection
-        scope specDigest planId configId secretDigest frame revision instanceId ServePhase service effects
-    + ValidatedServiceRequest specDigest configId secretDigest fields service
-    + (RoleParams specDigest configId secretDigest fields service
-         -> ServiceProgram
-              scope specDigest planId configId secretDigest frame revision instanceId
-              ServePhase service effects ())
-```
+1. **Verify the activation.** `withInstalledServiceActivation` rereads the digest-addressed revision's
+   members (two manifest copies, signature, public key, `role.dhall` role wire, and `secret.bundle` private
+   bundle), refuses a public key that differs from the independently installed one or a directory name that
+   is not the manifest digest, and passes the measured binary, role-wire, private-bundle, and instance
+   identities to `verifyRuntimeRoleActivation`. Success yields the seven-index
+   `VerifiedRuntimeRoleActivation` described in § X.
+2. **Match the registry.** The finalized registry is reindexed to the activation's signed specification
+   digest; a mismatch refuses before any decode.
+3. **Decode the selected role.** `withDecodedServiceProgram` selects the one definition named by the
+   activation's signed service, decodes the measured bytes as that definition's `RuntimeRoleWire fields`
+   through its `RoleCodec`, and yields one existential package: the
+   `ValidatedServiceRequest specDigest configId secretDigest fields service` under a fresh `configId`, the
+   declared effect row, the resource and payload backends, and the `ServiceProgram` built from the very
+   `RoleParams` the request retains. An unknown or duplicated service refuses.
+4. **Verify the draft.** `verifyRolePlanDraft` checks the definition's resource draft against the signed
+   role-plan digest and effect ceiling, with no durable mutation.
+5. **Admit and open the plan.** Inside one protected entry, `withRoleLifecycleAdmission` reserves the
+   one-use admission, and `withRuntimeRolePlanForRequest` (or, after `RoleAdmissionOpenUnknown`,
+   `resumeRuntimeRolePlanOpenForRequest`) checks the request's config digest, specification digest,
+   service, frame, and `ClusterService`/`Daemon` context kind against the activation and mints the
+   `RolePlan`, `RolePlanDigestBinding`, `VerifiedServicePlacement`, and Prereq cursor (§ X). Recovery-required,
+   refused, and unknown admission outcomes exit before Prereq.
+6. **Run the lifecycle.** The protected entry closes, then `runRoleLifecycle` drives
+   Prereq → Acquire → Ready → Serve → Drain → Exit under `mask`, restoring each project callback
+   individually so a catchable shutdown or exception becomes that callback's typed outcome. When the signed
+   ceiling names an exclusive effect, the whole run is held inside `withRunLiveness`, a kernel lock named
+   for the service and frame that the OS releases on process death; a live holder refuses before the first
+   acquisition. In Serve, `authorizeServiceEffects` admits the declared row only if every effect is in the
+   placement's signed ceiling, and `interpretServiceProgramWithReady` runs the program against only the
+   handles Ready probed. After the first acquisition, every outcome reaches Exit only through Drain, which
+   attempts every release despite individual failures and aggregates them in the `RoleExitReport`.
+   `service run` prints that report and exits 1 unless it is clean.
 
-Those three members cannot be separated or substituted by callers. The package is internal to the
-core-owned masked run-to-Exit operation; no arbitrary `IO a` callback receives it, a phase cursor, or live
-receipts. Private phase eliminators cannot escape those values to consumer code.
-`ServiceSelection ... effects` is an opaque proof that the exact effect row is authorized by the
-placement/effect witness and consumed service command authority, so activation authority alone, a
-non-Serve cursor, a non-durable placement demanding `DurableStore`, or a program demanding a different
-or additional effect cannot be packaged. No generic service `CommandAuthority`, pure
-`finalizeSelectedService`, or separable effect proof is public. The service command authority is
-single-use; an already consumed invocation cannot construct or run another service package. The handler
-receives only `RoleParams specDigest configId secretDigest fields service`, not
-`ValidatedConfig ... cfg`. `ServiceProgram` is a closed,
-capability-indexed program type with no public `IO`, `MonadIO`, arbitrary filesystem, or config-read
-escape hatch; core interprets only the finalized service's authorized network/durable-store/process
-effects. Therefore the public handler API cannot reopen the sibling path or pair a Web payload with an
+The finalized project specification hides each project-declared role field type and jointly derives its
+full `ProjectCodec` and `RoleCodec scope specDigest fields service`; callers cannot pair codecs or choose
+`fields`. A `RuntimeRoleWire fields` holds the framework envelope (`FrameworkValidation`: wire kind, scope
+kind, specification digest, and local context) and the service's own field record; each definition owns
+the projection from `cfg scope` to that record, and plan/build/deploy-only fields are simply not in it.
+The private bundle is measured against the manifest's secret digest and is not handed to the handler; no
+step mints `HarnessConfigAuthority`. A `ValidatedServiceRequest` is an inseparable bundle of the framework
+envelope, the measured config digest, and
+`RoleParams specDigest configId secretDigest fields service`; neither member has a public independent
+constructor, and neither crosses the process boundary.
+
+A handler is a `ProgramServiceHandler payload effects fields`. It receives only
+`RoleParams specDigest configId secretDigest fields service`, never `ValidatedConfig ... cfg`, and returns
+a `ServiceProgram payload service effects ()`. That program type is closed: its constructors are private,
+and it has no `IO`, `MonadIO`, arbitrary filesystem, or config-read escape hatch. Each effectful
+constructor (`serve`, `call`, `readDurable`, `writeDurable`, `work`) carries a `HasEffect` constraint over
+the declared `RoleEffect` row, so an undeclared effect is a compile error, and the only eliminator demands
+the `EffectAuthorization` that `authorizeServiceEffects` mints from the signed ceiling. `DurableStore` is
+executed by core against a `DurablePath` minted from the admitted canonical root; the network and process
+families reach the definition's own `ServiceBackend`. Listener, peer, and worker arguments are
+`AcquiredResource` handles whose sole producer is Ready, so Serve has no handler-visible open/bind/spawn
+escape hatch. Therefore the public handler API cannot reopen the sibling path or pair a Web payload with an
 accelerator handler.
 
-An effect row is family permission, never mutation or retry authority. Every mutating
-durable-store/process/backend constructor first creates an opaque
-`SealedServiceEffectCall ... effect ... targetId operationKey callDigest` containing the exact target and
-arguments. The backend adapter accepts no separate raw request. Private protected prepare consumes only
-that sealed call, the exact prior `ServiceEffectReady` session, and the whole retained resource/lease
-package. Success yields
-`PreparedServiceEffect ... targetId operationKey callDigest fence attempt journalVersion` carrying the
-sealed call and package; a different target or arguments cannot reuse it.
+An effect row is family permission, never mutation or retry authority. Rolling revisions and instances may
+overlap for non-exclusive service work. Each measured instance has its own admission key, so a value
+retained from one instance cannot run as another, and a genuine restart (a new restart count or invocation
+nonce) receives a fresh admission rather than replaying the old one. Exclusive work is serialized by the
+`withRunLiveness` lock held from Prereq through Drain.
 
-Prepare itself is constructive on failure: known rejection yields a
-`ServiceEffectPrepareFailed effect targetId operationKey callDigest fence attempt` session, and uncertain
-journal commit yields
-`ServiceEffectPrepareUnknown effect targetId operationKey callDigest fence attempt`. The private
-eliminator returns either failure state only with the sole successor journal session and whole retained
-package directly into the core-owned Serve→Drain/recovery path. Neither state is accepted by normal
-prepare, and no `Either` can drop its cleanup authority before a `PreparedServiceEffect` exists.
+**Target, not built.** The runtime above holds role receipts in process memory and journals nothing per
+service effect. The target adds four protections:
 
-The backend consumes only that prepared value and returns
-`ServiceEffectAdvance ... targetId operationKey callDigest ... fromJournalVersion nextJournalVersion
-nextEffectState`. Its private eliminator exposes `ServiceEffectOutcome nextEffectState` only with the sole
-fresh journal session under the unchanged effect row/phase and reconstituted retained package—never a
-bare lease detached from receipts. Unknown indexes that successor as
-`ServiceEffectUnknown effect targetId operationKey callDigest fence attempt`, which has no ordinary
-prepare/retry constructor until same-key/fence reprobe yields an observed resolution or
-`VerifiedSameKeyRetry ... configId secretDigest ... service effects phase effect invocationId sessionId
-targetId operationKey callDigest fence previousAttempt nextAttempt unknownJournalVersion
-retryJournalVersion`; observed success/failure yields `ServiceEffectReady`. Private
-`resumeVerifiedSameKeyRetry` jointly consumes that exact parameterized Unknown session, the full-lineage
-proof, and retained package and feeds its successor Ready session plus reconstructed sealed call only
-back into the same core interpreter. There is no public/caller-selected Unknown→Ready conversion. Another
-target, call digest, config, secret bundle, effect row, phase, invocation, session, or journal version
-cannot cross-pair. This includes crash-after-call-before-ack. Read/listen and
-supervised use of already acquired
-handles are the only unprepared operations. Adding an open/bind/spawn or raw `IO` escape hatch is not a
-valid effect contribution. The retained resource package inseparably carries every receipt/unknown and a
-closed lease disposition: either proof that the signed placement ceiling prohibits every
-exclusive/mutating effect or the matching live `ServiceGenerationLease ... fence`. The activation and
-verified placement derive this requirement before Acquire; callers cannot choose the no-lease branch.
-Serve accepts only a finalized registry row proved within that same ceiling, so a mutating program cannot
-appear on the no-lease branch. Only the live-lease branch can mint
-`PreparedServiceEffect`; neither receipts nor lease can be projected away before Drain.
+- a durable per-call effect journal, in which each mutating durable-store, process, or backend call is
+  sealed with its exact target and arguments, prepared under a fence before it runs, and resolved after a
+  crash between the call and its acknowledgment by same-key reprobe or retry;
+- durable role receipts, so the resources an uncatchably killed instance acquired are recovered rather
+  than left behind; today Drain releases only what the running process holds;
+- predecessor-instance recovery: today a contradictory predecessor admission row yields
+  `RoleAdmissionRecoveryRequired` and `service run` refuses, with no core recovery path that enumerates,
+  settles, and clears the old instances;
+- an exclusive-lease transfer barrier that proves a predecessor's prepared or in-flight backend mutations
+  are fenced before a successor mutates; today the liveness lock excludes only a live holder.
 
-Selection rejection, completion, typed failure, catchable shutdown, and caught interruption all produce
-one opaque `RoleAdvance ... ServePhase DrainPhase ServiceDispatchResult`; no `Either` or callback may
-drop receipts. Its sole eliminator yields the result only with the unique Drain cursor and retained
-receipt/lease package, still inside the core-owned runner. Drain attempts every independent
-release/reprobe despite individual failures and yields
-`RoleAdvance ... DrainPhase ExitPhase DrainResult`; only its eliminator exposes the aggregate result with
-the Exit cursor. Uncatchable process death uses durable admission/receipt/lease/journal recovery rather
-than an impossible in-process guarantee. Rolling revisions/instances may overlap for non-exclusive
-service work; cross-instance replay fails, and exclusive/mutating work retains a
-`ServiceGenerationLease` through Drain. The admission opener independently enumerates a complete
-`VerifiedOldRoleInstanceManifest` for one stable placement; every member retains its full old
-plan/spec/binary/config/secret/role-plan/effect-ceiling and local
-plan/config/revision/instance/invocation/journal/resource lineage. Recovery folds that exact set and
-rejects omitted, duplicate, extra, or substituted records before yielding
-one `SettledRoleLifecycleRecovery` whose contained `RecoveredRoleInstanceSet` and
-`RoleRecoveryClearance` both retain the full new
-plan/spec/binary/config/secret/service/role-plan/effect lineage. Recovery Unknown carries the same
-lineage and can only enter `resumeRoleLifecycleRecoveryUnknown`, which re-probes the stable key into
-another exhaustive advance. Every member requires authoritative `VerifiedRoleInstanceNonLive`, which
-the final CAS revalidates. Non-exclusive live overlap remains legal and outside recovery; only
-authoritatively non-live incomplete/unclean members are settled. A live exclusive predecessor yields
-Busy/Conflict or liveness Unknown without recovery authority, and an exclusive successor waits for all
-non-live predecessors. The no-exclusive branch requires
-`VerifiedNoServiceLeaseTransfer` for the complete set. Otherwise transfer publishes no successor lease
-until the typed `ServiceLeaseTransferBarrier ... predecessorFenceSet newFence transferVersion` proves
-an atomic backend fence has excluded every old mutation, or retained nontransferable locks held across
-each call until all prepared/in-flight old attempts settled or became authoritatively fenced. A backend
-with neither primitive is `Unsupported`. Only `resumeRoleLifecycleAdmission` may consume the single
-settled package, atomically close the old invocations, and reserve the new
-admission. Lost acknowledgment resumes the same key. After that barrier, later old prepares fail; Drain
-releases the lease only after dependent cleanup settles.
+That target is owed by the [service-runtime phase](phase-22-service-runtime.md).
 
-Core need not impose a universal service field: the project-owned field schema and `RoleCodec` define
-how a full validated config projects each role wire and how a verified local wire yields its typed
-request/consumer tags. Construction-time/property tests validate that semantic mapping. The generative
-eliminator binds the hidden row, local wire, request, and role parameters together; callers never choose
-`fields` independently. Core cannot infer that a misleading project tag is semantically accurate, so
-the generic guarantee is relative to the project's declared schema; the demo's field classification has
-compile-fail/projection tests. The guarantee is not that core can inspect an arbitrary function and
-prove it “non-constant”; the arbitrary function no longer exists. Missing-config diagnostics name the
-exact owning parent/controller projection, or `service init` together with the required authorized
-manifest installer; they never imply that a descriptive file alone authorizes `service run` and never
-recommend root `project init`. The registry may be explicitly
-empty; then no `SelectedService` exists and the fixed command fails before a handler.
+Core need not impose a universal service field: each definition's projection and `RoleCodec` define how a
+full validated config projects its role wire and how a verified local wire yields its typed request.
+Construction-time and property tests validate that mapping. The existential package binds the hidden row,
+local wire, request, and role parameters together; callers never choose `fields` independently. Core cannot
+infer that a project's projection is semantically accurate, so the generic guarantee is relative to the
+project's declared definitions; the demo's role projections have compile-fail and projection tests.
+`service run` diagnostics name the missing or malformed platform coordinate or the failed verification
+step; they never imply that a descriptive file alone authorizes `service run` and never recommend root
+`project init`. The registry may be explicitly empty; then the activation names a service this binary does
+not register and `service run` fails before any handler.
 
 `project up` and `service` **compose, they do not overlap**: the chain's `deploy-chart` step deploys the
-pod whose entrypoint is `service run`, and the pod's config arrives as a **ConfigMap that overrides the
-image's baked container `<project>.dhall`** (§ X). The project may render that ConfigMap dynamically from
-the validated parent-derived role-wire projection and fingerprint the exact narrowed mounted bytes on
-the pod template so a config change rolls the workload; a hand-maintained chart copy is not a second
-config authority. The child verifies that wire and creates the request locally.
+pod whose entrypoint is `service run`. The step renders the narrowed role wire from the validated
+parent-derived projection, has the root sign its activation manifest, and installs the immutable,
+digest-addressed revision with `installRelayedServiceActivationRevision`; the pod template names that
+revision, so a changed role wire is a new revision and rolls the workload. `service run` reads the role wire
+from that revision, not from a sibling `<project>.dhall` baked into the image or mounted over it, and a
+hand-maintained chart copy is not a second config authority. The child verifies that wire and creates the
+request locally.
 `project up` *deploys* the service; `service run` *is*
 the service. A project's long-running workload is therefore a service variant reached through this fixed
 command, and a project defines no long-running verb of its own: a web server is `service run` on its `Web`
@@ -1972,6 +2152,7 @@ variant, and an image-bridging step is a node of the build chain.
 ### BB. Generic Project Model and No Core Defaults
 
 **Owning phase**: [the Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
+
 `hostbootstrap-core` is a **library of pure shapes plus the lift algebra and the harness**; it owns **no
 default config values and no fixed config type**. The reusable substrate is the compositional lift
 (`BinaryContext`, `childContext`, the `Step`/frame graph, `ProviderKind`) and the test engine — **not** the
@@ -1994,8 +2175,9 @@ isolation, and the
 Their dated gates separately establish handoff, isolation, and command behavior; a configuration round trip
 alone does not establish those properties.
 
-In target type spellings below, `Production` is shorthand only for the project-indexed
-`Production projectId`, and `Harness runId` for `Harness projectId runId`. The full index is required at
+The type spellings below are the source's current spellings. Where the prose abbreviates,
+`Production` is shorthand only for the project-indexed `Production projectId`, and `Harness runId` for
+`Harness projectId runId`. The full index is required at
 API boundaries: installed project identity must be generative before plan or run identity.
 
 - **No core defaults.** `defaultResources` / `defaultDeployConfig` / `defaultProjectConfig` and the
@@ -2016,17 +2198,15 @@ API boundaries: installed project identity must be generative before plan or run
   `CanonicalProjectRoot scope rootId` beside `cfg scope`; independently scoped pairs are unrepresentable.
   Canonical render/hash/strict re-decode through the scope-correct
   `ProjectCodec`/`ValidatedConfig` transition mints root-local config identity. No command-specific
-  string selector exists: finalized project validation projects a role-specific wire; matching
-  `RoleCodec` verification jointly mints
-  the opaque `ValidatedServiceRequest specDigest configId secretDigest fields service`. Dispatch consumes it with exact
-  placement, current service command authority, and the finalized typed registry into
-  `SelectedService scope specDigest planId configId secretDigest frame revision instanceId ServePhase
-  fields`. Core owns the
-  consumer-indexed field/filter and
-  closed-program boundary but none of the project field names/value types; the handler receives only
-  `RoleParams specDigest configId secretDigest fields service`, never the full `cfg` or arbitrary `IO`. The selected package's
-  effect-indexed proof must match the handler program, so an unauthorized effect row cannot be
-  represented.
+  string selector exists: finalized project validation projects a role-specific wire; at runtime
+  `withDecodedServiceProgram` selects the definition the signed activation names, and its `RoleCodec`
+  decodes the measured wire into the opaque
+  `ValidatedServiceRequest specDigest configId secretDigest fields service`, packaged with the declared
+  effect row and the program built from the same `RoleParams` (§ AA). Core owns the role-wire envelope
+  (`FrameworkValidation`) and the closed-program boundary but none of the project field names or value
+  types; the handler receives only `RoleParams specDigest configId secretDigest fields service`, never the
+  full `cfg` or arbitrary `IO`. An effect the declared row omits does not type-check, and
+  `authorizeServiceEffects` refuses a declared row wider than the placement's signed ceiling.
   `ProjectConfig` / `Resources` / `DeployConfig` become the demo's concrete instance, not core types.
 - **The resource budget is a provider concern (refines § O).** Budget/provider-cordoning is a field of a
   project's `cfg` carried by a provider lift, **not** a universal config field. A secrets-strict,
@@ -2035,21 +2215,25 @@ API boundaries: installed project identity must be generative before plan or run
   exclusively owned shared utility-VM wall plus a per-distro VHDX slice on WSL2. An incompatible
   concurrent WSL declaration is `Conflict`; it cannot overwrite the global wall.
 - **DRY, scope-aware assembly.** A single project-owned
-  `psAssemble :: AssemblyRequest scope tcfg -> ConfigAssembly scope (cfg scope)` is the only
-  default-bearing function. `ConfigAssembly` permits only declared config/secret reads and exposes no
-  general `IO`, `MonadIO`, or lifecycle/backend mutation; assembly therefore cannot hide an effect
-  before the plan snapshot/journal/permit exists.
-  `AssemblyRequest` is the sole closed scope-input GADT: its Production constructor carries only
-  independently verified project-config values, while its Harness constructor carries the exact
-  `HarnessAuthority projectId runId` and one opaque validated `VariantDraft` that already contains its
-  stable variant identity and typed override payload.
+  `psAssemble :: forall projectId scope. AssemblyRequest projectId tcfg (TestVariant tcfg) scope -> ConfigAssembly scope (cfg scope)`
+  is the only default-bearing function. `ConfigAssembly` permits only declared config/secret reads and
+  exposes no general `IO`, `MonadIO`, or lifecycle/backend mutation; assembly therefore cannot hide an
+  effect before the plan snapshot/journal/permit exists.
+  `AssemblyRequest projectId tcfg variant scope` is the sole closed scope-input GADT, and its constructor
+  fixes the result scope. `ProductionAssembly` carries only the parsed `InitArgs` and yields
+  `Production projectId`. `HarnessAssembly` carries the exact `HarnessAuthority projectId runId`, the
+  canonical project-root path, the decoded `tcfg`, and one opaque validated `VariantDraft variant` that
+  already contains its stable variant identity and typed override payload, and yields
+  `Harness projectId runId`.
   Identity and variant occur once, so two inputs cannot disagree. It has no generic role/class list,
   output path, overwrite flag, or service/test writer policy; those belong to the command-specific
   writers.
-  `project init` and per-variant harness assembly are projections of that same assembler. A pure
-  `psTestMatrix :: tcfg -> Either TestConfigError (TestMatrix VariantDraft)` validates stable reporting
-  IDs/references before effects; for each distinct variant draft the engine opens a **fresh** generative
-  harness `runId`/lease, then calls `psAssemble (HarnessAssembly authority draft)`. The exact
+  `project init` and per-variant harness assembly are projections of that same assembler. The pure
+  `TestCfg` method `projectTestMatrix :: [CaseId] -> tcfg -> Either TestMatrixError (TestMatrix (TestVariant tcfg))`
+  receives the case IDs of `psTestSuite` (a project builds the opaque matrix with the `mkTestMatrix` smart
+  constructor) and validates stable reporting IDs/references before effects; for each distinct variant
+  draft the engine opens a **fresh** generative harness `runId`/lease, then calls
+  `psAssemble (HarnessAssembly authority projectRoot testConfig draft)`. The exact
   `HarnessAuthority`, scope-correct `ProjectCodec`, and assembled value then enter
   `withAssembledHarnessConfig`, whose canonical render/hash/strict re-decode jointly yields the
   root-local verified wire identity and `ValidatedConfig` required by the first `withProjectPlan`.
@@ -2078,7 +2262,9 @@ API boundaries: installed project identity must be generative before plan or run
   `<project>.dhall`.
 - **Generic secrets shape.** Core offers `SecretRef scope`, which projects embed in
   `cfg scope`; raw `Text` cannot occupy a secret-ref field and core never resolves secrets. The reflected
-  Production wire schema has only `Vault | TransitKey | Prompt`, while `TestPlaintext` requires opaque
+  Production wire schema has only `Vault | TransitKey | Prompt`; the untrusted Harness wire
+  (`HarnessSecretRefWire`) adds a `TestPlaintext` alternative. Its Haskell counterpart
+  `ScopedTestPlaintext` is minted only by `testPlaintextSecret`, which requires opaque
   `HarnessConfigAuthority projectId runId` and can
   produce only `SecretRef (Harness projectId runId)`. Generative authority is never serialized: the harness Dhall
   schema decodes through an untrusted Harness wire. At the root, exact authority plus canonical
@@ -2104,8 +2290,10 @@ API boundaries: installed project identity must be generative before plan or run
   does not need the root's non-serializable authority before verification. A pointer-only harness config
   is still Harness-indexed.
   Production decoders and commands have no plaintext constructor, harness-wire promotion, or unscoped
-  record update. the Dhall-configuration-and-project-model phase implements the root-local construction/codec boundary; the child handoff and
-  plan transitions remain owned by their downstream lifecycle phases.
+  record update. The
+  [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
+  implements the root-local construction/codec boundary; the child handoff and plan transitions remain
+  owned by their downstream lifecycle phases.
 - **A project field that flows to the workload is a field of the project's OWN `cfg`.** A value the
   workload reads and renders (the demo's `message` the web service reads/renders) is a field of the demo's
   own `cfg`, never a core-owned field and never a generic extra slot — core owns no project-specific field.
@@ -2123,6 +2311,7 @@ and removes core-owned defaults.
 ### CC. Readiness-Gated Lifecycle Steps and Legible Failure
 
 **Owning phase**: [the canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md)
+
 Every lifecycle step that **mutates a frame** — provisions it, stages into it, installs into it, or
 reconciles its state — runs only behind a proof that the dependency it needs is ready. That proof is a
 **sealed, lifecycle-plan- and resource-instance-bound
@@ -2141,14 +2330,24 @@ A mutating transition first takes an opaque descriptor binding
 relation. Its internal dependency-snapshot traversal looks up the exact managed resources and runs the
 plan-owned probes for the complete ordered zero/one/many edge set, then jointly seals those fresh
 observations and the verified backend call into `OperationPreconditionSet`. Callers cannot provide a
-retained witness or select/omit a member. The private zero-dependency branch is available only for operations whose
-descriptor declares none. Thus
+retained witness or select/omit a member. The second, public producer, `zeroDependencyPreconditions`,
+accepts only a descriptor whose edge list is empty and refuses any descriptor that declares an edge. Thus
 "act before the dependency is ready", choose an unrelated
 dependency, or mix production and harness values is a **type error**, not a convention. The witness is
 generative and bound to the exact resource identity observed; readiness for one VM, daemon, mount,
-registry, or generation cannot authorize another resource with the same phantom tag. As
-`Ready DockerDaemon` already gates the in-VM project-image build and `Ready RegistryServing` already gates
-the image push, so must the durable-share mount gate the alias step (§ DD).
+registry, or generation cannot authorize another resource with the same phantom tag. A plan-indexed
+`Ready` is minted only by the polling transition (`awaitPlanReady`/`awaitPlanReadyWith`), and `planDependencyProbe` registers such
+a probe in a plan's dependency snapshot. Production prepares register backend reprobes through
+`dependencyProbe` instead (for the durable share, `providerShareDependencyReprobe`), and
+`withOperationPreconditions` runs every registered probe at prepare time. The durable-share mount must gate
+the alias step (§ DD).
+
+What runs today falls short of that rule at the worked demo's own steps. The demo sequences its in-VM
+project-image build, image push, and guest alias reconcile behind non-authorizing `ObservedReady` evidence
+(`ObservedReady DockerDaemon`, `ObservedReady RegistryServing`, `ObservedReady DurableShareMounted`) rather
+than plan-indexed `Ready`; core's managed provider and share operations do consume the prepared pair.
+Moving those demo steps onto plan-indexed readiness is owed by the
+[worked-demo phase](phase-24-worked-demo.md).
 
 The canonical-quantities-and-reconcile-results phase foundation now removes `HostBootstrap.Readiness.Internal`, keeps every readiness constructor
 private, validates `Micros` and `PollPolicy`, and fixes each `BackendProbeKey` to a closed planned-resource
@@ -2159,9 +2358,12 @@ local convenience helpers. Managed provider/interpreter operations consume the p
 pair; they cannot treat compatibility evidence as mutation authority.
 
 The opaque witness retains the observed backend generation, resource phase, and journal version, but it
-is only a precondition-set input. Immediately before preparing an operation, the interpreter consumes that
-set, atomically revalidates those facts, reruns every plan-owned dependency/target probe, and obtains any
-conditional backend versions. Only success jointly returns the exact
+is only a precondition-set input. The plan-owned dependency probes run once, in the
+`withOperationPreconditions` traversal immediately before preparation; `withPreparedOperation` is then pure:
+it consumes the descriptor, that sealed set, and the `PreparedGate`, and checks that all three name the same
+plan, operation, and call digest, that the attempt and journal version are positive, that every sealed
+observation carries positive generation and phase versions, and that the sealed dependency keys equal the
+descriptor's ordered list. Only success jointly returns the exact
 `PreparedOperation`/`PreparedPreconditions` pair the adapter accepts; no retained witness, handle, edge,
 or raw prerequisite bundle is an adapter argument. Replacement is `Conflict`; same-identity loss of
 readiness is `Failure ... ReprobeBeforeRetry`; lack of a conditional backend primitive is
@@ -2182,11 +2384,14 @@ Guest probes stay **trivial** so they survive the host→guest command path unch
 `wsl -d <distro> -- bash -lc <script>` invocation crosses PowerShell's native-argument quoting, so a probe
 is a single simple command (`docker info >/dev/null 2>&1`, `test -d <path>`, `readlink <path>`) — never a
 multi-statement script with nested `"$(… "…")"` quoting. Retry and branching live in Haskell (the
-`awaitReady` loop plus a pure classifier over the probe output), not in an inline shell loop.
+`pollUntilReady`/`awaitPlanReady` polling loops plus a pure classifier over the probe output), not in an
+inline shell loop.
 
 **Failure is legible.** A bring-up failure never collapses to a message-less `ExitFailure 1`. Lifecycle
-failures are a structured exception (`LifecycleFailure`, the peer of the `SafetyRefusal` round-trip, § Z)
-that carries the cause across the subprocess and harness boundary, and a runner that captures a child's
+failures raise `LifecycleFailure` (the peer of the `SafetyRefusal` round-trip, § Z), which carries one
+rendered reason string (`lifecycleFailureReason`); its `Show` form prefixes `lifecycleFailureMarker`, so a
+parent runner finds the reason in a child's stderr and re-raises it across the subprocess and harness
+boundary. The cause travels as text in that reason, not as fields a caller can match on. A runner that captures a child's
 output **streams it, then dies with it** rather than folding it into a stderr the harness unwinds. The test
 report card renders the carried message (`displayException`), so a failed variant states *why*. The
 canonical homes are [readiness](../documents/architecture/readiness.md) and
@@ -2195,19 +2400,26 @@ canonical homes are [readiness](../documents/architecture/readiness.md) and
 ### DD. The Durable-Share Primitive
 
 **Owning phase**: [the host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md)
+
 A host directory reaches a guest through **one** per-substrate share primitive on `SubstrateProvider` /
 `HostPathShare`, modeled as pure data and interpreted generically (the lifecycle peer of the launch/cordon
 effect lists, § U). It has three parts, and the substrates differ only in which parts they need:
 
-- a **host-side reconcile** (`ShareReconcile`, the optional field shaped like the cordon-reconcile of § O) —
-  Incus attaches a disk device post-create; Lima declares the mount at instance create; WSL2 needs none
-  (drvfs already exposes the drive and the path rewrite already exists);
+- a **host-side reconcile** — Incus attaches a disk device post-create; Lima declares the mount at instance
+  create; WSL2 needs none (drvfs already exposes the drive and the path rewrite already exists). The managed
+  Incus and Lima shares run through the prepared provider share (`withPreparedProviderShare` and
+  `runProviderShareCall`), whose Incus disk device is named `hb-share-` plus 12 hex digits of the share
+  binding digest. The provider row's `ShareReconcile` field (the optional field shaped like the
+  cordon-reconcile of § O) is the pure per-row plan; the worked demo reaches it only on its WSL2 route, where
+  the row carries none;
 - a **guest-side alias reconcile** — where a provider guest is present, its stable Docker-visible path is
-  a symlink to the share, modeled as a pure `AliasState`
-  (`AliasAbsent | AliasLinkedCorrectly | AliasLinkedElsewhere | AliasOccupied`) with a total classifier
-  and a create/remove planner. The same classifier serves every provider guest. Direct Linux has no
-  guest boundary and supplies the canonical host projection directly, so it must not create or consume
-  this alias;
+  a symlink to the share, built from a `GuestAliasSpec` (`mkGuestAliasSpec`) and settled by
+  `reconcileNodeGuestAlias` in `HostBootstrap.Substrate.Provider.Alias`. The pure `AliasState` classifier
+  (`classifyAlias`) and its create/remove planners in `HostBootstrap.Substrate.Provider` have no production
+  caller; they are a diagnostic view that the
+  [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) deletes (Sprint
+  15.2). Direct Linux has no guest boundary and supplies the canonical host projection directly, so it must
+  not create or consume this alias;
 - a **mount-readiness** probe (§ CC) — the guest share is proven present and writable before the alias is
   scheduled, and the alias transition revalidates the same share identity immediately before mutation.
   The capability prevents logical out-of-order use; it does not pretend an external actor cannot unmount
@@ -2223,11 +2435,32 @@ phase records destroy→up→read acceptance (§ C, § J). The canonical home is
 ### EE. Opaque Capabilities and Phase-Indexed Lifecycle State
 
 **Owning phase**: [the installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md)
-Capabilities are authority, not descriptive labels. `Capability`, readiness witnesses, ownership
-witnesses, adoption authority, and lifecycle-state tokens expose no constructors or record updates from a
-public or `Internal` library module. They are minted only by validated transitions, narrowed when crossing
-a frame, and consumed by the operation they authorize. Tests use injected interpreters and typed fixture
-builders; exporting a constructor “for tests” defeats the boundary.
+Capabilities are authority, not descriptive labels. Authority-bearing capabilities (for example
+`RootInvocationAuthority`, `OwnershipReceipt`, and `AdoptionAuthority`), readiness witnesses, ownership
+witnesses, and lifecycle-state tokens expose no constructors or record updates from a public or `Internal`
+library module, and each index they carry is `nominal` under a `type role` annotation, so `coerce` cannot
+re-index a held value. They are minted only by validated transitions, narrowed when crossing a frame, and
+consumed by the operation they authorize. Tests use injected interpreters and typed fixture builders;
+exporting a constructor “for tests” defeats the boundary. The `Capability` type in `HostBootstrap.Context`
+is not authority: it is a descriptive, Dhall-decodable claim a context makes about its frame, exported with
+its constructors, and it grants nothing.
+
+**What runs today.** Three surfaces fall short of that rule. `HarnessAuthority` and
+`HarnessConfigAuthority` in `HostBootstrap.Config.Authority.Internal` are newtypes over `Text` whose
+project and run indices carry no `type role` annotation, so `coerce` moves a held value to another project
+or run; the [Dhall configuration and project model phase](phase-7-dhall-configuration-and-project-model.md)
+owns that module. The production `PreparedGate` producers are `withPreparedGate` in
+`HostBootstrap.Lifecycle.Session` and `gateFor` in `HostBootstrap.Lifecycle.FrameExecutor`, both through
+the package-private `mintPreparedGate`. The public `HostBootstrap.Lifecycle.Prepared` also exports
+`recordDurableUnknown`, a public `PreparedGate` producer no library module calls, and the public library
+re-exports `HostBootstrap.Protected`, so any consumer can open a store, enter `withProtectedEntry`, and mint
+a gate under a plan digest, operation key, session, fence, and attempt of its own choosing; Sprint 17.72 of
+the [recursive lifecycle command phase](phase-17-recursive-lifecycle-command.md) owes making
+`recordDurableUnknown` package-private, because its callers and its compile-fail boundary live in files that
+phase and the providers phase introduce. `HostBootstrap.Ensure.Colima.Ownership` is an exposed module whose entry points accept a
+caller interpreter or `HostConfig` and which exports its observation constructors; Sprint 16.29 of the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) moves it into
+a private sublibrary.
 
 Ordinary Haskell values are not linear, so “consumed” is also an interpreter invariant: each transition
 checks the current generation/lease and journals the successor state or one-time nonce consumption.
@@ -2249,12 +2482,26 @@ alias, a backend satisfies all four clauses of **Locked-Origin Identity Ownershi
    any other observation is a structured `Conflict` and the object is left untouched.
 
 The guarantee this buys, stated exactly: it **excludes** crash/retry and concurrent cooperating runs, and
-it **detects** rather than silently overwrites foreign mutation. It does **not** exclude a hostile
+it **detects** rather than silently overwrites foreign replacement, deletion, or substitution of the bound
+object. Clause 4 compares kernel identity only, so a foreign in-place edit that keeps the
+`(volumeOrDevice, fileIndexOrInode)` pair passes it; an owner that must also detect in-place content
+mutation adds its own content check after clause 4, as the generated-config owner does with a byte
+comparison against the payload digest it recorded. It does **not** exclude a hostile
 same-privilege process. No substrate supplies that exclusion, so no plan may claim it. A backend that
 cannot satisfy all four clauses — an unsupported filesystem, an unavailable lock, an identity the
-platform will not report — reports `Unsupported` and mints no receipt. A pathname compare, content hash,
-or immediate re-probe substitutes for none of the four. No plan may claim compile-time exactly-once
-effects from phantom types alone.
+platform will not report — reports `Unsupported` and mints no receipt. Two parts of the tree fall short of
+that rule. An unavailable lock or an unwritable state directory surfaces as the store fault
+`OwnershipProbeFailed` rather than `OwnershipUnsupported`, and the Windows row trusts the volume serial and
+file index without checking the filesystem type; both are owed by Sprint 14.21 of the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md).
+The Lima and WSL2 guest-VM provider realization holds none of the four clauses: provisioning reports an
+existing instance with the configured name as already owned (`ProviderProvisionAlreadyOwned`) with no origin
+record, owner claim, or bound identity; holding the clauses there, or refusing an unclaimed instance, is
+owed by the [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md). The
+Direct provider realization holds none by design: it claims nothing and answers stop and delete with
+`Unsupported`. A pathname compare, content hash,
+or immediate re-probe substitutes for none of the four; a content check can only supplement them. No plan
+may claim compile-time exactly-once effects from phantom types alone.
 
 **One implementation, not one per object.** The clauses are a single transaction — observe, record the
 origin, mutate, bind the identity, release conditionally — and it is written once, in Haskell, over one
@@ -2280,15 +2527,47 @@ primitives or unprovable identities are
 `Unsupported`; foreign profiles, copied records, replacements, partial foreign stages, and invocation drift
 are `Conflict` and remain untouched. This boundary is owned by the
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md), which
-adopts the ownership seam for it; Production recursive and demo consumption remain downstream.
+adopts the ownership seam for it, and builds the adapter as a library boundary with no in-tree production
+consumer: the core CLI dispatches only the adapter's shipped-command re-entry (`runShippedCommandEntry`),
+the provider-neutral recursive lifecycle command holds no direct-Colima call site, and the worked demo
+provisions its Apple Silicon path through Lima by design
+([build_and_run_model](../documents/architecture/build_and_run_model.md#the-direct-colima-adapter)). A
+production consumer would be a project's own step choice, and no phase schedules one; the adapter's live
+coverage is the direct-Colima lane of the [Apple Silicon substrate phase](phase-26-apple-silicon-substrate.md).
 
 The canonical statement of this contract, with its per-substrate realization, is
 [ownership_invariant](../documents/architecture/ownership_invariant.md).
 
+**Sub-contract owners.** This section's header names the phase that owns the opacity rule. The protocols
+the paragraphs below summarize are owned, and reopened when they change, by their own phases, as
+[system-components](system-components.md) assigns their modules: clause 1's exclusive-entry primitive (the
+exclusively entered protected store and its liveness lock, `HostBootstrap.Protected`) by the
+[protected-store phase](phase-4-protected-store.md); the reconcile result and error shapes,
+resource handles, and the persisted journal graph (`HostBootstrap.Reconcile`) by the
+[canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md);
+mode, root, lease, and migration brackets (`HostBootstrap.Lifecycle.Mode`) by the
+[lifecycle-modes-and-run-leases phase](phase-9-lifecycle-modes-and-run-leases.md); the session/fence
+protocol — sessions, operation intents, and fences — by the
+[sessions-journal-and-fences phase](phase-10-sessions-journal-and-fences.md); the
+prepare compare-and-swap and `PreparedGate` by the [prepared-operations phase](phase-11-prepared-operations.md);
+plan admission, snapshots, the acquisition journal, and cursors by the
+[step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md); signed handoff, child
+admission, activation, and build authority by the
+[authenticated-handoff-and-child-admission phase](phase-13-authenticated-handoff-and-child-admission.md);
+the four clauses by the [ownership-clauses-and-reservations phase](phase-14-ownership-clauses-and-reservations.md);
+the rooted catalog, frame session, and recursive traversal by the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md); recovery and resource-record
+rehydration by the [recovery-and-migration phase](phase-18-recovery-and-migration.md); the role lifecycle by
+the [composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md); and the service
+command by the [service-runtime phase](phase-22-service-runtime.md). The canonical full algebra is
+[lifecycle_state_model](../documents/architecture/lifecycle_state_model.md); where this section and that
+page disagree, that page is canonical.
+
 The lifecycle interpreter carries lifecycle scope, resource identity, ownership, and phase indices in
 its state type: `ResourceHandle scope planId id resource ownership phase`. `Unclassified`, `Managed`,
-and `Unmanaged` are distinct ownership states; provisioned, ready, staged, built, running, stopped, and
-destroyed are distinct phases (the exact names may vary). A transition accepts only the predecessor
+and `Unmanaged` are distinct ownership states, and `Observed`, `Provisioned`, `ReadyPhase`, `Staged`,
+`Built`, `Running`, `Stopped`, and `Destroyed` are distinct phase types; all eleven are empty data types
+exported from `HostBootstrap.Reconcile`. A transition accepts only the predecessor
 scope/plan/resource/ownership/phase it can legally follow and returns the successor state plus
 capabilities retaining that same scope and plan.
 Recursive descent and teardown use these values rather than reconstructing authority from a
@@ -2297,17 +2576,19 @@ but only a validated local transition can mint authority to mutate it.
 
 Every mutating reconciler returns `Either ReconcileError ReconcileResult`. A `ManagedResult` carries a
 `ResourceHandle scope planId id resource Managed phase`, the matching
-`OwnershipReceipt scope planId id resource`, and an indexed outcome whose non-authorizing view is
-`Changed (Created | Repaired | Adopted)` or `Unchanged`. Operation-specific hidden evidence fixes legal
-from/to/outcome combinations: adoption consumes matching authority, and `Unchanged` requires verified
-prior committed ownership at the same phase. A `ForeignResult` carries only a
-`ResourceHandle scope planId id resource Unmanaged phase` and a foreign observation. The latter type
-cannot be passed to mutation, stop, or destroy. The only `Unmanaged` → `Managed` transition requires
-an opaque `VerifiedForeignOrigin scope planId id resource generation observationVersion` that jointly
-binds that handle/observation plus matching
-`AdoptionAuthority scope planId id resource generation observationVersion operationKey`, and reports
-`Changed Adopted`; ordinary reconciliation cannot
-silently adopt. Idempotence never degrades a resource validated as ours into an unmanaged observation.
+`OwnershipReceipt scope planId id resource`, and a non-authorizing `ChangeView`: `Changed` with
+`Created`, `Repaired`, or `Adopted`, or `Unchanged`. The `ReconcileResult` constructors are hidden, and
+each completion function fixes its legal from/to/outcome combination: adoption consumes matching
+authority, and `Unchanged` requires a `PriorCommitProof` of committed ownership. A `ForeignResult` carries
+only a `ResourceHandle scope planId id resource Unmanaged Observed` and a `ForeignObservation`; that handle
+cannot be passed to mutation, stop, or destroy. The only `Unmanaged` → `Managed` transition requires an
+opaque `VerifiedForeignOrigin scope planId id resource originId`, whose `originId` is a rank-2 generative
+brand minted by `withVerifiedForeignOrigin` from that handle and observation, plus a matching
+`AdoptionAuthority scope planId id resource originId operationKey` from `withAdoptionAuthority`, and it
+reports `Changed Adopted`. Generation and observation version are runtime fields the origin retains;
+`withAdoptionAuthority` compares them with the handle and refuses a mismatch as `Conflict`, so they are
+value checks, not indices. Ordinary reconciliation cannot silently adopt. Idempotence never degrades a
+resource validated as ours into an unmanaged observation.
 `ReconcileError` distinguishes `Conflict`, `SafetyRefusal`, `Unsupported`, and `Failure`. A conflict
 carries structured expected/observed identity and an
 operator-safe remedy; a safety refusal records why an otherwise legal transition was declined; a failure
@@ -2315,42 +2596,47 @@ records the attempted operation, cause, and `RecoveryDisposition`. Observation i
 unsupported, foreign ownership, and probe failure cannot collapse into one branch. A conflict or safety
 refusal never triggers cleanup of the refused resource.
 
-Before a run mutates a named VM, cluster, generated config, data root, port, host daemon, or global
-provider setting, it must hold all four clauses above for that backend. A backend that cannot supply
-them returns `Unsupported`; a pathname compare or content hash substitutes for none of them. The
-resulting ownership receipt records the
-exact plan/resource identity and generation and is required by recursive teardown. Cleanup is therefore a typed
+A mutation of any object in the Locked-Origin Identity Ownership list above holds all four clauses
+first. The resulting ownership receipt records the exact plan/resource identity and generation and is
+required by recursive teardown. Cleanup is therefore a typed
 ownership operation: compatible unowned state remains `ForeignResult`, incompatible identity is
 `Conflict`, a policy refusal remains `SafetyRefusal`, and an unsatisfiable clause is `Unsupported`.
 Owned partial state is unwound in reverse lifecycle order and all cleanup failures are aggregated.
 
 Because an external effect and the ownership record cannot share one atomic transaction, durable state
-is an untrusted, generative-identity-free `PersistedJournalRecord`. Protected-store verification yields
-`VerifiedJournalRecord scope planDigest frameKey resourceKey generation operation operationKey
-recordVersion phase`;
-matching plan-digest, frame/resource-identity, and operation bindings yield the local private
-`JournalEntry scope planId frame id generation resource operation operationKey recordVersion phase`.
-Its legal graph is:
-`IntentRecorded → ReservationOutcomeUnknown`; reservation unknown branches to `ReservationAbsent`
-(same-generation reservation retry), `Reserved`, `ObservedManaged` (reserve-is-create), or terminal
-`ObservedForeign`; `Reserved → EffectOutcomeUnknown`; effect unknown branches to `EffectAbsent`
-(same-generation effect retry), `ObservedManaged`, or terminal `ObservedForeign`; and **only**
-`ObservedManaged → Committed`. Cleanup is `Committed → TeardownOutcomeUnknown → Released`, with an
-observed same identity returning explicitly to `Committed` for retry and replacement becoming terminal
-foreign state. A released ephemeral generation can start a later acquisition only from verified absence
-plus an opaque
-`FreshGeneration scope planDigest planId frame frameKey resourceKey id resource oldOperation
-oldOperationKey oldGeneration newAcquireOperationKey newGeneration`; it binds the exact local
-identity/operation evidence and old ordinary/adoption release to a distinct new `AcquireOperation` key.
-The token is only eligibility: its sole consumer creates a
-released-reacquisition origin, and `registerOperationIntent` revalidates/consumes the exact protected
-release/absence version while atomically writing the new generation and session membership. First
-acquisition instead requires the sole protected no-prior-generation proof. An unknown or foreign
-generation has no rollover edge. Stable scope/plan
-digest/frame/resource/generation/operation key—not `planId`, resource
-`id`, or handles—are persisted before a mutating backend call; each unknown state is durable before its
-external operation. Hidden, phase-/operation-indexed constructors expose no absent/foreign-to-commit edge,
-wrong-operation substitution, or unproved new-generation retry.
+is an untrusted, generative-identity-free `PersistedJournalRecord` of plan digest, frame key, resource
+key, generation, operation, operation key, record version, and phase. `verifyPersistedJournalRecord`
+checks it against the exact `LifecyclePlan` (Sprint 12.27 owes taking the exact `ProjectPlan` instead),
+`ResourceHandle`, and expected operation — plan digest,
+resource key, generation, and operation must match, the record version must be positive, and the frame
+and operation keys must be non-empty — and yields `VerifiedJournalRecord scope planId id resource`. Only
+those four are indices; generation, operation, operation key, record version, and phase are runtime
+fields that the check compares. The legal graph is enumerated by `legalJournalTransition` in
+`HostBootstrap.Reconcile`, which is canonical for it, and `advancePersistedJournalRecord` refuses any other
+edge as `SafetyRefusal`. Ordinary acquisition is `IntentRecorded → ReservationOutcomeUnknown`;
+reservation unknown branches to `ReservationAbsent`, `Reserved`, `ObservedManaged` (reserve-is-create),
+or terminal `ObservedForeign`; `Reserved → EffectOutcomeUnknown`; effect unknown branches to
+`EffectAbsent`, `ObservedManaged`, or terminal `ObservedForeign`; and **only**
+`ObservedManaged → Committed`. Cleanup is `Committed → TeardownOutcomeUnknown`, which branches to
+`Released`, back to `Committed` when the same identity is observed (for retry), or to terminal
+`TeardownObservedForeign` when the object was replaced. The graph has no absent-to-commit or
+foreign-to-commit edge.
+
+**Every retry is fenced.** In each of the five families — acquisition reservation, acquisition effect,
+adoption, repair, and phase change — an authoritative absent or original observation returns to its
+unknown state only through that family's explicit fenced state (`ReservationRetryFenced`,
+`EffectRetryFenced`, `AdoptionRetryFenced`, `RepairRetryFenced`, `PhaseRetryFenced`), entered under the
+same operation key after old-permit fencing. No observation has a direct edge back to its unknown state.
+
+A later generation of an operation starts from `registerOperationIntent`, which takes a caller-selected
+`IntentOrigin`, either `NoHistory` or `ReleasedReacquisition`. Inside the protected transaction it reads the
+operation's record: `NoHistory` is refused when any record exists, and `ReleasedReacquisition` is refused
+when a record exists whose phase is not `Released`, so an `AdoptionReleased` record does not qualify. Both
+origins are accepted when no record exists. That is a runtime phase check over a caller-chosen origin, not
+a typed proof of eligibility. Registration writes the intent and its session membership atomically. An
+unknown or foreign generation has no rollover edge. Stable scope/plan digest/frame/resource/generation/
+operation key — not `planId`, resource `id`, or handles — are persisted before a mutating backend call;
+each unknown state is durable before its external operation.
 
 Adoption is a separate journal transaction:
 `AdoptionIntentRecorded → AdoptionOutcomeUnknown`; total reprobe then records
@@ -2358,19 +2644,19 @@ Adoption is a separate journal transaction:
 Only `AdoptionObservedManaged → AdoptionCommitted` can mint adopted ownership. Authoritative absence
 permits an explicit retry under the **same** adoption operation key only after `OldPermitsFenced` proves
 that a delayed transfer cannot land; without that proof it is `Unsupported`/operator resolution, not a
-new attempt. Foreign observation and policy refusal are terminal. Cleanup is
-`AdoptionCommitted → AdoptionTeardownOutcomeUnknown → AdoptionReleased`, and there is no adoption edge
-from an ordinary `ObservedForeign` acquisition entry.
-Both ordinary and adoption release records can authorize a later exact-resource `FreshGeneration`
-rollover after verified absence; either must pass through the sole released-reacquisition origin and
-atomic intent/session registration to begin the ordinary acquisition graph under its distinct new
-acquisition key, while explicit re-adoption would instead require new adoption authority and intent.
-Neither unknown phase can roll over.
-Receipt rebinding requires raw persisted receipt verification, exact plan/frame/resource/operation
-bindings, and a `ReceiptCommitProof` admitting only the matching ordinary `Committed` acquisition or
-matching `AdoptionCommitted` transfer. A phase transition, teardown entry, same generation under another
-resource/operation, or foreign observation cannot mint a receipt. Operational failures carry their
-recovery disposition and never erase journal state.
+new attempt. Foreign observation and policy refusal (`AdoptionRefused`) are terminal. Cleanup is
+`AdoptionCommitted → AdoptionTeardownOutcomeUnknown`, which branches to `AdoptionReleased`, back to
+`AdoptionCommitted` on the same identity, or to terminal `AdoptionTeardownObservedForeign`, and there is
+no adoption edge from an ordinary `ObservedForeign` acquisition entry.
+Only an ordinary `Released` record admits `ReleasedReacquisition`; over an `AdoptionReleased` record,
+`registerOperationIntent` refuses both origins. Neither unknown phase can roll over.
+Receipt rebinding requires a `VerifiedJournalRecord` and the `PriorCommitProof` that `withPriorCommitProof`
+mints only from a record in `Committed`. A phase transition, teardown entry, same generation under another
+resource/operation, or foreign observation cannot mint a receipt. A record in `AdoptionCommitted` yields no
+`PriorCommitProof` today, so an adopted resource cannot be rebound as `Unchanged`; the rebinding of a
+matching adoption transfer is owed by the
+[canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md).
+Operational failures carry their recovery disposition and never erase journal state.
 
 Repairs and non-release phase changes are separately journaled effects. A repair uses
 `RepairIntentRecorded → RepairEffectOutcomeUnknown` before its backend call, then total reprobe observes
@@ -2387,7 +2673,7 @@ PhaseObservedAbsent | PhaseObservedUnexpected | PhaseObservedForeign`. The from-
 only the same operation key after old-permit fencing; **only**
 `PhaseObservedTo → PhaseCommitted` commits. Absent, unexpected third phase, and foreign replacement are
 terminal/operator-resolution branches. Both effect families preserve the existing receipt, and neither
-can enter acquisition/adoption commit, teardown release, or `FreshGeneration`. Kill recovery reprobes
+can enter acquisition/adoption commit, teardown release, or a reacquisition origin. Kill recovery reprobes
 instead of blindly replaying those effects.
 
 Execution profile is also indexed typed authority. Fresh construction uses
@@ -2401,9 +2687,10 @@ non-config authority layer verifies executable-bound installed identity and exac
 `RootInvocationAuthority (Production projectId) brokerGeneration verb`; it does not mint a profile. The
 [lifecycle-modes-and-run-leases phase](phase-9-lifecycle-modes-and-run-leases.md)'s rank-2 Production and
 Harness mode transaction creates the fresh broker generation and exclusive `UnboundRunLease`; the
-Harness opener generates the run
-identity and yields only the matching existential
-`HarnessRootAuthority projectId runId brokerGeneration`. The public root brackets are composite: they
+Harness opener, `withHarnessRoot`, generates the run identity and yields only the matching existential
+`HarnessRoot projectId runId brokerGeneration verb`, which bundles the Harness `RootInvocationAuthority`,
+the `HarnessAuthority`, the run identity, the mode lease, and the `UnboundRunLease`. The public root
+brackets are composite: they
 invoke the lower authority kernel inside the protected mode/lease transaction without exposing an
 intermediate state. Only the
 [lifecycle-modes-and-run-leases phase](phase-9-lifecycle-modes-and-run-leases.md)'s fresh profile openers
@@ -2411,13 +2698,13 @@ can combine the exact root scope/authority,
 active mode, and still-unbound lease into the matching `LifecycleProfile`. The opaque profile retains the
 opening lease's exact installed-project name, protected-store identity, and broker epoch; fresh
 `ProjectPlan` admission carries those values privately so the effectful snapshot leaf can reject a
-cross-store pairing even when project text and numeric epochs coincide. Phase 12.7–12.20
-provide plan admission, stable snapshot bytes, pure `PlanDigestBinding` verification, the indexed bound
+cross-store pairing even when project text and numeric epochs coincide. Sprints 12.7–12.20 of the
+[step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan.md) provide plan admission, stable snapshot bytes, pure `PlanDigestBinding` verification, the indexed bound
 snapshot plus ordered fresh persistence/binding, read-only admission of an existing Production snapshot,
 pure refinement of its exact indexed Open package into the recovered Production profile, safe restart
 config/specification refinement, and fixed-identity recovered plan reconstruction.
 
-The implemented `withPersistedPlanSnapshot` first uses one protected entry to revalidate the unbound lease,
+`withPersistedPlanSnapshot` first uses one protected entry to revalidate the unbound lease,
 store and flush the private indexed snapshot, and read it back under its exact bytes/digest. After that
 entry closes, it compare-and-swaps the separate lease record through the existing fresh-only
 `bindRunLease`. Snapshot durability and lease binding are ordered durable transitions, **not** one atomic
@@ -2425,7 +2712,7 @@ multi-record transaction. A crash between them leaves a classified persisted-sna
 that recovery may resume or refuse; only full completion yields the matching bound snapshot, binding, and
 lease evidence.
 
-Existing-snapshot admission through the implemented `withBoundPlanSnapshot` starts from only the protected
+Existing-snapshot admission through `withBoundPlanSnapshot` starts from only the protected
 store and installed Production identity. In one protected-record-read-only entry it requires the existing
 authority binding, exact currently allocated broker generation, Production mode and bound-lease epoch,
 canonical snapshot bytes and content-derived digest, and durable invocation disposition. A terminal
@@ -2433,13 +2720,13 @@ acknowledgment is routed after that entry closes to a close-key-only callback an
 identity; only a verified Open invocation generates the sole local `planId`. The fully indexed
 `BoundInvocationRecovery scope specDigest planDigest planId brokerGeneration`, recovered Production
 profile, and plan reconstruction retain that identity; neither the recovery-profile opener nor
-reconstruction quantifies or mints a second `planId`. The implemented pure recovered-profile refinement
+reconstruction quantifies or mints a second `planId`. The pure recovered-profile refinement
 requires the exact Production `ProjectUp` root, active mode, existing-bound lease, verified/bound snapshot
 and binding, and that recovery value. It revalidates the retained project, store, Production run, stable
 identities and bytes, broker epoch, and binding origin, then yields only the correspondingly indexed
 recovered profile. It opens no protected-store entry or one-use slot and cannot inhabit Harness or teardown
 scope. On restart, an independently repeated finalization retains the same stable specification text under
-a distinct local phantom. The implemented hidden recovery token is issued only after exact profile/finalized
+a distinct local phantom. The hidden recovery token is issued only after exact profile/finalized
 codec digest agreement and independently checks the abstract validated config's retained specification. The
 public input bridge preserves the config's `configId`, canonical digest, and value while regenerating drafts
 from the finalized builder. Fixed-plan reconstruction then requires exact root-bound canonical bytes/digest,
@@ -2448,7 +2735,7 @@ opens no journal, cursor, migration, fence, or effect authority. Production disp
 identity through dry rendering or snapshot persistence and the hidden root-Up `LifecycleEntry`; the entry
 alone derives journal/cursor/authorization and supplies the lower Chain interpreter. Reverse verbs derive
 current-frame work from that exact plan without minting teardown command authority.
-Phase 12 owns the implemented exact local current-frame `project up` authority substrate; the
+Phase 12 owns the exact local current-frame `project up` authority substrate; the
 [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) alone composes it with
 operator/descent evidence and recursive traversal. Both profiles contend on one project-wide
 `ProjectModeLease projectId mode brokerGeneration` record. Production retains its mode across `down`;
@@ -2468,7 +2755,7 @@ branches are classified. Callers cannot choose the run or broker phantom first, 
 effect-authorizing gate requires the root
 authority and lease to carry the same broker generation. Each fresh scope-specific profile opener consumes the
 matching lower root authority inside the composite bracket, breaking any
-command-authority/lifecycle-validation cycle. The implemented Sprint 12.21 lifecycle boundary opens
+command-authority/lifecycle-validation cycle. Sprint 12.21's lifecycle boundary opens
 `AcquisitionJournal scope planId brokerGeneration` from the exact root, bound lease, bound
 snapshot/binding, and plan. It compares the retained evidence first, then rereads the live mode, exact
 lease record version/state/bytes, and protected snapshot in one entry in the lease's store before opening
@@ -2484,7 +2771,7 @@ from the per-operation attempt/ownership journal. The lower `openProjectJournal`
 prepare APIs are non-authorizing primitives: entering them directly cannot mint plan-bound command authority
 or establish the acquisition ordering required by the command route. The no-prepared-work-before-acquisition
 guarantee therefore applies at the plan-bound command boundary. Sprint 12.22 supplies the canonical bounded cursor row and its exact
-source binding; implemented Sprint 12.23 opens
+source binding; Sprint 12.23 opens
 `LifecycleCursor scope planId frame brokerGeneration verb phase` only from that journal and the matching
 `ProjectFrame`. The journal row is the initial seed only until a frame's cursor row exists; thereafter the
 strict canonical per-frame row is authoritative. Existential current-phase recovery avoids phase guessing,
@@ -2493,10 +2780,12 @@ from at-least-once callback delivery after unlock. The root-only reservation bou
 lease's full retained origin, then revalidates live mode/lease/snapshot, source journal, and exact current row
 with the one-use reservation. Its result remains inside the fixed root interpreter; pure frame evidence and
 the descriptive lifecycle context authorize nothing and contain no store. `withProjectPlan` consumes the
-profile/config/draft, and
-`containerPlan` is only a projection of that exact
-`ProjectPlan scope specDigest planId configId cfg`; there are no
-independent name/path/profile arguments that can disagree. Harness retains its exact Harness-scoped plan
+profile/config/draft into the exact `ProjectPlan scope specDigest planId configId cfg`. The target is that
+every consumer cluster name, path, and profile is a projection of that plan, with no independent argument
+that can disagree with it. Today the demo's `containerPlan` takes a separately derived `ClusterProfile`
+(its call sites pass `clusterProfileOf` of the config) and the context's source root, so the profile and
+the plan can disagree; the [worked-demo phase](phase-24-worked-demo.md) owes the plan-owned projection.
+Harness retains its exact Harness-scoped plan
 through generated-config ownership and invokes the same fixed root-Up entry interpreter, leaving
 `TestSuite` assertion-only. The lifecycle value's raw constructor is confined to a Cabal-private internal
 component, and the public facade exposes only the opaque value and its engine eliminators.
@@ -2506,7 +2795,7 @@ record, resource-operation journal, or effect exists, while a crash leaves an ex
 lease for the recovery sweep.
 
 In-process authority is non-serializable. For recursive child-frame transitions, the independently
-authorized root retains the protected `AuthorityBroker`, bound lease, signing key, protected store, root
+authorized root retains the protected `RootBroker`, bound lease, signing key, protected store, root
 snapshot, and all durable cursors. Self-invocation uses a private duplex session—never Dhall, `argv`,
 environment, durable config, a mounted authority directory, or a general protected-store service. No
 recursive API exposes `ProtectedStore`, a raw read/list/compare-and-swap RPC, or a shared authority mount. The
@@ -2593,16 +2882,15 @@ verifies a manifest pairing the independent complete session and operation sets,
 existing stable session record to the fresh broker/local identity, and internally handles every unknown,
 pre-call continuable, whitelisted already-observed retryable, successful, or terminal operation before
 requiring that exact session's Closed proof plus sole successor state/permit pair. A zero-operation Open
-session remains a required member. Initial intent creation consumes the exact first/reacquisition origin
-and session membership is atomic with that generation write. A persisted initial intent with no fence is an explicit recovery
-state; the classifier idempotently completes the stable initial-fence protocol before continuable work
-receives an `OperationFence`. It also verifies/rebinds the complete
-resource-record set; only the matching bound snapshot and that opaque set can yield a recovered frame
-and a closed owned-or-released evidence sum for the forest's exact authorization point. The owned branch
-alone yields a managed handle/receipt; the released branch alone yields the verified tombstone and can
-mint `FreshGeneration` only after protected absence plus a distinct acquisition key. That eligibility
-token cannot call or register by itself; its sole consumer supplies the exact origin to the atomic
-registration compare-and-swap. Only both complete
+session remains a required member. Initial intent registration checks its `IntentOrigin` and writes
+session membership atomically with the generation. A persisted initial intent with no fence is an explicit
+recovery state; the classifier idempotently completes the stable initial-fence protocol
+(`establishInitialFence`) before continuable work receives its `FenceEpoch`. It also verifies/rebinds the
+complete resource-record set; only the matching bound snapshot and that opaque set can yield a recovered
+frame and a closed owned-or-released evidence sum for the forest's exact authorization point. The owned
+branch alone yields a managed handle/receipt; the released branch alone yields the verified tombstone,
+after which a new generation enters only through `registerOperationIntent` with `ReleasedReacquisition`.
+Only both complete
 session/operation sets yield
 `CurrentBrokerSessionAdmission`; missing/duplicate records, wrong membership, missing/replaced resource
 evidence, or unresolved recovery cannot manufacture it or create a second logical session. Before each
@@ -2616,7 +2904,8 @@ version, and only then returns a root-signed exact prepared grant naming the res
 the catalog-selected target node/dependencies. The storeless executor independently reconstructs that target
 node and exact-matches every coordinate. Only an allowlisted hidden consumer may then reify the
 `PreparedGate`, and only from that authenticated proof of the same root compare-and-swap; receipt of bytes or
-knowledge of the coordinates is not another gate origin. The executor runs the plan-owned local probes and
+knowledge of the coordinates is not another gate origin. (The public `recordDurableUnknown` producer named
+under **What runs today** above is the gap in this rule.) The executor runs the plan-owned local probes and
 prepared backend adapter and returns its exact observation. The root alone validates that observation,
 settles the frame journal, and yields the successor Open-session, Open-project operation state, and matching
 revision-permit authority at one fresh journal version. The
@@ -2656,8 +2945,8 @@ re-runs the independent root gate, verifies the protected versioned non-secret p
 lease/journal/receipts and backend identities, and opens a new broker generation. It does not infer old
 teardown from edited/missing config or a changed binary; unknown snapshot versions refuse without
 effects. Compatible revision carry first uses the sole `withProjectUpMigrationProfile` producer to
-revalidate the exact `ProjectUp` migration root, active mode, old-bound lease/snapshot/binding, and
-`NormalActiveRecovery` without a new plan. The pre-freeze `withProspectiveMigrationPlan` bracket
+revalidate the exact `ProjectUp` migration root, active mode, old-bound lease/snapshot/binding, and that
+the bound lease's binding origin is `FreshBinding`, without a new plan. The pre-freeze `withProspectiveMigrationPlan` bracket
 consumes that indexed profile and same old-bound package with the scope-correct new config and non-empty
 drafts and jointly creates one fresh candidate plan plus its pure non-authorizing
 `ProspectivePlanSnapshot`/binding. Only `withPlanMigration` can consume that exact candidate. It
@@ -2670,26 +2959,33 @@ authoritatively fences every old prepared operation before staging. Session open
 project-journal/revision version; the freeze cannot settle until every independently enumerated
 session, including zero-operation sessions, is Closed. Per-resource migration authority is
 indexed by unchanged frame/resource/generation/ownership-operation/key/policy, settled
-owned-or-released disposition, and complete `recordSetDigest`. A plan-owned exact-set fold stages each
-complete `VerifiedResourceRecordBundle`; owned members carry their receipt, released members carry only
-their tombstone, and missing/duplicate/extra/unknown/disposition-mismatched members refuse.
-Live migration uses `bindLiveMigrationPlanSnapshot` over the already-built candidate plus the exact
-stable-keyed persisted proof; it never reconstructs a plan after freeze. Abandoned Production
+owned-or-released disposition, and complete `recordSetDigest`. A plan-owned exact-set fold verifies each
+complete `VerifiedResourceRecordBundle` once, and the frozen lease (`LeaseFrozen`) pins the resulting set
+digest, which commit and frozen recovery recompute and compare; no per-member staging record is written.
+Owned members carry their receipt, released members carry only their tombstone, and
+missing/duplicate/extra/unknown/disposition-mismatched members refuse.
+Live migration binds the already-built candidate through `withPlanMigration`, which reloads it under its
+stable key and compares its digests with the candidate before returning the `FrozenMigrationRunLease`, and
+`commitMigrationActivation`, which consumes that frozen lease; it never reconstructs a plan after freeze. Abandoned Production
 `ProjectUp` must first load the exact persisted prospective `VerifiedPlanSnapshot` named by the
 incomplete recovery record and then use the exact bound-recovery profile plus
 `withRecoveredMigrationPlanSnapshot`. It may reconstruct only when the provided config/drafts render
 that loaded snapshot. These gates produce only migration-local plan/binding values, and prospective,
 frozen, and staged records authorize no effect. Freeze replaces the old bound lease with one exact
-stable-keyed `FrozenMigrationRunLease`. Only a protected
-compare-and-swap over the complete set can archive old active
-records, switch the lineage old→new, consume that frozen capability, return only the new-bound lease,
-and yield one old/new-indexed `PlanMigrationBarrier`; old- and new-bound authority cannot coexist.
+stable-keyed `FrozenMigrationRunLease`. Only one protected transaction over the complete set can swap
+the frozen lease to the `LeaseMigrated` lease and record `CompletedMigration` under the same stable key,
+switching the lineage old→new, consuming that frozen capability, returning only the new-bound lease, and
+yielding one old/new-indexed `PlanMigrationBarrier`; old- and new-bound authority cannot coexist. The old
+resource records stay in place under the superseded plan digest with their owned/released dispositions;
+nothing is archived. In the tree `commitMigrationActivation` makes the lease swap and the revision write as
+two separate writes, and the incomplete-migration readers refuse the intermediate state; Sprint 18.12 of the
+[recovery-and-migration phase](phase-18-recovery-and-migration.md) owes the single transaction.
 
 `activateMigratedPlan` must consume that barrier, the exact new-bound lease/active revision, local
 plan/binding, and complete set before exposing a journal or preparation authority. It rechecks that no old session
 remains Open and jointly yields the new revision's `CurrentBrokerSessionAdmission`; completed configless
 recovery must produce the same admission before opening a teardown session. A pre-CAS restart resumes
-the frozen old-active migration under a fresh local `migrationId`; `ProjectDown`/`ProjectDestroy` may instead cancel
+the frozen old-active migration under a fresh local migration identity; `ProjectDown`/`ProjectDestroy` may instead cancel
 inactive staging while old remains active. A post-CAS restart selects completed recovery. Both paths
 first load and verify the exact prospective snapshot named by the durable `stableMigrationKey`, never a
 digest inferred from current config. `withCompletedMigrationPlan` then requires the exact new-bound
@@ -2723,40 +3019,40 @@ authorization point produced only by the forest for either ordinary child-settle
 pre-descent reachability. The recovered frame and exact resource evidence must come from the bound
 snapshot plus complete rehydrated set; raw receipt bytes cannot authorize it. Recovery does not
 reconstruct a normal child config and cannot authorize `ProjectUp`.
-The `RecoveryHandoff` tag itself belongs to the **authenticated-handoff-and-child-admission phase**,
-which owns every v1 protocol tag and pins each one's round trip and negative paths; the
-recursive-lifecycle-command and recovery-and-migration phases consume it. This is the same wire the
-recursive teardown descent admits its nested verb with (§ X, § Y) — a nested teardown and a nested
-recovery are one edge, not two, so they share one tag rather than each minting a private one.
-Controller-managed service restarts use a separate platform/OS verifier. The signed manifest authorizes
-an immutable rollout revision/controller template; after creation, independently measured workload/OS
-identity contributes the concrete pod UID plus restart count or invocation nonce. Together with the
-pinned, independently provisioned Activation verification key they yield one
-`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId
-configDigest secretDigest service rolePlanDigest permittedEffects`; its activation authority, role-plan
-projection, and protected secret-channel locator cannot be separated or mixed.
-The scope-correct project-owned `RoleCodec` verifies the mounted role-wire bytes, and the activation
-internally reads/verifies the Production-empty or Harness-private bundle, into a fresh
-`VerifiedConfigWire`/`ValidatedServiceRequest`. The signed projection proves its narrowed
-`rolePlanDigest` and exact `configDigest` belong to that parent `planDigest`; the child does not recompute
-the full lifecycle plan from its least-authority wire. `verifyRolePlanDraft` first checks the project
-draft/digest without durable mutation. `withRoleLifecycleAdmission` then atomically reserves the one-use
-lifecycle admission/journal—or yields only the complete predecessor recovery manifest—and
-`withRuntimeRolePlan` linearly consumes that exact admission plus verified draft. It yields only
+`RecoveryHandoff` in `HostBootstrap.Handoff` is a constructor-hidden phantom payload discriminator, not a
+wire tag. On the wire, a recovery handoff is the `RecoveryRequestTag`/`RecoveryResponseTag` pair of the v1
+`ProtocolTag` set, and its signed `HandoffBinding` names the `RecoveryAdapterWire` payload kind where a
+config handoff names `NarrowedProjectConfig`. The
+[authenticated-handoff-and-child-admission phase](phase-13-authenticated-handoff-and-child-admission.md)
+owns every v1 `ProtocolTag` and pins each one's round trip and negative paths; the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) and the
+[recovery-and-migration phase](phase-18-recovery-and-migration.md) consume them. A nested teardown descent
+(§ X, § Y) and a nested recovery cross the same parent→child edge over that one v1 tag set; neither mints a
+private tag.
+Controller-managed service restarts use a separate platform/OS verifier, and § AA is canonical for the
+`service run` sequence. The signed manifest authorizes an immutable rollout revision; the independently
+measured instance contributes the pod UID plus restart count, or an invocation nonce. With the pinned,
+independently installed Activation verification key, `verifyRuntimeRoleActivation` yields one
+`VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId`, whose
+signed manifest, measured instance, and protected-store identity cannot be separated or mixed.
+`withDecodedServiceProgram` decodes the measured role-wire bytes through the scope-correct `RoleCodec`
+into a fresh `ValidatedServiceRequest`; the child does not recompute the full lifecycle plan from its
+least-authority wire. `verifyRolePlanDraft` checks the definition's draft against the signed role-plan
+digest and effect ceiling without durable mutation. `withRoleLifecycleAdmission` then reserves the
+one-use admission — a contradictory predecessor row yields `RoleAdmissionRecoveryRequired` and refuses —
+and `withRuntimeRolePlan` consumes that admission plus the verified draft, yielding only
 `RolePlan scope specDigest planId configId secretDigest frame revision instanceId`, the matching
-`RolePlanDigestBinding`, and a same-`planId` `VerifiedServicePlacement`; `selectAndRunService` also requires
-the exact Serve cursor, ready handles, retained receipt/lease package, and finalized runtime spec. It rechecks the
-workload-instance identity, proves the selected handler's exact effect row (including opaque
-durable-placement authority where required), and atomically transfers a private
-`ServiceCommandAuthority scope specDigest planId configId secretDigest frame revision instanceId
-ServePhase service effects` into the internal selected package. R1/I1 values cannot run in R2/I2 or after
-I1 terminates; non-exclusive rollout overlap is permitted. Exclusive lease transfer publishes the
-successor only after exact-set old-instance recovery produces typed
-`ServiceLeaseTransferBarrier` from an atomic backend fence or retained-lock in-flight-settlement barrier
-covering every predecessor; `resumeRoleLifecycleAdmission` consumes it before a new plan exists, and
-unsupported backends refuse. The core-owned masked run-to-Exit operation is the only public runner. Activation alone cannot authorize
-effects or execution. A restart cannot construct a
-lifecycle `ProjectPlan`, root authority, or lifecycle mutation. The Dockerfile-time gate uses an
+`RolePlanDigestBinding`, and a same-`planId` `VerifiedServicePlacement`. `runRoleLifecycle` is the only
+runner: it drives the masked Prereq-to-Exit sequence over that plan and placement. Each measured instance
+has its own admission key, so a value retained from one instance cannot run as another, and non-exclusive
+rollout overlap is permitted. When the signed ceiling names an exclusive effect, `leaseRequirementOf`
+yields `RequiresGenerationLease` and the whole run is held inside `withRunLiveness`, a kernel lock the OS
+releases on process death; a live predecessor holder makes the successor refuse before its first
+acquisition. That lock excludes only a live holder: the exclusive-lease transfer barrier that would prove
+a dead predecessor's prepared or in-flight mutations fenced is target, owed by the
+[service-runtime phase](phase-22-service-runtime.md) (§ AA). Activation alone cannot authorize effects or
+execution. A restart cannot construct a lifecycle `ProjectPlan`, root authority, or lifecycle mutation.
+The Dockerfile-time gate uses an
 ephemeral, project/spec/config/build/source/builder-bound `BuildInvocationAuthority` joined with its exact
 `ImageBuildFrame projectId specDigest configId frame`, never the baked config alone.
 `verifyBuildInvocation` checks the delivered `BuildChannel` against an independently installed Build key,
@@ -2781,12 +3077,19 @@ into a replayability contract. A resulting digest may identify one published bui
 single workflow handoff; it does not make locked inputs, digest-pinned consumers, or reproducible rebuilds
 part of the architecture.
 
-**The compiler is the one selection that does not roll.** GHC arrives as an explicit build argument
-carrying the same version the Python bootstrapper installs on the host and the guest bootstrap pins in a
-VM, and the image build verifies the installed compiler reports it. This is not a retreat from rolling
-selection, because it is not the same kind of selection. Every other version here is discovered so that a
-rebuild finds what consumers will actually resolve against; the compiler instead *keys* what the base
-ships. A Cabal store lives at `store/ghc-<version>-<abi>/`, so a base whose compiler drifts from the one
+**Three selections do not roll.** The bootstrapper's base-image module (`hostbootstrap/base_image.py`)
+fixes them as constants rather than discovering them:
+
+| Fixed selection | Value source | Why it is fixed |
+|---|---|---|
+| GHC version | `GHC_VERSION`, shared with the host bootstrap | it keys the warm store (below) |
+| LLVM major | `LLVM_MAJOR` | the LLVM toolchain packages are installed by major version, so a new major is a deliberate bump, not a discovery |
+| Ubuntu release line | `CPU_BASE_IMAGE` for the CPU parent; the CUDA parent is the newest `cudnn-devel-ubuntu24.04` tag | the parent never moves to a newer Ubuntu LTS without a source change; within the line, the parent tag and the CUDA version still roll |
+
+Every other version is discovered so that a rebuild finds what consumers will actually resolve against.
+**The compiler pin is a different kind of selection.** GHC arrives as an explicit build argument carrying
+the same version the Python bootstrapper installs on the host and the guest bootstrap pins in a VM, and the
+image build verifies the installed compiler reports it. The compiler *keys* what the base ships. A Cabal store lives at `store/ghc-<version>-<abi>/`, so a base whose compiler drifts from the one
 consumers select ships a warm store none of them can read, and a workspace that names its compiler
 explicitly cannot even be configured inside the image. The pin also costs nothing in maintenance: the
 version was already written down twice for the host and the guest, and this makes the base agree with
@@ -2817,8 +3120,10 @@ machine running the binary, the provider guest, and inside the cluster. There is
 because nothing this algebra admits is reachable from outside the host it was brought up on, and an
 unreachable fourth tag would be a proof obligation nobody can discharge.
 
-A finalized registry plan jointly binds the client, verified published exposure, backing object-store
-endpoint, credential authority, and blob-delivery strategy.
+A finalized `RegistryPlan` jointly binds the client, verified published exposure, backing object-store
+endpoint, blob-delivery strategy, and a positive plan revision. It carries no credential: the demo's
+in-cluster registry is anonymous, and the Docker Hub credential forwarded to nested image pulls is a
+separate policy ([registry credentials](../documents/engineering/registry_credentials.md)).
 Consumers may contribute concrete registry resources and image operations, but may not independently
 select endpoint strings or a serialized redirect boolean.
 
@@ -2835,16 +3140,21 @@ and its mappings by identity.
 
 A `Redirect` delivery strategy is constructible only from a `Reachability` proof that the client scope
 can reach the backend scope. There is no proof from `HostLocal` to `ClusterOnly`; that topology can
-construct only `Proxy`. Rendering is total over delivery strategy, so proxy delivery emits
-`storage.redirect.disable: true` and redirect delivery emits `false`. The boolean is output, never an
-input to the DSL.
+construct only `Proxy`. `renderStorageRedirect` is total over delivery strategy: proxy delivery emits the
+`storage.redirect.disable: true` stanza, and redirect delivery emits no `storage.redirect` stanza, which
+leaves Distribution's redirecting default in force. The boolean is output, never an input to the DSL.
 
 Static coherence does not replace runtime identity. The plan-owned route probe verifies the exact
-client→exposure and registry→store paths, rejects an out-of-scope redirect, and yields a
-revision-/plan-/registry-/store-indexed `ReadyBlobRoute`. A bare `/v2/` response cannot satisfy an image
-operation precondition. the composition-and-network-algebra phase owns the generic reachability and delivery algebra, the canonical-quantities-and-reconcile-results phase owns the
-identity-bound readiness/precondition machinery, and the worked-demo phase owns the demo renderer and live
-host-client→NodePort→cluster-only-S3-store proof. The canonical architecture is
+client→exposure and registry→store paths, rejects an out-of-scope redirect, and `settleBlobRoute` yields a
+`ReadyBlobRoute client store lifecycleScope planId clusterId service` only at the plan's current revision,
+which the witness retains as a runtime value rather than an index. A bare `/v2/` response cannot satisfy an
+image operation precondition. The
+[composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md) owns the generic
+reachability and delivery algebra, the
+[canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md)
+owns the identity-bound readiness/precondition machinery, and the [worked-demo phase](phase-24-worked-demo.md)
+owns the demo renderer and the live proof along host client → resolved relay exposure → internal NodePort
+registry → cluster-only S3 store. The canonical architecture is
 [network_reachability](../documents/architecture/network_reachability.md).
 
 ### HH. Unrepresentable Illegal State
@@ -2871,12 +3181,18 @@ an argument-order defect into a type error.
 indices: an index on a type whose accessors return plain `Text` is documentation, not enforcement. It
 applies to the values a sealed producer consumes for exactly the same reason.
 
-**A registered compile-fail fixture pins the diagnostic it expects.** `rejectsWith` names one contiguous
-phrase; a fixture that merely fails to compile proves nothing, because a typo satisfies it equally. An
-expectation split into separately-matched fragments is the same defect wearing a list, since an unrelated
-error on the same line can satisfy each fragment independently. A boundary whose fixture pins nothing is
-a boundary with prose where its proof should be — and the weakest fixtures tend to be the ones the
-doctrine cites most confidently.
+**A registered compile-fail fixture pins the diagnostic it expects.** A fixture that merely fails to
+compile proves nothing, because a typo satisfies it equally. The rule is one contiguous expected phrase per
+rejected binding, matched inside one diagnostic: an expectation split into separately matched fragments is
+weaker, because an unrelated error elsewhere in the output can satisfy each fragment independently. A
+boundary whose fixture pins nothing is a boundary with prose where its proof should be.
+
+What runs today is weaker than that rule. `rejectsWith` takes a list of expected fragments, and
+`rejectsWithUsing` in `CompileFailSpec` requires each fragment to appear somewhere in the whole compiler
+stderr, matched independently with `isInfixOf`. Several registrations list bare tokens rather than complete
+phrases. Re-joining them into one phrase each, matching per diagnostic block, and giving the combinator a
+non-empty argument are owed by Sprint 5.10 of the
+[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md).
 
 A claim of unrepresentability carries a proof obligation. A boundary asserting that a shape cannot be
 constructed ships a compile-fail fixture under `core/hostbootstrap-core/test/compile-fail/`, registered
@@ -2890,8 +3206,10 @@ behavioral assertion that the lawful shape *does the lawful thing*: such a test 
 unlawful shape, so it fails when the boundary is missing rather than certifying its absence.
 
 Spawning a child process is such a boundary. A child that outlives its launcher has exactly one lawful
-stdio disposition, file-descriptor inheritance setting, session, environment, and working directory, and
-each of `System.Process`'s other `StdStream` constructors is wrong for its own reason: `Inherit` retains
+stdio disposition, file-descriptor inheritance setting, session, and console detachment, so none of those is
+a parameter. Its working directory and environment are `detachedLaunch` parameters, constrained rather than
+fixed: an absolute `DetachedWorkingDirectory` and the child's complete environment, because a detached child
+never inherits the launcher's. Each of `System.Process`'s other `StdStream` constructors is wrong for its own reason: `Inherit` retains
 the launcher's capture pipe so nothing reading the launcher observes EOF, `CreatePipe` leaves the parent
 blocked on an EOF that never arrives or delivering `SIGPIPE` after it closes the read end, and `NoStream`
 closes the descriptor — which the `process` documentation restricts to children that never use it, and
@@ -2906,28 +3224,34 @@ configuration and target plan/digest/binding, and topology-owned lift context, i
 projector derives remote durable-root lineage without a parent-forged child-local `CanonicalProjectRoot`. Its reverse owner
 accepts only the already-prepared reverse descent. Neither route accepts a caller-supplied `CreateProcess`,
 executable, channel, working directory, environment, payload, binding, or completion constructor. The bracket
-assembles its process internally with cwd fixed to `/` and the environment currently inherited internally;
-inherited is neither sanitized nor plan-derived.
+assembles its host-side process internally (`frameChildProcess` in `HostBootstrap.Handoff.Transaction`,
+`childProcess` in `HostBootstrap.Handoff.Process`): stdin and stdout are its own pipes, stderr is inherited,
+the child leads its own process group, and descriptors are closed. That host-side process sets no working
+directory and no environment, so it inherits both from the launcher; the inherited environment is neither
+sanitized nor plan-derived. Only an admitted container layer of the route fixes a working directory: its
+container process runs with `-w /` (`HostBootstrap.Handoff.Process.Route`).
 
-Protocol success is also an unrepresentable boundary rather than exit-status convention. The root catalog's
-exact-binding-keyed child-frame row is v1 Published→v2 Received. Its separate parent slot is v1
-Reported→v2 Acknowledged→v3 Adopted. Publication, acknowledgement, adoption, and child receipt are all
-root-coordinator durable mutations; neither the immediate parent nor the frame executor obtains a protected
-store. Live admission and mutation finish under the exact root session guard, which releases before fixed
-callbacks deliver the committed response or adoption. Protocol supplies only structural one-field tags/states
-and a nullary/fixed invalid-report error; Relay owns their canonical transport envelopes and can forward only
-the sealed rooted request/response packages. The root prepares the parent transition, the immediate parent
-forwards the exact acknowledgement to the child, and only then may the root conditionally adopt. Only fresh
-Adopted invokes the immediate-parent continuation; replay redelivers the stored acknowledgement without
-another callback. Routed acknowledgement and receipt consume only sealed received edge/descent packages; the
-process owner receives neither Receiver internals, a raw protocol channel, durable record operations, nor a
-store locator.
+Protocol success is also an unrepresentable boundary rather than an exit-status convention: a child's
+completion counts only as a sealed, root-owned durable state transition, never as a process exit code. The
+root coordinator alone writes those transitions, and a process owner receives only sealed received packages —
+no protocol channel, durable record operation, or store locator. The protocol vocabulary
+(`HostBootstrap.Handoff.Protocol`) and the rooted receipt (`HostBootstrap.Lifecycle.Rooted.Receipt`) are hidden
+modules, proved by the compile-fail fixtures `ImportHandoffProtocol.hs` and `ImportLifecycleRootedReceipt.hs`.
+The transition sequence (Published, `FrameComplete`, `ReceiptConfirm`, Received, `ReceiptRecorded`, and the
+parent's Reported, Acknowledged, Adopted slot) is canonical in
+[composition_methodology](../documents/architecture/composition_methodology.md#the-recursive-project-up-interpreter),
+and its proof rows are in [unrepresentable_state](../documents/architecture/unrepresentable_state.md).
 
-The bracket's lifetime guarantee is bounded by what the host can execute. Timeout, cancellation, protocol
-failure, callback exception, and other catchable host exits terminate and reap the complete host-side child
-process group before ownership is released. An uncatchable parent death executes no Haskell cleanup and cannot
-promise termination or reap; only pipe EOF and the kernel's descriptor/process cleanup remain. This boundary
-makes no claim about guest or container descendant groups.
+The bracket's lifetime guarantee is bounded by what the host can execute. On a POSIX host, timeout,
+cancellation, protocol failure, callback exception, and other catchable host exits signal and reap the
+complete host-side child process group before ownership is released. On a Windows host the same exits
+terminate and reap only the direct child: `HostBootstrap.Effect.ChildGroup` calls `terminateProcess` on the
+child handle, so a descendant the child started outlives the bracket. Job-Object containment that ends the
+whole tree on Windows is owed by Sprint 13.20 of the
+[authenticated-handoff-and-child-admission phase](phase-13-authenticated-handoff-and-child-admission.md).
+An uncatchable parent death executes no Haskell cleanup and cannot promise termination or reap; only pipe EOF
+and the kernel's descriptor/process cleanup remain. This boundary makes no claim about guest or container
+descendant groups.
 
 What this does not buy. Hidden constructors exclude construction by cooperating code inside this
 repository. They do not exclude an external actor, do not bind a caller who reaches past the boundary to
@@ -2944,7 +3268,13 @@ owns the lower authority boundary, and the
 [lifecycle-modes-and-run-leases phase](phase-9-lifecycle-modes-and-run-leases.md) plus the
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) own the
 lifecycle instances. The
-[documentation-reconciliation-and-drift-guards phase](phase-29-documentation-reconciliation.md) owns the
+[authenticated-handoff-and-child-admission phase](phase-13-authenticated-handoff-and-child-admission.md)
+owns the frame-crossing bracket (`HostBootstrap.Handoff.Transaction`), the protocol vocabulary, and the
+child-group termination (`HostBootstrap.Effect.ChildGroup`), and the
+[recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) owns the lifecycle process
+route with its forward and reverse launch owners (`HostBootstrap.Handoff.Process`) and the root
+coordinator's durable receipt and acknowledgement transitions. The
+[documentation-reconciliation-and-drift-guards phase](phase-25-documentation-reconciliation.md) owns the
 mechanical guards that keep a sealed surface sealed. The canonical architecture is
 [unrepresentable_state](../documents/architecture/unrepresentable_state.md).
 
@@ -2957,7 +3287,9 @@ runs as an ordinary process of the outer host, and it passes host-native on macO
 alike. A suite that only builds and self-tests on POSIX cannot gate a binary the plan says is built
 host-native everywhere.
 
-**This is the gate, spelled once.** Every other document cites this list rather than paraphrasing it:
+**This is the gate, spelled once.** Every other document cites this list rather than paraphrasing it.
+Each command runs from the repository root, as a separate invocation; the two `cd` legs do not chain, so
+pasting the list as one script runs the second `cd` from `core/` and fails:
 
 ```
 cd core && cabal test all
@@ -2970,17 +3302,18 @@ All four legs, in the spelling above. There is no `-Werror` flag to remember: bo
 the warning policy in their `common warnings` stanza, so it is a property of the source tree rather than
 of whoever typed the command. Dropping the `demo/` leg leaves the only real consumer ungated; dropping
 `check_code` leaves the Python layer's types and formatting unchecked. A paraphrase that omits either is
-a weaker gate wearing this one's name, and the omission does not announce itself — which is how three
-documents came to describe this gate three different ways.
+a weaker gate wearing this one's name, and the omission does not announce itself.
 
 The harness therefore holds five rules. Each is a property of the test harness, never a weakening of the
 contract a guard asserts: a host-portable guard proves the same thing on every host, which is exactly why
 it may not be written in terms of one.
 
 - **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
-  bytes, so it is a property of the file rather than of the process locale. The suite driver also fixes
+  bytes, so it is a property of the file rather than of the process locale. Each suite driver also fixes
   the locale encoding, so a spec that reads a source file or captured command output decodes the same
-  text on every host.
+  text on every host. The core driver (`core/hostbootstrap-core/test/Spec.hs`) sets
+  `setLocaleEncoding utf8` before the runner starts; the demo driver (`demo/test/Spec.hs`) does not, and
+  Sprint 24.57 of the [worked-demo phase](phase-24-worked-demo.md) owes it.
 - **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
   module-ownership list compares canonical forward-slash paths, so a native path separator cannot make
   an otherwise-satisfied allow-list fail.
@@ -2992,21 +3325,24 @@ it may not be written in terms of one.
   host, so what varies is what it *answers* there: the kernel result where the row can hold its
   obligations, the total refusal where it cannot. A case reads that from the row's own declaration
   rather than from a build symbol the suite repeats, so the expectation cannot drift from the subject it
-  is about, and a compile-fail fixture expects one diagnostic because the module it names is built
-  everywhere.
+  is about, and a compile-fail fixture's expectation is the same on every gate host because the module it
+  names is built everywhere.
 - **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable
   on this gate host asserts the refusal its row declares; it does not disappear. A conditional that
   changes an *expectation* keeps the evidence, while one that removes the case removes it — and a green
   total that quietly shrank on one family is the most complete form of spoofing available, because the
   number reads the same. Platform rows are therefore compiled everywhere and stubbed to a total
   `Unsupported` where they cannot apply, rather than excluded by a Cabal condition of any kind — an
-  `os` guard, an `arch` guard, or a `flag`. A component the default build excludes is a component no
-  gate compiles, and a suite that cannot be compiled reports the same green nothing as one that passed:
-  the provider-live component sat behind a default-off `flag` and went fifteen days without compiling
-  while every gate run stayed green. Whether a run was *asked for* is a runtime decision the component
-  makes and reports, never a build condition. The suite reports what it did not run, and the gate
-  compares that against a declared per-family expectation, so a case vanishing is a failure rather than
-  a smaller number nobody reads.
+  `os` guard, an `arch` guard, or a `flag` — around a module, a component, or `buildable`. The row's
+  unavailable branch is a CPP-selected total refusal inside a module that is always built. A Cabal
+  conditional may vary `build-depends` only, as the `unix` and `Win32` dependencies do; it never varies
+  `exposed-modules`, `other-modules`, or whether a component builds. A component the default build
+  excludes is a component no gate compiles, and a suite that cannot be compiled reports the same green
+  nothing as one that passed. Whether a run was *asked for* is a runtime decision the component makes and
+  reports, never a build condition. The suite reports what it did not run, and the gate compares that
+  against a declared case count for each conditional test group (`CoverageManifest`, keyed by test-group
+  path, identical on every gate host), so a case vanishing is a failure rather than a smaller number
+  nobody reads.
 
 #### The gate host
 
@@ -3026,10 +3362,14 @@ produced it.
 This is not a way to obtain a substrate gate cheaply. § II's distinction is untouched: a substrate gate is
 about where the *effects of the lifecycle under test* execute, and running a static suite on a Linux gate
 host does not establish a live provider or container realization. A compiled local process fixture proves
-only its exercised native protocol and kernel behavior, with the evidence limits of § NN. Nor is provisioning
-machinery a source of gate hosts: `ensure wsl2`, `ensure lima`, and the provider reconcilers exist to
-establish the substrate the project under test runs in, never to obtain a development environment for the
-repository's own gates. How a developer or CI comes by a gate host is outside the plan.
+only its exercised native protocol and kernel behavior, with the evidence limits of § NN. Nor is the
+project's own provisioning machinery part of the gate: `ensure wsl2`, `ensure lima`, and the provider
+reconcilers exist to establish the substrate the project under test runs in, and no gate procedure invokes
+them to create the machine it runs on. The test is what the gate procedure does, not which provider the
+gate host sits on. A gate host may run on any provider, including one the reconcilers also manage — the
+recorded arm64 Linux gate host is a container on a Colima VM — and such a run is evidence for the
+container's own family and architecture only, never for the provider or for a substrate. How a developer
+or CI comes by a gate host is otherwise outside the plan.
 
 #### The coverage matrix, and visiting hardware once
 
@@ -3043,25 +3383,31 @@ more:
 
 | Cell | What it establishes | Owning phase |
 |---|---|---|
-| Apple Silicon / Metal | the apple-silicon substrate acceptance | [phase 25](phase-25-apple-silicon-substrate.md) |
-| Linux / NVIDIA | the nvidia substrate acceptance | [phase 26](phase-26-nvidia-gpu-substrate.md) |
-| Windows | the windows substrate acceptance | [phase 27](phase-27-windows-and-wsl2-substrate.md) |
-| `linux-cpu` on x86_64 | the baseline floor and the x86_64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
-| `linux-cpu` on arm64 | the baseline floor and the arm64 Linux gate host | [phase 28](phase-28-host-portability-acceptance.md) |
+| Apple Silicon / Metal | the apple-silicon substrate acceptance | [phase 26](phase-26-apple-silicon-substrate.md) |
+| Linux / NVIDIA | the nvidia substrate acceptance | [phase 27](phase-27-nvidia-gpu-substrate.md) |
+| Windows | the windows substrate acceptance | [phase 28](phase-28-windows-and-wsl2-substrate.md) |
+| `linux-cpu` on x86_64 | the host static gate passing on an x86_64 Linux gate host; no substrate claim | [phase 29](phase-29-host-portability-acceptance.md) |
+| `linux-cpu` on arm64 | the host static gate passing on an arm64 Linux gate host; no substrate claim | [phase 29](phase-29-host-portability-acceptance.md) |
+
+The two `linux-cpu` cells are filled by gate-host runs, not by substrate acceptances: neither needs a
+`linux-cpu` substrate gate run, and neither establishes the `linux-cpu` substrate (§ II).
 
 **A cell is a hardware-coverage unit; a gate-host run is not a cell.** The two are counted separately and
 the table above counts only the first. Five cells need hardware; the same hardware produces **four
 gate-host runs** — Windows, macOS, x86_64 Linux, arm64 Linux — because the three gate-host families split
-Linux by architecture. Those four are the host-portability phase's four sprints. So that phase owns two
-*cells* in the table and four *runs* in its own document, and both numbers are right about different
-things. Anywhere else in this plan, "cell" means a row of the table above and nothing else.
+Linux by architecture. The two Linux runs fill the two `linux-cpu` cells; the Windows and macOS runs fill
+no cell of their own and are produced on the Windows and Apple Silicon visits. The host-portability phase
+records all four runs. So that phase owns two *cells* in the table and four *runs* in its own document,
+and both numbers are right about different things. Anywhere else in this plan, "cell" means a row of the
+table above and nothing else; a phase that records a gate-host run calls it a gate-host run.
 
 The order in which the cells are filled carries no meaning. What matters is that every cell is filled
 against the current covered source, and that a cell nobody has filled is *named as owed* rather than
 assumed from a neighbouring one.
 
 **A hardware set is visited once.** One physical machine can usually fill more than one cell: an Apple
-Silicon host carries the Metal substrate and an arm64 Linux gate host, a Linux/NVIDIA host carries the
+Silicon host carries the Metal substrate, a macOS gate host, and an arm64 Linux gate host, a Linux/NVIDIA
+host carries the
 nvidia substrate and an x86_64 Linux gate host, and a Windows host carries the windows substrate and a
 Windows gate host. A visit that records only the cell it was convened for leaves the machine owing a
 second visit for evidence it could have produced in the same sitting — and the cost of a visit is a human
@@ -3084,7 +3430,7 @@ A phase closes when its own suites hold the five rules above and its declared ga
 that ran it. It does **not** owe evidence from every family: requiring three gate hosts to close a
 baseline sprint is exactly the closure obligation § C forbids, because the hardware is not something the
 phase declares. Cross-family confirmation is owned by one terminal acceptance phase, the
-[host-portability acceptance phase](phase-28-host-portability-acceptance.md), which runs the gate on each
+[host-portability acceptance phase](phase-29-host-portability-acceptance.md), which runs the gate on each
 supported family and lists what it confirms — so a baseline phase closing on one family's evidence does
 not silently drop the portability claim.
 
@@ -3119,8 +3465,20 @@ configuration, outside the repository.
 the binary issues — the tool, its exact argument vector, its stdio disposition, and its frame — and one
 interpreter executes it. Argument construction is pure and separately testable; execution is the
 interpreter's alone. A function that builds an argument vector does not run it, and a described effect
-never sits beside an ad-hoc path that performs the same work without being described. There is one shell
-quoter, one process runner, and one rendering of "cross into this frame" (§ LL).
+never sits beside an ad-hoc path that performs the same work without being described. There is one quoter
+per argument grammar (POSIX shell and PowerShell, both in `HostBootstrap.Effect.Quote`), one rendering of
+"cross into this frame" (§ LL), and one process runner (`HostBootstrap.Effect.Run`) for every captured and
+bounded run.
+
+**A launch boundary is admitted by the process shape it owns.** A module other than the runner may assemble
+a child process only when it owns a launch shape the runner cannot express, and the admitted set is closed.
+`EffectSpec`'s `launchBoundaries` pins it at six modules: the runner; the Colima backend runner, whose
+shipped command transaction owns the group it kills on parent death; `HostBootstrap.Detached`, a child that
+outlives its launcher with a fixed disposition (§ HH); `HostBootstrap.Handoff.Process` and
+`HostBootstrap.Handoff.Transaction`, each the bracketed owner of one child, its group, and its descriptor
+pair for one authenticated edge or one frame crossing; and the demo's accelerator daemon, a long-lived
+worker session whose pipes stay open across requests. A seventh spawn site is a defect unless it owns a
+shape none of these expresses, and admitting it changes this list and that guard together.
 
 **Interpreter text is not a substitute for the binary.** A shell string, a compiled-in Python program, or
 a PowerShell expression is an untyped, unversioned, per-platform fork of logic the binary already owns. It
@@ -3136,23 +3494,63 @@ bootstrap is therefore a closed, typed vocabulary of its own — install these p
 toolchain, build, install the binary — owned by exactly one module, ordered, and re-probed like any other
 reconciler (§ L). It is not a general escape hatch: once the binary is established in a frame, every
 further command in that frame is the binary's own typed operation, lifted (§ LL). Free-form text in that
-module is as forbidden as it is anywhere else.
+module is as forbidden as it is anywhere else. § KK grants no other exception, including none for a
+platform limitation of the runner.
+
+**What runs today.** Interpreter text stands outside the guest bootstrap module, and each site is owed by a
+named phase rather than admitted:
+
+- the runner's macOS branch in `HostBootstrap.Effect.Run` execs `/bin/sh -c` to set the working directory,
+  because `process` cannot combine `create_group`, an explicit environment, and `cwd` there; replacing it
+  with the binary's own working-directory entry is owed by Sprint 3.7 of the
+  [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md), and the
+  `wsl.exe` reframing through PowerShell `-Command` in `HostBootstrap.Effect.Interpreter` by its Sprint 3.8;
+- `Ensure/Incus.hs`, `Ensure/Cuda.hs`, `Ensure/Docker.hs`, `Ensure/Wsl2.hs`, and `Lift.hs`'s
+  `--entrypoint sh` config-write script (`configWriteScript`, Sprint 8.14) are owed by the
+  [ensure-reconcilers phase](phase-8-ensure-reconcilers.md);
+- `Substrate/Provider/Backend.hs` by Sprint 15.35 of the
+  [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md);
+- `Cluster/Cordon/Foundation.hs` by the
+  [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md);
+- `Registry.hs` by the [composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md);
+- the demo's `Commands.hs` by the [worked-demo phase](phase-24-worked-demo.md).
 
 The [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md) owns the
 vocabulary and its single runner; the
-[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns the guest bootstrap vocabulary. Absence
-guards (§ I) assert that the tree carries no script file, that interpreter-invocation tokens appear only in
-the guest bootstrap module, that exactly one quoter, one runner, and one crossing renderer exist, and that
-each computation the ownership rows share — the identity read, the no-replace publication, the
-identity-conditional act, and the record codec — has exactly one definition site.
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns the guest bootstrap vocabulary. The absence
+guards (§ I) that hold this section today live in `EffectSpec`: the tree carries no script file (by
+extension or by a `#!` first line); each quoter, the captured-run primitive, the bounded runner, the effect
+interpreter, and the described-command interpreter has exactly one definition site; no consumer carries a
+quoter or interpreter of its own; and the set of modules that assemble a child process equals
+`launchBoundaries`. Interpreter-token guards exist only per module (`GuestBootstrapSpec` over the guest
+bootstrap's renderings, `ClusterBackendSpec` over the cluster backend). The repository-wide guard that
+interpreter-invocation tokens appear only in the guest bootstrap module, beside a named list of files whose
+tokens are not an invocation, is owed by Sprint 25.25 of the
+[documentation-reconciliation phase](phase-25-documentation-reconciliation.md); it can pass only once every
+site listed above is removed by its owning phase, which is why it sits in that phase. No
+repository-wide guard yet asserts one crossing renderer (only `RegistrySpec` checks that the registry module
+derives its crossing from `foldLeaf`); that guard is owed by Sprint 15.47 of the
+[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md), which owns § LL's
+frame table. The fold itself, `foldLeaf` in `HostBootstrap.Lift`, is the
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md)'s. No guard yet asserts that each computation the ownership rows share — the identity read, the
+no-replace publication, the identity-conditional act, and the record codec — has one definition site;
+consolidating those computations onto one seam, with its guard, is owed by the
+[four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md).
+The `PreToolUse` guard named in `CLAUDE.md` and `AGENTS.md` governs how one development harness launches
+the long demo gate on Windows; it lives in that harness's configuration, not in the tree, and enforces
+nothing in this section.
 
 ### LL. The Frame Table: The Substrate Axis Is A Lift, Not A Fork
 
 **Owning phase**: [the host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md)
-A provider does not own a workflow. It owns a **frame**: a way to reach a context, plus the small closed
-table of facts that context differs by. Every lifecycle behaviour is written once against an abstract
-frame and instantiated from that table. Adding a provider adds a **row**; it never adds a parallel copy of
-a workflow.
+A provider does not own a workflow. It owns a **frame** in the frame-table sense of the
+[glossary](../documents/README.md#glossary): a way to reach a context, plus the small closed table of facts
+that context differs by. This section uses "frame" in that sense throughout. It is neither a topology frame
+(`ContextKind`, `ProjectFrame`) nor the host-frame axis: `HostFrame` (`LinuxFrame`, `AppleFrame`,
+`WindowsFrame`, enumerated by `allHostFrames`) classifies the outer host, and `substrateFrame` collapses the
+detected `SubstrateName` onto it. Every lifecycle behaviour is written once against an abstract frame and
+instantiated from that table. Adding a provider adds a **row**; it never adds a parallel copy of a
+workflow.
 
 The table is closed and small, and each entry is a value rather than a code path:
 
@@ -3164,9 +3562,12 @@ The table is closed and small, and each entry is a value rather than a code path
 - the frame's file-transfer and share primitives.
 
 The ownership primitive is the entry most easily mistaken for a workflow, so it is worth stating what its
-row contains. Three rows exist: a POSIX one, a Windows one, and one that ships the transaction to this
-same binary at the frame that interprets it. The third is a **transport**, not a third implementation —
-every frame the project reaches is Linux, so what runs on the far side is the POSIX row. The transaction
+row contains. Two rows implement the clauses: a POSIX one and a Windows one
+(`HostBootstrap.Ownership.Row`). A third entry, `HostBootstrap.Ownership.Shipped`, ships the transaction to
+this same binary at the frame that interprets it; it is a **transport**, not a third implementation. When
+the lift crosses at least one frame, the far side is Linux — every frame the project reaches across a
+crossing is — so what runs there is the POSIX row. An empty lift addresses this machine, so the far side is
+the local process and runs this host's own row, the Windows row on a Windows outer host. The transaction
 travels as one value and the process that receives it lives exactly as long as the lock it holds, which is
 what keeps § EE clause 1 a kernel fact rather than an application-level release that has to be correct on
 every error path.
@@ -3193,10 +3594,10 @@ The [step-algebra-and-project-plan phase](phase-12-step-algebra-and-project-plan
 unit its algebra composes over; the
 [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
 owns the one ownership seam; the
-[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) owns the rows and
-the single fold; the
-[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns reconcilers as rows rather than as
-per-platform modules.
+[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) owns the frame
+table's provider rows and the repository-wide one-crossing-renderer guard; the
+[ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns the single fold (`foldLeaf` in
+`HostBootstrap.Lift`) and reconcilers as rows rather than as per-platform modules.
 
 ### MM. A Path Belongs To The Frame That Interprets It
 
@@ -3252,8 +3653,10 @@ Four things count as evidence:
 - **exercising a platform row against the real kernel**, in a temporary directory it created — not
   spoofable, because it is the real syscall. Clause 1's "the OS releases the lock on process death" is
   proved by a real process actually dying;
-- **a compile-fail fixture that fails for its named reason** (§ HH), expecting one contiguous diagnostic
-  phrase rather than a list of tokens an unrelated error could also satisfy;
+- **a compile-fail fixture that fails for its named reason** (§ HH), to the extent its expectation pins
+  that reason: a complete diagnostic phrase counts, while a bare token an unrelated error could also
+  satisfy proves only that something failed (the matcher's current independent-fragment form, and the
+  phase that owes the per-diagnostic form, are stated in § HH);
 - **a row reporting `Unsupported` on a gate host where it genuinely cannot hold a clause** — the row is
   real; only the host differs.
 

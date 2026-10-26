@@ -14,9 +14,9 @@
 - `core/cabal.project` is the self-contained Cabal workspace for the core, the peer of the root-level
   Poetry project. The `demo/` consumer carries one `demo/cabal.project` used host-native and inside its
   derived container; the repository root holds no Cabal project file.
-- The package ships one `library` (the `HostBootstrap.*` surface), one `executable hostbootstrap`
-  (the bare binary, built like any project binary — not baked into the base image), and one
-  `test-suite`.
+- The package ships one public `library` (the `HostBootstrap.*` surface), seven Cabal-private
+  sublibraries, one `executable hostbootstrap` (the bare binary, built like any project binary — not
+  baked into the base image), and two test suites; see [package stanzas](#package-stanzas).
 - Each Cabal workspace carries its own `hie.yaml` so the Haskell Language Server resolves the right
   project when the repository root is opened as the editor workspace (`core/`, `demo/`, and a
   deliberate `none` cradle for the build-only `core/warm-deps/` stubs).
@@ -38,15 +38,56 @@ lock — everything else in the base still rolls (§ FF) — and compatibility i
 and a real consumer smoke. The demo's one project pins no compiler and needs none: it resolves the same
 GHC on the host and in the container. Neither imports a base-owned path.
 
+`with-compiler:` is one of the version's three asserted spellings; the `tested-with: GHC ==9.12.4` fields of
+`hostbootstrap-core.cabal` and `hostbootstrap-demo.cabal` are two further copies that select nothing and
+that no test asserts, so a GHC bump updates them by hand ([Haskell](../languages/haskell.md) names all
+five).
+
+`optimization: 2` is a top-level project setting, so it reaches only the workspace's local package; the
+dependencies build with Cabal's per-package defaults. It therefore does not align dependency builds with
+the warm store, and the store's own top-level settings likewise reach only its manifest packages (see
+[warm store](warm_store.md#population-inputs)).
+
+### Build resource bound
+
+`core/cabal.project` also bounds the host memory a core build can take:
+
+```cabal
+jobs: 1
+
+package *
+  ghc-options: +RTS -M6144M -xr18432M -RTS
+```
+
+A per-process heap cap bounds the host only together with the number of compiler processes, so the job
+count is pinned beside it: core builds compile one package at a time, and each GHC process has a 6 GiB
+heap cap. A module that needs more than 6 GiB of heap fails the build rather than driving the host into
+its out-of-memory path. `demo/cabal.project` carries neither setting; the demo's Dockerfile passes `-j1`
+to its in-image build.
+
 ## Package Stanzas
 
-`core/hostbootstrap-core/hostbootstrap-core.cabal` declares:
+[`core/hostbootstrap-core/hostbootstrap-core.cabal`](../../core/hostbootstrap-core/hostbootstrap-core.cabal)
+is the source of truth for every stanza, its modules, and its dependencies. It declares:
 
-| Stanza | Contents |
-|--------|----------|
-| `library` | the `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md) |
-| `executable hostbootstrap` | `app/Main.hs`, the bare binary: `runBareHostBootstrapCLI "hostbootstrap"` |
-| `test-suite hostbootstrap-core-test` | the `tasty` suite, including the documentation validator gate |
+| Stanza | Source directory | Contents |
+|--------|------------------|----------|
+| `library` | `src`, `internal/cluster-backend` | the public `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md); it re-exports seven modules of `ownership-internal` (`HostBootstrap.Protected` and six `HostBootstrap.Ownership.*` modules) through `reexported-modules` |
+| `library effect-internal` (private) | `internal/effect` | the effect vocabulary's runner, quoter, and child process group |
+| `library harness-lifecycle-internal` (private) | `internal/harness-lifecycle` | the constructor boundary for Harness lifecycle actions, which the public `HostBootstrap.Harness` facade exposes without a constructor |
+| `library ownership-internal` (private) | `internal/ownership` | the protected store, digests, and the ownership object, clause, row, and tape modules |
+| `library colima-backend-internal` (private) | `internal/colima-backend` | the Colima backend's resolver, runner, routing, and staging |
+| `library lifecycle-transaction-internal` (private) | `src` | the durable interrupted-transaction vocabulary a recovery fixture writes |
+| `library network-port-internal` (private) | `internal/network-port` | the TCP `Port` type and its one constructor `mkPort` |
+| `library lifecycle-dependency-internal` (private) | `src` | the backend-neutral runtime dependency commitments (`RuntimeDependencyPackage`) |
+| `executable hostbootstrap` | `app` | `app/Main.hs`, the bare binary: `runBareHostBootstrapCLI "hostbootstrap"` |
+| `test-suite hostbootstrap-core-test` | `test` | the `tasty` suite, including the documentation validator gate |
+| `test-suite hostbootstrap-provider-live-linux-cpu` | `provider-live` | the destructive provider-live gate; it is compiled and run on every host by `cabal test all`, and `requirePlatformAndConfirmation` prints an unsupported line and exits successfully unless `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host` is set, then refuses any host but native Linux/x86_64 |
+
+A `visibility: private` sublibrary is importable only by components of this package, so a downstream
+consumer cannot import its modules except through the public library's `reexported-modules`. A module
+whose internals must stay out of downstream reach belongs in a private sublibrary rather than in the
+public library's exposed modules.
 
 Every component imports one `common warnings` stanza, which carries the project's whole warning policy:
 `-Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
@@ -57,12 +98,18 @@ multi-constructor type throws at the call site instead of failing to compile.
 
 ## Dependency Surface
 
-The library takes `optparse-applicative` (the composable command tree) and `dhall` (the in-process
-project-local config decoder/generator) as its defining dependencies, plus the small set used by host-tool
-resolution and the reconcilers (`aeson`, `base`, `bytestring`, `containers`, `directory`, `filepath`, `process`,
-`safe-exceptions`, and `text`), plus two platform dependencies: `unix` on non-Windows and `Win32` on
-Windows, backing the POSIX prereq checks and the two ownership rows. Every one of these is already warmed
-into the base-image Cabal store.
+The [`.cabal` file](../../core/hostbootstrap-core/hostbootstrap-core.cabal) is the source of truth for
+each component's `build-depends`. The public library takes `optparse-applicative` (the composable command
+tree) and `dhall` (the in-process project-local config decoder/generator) as its defining dependencies,
+plus `aeson`, `base`, `bytestring`, `containers`, `crypton`, `directory`, `filepath`, `memory`, `network`,
+`process`, `safe-exceptions`, `temporary`, and `text`, plus two platform dependencies: `unix` on
+non-Windows and `Win32` on Windows, backing the POSIX prereq checks and the two ownership rows. The
+private sublibraries draw only on that same set. The test suites add `tasty` and `tasty-hunit`.
+
+The warm-store manifest names every one of these that is not a GHC boot package, except `crypton`: it
+names `cryptonite` instead, so `crypton` reaches the base-image store only if the warm-store solve pulls it
+in transitively. The store is an opportunistic cache either way (see [warm store](warm_store.md)), so a
+miss compiles normally.
 
 **Only `build-depends` is conditional.** No stanza excludes a module from a host family: a platform row is
 compiled everywhere and stubbed to a total refusal where it cannot apply, so its importers are
@@ -79,7 +126,7 @@ matching `cabal.project`:
 
 | Cradle | Workspace | Covers |
 |--------|-----------|--------|
-| `core/hie.yaml` | `core/cabal.project` | the `hostbootstrap-core` library, the `hostbootstrap` executable, and the `hostbootstrap-core-test` suite |
+| `core/hie.yaml` | `core/cabal.project` | every `hostbootstrap-core` component: the public library, the private sublibraries, the `hostbootstrap` executable, and both test suites |
 | `demo/hie.yaml` | `demo/cabal.project` | `hostbootstrap-demo` plus `hostbootstrap-core` from local source |
 | `core/warm-deps/hie.yaml` | `core/warm-deps/cabal.project` | a deliberate `none` cradle (the build-only stubs — see below) |
 
@@ -101,6 +148,8 @@ root would run `cabal` where no project file exists and fail for every file.
 
 - `cabal build all` builds the library and the bare executable, warning-clean by the package's own
   policy — there is no `--ghc-options=-Werror` to remember.
-- `cabal test all` runs the `tasty` suite, including the `DocValidatorSpec` documentation gate.
+- `cabal test all` runs both test suites: the `tasty` suite, including the `DocValidatorSpec`
+  documentation gate, and the provider-live suite, which reports itself unsupported and passes unless its
+  confirmation is set.
 - `hostbootstrap --help` prints the composed core command tree, which lists the `context`, `project`,
   `test`, `service`, and `check-code` verbs.

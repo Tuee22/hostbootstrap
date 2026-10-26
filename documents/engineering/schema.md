@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: static-base `hostbootstrap.dhall`; the three-execution-model / substrate-keyed / lifecycle `hostbootstrap.dhall` schema (Container/HostBinary/HostDaemon, Cluster/NoCluster, Mounts, force-target)
-**Referenced by**: [../README.md](../README.md), [prerequisites.md](prerequisites.md), [base_image.md](base_image.md), [derived_project_standards.md](derived_project_standards.md), [dhall_topology.md](dhall_topology.md)
+**Referenced by**: [../README.md](../README.md), [prerequisites.md](prerequisites.md), [derived_project_standards.md](derived_project_standards.md), [dhall_topology.md](dhall_topology.md), [authoring_project_binaries.md](authoring_project_binaries.md), [secrets.md](secrets.md), [../architecture/dhall_generation.md](../architecture/dhall_generation.md), [../architecture/generic_project_model.md](../architecture/generic_project_model.md)
 
 > **Purpose**: Define the project-local Dhall configuration file each project binary reads from beside
 > itself.
@@ -11,15 +11,17 @@
 
 - The runtime configuration file is the executable's sibling `<project>.dhall`, for example
   `./.build/hostbootstrap-demo.dhall` beside `./.build/hostbootstrap-demo`.
-- The Python bootstrapper currently derives a Cabal-file stem and a single executable-stanza name
-  independently, builds `exe:<executable>` into `./.build/<executable>`, and never reads or writes Dhall.
+- The Python bootstrapper derives the Cabal-file stem, the package name, and the single executable-stanza
+  name, requires all three to be equal, builds `exe:<executable>` into `./.build/<executable>`, and never
+  reads or writes Dhall.
 - The project binary owns scope-correct validated-codec schema text, assembly, rendering, decoding/validation,
   downstream projection, and help text for the local config. An opaque `CodecWitness` rejects unequal
   normalized encoder/decoder type expressions before decode or mutation; representative round trips
   separately test semantics.
 - Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
   limited to help and explicit config inspection/initialization commands, including static
-  `context render`.
+  `context render`. `service run` never reads the sibling: it is configured by its signed activation
+  revision.
 - Host, VM, ad-hoc container, daemon, and service copies use the same filename rule but different file
   contents. The role is a field inside the Dhall value, not part of the filename.
 
@@ -58,12 +60,11 @@ Test configuration is likewise project-defined. Core now owns only opaque valida
 current `<project>.test.dhall` decodes `testResources` plus a declarative `testVariants` list;
 `demoTestMatrix` projects every compiled case across those decoded variants. `all` is a typed parser
 selector and is never stored schema data. This typed foundation does not restore a core config type. The
-[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the matrix and its remaining
-same-run recreate acceptance.
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the matrix.
 
 This is why root/harness initialization defaults must be project-owned: a naive one-size `4/8/20`
 default (only the sample value of core's `budget` render artifact, not a core-shipped config default)
-cannot bootstrap the demo (its `deploy-VM` gate requires `6/10/80`,
+cannot bootstrap the demo (its `deploy-vm` gate requires `6/10/80`,
 `demoFullLifecycleResources`), so the demo's `psAssemble` returns its real budget rather than inheriting
 any core default. Service-role parameters are mandatory project fields rather than a second default
 source. See
@@ -84,7 +85,7 @@ Examples:
 | Host binary | `./.build/<project>.dhall` |
 | VM host-native binary | sibling of the VM-local executable |
 | Project container binary | `/usr/local/bin/<project>.dhall` |
-| Cluster service or daemon binary | sibling path mounted or materialized by the controller |
+| Cluster service or daemon binary | none read by `service run`; it reads the signed activation revision named by `HOSTBOOTSTRAP_SERVICE_ACTIVATION` |
 
 The filename does not encode the role. The binary always knows what to look for; the file tells the binary
 what role it has.
@@ -123,8 +124,10 @@ so a missing field fails the `FromDhall` decode. That does not make semantic val
 now has one project-owned `resources` value; `BinaryContext` carries no independently editable budget
 copy, and full child-config projection preserves the already-refined project value. One project-owned
 assembler is the structural default source, and finalized service-role projection invents no missing
-values. Plan-indexed provider admission and partitioning are implemented as a pure foundation; live
-budget-wall consumers still must adopt that authority. The lifecycle provider boundary is separate:
+values. Plan-indexed provider admission and partitioning are implemented as a pure foundation; no
+production lifecycle path consumes that authority to apply a budget wall, a gap
+[resource_budgeting.md](resource_budgeting.md#current-status) records and the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owes. The lifecycle provider boundary is separate:
 `SubstrateProvider` is an opaque Haskell descriptor selected from the closed provider kind, and its
 opaque nominal managed provider/share/alias authorities are minted only by prepared backend settlement.
 The Dhall `ProviderKind` below is descriptive topology data; it cannot construct a provider descriptor,
@@ -147,9 +150,13 @@ separate checks. See
 [development_plan_standards.md § O](../../DEVELOPMENT_PLAN/development_plan_standards.md) and
 [applied_cordon.md](applied_cordon.md).
 
-A host-level config has the same top-level shape as the project's config type (for the demo, the demoted
-`ProjectConfig` schema). A project may add its own mandatory fields with no core change: the demo carries a
-`message : Text` field its web service renders, shown below.
+A host-level config has the same top-level shape as the project's config type (for the demo, its own
+`ProjectConfig scope` type; core defines no config type). A project may add its own mandatory fields with
+no core change: the demo carries a `message : Text` field its web service renders, a `runProfile` that
+selects Production or Harness cluster identity (`ProductionRun` or `HarnessRun` with the run's name), and
+the service parameters `webServiceConfig` and `acceleratorServiceConfig`. The example below shows the
+demo's root host-orchestrator config with every field; `project init` emits the exact text, whose field
+order and formatting may differ.
 
 ```dhall
 let ContextKind =
@@ -199,15 +206,13 @@ let CommandClass =
 in  { dockerfile = "docker/Dockerfile"
     , resources = { cpu = 6, memory = "10GiB", storage = "80GiB" }
     , message = "Hello, world!"
-    , service =
-        None
-          < Web : { publicPort : Natural, acceleratorPort : Natural }
-          | Accelerator : { requestTimeoutSeconds : Natural }
-          >
+    , runProfile = < HarnessRun : Text | ProductionRun >.ProductionRun
+    , webServiceConfig = { publicPort = 8080, acceleratorPort = 8081 }
+    , acceleratorServiceConfig = { requestTimeoutSeconds = 30 }
     , context =
       { project = "hostbootstrap-demo"
       , binary = "hostbootstrap-demo"
-      , sourceRoot = "/home/matt/hostbootstrap/demo"
+      , sourceRoot = "/path/to/hostbootstrap/demo"
       , contextKind = ContextKind.HostOrchestrator
       , roleName = "host-orchestrator"
       , parentChain = [] : List { frameKind : ContextKind, frameBinary : Text }
@@ -252,27 +257,41 @@ in  { dockerfile = "docker/Dockerfile"
 
 The exact generated value is owned by the binary. Use `<project> project init` for a valid default,
 `<project> context schema` for the in-scope artifact union, and `<project> service schema` for the
-project codec's admitted type. Both rendering and decoding consume that same `CodecWitness`; do not
-hand-maintain a parallel schema in project docs.
+project config's admitted type. Each printed schema comes from the codec that also decodes and renders the
+same value, so the printed text is the type the decoder accepts:
 
-In the target, one finalized `specDigest` binds every codec. `context schema|render` exposes separately
-named Production/Harness full-config artifact families; `service schema` exposes separately named
-Production/Harness role-wire families. Harness role schemas contain typed private-bundle handles rather
-than inline `TestPlaintext`. An empty service registry has an explicit empty result for both scopes.
+| Command | Prints | Derived from |
+|---|---|---|
+| `context schema` | each registered artifact's schema, labelled by name | that artifact's own `CodecWitness`, through `artifactOf` (see [config_generation.md](config_generation.md#the-configartifact-registry)) |
+| `service schema` | the full project config schema | the project's `ProjectCodec`, which wraps the `CodecWitness` that `project init` renders with and the sibling loader decodes with |
+| `service schema` | one role-wire schema per registered service | each service's `CodecWitness` over its `RuntimeRoleWire` fields, which `service run` decodes |
 
-The demo config also owns `service : Optional ServiceType`, where `ServiceType` is the real Dhall union
-`Web { publicPort, acceleratorPort } | Accelerator { requestTimeoutSeconds }`. Core sees only the
-project-owned selector that maps a config to an internal handler key; `service run` has no positional
-variant. The demo selector validates its own payload bounds and role compatibility by convention. Core
-currently accepts an arbitrary `cfg -> Either String String` selector and does not prove that it reads
-this field, agrees with the registry, or carries the same config value into the handler.
+Do not hand-maintain a parallel schema in project docs.
+
+The project codec and the finalized service registry carry the same `specDigest` type index, so the role
+wires belong to the same finalized specification as the full config. `service schema` prints the role-wire
+schemas under two labelled families, Production and Harness; both are rendered from the one finalized
+registry and are identical. An empty service registry prints an explicit `services = []` and
+`schemas = []` under both labels. `context schema|render` prints one unscoped artifact registry.
+
+The demo's service parameters are ordinary mandatory fields, `webServiceConfig` and
+`acceleratorServiceConfig`; the demo's `ServiceType` union is a validation and schema vocabulary, not a
+config field. Core registers each service through `serviceProgramDefinition`: a `ServiceDefinition` pairs
+a per-service projection `forall scope. cfg scope -> Either String (Maybe fields)` with a `CodecWitness`
+over `RuntimeRoleWire fields` and a typed program over those same fields. `service run` has no positional
+variant. `withSelectedServiceProgram` runs every projection on the effective config and refuses when none
+or more than one selects it, and the selected projection's fields are exactly what the program receives.
+What core does not prove is the projection's content: the demo's `selectWeb` and `selectAccelerator`
+choose by context kind and check port and timeout bounds through `configuredServiceVariant` by convention.
 
 The `message : Text` field is a worked example of a project-extended field flowing all the way to the
-workload, with no core-owned slot: `<project>.dhall` carries `message`, the binary renders the exact child
-config into the web service's dynamically applied ConfigMap, the `serveWeb` handler reads it, the API's
-`BudgetView.message` carries it across the `purescript-bridge` round-trip, and the SPA renders it into its
-`#message` element. It is a mandatory field on the demo's OWN config type — core owns no project-specific
-field and ships no generic extra slot.
+workload, with no core-owned slot. `<project>.dhall` carries `message`; the demo's `selectWeb` projection
+copies it into `WebRoleFields.servedMessage`; service deployment installs that narrowed role wire as
+`role.dhall` inside the signed activation revision; `service run` decodes it there and `runWeb` passes
+`servedMessage` to `serveWebWithConfig`; the API's `BudgetView.message` carries it across the
+`purescript-bridge` round-trip; and the SPA renders it into its `#message` element. Editing a sibling file
+or a ConfigMap does not change the served message; a new activation revision does. It is a mandatory field
+on the demo's OWN config type — core owns no project-specific field and ships no generic extra slot.
 
 ## Default Generation
 
@@ -285,21 +304,22 @@ The project binary provides an ungated initialization command, for example:
 The generated file is a valid default; `project init --help` names the editable options (`--dockerfile`,
 `--cpu`, `--memory`, `--storage`, `--ha-replicas`, `--source-root`), `context schema` prints the in-scope
 artifact union, and `service schema` prints the project's validated-codec config type. Normal
-commands do not silently create a missing config. The current shared loader always recommends
-`<project> project init`; that is valid root-lifecycle recovery but is wrong for a missing service-leaf
-config, because the resulting host-orchestrator config still fails the `service run` gate. The target
-diagnostic names the command-specific writer (`service init`) or the exact owning parent projection.
+commands do not silently create a missing config. The shared sibling loader behind
+`withSiblingProjectConfigContext` reports a missing sibling with the recovery `<project> project init`,
+which is the right writer for the root-lifecycle and inspection commands that use it. `service run` does
+not use that loader: it requires the absolute runtime coordinates `HOSTBOOTSTRAP_SERVICE_ACTIVATION`,
+`HOSTBOOTSTRAP_ACTIVATION_KEY`, and `HOSTBOOTSTRAP_AUTHORITY_STORE`, refuses a missing one by name, and
+verifies the signed activation revision rather than any sibling `<project>.dhall`. A broken service pod is
+diagnosed from its activation revision and runtime coordinates, not from a sibling config.
 
-The Dockerfile creates a build-time image config after installing the binary:
+The derived Dockerfile never runs `project init`. It installs the coordinator-supplied image-build config
+from the `hostbootstrap-build-config` BuildKit secret beside the builder binary, so the image cannot mint its
+own build config or authority; the canonical home of that protocol is
+[derived_dockerfile.md](derived_dockerfile.md#the-check-code-gate).
 
-```dockerfile
-RUN <project> project init --role image-build-container --output /usr/local/bin/<project>.dhall
-```
-
-Runtime, service, or daemon deployments override the baked build-time config by mounting or materializing
-a role-specific file at the same canonical path. A lifted `test run all` container must receive a
-parent-generated VM-project-container config with topology witnesses; it must not rely on the image-build
-default.
+A lifted project container receives its parent-generated VM-project-container config, with topology
+witnesses, streamed in place over the handoff channel; it does not rely on the image-build config. Services
+and daemons receive a narrowed role wire in a signed activation revision instead of a full config.
 
 ## Downstream Projection
 
@@ -330,6 +350,22 @@ Reload requires the supported new revision/admission path; changed files or a mi
 refuse. See [binary context](../architecture/binary_context_config.md),
 [composition methodology](../architecture/composition_methodology.md), and the
 [lifecycle state model](../architecture/lifecycle_state_model.md).
+
+## Validation
+
+- `DhallGenSpec` (core) rejects a mismatched decoder/encoder pair before decode or side effects, proves an
+  artifact's schema and rendering come from one witness, compares every `Core.dhall` type with its admitted
+  codec, and checks byte-identical render → decode → re-render for representative values.
+- `SchemaSpec` (core) decodes valid project-local configs, refuses malformed and wrong-typed fields with
+  typed errors, re-renders every default role config stably, and checks child projection and role
+  authority.
+- `CLISpec` (core) pins `context schema` and `service schema` output against the committed snapshots under
+  `core/hostbootstrap-core/test/golden/`.
+- `ConfigSpec` (demo) round-trips the demo's `ProjectConfig` and `<project>.test.dhall`, checks the
+  demo's defaults and flag overrides, child projections, and service-role selection and bounds.
+
+All four run in the host static gate defined by
+[development_plan_standards.md § JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness).
 
 ## See Also
 

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: the execution-model / lifecycle ("five rules" tied to Container/HostBinary/HostDaemon) derived-project doctrine
-**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [in_cluster_registry.md](in_cluster_registry.md), [linking_and_optimization.md](linking_and_optimization.md), [binary_context_config](../architecture/binary_context_config.md)
+**Referenced by**: [../README.md](../README.md), [base_image.md](base_image.md), [warm_store.md](warm_store.md), [code_check_doctrine.md](code_check_doctrine.md), [in_cluster_registry.md](in_cluster_registry.md), [linking_and_optimization.md](linking_and_optimization.md), [derived_dockerfile.md](derived_dockerfile.md), [authoring_project_binaries.md](authoring_project_binaries.md), [library_hierarchy](../architecture/library_hierarchy.md), [hostbootstrap_core_library](../architecture/hostbootstrap_core_library.md)
 
 > **Purpose**: State the rules a derived project follows to build the one binary that extends
 > `hostbootstrap-core`, contribute and finalize its lift **plan** and step actions, inherit the base image, gate on
@@ -14,9 +14,12 @@
 - It extends the fixed command/parser surface through typed chain steps, config codecs, cases, services,
   and code checks rather than adding top-level verbs.
 - It builds host-native for host execution and derives its project image from the published base.
-- Forward steps and each frame's declared descent are one opaque validated `StepPlan`; teardown is a
-  checked single-assignment slot beside it. Receipt-driven recursive teardown and harness root isolation
-  are interpreted from that same exact admitted plan.
+- Forward steps, each frame's declared descent, and each step's reverse effect (`reversedBy`) are one
+  opaque validated `StepPlan`. The one checked single-assignment slot beside it is the forward-child
+  projector (`addForwardChildPlan`). Receipt-driven recursive teardown and harness root isolation are
+  interpreted from that same exact admitted plan.
+- Its Dockerfile follows [derived Dockerfile](derived_dockerfile.md), the canonical home for the image
+  shape and build-config delivery.
 
 This is the single page a derived project's author reads before writing their `docker/Dockerfile`,
 `cabal.project`, and project binary. It is the union of the doctrine docs under
@@ -28,9 +31,10 @@ re-derives it.
 
 ## The derived project is one binary whose identity is its lift chain
 
-A derived project currently ships **exactly one executable stanza** in exactly one top-level Cabal file.
+A derived project ships **exactly one executable stanza** in exactly one *selected* top-level Cabal
+file: auto-discovered when it is the only top-level `.cabal` file, otherwise chosen with `--cabal-file`.
 Python requires the Cabal filename stem, package name, and executable stanza to match and writes
-`.build/<identity>`; ambiguous discovery requires explicit `--cabal-file` selection. The Haskell
+`.build/<identity>`. The Haskell
 entrypoint then requires its declared project name to equal the invoked executable before dispatch. Once
 the binary exists, command dispatch is governed by its sibling runtime config file,
 [`<project>.dhall`](schema.md). See
@@ -47,53 +51,80 @@ finalizeProjectSpec builder :: Either ProjectSpecError (ProjectSpec cfg tcfg)
 where `appSteps :: CanonicalProjectRoot scope rootId -> cfg scope -> [Step]`. Core validates the combined exact order into
 an opaque `StepPlan`
 (see [composition methodology](../architecture/composition_methodology.md#single-representation-the-chain-is-the-representation)):
-host-management step kinds the core ships (deploy-VM, ensure-X, copy-source, build-pb, build-image,
+host-management step kinds the core ships (deploy-vm, ensure-X, copy-source, build-pb, build-image,
 context-init, deploy-kind, deploy-chart, expose-port) interleave freely with the project's own step kinds
-(deploy-object-store, deploy-registry, push-image, accelerator-daemon placement, …). Current `project up`
-interprets the resolved plan's exact current-frame segment and fails closed at a nested entry; the target
-authenticates and hands off `pb project up` into the next frame. `project up --dry-run` renders the chain plan without
-executing it. The `.dhall` carries **parameters + context + witness**, never the shape — each binary
+(deploy-object-store, deploy-registry, push-image, accelerator-daemon placement, …). The operator runs
+`project up` at the root frame; an operator invocation inside a nested frame is refused. The root runs
+its own frame's segment of the resolved plan and, at each frame boundary, launches the binary in the next
+frame as a storeless lifecycle child entered through `--hostbootstrap-lifecycle-child`, which executes
+only the nodes the root grants over the authenticated handoff (see
+[the recursive `project up` interpreter](../architecture/composition_methodology.md#the-recursive-project-up-interpreter)).
+`project up --dry-run` renders the chain plan without executing its steps, but it is not free of
+authority side effects: it takes Production mode and lease authority as an effectful `up` does (see
+[the core library's current status](../architecture/hostbootstrap_core_library.md#current-status)). The `.dhall` carries **parameters + context + witness**, never the shape — each binary
 verifies it is in the frame its `.dhall` describes, or fails fast.
 
 The binary extends `hostbootstrap-core`'s command tree rather than re-implementing core verbs:
 
 ```haskell
 import HostBootstrap.CLI
-  ( addServices, addSteps, finalizeProjectSpec, projectSpec
+  ( addForwardChildPlan, addServices, addSteps, finalizeProjectSpec, projectSpec
   , runHostBootstrapCLI )
+import System.Exit (die)
 
 main :: IO ()
 main = do
-  spec <- either (fail . show) pure
-    ( finalizeProjectSpec
-        ( addServices appServices
-            ( addSteps appSteps
-                        (projectSpec appTestSuite appCheckCode appArtifacts appTestCodec appTestInit appAssemble)
-                )
-            )
-        )
-    )
+  let builder =
+        addForwardChildPlan appForwardChildPlan
+          ( addSteps appSteps
+              ( addServices appServices
+                  (projectSpec appTestSuite appCheckCode appArtifacts appTestCodec appTestInit appAssemble)
+              )
+          )
+  spec <- either (die . show) pure (finalizeProjectSpec builder)
   runHostBootstrapCLI "app" spec
 ```
 
 `projectSpec` takes the project's test suite, code-check action, schema artifacts, test codec,
 `psTestInit`, and the single scope-aware restricted `psAssemble`. `addSteps`, `addArtifacts`,
 `addAssemblyInputs`, and `addServices` append; an `addSteps` fragment is rank-2 in the admitted
-`CanonicalProjectRoot`, so a step derives its project-relative paths from that one authority. Each frame
+`CanonicalProjectRoot`, so a step derives its project-relative paths from that one authority.
+`addForwardChildPlan` installs the project's forward-child projector, which derives the exact next child
+frame's config and its independently rebuilt child-local `StepPlan` from the parent's config, the parent
+and child frame names, and the supplied lift. It is the builder's only single-assignment slot: installing
+it zero times fails finalization with `MissingForwardChildPlan`, and more than once with
+`DuplicateForwardChildPlan`. Each frame
 but the innermost declares its descent into the next with `Step.descendsVia`, validated one-per-frame by
 `mkStepPlan`, so the chain carries its own topology. A step that acquires a resource also declares the
-effect that releases it with `Step.reversedBy`; a second declaration on one step, or one on a
-`PreserveOnReverse` step that no projection reaches, is a construction error. There is no lifecycle slot
-beside the plan. `runHostBootstrapCLI progName spec` composes
+effect that releases it with `Step.reversedBy`; a second declaration on one step
+(`DuplicateStepReverse`), or any declaration on a `PreserveOnReverse` step, which never enters a reverse
+projection (`ReverseOnPreservedStep`), is a construction error. There is no teardown slot beside the
+plan. `runHostBootstrapCLI progName spec` composes
 the project's chain, test suite, code-check action, and
 the artifact delta onto the inherited tree (`project init|up|down|destroy`, `context`, `test init|run`,
 `service init|schema|run`, `check-code`). The spec is generic: the chain consumes the project's `cfg`, the test suite must
 be non-empty, the `check-code` action is required, duplicate case/artifact names are rejected, and project
-artifacts feed the inherited `context` introspection registry. Finalization and plan projection require
-a non-empty contiguous plan, disjoint unique typed step identities, consistent frame labels, explicit
-reverse policy, exactly one declared descent per frame that has a successor, unique
-artifacts/inputs/services/cases, and exactly one teardown projection. `ConfigArtifact` construction remains codec-backed. The bare `hostbootstrap` binary uses
-`runBareHostBootstrapCLI`; it is the only intentional empty-chain/empty-suite binary. `project init` runs
+artifacts feed the inherited `context` introspection registry.
+
+Validation happens at two points:
+
+- `finalizeProjectSpec` runs once, at startup, and rejects (`ProjectSpecError`) an empty test suite
+  (`EmptyProjectTestSuite`), duplicate case ids, a project artifact that shadows a core artifact
+  (`CoreArtifactShadowing`), duplicate project artifacts, duplicate assembly inputs, no `addSteps`
+  fragment (`MissingStepPlan`), a missing or duplicated forward-child projector, and an invalid service
+  registry (duplicate service variants).
+- `mkStepPlan` runs per decoded config, when a command projects the plan for that config, and rejects
+  (`StepPlanError`), among other cases, an empty plan, empty frame or step labels, duplicate step identities, conflicting
+  frame labels, a non-contiguous frame return, a missing, duplicated, or innermost-frame descent, and a
+  duplicated or dead reverse effect. A fragment that returns an empty list, or a missing `descendsVia`,
+  therefore surfaces only when a command projects the plan, not at startup.
+
+`ConfigArtifact` construction remains codec-backed. The bare `hostbootstrap` binary uses
+`runBareHostBootstrapCLI` and is the only binary built without the `projectSpec` builder. It contributes
+no project chain or services; its Production plan projection is refused as `EmptyStepPlan`, so its
+`project up` has nothing to run. Its
+test suite carries one core `cluster-live` harness case whose one-step plan creates a run-scoped,
+harness-owned Kind cluster and releases it through the step's `reversedBy` effect. `project init` runs
 without an active local config to write the root `<project>.dhall`; `service init` and `test init` are
 likewise bootstrap writers. Static schema/render/path commands are config-free, `context inspect|show`
 read a config without applying mutation authority, and `test run` generates its own run config. Commands
@@ -117,10 +148,10 @@ Windows `.exe`) and requires it to equal `progName`. The Python build boundary h
 Cabal filename stem, package name, and sole executable name to equal that same artifact identity.
 
 The worked consumer lives at `demo/` (the `hostbootstrap-demo` app): its `app/Main.hs` detects the
-substrate, adds `demoChainFor substrate` and `demoServices` to the
+substrate, adds `demoServices`, `demoChainFor substrate`, and the `demoForwardChildPlan` projector to the
 builder, finalizes it, then calls `runHostBootstrapCLI "hostbootstrap-demo" spec`.
-Its `demoChainFor :: Substrate -> CanonicalProjectRoot rootScope rootId -> ProjectConfig configScope -> [Step]`
-contributes the demo's
+Its `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`
+(the root and the config share one `scope`) contributes the demo's
 substrate-selected lift as a single `[Step]`: VM-backed lanes use host→VM→container→cluster (deploy VM,
 build pb + image in the VM, then carry the project-container child config on the descent the in-VM
 `context-init` step declares), while native Linux GPU uses a two-frame host→direct-container→nvkind
@@ -134,15 +165,19 @@ algebra, not shelling `project up` or building a separate per-case cluster.
 ## The three-level library hierarchy
 
 The reusable surface is a three-level Cabal library hierarchy. Each level adds **only its delta** and
-imports the level below it; nothing re-implements a lower level's verbs:
+imports the level below it; nothing re-implements a lower level's verbs. Only L0 and the worked
+`hostbootstrap-demo` consumer live in this repository; the L1 and L2 libraries and `mcts` are external
+consumers in their own repositories (linked from
+[library_hierarchy](../architecture/library_hierarchy.md#the-three-library-levels)):
 
 | Level | Library | Consumers |
 |-------|---------|-----------|
-| L0 | `hostbootstrap-core` | `mcts` and `hostbootstrap-demo` consume it directly; `daemon-substrate` imports it |
-| L1 | `daemon-substrate` | the daemon apps import it |
-| L2 | `{jitML, infernix}` | the leaf apps |
+| L0 | `hostbootstrap-core` (this repository) | `mcts` and `hostbootstrap-demo` consume it directly; `daemon-substrate` imports it |
+| L1 | `daemon-substrate` (external) | the daemon apps import it |
+| L2 | `{jitML, infernix}` (external) | the leaf apps |
 
-The target has the same **parallel extension streams**, one additive merge idiom each (canonical statement:
+Every level, in this repository or outside it, extends through the same five **parallel extension
+streams**, one additive merge idiom each (canonical statement:
 [library_hierarchy](../architecture/library_hierarchy.md)):
 
 | Stream | Merge idiom | Rule |
@@ -154,8 +189,9 @@ The target has the same **parallel extension streams**, one additive merge idiom
 | **service handlers** | `addServices` | append handlers; duplicate variants are rejected |
 
 This table is the current composition rule. Builder fragments append steps, artifacts, assembly inputs,
-and typed services under duplicate checks; teardown is a checked single-assignment slot, while each
-frame's descent is declared on its own plan node. `Step` and `StepPlan` constructors are opaque. `ConfigArtifact` still has its separate validated
+and typed services under duplicate checks; the forward-child projector (`addForwardChildPlan`) is the one
+checked single-assignment slot, while each frame's descent and each step's reverse effect are declared on
+their own plan nodes (`descendsVia`, `reversedBy`). `Step` and `StepPlan` constructors are opaque. `ConfigArtifact` still has its separate validated
 codec constructor and registry duplicate checks.
 
 Stream 1 is the workload-extension seam: a project contributes step kinds into the same `StepPlan` the
@@ -182,30 +218,36 @@ toolchain image without becoming a hostbootstrap project; that is not a second i
    transitive closure may already be warm in the store. A moving branch or omitted remote `tag` is not
    a governed consumer source dependency. The demo uses `demo/cabal.project` unchanged in both
    environments. See [warm_store.md](warm_store.md).
-3. **Build the binary, materialize the image-build context, run `<project> check-code`, expose the authenticated
-   executable, and add a
-   tini-wrapped `ENTRYPOINT`.** Image-build context materialization is explicit: the Dockerfile runs the
-   binary once to write its image-build-container `<project>.dhall` after the binary is installed and
-   before any normal command. The check then runs under the narrow image-build frame and before any
-   expensive backend work; the container is built on every substrate as the mandatory code-check gate. The
-   The authenticated named-context builder occupies `/usr/local/libexec/<project>` and is itself source-built
-   and digest-bound to the clean input. After backend/web compilation, the Dockerfile proves the in-image Cabal
-   product is non-empty, copies the authenticated builder bytes with `dd` into a new regular
-   `/usr/local/bin/<project>` runtime file, final-materializes its runtime config, public keys, and generated
-   web output, removes the build-only libexec authority, and proves the runtime artifacts are non-empty. The
-   coordinator repeats those checks against an exported probe container before accepting the build. The image
-   therefore does not depend on snapshotting either the in-container linked product or a direct large-file
-   named-context copy.
-   The container frame skips the build step at runtime —
-   `docker run img project up` enters the chain already
-   built. Runtime launchers receive a parent-generated runtime `<project>.dhall` **streamed in-place**
-   (over the launch `stdin`, written before dispatch — no config bind-mount). In the current demo the
-   payload is carried by the descent the `context-init` step itself declares, so the announcing row and
-   the delivered bytes cannot disagree; the target plan additionally unifies projection with delivery.
+3. **Follow the [derived Dockerfile](derived_dockerfile.md) shape: authenticate, gate on `check-code`,
+   build, materialize, and add a tini-wrapped `ENTRYPOINT`.** That page is canonical; in summary:
+   - *Build-time authentication.* The coordinator supplies the authenticated builder through the
+     `hostbootstrap-builder` named context and the canonical image-build config through the
+     `hostbootstrap-build-config` BuildKit secret; the Dockerfile installs both under
+     `/usr/local/libexec` together with the public handoff and activation verification keys. The
+     Dockerfile never runs `project init`, so the image cannot mint its own build config.
+   - *Code-check.* `/usr/local/libexec/<project> check-code` runs under the narrow image-build frame with
+     the signed build channel mounted as secrets, before the web build; the container is built on every
+     substrate as the mandatory code-check gate.
+   - *Final materialization.* After the source and web builds, the Dockerfile proves the in-image Cabal
+     product is non-empty, copies the authenticated builder bytes with `dd` into a new regular
+     `/usr/local/bin/<project>` runtime file, final-materializes its runtime config, public keys, and
+     generated web output, removes the build-only libexec authority, and proves the runtime artifacts are
+     non-empty.
+   - *Runtime delivery.* The container frame skips the build at runtime. Recursive lifecycle verbs enter
+     the container as a storeless lifecycle child (`--hostbootstrap-lifecycle-child`) whose canonical
+     config travels inside the authenticated handoff; only the ordinary lift route, for non-lifecycle
+     subcommands, streams a `<project>.dhall` over `stdin` in place. Neither bind-mounts a config. See
+     [the runtime launch](derived_dockerfile.md#the-runtime-launch).
+
    See [code_check_doctrine.md](code_check_doctrine.md#derived-images) and
    [binary_context_config](../architecture/binary_context_config.md).
-4. **Link executables statically; build libraries with `shared: True`.** Do not pass
-   `--enable-executable-dynamic` or `--enable-executable-static`. See
+4. **Link executables statically.** Do not pass `--enable-executable-dynamic` or
+   `--enable-executable-static`. Setting `shared: True` is the recommended companion: it builds the dyn
+   way of the project's own local packages, which Template Haskell and GHCi load. It is not a
+   requirement and does not affect warm-store reuse: a top-level project option reaches only that
+   project's local packages, and store dependencies build as their own per-package defaults say (see
+   [warm_store.md](warm_store.md#population-inputs)). The worked demo's `demo/cabal.project` sets only
+   `optimization: 2` and passes `--enable-tests --enable-benchmarks` on the command line. See
    [linking_and_optimization.md](linking_and_optimization.md#recommended-policy).
 5. **Treat the inherited store as an optimization.** `cabal build --dry-run` can diagnose reuse, but a
    third-party package in the plan is a permitted cache miss. Add broadly useful dependencies to the
@@ -230,11 +272,14 @@ substrate:
   **metal-frame instance** of the fractal bootstrap (provision the frame → build/install the pb in it →
   hand off `pb project up`); see
   [python_haskell_boundary](../architecture/python_haskell_boundary.md).
-- A platform-locked artifact that cannot be produced inside a container is built on the **bare host**
-  with no build VM (the headless host-build shape, composition pattern #7), then staged into the
-  cluster — never run in a VM. The first worked instance is CUDA-on-Windows (`ensure cudawin`: NVIDIA
-  driver + CUDA Toolkit + MSVC via winget), whose nvcc artifacts are produced on the Windows host and
-  copied out. See [composition_patterns.md](composition_patterns.md).
+- A generic consumer may build a platform-locked artifact that cannot be produced inside a container on
+  the **bare host** with no build VM and stage it into the cluster (the headless host-build shape,
+  composition pattern #7). The demo's Windows GPU
+  accelerator instead follows host-daemon pattern #6: `ensure cudawin` requires a preinstalled NVIDIA
+  driver (it fails when `nvidia-smi` is absent) and installs the CUDA Toolkit, Visual Studio Build Tools,
+  and LLVM via winget, and the accelerator daemon builds **and runs** the worker on the Windows host;
+  nothing is staged into the cluster. See [composition_patterns.md](composition_patterns.md) and
+  [cuda](../languages/cuda.md#windows-host-build-cuda-headless).
 
 Building the project **container** is the invoked binary's job (its `check-code` gate), not the
 bootstrapper's. A `./.build/<executable>` is always present after a successful bootstrap, regardless of
@@ -243,51 +288,13 @@ Cabal filename stem = package name = executable stanza = invoked/declared CLI pr
 opaque plan/resource identity remains in the later lifecycle phases; see
 [schema](schema.md#project-and-executable-identity).
 
-## Worked compliant Dockerfile shape
+## Worked compliant Dockerfile and `cabal.project`
 
-```dockerfile
-# check=skip=InvalidDefaultArgInFrom
+The compliant Dockerfile shape, its parser directives, the build-stage ordering, and the runtime launch
+are canonical in [derived Dockerfile](derived_dockerfile.md#the-reference-shape), with
+`demo/docker/Dockerfile` as the worked instance; this page does not restate the skeleton.
 
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
-
-WORKDIR /workspace/app
-
-COPY . /workspace/app
-
-COPY --from=hostbootstrap-builder app /usr/local/libexec/app
-RUN --mount=type=secret,id=hostbootstrap-build-config,required=true \
-    install -m 0644 /run/secrets/hostbootstrap-build-config /usr/local/libexec/app.dhall
-RUN --mount=type=secret,id=hostbootstrap-build-channel,required=true \
-    --mount=type=secret,id=hostbootstrap-build-verification,required=true \
-    --mount=type=secret,id=hostbootstrap-build-coordinator,required=true \
-    /usr/local/libexec/app check-code
-
-RUN cabal build --enable-tests --enable-benchmarks all --ghc-options=-Werror \
-    && built_binary="$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" \
-    && test -s "${built_binary}"
-
-# Run backend/web compilation here.
-
-RUN built_binary="$(cabal list-bin --enable-tests --enable-benchmarks exe:app)" \
-    && test -s "${built_binary}" \
-    && dd if=/usr/local/libexec/app of=/usr/local/bin/app bs=4M status=none \
-    && dd if=/usr/local/libexec/app.dhall of=/usr/local/bin/app.dhall status=none \
-    && chmod 0755 /usr/local/bin/app \
-    && rm /usr/local/libexec/app \
-    && rm /usr/local/libexec/app.dhall \
-    && test -s /usr/local/bin/app \
-    && test -s /usr/local/bin/app.dhall
-
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/app"]
-```
-
-The `# check=skip=InvalidDefaultArgInFrom` parser directive on line 1 silences a BuildKit lint
-warning: the linter evaluates `FROM ${BASE_IMAGE}` against the static empty `ARG` default (the value
-is supplied as a build arg) and reports an "invalid base image name." The directive is required
-boilerplate for every derived project that follows the `FROM ${BASE_IMAGE}` pattern.
-
-Its `cabal.project`:
+A compliant consumer's `cabal.project`:
 
 ```cabal
 packages: .
@@ -310,14 +317,13 @@ the sibling local package instead, so it has no remote `tag` field.
 The same project file is used host-native and in the derived container. It imports no base-owned freeze;
 matching `hostbootstrap-core` dependencies may be warm, and missing ones compile normally.
 
-The `project init --role image-build-container` line is the container-image bootstrap hook. It is the only
-binary entry point in the Dockerfile that may run before the sibling config file exists; later build-time
-commands such as `check-code` load that config and refuse commands not valid for the image-build frame. At
-runtime the parent lifecycle **streams** the role-specific `<project>.dhall` into the container
-in-place — piped on the `docker run` `stdin`, written to `/usr/local/bin/<project>.dhall` by the entrypoint
-before dispatch (no config bind-mount). The current payload comes from the plan's declared descent;
-target projection/delivery is one plan node. The container enters the chain with `project up` (a Kubernetes
-service pod instead receives a ConfigMap override).
+The Dockerfile contains no `project init` line. The image-build-container `<project>.dhall` is the
+canonical config the coordinator supplies through the `hostbootstrap-build-config` BuildKit secret;
+build-time commands such as `check-code` load that config and refuse commands not valid for the
+image-build frame. At runtime a recursive lifecycle verb enters the container as a storeless lifecycle
+child whose canonical config travels inside the authenticated handoff; a Kubernetes service pod runs
+`service run`, which reads its signed activation coordinates rather than a sibling config. See
+[the runtime launch](derived_dockerfile.md#the-runtime-launch).
 
 ## Current Status
 
@@ -343,11 +349,13 @@ development plan:
 - `ensure` is a reconciler library, not a command. Core exposes `ensureStep`, but the current demo
   invokes `runEnsure` from composite provider/build/accelerator actions.
 
-The demo's deploy is the contributed `demoChainFor :: Substrate -> ProjectConfig -> [Step]` value in
+The demo's deploy is the contributed
+`demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]` value in
 `demo/src/HostBootstrapDemo/Commands.hs` — a list of `Step` the core interprets across the selected fractal
 descent. The demo contributes its `web` and `accelerator` service variants (run by `service run`; the
 build-time bridge folds into the build-image step) and its VM/provider IO as chain steps — the surface is
-fixed, so it adds no verbs. The image-build hook runs as `project init --role image-build-container`.
+fixed, so it adds no verbs. Its build-image step is the image-build coordinator: it supplies the
+authenticated builder and the image-build config to the Dockerfile and probes the exported image.
 
 A single `project up` is intended to stand up the live persistent stack — a cordoned kind cluster → the
 runtime-owned loopback relay and its resolved registry endpoint → the in-cluster registry → the project image
@@ -357,8 +365,10 @@ The target registry step is contributed from an opaque finalized plan that joint
 verified exposure, backing endpoint, and blob delivery. A consumer must not pass raw endpoints or
 choose `storage.redirect.disable` independently; see
 [network reachability](../architecture/network_reachability.md).
-`test run all` drives the corresponding Harness-scoped current-frame plan directly, but the demo currently
-resolves its cluster with the Production profile and `.data`; see [harness workflow](../architecture/harness_workflow.md).
+`test run all` drives the corresponding Harness-scoped current-frame plan directly; each harness config
+carries a `HarnessRun` run profile, which `clusterProfileOf` maps to a run-scoped `TestCase` cluster
+profile, so a run never touches the Production cluster or the durable `.data` root; see
+[harness workflow](../architecture/harness_workflow.md).
 `DEVELOPMENT_PLAN/` owns the phase status; this page describes the model and the worked `demo/` consumer
 that realizes it.
 

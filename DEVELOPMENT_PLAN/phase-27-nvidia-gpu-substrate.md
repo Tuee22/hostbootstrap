@@ -1,4 +1,4 @@
-# Phase 26 — NVIDIA GPU substrate
+# Phase 27 — NVIDIA GPU substrate
 
 **Status**: Done
 **Depends on**: Phase 24 (the worked demo)
@@ -28,8 +28,10 @@ host with no NVIDIA markers classifies as `linux-cpu` and cannot stand in for th
 ## What this phase confirms
 
 - the accelerator-capable cluster driver, including a one-GPU device request that the scheduler honours;
-- the CUDA worker built by `nvcc` on the host toolchain, reached over the private listener;
-- in-cluster accelerator placement behind a service address, which is the placement the Apple lane does not use;
+- the CUDA worker built by `nvcc` from the CUDA base image inside the in-cluster daemon pod, so the metal host
+  needs the NVIDIA driver and container toolkit but no CUDA toolkit;
+- in-cluster accelerator placement: the daemon pod dials the web pod's private accelerator listener through the
+  `<release>-accelerator` ClusterIP Service, which is the placement the Apple lane does not use;
 - the direct-host provider path, where the cluster runs without an intervening VM;
 - the single metal-to-container descent, where the cluster lives in a frame the metal host cannot see directly.
 
@@ -42,7 +44,7 @@ visit to it records two cells (§ JJ):
 | Cell | Owned by |
 |---|---|
 | NVIDIA substrate acceptance | this phase |
-| x86_64 Linux gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+| x86_64 Linux gate host, host static gate | [phase 29](phase-29-host-portability-acceptance.md) |
 
 The second row is not this phase's closure condition and never becomes one (§ C). It is recorded on the
 same visit because the alternative is convening the machine twice for evidence one sitting can produce.
@@ -52,9 +54,15 @@ What this phase does **not** confirm is that the host static gate passes on a Li
 than a declared substrate. This phase's gate is the live `10/10` demo run and the accelerator behavior
 above.
 
+Nor does it run Production `project down` or `project destroy`. Its matrix is Harness-scoped: each
+`durable-readback` case crosses the Direct reverse route through a same-run destroy and recreation, but no
+Production reverse verb runs on this lane. The Direct provider's structured `Unsupported` answer to physical
+stop and delete is a host-static contract, proved by `ProviderSpec` ("Direct stop/delete and Direct guest alias
+are structured refusals") and `ProviderReconcileSpec` ("a Direct stop refusal mints no successor phase").
+
 ## Sprints
 
-### Sprint 26.1: The accelerator cluster driver [Done]
+### Sprint 27.1: The accelerator cluster driver [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Command.hs`,
@@ -73,8 +81,14 @@ Bring up a GPU-capable cluster from the finalized plan.
 
 - The accelerator-capable cluster driver is selected from the classified substrate, and its configuration is
   rendered from the one finalized plan rather than assembled by string edits.
-- A workload declaring a device requirement receives a one-GPU request, and the budget preflight accounts for it.
-- `ensure cuda` reconciles the CUDA toolchain on the host and is a no-op when present.
+- The GPU request is attached by placement, not declared by a workload: when the context placement is the direct
+  Linux GPU container, the in-cluster accelerator daemon manifest selects RuntimeClass `nvidia` and requests and
+  limits `nvidia.com/gpu: 1`. The budget preflight carries CPU, memory, and storage only and does not account
+  for devices; the adopter's positive-allocatable `nvidia.com/gpu` check below is the device gate.
+- The `cuda` ensure step (reconciler `cuda` in `HostBootstrap.Ensure.Cuda`, a chain step rather than a CLI
+  verb) requires the NVIDIA kernel driver as a precondition, installs the NVIDIA container toolkit, registers it
+  as Docker's default runtime with CDI and volume-mount injection, and restarts Docker. It installs no host
+  CUDA toolkit or `nvcc`, and it is a verified no-op when the `nvkind` volume-mount Docker smoke sees a GPU.
 - The exact Direct/nvkind adopter waits through the shared bounded node-readiness policy before settling the
   fresh strong-backend observation; an identity conflict or probe fault refuses immediately rather than being
   retried as ordinary startup latency.
@@ -125,10 +139,11 @@ bound fresh clusters without a stale-record conflict.
 
 None.
 
-### Sprint 26.2: The CUDA worker and in-cluster placement [Done]
+### Sprint 27.2: The CUDA worker and in-cluster placement [Done]
 
 **Status**: Done
-**Implementation**: `demo/src/HostBootstrapDemo/Accelerator/`
+**Implementation**: `demo/src/HostBootstrapDemo/Accelerator/`, `demo/src/HostBootstrapDemo/Accelerator.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`
 **Substrates**: nvidia
 **Docs to update**: `documents/engineering/accelerator_daemon.md`
 
@@ -138,22 +153,28 @@ Build and run the CUDA worker in the cluster.
 
 #### Deliverables
 
-- The worker is compiled by `nvcc` and its artifact hash is asserted through the browser assertion.
-- The daemon runs as an in-cluster deployment, applied and rollout-waited before any client connects, and reached
-  at its own service address — the placement the host-native lanes do not use.
+- The worker is compiled by `nvcc` from the CUDA base image inside the daemon pod. Its artifact identity is
+  `stableSourceHash` over the generated worker source, and the browser assertion checks that a 16-hex identity
+  is present in `#add-artifact`; it does not compare that value with an expected identity.
+- The daemon runs as an in-cluster Deployment and is itself the WebSocket client: it dials
+  `ws://<project>-accelerator:<port>/api/accelerator/daemon`, the `<release>-accelerator` ClusterIP Service that
+  selects the web pod hosting the private listener. The daemon has no Service of its own. Its readiness probe is
+  a marker file the daemon maintains from its own connection events, so the rollout wait completes once the
+  daemon has connected to the web pod — the placement the host-native lanes do not use.
 - The private-listener contract and the CBOR round trip are the same as every other lane; only the placement
   differs.
 
 #### Validation
 
-Dated live evidence: `e2e-tabs` passed on both variants, asserting the daemon-returned sum, backend, and artifact
-hash through the browser on the GPU lane.
+Dated live evidence: `e2e-tabs` passed on both variants, asserting through the browser on the GPU lane the
+daemon-returned sum, the backend, and the presence of a 16-hex artifact identity
+(`demo/playwright/tests/demo.spec.ts`, `#add-artifact` matching `/^[0-9a-f]{16}$/`).
 
 #### Remaining Work
 
 None.
 
-### Sprint 26.3: NVIDIA GPU acceptance [Done]
+### Sprint 27.3: NVIDIA GPU acceptance [Done]
 
 **Status**: Done
 **Implementation**: the whole tree
@@ -198,7 +219,7 @@ passed 149/149, and the Python check-code plus 231/231 tests passed.
 
 None.
 
-### Sprint 26.4: The NVIDIA acceptance run [Done]
+### Sprint 27.4: The NVIDIA acceptance run [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -220,7 +241,7 @@ Record the dated live acceptance matrix on a native Linux host with an NVIDIA GP
 - Record a passing gate-evidence row with the declared source paths' digest only after the live matrix
   and audit pass.
 - Before leaving the machine, also record the complete host static gate on it for
-  [phase 28](phase-28-host-portability-acceptance.md)'s x86_64 Linux cell (§ JJ). It is not a closure
+  [phase 29](phase-29-host-portability-acceptance.md)'s x86_64 Linux cell (§ JJ). It is not a closure
   condition of this phase and does not become one; it is collected here because this visit is the one that
   can produce it.
 
@@ -298,8 +319,8 @@ registries on ports 32822, 32825, 32828, and 32831:
 |---------|------------|----------------------|
 | `hello-world` | 1 | `sha256:e6d90608f73c0a74b73da066817fd99dbb61bb4daade19be8f94a0654eff25b9` |
 | `hello-world` | 2 | `sha256:fb4c5cefa03cba1555c57c616da48ec78f958709178512bbb68df34fbfff00ab` |
-| `hello-universe` | 3 | `sha256:19961d3c34bb658546b56e3209469edec093d332fec57beb7beecc8721012e39` |
-| `hello-universe` | 4 | `sha256:60689e8ebfcd1ed552f96cdb0a1c142ea9f80a0f06cca02a8ec62c7da7f72629` |
+| `hello-universe` | 1 | `sha256:19961d3c34bb658546b56e3209469edec093d332fec57beb7beecc8721012e39` |
+| `hello-universe` | 2 | `sha256:60689e8ebfcd1ed552f96cdb0a1c142ea9f80a0f06cca02a8ec62c7da7f72629` |
 
 The one-GPU request was **observed live through the Kubernetes API during the run**, not inferred from a
 successful rollout. On `hello-world` generation 1, Running pod `accelerator-daemon-5cf57b99c6-gbx8h`
@@ -307,16 +328,18 @@ selected RuntimeClass `nvidia` with request and limit `nvidia.com/gpu: 1` on the
 device plugin `nvidia-device-plugin-rv99v`; that worker advertised one allocatable GPU and the
 control-plane advertised none. The host driver concurrently reported the compute process
 `/workspace/demo/.build/accelerator/linux-gpu/fc76cd884d2539b8/accelerator-worker` holding 500 MiB, and
-`fc76cd884d2539b8` is the artifact identity the daemon announced and the browser assertion checks.
+`fc76cd884d2539b8` is the source-derived artifact identity the daemon announced; the browser assertion checks
+only that a 16-hex identity is present.
 
-The same observation held on the recreated and second-variant clusters, with every pod identity distinct,
-which is what establishes that each generation was genuinely fresh rather than a surviving cluster:
+The same observation held on the `hello-world` same-run recreation and the first `hello-universe` cluster,
+with every observed pod identity distinct, which establishes that those generations were fresh rather than a
+surviving cluster. The `hello-universe` same-run recreation was not observed at pod level in this run:
 
-| Generation | Accelerator pod | Device plugin pod |
+| Variant and generation | Accelerator pod | Device plugin pod |
 |---|---|---|
 | `hello-world` 1 | `accelerator-daemon-5cf57b99c6-gbx8h` | `nvidia-device-plugin-rv99v` |
 | `hello-world` 2 (same-run recreation) | `accelerator-daemon-f496cb4c7-ghrnw` | `nvidia-device-plugin-dvj8m` |
-| `hello-universe` 3 | `accelerator-daemon-786bdbd8bc-wlbbb` | `nvidia-device-plugin-mnksr` |
+| `hello-universe` 1 | `accelerator-daemon-786bdbd8bc-wlbbb` | `nvidia-device-plugin-mnksr` |
 
 The terminal audit found both leases `closed` (`run-b9d0f80ba221f`, `run-b9e805768832f`), both profiles
 `available`, and no project mode, generated-config, or data-root ownership row. The generated
@@ -328,13 +351,13 @@ of an empty daemon. The terminal source measurement matched the in-run tree acro
 at digest `dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e`.
 
 Per § JJ this visit also recorded the x86_64 Linux gate-host cell for
-[phase 28](phase-28-host-portability-acceptance.md), so the machine is not owed a second visit.
+[phase 29](phase-29-host-portability-acceptance.md), so the machine is not owed a second visit.
 
 #### Remaining Work
 
 None.
 
-### Sprint 26.5: The NVIDIA acceptance against the current tree [Done]
+### Sprint 27.5: The NVIDIA acceptance against the current tree [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -364,7 +387,8 @@ this sprint may not do.
 #### Remaining Work
 
 None. On 2026-09-14 the matrix reported `10/10 passed` and exited 0 in 51m27s (02:57:44Z to 03:49:11Z),
-from a pristine demo state, on the host the row above names. Both variants passed all five cases:
+from a pristine demo state, on `matt-junction` (native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1). Both variants passed all five cases:
 `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and `durable-readback`.
 
 Accelerator placement was observed rather than inferred: each of the four bring-ups reported
@@ -381,7 +405,7 @@ because pinning the compiler touched `hostbootstrap/` and expired its digest in 
 two durations are the before-and-after of that pin, and the near-parity is explained in
 [the base-image phase](phase-23-base-image-and-warm-store.md).
 
-### Sprint 26.6: The NVIDIA acceptance against the reconciled tree [Done]
+### Sprint 27.6: The NVIDIA acceptance against the reconciled tree [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -412,7 +436,8 @@ this sprint may not do.
 #### Remaining Work
 
 None. On 2026-09-14 the matrix reported `test report: 10/10 passed` and exited 0 in 3,363.60 seconds
-(56 minutes 4 seconds), from 16:22:35Z to 17:18:39Z, on the host the row above names. Both variants
+(56 minutes 4 seconds), from 16:22:35Z to 17:18:39Z, on `matt-junction` (native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1). Both variants
 passed all five cases: `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and
 `durable-readback`, as `hello-world` (`run-c8d39184feb9`) and `hello-universe` (`run-c8ed0f03964d`).
 
@@ -438,7 +463,7 @@ An earlier run the same day also reported `10/10` in 3,344.77 seconds. It is not
 evidence, because the recursive lifecycle command's pre-descent repair landed under this phase's
 `**Evidence covers**` while that run was in flight; the run above is the one against the settled tree.
 
-### Sprint 26.7: The NVIDIA acceptance against the settled tree [Done]
+### Sprint 27.7: The NVIDIA acceptance against the settled tree [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -447,7 +472,7 @@ evidence, because the recursive lifecycle command's pre-descent repair landed un
 
 #### Objective
 
-The worked demo's live gate found two repairs after the run Sprint 26.6 records, and both landed under
+The worked demo's live gate found two repairs after the run Sprint 27.6 records, and both landed under
 this phase's `**Evidence covers**` — the consumer's provider reverse in `demo/src` and the reverse
 driver's reachability step in `core/hostbootstrap-core/src`. The recorded run therefore names a tree that
 no longer exists. § G names that as the expected state for an acceptance phase between runs; the claim is
@@ -468,7 +493,11 @@ this sprint may not do.
 #### Remaining Work
 
 None. On 2026-09-14 the matrix reported `test report: 10/10 passed` and exited 0 in 3,223.94 seconds
-(53 minutes 44 seconds), from 17:34:58Z to 18:28:42Z, on the host the row above names. Both variants
+(53 minutes 44 seconds), from 17:34:58Z to 18:28:42Z, on `matt-junction` (native x86_64 Ubuntu 24.04.4 LTS,
+Linux 7.0.0-28-generic, NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1, Kind 0.32.0, kubectl 1.37.0,
+Helm 3.16.3). This run's 2026-09-14 gate-evidence row covers
+`cbbaa6b6e13052bd9e4adb981b64b0de86a34b2d10c0bd0797118b1720e1165b` over the seven-root scope of that date.
+Both variants
 passed all five cases — `pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence` and
 `durable-readback` — as `hello-world` (`run-c912c61c28b1`) and `hello-universe` (`run-c92a0baf2bf8`).
 
@@ -493,7 +522,7 @@ as this phase's evidence: the worked demo's live gate found a repair under this 
 `**Evidence covers**` after each of them, and § G admits only a run against the tree the row measures.
 The three durations are within 4% of each other, which is the useful thing they say together.
 
-### Sprint 26.8: NVIDIA acceptance of the current ownership rows [Done]
+### Sprint 27.8: NVIDIA acceptance of the current ownership rows [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -517,18 +546,21 @@ The 2026-09-16 Windows visit identifies compilation defects in the shared owners
 protected short-close gap, followed by namespaced session-key enumeration and canonical resource closure
 defects. Their corrections expire this phase's covered-source evidence. The corrected 211-file source
 measures `a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`;
-this is a source measurement, not gate evidence. No native Linux/NVIDIA connection is
-configured for this visit and no new NVIDIA run is recorded. The operator supplies this run on the native
-Linux/NVIDIA machine after the available Windows visit finishes; the Windows result cannot replace it.
+this is a source measurement, not gate evidence. The 2026-09-16 Windows visit has no native Linux/NVIDIA
+connection and records no NVIDIA run; its Windows result does not substitute for this phase's gate. The
+2026-09-17 native run below supplies it.
 
-On 2026-09-17, the native visit on `matt-junction` begins after phase 24's complete baseline gate
-passes. Preflight confirms the RTX 5090 on driver 595.84, no Docker containers, and no demo `.build`,
+On 2026-09-17, the native visit on `matt-junction` (native x86_64 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic,
+NVIDIA GeForce RTX 5090 on driver 595.84, Docker 29.7.1, Kind 0.32.0, kubectl 1.37.0, Helm 3.16.3,
+GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, Poetry 2.4.1) begins after phase 24's complete baseline gate
+passes. The run executes against the corrected 211-file source measured above at
+`a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`. Preflight confirms the RTX 5090 on driver 595.84, no Docker containers, and no demo `.build`,
 `.hostbootstrap`, or `.test_data` state. The pre-existing `hb-linux-cpu` gate VM is stopped after its
 clean terminal audit; it is unrelated to this Direct lane and is preserved. The repository Python
 bootstrapper completes `test init` from the pristine native demo state. Its operator test config measures
 `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`. The complete `test run all`
 starts at 04:25:40 UTC. The complete native host static gate already passed on this visit, as recorded
-in phase 28.
+in phase 29.
 
 The first `hello-world` generation (`run-d51d791325677`) pulls published CUDA base
 `sha256:e4faab53cfaf88898c4e7c5c838396daa08f82cf4cb387906b8d35d181fdfa7a` and builds image
@@ -554,14 +586,16 @@ The terminal audit at 05:19:23 UTC finds no Docker container and no Kind cluster
 `closed` at generations 4 and 8, and both profiles encode `available` at generations 3 and 7. No mode,
 generated-config ownership, or data-root ownership record remains. The generated project config is
 absent, `.test_data` is empty, and the operator test config retains its exact hash. The unrelated
-pre-existing `hb-linux-cpu` VM remains stopped. All 211 covered files remeasure to that dated run's original digest.
+pre-existing `hb-linux-cpu` VM remains stopped. All 211 covered files remeasure to
+`a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90` after the run, and the
+2026-09-17 gate-evidence row records that digest.
 The post-closure `DocValidatorSpec` check passes 11/11 in 2.64 seconds.
 
 #### Remaining Work
 
 None.
 
-### Sprint 26.9: Revalidate NVIDIA after shared guest bootstrap stabilization [Done]
+### Sprint 27.9: Revalidate NVIDIA after shared guest bootstrap stabilization [Done]
 
 **Status**: Done
 **Implementation**: `demo/src/HostBootstrapDemo/Commands.hs` `demo/docker/wsl2-daemon.json`
@@ -633,13 +667,13 @@ stopped. All four Harness leases encode `closed` at generations 4, 8, 12, and 16
 encode `available` at generations 3, 7, 11, and 15. No mode, generated-config ownership, or data-root
 ownership record remains. The generated project config is absent, `.test_data` is empty, the operator
 test config retains its exact hash, and no project process remains. The 212 covered files remeasure to
-the original digest retained in this run's dated evidence. The same visit's complete host static gate is recorded in phase 28.
+the original digest retained in this run's dated evidence. The same visit's complete host static gate is recorded in phase 29.
 
 #### Remaining Work
 
 None.
 
-### Sprint 26.10: Revalidate the current protected-store teardown assertions [Done]
+### Sprint 27.10: Revalidate the current protected-store teardown assertions [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -669,7 +703,8 @@ The 25 roots contain 845 files and measure
 `cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b` on 2026-10-15.
 The corrected seven-root subset previously measured
 `7d460b28ebfe1bd26d84d3e276ba18bb3f6e2482737dbf67a744c2b1a258ccce`; that remains subset
-provenance rather than a measurement of the expanded live gate. Native NVIDIA acceptance remains owed.
+provenance rather than a measurement of the expanded live gate. Neither measurement carries a native NVIDIA
+pass; the 2026-10-21 run below supplies it.
 
 On 2026-10-16, minimal formatting and lint corrections change shared covered inputs. The selected
 source preflight uses compatible Fourmolu 0.19.0.1 and HLint 3.10, with a demo formatting spelling
@@ -691,16 +726,16 @@ Its dated result and original digest are preserved without restamping:
   accelerator placement observed ; pass ;
   covers 6882a9eda28dbac49323d4bf8c4e406d413cee4639e26fe4df839723922f0e34
 
-On 2026-10-15 this phase is reopened before changing its covered demo source. The available Windows
-RTX 3090 host exercises the Windows CUDA lane; it does not substitute for this native Linux/NVIDIA gate.
-The 2026-09-30 result remains historical evidence for its recorded tree.
+On 2026-10-15, changes to covered demo source expire the 2026-09-30 evidence for the current tree. The
+available Windows RTX 3090 host exercises the Windows CUDA lane; it does not substitute for this native
+Linux/NVIDIA gate. The 2026-09-30 result is dated evidence for its recorded tree only.
 
 On 2026-10-16, the native Apple visit completes the worked-demo gate and then both Apple
 acceptance legs before reaching this phase. This is the first gate in numerical order that the
 available hardware cannot validate: `MacBookPro` has an Apple M1 Max and no native Linux/NVIDIA
 host is available in the session. The successful Metal matrix and arm64 Linux static gate provide
-no native NVIDIA acceptance. This phase stays Active; no current-tree NVIDIA pass or refreshed gate
-evidence is claimed. The 845-file source scope still measures
+no native NVIDIA acceptance, and that visit records no NVIDIA pass or gate evidence; the 2026-10-21 run
+below supplies them. The 845-file source scope still measures
 `8f51333e732dca9ab234aaad99eec0a4856afa15b4c95835d18115381b11f582` after the Apple runs.
 
 On 2026-10-16, native NVIDIA revalidation begins on `matt-caledon-desktop`, x86_64 Ubuntu
@@ -756,10 +791,10 @@ retains its exact hash. Only the ambient Xorg and GNOME GPU processes remain. Th
 stopped Incus VM retains its UUID; the separately owned CPU gate VM is running for the worked-demo
 validation. The read-only watchers stop cleanly at 20:07:01 UTC.
 
-Sprint 24.38 owns the assertion-frame path projection, and both affected completed phases are
-reopened before its source changes. The corrected 25-root, 845-file scope measures
-`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`.
-No native NVIDIA gate pass against that corrected tree is claimed.
+Sprint 24.38 owns the assertion-frame path projection; its source change expires this phase's covered
+evidence. The corrected 25-root, 845-file scope measures
+`08d45edf2e1b616834a61ccf12783a8f04c84589c9a40f4f20eeff2f9099ee96`, a source measurement with no native
+NVIDIA gate pass of its own.
 
 On 2026-10-20, Sprint 24.46 adds shared provider reachability admission: an absent provider returns
 a failed teardown outcome before any start effect or guest descent. The covered core and demo
@@ -780,7 +815,7 @@ The Poetry environment is installed, and the installed GHC 9.12.4 is temporarily
 place of the host's GHC 9.14.1 default. Repository-bootstrapper `test init` starts at
 19:10:11 UTC. The complete native host static gate passes on the same visit; its dated
 commands and results are recorded in
-[host-portability acceptance](phase-28-host-portability-acceptance.md), Sprint 28.5.
+[host-portability acceptance](phase-29-host-portability-acceptance.md), Sprint 29.5.
 
 The complete cold `test init` exits 0 by 19:28:25 UTC and writes operator config
 `8a88f68edd459803fe6ffa8a60cabc4615fea91ce489842a6ba798fbab43136b`. The published CUDA/amd64

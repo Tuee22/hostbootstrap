@@ -43,7 +43,7 @@ artifact, ask the user where it should live rather than dropping a log into the 
 
 ## Removals must be statically resolvable
 
-Write every `rm`/`rmdir` so its target resolves **before** the shell expands it. Claude Code carries
+Write every `rm`/`rmdir` so its target resolves **before** the shell expands it, in any harness. Claude Code carries
 a `dangerousRemoval` circuit breaker that raises a permission prompt for removal targets it cannot
 resolve statically, and that prompt is **not** suppressed by `bypassPermissions` ("yolo") mode, by
 the auto-approve classifier, or by a `Bash(rm:*)` allow rule. Rewriting the command is the only way
@@ -69,12 +69,12 @@ Agents should build an absolute path from the working directory the harness repo
 
 ## Line endings
 
-The repository's canonical line ending for all text files is **LF**. Windows-specific scripts
-(`.bat`, `.cmd`, `.ps1`) use **CRLF**. The policy is defined by [`.gitattributes`](.gitattributes)
-(with [`.editorconfig`](.editorconfig) as the editor-level companion), which is **authoritative** —
-do not rely on per-machine `core.autocrlf` for correct behavior.
+The repository's canonical line ending for all text files is **LF**. The policy is defined by
+[`.gitattributes`](.gitattributes) (with [`.editorconfig`](.editorconfig) as the editor-level companion),
+which is **authoritative** — do not rely on per-machine `core.autocrlf` for correct behavior. Its CRLF rule
+for `.bat`, `.cmd`, and `.ps1` is defensive normalization only: § KK keeps scripts out of the repository.
 
-- New source files use LF; new Windows scripts use CRLF.
+- New files use LF; never add a script to the repository (§ KK).
 - Agents must not intentionally change line endings.
 - If a file appears changed only because of CRLF/LF conversion, **investigate before committing**
   rather than staging the churn.
@@ -90,10 +90,10 @@ for the ownership boundary between the two.
 ## Repository layout
 
 The Haskell core lives under `core/`: the `hostbootstrap-core` Cabal package, the
-`core/cabal.project` workspace file, and `core/warm-deps/` (the warm-store package). The
-Poetry project (the `hostbootstrap` CLI distribution) is rooted at the repository root —
-`pyproject.toml`, the `hostbootstrap/` package, and its `tests/`. The `demo/` consumer
-carries its own `demo/cabal.project`. The root also carries `docker/`, `documents/`, and
+`core/cabal.project` workspace file, and `core/warm-deps/` (the warm-store Cabal project, two
+dependency-group packages). The Poetry project (the `hostbootstrap` CLI distribution) is rooted at
+the repository root — `pyproject.toml`, the `hostbootstrap/` package, and its `tests/`. The `demo/`
+consumer carries its own `demo/cabal.project`. The root also carries `docker/`, `documents/`, and
 `DEVELOPMENT_PLAN/` and no Cabal project file.
 
 ## Working the development plan
@@ -102,8 +102,10 @@ carries its own `demo/cabal.project`. The root also carries `docker/`, `document
 
 1. Read the status table in [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md). It is the sole
    cross-phase status authority; no other document's prose overrides it.
-2. Take the **lowest-numbered `Active` phase**. Phase numbers are the dependency order, so a lower
-   phase never waits on a higher one.
+2. Take the **lowest-numbered `Active` phase**. Phase numbers are the dependency order: a phase depends
+   only on lower-numbered phases, so the four acceptance phases (26 to 29) come last. Acceptance phases
+   are terminal and none depends on another, so one whose hardware the session lacks stays `Active` and
+   the next is taken.
 3. Inside it, work the sprints in order — the `Active` sprint first, then each `Planned` one. A sprint
    is one working session: § G caps it at roughly 400 lines of production Haskell across at most three
    source modules, and a sprint that outgrows that is split rather than stretched.
@@ -118,9 +120,11 @@ Two things that will bite otherwise:
 
 - **Editing any source file expires the completion evidence of every `Done` deferred phase whose
   `**Evidence covers**` set contains it**, and `cabal test all` then fails through `DocValidatorSpec`.
-  That is the validator working, not a regression. The phase is reopened before the edit, not after.
+  That is the validator working, not a regression. Set each such phase `Active` in the same change that
+  edits the covered path, naming the sprint that owes the re-run in its `## Remaining Work`; § C calls
+  this evidence expiry, which is not a design-error reopening.
 - The acceptance phases (Apple Silicon, NVIDIA, Windows/WSL2, host portability) close **last**, once no
-  other phase carries open work, because each covers the host-portable tree and any earlier change
+  lower phase carries open work, because each covers the host-portable tree and any earlier change
   re-owes their runs.
 
 [DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md)
@@ -136,10 +140,12 @@ It schedules nothing on its own; the deleting phase's own sprints do that.
 - Build the library with `cabal build all` (from `core/`).
 - Run the Haskell tests with `cabal test all` (from `core/`).
 - Run the worked consumer the same way from `demo/`. The `demo/` leg is part of the gate, not an extra.
-- `-Werror` needs no flag. Both packages carry it in their `common warnings` stanza, so a plain
-  `cabal build` holds exactly the policy a phase closes on and a warning cannot land unnoticed.
-- The Haskell quality gate (formatter check, linter, type-correct build) runs through the project's
-  canonical code-check.
+- `-Werror` needs no flag. `hostbootstrap-core` and `hostbootstrap-demo` carry it in their
+  `common warnings` stanza, so a plain `cabal build` holds exactly the policy a phase closes on and a
+  warning cannot land unnoticed.
+- The Haskell formatter and linter (`fourmolu`, `hlint`) run in the base publisher's source gate and in a
+  derived image's `check-code`, never in the host static gate; see
+  [documents/engineering/code_check_doctrine.md](documents/engineering/code_check_doctrine.md#where-the-style-tools-run).
 
 ### Python bootstrapper
 
@@ -160,9 +166,9 @@ It schedules nothing on its own; the deleting phase's own sprints do that.
 
 ## Running tests on Windows
 
-The fast suites run foreground on every platform and need no special handling. The **host static
-gate** is these four commands, and all four finish well within the tool timeout — run them foreground
-and iterate normally, on Windows as elsewhere:
+The fast suites need no durable launcher on any platform. The **host static gate** is these four
+commands, each run from the repository root; run them foreground and iterate normally, on Windows as
+elsewhere:
 
 ```bash
 cd core && cabal test all
@@ -177,6 +183,13 @@ canonical for that list, and this file does not restate it in a second spelling.
 `check_code` or the `demo/` leg runs a strictly weaker gate than the one a phase closes on, and the
 difference is silent.
 
+The Python legs finish in seconds; the Cabal legs take minutes. The 2026-10-22 native Windows run records
+380 seconds for the `core/` leg and 529 seconds for the `demo/` leg, and an earlier native Windows `core/`
+run took 1,244 seconds including test compilation. A 10-minute per-command tool timeout is therefore no
+safe margin: give each Cabal leg an explicit timeout at the tool's maximum, and treat a timeout as an
+unfinished run, not a passing or failing one. The dated durations are in
+[host-portability acceptance](DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md).
+
 The gate is expected to *pass* natively on Windows, not merely to
 run: the project binary is built host-native on every substrate, so its sources and suites are
 host-portable. A failure that turns out to be a POSIX-only fixture, a native path separator, or a
@@ -185,11 +198,15 @@ kinds and the rules the harness holds are canonical in
 [documents/engineering/testing.md](documents/engineering/testing.md), and each is owned by a phase in
 [DEVELOPMENT_PLAN/](DEVELOPMENT_PLAN/README.md).
 
-The **long demo gate** (the Python bootstrapper's `poetry run hostbootstrap run -- test run all` and
-`project up`) is different **on Windows only**. Budget hours, not minutes: the recorded runs are
-51 minutes on NVIDIA/Linux and 2 hours 57 minutes on Windows. Launched as a naive `run_in_background` shell it is a descendant of `claude.exe`
-and gets force-killed mid-run by the harness's own reaper (`taskkill /PID <pid> /T /F`). To run it
-durably on Windows:
+The **long demo gate** runs from the repository root through the Python bootstrapper:
+`poetry run hostbootstrap run --project-root demo test init` (a short foreground call the matrix needs
+first), then `poetry run hostbootstrap run --project-root demo test run all`, and the same route's
+`project up`. It is different **on Windows only**. Budget hours, not minutes; the dated run durations are
+recorded in [the NVIDIA GPU phase](DEVELOPMENT_PLAN/phase-27-nvidia-gpu-substrate.md) and
+[the Windows and WSL2 phase](DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md). In any harness,
+launch it outside the agent's own process tree and poll an exit sentinel. Under Claude Code, a naive
+`run_in_background` shell is a descendant of `claude.exe` and gets force-killed mid-run by the
+harness's own reaper (`taskkill /PID <pid> /T /F`). To run it durably there on Windows:
 
 - launch it out of `claude.exe`'s process tree with the harness-owned
   `%USERPROFILE%\.claude\hostbootstrap\Start-DurableRun.ps1`, then poll the printed `<label>.exit`
@@ -219,16 +236,20 @@ versions; it is not required to replay a committed input lock.
 - Do **not** build the base locally and build derived projects against the un-republished local image —
   that hides the drift between the repo and Docker Hub.
 - The canonical command is `poetry run hostbootstrap base build-and-push --flavor <f> --arch <a>`
-  (plain single-arch `docker build` + `docker push`, host-native, no buildx). `base` is a maintainer
+  (single-arch and host-native, no buildx): it runs the repository source preflight, cold-builds with plain
+  `docker build`, smoke-builds a compatibility consumer against the local image, pushes, then pulls the
+  published tag and smoke-builds against its digest. `base` is a maintainer
   command of the **Python bootstrapper**, gated to the repository Poetry environment; it is not
   reachable from a pipx install. See
   [documents/engineering/base_image.md](documents/engineering/base_image.md) and
   [documents/engineering/build_release.md](documents/engineering/build_release.md).
 
 **Agents build and publish the base images to Docker Hub as required.** This is standing authority, not
-a request to repeat: when the base inputs change, or a published base tag a task depends on no longer matches
-the repository, an agent runs the canonical command itself on a native host of that architecture, then
-pulls the republished tag and records the pulled digest as dated evidence. It publishes only the affected
+a request to repeat: when `docker/basecontainer.Dockerfile` or the inputs under `core/warm-deps/` differ from
+those of the publication recorded in the owning development-plan sprint, an agent runs the canonical command
+itself on a native host of that architecture and records the pulled digest the command reports as dated
+evidence in that sprint (see
+[publication authority](documents/engineering/base_image.md#publication-authority)). It publishes only the affected
 tags, uses the host's existing `docker login`, and never prints, copies, or writes the credential. It reports
 an architecture with no native host in the session as outstanding instead of emulating it, and reports which
 rolling tags changed if one flavor fails after another was pushed. Publishing is a container-registry push,

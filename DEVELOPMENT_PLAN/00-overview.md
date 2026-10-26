@@ -13,6 +13,9 @@
 The [README phase table](README.md) is the sole cross-phase status source of truth. This document contains no
 status roll-up and no current test count. Dated validation evidence belongs to the phase whose gate produced it.
 
+[development_plan_standards.md](development_plan_standards.md) is the home of the plan doctrine this overview
+summarizes and does not restate; a bare § letter below names one of its sections.
+
 ## The architecture these phases build
 
 `hostbootstrap` is a Haskell `hostbootstrap-core` library plus a thin Python bootstrapper. Python asserts the
@@ -48,8 +51,8 @@ types every observation and reconciliation is expressed in (6). The last layer a
 provider-neutral capacity, sizing, and storage-cordon policy foundation; it has no project-plan or provider
 realization dependency.
 
-**Configuration (7).** The scope-indexed codec, the generated Dhall vocabulary, and the generic project
-specification. It sits above the kernel because a codec's scope index is what keeps a test-only secret out of
+**Configuration (7).** The scope-indexed codec, the hand-written Dhall vocabulary held equal to the codec
+schemas, and the generic project specification. It sits above the kernel because a codec's scope index is what keeps a test-only secret out of
 production configuration, and above authority because a harness codec requires a harness capability. Its
 cordon facade adapts `Resources`/`ResourceEnvelope` to the lower opaque `ResourceBudget`, while its public
 pure `Lift.Context` vocabulary describes provider targets and nested frame stacks without resolving a tool or
@@ -83,12 +86,13 @@ clause 1 is the store's entry. The clauses are one transaction, so they are writ
 per platform: what a POSIX kernel and a Windows kernel differ by is the primitive each supplies, and the
 clause order is a property of the types rather than of review.
 
-**Providers and clusters (15–16).** Provider lifecycle realizations that consume the already-defined target
-records/renderers and generic Lift (15), then the exact cluster/direct-Colima consumers inside a declared
-budget (16). Above ownership because a provider operation acquires an owned object. This layer adds the
-frame table's third ownership row — the one that runs a transaction at the frame that owns the object —
-which is a transport rather than a third implementation, because every frame the project reaches is Linux
-and what executes there is the same POSIX row.
+**Providers and clusters (15–16).** Provider lifecycle realizations (15) that consume the target records and
+renderers of the pure `Lift.Context` vocabulary (7) and the generic Lift fold (8), then the exact
+cluster/direct-Colima consumers inside a declared budget (16). Above ownership because a provider operation
+acquires an owned object. This layer adds the frame table's third ownership row — the one that runs a
+transaction at the frame that owns the object — which is a transport rather than a third implementation,
+because every frame the project reaches across a provider boundary is Linux and what executes there is the
+same POSIX row. The host frame keeps its own POSIX or Windows row.
 
 **Interpretation (17).** The recursive lifecycle command: one topology-root coordinator retains the durable
 store, lease, catalog, frame journals, prepare/settle transactions, and receipts while long-lived storeless
@@ -110,46 +114,59 @@ the complete gate and proved by pulling the tag and smoking a real consumer.
 
 **The consumer (24).** The worked demo — the real application that proves the library composes, including
 delivery of the reusable build-authority protocol to its actual command/Dockerfile gate and the terminal live
-Production/Harness confirmation of the recursive lifecycle command. It is last among baseline phases because
+Production/Harness confirmation of the recursive lifecycle command. It is the last constructive phase because
 a consumer depends on everything.
 
-**Acceptance (25–28).** The baseline remains one universal `linux-cpu` execution substrate on every host:
+**Reconciliation (25).** The governed-document sweep and the drift guards. It is the last baseline phase
+because its subject is every phase below it, and it precedes the acceptance phases because its guards are
+source: landing them after a hardware run would expire that run's evidence.
+
+**Acceptance (26–29).** The baseline remains one universal `linux-cpu` execution substrate on every host:
 native on Linux, Lima/Colima-backed on Apple Silicon, and WSL2-backed on Windows. Three terminal phases
 accept the additional Apple-host, NVIDIA-acceleration, and Windows-host realization behavior on real
 hardware; they do not define three competing project substrates. Each confirms the already-built universal
-contract through its provider and adds only realization-specific pieces. A fourth terminal phase (28)
+contract through its provider and adds only realization-specific pieces. A fourth terminal phase (29)
 declares no substrate at all and confirms the other axis: that the sources § N builds host-native
 everywhere do in fact build and self-test on every supported gate host. It exists because
-that claim needs machines § C forbids a baseline phase owing, and it carries one sprint per gate-host
-family because each family's run is independent evidence from an independent machine. Its own header
-names those families and the count; this section does not restate them.
-
-**Reconciliation (29).** The governed-document sweep and the drift guards. Last because its subject is every
-other phase.
+that claim needs machines § C forbids a baseline phase owing. Each gate-host family's run is independent
+evidence from an independent machine, so each is recorded as its own dated `**Gate evidence**` row; the
+phase header names those families and the count, and this section does not restate them.
 
 ## Dependency edges worth naming
 
-Most phases depend simply on their predecessor. These are the ones that reach further back, and each reaches
-only *backwards*:
+Most phases depend simply on their predecessor. The list below names every phase with an edge that reaches
+further back, plus every phase after the worked demo, and each edge reaches only *backwards*:
 
 - **9** depends on authority (5) and configuration (7): a profile opener needs both a verified root and a
   scope-correct codec.
-- **12** depends on the generic Lift (8) as well as the lifecycle/prepare layers beneath it.
-- **14** depends on the store (4) and prepare (11): clause 1 is the store's entry, and a reservation is a
-  prepared operation.
-- **15** depends on the reconcilers (8) and ownership (14).
+- **12** depends on authority (5), configuration (7), the generic Lift (8), modes and leases (9), and prepare
+  (11): a plan is built from a finalized scope-indexed specification, its root binds an installed identity
+  and a lease, its Chain dispatches through the Lift, and every step's action reaches a prepared gate.
+- **14** depends on host tools (3), the store (4), and prepare (11): the platform rows act through the
+  closed effect vocabulary, clause 1 is the store's entry, and a reservation is a prepared operation.
+- **15** depends on the reconcilers (8), the plan (12), handoff (13), and ownership (14): a provider is
+  ensured before use, its resources are plan-owned projections, its frame-local ownership transaction
+  crosses through the frame-child entry, and its operations acquire owned objects.
+- **16** depends on the plan (12), ownership (14), and providers (15): the cluster wall is the generic
+  plan-indexed budget boundary, cluster objects are held through the ownership seam, and a cluster runs on a
+  provider.
 - **17** depends on handoff (13) and clusters (16).
-- **21** depends on clusters (16) rather than on the test surface, because reachability is a property of the
-  cluster's frames.
-- **24** reaches back past its predecessor to the recursive lifecycle command (17) and publication (23),
-  alongside the cluster and service-runtime foundations its header names: its terminal live gate is the
-  first real worked-consumer confirmation of the host-static recursive interpreter.
-- **28** depends on the worked demo (24) and nothing later, which is what makes it terminal. It is not a
-  dependency on every phase: its *covers* set is the host-portable source, so any source change expires
-  its claim, but that is an evidence relation rather than a `Depends on` edge.
+- **21** depends on clusters (16) and the recursive lifecycle command (17) rather than on the test surface,
+  because reachability is a property of the cluster's frames.
+- **22** depends on the `test`/`context` semantics (20) as well as composition (21).
+- **24** depends on clusters (16), the recursive lifecycle command (17), the service runtime (22), and
+  publication (23): its terminal live gate is the first real worked-consumer confirmation of the
+  host-static recursive interpreter.
+- **25** depends on the worked demo (24) only; no acceptance phase depends on it either.
+- **26**, **27**, and **28** each depend on the worked demo (24) only, and no phase depends on any of them:
+  each confirms the demo's universal contract and its own realization on real hardware.
+- **29** depends on the worked demo (24) only, and no phase depends on it, which is what makes it terminal.
+  It is not a dependency on every phase: its *covers* set is the host-portable source, so any source change
+  expires its claim, but that is an evidence relation rather than a `Depends on` edge.
 
-Each phase header's `**Depends on**` field is the authority for its own edges; the list above names why
-the non-obvious ones exist, and never a different set.
+Each phase header's `**Depends on**` field is the authority for its own edges; the list above names every
+edge that skips a predecessor, and every edge of the phases after the worked demo, with why it exists, and
+never a different set.
 
 ## Non-goals
 

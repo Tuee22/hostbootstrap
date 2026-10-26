@@ -2,18 +2,20 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [cpp.md](cpp.md), [composition_patterns](../engineering/composition_patterns.md), [wsl2](../engineering/wsl2.md)
+**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [composition_patterns](../engineering/composition_patterns.md), [derived_project_standards](../engineering/derived_project_standards.md)
 
 > **Purpose**: Document the CUDA-flavored base image and how its CUDA toolchain is selected.
 
 ## Current Status
 
-The CUDA base and Linux/Windows toolchain paths below exist. The container parent is selected by the
-rolling build; live
-lane closure still varies by substrate. The development plan owns hardware evidence and gate status;
-this page owns the stable division between in-container Linux CUDA and host-native Windows CUDA.
+The CUDA base and the Linux and Windows toolchain paths below are implemented, and the container parent is
+selected by the rolling build. Each lane's dated acceptance evidence is recorded in the phase that owns its
+substrate: the native Linux GPU lane in
+[the NVIDIA GPU substrate phase](../../DEVELOPMENT_PLAN/phase-27-nvidia-gpu-substrate.md) and the Windows
+host path in [the Windows and WSL2 substrate phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md).
+This page owns the stable division between in-container Linux CUDA and host-native Windows CUDA.
 
-This page documents what the cuda-flavored base image ships. The sections below — the rolling compatible
+This page documents what the cuda-flavored base image ships. The sections below — the rolling
 NVIDIA CUDA parent, `ldconfig`, CUDA updates, and arm64 — all describe
 the **in-container, `linux-gpu` CUDA path**: the GPU toolchain baked into the base image and reached at
 runtime through the `nvidia-container-toolkit` runtime (readied and proved by `ensure cuda`). The host
@@ -22,8 +24,13 @@ the install-and-verify lifecycle for the container toolkit. A second, distinct p
 artifacts on a bare Windows host — is described separately under
 [Windows Host-Build CUDA (headless)](#windows-host-build-cuda-headless).
 
-The `basecontainer-cuda-<arch>` workflow queries Docker Hub and selects the highest compatible
-`cudnn-devel-ubuntu24.04` tag that publishes the native requested architecture.
+For a `basecontainer-cuda-<arch>` build, `base build` (and `base build-and-push`) queries Docker Hub's `nvidia/cuda` tags and selects
+the tag with the highest `X.Y.Z` version among those named exactly `X.Y.Z-cudnn-devel-ubuntu24.04` whose
+manifest publishes the requested native architecture (`resolve_cuda_base_image` in
+[`hostbootstrap/base_image.py`](../../hostbootstrap/base_image.py)). Those two tests are the whole selection
+rule. Neither the selection nor the publication's compatibility smoke, which runs no GPU code, checks the
+CUDA version against any host's NVIDIA driver, so a CUDA release that needs a newer driver than a GPU host
+carries surfaces only when a CUDA workload runs on that host.
 
 ## Ldconfig
 
@@ -33,7 +40,7 @@ filesystem check, not version-resolution logic, so it stays in the Dockerfile.
 
 ## CUDA updates
 
-CUDA updates are intentional rolling behavior: each rebuild discovers the current compatible parent,
+CUDA updates are intentional rolling behavior: each rebuild selects the newest parent the rule above admits,
 then an agent publishes, pulls, and compatibility-smokes the affected native tag as required. The selected
 parent is observable in that build's output and resulting image, but is not committed as a replay lock.
 The internal Python build API retains a `base_image_override` test seam.
@@ -69,12 +76,18 @@ runtime is reconciled again and then fails closed if the smoke still cannot see 
 
 The demo's direct `linux-gpu` chain has no provider VM. On the metal host it runs the shared resource
 preflight, `ensure docker`, and `ensure cuda`, then builds `hostbootstrap-demo:local` from the published
-`basecontainer-cuda-<arch>` image. The handoff starts that project container with `--gpus=all`; its
-validated direct-topology witness selects `NvkindDriver` and `nvkind-in-cluster.yaml` instead of
-re-detecting the nested container as an ordinary CPU host.
+`basecontainer-cuda-<arch>` image. The handoff starts that project container with the
+`DirectHostContainer` placement: host networking, the host's `/var/run/docker.sock` mounted, and
+`HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu` in its environment. The container receives no GPU device itself;
+the nvkind nodes it creates reach the GPU through the NVIDIA runtime that `ensure cuda` made Docker's
+default. The environment marker is the validated direct-topology witness that selects `NvkindDriver` and
+`nvkind-in-cluster.yaml` instead of re-detecting the nested container as an ordinary CPU host.
 
-That template is explicit: one control-plane node carries the public web/registry mappings and one GPU
-worker carries `/dev/null` at `/var/run/nvidia-container-devices/all`. Cluster bring-up repeats the
+That template is explicit and declares no host port mappings: one control-plane node carries the durable
+data mount (`/var/tmp/hostbootstrap-demo-data` at `/var/lib/hostbootstrap-demo-data`), and one GPU worker
+carries `/dev/null` at `/var/run/nvidia-container-devices/all` plus the same data mount. Web and registry
+exposure is resolved at runtime (see
+[network_reachability](../architecture/network_reachability.md)), not declared in the template. Cluster bring-up repeats the
 runtime smoke and waits for both nodes, then probes allocatable GPU before any Helm or `kubectl` mutation.
 An already-positive allocation is a no-op; otherwise cluster bring-up installs pinned NVIDIA device-plugin
 chart `0.19.3`, waits for its pods, and refuses to continue until at least one node advertises positive
@@ -82,10 +95,9 @@ allocatable `nvidia.com/gpu`. The accelerator daemon pod requests `nvidia.com/gp
 process through the dedicated in-cluster accelerator Service; no accelerator NodePort is published for
 this lane.
 
-The planners, probes, topology choice, plugin gate, GPU request, CUDA base selection, and `--gpus=all`
-handoff have static coverage. Historical WSL2 evidence does not close the native Linux GPU lane; current
-gate status and exact totals belong in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+The planners, probes, topology choice, plugin gate, GPU request, CUDA base selection, and the direct
+placement's `HOSTBOOTSTRAP_DIRECT_CONTAINER` marker have static coverage. Gate status and exact totals
+belong in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Windows Host-Build CUDA (headless)
 
@@ -100,7 +112,11 @@ display driver is a **precondition** — the reconciler fails fast when `nvidia-
 never auto-installed — while the CUDA Toolkit (`Nvidia.CUDA`), Visual Studio Build Tools with the VCTools
 workload, and LLVM clang (`LLVM.LLVM`) are installed via **winget** (the Homebrew-analog pre-binary package
 manager). The reconciler verifies `vswhere`, the resolved MSVC `cl.exe`, LLVM clang, and a CUDA smoke
-compile through `nvcc -ccbin <resolved-msvc-cl-directory>`. The accelerator daemon then compiles the
+compile through `nvcc -ccbin <resolved-msvc-cl-directory>`. Its fail-fast check is narrower than
+`ensure cuda`'s: `ensure cudawin` refuses up front only when `nvidia-smi` is missing. When `nvidia-smi` is
+present but `nvidia-smi -L` reports no GPU, the satisfied check fails, the winget installs run, and the
+reconciler then fails with its generic not-satisfied-after-install error rather than a driver message.
+The accelerator daemon then compiles the
 platform-locked worker **on the bare Windows host and runs it there**. The WSL2 VM still owns Docker/kind,
 but no GPU workload runs in that VM and the worker is not staged into the cluster.
 
@@ -126,7 +142,7 @@ The accelerator daemon design uses CUDA in two places:
   generated add worker with in-image `nvcc`, and requests one `nvidia.com/gpu`. Host-side `ensure cuda`,
   the `nvkind` volume-mount smoke, device-plugin readiness, and the allocatable-GPU gate all complete
   before that pod is deployed. It does not run host ensure inside the pod.
-- `windows-gpu`: the daemon runs host-native, uses `ensure-cudawin` to verify/install the host CUDA build
+- `windows-gpu`: the daemon runs host-native, uses `ensure cudawin` to verify/install the host CUDA build
   stack (`Nvidia.CUDA`, MSVC C++ Build Tools/VCTools, LLVM clang, and an `nvcc -ccbin` smoke compile),
   builds the generated CUDA worker with host `nvcc`, and connects to the cluster web service through its
   exact runtime-resolved loopback exposure.

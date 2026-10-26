@@ -4,9 +4,10 @@
 **Supersedes**: the platform-primitive ownership rule that admitted a backend only with an OS-protected
 namespace plus an identity-bound conditional kernel mutation, and returned `Unsupported` otherwise
 **Referenced by**: [ownership seam](ownership_seam.md), [lifecycle state model](lifecycle_state_model.md),
-[durable state](durable_state.md), [readiness](readiness.md), [WSL2](../engineering/wsl2.md),
-[applied cordon](../engineering/applied_cordon.md), [Incus](../engineering/incus.md),
-[Lima](../engineering/lima.md), [documents index](../README.md)
+[durable state](durable_state.md), [harness workflow](harness_workflow.md),
+[unrepresentable state](unrepresentable_state.md), [composition methodology](composition_methodology.md),
+[WSL2](../engineering/wsl2.md), [Incus](../engineering/incus.md), [Lima](../engineering/lima.md),
+[cluster lifecycle](../engineering/cluster_lifecycle.md), [documents index](../README.md)
 
 > **Purpose**: Define the one ownership invariant every substrate must satisfy before mutating shared
 > state — its four clauses and the exact guarantee it does and does not provide.
@@ -16,15 +17,27 @@ namespace plus an identity-bound conditional kernel mutation, and returned `Unsu
 Ownership is a **protocol** requirement, not a platform-primitive requirement. A backend may mint an
 ownership receipt when it holds all four **Locked-Origin Identity Ownership** clauses: an OS-released
 exclusive lock, a durable origin record written before the first mutation, identity binding to the
-object's stable kernel identity rather than its pathname, and conditional release on exact identity
-match. This **excludes** crash/retry and concurrent cooperating runs and **detects** foreign mutation;
-it does **not** exclude a hostile same-privilege process. No substrate supplies that exclusion, and the
-contract makes no such claim. A backend that cannot satisfy a clause returns `Unsupported` and mints no
-receipt.
+object's stable identity as its owning authority answers it rather than its pathname, and conditional
+release on exact identity match. This makes crash/retry **recoverable**, **excludes** concurrent
+cooperating runs, and **detects** foreign mutation; it does **not** exclude a hostile same-privilege
+process. No substrate supplies that exclusion, and the contract makes no such claim. A backend that cannot
+satisfy a clause returns `Unsupported` and mints no receipt.
 
-The normative statement is
-[development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md); this
-document is its canonical explanation and per-substrate realization.
+This page is the canonical statement of the invariant and of its per-backend realization.
+[development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md#ee-opaque-capabilities-and-phase-indexed-lifecycle-state)
+is the plan's restatement of the four clauses, the contract phases close against, and it names this page
+as the canonical statement.
+
+## Scope
+
+The invariant governs every object a backend mutates on the project's behalf: a named VM, cluster,
+generated config, data root, port, host daemon, global provider setting, or durable alias. A pathname
+compare, a content hash, or an immediate re-probe substitutes for none of the four clauses: each answers a
+question about a name or about bytes at one instant, and none of them binds the object.
+
+This page uses **frame** in the frame-table sense of [the glossary](../README.md#glossary) — a row of the
+frame table, and the machine a provider reaches — except where it names a plan's frame text, which is the
+default topology sense (a `ProjectFrame` identity).
 
 ## Current Status
 
@@ -34,196 +47,60 @@ their digest, what is owned and what was there before, the durable origin record
 codec, and the closed fault sum with its total eliminator. See
 [ownership seam](ownership_seam.md#the-vocabulary) for what each carries and why.
 
-The invariant is defined and the algebra that consumes it exists. The prepared Incus provider/share and
-provider-guest alias implementations encode all four clauses, and the
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-carries both its static and its native Linux/x86_64 KVM/Incus closure evidence. The demo
-still uses its compatibility
-provider/alias call site; adopting the sealed route belongs to the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), which is where that call site's
-native validation lives.
+The [per-backend clause matrix](#per-backend-clause-matrix) is the one statement of which backend holds
+which clause and how. Every backend in it holds all four clauses except two:
 
-- `HostBootstrap.ProjectPlan` is the sole whole-plan producer of `PlannedResource` and `PlannedEdge`.
-  Its facade takes an opaque admitted `OperationKey` plus a closed `PlannedResourceKind`, generates the
-  resource and frame identities under a rank-2 continuation, and admits a typed edge only when the exact
-  resources remain open and the dependency exists in the same plan. `HostBootstrap.Reconcile` consumes
-  that vocabulary through the public facade. Its exact, total `stepExecutionFor` producer accepts one
-  `ProjectPlan scope specDigest planId configId cfg`, a matching `StepRuntime scope planId`, and one
-  `PlannedStep scope planId configId (cfg scope)`. The resulting `StepExecution scope planId` retains the
-  stable plan digest, admitted configuration digest, stable node identity, frame, operation key, ordered
-  dependency prefix, and projected operation keys. The shared `scope`, `planId`, and `configId` inputs make
-  a node from another admission a type error; no caller supplies an identity or asks a membership question.
-  `HostBootstrap.Reconcile` exposes no constructor for the plan, planned resource, or canonical snapshot.
-  Its resource-narrowing and guest-alias adapters consume the same exact descriptor projections.
+- **The Direct provider realization holds none, by design.** It admits the already-local host by
+  observing it, publishes no origin, never claims the host, and answers stop and delete with
+  `Unsupported`, so it mints no receipt that would need the clauses.
+- **The Lima and WSL2 guest-VM provider realization holds none, and that is a gap.** Its provisioning
+  probes whether an instance with the configured name exists and reports a present one as already owned
+  (`ProviderProvisionAlreadyOwned`), with no origin record, no owner claim, and no bound identity, so a
+  pre-existing, unrelated instance with that name is adopted as managed. Holding the clauses over that
+  realization, or refusing an unclaimed instance, belongs to the
+  [host providers and lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
 
-  `StepRuntime scope planId` contains the interpretation's `ResourceCarrier scope planId`, so a managed
-  resource carried from a projected node can be read only within the same scope and plan. Every phantom
-  parameter on the opaque lifecycle-plan, execution, runtime, carrier, handle, receipt, authority,
-  descriptor, dependency, prepared-call, reconcile-result, journal-proof, and phase-evidence types has an
-  explicit nominal role. Equal runtime representations therefore cannot use `coerce` to relabel a scope,
-  plan, resource, operation, phase, attempt, or journal identity.
+Four further gaps sit between the contract below and the tree:
 
-  Public `HostBootstrap.Chain` now consumes one exact `ProjectPlan` and its non-empty `forward`
-  projection together with a matching execute-phase `CommandAuthority` and `LifecycleCursor`. Before it
-  begins I/O, it checks that the authority belongs to the supplied `ProtectedStore`, and it compares the
-  cursor's retained store plus decoded acquisition project/store/broker origin with that authority. It
-  also compares the retained frame, verb, and phase terms before opening the journal or performing any
-  durable transition. The authority's broker epoch and invocation identity drive the operation session,
-  each exact `PlannedStep` enters the total `stepExecutionFor` producer, and descent comes only from the
-  plan's `DerivedTopology`. The term-level origin check makes even a hostile package substitution fail
-  before durable state is opened rather than relying only on nominal indices. Every later protected
-  entry revalidates the cursor's exact acquisition source and current durable row under that same
-  exclusive entry before its dependent journal/session/prepare/settle/close action. An execute cursor
-  advanced to teardown therefore cannot be reused through a stale in-memory value.
+- **`Unsupported` covers fewer cases than [the contract](#when-a-backend-returns-unsupported) names.**
+  The Windows row reads the volume serial number and file index without checking the filesystem type,
+  so a non-NTFS volume is trusted rather than refused. An unavailable lock or an unwritable state
+  directory surfaces as a store fault (`OwnershipProbeFailed`), not as `OwnershipUnsupported`. Both
+  belong to the
+  [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md).
+- **The seam's re-entry and record tape trust the caller.** Re-entry accepts any bound record a caller
+  presents, and the tape replaces a stored binding rather than refusing it;
+  [ownership seam](ownership_seam.md#current-status) states both and names the same phase.
+- **Harness recovery does not yet settle every crash window.** The data root's recovery of an unbound
+  absent-origin record (the window between clauses 2 and 3) removes whatever stands at the generation
+  path, recursively, where the contract removes only an empty directory and reports a non-empty one as a
+  conflict. For both harness owners, a bound record whose object is already gone (a kill between
+  release's removal and its forget) is reported as a conflict on every later recovery, where the contract
+  settles it as already absent; and the generated config's unbound-window recovery leaves the record
+  standing. All three belong to the
+  [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md).
+- **An already-owned cluster reconcile enters the store twice.** The cluster backend answers an
+  already-owned reconcile in one protected-store entry and checks that the cluster is running in a
+  second, where the contract takes the entry once per transaction. It belongs to the
+  [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 
-  The step callback's raw `StepObservation` is deliberately plan-independent and grants no ownership.
-  The public plan facade immediately wraps that result under the projected scope, plan, and configuration
-  indices as opaque nominal `PlannedStepObservation scope planId configId`; a caught safety refusal is
-  wrapped through the same call-site `PlannedStep`. Chain classifies, reports, and acknowledges only this
-  indexed wrapper, so an
-  observation from another scope, plan, or configuration cannot enter the node's settlement path through
-  `coerce`.
+The worked demo routes its VM durable share by provider. Incus and Lima run the exact prepared route
+(`runExactVmShare`). WSL2 runs the shipped symbolic-link alias transaction directly
+(`reconcileShippedDurableAlias`) and then the same exact route; both reach the alias through the shipped
+row described in the [matrix](#per-backend-clause-matrix).
 
-  Production `HostBootstrap.Command` retains or reconstructs one exact plan and keeps render/persist,
-  root-refined lifecycle-context admission, fixed root-Up entry interpretation, observations, and current-frame
-  reverse work under that identity. The Cabal-private `LifecycleEntry` producer alone derives the
-  journal/current cursor, invokes generic `authorizeRootProject`, and supplies the raw lower Chain inputs. No
-  Production plan-only authority, raw-step descriptor, alternate
-  forward interpreter, or reverse-plan producer exists. This exact representation does not itself mint
-  `down`/`destroy` authority; nested lifecycle entry fails closed and
-  [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
-  owns the proof-complete operator/descent gates. The
-  [test-harness-and-run-ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
-  owns direct Harness interpretation.
-- `HostBootstrap.Harness.DataRoot` holds all four clauses for the harness durable data root **through the
-  one seam**, and is **live**: `HostBootstrap.Harness.Ownership` — the bracket every `test run` executes
-  inside — acquires and releases `.test_data` through it, against the row `ownershipRowForHost` selects.
-  The origin record naming the exact prior identity-or-absence is the canonical `OriginRecord`, published
-  before the directory is created; the created directory's own identity is bound to it; and teardown
-  re-enters the object from that record and removes it only after re-observing the identity. What stays
-  the data root's own is its policy rather than its mechanism: the parent is scaffolding that is created
-  if missing and never owned, a directory the run merely found is preserved, and a confirmed generation's
-  content is cleared *after* clause 4's re-observation and before the seam removes the directory itself.
-  This was the first production route on the invariant.
-  The enclosing Harness short close re-observes its lease epoch, legacy effect markers, canonical
-  resource namespace, and bound-plan session set under the same protected entry as closure. A retained
-  proof cannot discard an open session's recovery path or release mode after a later ownership record
-  appears. Released resource tombstones still require settled recovery rather than a no-resource close.
-- `HostBootstrap.Harness.GeneratedConfig` holds all four clauses for the run's generated sibling
-  `<project>.dhall` **through the same seam**, and is **live** on the same bracket. It is the same
-  protocol over a file: the canonical `OriginRecord`, whose file case names the recorded absence *and the
-  intended payload digest*, is published before the file is created; the payload is staged and then
-  published through the row's atomic no-replace primitive, so a target that already exists is refused
-  rather than replaced; the created file's own identity is bound to the record; and release re-enters the
-  object from that record. Because both owners consume one seam and one row, the directory and file
-  realizations cannot drift, and the record one writes is the record the other reads. What stays the
-  generated config's own is its policy rather than its mechanism: a found object is refused before any
-  record is written and is never adopted, and release compares the bytes against the recorded digest
-  *after* clause 4 has confirmed the identity — so an edited file is left intact even though it is the
-  same object. Recording the payload digest before the write is what makes the crash window between the
-  record and the identity binding resolvable without ever adopting bytes the record does not name. No
-  pathname sidecar participates in that authority.
-- `HostBootstrap.Substrate.Provider.Ownership` holds all four clauses over an Incus instance and over
-  each share attached to it, through the seam's **reported** face. Every effect it performs is a
-  described command run by the one interpreter, every answer it reads is a value a total classification
-  produced, and where a transaction stands is a total function of the durable record, that observation,
-  and the claim the instance carries — so the interval between clause 2 and clause 3 is decided by
-  application rather than by whichever branch a live run happened to take. It publishes an
-  explicit-absence origin under a fresh claim before launch, carries that claim on the creating command
-  itself, binds the instance's own identity from what the provider reports afterwards, and re-observes
-  that identity before and after every later mutation and every guest command. A share is an owned object
-  of its own inside that instance, so its attachment re-observes both: the device on both sides of the
-  attachment, and the instance's standing on both sides of the device readback — an instance replaced
-  while a device was being attached is a conflict rather than a share. Incus does not reliably hot-mount
-  a newly attached disk into an already-running VM. Consequently the newly-attached and recovered-unbound
-  branches force-restart only the still-owned instance, then re-read its exact identity and Running state
-  before binding the share record. A replacement during that restart is a conflict, and an exact bound
-  retry performs no additional restart. The boundary's **durability** is
-  not its own: every durable byte it publishes is the protected store's compare-and-swap, so the
-  partial-write and partial-unlink windows are the store's contract below, and the driver names no
-  mutating filesystem primitive at all. `Provider.Backend` and
-  `Provider.Reconcile` turn its outcomes into the prepared provision/readiness/share/stop/delete route;
-  the opaque nominal `ManagedProviderHandle` and `ManagedProviderShareHandle` retain the exact backend
-  origin rather than exposing their generic handle/receipt components. Direct uses the same prepared
-  algebra only for a plan-local reservation and identity share: its root admission is this binary's own
-  observation of the kernel followed by a total decision over it, and it publishes no physical-host
-  origin and cannot produce successful stop/delete authority.
-- `HostBootstrap.Substrate.Provider.Alias` supplies the typed prepared call/release for the
-  provider-guest durable alias. Its `StrongAliasBackend` is derived only from the capability for the exact
-  managed Running provider and accepts the exact opaque managed share authority. `ManagedGuestAliasHandle`
-  hides the generic handle/receipt authority after settlement. The whole-plan alias projection yields its
-  opaque alias resource and typed alias-to-share edge only when the durable-share node both depends on the
-  provider and declares the derived `<provider>/<share>/guest-alias` operation. The project binary installed
-  in the guest interprets a closed shipped symbolic-link transaction over the same ownership row: the shared
-  codec records absence in the host-backed share, stages the link, and durably binds that staging inode before
-  atomic no-replace publication. Linux gives the inode a second name with `link(2)`; Darwin moves that same
-  inode with `renamex_np(RENAME_EXCL)`, because APFS refuses hard links to symbolic links. Retries converge
-  across the unbound, bound-staging, and published windows, and destroy releases that exact identity before
-  deleting the provider frame. No guest Python program or `stat`/`flock` front end participates.
-- `HostBootstrap.Cluster.Backend` is the **join** between the plan's prepared cluster package and the driver
-  above, not a second holder of the clauses. It derives the owned object from the package — name, declared
-  node containers control plane first, configuration snapshot, the file this run opens for the credential,
-  and this run's durable ownership binding — opens the protected store under the plan's own state directory,
-  takes the exclusive entry once per transaction, and maps the driver's answer onto the reconcile, cordon,
-  readiness, and cleanup observations. It resolves no interpreter and no locking front end, carries no
-  injected executor, and a source guard holds that absence; a backend is a value the declaration decides,
-  admitted from the typed `HostConfig` when all three tools the cluster drives are resolved in it and probed
-  no further. A cluster this record already owns is additionally asked whether its node containers are
-  running, because that is the container runtime's answer rather than the API server's.
-- The backend also holds the four clauses over one cluster-adjacent exposure relay. Clause 1 is the same
-  protected-store entry; clause 2 publishes a nonce- and specification-bound pending record before `docker
-  container run`; clause 3 binds the exact inspected relay/container identity and every runtime-selected
-  `127.0.0.1` mapping; clause 4 re-inspects the name, identity, labels, generation, operation, and complete
-  mapping set before removal and forgets the record only after the exact identity is absent. A replacement,
-  wildcard, missing/additional mapping, or changed target is a conflict, and cluster cleanup refuses until
-  this adjacent resource has completed clause 4.
-- `HostBootstrap.Cluster.Ownership` is the kind cluster written as a **row** of the one seam rather than as
-  a program in another language. What to ask is a described command (`Cluster.Command`), what an answer
-  means is a total classification (`Cluster.Report`), where an interrupted transaction stands is a total
-  function of the durable record and the two authorities' answers (`Cluster.Resume`), and what a clause is
-  belongs to `Ownership.Primitive`. **Every node is an owned object**: clause 3 binds exactly one identity
-  per record, so the cluster's own record binds the control-plane container and each other node carries its
-  own record beside it — which is what lets a later cordon address a node by the identity this run bound
-  rather than by the name a replacement inherits. Every record is published over an explicit absence
-  *before* the single creating command, because one `kind create cluster` brings every node container into
-  existence at once, and each is bound afterwards from what the runtime reports. The node observation asks
-  the node's **name** twice — of the listing and of the inspection — so a container replaced between the two
-  answers differently. Readiness re-enters from the records on both sides of a read-only probe it takes
-  through the kubeconfig the driver hands back, so a node replaced while the probe ran is a conflict rather
-  than a readiness; cordon applies the one budget renderer's wall to each bound container identity and
-  re-observes every node on both sides; and release re-observes every node, removes the cluster through the
-  one interpreter, and forgets a record only over a reported absence, leaving a same-named replacement
-  standing because clause 4 compares the identity rather than the name. Its durability is the protected
-  store's compare-and-swap, exactly as the provider boundary's is.
-- The implemented direct-Colima backend applies the four clauses to one 128-bit plan/lifecycle namespace, not to
-  a caller-selected profile. Its reusable global lock contains only its own self-bound profile/lock identity
-  and remains synchronization-only across owners. A fresh self-bound nonce record publishes absence before
-  the isolated Colima home or Docker config is created; descriptor-relative transitions retain the exact
-  acquisition invocation, root/data wall, machine/context, record/namespace/disk objects, directory chain,
-  and complete Colima/Lima artifact manifest. The sole pre-call `prepared` state cannot adopt a present
-  profile after an outcome-unknown start; only a matching managed stage can recover it. Live Docker
-  reacquires that exact binding. Cleanup carries a distinct journal invocation, enters `releasing` before
-  `colima delete --force --data`, and proves profile/data/context absence before conditionally removing only
-  manifest-listed namespaces and origin evidence. This source boundary belongs to the
-  [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md),
-  which has closed it. What the source boundary does not carry is the live Apple lane that exercises it
-  against a real Colima; that run belongs to the
-  [Apple Silicon substrate acceptance phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md),
-  and [the plan index](../../DEVELOPMENT_PLAN/README.md) is the authority for both statuses.
-- The WSL2 global `.wslconfig` wall is a portable driver (`Wsl2.GlobalWall.Host`) over a `Posix` and a
-  `Windows` backend; the backup-existence (`.bak`) inference is gone. The Windows-gated
-  suite exercises the production entrypoint against a temporary `USERPROFILE` across four
-  native apply/restore/origin/replacement cases. That is focused adapter evidence, not the full WSL2
-  provider lifecycle gate, and its dated runs belong to the
-  [Windows and WSL2 substrate phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
-
-The plan projections above are descriptive identity and topology evidence, not ownership receipts or
-mutation authority. They prevent a caller from supplying a plan digest, frame text, resource identity, or
+Plan-level identities — `ProjectPlan`, the `StepExecution` that `stepExecutionFor` produces, and Chain's
+exact `CommandAuthority` and `LifecycleCursor` — are typed in
+[execution-shape taxonomy](run_models.md) and
+[hostbootstrap-core library](hostbootstrap_core_library.md).
+Those plan identities are descriptive identity and topology evidence, not ownership receipts or mutation
+authority. They prevent a caller from supplying a plan digest, frame text, resource identity, or
 dependency edge independently; the selected backend must still satisfy all four clauses below before it
 may mutate the named object or mint ownership evidence.
 
-Phase and sprint ownership is in
-[the development-plan index](../../DEVELOPMENT_PLAN/README.md). The clauses below apply to every managed backend; unsupported rows refuse before mutation.
+Phase and sprint ownership is in [the development-plan index](../../DEVELOPMENT_PLAN/README.md). The
+clauses below bind every backend that mints an ownership receipt; a row that cannot hold one refuses
+before mutation.
 
 ## The four clauses
 
@@ -252,10 +129,15 @@ teardown then restores that content instead of the user's state.
 
 ### 3. Identity binding, never pathname
 
-Every operation after the first binds to the object's stable kernel identity — the
-`(volumeOrDevice, fileIndexOrInode)` pair — rather than the name it was reached by. A pathname is
-evidence of nothing between two operations: another process can rename, replace, or redirect the name
-in that window. Reparse points and symlinks at the target are rejected rather than followed.
+Every operation after the first binds to the object's stable identity, as answered by the authority
+that owns the object, rather than the name it was reached by. On the kernel face that is the kernel's
+`(volumeOrDevice, fileIndexOrInode)` pair; on the reported face it is the identity the provider or
+container runtime reports for the object it created (an Incus instance's volatile.uuid, a container's
+identity). An identity qualifies only when its authority never answers it for a different live object;
+a name, including a container or instance name, never qualifies. A pathname is evidence of nothing
+between two operations: another process can rename, replace, or redirect the name in that window.
+Reparse points and symbolic links at a target are never followed. Where a symbolic link is itself the
+owned object, as the provider-guest durable alias is, it is bound by its own identity.
 
 ### 4. Conditional release
 
@@ -268,8 +150,9 @@ untouched. The invariant never removes state because its pathname matched.
 The clauses are uniform; the mechanism that supplies each belongs to a **row** of the frame table, and the
 transaction they compose is written once above those rows. [Ownership seam](ownership_seam.md) is the
 canonical home for that structure: the seam of kernel primitives, the two platform rows, the row that runs
-a transaction at the frame owning the object, the atomic no-replace publication, and what each individual
-owner adds on top.
+a transaction at the frame owning the object, and the atomic no-replace publication. Which backend holds
+which clause, and what each owner adds on top, is the [per-backend clause matrix](#per-backend-clause-matrix)
+below.
 
 Not every owned object is one a kernel this process can call answers for. A provider instance's stable
 identity is answered by the provider, so the clause producers have a second **reported** face: the
@@ -284,7 +167,11 @@ Three consequences belong here rather than there, because they are properties of
 of its realization. A backend that cannot supply a clause returns `Unsupported` and mints no receipt —
 never a weaker receipt. The clause *order* is not a convention a reviewer checks: a mutation consumes the
 recorded origin and a release consumes the bound identity, so performing either out of order has no term.
-And on the reported face the same order still holds even though the removal happens outside this process:
+The types fix the order of the calls, not the values passed through them: the identity clause 3 binds and
+the origin the reported face enters with are caller-supplied, so an owner passes the identity its creating
+primitive returned or its classified command outcome, and refusing a found object is the owner's policy
+(see the [matrix](#per-backend-clause-matrix) and
+[ownership seam](ownership_seam.md#the-clause-tokens)). And on the reported face the same order still holds even though the removal happens outside this process:
 the record is forgotten only over a reported absence, so an object that survived its removal leaves a
 record that still claims it rather than an orphan nobody claims. That comparison is of the *identity*,
 not the name: an object standing where this run's object was, after the removal it issued, is somebody
@@ -297,6 +184,72 @@ therefore compares what the record *says* — its kind and its prior origin — 
 one field a later step of the same transaction adds. Comparing the encoded bytes instead refuses the
 transaction's own record as a foreign one, which makes every re-entry impossible.
 
+## Per-backend clause matrix
+
+One row per backend, each verified against its module. "Kernel face" and "reported face" are the seam's
+two faces ([ownership seam](ownership_seam.md#the-two-faces)); "host row" is the row
+`ownershipRowForHost` selects for the binary's own kernel.
+
+| Backend | Object | 1 — exclusive entry | 2 — origin record | 3 — identity | 4 — conditional release | A found object |
+|---|---|---|---|---|---|---|
+| [`HostBootstrap.Harness.DataRoot`](../../core/hostbootstrap-core/src/HostBootstrap/Harness/DataRoot.hs) — kernel face, host row | the run's `.test_data` generation directory | the caller's protected-store entry | canonical `OriginRecord`, directory case, published before the directory is created | the created directory's kernel identity | re-entry from the record, re-observation, content cleared, directory removed | preserved: the record names it and no identity is ever bound |
+| [`HostBootstrap.Harness.GeneratedConfig`](../../core/hostbootstrap-core/src/HostBootstrap/Harness/GeneratedConfig.hs) — kernel face, host row | the run's generated sibling config file | the caller's protected-store entry | canonical `OriginRecord`, file case carrying the intended payload digest | the published file's kernel identity, after atomic no-replace publication | re-entry, re-observation, then a byte comparison against the recorded digest; an edited file is left intact | refused before any record is written |
+| [`HostBootstrap.Wsl2.GlobalWall.Host`](../../core/hostbootstrap-core/src/HostBootstrap/Wsl2/GlobalWall/Host.hs) — host-row primitives under its own driver | the per-user `.wslconfig` | the wall's own protected store, opened beside the target | the wall's own record (`encodeWallRecord`) naming the exact prior bytes or their absence, plus a strictly monotonic fence record | the host row's identity read | re-observation through the row before every removal or move; a replacement is refused | its bytes are the recorded origin and are restored byte-for-byte |
+| [`HostBootstrap.Substrate.Provider.Ownership`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs) — reported face | an Incus instance, and each share attached to it | the protected store under the provider's state directory | explicit absence plus a fresh owner claim, published before `incus launch`, which carries the claim on the instance | the instance's volatile.uuid; a share's device, re-observed together with the instance | re-observation before and after every mutation and guest command; the record is forgotten only over a reported absence | an instance no record claims, or one carrying another record's claim, is a conflict |
+| [`HostBootstrap.Substrate.Provider.Alias`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs) over [`HostBootstrap.Ownership.Shipped`](../../core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs) — shipped symbolic-link acts, reported-face producers | the provider-guest durable alias, a symbolic link in the guest | the protected store's exclusive entry, taken by the project binary in the guest in a store inside the host-backed share; no guest `flock`, `stat`, or Python front end participates | a reported-object record over explicit absence, with a claim derived from the link target, keyed by a digest of the alias path and target | the staging link's device/inode pair, bound before no-replace publication | re-observation of the exact link, removal by name, record forgotten over absence | a link no record claims is reported foreign |
+| [`HostBootstrap.Cluster.Ownership`](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs), joined to the plan by [`HostBootstrap.Cluster.Backend`](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs) — reported face | a kind cluster and every node container | the protected store under the plan's state directory, entered once per call except an already-owned reconcile, which enters twice (see [Current Status](#current-status)) | one record per node over explicit absence, all published before `kind create cluster` | each node container's runtime-reported identity | every node re-observed, the cluster removed through the one interpreter, each record forgotten only over a reported absence | anything at the name that no record claims is a conflict |
+| [`HostBootstrap.Cluster.Backend`](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs) — protected-store records written directly | the cluster-adjacent exposure relay container | the cluster's protected-store entry | a nonce- and specification-bound pending record, published before `docker container run` | the inspected relay container identity and every runtime-selected loopback mapping | name, identity, labels, generation, operation, and mapping set re-inspected; record forgotten only after the identity is absent | a replacement, wildcard, missing or extra mapping, or changed target is a conflict |
+| [`HostBootstrap.Ensure.Colima.Ownership`](../../core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs) — both faces | one 128-bit plan/lifecycle namespace and its isolated Colima profile | the protected-store entry; the reusable profile-global lock is synchronization only | a reserved stage record binding the owner token, the lineage digest, and the invocation digest, published before any namespace object exists | the Colima home, Docker config, root/data wall, machine and context, every required artifact, and a directory-chain digest, retained as the managed stage's evidence beside a retained namespace manifest | the stage advances to `ColimaReleasing` with the cleanup invocation digest, and the retained manifest is revalidated against the live home and Docker config, before `colima delete --force --data`; the machine and disk identities are re-observed first and their absence proved after; the home's remaining entries, other than its cache and tmp directories, are then each removed by re-observed identity | foreign profiles, copied records, replacements, and partial foreign stages are conflicts |
+| [`HostBootstrap.Substrate.Provider.Backend`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs) — Direct realization | the already-local host | none | none: no origin is published | none | stop and delete answer `Unsupported` | admitted by observation and never claimed |
+| [`HostBootstrap.Substrate.Provider.Backend`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs) — Lima and WSL2 realization (`StrongLimaBackend`) | a Lima instance or a WSL distro | none | none | none: existence is a name-membership probe | stop and delete through a forward handle answer `Unsupported`; reverse belongs to the plan's retained step-declared adapter | **reported as already owned** — the gap [above](#current-status) |
+
+What each owner adds beyond the shared mechanism:
+
+- **Harness data root.** The parent `.test_data` is scaffolding: created if missing, never owned, never
+  removed. A confirmed generation's content is cleared only after clause 4's re-observation and before the
+  seam removes the directory. The enclosing Harness close is described in
+  [harness workflow](harness_workflow.md). By contract, recovery of the window between clauses 2 and 3
+  removes the generation only when it is an empty directory, because the dead run bound nothing and wrote
+  nothing into it, and a bound record whose directory is already gone settles as already absent; the
+  tree's departure from both is under [Current Status](#current-status).
+- **Generated config.** Recording the payload digest before the write is what makes the crash window
+  between the record and the identity binding resolvable without adopting bytes the record does not name.
+  No pathname sidecar participates.
+- **WSL2 global wall.** The driver is portable over the POSIX and Windows rows and keeps both names of its
+  armed publication until the durable one is bound ([ownership seam](ownership_seam.md#the-no-replace-publication)).
+  The Win32-row suite compiles and runs on every gate host: on Windows its three row cases (absent origin,
+  present origin, replacement) drive the production entry point against a temporary `USERPROFILE`, and
+  elsewhere each asserts the row's refusal. Detail is in [WSL2](../engineering/wsl2.md).
+- **Incus instance and shares.** The claim rides on the creating command, so where an interrupted
+  transaction stands is a total function of the record, the provider's report, and the claim the
+  instance carries. A share's attachment re-observes the device on both sides of the attachment and the
+  instance on both sides of the readback. Durability is the protected store's compare-and-swap; the
+  driver names no mutating filesystem primitive. The opaque `ManagedProviderHandle` and
+  `ManagedProviderShareHandle` retain the exact backend origin. The restart a newly attached share needs
+  is in [Incus](../engineering/incus.md).
+- **Provider-guest durable alias.** `StrongAliasBackend` is derived only from the capability for the
+  exact managed Running provider, and `ManagedGuestAliasHandle` hides the generic handle and receipt after
+  settlement. The far-side publication is `link(2)` on Linux and `renamex_np(RENAME_EXCL)` on Darwin,
+  because APFS refuses hard links to symbolic links; both are in `HostBootstrap.Ownership.Shipped`, outside
+  the row record ([ownership seam](ownership_seam.md#what-each-owner-adds)). Retries converge across the
+  unbound, bound-staging, and published windows, and destroy releases the exact identity before deleting
+  the provider frame. A later prepared call for the same alias path and target that finds the exact link
+  its record names settles as unchanged when the caller holds the prior commit proof, and as repaired
+  otherwise.
+- **kind cluster.** Every node is an owned object, because clause 3 binds one identity per record; a later
+  cordon therefore addresses a node by its bound identity. The node observation asks the node's name of
+  both the listing and the inspection, readiness re-enters the records on both sides of its probe, and
+  release leaves a same-named replacement standing. Cluster cleanup refuses until the exposure relay has
+  completed clause 4. Detail is in [cluster lifecycle](../engineering/cluster_lifecycle.md).
+- **Direct Colima.** The pre-call `prepared` stage cannot adopt a present profile after an
+  outcome-unknown start; only a matching managed stage recovers it, and live Docker reacquires the same
+  binding. The plan's statement of this boundary is
+  [§ EE](../../DEVELOPMENT_PLAN/development_plan_standards.md#ee-opaque-capabilities-and-phase-indexed-lifecycle-state),
+  owned by the
+  [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md); its live
+  Apple lane belongs to the
+  [Apple Silicon substrate phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md).
+
 ## What the invariant excludes
 
 Stating this exactly is part of the contract; any stronger claim is unsupported.
@@ -307,7 +260,8 @@ Stating this exactly is part of the contract; any stronger claim is unsupported.
 | A run crashes after the first write | Recoverable, same mechanism. |
 | Two concurrent `hostbootstrap` runs target the same state | Excluded. The second blocks on clause 1, then observes clause 3's identity. |
 | A cooperating peer replaces the object with a different kernel identity between two operations | Detected. Clause 3 reports `Conflict`; clause 4 refuses release. |
-| A hostile same-privilege process ignores the lock and replaces the object | **Not excluded.** A changed identity is detected on the next observation. |
+| A hostile same-privilege process ignores the lock and replaces the object | **Not excluded.** A changed identity is detected on the next observation, unless the replacement lands in the release window below. |
+| A same-privilege process replaces the object between clause 4's re-observation and the removal | **Not excluded.** Kernel-face release re-observes the identity and then removes the object by name inside the protected entry, which excludes only cooperating runs; a replacement in that window is removed rather than detected. |
 | A removed object's kernel identity is recycled for a replacement with the same checked payload | Not distinguishable by the recorded identity and payload alone. |
 
 An advisory lock can be ignored by a process that chooses to, and no substrate in scope offers a
@@ -319,12 +273,29 @@ without assuming the filesystem never recycles one. They do not establish detect
 ## When a backend returns `Unsupported`
 
 `Unsupported` is a real outcome, not a failure to try. A backend returns it — and mints no receipt —
-when a clause is unsatisfiable on the host:
+when a clause is unsatisfiable on the host. The contract names three such conditions:
 
-- the filesystem cannot report a stable object identity (clause 3). On Windows the 64-bit file index is
-  unique and stable on NTFS; a non-NTFS volume is `Unsupported` rather than assumed.
-- the lock cannot be taken because the platform or filesystem does not support it (clause 1).
+- the filesystem cannot report a stable object identity (clause 3);
+- the lock cannot be taken because the platform or filesystem does not support it (clause 1);
 - the state directory is not writable, so no origin record can be made durable (clause 2).
+
+The seam answers `OwnershipUnsupported` in these cases:
+
+- a row's capability declaration lacks what a clause needs. `clauseRefusal` applies the declaration
+  before any kernel call, and the row a binary was not built for declares nothing, so every clause
+  through it is refused;
+- the filesystem refuses the hard link that atomic no-replace publication needs;
+- the identity a host or authority answers is empty or longer than the vocabulary's ceiling;
+- a record's kind does not match the producer it reaches: a file record offered to directory creation, a
+  directory record offered to file publication, a reported-object record offered to either, or a payload
+  that is not the one the record's digest names;
+- a symbolic-link act, or the direct-Colima manifest observation, reaches a Windows binary.
+
+Two parts of the contract's list are not realized as `OwnershipUnsupported`. The Windows row trusts the
+volume serial number and file index on every volume without checking the filesystem type, so a volume
+whose file index is not stable is not refused. A lock that cannot be taken, or a state directory that
+cannot be written, surfaces as the store fault `OwnershipProbeFailed`. The gap is stated under
+[Current Status](#current-status).
 
 `Unsupported` carries the attempted operation and the reason. It is distinct from `Conflict` (an
 identity mismatch), `SafetyRefusal` (a policy decline), and `Failure` (an IO fault); observation is
@@ -367,8 +338,11 @@ evidence for each criterion — and what cannot — is in [testing](../engineeri
 5. A kill between the origin record and the first write leaves recoverable state, including the
    **absent-original** case: the next run restores absence rather than treating generated content as
    the original.
-6. A clean-path run reaches absence, creates the object, and reruns to `Unchanged` with the same
-   verified receipt on every supported substrate.
+6. A clean-path run reaches absence, creates the object, and reruns over it on every supported substrate.
+   A later call that finds the exact object its record already bound settles `Unchanged` through
+   `completePreparedUnchanged` when the caller passes the `PriorCommitProof` of an earlier settlement, and
+   `Repaired` without one, as [durable state](durable_state.md#root-authority-and-alias-target) states for
+   the provider-guest alias.
 7. An unsatisfiable clause returns `Unsupported` with its reason, and no receipt is minted.
 
 Validation status and scheduling belong to
@@ -381,13 +355,13 @@ whose gate produced it.
   supply each clause's mechanism.
 - [lifecycle state model](lifecycle_state_model.md) — the handle/receipt/phase algebra a satisfying
   backend settles into, and the total error branches.
-- [durable state](durable_state.md) — the provider-guest durable alias, the first consumer.
-- [WSL2](../engineering/wsl2.md) — the global `.wslconfig` wall, the second consumer.
-- [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind cluster, the third consumer, whose
-  clause-3 identity is the control-plane node container ID.
-- [harness workflow](harness_workflow.md) — the run's `.test_data` root, the fourth consumer and the
-  first one wired into a production route.
-- [Incus](../engineering/incus.md), [Lima](../engineering/lima.md) — peer provider lanes that gain
-  clauses 2–4 from this contract.
-- [development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md) — the
-  normative statement.
+- [durable state](durable_state.md) — the provider-guest durable alias.
+- [WSL2](../engineering/wsl2.md) — the global `.wslconfig` wall.
+- [cluster lifecycle](../engineering/cluster_lifecycle.md) — the kind cluster, whose records bind each
+  node container's identity, and its exposure relay.
+- [harness workflow](harness_workflow.md) — the run's `.test_data` root and generated config.
+- [Incus](../engineering/incus.md) — the provider lane that holds all four clauses through the reported
+  face; [Lima](../engineering/lima.md) — the provider lane that holds none, per the
+  [matrix](#per-backend-clause-matrix).
+- [development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md#ee-opaque-capabilities-and-phase-indexed-lifecycle-state)
+  — the plan's restatement of the clauses.

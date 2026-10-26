@@ -1,16 +1,42 @@
 # Cluster Lifecycle
 
 **Status**: Authoritative source
-**Supersedes**: the claim that teardown is recursive, readiness gating is universal, and demo tests use the Test profile
+**Supersedes**: the claims that readiness gating is universal and that demo tests use the Test profile
 **Referenced by**: [documents index](../README.md), [resource budgeting](resource_budgeting.md), [durable state](../architecture/durable_state.md), [readiness](../architecture/readiness.md), [testing](testing.md)
 
 > **Purpose**: Describe the implemented kind/nvkind/Helm lifecycle and clearly separate its current
 > guarantees from the typed lifecycle target.
 
+## TL;DR
+
+`project up` creates, cordons, and readies a cluster through the plan-owned ownership backend
+(`discoverStrongClusterBackend`), which never adopts a foreign cluster and never auto-deletes an unhealthy
+one. `project down` and `project destroy` release it through the recursive reverse command: the frame that
+owns the `deploy-kind` step releases the recorded exposure relay and then the cluster, by bound container
+identity, for both verbs. The name-only compatibility actions (`ensureCluster`, `clusterDelete`) remain only
+behind the bare `cluster-live` gate. The cluster-node cap is the whole cluster slice on every node; see
+[resource budgeting](resource_budgeting.md#what-runs-today).
+
+The cluster modules divide the work as follows:
+
+| Module | Owns |
+|---|---|
+| `HostBootstrap.Cluster.Lifecycle` | plan types (`ClusterPlan`, `PlanOwnedClusterConfig`, `AcceleratorIngressPlan`), the teardown partition, and the compatibility actions |
+| `HostBootstrap.Cluster.Backend` | the strong backend: discovery, prepared calls, exposure relay, and retained release |
+| `HostBootstrap.Cluster.Reconcile` | the total reconcile classification and the plan-indexed cluster authorities |
+| `HostBootstrap.Cluster.Command`, `HostBootstrap.Cluster.Report`, `HostBootstrap.Cluster.Resume`, `HostBootstrap.Cluster.Ownership` | the described commands, their classifiers, resumption decisions, and the clause-holding transactions |
+| `HostBootstrap.Cluster.Shipped` | carrying a recorded exposure observation across a frame boundary |
+| `HostBootstrap.Cluster.Budget` | plan-indexed budget admission |
+| `HostBootstrap.Cluster.Workload` | the prepared chart workload over a ready cluster |
+
 ## Current Status
 
-The cluster actions live in `HostBootstrap.Cluster.Lifecycle` and are invoked from project chain steps.
-The demo's workload segment is:
+The gaps between the tree and this page's contract are listed under [Current gaps](#current-gaps). An
+unqualified "frame" on this page is the topology sense of the [glossary](../README.md#glossary): a root,
+child, or provider frame is a place in the composed topology.
+
+Project chain steps invoke the cluster actions; the plan-owned path runs through
+`HostBootstrap.Cluster.Backend` and `HostBootstrap.Cluster.Ownership`. The demo's workload segment is:
 
 ```text
 deploy-kind or nvkind
@@ -26,16 +52,19 @@ deploy-kind or nvkind
 backend. Linux CPU/GPU append an in-cluster accelerator-daemon deployment; Apple Silicon and Windows GPU
 start a host daemon after the web and private daemon ingress are reachable.
 
-The current registry wait proves only Deployment readiness and can be followed by `/v2/` success while
-blob `HEAD` redirects the host client to cluster-only S3 store. The target chain requires the exact
-`ReadyBlobRoute` derived from the finalized registry plan before `push-image`; see
-[network reachability](../architecture/network_reachability.md).
+`push-image` consumes a `ReadyBlobRoute`, which `settleBlobRoute` mints from a blob `HEAD` observation
+against the finalized registry plan, so an image push cannot begin while the registry redirects the host
+client to the cluster-only S3 store; see [network reachability](../architecture/network_reachability.md).
 
-Cluster creation is fail-closed around command exit status. Existing named clusters are health-probed;
-an unhealthy one is deleted before recreation. Kind creation carries a finite ten-minute driver readiness
+Cluster creation is fail-closed around command exit status. The plan-owned backend never auto-deletes an
+existing cluster: an unhealthy owned cluster is a conflict (see [The ownership backend](#the-ownership-backend)).
+Only the compatibility `ensureCluster` path, reached solely from the bare `cluster-live` gate through
+`clusterCreate`, health-probes an existing named cluster and deletes an unhealthy one before recreation; that
+gate first refuses any existing same-named cluster. Kind creation carries a finite ten-minute driver readiness
 bound, followed by a fresh API and declared-node readiness observation. The bound covers a cold Apple/Lima
 control plane without turning a failed creation into an unbounded wait. Nvkind adds the NVIDIA runtime smoke,
-a control-plane/GPU-worker topology, per-node CPU/memory cordons, and a device-plugin/allocatable-GPU gate.
+a control-plane/GPU-worker topology whose node containers each receive the cluster cordon (see
+[Resource limits](#resource-limits)), and a device-plugin/allocatable-GPU gate.
 The strong backend passes the finalized driver into its creation transaction: Kind receives `--config`, while
 nvkind receives `--config-template` and performs its NVIDIA containerd/RuntimeClass post-setup.
 
@@ -47,12 +76,16 @@ answer would be a guess that fails closed on every project whose root does not c
 filename. A project that ships templates names one on the plan it hands the backend, and owes a case
 that each answer it can give resolves.
 
-**Accelerator ingress is a closed sum with one case per service type.** An in-cluster daemon is reached
-through a `ClusterIP` service and carries only its service port; a host-resident daemon is reached
-through a `NodePort` and carries the node port and the address its kind host mapping listens on. The
-combinations that were previously constructible and meaningless — a `ClusterIP` carrying a node port, a
-`NodePort` carrying none — now have no constructor, so the correlation is held by the type rather than by
-prose (§ HH). A resolved plan also retains exactly one derived state directory rather than a list that
+**Accelerator ingress is a closed sum with one case per service type.** `AcceleratorIngressPlan` has two
+constructors: `ClusterIpIngress` for an in-cluster daemon, carrying only its service port, and
+`NodePortIngress` for a host-resident daemon, carrying the service port, the internal node port, and a fixed
+`127.0.0.1` listen address. The listen address is retained plan data, not a kind port mapping: the canonical
+cluster configuration refuses `hostPort` and `extraPortMappings`, so a cluster publishes no host port, and the
+host reaches cluster services through the runtime exposure relay described under
+[The ownership backend](#the-ownership-backend). A `ClusterIP` carrying a node port and a `NodePort` carrying
+none have no constructor, so the correlation is held by the type rather than by prose
+([§ HH](../../DEVELOPMENT_PLAN/development_plan_standards.md#hh-unrepresentable-illegal-state)). A resolved
+plan also retains exactly one derived state directory rather than a list that
 could be empty, so reading it is total. Listing,
 kubeconfig readback, identity binding, and conditional deletion use Kind after either creator. Kind's quiet
 creation report remains strictly framed. Nvkind has no quiet mode and emits successful progress on both streams,
@@ -61,15 +94,20 @@ kubeconfig readback and every declared node-container identity, never from the p
 gate runs before the cluster package is registered, so downstream workloads cannot confuse Ready nodes with
 accelerator readiness; the plugin and GPU workload both select nvkind's verified `nvidia` RuntimeClass.
 
-The [cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+The [cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 has an independent live linux-cpu gate, reached as a case behind the fixed `test` verb:
 `hostbootstrap test run cluster-live`. It creates a fresh kind cluster, waits for node readiness, performs a
 read-only node-status query, deletes the cluster and verifies its labelled node containers are absent, then
-re-reads a durable-root sentinel outside the deletion boundary. The exclusive run, the lease, the
-clause-holding cleanup, and the report card come from the harness rather than from anything the case
-arranges itself. The case does not invoke the demo; demo lifecycle integration and end-to-end durable
-readback remain owned by the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this phase gate.
+re-reads a durable-root sentinel outside the deletion boundary. The case drives the compatibility
+`clusterCreate`/`clusterDelete` actions, not the plan-owned ownership backend, so it is live evidence for
+creation, readiness, name-addressed deletion, and durable-root survival, and not for ownership records,
+identity binding, or conditional release. Each of its commands runs through `runTool` with no per-command
+deadline. The target routes the case through the plan-owned backend — reconcile, the applied cordon,
+readiness, and `releaseRetainedCluster` as the reverse — with every command under a bounded cluster
+interpreter (see [Current gaps](#current-gaps)). The exclusive run, the lease, the run-ownership cleanup, and the
+report card come from the harness rather than from anything the case arranges itself. The case does not
+invoke the demo; demo lifecycle integration and end-to-end durable readback are evidenced by the
+[worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this gate.
 
 The exact prepared cluster adapter produces plan/resource-indexed readiness and ownership settlement.
 Convenience `IO ()` waits are descriptive and cannot mint those authorities. See
@@ -83,12 +121,9 @@ only return `IO ()` claim completion rather than typed idempotence.
 
 ### The ownership backend
 
-The
-[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s
-typed exact consumer and clause-holding backend are implemented. The root coordinator and worked demo consume that exact adapter. The source
-boundary plus its focused, full-static, and linux-cpu live gates are closed; call-site adoption belongs to
-the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
-the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+The typed exact consumer and clause-holding backend are implemented. The demo's cluster step reaches it
+through `discoverStrongClusterBackend`, and the root and child reverses release through
+`releaseRetainedCluster` (see [Current teardown](#current-teardown)).
 
 `HostBootstrap.Cluster.Reconcile` owns the total classification: an absent cluster created is
 `Changed Created`. An **origin-verified** healthy cluster with a matching committed proof is `Unchanged`;
@@ -101,7 +136,7 @@ immutable control-plane container ID is retained separately in an opaque `Manage
 Conditional cleanup, cordon, and readiness consume that handle rather than a caller-paired generic
 handle/receipt.
 
-`HostBootstrap.Cluster.Backend` supplies the IO that feeds it, and it is now a **join** rather than a
+`HostBootstrap.Cluster.Backend` supplies the IO that feeds it, and it is a **join** rather than a
 driver. The four
 [ownership invariant](../architecture/ownership_invariant.md) clauses are held by
 `HostBootstrap.Cluster.Ownership` over the one seam, every effect is a described command interpreted by the
@@ -128,15 +163,26 @@ pass quietly. [rationale.md](../../DEVELOPMENT_PLAN/rationale.md) says why a pro
 refused.
 
 A backend is a value the declaration decides. `discoverStrongClusterBackend` takes the typed
-`HostConfig` (§ K), admits it only when all three tools the cluster drives are resolved in it, and probes
-nothing: what a discovery once proved — that a writable state directory, a locking front end, and an
-interpreter exist — is the protected store's own to establish when the first transaction enters it. A tool
-the configuration does not carry is `Unsupported`, so a backend that cannot reach its driver mints no
-capability rather than failing at the first effect. The constructor is not exported, so a caller cannot
-mint one from chosen tool paths.
+`HostConfig` ([§ K](../../DEVELOPMENT_PLAN/development_plan_standards.md#k-host-tool-resolution-doctrine)),
+admits it only when four tools are resolved in it — the plan's creation driver (`Kind` or `Nvkind`),
+`Docker`, `Kubectl`, and `Helm` — and probes nothing: that a writable state directory and a locking front end
+exist is the protected store's own to establish when the first transaction enters it. A required tool the
+configuration does not carry is `Unsupported`, so the backend mints no capability. Listing, kubeconfig
+readback, and deletion always run through `Kind`, which discovery does not require on an nvkind plan, so an
+nvkind plan without a resolved `Kind` fails at its first such effect rather than at discovery (see
+[Current gaps](#current-gaps)). The constructor is not exported, so a caller cannot mint one from chosen tool
+paths.
 
-The four calls are one transaction shape with four continuations, so the store is opened once per
-transaction and the exclusive entry covers the whole of it:
+The four `HostBootstrap.Cluster.Backend` calls below are one transaction shape with four continuations, so the
+store is opened once per transaction and the exclusive entry covers the whole of it. Their results are the
+descriptive call results the prepared reconcile, cordon, readiness, and cleanup calls return; the
+`HostBootstrap.Cluster.Ownership` transactions under
+[The cluster as a row of the frame table](#the-cluster-as-a-row-of-the-frame-table) run beneath them. A
+`ClusterCreated` or `ClusterRecovered` ownership outcome surfaces as `ClusterResultCreated`; a
+`ClusterAlreadyOwned` outcome surfaces as `ClusterResultHealthy` when every bound node container is running and
+as `ClusterResultUnhealthy` otherwise; and a `ClusterReleased` or `ClusterAlreadyReleased` release outcome
+surfaces as `ClusterCleanupRemoved`. The prepared cleanup call has no production caller: production release
+runs `releaseRetainedCluster` over the same ownership release (see [Current teardown](#current-teardown)).
 
 - **reconcile** answers `ClusterResultCreated`, `ClusterResultHealthy`, `ClusterResultUnhealthy`, or
   `ClusterResultForeign` — the `ClusterReconcileResultView` cases, whose remaining constructor
@@ -147,18 +193,25 @@ transaction and the exclusive entry covers the whole of it:
   recreate. Something standing at the name under no durable record of this project's is `Foreign` and is
   never adopted.
 - **cordon** applies the one budget renderer's wall to each bound container identity and reports a container
-  that took a node's name as a replacement.
-- **readiness** is read-only and versioned: the counter advances only when this call freshly observed the
-  managed identity with the API server and every declared node reporting ready, so a stale observation
-  cannot be presented as a fresh one. A container that took a node's name is reported as *that* identity
-  rather than as a probe failure, which is what lets settlement tell a replacement apart from a retry.
+  that took a node's name as a replacement. The wall is the whole cluster slice on every node rather than a
+  per-node share (see [Resource limits](#resource-limits)).
+- **readiness** is read-only and versioned: the counter advances only on a ready answer — the API server and
+  every declared node reporting ready — whose stamped identity equals the managed handle's. A ready answer is
+  stamped with the handle's own identity rather than the identity the transaction re-observed, so that
+  comparison holds by construction, and a cluster released and recreated under a fresh record between the
+  cordon and this call is reported ready under the old identity (see [Current gaps](#current-gaps)). A
+  container that took a node's name inside the transaction is reported as *that* identity rather than as a
+  probe failure, which is what lets settlement tell a replacement apart from a retry.
 - **cleanup** re-observes every owned node, removes the cluster through the one interpreter, and forgets a
   record only over a reported absence, leaving a same-named replacement standing.
 
 What a configuration drift changes is upstream of the backend: the ownership identity is derived from the
 plan's own stable snapshot digest, of which the rendered cluster configuration is part, so a plan whose
-configuration changed presents a different identity, mints a different claim, and finds a record it does not
-recognize.
+configuration changed presents a different identity and mints a different claim. The records are keyed by
+cluster and node name, and the standing decision (`clusterStanding`, `nodeStanding`) does not compare a
+record's claim with the plan's, so that plan treats the previous generation's records as its own and
+re-cordons the cluster they bound. The target refuses a record carrying another generation's claim as a
+conflict (see [Current gaps](#current-gaps)).
 
 The read-only status path is outside every clause because it mutates nothing: one described command through
 the one interpreter and one projection of the cluster report vocabulary's own total classification. Its
@@ -198,33 +251,44 @@ No caller-selected loopback-exposure preparation or equality settlement exists; 
 to construct. Public preparation
 accepts an applied cluster cordon, an immutable relay image identity, and semantic targets only. The protected
 record is published before runtime creation with a fresh 256-bit operation nonce; managed replacement binds
-the inspected relay identity and complete mapping set. Cluster cleanup refuses while that record exists, so
-release must remove and re-observe the exact relay before cluster deletion can begin. The
-[cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
-closed this boundary with the complete warning-clean static gate and a live concurrent-allocation run;
-the dated evidence for it lives in that phase.
+the inspected relay identity and complete mapping set. Production release removes and re-observes the exact
+relay before cluster deletion begins: `releaseRetainedClusterLifecycle` and `runCoreManagedReverse` run the
+relay release and then `releaseRetainedCluster` as two separate protected entries. Only the prepared cleanup
+call, which has no production caller, refuses inside its own entry while the exposure record exists;
+`releaseRetainedCluster` does not check it (see [Current gaps](#current-gaps)). The dated static and live
+concurrent-allocation evidence for this boundary lives in the
+[cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 
 A parent-frame consumer does not retain the child's cluster runtime package after the deployment child exits.
-For that case, `observeRecordedClusterExposure` opens the exact protected `<cluster>.exposure` row read-only,
-admits only a canonical managed record with one requested service, and re-inspects the recorded Docker relay's
-name, immutable identity, operation, specification, and complete loopback mapping set before returning the
-selected port. `HostBootstrap.Cluster.Shipped` carries that observation through the existing frame-child
-transaction into the provider frame that owns Docker. Its bounded response is only the freshly observed port;
-no cluster handle, ownership witness, credential, or executable selector crosses back.
+For that case, `observeRecordedClusterExposure` opens the protected store under the cluster's state directory,
+reads the exact `<cluster>.exposure` row inside the store's exclusive entry without writing it, admits only a
+canonical managed record with one requested service, and re-inspects the recorded Docker relay's name,
+immutable identity, operation, specification, and complete loopback mapping set before returning the selected
+port. Opening the store creates it when the state directory holds none, so an observation of a cluster that
+never recorded an exposure leaves an empty store behind; the target creates nothing and refuses with the
+absent-record answer before any store is opened (see [Current gaps](#current-gaps)).
+`HostBootstrap.Cluster.Shipped` carries that observation through the unauthenticated frame-child transaction
+of `HostBootstrap.Handoff.Transaction` into the provider frame that owns Docker: the request carries no
+authority, so its vocabulary admits observations only. Its bounded response is only the freshly observed
+port; no cluster handle, ownership witness, credential, or executable selector crosses back.
 
-What remains is legacy wiring. `ensureCluster` still treats any healthy cluster with `clusterName plan` as
-the desired cluster without checking a receipt, and still deletes and recreates an unhealthy same-name
-cluster; `clusterDown`/`clusterDelete` still issue `kind delete cluster --name <name>` without proving
-this plan created or adopted the resource. Replacing those call sites belongs to the recursive-plan
-tranche, not to the backend.
+The compatibility actions in `HostBootstrap.Cluster.Lifecycle` hold none of these clauses.
+`ensureCluster` treats any healthy cluster with `clusterName plan` as the desired cluster without checking a
+receipt, and deletes and recreates an unhealthy same-name cluster; `clusterDown`/`clusterDelete` issue
+`kind delete cluster --name <name>` without proving this plan created or adopted the resource. Their only
+production caller is the bare `cluster-live` gate (`clusterCreate` and `clusterDelete`); `project up`,
+`project down`, and `project destroy` do not reach them.
 
 ### The cluster as a row of the frame table
 
-Beside that backend the cluster now also exists as a **row** rather than as a module of parallel logic,
-and the four modules it is written in are the whole of it. `HostBootstrap.Cluster.Command` says what to
-ask — the tool the frame table names, the exact argument vector, the stdio disposition, and the frame
-whose process reads it — and declares the three tools a cluster drives in one place, so a driver and the
-row that holds its clauses are declared together. `HostBootstrap.Cluster.Report` says what an answer
+Beside that backend the cluster also exists as a **row** of the
+[frame table](../README.md#glossary) (the frame-table sense of "frame": a provider's frame and the closed
+table of facts a context differs by) rather than as a module of parallel logic, and the four modules it is written in are the whole of
+it. `HostBootstrap.Cluster.Command` says what to ask — the tool the frame table names, the exact argument
+vector, the stdio disposition, and the frame whose process reads it — and declares the four tools a
+cluster's commands reach (`Kind`, `Nvkind`, `Docker`, `Kubectl`) in one place, so a driver and the row that
+holds its clauses are declared together; `Helm` is required by discovery for chart work but issues no cluster
+command. `HostBootstrap.Cluster.Report` says what an answer
 means, as total classifications over the interpreter's own outcome. `HostBootstrap.Cluster.Resume` says
 where an interrupted transaction stands, as a total function of the durable record and the two
 authorities' answers. `HostBootstrap.Cluster.Ownership` composes them and holds the four clauses through
@@ -264,26 +328,35 @@ point, and the family runs and is counted on every gate host.
 
 ## Current teardown
 
-`project down` and `project destroy` are intended root-orchestrator commands, but the current gate checks
-only the descriptive `HostOrchestratorCommand` class. Because `addRole` can add that class without
-changing a leaf's primary kind or proving an empty parent chain, a widened leaf can currently pass; the
-opaque root-authority target closes that gap. After the class gate, core checks whether the **current**
-frame owns a `deploy-kind` step:
+`project down` and `project destroy` are root-orchestrator commands. `placementAllowsCommand` admits the
+`HostOrchestratorCommand` class only when the current frame is the topology's root (`isRootFrame`, derived
+from the validated topology graph rather than a config field) and its placement is
+`HostOrchestratorPlacement`. `addRole` can widen a context's declared command classes, but not past that
+placement-and-root check, so a widened leaf is refused.
 
-- an owning frame invokes `clusterDown`/`clusterDelete`;
-- a non-owning frame skips core kind cleanup;
-- the reverse each acquiring node declared then stops or deletes provider/direct resources.
+Teardown is the recursive reverse command. The root lifecycle entry drives the plan's teardown forest
+child-first: it launches each child frame's reverse through the authenticated handoff, runs each frame's
+local work in reverse forward order, and stops or deletes a parent's provider only on ascent.
+[Composition methodology](../architecture/composition_methodology.md#the-recursive-project-up-interpreter)
+is the canonical home for that traversal. Within a frame, the reverse projection selects the local work:
 
-The interpreter does **not** recursively dispatch the lifecycle verb through every child frame before
-unwinding. On VM-backed paths, stopping or deleting the provider VM incidentally stops or removes the
-nested cluster. On the direct Linux GPU path, the demo hook recovers the exact Docker-visible durable profile
-bind and invokes a fixed internal entry in the project image. That entry runs the core retained-cluster
-transaction: it re-observes the bound node identities, deletes through the pinned Kind client, proves absence,
-and only then releases their protected ownership records. The outer frame separately proves every declared
-node absent. These remain project-specific cleanup strategies, not recursive descent/ascent.
+- the frame that owns the `deploy-kind` step runs the core-managed `DeleteCluster` reverse, for Down and
+  Destroy alike. At the root that is `releaseRetainedClusterLifecycle`; in a child frame reached by descent
+  it is `runCoreManagedReverse`. Both first release the recorded exposure relay
+  (`releaseRecordedClusterExposure`) and then run `releaseRetainedCluster`, which re-observes the bound node
+  identities under the protected store, deletes through the one interpreter, and forgets the records only
+  over a reported absence;
+- `deploy-chart` and `expose-port` are released with the cluster that contains them;
+- a node's declared reverse stops or deletes its provider or direct resources.
 
-Independent cleanup actions are attempted and their failures are aggregated. `down` stops provider VMs;
-`destroy` deletes them. A failed `project up` invokes best-effort root teardown, but a hard process kill can
+On the direct Linux GPU path the demo declares a reverse that recovers the exact Docker-visible durable
+profile bind and invokes a fixed internal entry in the project image; that entry runs
+`releaseRetainedCluster`, and the outer frame separately proves every declared node absent.
+
+An exception from a release becomes the ordinary typed failed teardown outcome, so the reverse driver
+settles or continues siblings without a second cluster-specific control path. Independent cleanup actions
+are attempted and their failures are aggregated. `down` stops provider VMs;
+`destroy` deletes them. A failed `project up` unwinds through the same forest, but a hard process kill can
 still leave state for a later reconcile.
 
 The prepared provider boundary does not reinterpret Direct as a VM. Direct settles only a plan-local
@@ -291,24 +364,26 @@ admission and canonical identity share; provider stop, delete, guest execution, 
 structured refusals with no physical-host mutation. Direct-lane cluster/container cleanup therefore
 remains its own plan work rather than provider teardown.
 
-The target is child-to-parent recursion: enter the reachable child while its parent is alive, run the same
-verb there, retain typed results, and stop/delete the parent only on ascent.
-
 ## Data-path guarantee
 
 The cluster teardown partition excludes the plan's data path from its filesystem removal set:
 
 - `Down` removes no planned filesystem path;
-- `Delete` removes derived paths but not the data path.
+- `Delete` removes the derived state path but not the data path.
 
-This is a narrow and unit-tested guarantee. Root admission now derives direct-host `.data` from one
+For a plan-owned cluster the derived state path is the leaf `<durable root>/cluster/<driver>/state`
+(`clusterRuntimeStateDirectoryFor`), beneath the data path, so a workload must not write there; a plan
+resolved without plan ownership keeps it at `<project-root>/.cluster/<cluster name>`, outside the data path.
+[Durable state](../architecture/durable_state.md#what-lives-under-data) lists what that leaf holds.
+
+This is a narrow and unit-tested guarantee. Root admission derives direct-host `.data` from one
 opaque canonical project root, and the Docker handoff consumes a same-root typed host projection.
 The core provider-guest alias route reconciles `/var/tmp/hostbootstrap-demo-data` through exact opaque
-managed provider/share/alias authority and identity-conditional release, but the demo still uses its
-compatibility pathname call site. The final plan still has to carry typed guest, container, kind/nvkind,
-and pod projections, and the
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that call-site adoption. Whether
-those bytes survive the entire destroy/up cycle is still unvalidated. See
+managed provider/share/alias authority and identity-conditional release. The demo renders the Kind node's
+durable bind from that alias as the fixed `durableDockerHostPath` on VM-backed lanes, and from the
+Docker-reported bind source of the project container's durable mount on the Direct lane; the plan carries no
+typed guest, container, kind/nvkind, or pod projection of the path. Dated live persistence evidence for the
+demo lives in [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md). See
 [durable state](../architecture/durable_state.md).
 
 The status renderer's current wording is `(not removed by cluster teardown)`. It describes membership in
@@ -316,57 +391,92 @@ the removal partition; it is not a filesystem stat or an end-to-end persistence 
 
 ## Production and test profiles
 
-The library represents:
+The library's `ClusterProfile` has two constructors:
 
 | Profile | Data directory | Cluster identity |
 |---|---|---|
-| Production | `.data` | fixed project name |
-| `HarnessRun runId` | `.test_data/<runId>` | run-scoped Harness name |
+| `Production` | `.data` | fixed project name |
+| `TestCase runName` | `.test_data/<runName>` | run-scoped Harness name |
+
+The demo's `RunProfile` (`ProductionRun` or `HarnessRun`) is a configuration field that `clusterProfileOf`
+projects onto those constructors.
 
 The Harness command admits an exact `ProjectPlan (Harness projectId runId) ...` and owns the generated
-config and `.test_data/<runId>` root. Demo cluster/provider/mount/teardown consumers still receive
-config-derived `RunProfile`/`ClusterProfile` and root terms independently. The
-[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns replacing those terms with the
-retained exact plan's profile/root projection; see [harness workflow](../architecture/harness_workflow.md).
+config and `.test_data/<runId>` root. The core reverse derives its cluster profile from the plan's own profile
+name. The demo's cluster, provider, mount, and teardown consumers instead compute the `ClusterProfile` as
+`clusterProfileOf` of the working configuration and the durable root through `ensureProfileDataPath` over
+the process working directory, independently of the retained plan (see [Current gaps](#current-gaps)); see
+[harness workflow](../architecture/harness_workflow.md).
 
 The target uses an opaque, scope-indexed `LifecycleProfile`. The
-[host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+[host providers and the lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 supplies backend-indexed opaque managed provider/share/alias authority inside an already admitted exact
 plan; it cannot mint a lifecycle profile or command authority. Only the
-[sessions-journal-and-fences phase](../../DEVELOPMENT_PLAN/phase-10-sessions-journal-and-fences.md)'s protected
+[sessions, journal, and fences phase](../../DEVELOPMENT_PLAN/phase-10-sessions-journal-and-fences.md)'s protected
 mode/lease openers can combine that authority with the exact active Production or Harness mode. Fresh
 plans require the still-unbound lease and produce `LifecycleProfile (Production projectId)` or
 `LifecycleProfile (Harness projectId runId)`. Configful abandoned Production `ProjectUp` instead requires
 the exact bound lease/snapshot/recovery tuple and yields only its indexed
 `RecoveredProductionLifecycleProfile`; Harness/teardown cannot inhabit it. `withProjectPlan` consumes a
 fresh profile and scope-matching config. The exact plan therefore retains the right scoped profile/root
-identity, but the demo's `containerPlan` still accepts a separately config-derived `ClusterProfile` and
-source root. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) replaces those
-independent consumer terms with projections from that exact plan. See
+identity, but the demo's `containerPlan` accepts a separately config-derived `ClusterProfile` and source
+root rather than a projection from that exact plan. See
 [lifecycle state model](../architecture/lifecycle_state_model.md#lifecycle-profile-authority).
 
 ## Resource limits
 
-CPU and memory are divided across kind/nvkind nodes and applied with `docker update`. The implementation
-sets `--memory-swap` to twice the memory limit, not equal to it. Bare Linux has no implemented storage
-quota or image-garbage-collection cap; storage is only capacity-checked before bring-up. VM-backed lanes
-receive provider storage walls when a new Lima/Incus VM or WSL distro is created, but existing VM/VHDX
-sizes are not uniformly observed, resized, or refused when config changes. The exact plan consumer checks the declared complete workload and budget partition through `Cluster.Budget`;
-the static `fitsBudget`/`demoPods` example is not the applied authority. See [resource budgeting](resource_budgeting.md).
+CPU and memory are applied to kind/nvkind node containers with `docker update`, and `--memory-swap` is twice
+the memory limit, not equal to it. The owned-cluster backend applies the whole cluster slice to every node
+container rather than dividing it, so an N-node cluster's aggregate cap is N times its slice; only the
+compatibility `clusterCreate` path divides the slice per node. Bare Linux has no implemented storage quota or
+image-garbage-collection cap; storage is only capacity-checked before bring-up. VM-backed lanes receive
+provider storage walls when a new Lima/Incus VM or WSL distro is created, but existing VM/VHDX sizes are not
+uniformly observed, resized, or refused when config changes. No production path runs the `Cluster.Budget`
+workload-fit and partition chain, and the static `fitsBudget`/`demoPods` example is not the applied
+authority. [What runs today](resource_budgeting.md#what-runs-today) is the canonical statement of the applied
+controls and their gaps.
+
+## Current gaps
+
+- The owned-cluster cordon applies the whole cluster slice to every node container. That defect is owed by
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md);
+  [resource budgeting](resource_budgeting.md#current-status) states it canonically.
+- `discoverStrongClusterBackend` does not require `Kind` on an nvkind plan although listing, kubeconfig
+  readback, and deletion run through it, so a missing `Kind` fails at the first such effect instead of at
+  discovery. The backend belongs to
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- `releaseRetainedCluster` does not refuse while the cluster's exposure record exists; production relies on
+  its callers releasing the relay first. That check is owed by
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- The bare `cluster-live` gate drives the compatibility actions, so no live gate exercises the ownership
+  backend's records, identity binding, or conditional release. The gate belongs to
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- The backend's described commands run through `interpretHostCommand` with no per-command deadline or
+  process-group reaping, and the compatibility actions through `runTool`; the bounded cluster interpreter is
+  owed by
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- The readiness call stamps a ready answer with the managed handle's identity rather than the identity it
+  re-observed, so a cluster recreated under a fresh record after the cordon can advance the readiness counter.
+  Stamping the re-observed identity is owed by
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- The cluster and node standings do not compare a record's claim with the plan's, so a plan whose
+  configuration changed adopts the previous generation's records. The claim check is owed by
+  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- `observeRecordedClusterExposure` opens, and so creates, the protected store before it finds no exposure
+  record. The non-creating observation is owed by
+  [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+- The demo's cluster, provider, mount, and teardown consumers take their `ClusterProfile` from
+  `clusterProfileOf` of the working configuration and their durable root from `ensureProfileDataPath` over
+  the process working directory (`runVmUp`, `runCopySource`, and `withHostAcceleratorExposure` each do
+  both), `containerPlan` takes that profile with the context's source root, and the guest-alias, kind-node,
+  and pod durable paths are fixed demo constants, rather than every term being a projection of the retained
+  exact plan. Those consumers belong to
+  [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## Validation
 
-The recursive reverse command admits the core-managed cluster action through the same durable preparation
-boundary as every other frame node. `Cluster.Reconcile.runExactClusterCleanupKernel` requires the exact
-admitted plan digest, the prepared operation key, and a `LocalWork` whose plan-derived action is
-`DeleteCluster`. The sealed root lifecycle entry is the only caller that can disclose the matching plan and
-closed verb: Down selects the retained/down cleanup operation and Destroy selects deletion, with no Boolean
-or textual policy input. An exception becomes the ordinary typed failed teardown observation, so the shared
-reverse driver can settle or continue siblings without a second cluster-specific control path. The driver
-adoption is owned by the [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
-
 From the repository root, the exact
-[cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
+[cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 gate is:
 
 ```sh
@@ -376,12 +486,13 @@ gate is:
 The static leg covers the exact plan-owned precondition, reconcile-result, ownership-receipt, same-name
 foreign-cluster, readiness, status, and teardown cases declared by the phase. The independent live leg covers
 fresh creation, bounded readiness, a read-only status observation, deletion, labelled-node absence, and
-durable-sentinel survival on linux-cpu. It deliberately has no demo dependency.
+durable-sentinel survival on linux-cpu, through the compatibility actions. It deliberately has no demo
+dependency.
 
 Recursive child-to-parent lifecycle traversal, the run-scoped demo cluster, end-to-end pod/host durable
-readback, GPU daemon placement, and substrate-specific storage-wall acceptance remain validation owned by
-their respective later integration or acceptance phases. None is a prerequisite for the independent phase
-gate above.
+readback, GPU daemon placement, and substrate-specific storage-wall acceptance are evidenced by
+[the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and the substrate acceptance phases,
+not by the gate above.
 
 `DEVELOPMENT_PLAN/README.md` owns phase status and closure evidence.
 

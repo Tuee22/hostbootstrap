@@ -4,11 +4,13 @@
 **Supersedes**: N/A
 **Referenced by**: [warm_store.md](warm_store.md), [derived_project_standards.md](derived_project_standards.md), [../languages/haskell.md](../languages/haskell.md)
 
-> **Purpose**: Give the authoritative recommendation for how derived Haskell projects link and
-> optimise for the repository's workloads while improving opportunistic warm-store reuse.
+> **Purpose**: Explain the linking and optimisation defaults derived Haskell projects follow for the
+> repository's workloads, and why those defaults do not decide opportunistic warm-store reuse.
 
-This page is the authoritative recommendation for **how derived projects link
-and optimise their Haskell code**. The defaults are tuned for the
+This page is the supporting rationale for **how derived projects link and
+optimise their Haskell code**. The linkage rule itself is rule 4 of
+[derived_project_standards.md](derived_project_standards.md#the-rules), which
+wins where the two differ. The defaults are tuned for the
 performance-sensitive projects this base image targets (search, inference,
 JIT compilation) rather than for distribution size.
 
@@ -17,12 +19,18 @@ JIT compilation) rather than for distribution size.
 * **Executables link statically.** Do not pass `--enable-executable-dynamic`.
   Default Cabal exe linkage is static against the project's library archives —
   keep it.
-* **Libraries ship both vanilla and dyn ways in the Cabal store.** Set
-  `shared: True` in the project's `cabal.project`; the warm store already does
-  this, and matching the warm store can avoid rebuilds.
-* **Standardise on `-O2`.** Set `optimization: 2` in `cabal.project`. Apply
-  `-O2` in the library and executable stanzas' `ghc-options` so the project's
-  own modules also benefit.
+* **Local libraries build both vanilla and dyn ways.** Setting
+  `shared: True` in the project's `cabal.project` is recommended, as the
+  [compliant template](derived_project_standards.md#worked-compliant-dockerfile-and-cabalproject)
+  does. As a top-level option it reaches only the project's local packages, so
+  it does not change warm-store reuse (see
+  ["Why build the dyn way"](#why-build-the-dyn-way)). It is not a requirement:
+  the worked demo's project omits it.
+* **Standardise on `-O2`.** Set `optimization: 2` in `cabal.project`. That
+  setting compiles the project's own local packages at `-O2`, so the `.cabal`
+  stanzas need no `-O2` in `ghc-options` (which would also override a
+  developer's `-O0` for fast iteration); the repository's own packages carry
+  none.
 * **Use `INLINABLE` / `SPECIALISE` on hot polymorphic exports.** This is the
   biggest perf lever in Haskell — and it is independent of linkage. See
   ["Inlining is the bigger lever"](#inlining-is-the-bigger-lever) below.
@@ -40,18 +48,20 @@ the container they were built in. For tight cross-package hot loops the
 runtime gap from static → dynamic is in the few-percent range; for normal
 business logic it is in the noise.
 
-## Why ship the dyn way in the store
+## Why build the dyn way
 
 Template Haskell, `hint`-style runtime evaluation, and `ghci` all need
-`.so`/`.dylib` versions of every loaded library. Pre-building the dyn way in
-the warm store removes a class of surprise rebuilds when a project pulls in
-TH-heavy libraries (`brick`, `aeson` with `deriving`, `proto-lens`,
-`postgresql-simple`).
+`.so`/`.dylib` versions of every loaded library. `shared: True` builds that
+way for the project's own libraries alongside the vanilla way.
 
-The warm store is built with `--enable-shared`, so the `dyn` way exists for
-every cached package. A project enabling `shared: True` in its `cabal.project`
-matches the warm store's store keys and can reuse matching artifacts; a project leaving it
-off rebuilds the dyn way of any TH-using package.
+The warm store sets `shared: True` at the top level of
+[`core/warm-deps/warm-store.config`](../../core/warm-deps/warm-store.config).
+Top-level package options in a Cabal project reach only that project's local
+packages, so that setting builds the dyn way of the warm store's own manifest
+packages, not of the dependencies cached in the store, which build with Cabal's
+per-package defaults. A project's own top-level `shared: True` likewise builds
+the dyn way of its local packages and does not decide whether store
+dependencies are reused (see [warm_store.md](warm_store.md)).
 
 ## Why `-O2`
 
@@ -64,9 +74,14 @@ projects with:
   site,
 
 `-O2` produces measurably faster code, often by ≥10% on the relevant
-microbenchmarks. The warm store builds at `-O2`, so a project also building
-at `-O2` is the cache-friendly path. A project at `-O1` rebuilds every
-package against `-O1` and pays for it.
+microbenchmarks. The choice is about the project's own code, not about cache
+reuse. The top-level `optimization: 2` in
+[`core/warm-deps/warm-store.config`](../../core/warm-deps/warm-store.config)
+reaches only the warm store's own manifest packages; the dependencies cached in
+the store build at Cabal's per-package default. A consumer's top-level
+`optimization` likewise reaches only its local packages, so a project's
+optimisation level does not decide whether store dependencies are reused (see
+[warm_store.md](warm_store.md)).
 
 ## Inlining is the bigger lever
 
@@ -114,27 +129,21 @@ for the pattern; add it where measured.
   libraries whose hot paths cross many module boundaries; otherwise prefer
   targeted `INLINABLE`.
 
-## Project-specific notes
+## Project-specific tuning
 
-* **MCTS:** the four foreign backends (`cpp-legacy`, `cpp-imperative`,
-  `cpp-functional`, `rust`) apply PGO + LLVM BOLT in their own build
-  pipelines. The Haskell library and executable already use the full
-  numeric-tuned set (`-O2 -funbox-strict-fields -fspecialise-aggressively
-  -fexpose-all-unfoldings -flate-dmd-anal -fmax-simplifier-iterations=20
-  -fworker-wrapper -fstatic-argument-transformation -fllvm`) — a deliberate
-  choice because almost every module is a hot kernel for the search loop.
-  This is the measured-and-justified case for blanket `-fllvm`. New Haskell
-  modules under `MCTS.*` should add `INLINABLE` to any polymorphic exports
-  that participate in the inner search loop.
-* **jitML:** the project builds on GHC 9.12 with `base >=4.18`. It adopts the
-  canonical `cabal.project` template from
-  [warm_store.md](warm_store.md#consumer-project) and audits
-  hot numeric modules for `-fllvm` opportunities.
+A project whose modules are almost all hot numeric kernels (a search loop,
+for example) can justify a blanket numeric-tuned flag set — `-O2` with
+aggressive specialisation, exposed unfoldings, and `-fllvm` on the library and
+executable — and is the measured case for blanket `-fllvm`. Such a project
+records its flag set and the measurement behind it in its own repository;
+this page does not track other projects' builds. Any project with polymorphic
+exports on its inner loop adds `INLINABLE` to them, as described above.
 
 ## See also
 
-* [warm_store.md](warm_store.md) — the cache-hit contract; flags here must
-  match it
+* [warm_store.md](warm_store.md) — the cache-hit contract; a project's
+  top-level flags here reach only its local packages, so they are not what
+  store reuse depends on
 * [languages/haskell.md](../languages/haskell.md) — GHC version, fourmolu /
   hlint pins
 * [derived_project_standards.md](derived_project_standards.md) — the

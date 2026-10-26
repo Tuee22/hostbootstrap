@@ -1,7 +1,7 @@
 # hostbootstrap-demo Runbook
 
 **Status**: Authoritative source
-**Supersedes**: the fully validated, recursively torn-down, test-scoped demo narrative
+**Supersedes**: the earlier demo narrative that described validation, recursive teardown, and test scoping without separating built behavior from intended behavior
 **Referenced by**: [documents index](../README.md), [testing](../engineering/testing.md), [binary context](../architecture/binary_context_config.md), [WSL2](../engineering/wsl2.md)
 
 > **Purpose**: Give operators an honest guide to the demo's current command surface, lift chain,
@@ -15,9 +15,10 @@
   installed through `addSteps`. There is no base-image LABEL/ENTRYPOINT
   integration mode.
 - `project up` executes the exact recursive Chain, while `project down`/`destroy` execute the retained
-  plan's child-first reverse projection. The **target** recursively authenticates each child invocation; the operator sequence remains
-  root-only, with no nested form to type. The authenticated-handoff phase supplies the child-plan authority
-  substrate, while the
+  plan's child-first reverse projection. Every child invocation is admitted only through the root-signed
+  handoff, at every depth; the operator sequence remains root-only, with no nested form to type. The
+  [authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
+  owns the handoff and child-plan authority, and the
   [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owns
   Production descent, child acquisition integration, and recursive forward/reverse traversal.
 - At a chart reverse node, the shared command projects the exact chart from the retained plan, reads only its
@@ -28,13 +29,14 @@
   role manifest, relays it to the root-only activation signer, installs the signed immutable revision under the
   durable data root, and gives Helm only that revision basename. The pod verifies the revision with the
   independently installed public key before selecting or acquiring its closed service program.
-- The chain includes the S3 store before the registry and places the accelerator daemon after the workload.
+- The chain includes the S3 store before the registry and, on every substrate except `windows-cpu`, places
+  the accelerator daemon after the workload (see [accelerator placement](#accelerator-placement)).
 - Before lifecycle adapters consume that chain, the pure exact-slice projection classifies its typed operations
   into provider, cluster, workload, service, and assertion roles. VM and Direct plans retain distinct provider
   prefixes but both require one immediate provider-to-cluster edge and cluster-local workload suffix. The
   projection refuses unknown identities, missing or duplicate singleton roles, wrong-frame workloads, broken
   dependency prefixes, or a config whose canonical digest differs from the admitted plan.
-- On the `linux-cpu` Incus lane, the VM deployment action now receives its exact `StepExecution`. Before
+- On the `linux-cpu` Incus lane, the VM deployment action receives its exact `StepExecution`. Before
   share attachment, cluster work, or descent, it resolves only that node's plan-owned provider resource,
   prepares and settles provision, prepares and settles a live Ready probe, records the settled provider
   identity, and registers the invocation-local pending provider dependency package. A failed, foreign, or
@@ -46,14 +48,15 @@
   project root plus the configured base-image egress probe. Only its managed Ready result records the
   `reserved` reverse identity and registers the Direct invocation-local dependency package. Direct reverse
   remains journal terminalization only; this does not claim a physical host-provider release.
-- The VM chain now has an explicit `copy-source` node between provider settlement and VM descent. On Incus it
+- The VM chain has an explicit `copy-source` node between provider settlement and VM descent. On Incus it
   freshly opens the invocation-local provider dependency, resolves only its own durable-share resource, and
   keeps both provider and managed share handles inside one continuation while attaching the canonical host
   durable root at the provider-selected absolute guest target. Mount validation and exact guest-alias
   reconciliation finish before the continuation returns. No share handle is carried into the later descent node, and the
   Direct chain declares no copy-source action.
-- Host `.data` is carried through the stable `/var/tmp/hostbootstrap-demo-data` Linux alias into
-  kind/nvkind and the pod. The durable-readback case writes before and reads after an engine-owned fresh
+- VM-backed lanes carry host `.data` through the stable `/var/tmp/hostbootstrap-demo-data` guest alias
+  into kind and the pod; the Direct Linux GPU lane binds the canonical absolute host `.data` path into
+  nvkind and creates no alias (see [Durable Data](#durable-data)). The durable-readback case writes before and reads after an engine-owned fresh
   same-run lifecycle generation.
 - `test run <case-id>|all` selects compiled cases. Each variant is admitted under an exact Harness plan and
   owns `.test_data/<runId>`. The long gate
@@ -100,14 +103,28 @@ produces the opaque service endpoints carried to fixed successors. Every applica
 selects its semantic service only inside that lexical resolved-endpoint continuation. Reverse authenticates
 and removes the exact relay before cluster deletion, retaining the exposure record on any mismatch.
 
-The `deploy-kind`/nvkind node now consumes the authenticated provider package carried into its child frame.
+The `deploy-kind`/nvkind node consumes the authenticated provider package carried into its child frame.
 It fresh-probes that exact parent-owned generation, derives its cluster package from the node's opaque admitted
 execution projection, writes the canonical config, reconciles ownership, applies the budget cordon, verifies
 fresh readiness, settles the runtime exposure, and publishes only the pending cluster dependency package for
 fixed successors. A refusal
-at any stage leaves no readiness/package to consume. After correcting the reported provider, tool, ownership,
-or config mismatch, run `project down` or `project destroy` to advance the consumed failed-Up invocation through
-its exact reverse path before starting a fresh `project up`.
+at any stage leaves no readiness/package to consume.
+
+A failed `project up` handles its own failure in this order:
+
+1. The same command runs the failed-Up unwind. It attempts the admitted reverse work for the operations the
+   forward run reached but did not settle, in child-first order, and reports any resource it leaves unsettled.
+   The forward failure stays the command's error; a cleanup failure is reported beside it and never replaces it.
+2. The failed invocation keeps its consumed Up reservation, so a second `project up` refuses rather than
+   replaying it. The reverse entry is that invocation's only continuation.
+3. After correcting the reported provider, tool, ownership, or config mismatch, run `project down` or
+   `project destroy`. It advances the failed invocation through its exact reverse path, which re-attempts any
+   work the unwind left unsettled.
+4. Start a fresh `project up`.
+
+The unwind's authority and records are defined in
+[composition methodology](../architecture/composition_methodology.md) and
+[lifecycle state model](../architecture/lifecycle_state_model.md).
 
 The VM placement witness under `/run/hostbootstrap` is recreated after the
 provider share transaction settles. This ordering matters on Incus because
@@ -120,15 +137,25 @@ Operator-significant boundaries are:
   resource-specific callback;
 - Direct provider reverse terminalizes its journal reservation and reports physical host stop/delete as
   `Unsupported`;
+- the Direct lane releases its retained nvkind cluster through a demo-owned pre-parser entry that standards
+  § P forbids, and the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owes its deletion
+  (see [Down and Destroy](#down-and-destroy));
 - bare Linux has no runtime storage quota or image-GC wall;
+- `project up --dry-run` takes Production mode authority before it renders, so it refuses while a Harness
+  run holds the mode; the
+  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owes a
+  render path that takes no mode, lease, or snapshot authority;
 - terminal hardware acceptance follows each substrate's declared gate; current completion and dated
   evidence are recorded in the [development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Build and Config
 
 The Python entry point builds the sole Cabal executable host-native into `.build/<executable>` and hands
-off its arguments. It discovers exactly one top-level Cabal file, runs `cabal update`, and is not an
-offline path. See [Python/Haskell boundary](../architecture/python_haskell_boundary.md).
+off its arguments. It selects the project root's sole top-level Cabal file (or the one `--cabal-file`
+names when the root holds more than one) and runs `cabal update` only when the cached package index is
+missing or stale. `--offline` builds from the existing cached index and store, runs no index update, and
+refuses when no index is cached. See
+[Python/Haskell boundary](../architecture/python_haskell_boundary.md#network-and-offline-behavior).
 
 The demo host build and later Linux image build both use `demo/cabal.project`. It contains no
 base-owned absolute import; the container inherits the warm store opportunistically and may compile
@@ -141,15 +168,17 @@ Initialize the executable-sibling root config with:
 hostbootstrap-demo project init
 ```
 
-Normal commands load that sibling `hostbootstrap-demo.dhall`. Current child configs adjust context but
-retain the full demo project record and raw parent envelope; they are not least-privilege parameter
-types. Their ownership is also split: the composite pristine-bootstrap derives/streams the VM config,
+Normal commands load that sibling `hostbootstrap-demo.dhall`. Child configs adjust context but retain the
+full demo project record and raw parent envelope (`projectConfigFromContext`); they are not least-privilege
+parameter types. Their ownership is also split: the composite pristine-bootstrap derives/streams the VM config,
 the descent the `context-init` step declares carries the container payload that the handoff streams, and
 the chart transaction renders the service ConfigMap while the daemon action renders its own ConfigMap. The
 context-init step's action body only announces the
 container handoff and anchors the frame. VM/container payloads are written at the child's executable-sibling path before
-dispatch; there is no config bind-mount. The target plan owns projection/delivery as one operation and
-emits a role-specific payload.
+dispatch; there is no config bind-mount. Before any remote effect, the root coordinator projects every
+reachable child config and admits its canonical bytes and digests into one `RootedPlanCatalog`; each child
+rebuilds its config and plan and exact-matches them against that catalog (see
+[generic project model](../architecture/generic_project_model.md)).
 
 ## Inspect Before Mutating
 
@@ -163,7 +192,10 @@ hostbootstrap-demo context schema
 hostbootstrap-demo context render [--artifact NAME]
 ```
 
-Use `project up --dry-run` to render the selected step chain without applying it.
+Use `project up --dry-run` to render the selected step chain without executing any step. It is not yet
+read-only: it enters the Production path, opens the protected authority store, and acquires or retains
+Production mode before rendering, so it refuses while a Harness run holds the mode (see
+[the core library's current status](../architecture/hostbootstrap_core_library.md#current-status)).
 
 ## Bring-up Chain
 
@@ -181,13 +213,24 @@ deploy-kind or nvkind
   -> push-image
   -> deploy-chart
   -> expose-port
-  -> accelerator-daemon placement
+  -> accelerator-daemon placement (absent on windows-cpu)
 ```
 
 Before backend selection, the command projects the singular cluster operation from the admitted plan and
 renders canonical config bytes. VM-backed lanes select Kind and preserve their provider-visible writable
 durable target. The Direct Linux GPU lane selects nvkind, adds its GPU worker, and contains no VM/share/alias
-fiction. The target renderer carries only these semantic exposure intents:
+fiction. The renderer carries only the semantic exposure intents of its lane. It keeps the accelerator
+ingress intent only for Kind with a host-resident daemon placement, which the demo selects for every
+Lima or WSL2 provider (`acceleratorPlacementForContext`):
+
+| Lane | Driver | Runtime-exposed services |
+|---|---|---|
+| Apple Silicon (Lima), Windows CPU and Windows GPU (WSL2) | Kind | registry, web, accelerator ingress, S3 store |
+| Linux CPU (Incus) | Kind | registry, web, S3 store |
+| Linux GPU (Direct) | nvkind | registry, web, S3 store |
+
+The Windows CPU lane publishes the accelerator ingress although its chain starts no accelerator daemon
+(see [accelerator placement](#accelerator-placement)).
 
 The cluster action accepts neither a selected executable nor a cluster name. VM/container lanes open the
 carried `core:deploy-vm` provider through `runtime://provider/demo-vm-readiness`; Direct opens its admitted
@@ -219,11 +262,6 @@ uses it to read its own real restart count, combines that with its downward-API 
 `service run`. A missing/malformed revision, key, instance identity, role wire, measurement, or effect grant
 refuses before the service program acquires a listener.
 
-| Driver | Runtime-exposed services |
-|---|---|
-| Kind | registry, web, accelerator ingress, S3 store |
-| nvkind | registry, web, S3 store |
-
 Stable Kubernetes Service/NodePort targets remain cluster-internal. They are not copied into host publication.
 After cluster readiness, Docker assigns a distinct host port to every relay listener while binding it to
 `127.0.0.1`; hostbootstrap inspects the exact relay identity and passes those resolved endpoints to the
@@ -243,11 +281,25 @@ manifest and receive a signed activation grant without retaining a child service
 key. Exposure observation and activation signing are therefore separate fresh checks: one returns only a
 loopback port, and the other returns only a signed grant.
 
-The object-store step creates the S3 bucket before the registry. The accelerator daemon is in-cluster for
-Linux CPU/GPU and host-native after private ingress for Apple Silicon/Windows GPU. An in-cluster daemon mounts
+The object-store step creates the S3 bucket before the registry.
+
+### Accelerator placement
+
+The demo chain for each substrate fixes where, and whether, an accelerator daemon runs:
+
+| Substrate | Accelerator daemon |
+|---|---|
+| `linux-cpu` | in-cluster pod from the CPU project image, whose `clang++` builds the C++ worker |
+| `linux-gpu` | in-cluster pod from the CUDA project image, requesting one `nvidia.com/gpu` |
+| `apple-silicon`, `windows-gpu` | host-resident process, started by the `accelerator-daemon` post-handoff step after the private ingress is exposed |
+| `windows-cpu` | none; the chain ends at `expose-port`, and `e2e-tabs` asserts that the accelerator path reports unavailable |
+
+An in-cluster daemon mounts
 the same revision and authority directories as the web workload, reads its own pod UID and exact daemon-container
 restart count, and invokes `service run`. A host daemon instead measures the copied executable, installs its
 verification key and revision beside durable state, and receives a fresh invocation nonce for that process.
+
+### Running the chain
 
 Run:
 
@@ -255,18 +307,35 @@ Run:
 hostbootstrap-demo project up
 ```
 
-Most reconcilers currently return `IO ()`; “reconcile-to-running” is an operational intention, not a
-typed report of created/adopted/repaired/unchanged state.
+What `project up` reports per node depends on the layer:
+
+| Layer | Result |
+|---|---|
+| Resource reconciliation in `HostBootstrap.Reconcile` | a typed `ChangeView`: created, repaired, adopted, or unchanged |
+| A step action | a `StepObservation`: unchanged, changed, conflict, unsupported, or refused |
+| A demo step body | an `IO ()` lifted by the demo's `changed` wrapper, so it always reports `StepChanged`; an already-converged resource is not distinguished from a newly created one |
+| A host-tool `ensure` reconciler (`runEnsure`) | `IO ()`, with no typed report |
+
+The prepared provider, cluster, chart, and alias adapters retain their own exact settlement results, so the
+untyped demo body result never mints ownership or readiness evidence.
 
 ## Durable Data
 
-The current data path is:
+The data path on the VM-backed lanes (Incus, Lima, WSL2) is:
 
 ```text
 <project-root>/.data
   -> provider-specific share/mount
   -> provider guest /var/tmp/hostbootstrap-demo-data
-  -> kind/nvkind node /var/lib/hostbootstrap-demo-data
+  -> kind node /var/lib/hostbootstrap-demo-data
+  -> pod /var/lib/hostbootstrap-demo-data/web
+```
+
+The data path on the Direct Linux GPU lane is:
+
+```text
+<project-root>/.data   (canonical absolute host path)
+  -> nvkind node /var/lib/hostbootstrap-demo-data
   -> pod /var/lib/hostbootstrap-demo-data/web
 ```
 
@@ -309,11 +378,13 @@ Down retains the provider's durable share, guest alias, and exact alias ownershi
 restart the guest and reach the same durable cluster store before releasing the alias and deleting the VM.
 The host `.data` root and marker survive both verbs.
 
-On Apple and Linux, `project down` returns the provider VM's CPU and memory to the host. On Windows it
+On the VM-backed Apple Silicon and Linux CPU lanes, `project down` returns the provider VM's CPU and memory
+to the host. The Direct Linux GPU lane has no provider VM to stop: its `down` terminalizes the journal
+reservation and reports physical host stop as `Unsupported`. On Windows it
 first restores the journalled `.wslconfig` origin, including an absent origin, and then invokes the
 global `wsl --shutdown`. That ordering makes the next cold boot read the restored configuration; the
 shutdown stops every distro and releases the shared utility VM's memory balloon. The
-[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md)
+[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md)
 records dated wall-release observations, recursive teardown and durable-readback gate evidence, and the
 required terminal ownership audit; its status and remaining work describe current acceptance coverage.
 
@@ -321,15 +392,23 @@ The managed six-hour idle timeouts are a backstop only when a run is interrupted
 that case an operator can run `wsl --shutdown` manually, after accounting for its disclosed effect on
 every WSL distro. See [wsl2](../engineering/wsl2.md) § Wall release.
 
-The provider disk may be removed by `destroy`; the canonical host durable root is shared from outside
-that disk and is not intentionally included in cluster removal. Same-run reattachment/readback is a required
+On a VM-backed lane, `destroy` deletes the provider VM and its disk. The canonical host durable root lives
+outside that disk and is never in either verb's cluster-teardown removal set. Same-run reattachment/readback is a required
 worked-demo acceptance assertion on every lane.
 
 On Direct Linux GPU, reverse first releases any recorded host exposure, then starts the project image with the
-Docker socket and only the exact profile data bind. Its fixed internal retained-release entry authenticates the
-recorded nvkind node identities, deletes and proves them absent, and releases those records. The parent proves
-the declared nodes absent again before Harness permission restoration and removal; Production data permissions
-are never normalized by this route.
+Docker socket and only the exact profile data bind. The demo's own `main` intercepts
+`--hostbootstrap-direct-cluster-release-v1 PROFILE` before `runHostBootstrapCLI` and routes it to
+`runDirectClusterReleaseChild`, which authenticates the recorded nvkind node identities, deletes and proves
+them absent, and releases those records. The parent proves the declared nodes absent again before Harness
+permission restoration and removal; Production data permissions are never normalized by this route.
+
+That entry is not a pattern for a derived project. It is a per-project pre-parser verb that
+[development_plan_standards.md § P](../../DEVELOPMENT_PLAN/development_plan_standards.md#p-fixed-command-surface-and-the-extension-streams)
+forbids: a lane that retains a cluster releases it through the authenticated reverse child's core-managed
+reverse in that cluster's frame. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owes
+moving the Direct lane onto that reverse and deleting the entry; the canonical inventory of pre-parser entries
+is [hostbootstrap_core_library § Entries before the parser](../architecture/hostbootstrap_core_library.md#entries-before-the-parser).
 
 ## Demo Harness
 
@@ -343,22 +422,29 @@ hostbootstrap-demo test run all
 
 The compiled case ids are `pristine-bootstrap`, `web-build`, `e2e-tabs`,
 `registry-persistence`, and `durable-readback`. They are Haskell code, not dynamically defined by
-`<project>.test.dhall`. The demo test file decodes as:
-
-```haskell
-data TestConfig = TestConfig
-  { testResources :: Resources
-  , testVariants :: [TestVariantConfig]
-  }
-```
+`<project>.test.dhall`. The demo test file decodes into `TestConfig`
+([`HostBootstrapDemo.Config`](../../demo/src/HostBootstrapDemo/Config.hs)), whose two fields are
+`testResources`, the resource budget of the test stack, and `testVariants`, the declared message variants.
 
 Case selection uses opaque compiled `CaseId`s and a validated total `TestMatrix`; `all` is only a parser
-selector. `testVariants` declares the two stable message variants, and `demoTestMatrix` projects every
-compiled case across them before the run acquires anything. The command retains one exact Harness plan and
+selector. `testVariants` declares the message variants (`test init` generates two, `hello-world` and
+`hello-universe`), and `demoTestMatrix` projects every compiled case across them before the run acquires
+anything. The command retains one exact Harness plan and
 drives the common recursive forward and reverse interpreters. Four cases use `AssertOnce`.
 `durable-readback` uses `AssertAcrossRestart`, so its before/after callbacks merge into one report row while
 the engine alone owns settled teardown, protected generation rotation, exact snapshot rebind, and the second
-forward. Two variants still produce exactly ten report rows.
+forward.
+
+The run's size follows from the selection and the declared variants:
+
+- report rows = selected cases × variants;
+- bring-ups = variants × 2 when `durable-readback` is selected (one forward per variant plus the
+  engine-owned rotation, which runs only after its `BeforeRestart` phase passes), else variants × 1;
+- terminal destroys = bring-ups.
+
+`test run all` under the generated two-variant test config therefore produces exactly ten rows, four
+bring-ups, and four destroys. The pristine acceptances below run that unedited generated config, and their
+counts assume it.
 
 The command is admitted only at the rooted Harness entry. Its independent Harness authority cannot admit a
 Production plan, and each owned run root is `.test_data/<runId>`.
@@ -383,8 +469,9 @@ native-substrate acceptance gates.
 This is the baseline lane every other one is measured against, and it is the one the
 [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) closes on. Run it only from a
 disposable demo state with no `.build`, `.hostbootstrap`, generated `hostbootstrap-demo.dhall`, or
-`.test_data`, on a host the substrate classifier calls `linux-cpu` — a Linux host reporting neither
-`/proc/driver/nvidia/version` nor `/dev/nvidiactl`. A workstation with a visible accelerator classifies
+`.test_data`, on a host the substrate classifier calls `linux-cpu` — a Linux host with neither
+`/proc/driver/nvidia/version` nor `/dev/nvidiactl` present and no `nvidia-smi -L` listing a GPU (the full
+rule is under [Linux/NVIDIA pristine acceptance](#linuxnvidia-pristine-acceptance)). A workstation with a visible accelerator classifies
 as `linux-gpu` and takes the Direct chain instead, so on one of those the `linux-cpu` gate host is a
 guest VM of its own. That guest needs nested virtualization, because this lane creates a provider VM.
 
@@ -412,8 +499,9 @@ This lane takes the Incus VM path. `project up` provisions the guest at the decl
 the durable share, builds the project binary host-native *inside* the guest, pulls the published CPU
 base and builds the derived image there, then descends into that image for the cluster, registry,
 workload, and web service. Budget hours rather than minutes for a cold host: the guest's own GHC and
-dependency closure are built from nothing before the image build begins. The matrix then performs four
-pristine generations, one per fresh guest. Success is exactly `10/10 passed`.
+dependency closure are built from nothing before the image build begins. Under the generated two-variant
+test config the matrix then performs four pristine generations, one per fresh guest. Success is exactly
+`10/10 passed`.
 
 After success, audit the end state: no provider VM remains, no kind cluster and no
 hostbootstrap-named container survive, `.build/hostbootstrap-demo.dhall` is gone while the
@@ -446,7 +534,8 @@ starts a default guest nor attempts guest cleanup. A capacity refusal can theref
 authority; preserve the protected store after such a refusal. Harness recovery
 runs at the next selected `test run`; `project destroy` is a Production command.
 
-The complete matrix performs four fresh Lima bring-ups and four terminal destroys. Allow at least two hours
+Under the generated two-variant test config, the complete matrix performs four fresh Lima bring-ups and
+four terminal destroys. Allow at least two hours
 for the matrix, plus the initial cold host-native build; the acceptance phase records measured durations.
 Every bring-up installs/builds inside a pristine guest, pulls the published base, and
 runs the image's `check-code`/export verification before workloads start. Success is exactly `10/10 passed`.
@@ -467,21 +556,25 @@ HOSTBOOTSTRAP_COLIMA_LIVE=1 cabal test hostbootstrap-core-test --test-options='-
 The opted-in lane must acquire its exact native profile, refuse the conflicting plan, and clean up its owned
 profile, context, and data while preserving ambient state. A no-request `Unsupported` result does not satisfy
 this live leg. The dated host, versions, run IDs, durations, image digests, both gate legs, and audits belong in
-[Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md).
+[Apple Silicon substrate acceptance](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md).
 
 ### Linux/NVIDIA pristine acceptance
 
 Run the NVIDIA acceptance only from a disposable demo state with no `.build`, `.hostbootstrap`, generated
 `hostbootstrap-demo.dhall`, or `.test_data`. Preserve tracked sources and any unrelated ambient Docker or
-Incus workload. The substrate classifier reads `/proc/driver/nvidia/version` and `/dev/nvidiactl`, so a host
-with no NVIDIA markers classifies as `linux-cpu` and runs a different lane. From the repository root:
+Incus workload. The substrate classifier (`hasNvidiaGpu` in `HostBootstrap.Substrate`, mirrored by the
+Python bootstrapper, which states the result to the binary) classifies a Linux host as `linux-gpu` when
+`/proc/driver/nvidia/version` or `/dev/nvidiactl` exists, or, failing both, when `nvidia-smi -L` succeeds
+and lists a GPU. A host where all three checks fail classifies as `linux-cpu` and runs a different lane.
+From the repository root:
 
 ```text
 poetry run hostbootstrap run --project-root demo test init
 poetry run hostbootstrap run --project-root demo test run all
 ```
 
-This lane takes the Direct host-provider path, so the four bring-ups create no VM: each builds the project
+This lane takes the Direct host-provider path, so the four bring-ups of the generated two-variant test
+config create no VM: each builds the project
 image, descends into it, and creates an nvkind cluster in a frame the metal host cannot see directly. Allow
 about an hour for the matrix, plus the initial cold host-native build. Every bring-up pulls the published
 CUDA base, runs the image's `check-code`/export verification, and reconciles the pinned NVIDIA device plugin
@@ -502,9 +595,9 @@ Before leaving the machine, also record the complete host static gate on it. A L
 x86_64 Linux gate host, and the coverage matrix visits a hardware set once, so that cell is collected on
 this visit rather than by convening the machine again. The dated host, versions, run IDs, duration, image
 digests, and audit belong in
-[NVIDIA GPU substrate acceptance](../../DEVELOPMENT_PLAN/phase-26-nvidia-gpu-substrate.md); the gate-host
+[NVIDIA GPU substrate acceptance](../../DEVELOPMENT_PLAN/phase-27-nvidia-gpu-substrate.md); the gate-host
 row belongs in
-[host-portability acceptance](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md).
+[host-portability acceptance](../../DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md).
 
 ### Windows pristine acceptance
 
@@ -519,7 +612,8 @@ poetry run hostbootstrap run --project-root demo test run all
 ```
 
 Launch the second command through [durable Windows runs](../engineering/durable_windows_runs.md) rather
-than directly, because the matrix outlives any agent-driven shell. The complete matrix performs four fresh
+than directly, because the matrix outlives any agent-driven shell. Under the generated two-variant test
+config, the complete matrix performs four fresh
 WSL2 guest installations and four terminal destroys, taking the per-user global wall at four successive
 fences. Each bring-up warns before applying the wall ceiling, because doing so runs a global cross-distro
 `wsl --shutdown`. Allow at least three hours on a four-core-class host, plus the initial cold host-native
@@ -532,22 +626,38 @@ installed distribution; no accelerator daemon is live; and `.wslconfig` holds it
 no active wall record. An idle utility VM left by post-run observation is settled with `wsl --shutdown`,
 which is safe once no distribution remains. The dated host, versions, run IDs, duration, image digests, and
 audit belong in
-[Windows and WSL2 substrate acceptance](../../DEVELOPMENT_PLAN/phase-27-windows-and-wsl2-substrate.md).
+[Windows and WSL2 substrate acceptance](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md).
 
 ## Safe Operating Guidance
 
 - Do not run the long harness on a machine carrying production demo state.
 - Treat every runtime-resolved web, registry, S3 store, and accelerator endpoint as a development-only listener.
-  The target relay binds only `127.0.0.1`; do not publish it on a wildcard address, persist its selected port in
+  The relay binds only `127.0.0.1`; do not publish it on a wildcard address, persist its selected port in
   Dhall, or construct a localhost URL independently. The registry is still anonymous HTTP, and the store uses
   fixed source credentials rendered into a Kubernetes Secret.
 - Treat a wrong or occupied durable alias as a conflict; do not delete it by pathname alone.
 - Do not point a derived build at a locally rebuilt base. Pull the published tag; the host-native lane
   requires its repository digest and refuses an image with no registry digest.
 - On Windows, follow [durable Windows runs](../engineering/durable_windows_runs.md) for the long gate.
-- Follow explicit recovery guidance when a command emits it. Structured recovery dispositions are target
-  behavior, not universal today; do not manually unregister/delete a provider unless you have separately
-  established ownership.
+- Follow explicit recovery guidance when a command emits it. A core reconcile `Failure` carries a
+  `RecoveryDisposition` (reprobe before retry, retry the same operation key after fencing, operator
+  resolution required, or do not retry); a failure raised from a demo step body or a host-tool `ensure`
+  reconciler carries only its message. Do not manually unregister/delete a provider unless you have
+  separately established ownership.
+
+## Validation
+
+Each lane's acceptance is a declared phase gate; whether it has passed, on which host, and with which run
+IDs and digests is recorded in the phase file and summarized in
+[the development-plan index](../../DEVELOPMENT_PLAN/README.md), not here.
+
+| Lane | Owning phase |
+|---|---|
+| Linux CPU pristine acceptance | [the worked demo](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) |
+| Apple Silicon pristine acceptance and the direct-Colima leg | [Apple Silicon substrate](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md) |
+| Linux/NVIDIA pristine acceptance | [NVIDIA GPU substrate](../../DEVELOPMENT_PLAN/phase-27-nvidia-gpu-substrate.md) |
+| Windows pristine acceptance | [Windows and WSL2 substrate](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md) |
+| Host static gate on each gate host | [host-portability acceptance](../../DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md) |
 
 ## Related
 

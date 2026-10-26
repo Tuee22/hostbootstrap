@@ -15,7 +15,7 @@
   catalogues both.
 - **The plan is the project.** A consumer contributes one ordered step fragment from root parameters;
   finalization produces the `StepPlan` from which exact plan admission derives the current-frame
-  execution and declared descent. The target `project up` interpreter repeats that operation across
+  execution and declared descent. The recursive `project up` interpreter repeats that operation across
   authenticated child entries. The shapes below are generic; any consumer assembles its specific
   fragment from them.
 - The foundational model is [composition_methodology](../architecture/composition_methodology.md) (the
@@ -26,23 +26,32 @@
 
 ## Frame Topologies
 
-Each topology is a lift stack of **frames** (outermost-first). In the complete model, a binary crosses
-each boundary by handing off an authenticated `pb project up` entry into the next frame (the selected
-VM provider for a VM, `docker run` for a container). The chain is one flat `[Step]`, and each pb owns
-its own segment. The current public Chain executes one authorized current-frame segment and derives the
-declared child boundary; authenticated child admission and cross-frame continuation remain with the
-[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+Each topology is a lift stack of **frames** (outermost-first); "frame" on this page is the topology sense
+of the [glossary](../README.md#glossary). A binary crosses each boundary by
+launching the next frame's copy of the binary (through the selected VM provider for a VM, `docker run`
+for a container) with the fixed private `--hostbootstrap-lifecycle-child` marker as its only argument;
+the verb, plan, frame, and config arrive in the authenticated Offer, so the child's command line never
+names `project up`. The chain is one flat `[Step]`, and each pb owns its own segment. The current-frame
+Chain executes one authorized segment and derives the declared child boundary; the root admits the
+child, which executes only root-granted nodes, as owned by the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) and
+canonical in
+[composition_methodology](../architecture/composition_methodology.md#the-recursive-project-up-interpreter).
 
-1. **One-shot container lift** — `host → docker run <project-container> pb project up`. Run a tool the
+1. **One-shot container lift** — `host → docker run <project-container> pb`, the child continuing the
+   parent's `project up` work. Run a tool the
    host lacks (a cloud CLI, `helm`) inside the project container. The atom every other shape builds on.
 2. **Pristine-host VM bootstrap** — `host → VM (re-establish the binary host-native) → container →
    deploy`. The worked [demo](../operations/demo_runbook.md): the no-copy-out rebuild-in-context case.
-   Its chain is a **single** ordered `[Step]` — deploy-VM (ensure the VM provider — Lima on Apple Silicon,
-   Incus on Linux, WSL2 on Windows) → deploy-VM (launch/start the provider VM; sizing is
+   Its chain is a **single** ordered `[Step]` — the project's ensure-vm-provider row (ensure the VM
+   provider — Lima on Apple Silicon, Incus on Linux, WSL2 on Windows; preserved on reverse) → deploy-vm
+   (launch/start the provider VM; sizing is
    creation-time for Lima/Incus and utility-VM-global for WSL CPU/memory) →
    build-pb (the pristine-host bootstrap: build the binary host-native, then the project image, in the
-   VM) → context-init announcing frame anchor in the VM → deploy-kind → deploy-object-store → deploy-registry → push-image →
-   deploy-chart → expose-port → accelerator-daemon placement —
+   VM) → copy-source (attach the durable source to the VM; declares the metal-to-VM descent) →
+   context-init announcing frame anchor in the VM (declares the container descent) → deploy-kind →
+   deploy-object-store → deploy-registry → push-image → deploy-chart → expose-port → the accelerator
+   placement, where the lane has one —
    that stands up a live, persistent stack ending at a web service. See
    [single representation](#single-representation-the-chain-is-the-representation).
 3. **Host → managed cloud cluster** — build the container, then a container-frame step uses a cloud CLI
@@ -85,18 +94,22 @@ declared boundary. The canonical home for this doctrine is
 the cookbook summary:
 
 - **Opaque validated `StepPlan`.** The forward source begins as ordered additive fragments computed from
-  root parameters. `mkStepPlan` rejects empty, duplicate, conflicting, post-handoff-invalid, and
-  non-contiguous `A/B/A` sequences; `--dry-run` renders every accepted plan in exact source order.
+  root parameters. `mkStepPlan` refuses an invalid sequence before effects — among others an empty,
+  duplicate, conflicting, post-handoff-invalid, or non-contiguous `A/B/A` one; the complete set of
+  refusals is the `StepPlanError` table in
+  [run_models § Single-Representation Rule](../architecture/run_models.md#single-representation-rule).
+  `--dry-run` renders every accepted plan in exact source order.
 - **Authenticated recursive descent.** Each `project up` frame boundary is the same move: *provision the frame
-  → build/install the pb in it → authenticate and hand off `pb project up`*. The current interpreter
-  runs the local segment and selects the exact catalog edge and lift route. Its root-owned protocol
+  → build/install the pb in it → launch it as an authenticated lifecycle child that continues the
+  `project up` work*. The interpreter runs the local segment and selects the exact catalog edge and lift
+  route. Its root-owned protocol
   authenticates the child, prepares each selected operation, and settles returned observations. Reconcilers attempt convergence, but typed
   convenience actions report completion only; managed adapters return exact settlement observations.
 - **The Python bootstrapper is the metal-frame precursor** to that pattern — provision the metal frame,
   build/install the pb, hand off — with two caveats the cookbook reuses: the *build* step is
   parent-orchestrated (the child pb does not exist yet), and the container frame *skips* the build
-  (`docker run img project up`). Proof-complete continuation through the Haskell-owned frame stack is
-  still target work.
+  (`docker run img project up`). Below the metal frame, the Haskell-owned authenticated descent continues
+  through the frame stack.
 - **`.dhall` is parameters + context + witness, never the shape.** Each pb reads the sibling
   `<project>.dhall`, verifies it occupies the frame the `.dhall` describes, and fails fast on a wrong
   handoff before the current frame's chain effects. Outer-frame provider/preparation effects may already
@@ -119,13 +132,21 @@ same `[Step]`, and host and workload steps interleave freely. This is the worklo
 | Origin | Step kinds (examples) |
 |---|---|
 | Core (host-management) | `deploy-vm`, optional `ensure-<tool>` row, `copy-source`, `build-pb`, `build-image`, `context-init`, `deploy-kind`, `deploy-chart`, `expose-port`, `post-handoff-<name>` |
-| Project (workload) | `deploy-object-store`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
+| Project (workload) | `ensure-vm-provider`, `deploy-object-store`, `deploy-registry`, `push-image`, accelerator placement, … contributed by the consumer |
 
-The current demo does not use `ensureStep`; it calls `runEnsure` inside composite
-provider/build/accelerator actions. Its `context-init` action body is also a no-op announcement: VM
+The demo does not use the core `ensureStep`. It ensures the VM provider in a dedicated project row,
+ensure-vm-provider, built with `projectStep` and `PreserveOnReverse`, whose action calls `runEnsure` for
+the selected provider. The Docker and CUDA ensures run inside the direct Linux GPU lane's
+provider-reservation and host-bootstrap actions, and the Apple Metal and Windows CUDA ensures inside the
+host accelerator daemon's worker-build startup path. Its
+`context-init` action body is a no-op announcement: VM
 config delivery is inside the composite bootstrap, container projection/delivery is in the descent that
-same `context-init` step declares plus the handoff, and service projections are in deployment actions. The target plan gives each
-effect an explicit operation identity and prevents those labels from drifting from the work.
+same `context-init` step declares plus the handoff, and service projections are in deployment actions.
+Each node carries its own operation key, and an operation on a resource the node relates (the provider
+guest alias) is claimed with `projectsOperation`; effects composed inside one action, such as the VM
+config delivery inside `build-pb`, share that node's key. Execution descriptors that carry each node's
+exact operation identity are owed by
+[the step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md).
 
 The canonical taxonomy of step semantics — converge / context-lift / one-shot action / control-loop /
 run-to-completion, plus each kind's plan/apply, retry behaviour, and L0/L1/L2 layer — lives in
@@ -135,8 +156,9 @@ those kinds across the topologies above. Which layer contributes which kind is
 
 ## Single Representation: The Chain Is The Representation
 
-One operation must have one representation. Forward ordering is the `[Step]` returned by
-`chain`; exact admission creates an opaque `ProjectPlan scope specDigest planId configId cfg`, whose
+One operation must have one representation. Forward ordering is the `[Step]` returned by the step
+fragments passed to `addSteps`, each of which receives the admitted `CanonicalProjectRoot` and the
+config; exact admission creates an opaque `ProjectPlan scope specDigest planId configId cfg`, whose
 topology and current-frame forward and reverse projections come from that same sequence. Each descent
 is declared by a plan node (`descendsVia`), and each acquiring node declares the effect that releases it
 (`reversedBy`). Current verbs consume those exact current-frame projections. The recursive interpreter
@@ -146,16 +168,22 @@ from receipt-bound ownership. Descriptive topology never substitutes for command
 (and [development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)); the
 summary for shape 2:
 
-- The shape-2 plan declares one persistent-stack descent: the metal segment provisions the VM and
-  rebuilds the binary + project image in it, the in-VM segment reaches its `context-init` anchor and
-  declares the project-container handoff, and the in-container segment runs deploy-kind → deploy-object-store
-  → deploy-registry → push-image → deploy-chart → expose-port and places the accelerator daemon. The
-  target authenticated interpreter reaches the live web service through those segments; the current
-  public boundary executes only the admitted current-frame segment.
-- The standardized harness (`HostBootstrap.Harness`: `runMatrix` + `Seams`) is a **separate** test
-  surface. For each generated run it constructs and retains an exact `ProjectPlan (Harness projectId
-  runId) ...`, drives the Cabal-private fixed root-Up entry through the recursive Chain and exact reverse
-  boundary, and keeps assertion logic outside lifecycle authority. A restart-spanning case requests the
+- The shape-2 plan declares one persistent-stack descent: the metal segment ensures the provider,
+  provisions the VM, rebuilds the binary + project image in it, and attaches the durable source with
+  copy-source, which declares the metal-to-VM descent; the in-VM segment reaches its `context-init` anchor
+  and declares the project-container descent; and the in-container segment runs deploy-kind →
+  deploy-object-store → deploy-registry → push-image → deploy-chart → expose-port. The accelerator row
+  follows the stack: a metal-frame post-handoff daemon on Apple Silicon and Windows GPU, an in-container
+  deploy-accelerator-daemon row on Linux CPU, and no accelerator row on Windows CPU. The authenticated
+  interpreter reaches the live web service through those segments, each frame executing only its
+  admitted segment.
+- The standardized harness (`HostBootstrap.Harness`) is a **separate** test surface.
+  `runSuiteSelection` loops over the config variants, and each variant's bracket, which supplies its
+  `HarnessLifecycle`, is the lifecycle unit: once per variant it constructs and retains an exact `ProjectPlan (Harness projectId
+  runId) ...`, drives the Cabal-private fixed root-Up entry through the recursive Chain, and drives the
+  exact reverse boundary afterwards. Inside that bracket `runMatrix` over the suite's `Seams` is the
+  per-case assertion loop, so cases sharing a variant share its stack and assertion logic stays outside
+  lifecycle authority. A restart-spanning case requests the
   engine-owned settled reverse, protected invocation rotation, exact plan rebind, second forward, and one-row
   before/after assertion merge.
 
@@ -166,9 +194,17 @@ relies only on an L0 affordance (the role-lifecycle skeleton, Dhall config/schem
 streams) — so L0 hosts it without modification.
 
 For a runtime role, verify the signed activation and project-owned non-empty role draft before entering the
-protected admission. Treat `RoleAdmissionReserved` as the only ordinary open input,
-`RoleAdmissionOpenUnknown` as a lost-acknowledgement signal for `resumeRuntimeRolePlanOpen`, and every
-contradictory predecessor as recovery work rather than a new run. Supply total callback outcomes. In
+protected admission, then handle every `RoleAdmissionOutcome` constructor:
+
+| Outcome | Meaning | Required handling |
+|---|---|---|
+| `RoleAdmissionReserved` | the one-use admission is reserved | the only ordinary open input; open the role plan |
+| `RoleAdmissionOpenUnknown` | the matching admission is already consumed (lost acknowledgement) | reopen its exact plan with `resumeRuntimeRolePlanOpen` |
+| `RoleAdmissionRecoveryRequired` | a contradictory predecessor record exists | recovery work, not a new run |
+| `RoleAdmissionRefused` | a deterministic precondition refusal; no durable operation ran | stop; there is nothing to recover or resume |
+| `RoleAdmissionUnknown` | a protected-store failure left the reservation unclassified | not resume evidence; reclassify or escalate, never resume or reopen on it |
+
+Supply total callback outcomes. In
 particular, `engineRelease` must idempotently reprobe-and-release a resource whose acquisition result was
 unknown; returning `Released` is the proof that resolves it. The core runner consumes the Prereq cursor once,
 forces each callback result inside its interruption guard, drives every successor internally, and always
@@ -195,20 +231,24 @@ Reused across shapes and step kinds:
   reservation→observed-live-authority transition. Current VM creation and kind/nvkind node paths have partial caps, but direct Colima
   and the outer direct-Linux-GPU build/container effects are not uniformly capped, existing provider
   walls are not uniformly reconciled, and child service configs do not receive the computed slice (see
-  [applied_cordon](applied_cordon.md) and [resource_budgeting](resource_budgeting.md)).
-- **Teardown discipline (target)** — descend while each child is reachable, then stop/delete on ascent;
-  require verified ownership receipts, preserve durable data, aggregate independent failures, and return
-  explicit idempotent outcomes. Current commands consume the exact plan's current-frame reverse
-  projection but do not authenticate recursive child traversal or bind every release to ownership
-  receipts; see
-  [cluster_lifecycle](cluster_lifecycle.md) and
+  [applied_cordon](applied_cordon.md) and [resource_budgeting](resource_budgeting.md#current-status)).
+  Production adoption of the budget chain and the leaf slice are owed by
+  [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), and the per-node cluster cap by
+  [the cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+- **Teardown discipline** — `project down`/`project destroy` reconstruct the committed plan and drive its
+  verb-indexed reverse projection child-first through authenticated lifecycle children: each child's
+  subtree settles (signed close, receipt, durable adoption) before its parent stops or deletes on ascent.
+  Releases are bound to verified ownership records, durable data is preserved, and outcomes are explicit
+  and idempotent; see
+  [composition_methodology](../architecture/composition_methodology.md#the-recursive-project-up-interpreter),
+  [cluster_lifecycle](cluster_lifecycle.md), and
   [lifecycle state model](../architecture/lifecycle_state_model.md).
-- **Plan→Apply** — `project up --dry-run` renders `chain cfg` (the planned step sequence) before
-  the mutating apply.
+- **Plan→Apply** — `project up --dry-run` renders the admitted plan's forward projection (`renderChain`,
+  the planned step sequence in exact source order) before the mutating apply.
 - **Substrate multiplexing** — the same pure chain parameterized over `(model × substrate)` under one
   control-plane contract.
 - **The test surface drives the deploy** — `test run all` runs the standardized harness
-  (`runMatrix` over the project's cases). Each generated run retains an exact Harness-scoped plan and
+  (`runSuiteSelection` over the config variants, `runMatrix` over each variant's cases). Each generated run retains an exact Harness-scoped plan and
   drives the hidden fixed root-Up entry into the lower current-frame Chain and the exact reverse boundary;
   it does not construct a second per-case deployment graph. The harness stays frame-agnostic and may lift a case into the
   cluster as a Job (a finite-job operation); see
@@ -226,21 +266,21 @@ The **plan surface** this cookbook describes is the running system: the core com
 `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`
 (`demo/src/HostBootstrapDemo/Commands.hs`), whose result is accepted only through `addSteps` and
 `finalizeProjectSpec`; its VM-backed branch declares shape 2 as one ordered plan ending at a live web
-service. Execution across its declared frames uses authenticated child admission and recursive traversal. The lift
-primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows, with authenticated recursive
-closure owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) — see
+service. Execution across its declared frames uses authenticated child admission and recursive traversal,
+owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The lift
+primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The
 reconcilers (`clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
 `HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
 
 The opaque `StepPlan`, admitted `ProjectPlan`, core Step algebra, and workload-contributed step kinds
-compose one exact forward description. The current public Chain executes the authorized current-frame
-segment and derives its declared descent; nested lifecycle entry fails closed pending authenticated
-child admission and proof-complete traversal. The complete interpreter is intended to carry the Incus/Linux
-plan through to a cordoned kind cluster, the in-cluster registry, the project image pushed to that
-registry, and the web chart pod serving through its runtime-resolved loopback endpoint. Current `project down`/`project destroy`
-consume the verb's exact current-frame reverse projection and must not be described as fractal teardown. The
-demo's status is tracked in
+compose one exact forward description. Each frame's current-frame Chain executes its authorized segment
+and derives its declared descent; nested lifecycle entry is admitted only through the root's authenticated
+child protocol. The recursive interpreter carries the Incus/Linux plan through to a cordoned kind cluster,
+the in-cluster registry, the project image pushed to that registry, and the web chart pod serving through
+its runtime-resolved loopback endpoint. `project down`/`project destroy` drive the same plan's
+verb-indexed reverse projection child-first across the frames, as described under
+[Teardown discipline](#cross-cutting-concerns). The demo's status is tracked in
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and the composition phases of the
 development plan.
 
@@ -248,8 +288,8 @@ development plan.
 
 - [composition_methodology](../architecture/composition_methodology.md) — the canonical foundational
   model these shapes instantiate.
-- [authoring_project_binaries](authoring_project_binaries.md) — how to author a `chain` from these
-  shapes (its step actions, test suite, and Dhall vocabulary).
+- [authoring_project_binaries](authoring_project_binaries.md) — how to author the step fragments passed
+  to `addSteps` from these shapes (their step actions, test suite, and Dhall vocabulary).
 - [library_hierarchy](../architecture/library_hierarchy.md) — the extension-stream merge that adds step
   kinds.
 - [dhall_topology](dhall_topology.md) — the topology frames declared by the plan and consumed by the

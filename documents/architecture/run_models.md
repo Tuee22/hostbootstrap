@@ -17,29 +17,42 @@
 ## Current Status
 
 No detached Haskell selector, selector-only topology/key type, or configurable Dhall execution union exists.
-A structural test checks both `HostBootstrap.Harness` and `Core.dhall` for that single-representation
-boundary.
+The `ContextKind` union a binary context carries records which frame a process occupies; it is not an
+execution-shape selector (see [The Four Names](#the-four-names)). A substring test in `HarnessSpec`
+refuses four selector tokens in `HostBootstrap.Harness` and one selector `let` binding in
+`Core.dhall` (see [Single-representation guard](#single-representation-guard)).
 
 The real demo path contributes
 `demoChainFor :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]`. Plan
 admission validates that authored sequence and retains it as the exact non-empty `forward` projection of
 one `ProjectPlan`. Public `HostBootstrap.Chain.renderChain` renders that full projection, while
-`runChainFromFrame` interprets only its non-empty current-frame segment. No project or test config carries
-a second execution-mode literal.
+`runChainFromFrameWithDescentFailure`, the root-coordinator descent interpreter that `LifecycleEntry`
+drives, interprets only its non-empty current-frame segment. No project or test config carries a second
+execution-mode literal.
+
+`HostBootstrap.Chain` also exports `runChainFromFrame` and `runChainFromFrameWithDescent`, whose built-in
+descent launches the binary's own `project up` through an argument vector, and `handoffDispatch`, which
+renders that vector. No production path calls them; only tests and compile-fail fixtures do.
+[The recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+owes their deletion.
 
 Production dispatch retains or reconstructs one exact `ProjectPlan` and uses it for dry rendering and
 snapshot persistence/binding. Effectful root Up then admits the root-refined lifecycle context and enters the
 Cabal-private `LifecycleEntry` producer/fixed interpreter, which alone derives the journal/current cursor,
-calls generic `authorizeRootProject`, and reaches the lower public Chain. Its current-frame reverse verbs
-derive work from that same exact representation. Harness does the same inside each generated-config ownership
+calls generic `authorizeRootProject`, and reaches the lower public Chain. Its reverse verbs derive work
+from that same exact representation. Harness does the same inside each generated-config ownership
 bracket: it admits one `ProjectPlan (Harness projectId runId) ...`, packages that plan's fixed root-Up entry
 interpreter and reverse action in an opaque `HarnessLifecycle`, and lets the engine invoke those actions
 directly. No Harness lifecycle action
 re-enters the CLI or a Production plan. These are call-site boundaries around one authored graph, not
 alternate execution selectors. Nested lifecycle entry authenticates the exact root-selected catalog edge
-and executes only its signed prepared grants. Proof-complete traversal and exact `down`/`destroy`
-authorization belong to
-[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+and executes only its signed prepared grants. `project down` and `project destroy` cross each declared
+descent child-first through the authenticated reverse-child protocol: the root opens the plan's teardown
+forest once, and a parent advances only on the `SubtreeSettled` value its child's signed close produces.
+[Composition methodology](composition_methodology.md#the-recursive-project-up-interpreter) is the
+canonical home for that traversal, which
+[the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+owns.
 
 The [step-algebra-and-project-plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
 owns the common plan/Chain foundation and Production command call site. The
@@ -59,6 +72,21 @@ Current status and cleanup ownership live in
 | `Cluster` | A kind/nvkind cluster plus deployed workloads | `deploy-kind`/`deploy-chart` and demo workload steps |
 
 This table is a taxonomy. It does not imply that a separate value controls those paths.
+
+The four names are not `ContextKind` values. `ContextKind`, in
+[`Context`](../../core/hostbootstrap-core/src/HostBootstrap/Context.hs), is the binary-context field that
+records which topology frame a process occupies. A parent derives it when it writes a child's context
+(`deriveOneShotContext`, `deriveHostDaemonContext`, `deriveClusterDaemonContext`, `deriveServiceContext`),
+`validateContext` refuses a context whose kind differs from its current topology frame's kind, and the
+command gate reads it: `service run`, for example, requires a `ClusterService` or `Daemon` leaf. It
+chooses no work; the chain still decides what runs. The names relate to it as follows:
+
+| Name | Corresponding `ContextKind` |
+|---|---|
+| `OneShot` | `OneShotJob`; an `ImageBuildContainer` frame is also a bounded container |
+| `HostNative` | `HostOrchestrator`, or `VMOrchestrator` inside a provider guest |
+| `HostDaemon` | the two `service run` leaves: `Daemon` on the host provider, or `ClusterService`/`Daemon` under the Kubernetes provider |
+| `Cluster` | none: the cluster is not a process frame, and its workloads run as `ClusterService` or `Daemon` frames |
 
 ## Single-Representation Rule
 
@@ -94,15 +122,30 @@ could say `Cluster` while the chain contains only a one-shot container, or a det
 say `HostNative` while the interpreter still executes a container step. Keeping both values would
 violate the single-representation contract.
 
-Raw step and plan constructors are hidden. Validation rejects an empty plan, duplicate typed identities,
-conflicting labels, noncontiguous frame returns, and any post-handoff suffix that does not unwind from
-deeper participating frames toward the root before effects.
+Raw step and plan constructors are hidden. `mkStepPlan` returns a
+[`StepPlanError`](../../core/hostbootstrap-core/src/HostBootstrap/Step.hs) before effects for each of
+these rejection classes:
+
+| Class | Constructors |
+|---|---|
+| Empty plan, frame id, or label | `EmptyStepPlan`, `EmptyFrameId`, `EmptyStepLabel` |
+| Identity and labels | `DuplicateStepIdentities`, `ConflictingFrameLabels` |
+| Frame contiguity | `NonContiguousFrameReturn` |
+| Post-handoff suffix that does not unwind from deeper participating frames toward the root | `PostHandoffBeforeDescentComplete`, `PostHandoffForUnknownFrame`, `PostHandoffOutOfDescentOrder` |
+| Exactly one descent per frame but the innermost, none on a post-handoff step | `MissingFrameDescent`, `DuplicateFrameDescent`, `DescentFromInnermostFrame`, `DescentOnPostHandoffStep` |
+| At most one reverse per step, none on a preserved step | `DuplicateStepReverse`, `ReverseOnPreservedStep` |
+| Projected operations live under their declaring node and are claimed once | `ProjectionOutsideStep`, `DuplicateProjectedOperation` |
+| A step declares at most one provider-resource placement, and a placement at the immediate child needs the step's frame to have exactly one descent | `DuplicateProviderResourceDeclaration`, `ProviderResourceChildWithoutUniqueDescent` |
+
 `renderChain` consumes the full `forward` projection of the admitted `ProjectPlan`; it neither opens a
 second plan nor reads the hidden raw step representation.
 
-`runChainFromFrame` consumes that same `ProjectPlan`, a matching
-`CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase`, and a matching
-`LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase`. It verifies their retained
+`runChainFromFrameWithDescentFailure` consumes that same `ProjectPlan`, a matching
+`CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase`, a matching
+`LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase`, and the root coordinator's
+descent callback, which receives the exact parent and child frame names and the plan-owned lift context.
+On failure it returns the failure together with the operations whose durable gates were published before
+it stopped. It verifies the authority's and cursor's retained
 frame, verb, and phase terms, checks the authority's retained protected-store origin, and compares the
 cursor's retained acquisition project/store/broker origin to that authority before opening durable state.
 It then selects a `NonEmpty` current-frame node segment and keeps the same plan indices
@@ -139,7 +182,9 @@ A descent edge adds one execution-shape fact the four names above do not carry: 
 vector rendered for the child keeps that child's standard input attached. A Docker container is launched
 interactively, because the root's request and response bytes travel on the descriptor it keeps open; the
 Incus, Lima, and WSL2 providers are launched noninteractively, because nothing on the far side of them
-reads that descriptor. For a composed route only the terminal layer decides the answer.
+reads that descriptor. A descent edge is a single lift layer. A composed route, which the rooted reverse
+coordinator uses to reach a descendant below its immediate child, keeps each layer's closed checks,
+admits a container only as its terminal layer, and takes its channel from that terminal layer.
 
 That fact is a two-case `ChannelInteractivity` — `InteractiveChannel` or `NoninteractiveChannel` — on the
 Cabal-private `LifecycleProcessRoute`, and the results that carry it from the closed argument grammar to
@@ -174,7 +219,8 @@ framework view. Demo handlers do not reopen the sibling config.
 - There is no `service down`; `project down`/`destroy` own the enclosing lifecycle.
 
 The demo accelerator uses both placements depending on substrate. Its placement follows the configured
-service and lifecycle steps.
+service and lifecycle steps; the per-substrate placement is canonical in
+[accelerator daemon](../engineering/accelerator_daemon.md#substrate-matrix).
 
 The [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns this boundary, and
 no raw handler action survives it. A validated
@@ -194,14 +240,18 @@ mandatory `FrameworkValidation` fields plus fields visible to that service; the 
 plan/build/deploy-only fields cross neither boundary. The handler receives neither the full config nor
 raw `IO`/config-read capability. Before any acquisition, the one-use `withRoleLifecycleAdmission`
 compare-and-swap binds the measured process instance; a later Serve reservation prevents duplicate
-handler start. In the final API the phase eliminators are not exposed: the core-owned engine
+handler start. The phase eliminators are not exposed: the core-owned engine
 `runRoleLifecycle` consumes that plan, that placement, a one-use
 `RoleCursor scope planId frame instanceId PrereqPhase`, and the project's `RoleEngine` callbacks, and
-its sole public result is a `RoleExitReport`. Completion, typed failure, and catchable shutdown are the
-three `RoleServeOutcome` cases — `ServeCompleted`, `ServeFailed`, and `ServeShutdown` — and each advances
-the cursor out of `ServePhase` into `DrainPhase`; drain consumes the
-retained package, attempts every independent release while aggregating failures, and is the sole
-transition to `ExitPhase`. Serve cannot expose bind/spawn to a handler. A restartable worker instead uses a
+its sole public result is a `RoleExitReport`. The engine consumes the cursor once and then runs Prereq,
+Acquire, Ready, Serve, Drain, and Exit internally; the report's `exitTurnedAtPhase` names the `RolePhase`
+at which the role turned around. Four exits happen before any acquisition and report no resources: a
+cursor already consumed, a role plan from a different protected store, an unavailable or already-held
+exclusive generation lease, and a refused prerequisite. Once acquisition begins, Drain is the sole route
+to Exit. A failed or unknown acquisition, a failed readiness probe, and each of the three
+`RoleServeOutcome` cases — `ServeCompleted`, `ServeFailed`, and `ServeShutdown` — enter Drain, which
+attempts every independent release while aggregating failures. Serve cannot expose bind/spawn to a
+handler. A restartable worker instead uses a
 stable ready supervisor handle; only a prepared core transition may replace and reprobe its child.
 Mutating effects first seal the exact target/arguments behind an operation key and call digest, then
 require a matching prepared journal value minted from a Ready session and the retained live lease/fence.
@@ -224,20 +274,23 @@ own and generate run config
 
 It does not need a separate run-model dispatch to bring up a parallel test topology. `TestSuite` contains
 only safety and assertion behavior; the private lifecycle constructor is available to the command and core
-test components, not to downstream projects. The configured `durable-readback` case declares that it spans a
-restart, while the engine owns the intermediate destroy, fresh invocation generation, exact rebind, and second
-forward. The detailed authority path is documented in [harness workflow](harness_workflow.md).
+test components, not to downstream projects. A case that declares `AssertAcrossRestart` (the demo's
+`durable-readback`, for example) spans a restart, while the engine owns the intermediate destroy, fresh
+invocation generation, exact rebind, and second forward. The detailed authority path is documented in [harness workflow](harness_workflow.md).
 
 ## Single-representation guard
 
-The source/API boundary admits no runtime selector or selector-only topology/key surface, `Core.dhall`
-contains no execution-shape union, and exact vocabulary coverage plus a structural source test guard that
-single representation.
+The source/API boundary admits no runtime selector or selector-only topology/key surface, and `Core.dhall`
+contains no execution-shape union. The guard is the `HarnessSpec` case "the harness and Core.dhall contain
+no parallel execution selector": it reads `HostBootstrap.Harness` and `Core.dhall` and fails if either
+contains the run-model selector's tokens (two run-model data declarations, a run-model selector function,
+and a topology data declaration in the Haskell module; a run-model `let` binding in the Dhall file). It is a tripwire for those names in those
+two files; a selector under another name, or in another module or Dhall file, would pass it.
 
 ## Validation
 
-- A source/API test proves there is no unconsumed runtime selector or configurable Dhall execution
-  literal.
+- A source test refuses the run-model selector's declaration tokens in `HostBootstrap.Harness` and
+  `Core.dhall` (see [Single-representation guard](#single-representation-guard)).
 - Plan/interpreter tests prove each supported topology is expressed by concrete steps, the full exact
   projection is rendered, and an authority/cursor-matched current-frame projection is executed.
 - Production and Harness dispatch have no alternate plan/interpreter boundary. Harness retains one exact

@@ -44,7 +44,7 @@ NVIDIA, or Windows-host CUDA capabilities and placement:
 
 | Outer host | `linux-cpu` realization | Container/cluster path |
 |---|---|---|
-| Apple Silicon | Lima/Colima Linux VM | Docker project container → kind |
+| Apple Silicon | Lima Linux VM | Docker project container → kind |
 | Native Linux CPU | native Linux runtime (with Incus where the plan declares a VM frame) | Docker project container → kind |
 | Windows | WSL2 Linux VM | Docker project container → kind |
 | Native Linux GPU | native Linux runtime plus the NVIDIA acceptance dimension | Docker project container → nvkind |
@@ -86,7 +86,7 @@ cluster, deploy services, or tear them down. Those are Haskell/project-binary re
 
 Two explicit distribution/maintainer surfaces sit outside that project-runtime boundary:
 `hostbootstrap update` updates the pipx application, and the repository-only `base` command builds and
-publishes base images, which agents do as required. Neither surface becomes a child lifecycle step or
+publishes base images when the base inputs change. Neither surface becomes a child lifecycle step or
 gives Python ownership of project config, providers, images, clusters, services, or teardown.
 
 The rolling base image contains the container-build toolchain and an opportunistic Cabal store; it does
@@ -94,8 +94,8 @@ not contain the host-native project binary. Builds discover current compatible u
 host/container consumers use one ordinary `cabal.project` with online cache misses allowed. Published
 `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the derived-build source of
 truth. Base Dockerfile or warm-store changes require rebuilding and republishing the affected tag before
-consumers pull it; agents run the publication and live compatibility smoke as required. See
-[base image](documents/engineering/base_image.md).
+consumers pull it. Who publishes, when, and the compatibility smoke each publication runs are defined in
+[base image](documents/engineering/base_image.md#publication-authority).
 
 ## Configuration
 
@@ -117,21 +117,29 @@ The demo's config includes its own resources, deploy settings, context, and mess
 Host exposure is intentionally not another Dhall setting. Project config names semantic services and their
 stable cluster-internal targets; after cluster readiness, the container runtime atomically assigns
 loopback-only host ports to an owned relay. Only authenticated inspection of that exact runtime resource
-produces the resolved endpoints used by registry, web, object-store, accelerator, and test clients. See
+produces the resolved endpoints the demo's store initialization, registry push, web readiness, and
+host-resident accelerator ingress consume. The demo's test cases are the exception: their client containers
+join the `kind` Docker network and address the stable NodePort directly. See
 [network reachability](documents/architecture/network_reachability.md).
 
 `SecretRef scope` makes plaintext constructible only with matching
 `HarnessConfigAuthority projectId runId`, and the Production wire schema has no plaintext alternative.
-Root-local assembly and codec validation enforce this now. Normal parent-to-child handoff and
-restartable-controller runtime verification remain later lifecycle work; the runtime target reads the
-activation-bound private channel internally and mints no `HarnessConfigAuthority`. See
+Root-local assembly and codec validation enforce this; authenticated config refinement carries it across
+each parent-to-child handoff, and service activation independently verifies its installed narrowed wire
+and private bundle, so a service reads the activation-bound private channel and mints no
+`HarnessConfigAuthority`. See
 [generic project model](documents/architecture/generic_project_model.md) and
 [secrets](documents/engineering/secrets.md).
 
-Projects with a provider budget carry one host-level ceiling. `Cluster.Budget` admits the
-topology-derived workload set against it, and an applied cordon proves that concurrent slices plus
-overhead fit. See [resource budgeting](documents/engineering/resource_budgeting.md) and
-[applied cordon](documents/engineering/applied_cordon.md), which own that contract.
+Projects with a provider budget carry one host-level ceiling. `Cluster.Budget` is the admission chain
+that proves the topology-derived workload set plus overhead fits it; an applied cordon then enforces the
+admitted CPU/memory wall at the provider or cluster-node boundary (the
+[glossary](documents/README.md#glossary) defines cordon). No production lifecycle path runs that admission
+chain yet: production sizes provider walls from the project envelope, preflights host capacity, and caps
+every cluster node with the whole cluster slice.
+[What runs today](documents/engineering/resource_budgeting.md#what-runs-today) is the canonical account,
+and [the worked demo phase](DEVELOPMENT_PLAN/phase-24-worked-demo.md) owes production adoption of the
+chain. See [applied cordon](documents/engineering/applied_cordon.md) for the operation boundary.
 
 ## CLI Surface
 
@@ -156,22 +164,26 @@ Every Haskell project binary exposes the fixed tree:
 
 | Command | Behavior |
 |---|---|
-| `project init` | Write the project-owned sibling config |
+| `project init` | Write the project-owned sibling config; an existing output refuses unless `--force` (overwrite) or `--if-missing` (no-op) |
 | `project up` | Interpret the admitted plan and authenticate each declared descent, granting the child only its selected node's prepared operations; `--dry-run` renders the admitted plan |
 | `project down` | Child-first reverse traversal plus stop-mode project hook, releasing only resources whose ownership is established |
 | `project destroy` | Child-first reverse traversal plus delete-mode project hook, closing only on settled destroy evidence or a verified pre-effect refusal |
-| `test init` | Write `<project>.test.dhall` without requiring a project config |
+| `test init` | Write `<project>.test.dhall` without requiring a project config; an existing file refuses unless `--replace` |
 | `test run <case-id>\|all` | Generate each variant, directly drive its exact Harness current-frame forward/reverse around assertions, then close only after settled destroy |
 | `service init\|schema\|run` | Initialize/inspect service config or run one config-selected leaf service |
 | `context inspect\|path\|show\|schema\|render` | Read-only context/config introspection |
 | `check-code` | Run the inherited project quality gate |
 
-That tree is the whole surface a project or an operator reaches; projects add no verb. One internal
-marker exists beside it and is deliberately not a command: it is how a binary recognizes that it is the
-process on the far side of a frame crossing, which no verb can express, and it carries no coordinates,
-path, authority, or caller-selected action. See
-[the library surface](documents/architecture/hostbootstrap_core_library.md) for exact parser and
-dispatch behavior.
+That tree is the whole command surface a project or an operator reaches; projects add no verb. Before the
+parser runs, every binary also tests its argument vector against five internal entries that are not
+commands: identity installation, the exposure relay, the Colima command transaction, the lifecycle child,
+and the frame child. The identity, lifecycle-child, and frame-child entries carry no coordinates, path,
+authority, or caller-selected action; the exposure relay and the Colima transaction carry caller-selected
+work (relay targets, a command to run). The demo adds one entry of its own in its `main`.
+[Entries before the parser](documents/architecture/hostbootstrap_core_library.md#entries-before-the-parser)
+lists each entry, what it carries, and who launches it; the
+[library surface](documents/architecture/hostbootstrap_core_library.md) owns exact parser and dispatch
+behavior.
 
 ## Install
 
@@ -199,16 +211,17 @@ pipx install --force /path/to/hostbootstrap
 builds the project image, creates kind/nvkind, deploys an S3 store and the anonymous HTTP in-cluster registry,
 pushes the image, deploys the web and accelerator services, and verifies exposure. Automatic host exposure is
 runtime-owned: host-port numbers are absent from Dhall and Kind/nvkind rendering, the container runtime
-atomically selects loopback ports for identity-owned relays, and application clients consume only the
-authenticated resolved endpoints. Stable Kubernetes Service/NodePort values remain internal targets.
+atomically selects loopback ports for identity-owned relays, and host-side application clients consume only
+the authenticated resolved endpoints. Stable Kubernetes Service/NodePort values remain internal targets,
+which the demo's test clients reach from inside the `kind` Docker network.
 The registry route binds client scope, exposure, backend, and delivery in one opaque plan, so the host
 Docker client cannot be redirected to the cluster-only S3 store. See
 [network reachability](documents/architecture/network_reachability.md) and the
 [in-cluster registry guide](documents/engineering/in_cluster_registry.md).
 
 The stable `/var/tmp/hostbootstrap-demo-data` pathname is a provider-guest projection of the project's
-host-backed durable root, not a portable direct-host path or the canonical store. The target resolves
-descriptive `sourceRoot` once into opaque canonical-root authority: direct-host Docker binds the actual
+host-backed durable root, not a portable direct-host path or the canonical store. Root-config admission
+resolves descriptive `sourceRoot` once into opaque canonical-root authority: direct-host Docker binds the actual
 absolute `<project-root>/.data`, while WSL2, Incus, and Lima may reconcile their own typed guest alias.
 The Harness profile uses `.test_data/<runId>`. See
 [durable state](documents/architecture/durable_state.md).
@@ -225,37 +238,35 @@ hostbootstrap run -- project destroy
 ```
 
 The root `project init` also installs or validates the executable-sibling handoff key pair and the separate
-build-signing key. Rebuilds and `--force` retain valid identities; inconsistent material refuses instead of
-silently rotating the project trust root.
+build-signing key. Rebuilds and `project init --force` retain valid identities; inconsistent material
+refuses instead of silently rotating the project trust root.
 
-The current `context-init` row's action body is only an announcement. VM config is produced/streamed
+The `context-init` row's action body is only an announcement. VM config is produced and streamed
 inside the composite VM bootstrap action; container config rides the descent that same `context-init`
 row declares, so the announced boundary and the delivered bytes are one plan node; and service config is
-delivered through a ConfigMap. The target gives projection and authenticated delivery one plan-owned
-operation.
+delivered through a ConfigMap.
 
 ## Tests
 
-Run the supported fast suites from their project roots:
+The **host static gate** is the four commands spelled once in
+[development_plan_standards.md § JJ](DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness),
+each run from the repository root:
 
 ```bash
-# Repository root: Python
+cd core && cabal test all
+cd demo && cabal test all
+poetry run python -m hostbootstrap.check_code
 poetry run python -m hostbootstrap.test_all
-
-# core/: Haskell core + documentation validator
-cabal test all
-
-# demo/: demo + local core workspace
-cabal test all
 ```
 
-The demo command is the canonical static entry point. Its test component carries the same threaded RTS
-contract as the executable because `WebServerSpec` starts Warp; a component-contract test prevents that
-option from being removed silently.
+The `core/` leg runs the Haskell core suites and the documentation validator. The `demo/` leg adds the
+worked consumer's own suite over the local core workspace; its test component carries the same threaded
+RTS contract as the executable because `WebServerSpec` starts Warp, and a component-contract test prevents
+that option from being removed silently. `check_code` runs Ruff, Black, and mypy over the Python package.
 
 Do not invoke `pytest` directly; the supported Python runner establishes the suite sentinel.
 
-These fast suites are the **host static gate**. The project binary is built host-native on every
+The project binary is built host-native on every
 substrate, so they run as ordinary processes of the outer host and are expected to pass host-native on
 macOS, Linux, and Windows alike — no WSL2 distro, container, or durable launcher involved. That is a
 different thing from a `linux-cpu` substrate gate, whose process and POSIX/container effects execute
@@ -277,39 +288,45 @@ no lifecycle route and durable state is isolated under `.test_data/<runId>`. The
 declares two assertion phases around an engine-owned settled destroy, protected fresh invocation, exact
 plan rebind, and second forward while retaining one report row. Run the long gate only on a
 disposable host with no production demo state. On Windows the gate also holds the project's full
-CPU/memory budget in the shared WSL2 utility VM while it runs; normal `project down` restores the
-journalled `.wslconfig` origin and then shuts that VM down globally to release the wall (see
-[documents/engineering/wsl2.md](documents/engineering/wsl2.md)). Its Playwright case executes the
-already-built project image with `--network host` in the VM frame and points `BASE_URL` at that VM's
-exact runtime-resolved web exposure.
+CPU/memory budget in the shared WSL2 utility VM while it runs. Each variant closes through settled
+destroy, which restores the journalled `.wslconfig` origin but does not shut the utility VM down, so the managed wall stays in force until that VM idles out or an operator runs
+`wsl --shutdown`, which stops every running distro, including unrelated ones. `project down` restores the
+origin and then runs that global shutdown itself (see
+[documents/engineering/wsl2.md](documents/engineering/wsl2.md#wall-release); appending the shutdown to
+destroy is owed by [the host-providers-and-lift phase](DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)).
+Its Playwright case runs the base-provided Playwright from a client container in the VM frame that joins
+the `kind` Docker network and points `BASE_URL` at the run's control-plane node on NodePort 30080.
 Authoritative current evidence and remaining live substrates are in the
 [development-plan index](DEVELOPMENT_PLAN/README.md).
 
 ## Current Status
 
-The contracts this README describes are built. Readiness and reconciliation are plan- and
-resource-indexed; polling, probes and prepare-time precondition sets are opaque and validated;
-operation sessions are versioned and one-use over durable fences with crash-recoverable journals; the
+Apart from the gaps the sections above name, the contracts this README describes are built. Readiness
+and reconciliation are plan- and resource-indexed; polling, probes and prepare-time precondition sets are
+opaque and validated; operation sessions are versioned and one-use over durable fences with crash-recoverable journals; the
 four-clause ownership invariant holds over one closed seam with a platform row beneath it; there is one
 validated forward/topology/reverse plan; handoffs are authenticated in both the normal and recovery
 directions; the Production/Harness mode lease is project-wide; and project, step and config
 constructors cannot represent contradictory states. Spawning a child that outlives its launcher is a
-closed boundary whose stdio disposition, descriptor inheritance, session, environment and working
-directory are properties of a type rather than fields a call site fills in — see
+closed boundary: its stdio disposition, descriptor inheritance and session are fixed by the type rather
+than filled in by a call site, its environment is always the complete one the caller supplies (never
+inherited), and its working directory and output sink are absolute by construction — see
 [`Detached`](core/hostbootstrap-core/src/HostBootstrap/Detached.hs). The method every one of those
 boundaries applies is stated once in
 [documents/architecture/unrepresentable_state.md](documents/architecture/unrepresentable_state.md), and
 each claim of unrepresentability ships a registered compile-fail fixture.
 
 The host static gate passes host-native on every supported outer host, and the suites assert from none
-of them in particular: the host-portability acceptance phase records separate native Windows, macOS and
-Linux runs, and the per-platform difference in their totals is enumerated against the suites' own
+of them in particular: the
+[host-portability acceptance phase](DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md) records
+separate native Windows, macOS and Linux runs, and the per-platform difference in their totals is enumerated against the suites' own
 declared platform conditions rather than left to the run.
 
-**The plan currently carries open work.** Phase status, what each open phase owes, and the deletion
-ledger are authoritative only in
-[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) and
-[design rationale](DEVELOPMENT_PLAN/rationale.md). This page deliberately does not restate them: a root
+Phase status and what each open phase owes are authoritative only in
+[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md); the deletion ledger is
+[legacy_tracking_for_deletion.md](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md), and
+[design rationale](DEVELOPMENT_PLAN/rationale.md) is design background only. This page deliberately does
+not restate status: a root
 document that carries its own status list becomes a second authority that drifts from the first, which
 is what [the documentation standard](documents/documentation_standards.md) forbids.
 
@@ -318,10 +335,10 @@ is what [the documentation standard](documents/documentation_standards.md) forbi
 ```text
 .
 ├── core/hostbootstrap-core/    # Haskell library, bare binary, Dhall, tests
-├── core/warm-deps/             # container warm-store package
+├── core/warm-deps/             # container warm-store Cabal project
 ├── demo/                       # worked project consumer and its Cabal workspace
 ├── hostbootstrap/              # thin Python CLI
-├── tests/  stubs/              # Python tests and typing stubs
+├── tests/                      # Python tests
 ├── docker/                     # published base-image definition
 ├── documents/                  # canonical architecture/engineering/operations guidance
 └── DEVELOPMENT_PLAN/           # implementation status, phases, and deletion ledger

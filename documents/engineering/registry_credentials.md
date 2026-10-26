@@ -23,11 +23,47 @@
   not prove that every forwarded entry is Docker Hub-only.
 - Current forwarding avoids putting the value directly in the constructed command `argv`, but it does
   use process memory, pipes, a container environment variable, shell environment, and a temporary
-  `DOCKER_CONFIG` file. Environment values can be observable through same-privilege process/container
-  inspection, and ordinary trap/bracket cleanup is not guaranteed after `SIGKILL`, host crash, or abrupt
-  VM termination.
+  `DOCKER_CONFIG` file. A value forwarded through a container environment variable is stored in Docker's
+  container configuration (readable through `docker inspect` until the container is removed) and stays in
+  the container process's initial environment block for its lifetime. Ordinary trap/bracket cleanup is not
+  guaranteed after `SIGKILL`, host crash, or abrupt VM termination.
+- In the demo only the VM-frame `stdin` path carries a value. The container frame's pulls run
+  anonymously; see [Current Status](#current-status).
 - When the host is not logged in, discovery yields `Nothing` and every pull runs anonymously — a
   pristine host needs no Docker Hub login.
+
+## Current Status
+
+`HostBootstrap.Registry` implements discovery, the `stdin` wrapper, the environment consumer, and the
+registry-aware lift described in [the model](#the-model-hostbootstrapregistry). The demo forwards a
+credential over one path only: the metal host discovers it and pipes it on `stdin` to the in-VM build #3 and
+to the in-VM published-base `docker pull`.
+
+The container-frame path delivers no value. Core's admitted lifecycle container route
+(`HostBootstrap.Handoff.Process.Route`) passes `-e HOSTBOOTSTRAP_REGISTRY_AUTH` with the name only, and
+Docker forwards a name-only `-e` only when the launching Docker client's own environment already holds the
+variable. No production frame sets it: the only code that exports a value is `liftSubcommandWithAuth`, and
+only `RegistrySpec` calls it. The in-container `deploy-kind` node-image pull and the in-container
+`docker run` probes therefore pull anonymously. The
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns the credential policy and that gap; the route itself belongs to the
+[recursive lifecycle phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+
+The module header of `HostBootstrap.Registry` describes leakage as unrepresentable and the credential as
+never logged or persisted. This page's narrower statement is the accurate one: the public `Text` accessor
+lets caller code log, serialize, or persist the bytes (see
+[Why credentials are not in Dhall](#why-credentials-are-not-in-dhall)). The
+[composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+owns that header.
+
+The same phase owes two changes to the forwarding described on this page: Docker Hub entries selected by an
+exact normalised key match instead of the `docker.io` substring test, with the in-container lifecycle of
+`withForwardedRegistryAuth` and `discoverHostRegistryAuth` under test; and forwarding as a typed operation of
+the binary that replaces the `dockerAuthStdinWrapper` shell wrapper and the provider shell script of
+`registryAuthLiftPlan`, with the authenticated plan itself adding `-e HOSTBOOTSTRAP_REGISTRY_AUTH`. The
+sections below describe the substring filter and the shell transport the tree implements.
+
+The [target capability boundary](#target-capability-boundary) is a target only. No phase schedules it.
 
 ## Why credentials are not in Dhall
 
@@ -46,32 +82,44 @@ currently makes impossible.
 | Surface | Contract |
 |---|---|
 | `RegistryAuth` | Constructor-hidden newtype; `Show` is redacted and no Dhall/JSON instance is supplied. The public `registryConfigPayload` exposes its raw `Text`, so this is an accidental-leak guard rather than non-extractable authority. |
+| `registryConfigPayload :: RegistryAuth -> Text` | The only accessor: the minimal `config.json` payload holding the projected Docker Hub `auths` entries. Any caller can log, serialize, or persist what it returns. |
 | `discoverHostRegistryAuth :: IO (Maybe RegistryAuth)` | Reads `$DOCKER_CONFIG/config.json` (or `~/.docker/config.json`). Filters auth keys by a `docker.io` substring and inline credential presence; this may overmatch non-Hub hostnames. `Nothing` on read/parse/no-match failure. |
+| `dockerHubAuthFromConfig` | The pure projection `discoverHostRegistryAuth` applies to the file bytes: keeps each `auths` entry whose key contains `docker.io` and that carries a non-empty `auth` or `identitytoken`; `Nothing` when no entry survives. |
+| `registryAuthEnvVar` | The environment-variable name, `HOSTBOOTSTRAP_REGISTRY_AUTH`, that carries the payload into a container. |
 | `dockerAuthStdinWrapper :: String -> String` | Wraps a shell command so it reads `stdin` into `mktemp -d/config.json` and registers an exit trap. The returned command string embeds no secret, but the file can survive an untrappable kill/crash. |
-| `withForwardedRegistryAuth :: IO a -> IO a` | Consumes the forwarded environment value into a temporary `DOCKER_CONFIG`, unsets the variable in the current process, and removes the directory on normal/exceptional `bracket` exit. Same-privilege/container inspection before consumption and uncatchable termination remain outside that guarantee. |
-| `liftSubcommandWithAuth` (owner: `HostBootstrap.Registry`) | Pipes the payload to the VM shell and uses `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the name only) on `docker run`. The value is absent from constructed `argv`, but exists in the shell/container environment and may be visible through process or Docker inspection. The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) validates this policy-bearing ownership and the guarded direction in which Registry imports generic Lift while Lift imports no credential type. |
+| `withForwardedRegistryAuth :: IO a -> IO a` | On a Linux frame, consumes a non-empty forwarded environment value into a temporary `DOCKER_CONFIG`, unsets the variable in the current process's environment array, and removes the directory on normal/exceptional `bracket` exit; with the variable unset or empty it runs the action unchanged. On a Windows frame a non-empty value is a fatal configuration error: the action never runs, and because the demo wraps every ordinary command in this function, every ordinary demo command fails on Windows while the variable is set. `unsetEnv` does not clear the process's initial environment block, Docker's stored container configuration, or anything observed before consumption, and uncatchable termination skips cleanup. |
+| `registryAuthLiftPlan` | The pure plan behind `liftSubcommandWithAuth`. It returns a plan only for a two-layer `LiftContext` whose outer layer is one Incus, Lima, or WSL2 VM (`ViaVM`, `ViaLimaVM`, `ViaWsl2VM`) and whose inner layer is a container (`ViaContainer`), with a non-empty subcommand. The plan is one provider-shell command that runs `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and then `exec`s the container's `docker run`; the plan adds no `-e`, so the value reaches the container only when that container layer's extra arguments carry `-e HOSTBOOTSTRAP_REGISTRY_AUTH`. Every other shape yields `Nothing`: the local context, any single layer (a lone VM or a bare container), a container outer layer, a VM inner layer, and any chain of three or more layers. |
+| `liftSubcommandWithAuth` (owner: `HostBootstrap.Registry`) | Runs `registryAuthLiftPlan`'s command with the payload on `stdin`. The value is absent from constructed `argv`, but exists in the shell/container environment and in Docker's stored container configuration. With `Nothing`, or with any context shape for which `registryAuthLiftPlan` returns `Nothing`, it runs the unauthenticated `liftSubcommand` and reports nothing, so the nested pull is anonymous. The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) validates this policy-bearing ownership and the guarded direction in which Registry imports generic Lift while Lift imports no credential type. |
 
 ## How forwarding crosses each boundary
 
-The current demo calls discovery on the outer host. It then reaches a nested pull over one of two
-transient channels. The library does not place the value directly in constructed `argv`, Dhall, or an
+The current demo calls discovery on the outer host. The library offers two transient channels to a nested
+pull; the demo delivers a value over the first only. The library does not place the value directly in constructed `argv`, Dhall, or an
 image layer; “no durable state” depends on cleanup completing:
 
 - **VM, raw `docker build`/`docker pull`** (the demo's build #3 base-image pull in `pristine-bootstrap`):
   the host pipes the minimal `config.json` on `stdin` to a command wrapped by `dockerAuthStdinWrapper`.
   The in-VM shell writes it to a `mktemp` `DOCKER_CONFIG`, runs the build, and the `trap` removes it on
   ordinary shell exit. `SIGKILL`, VM loss, or a host crash can leave the directory behind.
-- **Container, the persistent stack's in-container pulls**: the project container the chain hands
-  `project up` into (`demoDeployImage`) carries `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the **name** only) on
-  its `docker run`, so Docker forwards the value into the container's environment without putting the
-  value in the constructed `argv`. That environment may be visible through `/proc`/same-privilege or
-  Docker inspection until consumption. The in-container binary's `withForwardedRegistryAuth`
-  consumes it once at startup into a transient `DOCKER_CONFIG`, so the `deploy-kind` step's `kind` node-
-  image pull and the in-container `docker run` probes authenticate, then attempts normal/exceptional
-  cleanup through `bracket`. The Registry-owned consumer of the generic lift seam,
-  `liftSubcommandWithAuth`, supports the same shape for a container reached directly through a VM: it
-  pipes the payload on `stdin` to the VM shell, which imports it with
-  `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and `exec`s a `docker run -e HOSTBOOTSTRAP_REGISTRY_AUTH`.
+- **Container, environment forwarding**: core's admitted lifecycle container route
+  (`HostBootstrap.Handoff.Process.Route`) adds `-e HOSTBOOTSTRAP_REGISTRY_AUTH` (the **name** only) to the
+  `docker run` of the project container the chain hands `project up` into. Docker copies a name-only `-e`
+  from the launching Docker client's own environment, so a value reaches the container only when that
+  client's environment holds one; in the demo no frame sets it, so this path carries no value and the
+  container frame's pulls run anonymously (see [Current Status](#current-status)). The Registry-owned
+  consumer of the generic lift seam, `liftSubcommandWithAuth`, is the one producer of a value: for a
+  container reached directly through one Incus, Lima, or WSL2 VM (the only shape `registryAuthLiftPlan`
+  plans; every other shape falls back to the unauthenticated lift) it pipes the payload on `stdin` to the VM
+  shell, which imports it with `export HOSTBOOTSTRAP_REGISTRY_AUTH="$(cat)"` and `exec`s the container's
+  `docker run`, which passes the value only when the container layer's extra arguments carry
+  `-e HOSTBOOTSTRAP_REGISTRY_AUTH`.
+  When a value does arrive, the in-container binary's `withForwardedRegistryAuth` consumes it once at
+  startup into a transient `DOCKER_CONFIG` for the binary's nested `kind`/`docker` pulls and attempts
+  normal/exceptional cleanup through `bracket`. The value is not in the constructed `argv`, but Docker
+  writes it into the container's stored configuration, where `docker inspect` returns it until the
+  container is removed, and it stays in the container process's initial environment block (readable
+  through `/proc/<pid>/environ` with the same privilege) for the process lifetime. Environment forwarding
+  is therefore not a confidential transport.
 
 The source boundary is one-way: `HostBootstrap.Registry` may import the lower `HostBootstrap.Lift` and its
 generic quoting helper; generic Lift imports neither Registry nor `RegistryAuth`. That dependency boundary
@@ -110,13 +158,21 @@ helper is configured**:
 
 ## Required Policy And Current Limits
 
-- A credential field, env-reference, or path in any `<project>.dhall`, `ConfigArtifact`, or `HostConfig`.
-- Writing the credential to a durable project file in the VM or a container image layer, or mounting the host
-  Docker config into a VM or container.
-- Putting the credential value directly in constructed `argv`. Current transport uses `stdin` and a
-  forwarded environment name, but the resulting environment value is not “out of band” from OS/container
-  inspection.
-- A hard dependency on being logged in: with no host login, pulls run anonymously.
+The following are forbidden:
+
+- a credential field, env-reference, or path in any `<project>.dhall`, `ConfigArtifact`, or `HostConfig`;
+- writing the credential to a durable project file in the VM or a container image layer, or mounting the
+  host Docker config into a VM or container;
+- putting the credential value directly in constructed `argv`;
+- requiring a Docker Hub login: with no host login, every pull runs anonymously and the run proceeds.
+
+Current limits of the transport:
+
+- `stdin` and a forwarded environment-variable name keep the value out of constructed `argv`, but an
+  environment value is not out of band: OS and Docker inspection can read it, and Docker stores it in the
+  container's configuration until the container is removed.
+- The temporary `DOCKER_CONFIG` directories are removed by `trap` and `bracket` cleanup, which uncatchable
+  termination skips.
 
 > **Scope note.** This doctrine governs the **host Docker Hub credential** forwarded
 > down the lift. It does **not** govern an in-cluster application secret — e.g. the
@@ -137,20 +193,23 @@ wrong-registry, or expired grant is rejected.
 
 OS transport still has an honesty boundary. A supported strong mode must use a substrate mechanism whose
 same-privilege visibility and crash cleanup can be stated precisely (for example, an inherited
-descriptor/anonymous pipe owned by the child operation). If the substrate cannot meet the requested
+descriptor/anonymous pipe owned by the child operation). A container receives the payload over such a
+descriptor or `stdin`, never through an environment variable, because Docker persists environment values in
+the container's configuration. If the substrate cannot meet the requested
 confidentiality or cleanup guarantee, planning returns `Unsupported`; documentation must not upgrade
 best-effort temporary-file/environment handling into “never exposed” or “always scrubbed.”
 
 ## Validation
 
 - `RegistrySpec` covers the current substring projection fixtures (including dropping the tested
-  unrelated registry key), redacted `Show`, `Nothing` fallback paths, and that the generated stdin
-  wrapper text embeds no fixture secret. It does not prove canonical registry matching, same-privilege
-  environment secrecy, or cleanup after uncatchable termination.
-- The demo (`project up`, interpreting `demoChainFor` for the detected substrate) exercises forwarding
-  end to end: the
-  metal frame's build #3 pulls the base image authenticated, and the container frame's `deploy-kind`
-  step pulls the kind node image authenticated (with the in-container `docker run` probes likewise),
-  using the current risk-reducing transport. A successful run shows no intended Dhall/image/argv write;
-  it is not a proof against inspection or interrupted cleanup. See
+  unrelated registry key), redacted `Show`, `Nothing` fallback paths, that the generated stdin
+  wrapper text embeds no fixture secret, the exact Incus, Lima, and WSL2 `registryAuthLiftPlan` commands
+  and their freedom from payload bytes, the `Nothing` plan for every other context shape, and the ordinary
+  lift `liftSubcommandWithAuth` falls back to. It does not prove canonical registry matching,
+  same-privilege environment secrecy, or cleanup after uncatchable termination.
+- The demo (`project up`, interpreting `demoChainFor` for the detected substrate) forwards the credential
+  only over `stdin` from the metal host: build #3 and the published-base pull run authenticated in the VM
+  when the host is logged in. No test observes an authenticated pull inside the project container, and in
+  the demo none occurs (see [Current Status](#current-status)). A successful run shows no intended
+  Dhall/image/argv write; it is not a proof against inspection or interrupted cleanup. See
   [demo_runbook](../operations/demo_runbook.md).

@@ -8,9 +8,10 @@
 
 This page documents what the base image ships for PureScript.
 
-The rolling workflow installs the current upstream `purs` release for the target architecture, plus
-current compatible `purs-tidy` and `spago` versions via npm (see [node.md](node.md)). Architecture maps
-to the upstream asset:
+The rolling workflow installs the latest upstream `purs` GitHub release for the target architecture,
+plus the latest published `purs-tidy` and `spago` from npm (see [node.md](node.md#global-packages)).
+None of the three is pinned, and nothing checks the npm tools against the selected `purs` release beyond
+the image build succeeding. Architecture maps to the upstream asset:
 
 * `amd64` → `linux64.tar.gz`
 * `arm64` → `linux-arm64.tar.gz`

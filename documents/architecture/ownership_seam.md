@@ -4,8 +4,8 @@
 **Supersedes**: the per-substrate realization section of [ownership invariant](ownership_invariant.md)
 **Referenced by**: [ownership invariant](ownership_invariant.md), [durable state](durable_state.md),
 [build and run model](build_and_run_model.md), [readiness](readiness.md),
-[unrepresentable state](unrepresentable_state.md), [WSL2](../engineering/wsl2.md),
-[Incus](../engineering/incus.md), [cluster lifecycle](../engineering/cluster_lifecycle.md),
+[lifecycle state model](lifecycle_state_model.md), [harness workflow](harness_workflow.md),
+[WSL2](../engineering/wsl2.md), [Incus](../engineering/incus.md), [Lima](../engineering/lima.md),
 [documents index](../README.md)
 
 > **Purpose**: Define how the four ownership clauses are realized — one transaction, one seam, and the
@@ -15,41 +15,81 @@
 
 The four clauses [ownership invariant](ownership_invariant.md) states are **one transaction**: observe,
 record the origin, mutate, bind the identity, release conditionally. It is written once, over one closed
-seam of kernel primitives. What differs between platforms is the *primitive*, which is a row of the frame
-table — never a clause written twice.
+seam of kernel primitives. What differs between platforms is the *primitive*, which is a row of the
+[frame table (§ LL)](../../DEVELOPMENT_PLAN/development_plan_standards.md#ll-the-frame-table-the-substrate-axis-is-a-lift-not-a-fork)
+— never a clause written twice.
 
-Three rows exist, and the frame table's ownership column says which one holds a frame's clauses. Two are
-platforms: POSIX and Windows, and the outer host's column entry is whichever this binary was built for.
-The third is a **transport** that runs the transaction at the frame owning the object; every crossing's
-column entry is the POSIX row, because every frame reached *through a crossing* is Linux, so the
-transport is not a third implementation of the clauses. That premise is about crossings, not about the
-outer host: the shipped act is built host-native (§ N) like every other binary, so the same POSIX row is
-also compiled for a Darwin outer host, and one of its primitives has two kernel spellings there. A row
-may spell a primitive differently per kernel; what must never be written twice is the clause order. The column is a declaration rather than a value a caller runs,
-which is exactly what keeps it one.
+This page uses **frame** in the frame-table sense of [the glossary](../README.md#glossary), not the
+default topology sense: the machine a `LiftContext` addresses, whose kernel answers for the objects there. A **crossing** is a lift from one such
+frame into another through the authenticated handoff. The frame table's ownership column names the row
+that holds a frame's clauses; it is a declaration rather than a value a caller runs.
 
-The clause order is a property of the types. A mutation consumes the recorded origin and a release
-consumes the bound identity, so performing either out of order has no term rather than failing a review.
+- **Two platform rows**, POSIX and Windows. `ownershipRowForHost` selects the one this binary was built
+  for, as a build fact rather than a runtime probe.
+- **The shipped row** is a transport, not a third implementation of the clauses: it runs the
+  transaction in a process of this same binary at the frame owning the object, and that process uses its
+  own `ownershipRowForHost`. Every frame reached through a crossing is Linux, so across a crossing that is
+  the POSIX row; an empty `LiftContext` addresses this machine and runs this host's row.
+- **Per-kernel spellings.** Every binary is built host-native
+  ([§ N](../../DEVELOPMENT_PLAN/development_plan_standards.md#n-host-native-binary-build)), so the POSIX
+  row is compiled for a Darwin outer host as well as for Linux, and a primitive may be spelled differently
+  per kernel. What must never be written twice is the clause order.
+
+The types fix the order of the calls: a mutation consumes the recorded origin and a release consumes the
+bound identity, so performing either out of order has no term rather than failing a review. They do not
+fix the values passed through them: the identity clause 3 binds, the origin the reported face enters
+with, and the record re-entry starts from are all caller-supplied ([the clause tokens](#the-clause-tokens)).
 
 ## Current Status
 
 Host-local owners use the shared ownership primitives for kernel identity, exclusion, origin publication,
-no-replace linking, and identity-conditional release. The POSIX row uses descriptor-based operations and
-symbolic errno classification. The Windows row uses no-follow handles, `LockFileEx`, file identity, and
-write-through creation. `ownershipRowForHost` selects the native row as a build fact.
+no-replace linking, and identity-conditional release. The POSIX row opens objects through descriptors
+with no-follow flags, removes by name after an `lstat`, and classifies errno by symbolic constant. The
+Windows row uses no-follow handles, `LockFileEx`, file identity, and write-through file creation; its
+parent sync performs no IO (see the gaps below). `ownershipRowForHost` selects the native row as a build
+fact.
 
-`HostBootstrap.Substrate.Provider.Ownership` holds provider and share transactions. The cluster and direct
-Colima backends retain their exact backend-specific machine, namespace, snapshot, and node identities through
-the same clause order. The guest-alias path runs the shared transaction at the guest through the shipped
-ownership command; the demo consumes its prepared managed authority. A missing primitive is an explicit
-unsupported result, never a weaker ownership receipt.
+Which backend holds which clause, and how, is the
+[per-backend clause matrix](ownership_invariant.md#per-backend-clause-matrix). A missing primitive is an
+explicit unsupported result, never a weaker ownership receipt.
 
 Clause tokens have nominal object and entry indices. The protected entry's rank-2 identity prevents evidence
 from moving between entries or outliving its transaction. Shipped requests are canonical bounded data; the
-receiving binary performs the transaction using the row for the frame that owns the object.
+receiving binary performs the transaction using its own host row.
 
-The [ownership clauses phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) owns the
-primitive seam. The [providers and lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+Six gaps sit between this page's contract and the tree:
+
+- **Re-entry trusts the record it is handed.** `ObjectIdentity` and `OriginRecord` keep their
+  constructors private, but the public functions `mkObjectIdentity`, `parseObjectIdentityHex`,
+  `parseOriginRecord`, and `bindOriginRecord` validate shape only. `reenterOwnedObject` accepts any bound
+  record, so a caller that builds one from bytes holds release authority over whatever object currently
+  has that identity. Re-entry is sound only when the record was read back from the owner's own protected
+  store.
+- **The tape replaces a stored binding.** `publishFreshRecord` accepts a stored record whose kind and
+  origin match, whatever binding it carries, and `publishBoundRecord` then writes over the stored version
+  without comparing bindings, so a stale bound record is rebound rather than refused. The harness owners
+  and the shipped acts read the stored record before clause 2 and refuse or resume from it, which keeps
+  them clear of this.
+- **A foreign record is reported as malformed.** A well-formed record that belongs to another transaction
+  is refused with `OwnershipMalformed`, the case reserved for a record that cannot be interpreted, so a
+  caller cannot tell the two apart by case.
+- **The record reader is whitespace-tolerant.** Rendering is canonical, but reading splits the line on
+  any whitespace, so tabs, repeated or surrounding spaces, and a carriage return before the newline are
+  accepted rather than refused.
+- **The Windows row's parent sync does nothing.** The row declares `holdsDurableParentSync`, but its
+  `rowSyncParent` returns success without a kernel call. Only file creation passes
+  `FILE_FLAG_WRITE_THROUGH`, and a written file is flushed through its own handle; the hard link,
+  directory creation, and removals that change a parent's entries carry no write-through, so nothing
+  makes those name changes durable. The contract is a FlushFileBuffers on a handle opened on the parent
+  directory, with a refused flush reported as a fault.
+- **The host wall keeps its own clause-4 check.** The global host wall reaches the row's primitives
+  directly, and its identity-conditional removal and move run through its own `withConfirmedIdentity`
+  rather than an identity-conditional act the seam supplies, so the comparison clause 4 rests on is
+  written twice.
+
+All six belong to the
+[ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md),
+which owns the primitive seam. The [providers and lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 owns provider realization and transport, the [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 owns cluster and Colima adapters, and the [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
 owns their concrete consumers. Their dated gates distinguish native kernel checks from live provider acceptance.
@@ -58,9 +98,11 @@ owns their concrete consumers. Their dated gates distinguish native kernel check
 
 A transaction needs nouns, and they are stated once, without effects, in `HostBootstrap.Ownership.Object`:
 
-- **`ObjectIdentity`** — the kernel's answer for an object, `device:inode` on POSIX and volume serial plus
-  file index on Windows. The constructor is private and admits only a non-empty answer within a fixed
-  ceiling, so an empty or fabricated value is never compared as though it were an identity.
+- **`ObjectIdentity`** — the owning authority's answer for an object: `device:inode` on POSIX and volume
+  serial plus file index on Windows, both encoded by `mkKernelObjectIdentity`, or the identity a provider
+  or container runtime reports. The raw constructor is private; the smart constructors admit only a
+  non-empty value within a fixed ceiling, so an empty or over-long value is never compared as an identity.
+  They check shape, not provenance: a well-shaped value read from a record parses as an identity.
 - **`Payload` and `PayloadDigest`** — the exact bytes a run intends to publish at an owned file, and the
   digest a record carries in their place. Recording the intended payload before the file exists is what
   makes the crash window between the origin record and the identity binding resolvable.
@@ -72,16 +114,20 @@ A transaction needs nouns, and they are stated once, without effects, in `HostBo
   exists, and written into the durable record.
 - **`ObjectKind` and `Origin`** — what is owned, and what was there before. A directory has no payload and
   a file has one, so the digest is a field of the file's own case rather than an optional value beside
-  both; the third case is an object this process's kernel does not answer for, and it carries an owner
-  claim for the same structural reason. Recorded absence is a distinct case from a recorded prior
-  identity, because "an owner looked and found nothing" and "no owner has looked" license different
-  recoveries.
-- **`OriginRecord`** — the durable record clause 2 publishes. Its constructor is private, its one producer
-  records only what was observed, and the identity binding is attached by its own producer, so a record
-  cannot claim a binding it never made. A second, different binding is a conflict rather than an update.
-- **One canonical record codec** — one line, six space-separated tokens, one terminator, and nothing else,
-  so a record one owner writes is readable by every other and a version tag means one thing. Every
-  malformed shape is a refusal rather than a partially understood record, because a record an owner
+  both; the third case (`ReportedObject`) is an object no row primitive creates — one another authority
+  answers for, or the alias's symbolic link — and it carries an owner claim for the same structural
+  reason. Recorded absence is a distinct case from a recorded prior identity, because "an owner looked and
+  found nothing" and "no owner has looked" license different recoveries.
+- **`OriginRecord`** — the durable record clause 2 publishes. Its constructor is private, `originRecord`
+  builds an unbound record from a kind and an origin, and `bindOriginRecord` attaches the binding: binding
+  a second, different identity to an in-memory record is a conflict rather than an update. A record parsed
+  from bytes by `parseOriginRecord` may already carry a binding, so the binding a record holds is evidence
+  only when the record came from the owner's own protected store.
+- **One canonical record codec** — rendering writes one line of six single-space-separated tokens and one
+  newline, so a record one owner writes is readable by every other and a version tag means one thing.
+  Reading requires ASCII, exactly one newline-terminated line, the magic, the version, six tokens, and
+  well-formed hex in each identity, digest, or claim field; it splits that line on any whitespace. Every
+  shape outside that is a refusal rather than a partially understood record, because a record an owner
   half-reads is the one input that could make it delete something it does not own.
 - **`OwnershipFault`** — the closed fault sum, with a total eliminator and a structured conflict report
   carrying both the expected and the observed side. Each case licenses a different act: a row that cannot
@@ -107,11 +153,50 @@ Three things it deliberately does not carry:
   above it never comes to depend on one platform's error numbering.
 - **No clause 1 or clause 2 field.** Exclusive entry is the protected store's own OS-released entry and the
   durable origin record is its compare-and-swap. A second durable record beside the store would be a second
-  source of truth.
+  source of truth. The seam's exclusive open is a different thing and is a field: it opens one
+  already-existing named object, without following a link, inside an entry the store already holds. It is
+  not clause 1. On the POSIX row it is an `fcntl` write lock over the whole file, which belongs to the
+  (process, inode) pair rather than to the descriptor: it excludes other processes only, and closing any
+  descriptor the process holds on that inode drops it. On the Windows row it is a `LockFileEx` byte-range
+  lock, which conflicts between handles even inside one process.
 
-`OwnershipCapabilities` declares what a row can hold, and the refusal a row owes when it cannot is a total
-function of that value — so `Unsupported` is decided by application rather than by a stand-in, which is
-what [testing](../engineering/testing.md) means by evidence.
+`OwnershipCapabilities` declares what a row can hold, and `clauseRefusal` turns that declaration into the
+refusal a row owes, before any kernel call — so `OwnershipUnsupported` is decided by application rather
+than by a stand-in, which is what [testing](../engineering/testing.md) means by evidence.
+
+| Clause | Capabilities `clauseRefusal` requires |
+|---|---|
+| 1 — entering (`enterOwnedObject`) | `holdsStableIdentity` |
+| 2 — recording (`recordOwnedOrigin`) | `holdsStableIdentity`, `holdsDurableParentSync` |
+| 3 — binding (`bindOwnedIdentity`) | `holdsStableIdentity`, `holdsNoReplacePublication` |
+| 4 — releasing (`reenterOwnedObject`, `reobserveOwnedIdentity`) | `holdsStableIdentity` |
+
+`holdsExclusiveOpen` is declared by both rows and gates no clause.
+
+### Module map
+
+| Module | Holds | Visibility |
+|---|---|---|
+| [`HostBootstrap.Ownership.Object`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Object.hs) | the vocabulary above | public re-export |
+| [`HostBootstrap.Ownership.Primitive`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Primitive.hs) | the seam record, `OwnershipCapabilities`, `clauseRefusal`, and every clause producer | public re-export |
+| [`HostBootstrap.Ownership.Clause`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Clause.hs) | the abstract clause tokens and their eliminators | public re-export |
+| [`HostBootstrap.Ownership.Internal`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Internal.hs) | the token constructors | Cabal-private |
+| [`HostBootstrap.Ownership.Posix`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Posix.hs), [`HostBootstrap.Ownership.Windows`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Windows.hs) | the two platform rows | public re-export |
+| [`HostBootstrap.Ownership.Row`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Row.hs) | `ownershipRowForHost`, the one production row selector | public re-export |
+| [`HostBootstrap.Ownership.Tape`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Ownership/Tape.hs) | the record tape and `OwnershipCarrier` | Cabal-private library |
+| [`HostBootstrap.Protected`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs) | the protected store: clause 1's entry and clause 2's compare-and-swap | public re-export |
+| [`HostBootstrap.Ownership.Shipped`](../../core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs) | the shipped row and the symbolic-link acts | public |
+
+The clause producers come in two faces ([the two faces](#the-two-faces)):
+
+| Clause | Kernel face | Reported face |
+|---|---|---|
+| 1 | `enterOwnedObject` | `enterReportedObject` |
+| 2 | `recordOwnedOrigin` | `recordReportedOrigin` |
+| creation | `createOwnedDirectory`, `publishOwnedFile` | a described command, outside the seam |
+| 3 | `bindOwnedIdentity` | `bindReportedIdentity` |
+| re-entry | `reenterOwnedObject` | — |
+| 4 | `reobserveOwnedIdentity`, `releaseOwnedObject` | `reobserveReportedIdentity`, `releaseReportedObject` |
 
 ## The clause tokens
 
@@ -121,7 +206,7 @@ Each clause mints a token, and the producer of the next clause demands it:
 |---|---|---|
 | `Entered session object` | observing the target inside the protected entry | the target, and what was there before |
 | `Recorded session object` | publishing the unbound origin record durably | the target, and that record |
-| `Bound session object` | attaching the created object's own identity and re-publishing | the target, the bound record, the identity |
+| `Bound session object` | attaching the identity the caller passes — by contract the created object's own — and re-publishing | the target, the bound record, the identity |
 | `Releasable session object` | re-observing the target and finding exactly that identity | the target, the record to forget, the identity |
 
 The four clauses are one transaction but not one process, so `Bound` has a second producer: **re-entry**.
@@ -132,6 +217,15 @@ caller read back through its own store, and mints the same token; a record with 
 describes a transaction that never got past clause 2, so it authorizes no removal and mints nothing. The
 object index is introduced fresh, exactly as clause 1 introduces it, and the token still cannot outlive
 the entry.
+
+The tokens order the calls; they do not certify the values. `bindOwnedIdentity` and
+`bindReportedIdentity` take the identity as a parameter, `enterReportedObject` takes the observed origin
+as a parameter, and `reenterOwnedObject` takes the record as a parameter. An owner therefore passes the
+identity its creating primitive returned or its classified command outcome, and re-enters only from a
+record its own store returned. Refusing a found object is likewise the owner's policy: the kernel
+creation primitives refuse a target that already exists, and the
+[per-backend clause matrix](ownership_invariant.md#per-backend-clause-matrix) states what each owner does
+with one.
 
 Both indices are nominal. `session` is the protected entry's own rank-2 variable, so a token cannot
 outlive the entry that authorized it and no second brand can disagree with it; `object` names which object
@@ -161,14 +255,20 @@ The tape's operations are the ones the transaction actually needs and no more:
 | `readRecordUnder` | the decoded record, with a store failure and a malformed record kept distinct |
 
 Idempotence is a property of the transaction rather than a convenience. The binding is the single
-field a later clause adds, so a record whose kind and origin already match this one is this
-transaction's own earlier write and publishing again is a no-op; a record that differs in any other
-way belongs to someone else and is refused, never overwritten. That refusal is one message, so the
-same condition cannot produce two different answers depending on which owner observed it.
+field a later clause adds, so `publishFreshRecord` decides by kind and origin alone: a stored record
+whose kind and origin match this one is taken as this transaction's own earlier write and publishing
+again is a no-op, whatever binding it carries; a record that differs in kind or origin, or does not
+parse, belongs to someone else and is refused with `OwnershipMalformed`, never overwritten. That refusal
+is one message, so the same condition cannot produce two different answers depending on which owner
+observed it. `publishBoundRecord` then writes over the exact stored version without comparing bindings,
+so the store does not refuse a rebinding: an owner that must not rebind reads and resolves the stored
+record before clause 2, as the harness owners and the shipped acts do ([Current Status](#current-status)).
 
 The two error layers collapse through one class rather than ten hand-written lifts.
-`OwnershipCarrier` has exactly two methods — a clause fault and a store fault, each into the owner's
-own closed error sum — and `carryClause` and `carryStore` are the only places the lifting is written.
+`OwnershipCarrier` has exactly two methods — `fromClauseFault` and `fromStoreFault`, each into the
+owner's own closed error sum. `carryClause` collapses a clause producer's refusal and the domain result
+nested inside it; `carryStore` carries a bare clause result (`OwnershipFault`) into the domain sum.
+A store fault (`ProtectedError`) is lifted by `fromStoreFault` itself, which `readRecordUnder` applies.
 An owner therefore declares its instance and its subject, and keeps only what is genuinely its own:
 its removal-set policy, its payload rules, and its create-then-bind path.
 
@@ -203,17 +303,32 @@ The kernel producers refuse a record describing an object another authority owns
 own creating command is not the seam's to run — which is the same rule as ever, seen from the other side:
 the moment a seam can run a string, it is a shell again.
 
+The reported face is also used for one object a local kernel does answer for: the provider-guest alias's
+symbolic link, whose creation no row primitive performs. There the "authority" is the shipped act's own
+direct observation, and the face's producers order the clauses exactly as they do for a provider
+instance ([what each owner adds](#what-each-owner-adds)).
+
 ## The rows
 
-The clauses are uniform; the mechanism that supplies each is per-row. All frames this project reaches run
-Linux, so the shipped row is one implementation reused, not a third.
+The clauses are uniform. Clauses 1 and 2 are the protected store's
+([`HostBootstrap.Protected`](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs)) and
+are identical under every row; the store's root is the owner's choice — the store the harness bracket
+opens, a provider's or plan's state directory, the store opened beside the host-wall target, or the
+authority a shipped transaction names.
+The mechanism for clauses 3 and 4, and every primitive, is per-row. The shipped row reuses the receiving
+binary's own row rather than adding a third implementation.
 
 | Clause | POSIX row | Windows row | Shipped row |
 |---|---|---|---|
-| 1 — exclusive entry | kernel lock on a retained descriptor, released by the OS on process death | `LockFileEx` byte-range lock | the receiving process holds the POSIX row's lock for exactly its own lifetime |
-| 2 — durable origin record | write-temp, fsync, rename under the project state directory | same | the transaction carries the record it will write; the row writes it where the object lives |
-| 3 — identity binding | `deviceID` / `fileID`, read without following a link | `getFileInformationByHandle` → volume serial plus file index | the POSIX row's read, performed by the kernel that owns the object |
-| 4 — conditional release | re-observe, compare, act only on exact match | same | same |
+| 1 — exclusive entry | the protected store's lock: `base`'s portable `hLock` (`flock`/`fcntl`) on a retained descriptor, released by the OS on process death | the same store lock, which is `LockFileEx` on Windows | the receiving process holds the store lock at the authority the transaction names, for exactly its own lifetime |
+| 2 — durable origin record | the protected store's compare-and-swap: write-temp, fsync, rename | same | same, performed by the receiving process |
+| 3 — identity binding | `deviceID` / `fileID` from `lstat`, without following a link | `getFileInformationByHandle` → volume serial plus file index | the receiving binary's own row: POSIX across every crossing, this host's row for an empty `LiftContext` |
+| 4 — conditional release | re-observe, compare, then remove by name | same | same, through the receiving binary's row |
+
+Release is check-then-remove: the row re-observes the identity and then removes the object by its name,
+both inside the protected entry. The entry excludes cooperating runs only, so a same-privilege process
+that replaces the object between the two steps is not excluded
+([ownership invariant](ownership_invariant.md#what-the-invariant-excludes)).
 
 Every mechanism uses a dependency or platform API already present. `Win32` ships with the pinned GHC, and
 the Windows row supplements its public surface with a narrow direct `kernel32` boundary where exact status
@@ -228,6 +343,7 @@ module nothing asserts, and the suite total reads the same either way — see
 
 An object is owned by the kernel that can lock it, so a transaction addressed to a frame runs *in* that
 frame. The row carries the transaction to a process of this same binary there and reads back one outcome.
+That process runs `runShippedOwnership` over its own `ownershipRowForHost`.
 
 Three properties make it a transport rather than a workflow:
 
@@ -243,9 +359,11 @@ Three properties make it a transport rather than a workflow:
   one opaque transaction out and one opaque outcome back and interprets neither; the ownership
   interpreter is installed into that entry rather than beside it.
 - **A closed set of acts.** Observe, take a directory, take a file, and generic give-back are joined by
-  symbolic-link take and give-back for the guest-alias owner. There is no act that runs a command: an external
-  effect travels as a described command through the one interpreter (§ KK), and an act that could run a string
-  would make the row a shell again.
+  symbolic-link take and give-back for the guest-alias owner. The symbolic-link acts are available only
+  in a POSIX frame; a Windows binary answers them with `OwnershipUnsupported`. There is no act that runs a
+  command: an external effect travels as a described command through the one interpreter
+  ([§ KK](../../DEVELOPMENT_PLAN/development_plan_standards.md#kk-one-effect-vocabulary-and-no-scripts)),
+  and an act that could run a string would make the row a shell again.
 
 Both directions are exact values. The transaction is length-framed rather than delimited, because a target
 path and a payload are arbitrary bytes and a delimiter would let one of them describe the next field; the
@@ -257,10 +375,11 @@ stream that ended.
 The shipped codec is platform-neutral: its shared `HostBootstrap.Wire.LittleEndian` reader is available
 on Windows as well as POSIX. A kernel-specific refusal does not remove the request or outcome decoder.
 
-An empty frame stack addresses this machine, which is how a local transaction that must outlive its
+An empty `LiftContext` addresses this machine, which is how a local transaction that must outlive its
 launcher's own bracket is expressed — a supervised child whose group is killed when the owning process
 disappears cannot be an ordinary bounded run, because the launcher's cleanup is exactly what a hard kill
-skips.
+skips. The receiving process then runs this host's own row, so on a Windows host it is the Windows row and
+the symbolic-link acts refuse.
 
 ## The no-replace publication
 
@@ -276,37 +395,35 @@ before any durable name for it exists, so it links a second name and keeps both 
 bound. Folding the withdrawal into the primitive would make that second shape unrepresentable.
 
 A *symbolic* link is not a substitute: it publishes a reference rather than the bytes, and a destination
-that reads as a link is refused by the same inspector that enforces clause 3's "reparse points and symlinks
-at the target are rejected rather than followed". `rename(2)` is not a substitute either, because it
+that reads as a link is refused by the same inspector that enforces clause 3's rule that reparse points
+and symbolic links at a target are never followed. The one owner whose object *is* a symbolic link, the
+provider-guest durable alias, publishes it outside the row (below). `rename(2)` is not a substitute either, because it
 replaces the destination.
 
 ## What each owner adds
 
-The transaction is shared; the policy is the owner's own.
+The transaction is shared; the policy is the owner's own. Each owner's object, mechanism per clause, and
+treatment of a found object is the
+[per-backend clause matrix](ownership_invariant.md#per-backend-clause-matrix); this section states only
+the two places where an owner's shape bears on the seam itself.
 
-- **A host directory** — the harness data root — owns its own generation and never the shared parent. The
-  parent is scaffolding: created if missing, never owned, never removed.
-- **A host file** — the generated sibling config — adds the intended payload digest to its origin record,
-  because a file's bytes are part of what "the object this run owns" means. That is what makes the crash
-  window between the record and the identity binding resolvable. A found object is refused before any
-  mutation rather than adopted: a generated config cannot share a path with a config already present.
-- **The global host wall** keeps its phase graph and its pure byte transformer, so the file's content is
-  derived rather than edited in place and a crash leaves either the prior body or the new one. Its
-  clause 1 and clause 2 are its own protected store, opened beside the target, so its exclusive entry is
-  the same one every other host-local owner takes and its strictly monotonic fence is that store's own
-  never-reused record version rather than a counter file. It is also the owner that keeps both names of a
-  publication, for the reason above.
-- **The provider-guest alias** keys its record by a digest of an injective owner binding — provider origin,
-  share key and generation, alias key and generation, alias, and target — and stores the complete binding
-  as well, so the digest is only a bounded filename. Its prepared state records explicit absence plus a
-  fresh nonce before the first mutation. The shipped row stages the symlink and binds its exact device/inode
-  identity before atomic no-replace publication. This is the primitive with two spellings: Linux gives the
-  symlink inode a second name with `link(2)`, while Darwin uses `renamex_np(RENAME_EXCL)` because APFS
-  deliberately refuses hard links to symbolic links. Both are the POSIX row's publication step, selected
-  at build time by `publishSymbolicLinkNoReplace`; neither is a fourth row. The durable binding
-  therefore identifies the inode in both the bound-staging and bound-published recovery windows. A
-  correct-looking foreign symlink with no matching durable record is reported foreign. No pathname sidecar
-  participates in ownership.
+- **The global host wall** composes the row's primitives under its own driver and keeps both names of a
+  publication, for the reason above. Its fence is its protected store's never-reused record version
+  rather than a counter file. Its re-observation before a removal or move is its own copy of clause 4's
+  comparison ([Current Status](#current-status)).
+- **The provider-guest alias** owns a symbolic link, which no row primitive publishes. Its acts live in
+  [`HostBootstrap.Ownership.Shipped`](../../core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs),
+  outside the `OwnershipPrimitive` record: the far side observes, creates, publishes, and removes the link
+  with direct POSIX calls and reaches the row only for `rowSyncParent`, so `clauseRefusal` does not gate
+  those calls. Its clause tokens come from the reported-face producers (`enterReportedObject`,
+  `recordReportedOrigin`, `bindReportedIdentity`, `reobserveReportedIdentity`, `releaseReportedObject`)
+  with a reported-object record whose claim is derived from the link target, although its identity is the
+  local kernel's device/inode answer. It stages the link and binds that identity before publication, so
+  the durable binding identifies the inode in both the bound-staging and bound-published recovery windows.
+  Publication is the module-local `publishSymbolicLinkNoReplace`, selected at build time: Linux gives the
+  link inode a second name with `link(2)`, and Darwin moves it with `renamex_np(RENAME_EXCL)` because APFS
+  refuses hard links to symbolic links. A correct-looking foreign link with no matching durable record is
+  reported foreign.
 
 ## Validation
 
@@ -336,5 +453,6 @@ gate produced it.
   settles into.
 - [durable state](durable_state.md) — the durable records these rows write and read back.
 - [testing](../engineering/testing.md) — what counts as evidence for a row, and what cannot.
-- [development_plan_standards.md § EE and § LL](../../DEVELOPMENT_PLAN/development_plan_standards.md) — the
-  normative statements.
+- [development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md#ee-opaque-capabilities-and-phase-indexed-lifecycle-state)
+  and [§ LL](../../DEVELOPMENT_PLAN/development_plan_standards.md#ll-the-frame-table-the-substrate-axis-is-a-lift-not-a-fork)
+  — the plan's statements of the clauses and of the frame table.

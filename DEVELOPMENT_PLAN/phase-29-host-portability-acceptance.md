@@ -1,4 +1,4 @@
-# Phase 28 — Host-portability acceptance
+# Phase 29 — Host-portability acceptance
 
 **Status**: Done
 **Depends on**: Phase 24 (the worked demo)
@@ -55,10 +55,10 @@ Compiled local fixtures can prove the native process and kernel behavior they ac
 
 Per § G this phase is **expected to sit `Active` between runs**, and that is not a report of unfinished
 work in this tree. Its covers set is the host-portable source itself, so any ordinary source change expires
-the claim for every cell until each family re-runs. Reading `Active` here as a defect would invite the one
+the claim for every gate-host run until each family re-runs. Reading `Active` here as a defect would invite the one
 outcome the phase exists to prevent: quietly carrying a stale portability claim because re-recording it is
 inconvenient. `Done` is reachable only in the window between the last source change and the next, with all
-four cells freshly recorded.
+four gate-host runs freshly recorded.
 
 It exists because of an ownership hole that would otherwise have no owner. § JJ obliges every phase to hold
 the five harness rules over its own suites, and that obligation is mechanical — the absence guards check it
@@ -84,23 +84,33 @@ evidence for the other (§ JJ). The other two families are single-architecture i
 such split.
 
 This phase owns two of the five cells § JJ's coverage matrix names — `linux-cpu` on x86_64 and `linux-cpu`
-on arm64 — plus the three gate-host families. The remaining three cells are substrate acceptances owned by
-the [Apple-Silicon](phase-25-apple-silicon-substrate.md),
-[NVIDIA-GPU](phase-26-nvidia-gpu-substrate.md), and
-[Windows-and-WSL2](phase-27-windows-and-wsl2-substrate.md) phases. Because a hardware set is visited once
+on arm64 — and records the four gate-host runs of the three gate-host families. The remaining three cells are substrate acceptances owned by
+the [Apple-Silicon](phase-26-apple-silicon-substrate.md),
+[NVIDIA-GPU](phase-27-nvidia-gpu-substrate.md), and
+[Windows-and-WSL2](phase-28-windows-and-wsl2-substrate.md) phases. Because a hardware set is visited once
 (§ JJ), those three visits also produce every gate-host result this phase needs, and this phase requires no
 machine of its own: the Apple visit supplies the macOS gate host and an arm64 Linux gate host, the
 Linux/NVIDIA visit supplies an x86_64 Linux gate host, and the Windows visit supplies the Windows gate host.
-This phase never demands a fresh machine for a cell one of those visits already fills.
+This phase never demands a fresh machine for a gate-host run one of those visits already produces. Sharing a
+visit is not a dependency: `**Depends on**` names only the worked-demo phase, a gate-host run recorded on a substrate phase's
+visit does not wait for that phase to close, and this phase closes last only because its covers set is the
+host-portable tree, which every earlier phase's open work would change.
 
 What this phase does **not** confirm is anything about a substrate. A gate host is identified by what it is
 rather than by how it came to exist (§ JJ), so bare metal, a virtual machine, a container, and a WSL2
 distribution each count as a gate host of their own family and architecture — and none of them is a
 `linux-cpu` substrate gate. Each of the three substrate phases keeps its own declared gate.
 
+The phase records each family in its own sprint (Sprints 29.1–29.3) and then records all four gate-host runs
+together against one tree (Sprints 29.4 and 29.5), because each run is independent evidence obtained on an
+independent machine. A sprint that bundles every family cannot record a family whose machine is available
+until the family whose machine is not also becomes available. A gate-host run that is not available is named as
+owed rather than assumed, because a dated run is evidence for the gate host that produced it and for no
+other (§ II).
+
 ## Sprints
 
-### Sprint 28.1: Windows gate-host acceptance [Done]
+### Sprint 29.1: Windows gate-host acceptance [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint changes no source
@@ -153,7 +163,7 @@ macOS and Linux runs is the source selection enumerated above.
 
 None.
 
-### Sprint 28.2: macOS gate-host acceptance [Done]
+### Sprint 29.2: macOS gate-host acceptance [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint changes no source
@@ -186,7 +196,7 @@ The fixed coverage manifest exercised the POSIX ownership, host-wall, and shippe
 the Darwin kernel. The Windows ownership families and the three platform-row cases in
 `WslGlobalWallWindowsSpec` asserted their declared refusal; its platform-neutral case remained present.
 The total matches Linux. The five-case difference from Windows is the explicit source selection described
-in Sprint 28.1; this run does not establish coverage for a case another host does not execute.
+in Sprint 29.1; this run does not establish coverage for a case another host does not execute.
 
 Final working-tree refresh on 2026-09-05 on the same native arm64 macOS 26.6.2 gate host passed
 `cabal build all --ghc-options=-Werror` and the complete core suite at 2,494/2,494 in 402.88 seconds.
@@ -198,7 +208,7 @@ the same five-case source-condition difference from Windows.
 
 None.
 
-### Sprint 28.3: Linux gate-host acceptance [Done]
+### Sprint 29.3: Linux gate-host acceptance [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint changes no source
@@ -213,12 +223,12 @@ Record the host static gate passing host-native on an x86_64 Linux gate host.
 
 - One dated run naming the gate host's OS version, architecture, GHC and Cabal versions, test total, and
   duration. Per § JJ bare metal, a virtual machine, a container, and a WSL2 distribution are each a Linux
-  gate host of their own right, so this cell does not require separate metal.
+  gate host of their own right, so this gate-host run does not require separate metal.
 - The per-family differences this run's total reflects are enumerated against the suites' own platform
   conditions, so a difference in totals is explained by a condition a reader can find rather than by the
   run.
-- The arm64 Linux cell is a separate one, because § N compiles different code for each architecture. It is
-  recorded by Sprint 28.4 on the Apple visit that can produce it, and this sprint makes no claim about it.
+- The arm64 Linux gate-host run is a separate one, because § N compiles different code for each architecture. It is
+  recorded by Sprint 29.4 on the Apple visit that can produce it, and this sprint makes no claim about it.
 - The run asserts nothing the suites do not already assert. It confirms that what they assert holds here.
 
 #### Validation
@@ -236,7 +246,7 @@ POSIX-row case, every POSIX ownership case, and every shipped guest-alias case e
 against the Linux kernel. Every Windows ownership case and the three platform-row cases in
 `WslGlobalWallWindowsSpec` asserted their declared refusal; that family's fourth, platform-neutral
 case remained in the fixed family total. No case in these fixed manifest families was skipped. The
-five-case difference from Windows follows the source conditions enumerated in Sprint 28.1.
+five-case difference from Windows follows the source conditions enumerated in Sprint 29.1.
 
 Final working-tree refresh on 2026-09-05 also passed on native x86_64 Ubuntu 24.04.4 LTS,
 Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1.
@@ -248,13 +258,7 @@ The final documentation-only revalidation passed 3/3 in 0.95 seconds after statu
 
 None.
 
-These are three sprints rather than one because the three runs are independent evidence obtained on
-independent machines. Bundled into a single sprint, a family that is available cannot be recorded until the
-family that is not becomes available, and the phase reports nothing while holding two thirds of its answer.
-A family whose run is not available is named as owed rather than assumed, because a dated run is evidence
-for the gate host that produced it and for no other (§ II).
-
-### Sprint 28.4: The current-tree portability run [Done]
+### Sprint 29.4: The current-tree portability run [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -263,20 +267,20 @@ for the gate host that produced it and for no other (§ II).
 
 #### Objective
 
-Record the host static gate passing host-native on each gate-host cell against the current tree: a
+Record the host static gate passing host-native in each gate-host run against the current tree: a
 Windows gate host, a macOS gate host, an x86_64 Linux gate host, and an arm64 Linux gate host.
 
 #### Deliverables
 
-- four dated runs, one per gate-host cell, each naming its family, architecture, machine, and toolchain
+- four dated gate-host runs, one per gate host, each naming its family, architecture, machine, and toolchain
   versions;
 - the per-family difference in totals enumerated against the suites' own platform conditions;
 - each run collected on a visit already owed to a substrate acceptance, so this sprint adds no visit of its
-  own (§ JJ). A cell still owed is named as owed, never inferred from a neighbouring cell.
+  own (§ JJ). A gate-host run still owed is named as owed, never inferred from a neighbouring run.
 
 #### Validation
 
-On 2026-09-11, the current source passes the native Windows family gate on x86_64
+On 2026-09-11, the source measured that day passes the native Windows family gate on x86_64
 Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G, GHC 9.12.4, Cabal 3.16.1.0,
 repository-venv Python 3.14.7, and Poetry 2.4.1. From `core/`, the warning-clean build passes and
 `cabal test all --ghc-options=-Werror` passes 2,500/2,500 in 338.12 seconds of suite execution; the
@@ -285,13 +289,13 @@ root, `poetry run python -m hostbootstrap.check_code` passes and
 `poetry run python -m hostbootstrap.test_all` passes 235/235 in 3.92 seconds. The Windows ownership
 families execute their native rows, and the POSIX-only process fixtures assert their declared refusals,
 which is the platform condition the Windows total reflects. That core run carries the documentation
-validator, so it is also the run under which this plan's current text passes.
+validator, so it is also the run under which this plan's text of that date passes.
 
 The Python environment is reconstructed from `pyproject.toml` on this gate host, because `poetry.lock`
 is deliberately untracked and each family resolves its own. That is what makes a per-family Python run
 evidence about that family's resolved toolchain rather than a replay of another's.
 
-On the same date, the current source passes the x86_64 Linux cell on `matt-junction`, native x86_64
+On the same date, the same source passes the x86_64 Linux gate-host run on `matt-junction`, native x86_64
 Ubuntu 24.04.4 LTS, Linux 7.0.0-28-generic, GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1.
 From `core/`, `cabal build all --ghc-options=-Werror` passes in 114.56 seconds and
 `cabal test all --ghc-options=-Werror` passes 2,505/2,505 core cases in 169.73 seconds of suite
@@ -303,40 +307,40 @@ missing case. From the repository root, `poetry run python -m hostbootstrap.chec
 and `poetry run python -m hostbootstrap.test_all` passes 235/235 in 1.59 seconds. The POSIX ownership,
 host-wall, and shipped guest-alias rows execute against the Linux kernel, while the Windows ownership
 families and the three platform rows in `WslGlobalWallWindowsSpec` assert their declared refusals. The
-five-case difference from the Windows total is the source selection enumerated in Sprint 28.1.
+five-case difference from the Windows total is the source selection enumerated in Sprint 29.1.
 
-This cell was collected on the visit [phase 26](phase-26-nvidia-gpu-substrate.md) already required, which
+This gate-host run was collected on the visit [phase 27](phase-27-nvidia-gpu-substrate.md) already required, which
 is the § JJ rule working as intended: the machine convened for the nvidia substrate also carries the
 x86_64 Linux gate host, and recording both in one sitting removes any later reason to return to it.
 
 The Python environment on this gate host is likewise reconstructed from `pyproject.toml`, resolving
 Python 3.12.3 rather than replaying the Windows family's 3.14.7.
 
-On the same date, the current source passes the macOS cell on `MacBookPro`, native arm64 macOS 26.6.2
+On the same date, the same source passes the macOS gate-host run on `MacBookPro`, native arm64 macOS 26.6.2
 (build 25G83) on an Apple M1 Max, with GHC 9.12.4, Cabal 3.16.1.0, Python 3.14.3, and Poetry 2.3.2. From
 `core/`, `cabal build all --ghc-options=-Werror` passes in 215.73 seconds and
 `cabal test all --ghc-options=-Werror --test-show-details=direct` passes 2,505/2,505 core cases in
 412.49 seconds of suite execution (590.05 seconds for the complete Cabal command). Both components run:
 the core suite reports its Apple lane as `Unsupported: native direct-Colima lane not requested`, which is
-the declared no-request outcome of an opt-in lane [phase 25](phase-25-apple-silicon-substrate.md) records
+the declared no-request outcome of an opt-in lane [phase 26](phase-26-apple-silicon-substrate.md) records
 live, and the provider-live component compiles and reports `Unsupported: provider-live not requested`. From
 the repository root, `poetry run python -m hostbootstrap.check_code` passes and
 `poetry run python -m hostbootstrap.test_all` passes 235/235 in 5.71 seconds of pytest execution. The fixed
 coverage manifest exercises the POSIX ownership, host-wall, and shipped guest-alias rows against the Darwin
 kernel, while the eleven Windows ownership cases and three of the four `WslGlobalWallWindowsSpec` cases
-assert their declared refusals. The total matches both Linux cells, and the five-case difference from the
-Windows total is the source selection enumerated in Sprint 28.1.
+assert their declared refusals. The total matches both Linux gate-host runs, and the five-case difference from the
+Windows total is the source selection enumerated in Sprint 29.1.
 
-On the same date, the current source passes the arm64 Linux cell on an aarch64 Ubuntu 24.04.4 LTS
+On the same date, the same source passes the arm64 Linux gate-host run on an aarch64 Ubuntu 24.04.4 LTS
 container, Linux 6.8.0-100-generic with 9 CPUs and 31 GiB, carried by that same Apple visit through
 Colima 0.10.3, with GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1. Its covered source is
-byte-identical to the macOS cell's. From `core/`, a clean `cabal build all --ghc-options=-Werror` passes in
+byte-identical to the macOS gate-host run's. From `core/`, a clean `cabal build all --ghc-options=-Werror` passes in
 122.71 seconds and `cabal test all --ghc-options=-Werror --test-show-details=direct` passes 2,505/2,505
 core cases in 148.69 seconds of suite execution (250.78 seconds for the complete Cabal command), with the
 same two declared no-request outcomes. From the repository root,
 `poetry run python -m hostbootstrap.check_code` passes and
 `poetry run python -m hostbootstrap.test_all` passes 235/235 in 1.68 seconds. The fixed coverage manifest
-reports the same Linux realization the x86_64 cell reports, row for row and count for count, which is what
+reports the same Linux realization the x86_64 gate-host run reports, row for row and count for count, which is what
 makes the two architectures comparable evidence rather than one standing in for the other.
 
 A container gate host runs under a reaping PID 1. `ColimaSpec`'s hard-parent-death case proves that the
@@ -347,19 +351,19 @@ assembled (§ JJ), not of the source, and it is named here so the next container
 it.
 
 The Python environment on each of these two gate hosts is likewise reconstructed from `pyproject.toml`,
-resolving Python 3.14.3 on the macOS cell and Python 3.12.3 on the arm64 Linux cell.
+resolving Python 3.14.3 on the macOS gate host and Python 3.12.3 on the arm64 Linux gate host.
 
 The core suite carries the documentation validator, so this plan's text is itself gated by these runs. After
 the status reconciliation this sprint's closure entails, that validator passes 5/5 against the current text
-on both cells, which is what makes the recorded runs evidence for the document a reader is holding rather
-than for an earlier draft of it.
+on both gate hosts, which makes the recorded runs evidence for the plan text of that date.
 
 #### Remaining Work
 
-None. Every cell this sprint owns has current-source evidence. Any further host-portable source change
-expires all four and requires fresh coverage from each.
+None. This sprint's runs are evidence for the source measured on 2026-09-11 and for no later tree. Sprint
+29.5 owns the four gate-host runs' evidence for the current tree, and any host-portable source change expires all
+four and requires fresh coverage from each.
 
-### Sprint 28.5: The host-portability acceptance against the current tree [Done]
+### Sprint 29.5: The host-portability acceptance against the current tree [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -379,11 +383,16 @@ over a tree nothing re-tested. The four gate-host runs this phase records are pr
 - A gate-evidence row records the date, the gate host, the command as run, and the result.
 - The row names which program ran where two share a name, and prefers an invocation against the tree over a separately installed one.
 - The covers digest is re-measured over this phase's own paths and recorded.
-- Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
+- Every gate-host run this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
 
 #### Validation
 
-**2026-10-22 — complete native Windows gate passed.** Phase 27 completes its live
+The entries below run newest first from 2026-10-22 back to 2026-10-16, then follow the earlier visits from
+2026-09-14 to 2026-10-15 in date order. A statement in an older entry that a gate host has no run against its
+source describes that entry's own date; the 2026-10-22 entry records the last of the four gate-host runs against
+the current source, and nothing in this sprint is owed.
+
+**2026-10-22 — complete native Windows gate passed.** Phase 28 completes its live
 matrix, terminal ownership/WSL audit, and closure documentation check before this sprint
 begins. On `DESKTOP-R6BTBVS`, every declared native Windows command passes:
 
@@ -403,15 +412,15 @@ begins. On `DESKTOP-R6BTBVS`, every declared native Windows command passes:
 
 Both core suites report the direct-Colima lane's expected no-request `Unsupported` result.
 The five-case difference from the macOS/Linux core total follows the explicit platform
-conditions enumerated in Sprint 28.1; no new exclusion or weakened gate is introduced.
+conditions enumerated in Sprint 29.1; no new exclusion or weakened gate is introduced.
 These are native Windows static results; the preceding phase separately records the
 live Windows/WSL2 acceptance.
 
 The 18:24:42 UTC post-gate measurement covers all 24 roots and 857 files at
 `b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`, matching the
 pre-gate measurement and the three existing current macOS, arm64 Linux, and x86_64 Linux
-rows. No covered source changes during these checks. All four gate-host cells now have
-complete current-source evidence, closing Sprint 28.5 and this phase.
+rows. No covered source changes during these checks. All four gate-host runs now have
+complete current-source evidence, closing Sprint 29.5 and this phase.
 
 **2026-10-21 — complete native x86_64 Linux gate passed.** The current header row records
 all six commands against the same provider-admission source as the macOS and arm64 Linux rows.
@@ -426,12 +435,13 @@ direct-Colima lane's expected no-request `Unsupported` result. Python code check
 the supported Python runner passes 251/251 in 2.06 seconds. The post-gate measurement at
 19:35:07 UTC covers all 24 roots and 857 files at
 `b53b1dffdc3ba5a75abfe5c000f1a6766e3dda0328ad34f40ed62fb290314328`, matching the pre-gate
-measurement. No covered source changes during the checks. Native Windows revalidation remains owed.
+measurement. No covered source changes during the checks. At that date the native Windows gate host is the
+one gate host without a run against this source; the 2026-10-22 entry above records it.
 
 **2026-10-20 — complete native macOS and arm64 Linux gates passed.** Both current header
 rows record their actual gate hosts and complete command sets against the provider-admission
-source. Phase status remains Active; native Windows and x86_64 Linux revalidation remain owed.
-These host-static results do not establish the worked-demo phase's live gate or advance its closure.
+source. At that date the native Windows and x86_64 Linux gate hosts have no run against this source; the
+2026-10-21 and 2026-10-22 entries above record them. These host-static results do not establish the worked-demo phase's live gate or advance its closure.
 
 On `MacBookPro`, core build passes and plain core `cabal test all` passes 2,553/2,553 in
 553.83 seconds. Demo build passes; plain demo `cabal test all` passes 2,553/2,553 core cases
@@ -527,15 +537,15 @@ code checks pass in 2.48 seconds; the supported runner passes in 4.16 seconds, w
 the separately measured focused demo suite is additional.
 
 Both workspaces run the provider-live component to its declared no-request result. The
-ordinary static core runs do not request native Colima; Sprint 25.7 separately records its
+ordinary static core runs do not request native Colima; Sprint 26.7 separately records its
 33/33 opted-in pass. All 17 fixed coverage-manifest rows are present: POSIX ownership,
 process, and guest-alias rows exercise the Darwin kernel, while Windows-only rows assert
 their declared refusal. No cases are skipped. Independent before/after measurements agree
 over all 24 roots and 857 files at
 `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`.
 No covered source changes during the visit. These are host-static results, alongside the
-failed live Apple capacity/cleanup attempt recorded in Sprint 25.7; they make no live
-acceptance claim. Windows static revalidation remains owed against this source.
+failed live Apple capacity/cleanup attempt recorded in Sprint 26.7; they make no live
+acceptance claim. At that date no Windows static run covers this source.
 
 **2026-10-17 — complete arm64 Linux gate passed.** The gate host and exact commands are
 recorded in the corresponding dated row above. The isolated, init-enabled container uses the published
@@ -559,8 +569,8 @@ case counts: 12 exercise Linux kernel behavior and five assert Windows-only refu
 are skipped. Independent host/container measurements before and after agree over all 24 roots
 and 857 files at `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`.
 This is the Apple visit's available hardware evidence, collected while the lower Apple live
-matrix remains owed. The same visit's native macOS complete gate is recorded above; Windows static revalidation
-remains owed. The updated five-file documentation snapshot passes native `DocValidatorSpec`
+matrix is still open at that date. The same visit's native macOS complete gate is recorded above; at that
+date no Windows static run covers this source. The updated five-file documentation snapshot passes native `DocValidatorSpec`
 11/11 in 3.12 seconds and the arm64 Linux focused command
 `cabal test hostbootstrap-core-test -j1 --test-show-details=direct --test-options='--pattern DocValidatorSpec'`
 11/11 in 3.33 seconds (6.59 seconds wall), ending 16:56:13 UTC. The repository's actual Haskell
@@ -613,8 +623,8 @@ covers bcd5a213574b3026c2bce0279b8012a05c80aca160d96dde5cb4088948dbff9f
 On 2026-10-16, the two changed demo files make the current 24-root, 857-file scope
 `1ff47984b9391096aadfb76e3153d9e8c404fe44dd490f339162d617753ea97f`.
 Native x86_64 Linux static validation passes on the metal host; the independently provisioned CPU
-gate host is running its own complete gate. Native macOS, Windows, and arm64 Linux runs remain owed
-against this source.
+gate host is running its own complete gate. At that date the native macOS, Windows, and arm64 Linux
+gate hosts have no run against this source.
 
 On 2026-10-16, the native Apple visit records the complete macOS static gate incidentally through
 the lower worked-demo phase's base-publication source preflight. This collects the visit's hardware
@@ -636,15 +646,15 @@ complete source-preflight legs pass:
   the complete core component also passes.
 - Both workspaces run the provider-live component to its declared no-request `Unsupported`
   disposition. At source-preflight time the focused native direct-Colima lane is not requested;
-  Sprint 25.7 records its subsequent opted-in native pass.
+  Sprint 26.7 records its subsequent opted-in native pass.
 
 The separate exact demo command `cabal test hostbootstrap-demo-test --test-show-details=direct
 --test-options=--hide-successes` passes 159/159 in 5.45 seconds. A final plain `cabal build all`
 from `core/` passes at 14:37 UTC after the final conditional-pragma edit. The 24-root, 857-file
 covers set independently measures
 `bcd5a213574b3026c2bce0279b8012a05c80aca160d96dde5cb4088948dbff9f`, matching the preceding
-preserved macOS row. The same visit's arm64 Linux gate is recorded next; native Windows and x86_64 Linux
-remain owed against this source. Every earlier row below retains its original date, source scope,
+preserved macOS row. The same visit's arm64 Linux gate is recorded next; at that date the native Windows
+and x86_64 Linux gate hosts have no run against this source. Every earlier row below retains its original date, source scope,
 and digest.
 
 The same Apple visit completes the arm64 Linux gate on 2026-10-16 in
@@ -687,8 +697,17 @@ Apple phases close, a post-closure documentation snapshot is copied into this ga
 from `core/` exits 0 at 18:06:31 UTC, passing 11/11 in 3.65 seconds (6.99 seconds for the command). The 857-file source digest
 is unchanged. The exact owned container is removed at 18:06:45 UTC; ambient containers, images,
 and Docker context are preserved. Later evidence-wording corrections are validated on the native
-macOS gate host, with no covered-source change. Native Windows and x86_64 Linux remain owed
-at the end of that Apple visit.
+macOS gate host, with no covered-source change. At the end of that Apple visit the native Windows
+and x86_64 Linux gate hosts have no run against this source.
+
+The same 2026-10-16 native macOS visit refreshes the full core suite against the finalized
+conditional pragmas: `cabal test all --test-show-details=direct --test-options=--hide-successes`
+from `core/` exits 0 at 16:05 UTC with 2,552/2,552 in 453.84 seconds and the provider-live component's
+expected no-request `Unsupported` result. Both Python host-static commands pass again; the runner
+passes 251/251 in 1.89 seconds. The demo workspace's complete build/test already postdates the final
+pragma edits. No covered source changes during these refreshes. After recording the Linux cleanup
+and final evidence-wording corrections, the native focused `DocValidatorSpec` passes 11/11 in
+3.29 seconds. The index and phase headers agree, and `git diff --check` passes.
 
 On 2026-10-16, the native NVIDIA visit collects the x86_64 Linux static gate on
 `matt-caledon-desktop`, Ubuntu 24.04.5 LTS, Linux 7.0.0-38-generic, AMD Ryzen 7 5700G
@@ -712,7 +731,7 @@ The gate completes at 19:20 UTC. Independent before/after measurements agree ove
 and 857 files at `bcd5a213574b3026c2bce0279b8012a05c80aca160d96dde5cb4088948dbff9f`.
 This is the same visit's available host-static evidence under § JJ, collected while the lower
 NVIDIA acceptance remains Active; it does not advance phase closure past that live gate.
-Only native Windows static revalidation remains owed against this source set.
+At that date the native Windows gate host is the one gate host without a run against this source set.
 
 On 2026-09-14, the x86_64 Linux gate host `matt-junction` passes `cabal build all` and
 `cabal test all` from `core/` at 2,546/2,546 in 200.71 seconds, the Python code check, and the
@@ -734,7 +753,7 @@ Python 3.14.3, and Poetry 2.3.2. The repository Poetry environment is resolved f
   `poetry run python -m hostbootstrap.test_all` passes 251/251 in 1.71 seconds.
 
 The POSIX ownership and process cases execute against Darwin; unavailable Windows rows assert their
-declared refusals. The native direct-Colima lane has its separate live result in Sprint 25.5.
+declared refusals. The native direct-Colima lane has its separate live result in Sprint 26.5.
 The 823 covered files measure `6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0`.
 
 The same visit records the complete arm64 Linux gate in `hostbootstrap-portability-arm64-20260916`,
@@ -778,7 +797,7 @@ without advancing past the earlier open acceptance phases.
 Both workspaces run the provider-live component with its declared no-request `Unsupported` result.
 The native Windows ownership and host-wall cases exercise the Win32 kernel; POSIX-only rows assert
 their declared refusals. The five-case difference from the POSIX totals follows the source conditions
-listed in Sprint 28.1. The 823 covered files measure
+listed in Sprint 29.1. The 823 covered files measure
 `f87e2c335a541d015248234b288f9ea5e8a457d65724335883a71f25f82497f9`.
 
 The subsequent short-close correction adds two regression cases. Against the settled source, the
@@ -854,7 +873,7 @@ makes the Python leg evidence about this family's own resolved toolchain.
 
 The native Windows ownership and host-wall cases exercise the Win32 kernel, while the POSIX-only
 rows assert their declared refusals. The core total is five cases below the 2,552 the x86_64 Linux
-row reports, which is exactly the source selection enumerated in Sprint 28.1 rather than a difference
+row reports, which is exactly the source selection enumerated in Sprint 29.1 rather than a difference
 this run introduced. The 823 covered files measure
 `d3ba074e8cff0e8546bf2352ecbaea2a2cf220f03f77cdff6ab3d05fca9570e9`, byte-identical to the native
 x86_64 Linux row above, so the two families record one measured tree on that date. The focused
@@ -863,15 +882,16 @@ x86_64 Linux row above, so the two families record one measured tree on that dat
 The first `cabal build all --enable-tests` attempt in `demo/` aborted with the GHC RTS internal error
 `evacuate: strange closure type -1570714288`, and the identical command passed on immediate retry
 with no source, toolchain, or flag change. That is the same intermittent-corruption signature
-Sprint 27.5 records on this host from a different program, and it is named here so the next visit
+Sprint 28.5 records on this host from a different program, and it is named here so the next visit
 does not read it as a source defect. Every gate leg above is a clean pass.
 
 Separately, `hostbootstrap --help` from the repository Poetry environment aborts on this gate host
 with `UnicodeEncodeError` writing U+2192 to a cp1252 stdout, on a Python whose `sys.stdout.encoding`
 is the console code page. This is a native-Windows defect in the Python bootstrapper's help
-rendering rather than a platform limit, and no gate leg invokes it. It is recorded rather than
-repaired here because no phase owns it yet and a source change would expire the completion evidence
-of the `Done` deferred phases whose covers sets name `hostbootstrap`.
+rendering rather than a platform limit, and no gate leg invokes it: the `check-code` command's short
+help in `hostbootstrap/cli.py` carries the arrow, and Click prints it in the command listing. The repair
+and its regression case belong to the Python pre-binary floor phase, which owns `hostbootstrap/cli.py`;
+this phase records the observation and makes no claim about `--help` rendering.
 
 On 2026-09-30, the native Linux/NVIDIA visit records the complete header gate on `matt-junction` again,
 now on Ubuntu 24.04.5 LTS and Linux 7.0.0-31-generic with GHC 9.12.4, Cabal 3.16.1.0, Python 3.12.3, and
@@ -902,7 +922,7 @@ expanded current covers set.
   `poetry run python -m hostbootstrap.test_all` passes 251/251 in 1.63 seconds.
 
 Both workspaces run the provider-live component to its declared no-request `Unsupported` result, and the core
-suite reports its direct-Colima lane as not requested; [Sprint 25.6](phase-25-apple-silicon-substrate.md)
+suite reports its direct-Colima lane as not requested; [Sprint 26.6](phase-26-apple-silicon-substrate.md)
 records that lane live. The fixed coverage manifest (17 rows) exercises the POSIX ownership, host-wall, and
 shipped guest-alias rows against the Darwin kernel, while its eleven Windows ownership cases and three of the
 four `WslGlobalWallWindowsSpec` cases assert their declared refusals.
@@ -912,7 +932,7 @@ Ubuntu 24.04.4 LTS container on Linux 6.8.0-100-generic with 9 CPUs, carried by 
 0.10.3. It uses published CPU/arm64 base digest
 `sha256:3634916e85b1fda411ae671a4bca2f72745e0bd106e2e9efebccc25415e0bc49`, the image's own GHC 9.12.4 and
 Cabal 3.16.1.0, Python 3.12.3, and Poetry 2.4.1, and Docker's `--init` supplies a reaping PID 1. That base is
-the unrepublished arm64 publication described in [Sprint 25.6](phase-25-apple-silicon-substrate.md). The
+the unrepublished arm64 publication described in [Sprint 26.6](phase-26-apple-silicon-substrate.md). The
 working-tree bytes and checkout metadata are copied into the container's own filesystem with no bind mount, and
 no project ensure or provider step provisions this gate host. The Python environment is resolved inside it with
 `POETRY_VIRTUALENVS_CREATE=true` and `POETRY_VIRTUALENVS_IN_PROJECT=true`, overriding the base image's
@@ -928,7 +948,7 @@ the legs.
 
 The Linux POSIX rows execute against the guest kernel, both workspaces run the provider-live component to its
 declared no-request `Unsupported` result, and the same 17-row coverage manifest reports the same rows and
-counts the macOS cell reports. The two POSIX gate hosts report the same core total. At that visit,
+counts the macOS gate host reports. The two POSIX gate hosts report the same core total. At that visit,
 these runs and the 2026-09-30 native x86_64 Linux and 2026-09-17 native Windows runs record one original
 823-file covered tree. That
 historical agreement does not establish macOS or arm64 Linux acceptance of the later teardown correction
@@ -979,13 +999,13 @@ dependency store. The complete commands and their observed results are:
   passes in 536.66 seconds. The demo component passes 159/159 in 2.08 seconds, followed by
   2,552/2,552 core cases in 326.72 seconds.
 - Both Cabal workspaces run the provider-live component to its declared no-request `Unsupported`
-  result. The Linux and Windows core totals retain the five-case difference described in Sprint 28.1.
+  result. The Linux and Windows core totals retain the five-case difference described in Sprint 29.1.
 - From the repository root, `poetry run python -m hostbootstrap.check_code` passes in 3.25 seconds,
   and `poetry run python -m hostbootstrap.test_all` passes 251/251 in 3.31 seconds of pytest
   execution, with the complete Python runner taking 4.57 seconds.
 
 The durable runner `phase28-linux-static-20261015` exits 0 at 2026-10-15 21:41:23 UTC after
-1,214.41 seconds. This is Linux host-static evidence; Sprint 24.49 and Sprint 27.5 separately
+1,214.41 seconds. This is Linux host-static evidence; Sprint 24.49 and Sprint 28.5 separately
 record the completed Production and live Harness gates.
 
 The exact 2026-10-15 Windows and x86_64 Linux gate-evidence rows are retained for their expanded
@@ -1059,15 +1079,6 @@ Those measurements covered exactly `core/hostbootstrap-core/src`, `core/hostboot
   `cabal test all --test-show-details=direct --test-options=--hide-successes` from `demo/`,
   `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all`
   from the repository root ; pass ; covers `6186d83e0e060bf70b4090ee8176abf944debb25ebb5ad6fc7176e99df1ab2b0`.
-
-The 2026-10-16 native macOS visit additionally refreshes the full core suite against the finalized
-conditional pragmas: `cabal test all --test-show-details=direct --test-options=--hide-successes`
-from `core/` exits 0 at 16:05 UTC with 2,552/2,552 in 453.84 seconds and the provider-live component's
-expected no-request `Unsupported` result. Both Python host-static commands pass again; the runner
-passes 251/251 in 1.89 seconds. The demo workspace's complete build/test already postdates the final
-pragma edits. No covered source changes during these refreshes. After recording the Linux cleanup
-and final evidence-wording corrections, the native focused `DocValidatorSpec` passes 11/11 in
-3.29 seconds. The index and phase headers agree, and `git diff --check` passes.
 
 #### Remaining Work
 

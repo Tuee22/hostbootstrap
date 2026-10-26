@@ -17,7 +17,9 @@ The base image contains a pre-built Cabal store at `/opt/cache/cabal/`. It is a 
 - consumers do not import base-owned freezes or project fragments;
 - the store does not prescribe package versions;
 - matching artifacts may be reused;
-- cache misses may update the package index, download dependencies, and compile them;
+- cache misses solve, download dependencies, and compile them against the package index the base's
+  `cabal update` fetched; `cabal build` does not refresh that index, so a consumer needing a newer release
+  runs `cabal update` (or sets its own `index-state`) in its own Dockerfile;
 - offline builds and complete cache hits are not acceptance requirements.
 
 Every consumer uses one ordinary host-compatible `cabal.project` both host-native and in its derived
@@ -38,9 +40,13 @@ These groups make the manifest maintainable. They are not consumer layers and do
 solver fragments. The build-only executables exist solely to make Cabal compile the listed dependency
 sets.
 
-`warm-store.config` aligns commonly useful compilation ways: tests, benchmarks, shared libraries, and
-optimization level 2. Matching these settings improves cache reuse, but no consumer is required to keep
-them merely to satisfy the base.
+`warm-store.config` sets `tests`, `benchmarks`, `shared`, and `optimization: 2` at the top level of the
+warm-store project. Top-level package options in a Cabal project apply only to that project's local
+packages, which here are the two manifest packages; they do not reach the dependencies cached in the
+store, which build with Cabal's per-package defaults. A consumer's own top-level settings, such as the
+`optimization: 2` in `core/cabal.project` and `demo/cabal.project`, likewise reach only its local packages,
+so its dependencies are planned with the same defaults the store holds. A consumer therefore neither needs
+nor gains cache reuse by copying these settings.
 
 ## Consumer project
 
@@ -67,7 +73,7 @@ consumer flag, or compiler is a normal miss, not an error in the base-image cont
 
 `cabal build --dry-run` may be used to observe likely reuse. Its output is diagnostic only. A third-party
 package marked for build is allowed, and an online derived build must be able to resolve and compile it.
-Source quality and successful real-consumer build are the acceptance gates.
+Source quality and a real consumer's resolvable build plan are the publication gates.
 
 The host-native Python bootstrap uses its repository-local store under `.build/cabal-store/`; the base
 cache exists only inside the Linux image. That difference does not require different project files.
@@ -85,8 +91,10 @@ cache exists only inside the Linux image. That difference does not require diffe
 There is no freeze generation or commit step. A rebuild may select newer compatible transitive
 dependencies than the prior publication.
 
-A publication exercises both sides of this contract: the compatibility consumer resolves `Up to date`
-against the newly built immutable local image before publication and against the pulled digest afterward.
+A publication runs the compatibility consumer twice: against the newly built immutable local image ID
+before publication, and against the pulled digest afterward. Each run passes when
+`cabal build --dry-run all` resolves a complete build plan; the plan may list builds or downloads, because
+the consumer is a package the store has never built (see [base image](base_image.md#republishing)).
 The dated publication and that digest belong to the
 [base-image-publication-and-opportunistic-warm-store phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md).
 
@@ -108,6 +116,7 @@ RUN cabal build --offline all
 Right:
 
 ```dockerfile
+COPY core/hostbootstrap-core /workspace/core/hostbootstrap-core
 COPY demo /workspace/demo
 WORKDIR /workspace/demo
 RUN cabal build all

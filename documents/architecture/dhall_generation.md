@@ -15,27 +15,60 @@
   a binary reads to learn *which frame it is in* and *what budget it may spend*. The
   [composition_methodology](composition_methodology.md) is the canonical home of that model; this doc
   describes the Dhall it consumes and emits.
-- **Parameters** are the root resource knobs (`--cpu/--memory/--storage/--ha-replicas`). **Context**
+- **Parameters** are the root config's values: the resource knobs (`--cpu/--memory/--storage/--ha-replicas`),
+  the Dockerfile path, the deploy knobs, and any project-extended field such as the demo's `message`. **Context**
   names the binary's position in the topology (`topologyFrames`/`currentFrame`). **Witness** is the set
   of locally checkable `runtimeWitnesses` a binary proves before it acts. See
   [binary_context_config](binary_context_config.md).
 - The root `<project>.dhall` is the fresh-root default of the config-free `project init` writer; explicit
-  role/output/policy flags also support other current init uses. In the demo, the named
+  role/output/policy flags also support other init uses. In the demo, the named
   **context-init** action body is only a no-op announcement: VM projection and streaming occur in
   the composite `build-pb` action, container projection is carried by the descent that same step
   declares and delivered by the handoff, and service/daemon projection occurs in deployment actions. The declared descent binds projection and authenticated delivery to the exact plan node.
-- The binary-generated tiers are composed from **three vocabulary layers** — `Core.dhall` (L0),
-  `Daemon.dhall` (L1), `App.dhall` (L2) — each embedding the one below (`let C = ./Core.dhall`).
+- The reusable vocabulary has **three layers** — `Core.dhall` (L0), `Daemon.dhall` (L1), `App.dhall`
+  (L2) — each embedding the one below (`let C = ./Core.dhall`). Standalone numeric artifacts import
+  `Core.dhall` the same way; the runtime `<project>.dhall` and the `<project>.test.dhall` are rendered from
+  Haskell codecs and do not import it.
 - The lower-layer opaque `CodecWitness a` validates normalized `FromDhall` decoder `expected` and
   `ToDhall` encoder `declared` expressions once and is the only schema/decode/render input.
-  `ConfigArtifact` construction and every project/test config IO path consume that witness. The
-  project boundary wraps it with installed identity and lifecycle scope as
-  `ProjectCodec scope specDigest cfg`.
+  `ConfigArtifact` construction and the command and harness project/test config paths consume that
+  witness; the bare binary's live-gate reader is the one project-config read that does not (see
+  [Current Status](#current-status)). The project boundary wraps it with installed identity and lifecycle
+  scope as `ProjectCodec scope specDigest cfg`.
 - The budget **functions** (`fitsWithin`, `split`) are **hand-written Dhall** in `Core.dhall` and
   drift-controlled by evaluation tests, not reflection. Project configs intentionally do not attach a
   `fitsWithin` assertion: they carry text quantities and no pod set. Typed scalar refinements form the
-  decode ring. The plan-indexed `Cluster.Budget` admission checks the complete declared workload set and partition;
-  the descriptive `fitsBudget` helper is not the authority for applying a wall.
+  decode ring. `fitsWithin` compares CPU and memory only, never storage. The plan-indexed `Cluster.Budget`
+  admission (`verifyPlannedWorkloadFit`, `withBudgetPartition`) is the authoritative fit and partition over
+  the complete declared workload set; the descriptive `fitsBudget` helper is not the authority for applying a
+  wall.
+
+## Current Status
+
+The codec, vocabulary, and assembly model on this page is implemented. Four points fall short of it:
+
+- `HostBootstrap.Dhall.Gen` exports the `ConfigArtifact` field labels `artifactName`, `schemaText`, and
+  `renderText`, so record-update syntax on an existing artifact replaces its schema or render text without a
+  `CodecWitness`; witness-only construction holds by convention, not by the type. See
+  [config_generation](../engineering/config_generation.md#current-status); the
+  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+  owns the fix.
+- The bare core binary's cluster-live gate reads its sibling project config with `readBareConfig`, which
+  decodes it with the plain Dhall decoder rather than through `decodeProjectCodecFile`, so that read bypasses
+  the codec witness and the installed-identity and scope binding. The
+  [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns
+  `HostBootstrap.CLI.Bare`.
+- `project init` checks whether its output exists and then writes it in place with
+  `writeScopedProjectConfigFile`, holding no lock. A concurrent writer can be overwritten between the check
+  and the write, and a crash can leave a truncated config; the atomic no-replace publication the harness's
+  generated-config writer uses is not applied. The
+  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+  owns the existing-output policy and its atomic publication.
+- `project init` fills an omitted `--source-root` with the working directory in core (`initAction` in
+  `HostBootstrap.Command` calls `getCurrentDirectory`) before the project's `psAssemble` runs, so that one
+  default is a core value rather than the project's. The
+  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
+  owns passing the omitted root through to the project assembler.
 
 ## Three Roles Of `.dhall`: Parameters, Context, Witness
 
@@ -44,11 +77,11 @@ as an opaque validated `StepPlan`. Each `.dhall` plays three roles:
 
 | Role | What it carries | Read for |
 |------|-----------------|----------|
-| Parameters | the root resource knobs | plan fragments are pure functions of these, so the finalized plan is determined by the project `.dhall` |
+| Parameters | the root config values: resource knobs, Dockerfile path, deploy knobs, and project-extended fields | plan fragments are pure functions of these, so the finalized plan is determined by the project `.dhall` |
 | Context | the binary's `topologyFrames` + `currentFrame` — its position in the global lift composition | the binary reasons about which segment of the plan it owns |
 | Witness | the `runtimeWitnesses` a binary must verify locally before acting | per-frame fail-fast on handoff: a binary that cannot witness its declared frame exits non-zero |
 
-The resource knobs are **root parameters**, so plan construction is a pure function of root params rather than
+These values are **root parameters**, so plan construction is a pure function of root params rather than
 branching on ambient state. The context and witness fields are the `binary_context_config` "know your
 place" description and current mismatch gate; opaque installed and lifecycle authority is verified separately. This doc owns how
 the data is generated and projected. See
@@ -70,20 +103,12 @@ steps that first validate the active local config. Everything richer is binary-g
 [dhall_topology](../engineering/dhall_topology.md), [schema](../engineering/schema.md), and
 [binary_context_config](binary_context_config.md).
 
-Config acquisition is command-specific. `project init`, `service init`, and `test init` are config-free
-writers; `service schema` and `context path|schema|render` are static and config-free; `context inspect`
-reads the executable-sibling config and `context show [FILE]` reads its selected/default file without a
-mutation-authority gate. `test run` reads `<project>.test.dhall` and installs/removes each run variant under
-`HostBootstrap.Harness.GeneratedConfig`, which holds the four § EE ownership clauses over that file:
-a found config is refused before any mutation, and cleanup unlinks only on an exact re-observed identity
-and payload. The refusal is the post-sweep one derived from installed project identity, so an
-interrupted run's own config is reclaimed rather than blocking the next run. Durable verification and
-rehydration of the complete lifecycle resource set belongs to the
-[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
-Root `project up|down|destroy` loads the sibling project config and separately admits installed root
-authority. `service run` reads only its verified activation's narrowed role wire. Image `check-code`
-verifies its transient build channel, while ordinary developer checks use the local config gate. The exact
-admission boundaries live in [binary_context_config](binary_context_config.md#per-frame-fail-fast-on-handoff).
+Config acquisition is command-specific: the init writers are config-free, `context` and `service schema`
+are read-only, `test run` installs and removes harness-owned run configs, and `service run` reads only its
+verified activation's narrowed role wire. [config_generation](../engineering/config_generation.md#the-structural-assembler)
+is the home of the per-command acquisition rules, and
+[binary_context_config](binary_context_config.md#per-frame-fail-fast-on-handoff) of the exact admission
+boundaries.
 
 ## Generated Tiers
 
@@ -105,19 +130,25 @@ separate and pin both the bare and representative consumer registries.
 
 ## Root Init And Child Projection
 
-`project init` is currently a config-free writer. Its no-flag behavior is the **fresh-root default**:
+`project init` is a config-free writer. Its no-flag behavior is the **fresh-root default**:
 write the executable-sibling `<project>.dhall` as a host orchestrator with no parent, using the project's
-defaults, and refuse an existing output. The parser also supports `--role ROLE`, repeatable
-`--also-role ROLE`, `--output FILE`, `--force`, and `--if-missing`, alongside optional
-`--cpu`/`--memory`/`--storage`/`--ha-replicas` and other project parameter overrides. `--force`
-overwrites, `--if-missing` is a no-op when the output exists, and the current parser gives `--force`
-precedence when both are supplied. Defaults are **not** core values. `project init` obtains its complete
+defaults, and refuse an existing output. Explicit role, output, and write-policy flags select other writer
+modes, and root identity provisioning follows the write step.
+[config_generation](../engineering/config_generation.md#project-init-fresh-root-default-and-explicit-writes)
+is the home of the writer, its flags (including the mutually exclusive `--force` and `--if-missing`), and the
+write-then-identity order; the
+[surfaced commands](hostbootstrap_core_library.md#surfaced-commands) table lists the command. The write step
+is a check-then-write with no lock (see [Current Status](#current-status)).
+
+Defaults are **not** core values, with the one exception of the source root that core fills before
+assembly (see [Current Status](#current-status)). `project init` obtains its complete
 Production value from `psAssemble (ProductionAssembly args)`; the harness obtains each exact-run-scoped
-config from `psAssemble (HarnessAssembly authority tcfg draft)`, and `test init` independently builds
+config from `psAssemble (HarnessAssembly authority root tcfg draft)`, where `root` is the canonical
+project root of the run's ownership scope, and `test init` independently builds
 the project-owned `tcfg` through `psTestInit`. The generic type therefore enforces one structural
 project-config assembly path.
 
-The shared permissive `InitArgs` representation is the current parser contract. Role additions pass
+The parser produces one shared, permissive `InitArgs` value. Role additions pass
 through the closed `roleAdditionAllowed` relation and `addRole` validating smart constructor; incompatible
 primary-role additions are refused during assembly. A project
 may carry its own typed Parameters-layer fields on `cfg`: the demo's mandatory `message : Text` (its
@@ -145,8 +176,11 @@ project hook. Configuration alone cannot authorize that build. See
 
 ## Three Vocabulary Layers
 
-The binary-generated tiers are composed from a three-level Dhall vocabulary that tracks the
-[library hierarchy](library_hierarchy.md):
+The reusable Dhall vocabulary has three levels that track the
+[library hierarchy](library_hierarchy.md). Higher layers and standalone numeric artifacts such as the
+`deployConfigText` output import it; the runtime `<project>.dhall` and the `<project>.test.dhall` are
+rendered from Haskell codecs whose types the equality tests below hold in step with it, and they import
+nothing:
 
 | Layer | File | Embeds | In repo |
 |-------|------|--------|---------|
@@ -161,7 +195,8 @@ evaluates with no network access, both in-process via the Haskell `dhall` librar
 `Mount`, `ProductionSecretRef`, and `HarnessSecretRef` (plus the `Weight = Natural` synonym), and the
 functions `lessThanEqual`, `requestsWithinLimits`, `fitsWithin`, and `split` (the last two also under
 the aliases `Budget/fitsWithin` and `Budget/split`). `divFloor` is deliberately not exported: it is
-partial at a zero divisor, and `split` — its only caller — never reaches that input. Higher
+partial at a zero divisor, and `split`, its only caller, passes a zero divisor only when every weight is
+zero, so the dividend is zero too and the result 0 is correct. Higher
 layers embed it via `let C = ./Core.dhall` and extend it; they never redefine the L0 types (the Dhall
 stream of the extension-stream contract—see [library_hierarchy](library_hierarchy.md)). Two exhaustive
 tests partition the export record: one derives every type-valued export and requires a named Haskell
@@ -176,9 +211,12 @@ nuance of the model:
 
 - **Types share a validated codec witness.** An opaque lower-layer `CodecWitness a` compares
   normalized decoder `expected` and encoder `declared` expressions before it can exist. Schema printing,
-  decoding, and rendering accept that value rather than independent constraints; config writers force
-  admission before acquiring their ownership lock. `ConfigArtifact` is opaque and can be built only
-  from a witness plus a canonical value. Every hand-written `Core.dhall` type is exhaustively named and
+  decoding, and rendering accept that value rather than independent constraints; every config writer
+  forces admission before it writes. The harness's generated-config writer then publishes inside its
+  ownership bracket, while `project init` holds no lock (see [Current Status](#current-status)).
+  `artifactOf` builds a `ConfigArtifact` from a witness plus a canonical value and is the only way to build
+  one from nothing; the exported field labels still let record update replace an existing artifact's text
+  (see [Current Status](#current-status)). Every hand-written `Core.dhall` type is exhaustively named and
   judgmentally equality-gated. This makes type-expression mismatch unrepresentable after admission;
   semantic encode/decode behavior still requires round-trip/property tests. At the project
   boundary, installed identity and lifecycle scope additionally wrap the witness as
@@ -187,7 +225,10 @@ nuance of the model:
 - **Functions are hand-written and evaluation-controlled.** `fitsWithin` and `split` are written by hand
   in `Core.dhall` (Dhall has no facility to reflect a Haskell function into a Dhall function). They
   are drift-controlled by **evaluation tests** that run them against fixtures — an over-budget input is
-  rejected. A generated project config cannot use that function for its real fit decision because its
+  rejected. `fitsWithin` sums replicas × limit over the pod set for CPU and for memory, compares each total
+  with the budget, and requires every pod's CPU and memory request to be within its limit
+  (`requestsWithinLimits`). It does not compare storage, so the budget's storage field constrains nothing
+  in that assertion. A generated project config cannot use that function for its real fit decision because its
   quantities are Kubernetes `Text` and it contains no resolved pod set. Dhall decoding rejects malformed
   shapes, and demo validation uses private smart-constructed quantities, resources, replicas, and
   service parameters. The single project-owned budget is then subjected to positive and provider-exact
@@ -202,20 +243,24 @@ nuance of the model:
   expressions, and derive printed schema plus decode/render operations from that opaque witness.
 
 This split defines the lower-layer drift control: type expressions share a validated witness, while the
-part that cannot be reflected (functions) is pinned by evaluation tests. Current decode/validation uses
+part that cannot be reflected (functions) is pinned by evaluation tests. Decode and validation use
 opaque scalar constructors and one project-owned budget. The
 [step algebra and project plan phase](../../DEVELOPMENT_PLAN/phase-12-step-algebra-and-project-plan.md)
 admits the exact plan-owned generic budget; the
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns its concrete workload, overhead,
-partition, and slices. The resolved workload fit is enforced by `fitsBudget` before effects once that
-complete topology-derived set exists. See
+partition, and slices. The resolved workload fit over that complete topology-derived set is enforced
+before effects by `HostBootstrap.Cluster.Budget` admission; `fitsBudget` is a descriptive check that no
+lifecycle path calls. See
 [config_generation](../engineering/config_generation.md) for the `ConfigArtifact` registry and the
-current child-projection seams that realize this, and
+child-projection seams that realize this, and
 [resource_budgeting](../engineering/resource_budgeting.md) for the budget the assertion guards.
 
 ## Validation And Consumers
 
-One admitted codec owns schema, decode, and render for each artifact and project/test config path. The
+One admitted codec owns schema, decode, and render for each artifact and for the command and harness
+project/test config paths; the bare binary's live-gate reader is the exception named in
+[Current Status](#current-status). `decodeContextText` and `decodeContextFile` decode a standalone
+`BinaryContext`, not a project config, with the plain Dhall decoder. The
 `Core.dhall` tests equality-check every exported type, while `fitsWithin` and `split` have evaluation tests.
 Role-schema tests compare the finalized Production and Harness families with their exact decoders.
 

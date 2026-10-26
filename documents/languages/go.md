@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [cluster_tooling.md](cluster_tooling.md)
+**Referenced by**: [../README.md](../README.md), [cluster_tooling.md](cluster_tooling.md)
 
 > **Purpose**: Document the Go toolchain the base image ships and the in-place `nvkind` build.
 
@@ -21,6 +21,10 @@ GOTOOLCHAIN=local
 PATH=…/opt/go/bin:/opt/cache/go/bin:…
 ```
 
+The GOTOOLCHAIN=local setting means the `go` command only ever uses the toolchain installed at `/opt/go` and never
+downloads another one. A module whose `go.mod` `go` or `toolchain` line requires a newer Go than the image
+carries fails to build instead of triggering a toolchain download.
+
 ## nvkind
 
 The base image builds `nvkind` natively in the final image, in a **single
@@ -29,9 +33,12 @@ gcc is still installed for projects that opt into it explicitly. There is no
 multi-stage cross-compile path for `nvkind`; it is built natively in the final
 image.
 
-The layer installs the current compatible `nvkind` module release and places the native binary at
-`/usr/local/bin/nvkind`. This selection is rolling cache/tooling input, not a public source-version
-contract.
+The layer runs `go install` for the `nvkind` module's latest release, which writes the binary to
+`/opt/cache/go/bin/nvkind`, then copies it to `/usr/local/bin/nvkind`. Both copies stay in the image.
+`/opt/cache/go/bin` precedes `/usr/local/bin` on `PATH`, so a bare `nvkind` runs the
+`/opt/cache/go/bin` copy; replacing only `/usr/local/bin/nvkind` does not change what `PATH` resolves. This
+selection is rolling cache/tooling input, not a public source-version contract.
 
-A build can only ever produce the host-native arch — there is no cross-arch
-build for Go, which keeps this stage simple.
+The base image is built only for the host's native architecture, so this `nvkind` build never
+cross-compiles. That is a property of the base build only; it places no limit on a project's own
+cross-compilation through the GOOS and GOARCH variables.

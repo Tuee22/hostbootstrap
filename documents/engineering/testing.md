@@ -6,24 +6,28 @@
 
 > **Purpose**: Define the supported fast test entry points, name the gate kinds and what each proves, and
 > describe the exact-plan demo lifecycle harness, including its command gate, assertion boundary,
-> ownership, and remaining live-validation gaps.
+> ownership, and the gaps between the tree and its live gate contract.
 
 ## TL;DR
 
 - Run Python tests from the repository root with
   `poetry run python -m hostbootstrap.test_all`; do not invoke `pytest` directly.
-- Run Haskell suites from their Cabal project roots with `cabal test all`. The complete Haskell
-  quality gate also includes formatter, linter, and warnings-as-errors build checks.
-- Those fast suites are the **host static gate**. Because the project binary is built host-native on
-  every substrate, they run as ordinary processes of the outer host and pass host-native on macOS,
-  Linux, and Windows alike. Running them natively on Windows is an outer host realization, not a
-  substrate.
+- Run Haskell suites from their Cabal project roots with `cabal test all`. The formatter and linter are
+  not part of these suites; [code-check doctrine](code_check_doctrine.md#where-the-style-tools-run) is
+  canonical for where they run.
+- The **host static gate** is the four legs spelled once in
+  [development_plan_standards.md § JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness):
+  the two Cabal suites, the Python suite, and the Python `check_code` leg. Because the project binary is
+  built host-native on every substrate, they run as ordinary processes of the outer host and pass
+  host-native on macOS, Linux, and Windows alike. Running them natively on Windows is an outer host
+  realization, not a substrate.
 - A **`linux-cpu` substrate gate** is a different thing: its process and POSIX/container effects execute
   inside the realized Linux substrate. Neither gate substitutes for the other.
 - The demo command is `test init` followed by `test run <case-id>|all`. Cases are compiled Haskell with
   validated `CaseId`s; the current `<project>.test.dhall` contains resource overrides and declarative
   variants, not case bodies or lifecycle actions.
-- The test surface is admitted only at the rooted Harness entry.
+- The test surface is described as root-only, but the parser applies no binary-context root gate; see
+  [Current Status](#current-status).
 - Each variant owns a generated config and one exact Harness-scoped `ProjectPlan`; the command drives its
   common forward/reverse interpreters directly. The five-field `TestSuite` contains assertions and no
   lifecycle callback.
@@ -38,40 +42,48 @@ of thing, and none substitutes for another.
 | Gate | Command | Where it runs | What it proves | What it cannot prove |
 |---|---|---|---|---|
 | Host static gate | all four commands in [the canonical host static gate](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness) | an ordinary process of the outer host — macOS, Linux, or Windows | type boundaries, compile-fail diagnostics, codecs, source guards, plans, argv, documentation, and exercised native kernel/process protocols | live provider, container, cluster, or accelerator acceptance |
-| `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, WSL2, or a container | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
-| Container `check-code` | `<project> check-code` in the derived image | inside the built container | the formatter (`fourmolu`) and linter (`hlint`), which are installed in the base image only | behaviour; it is a build-time guardrail |
-| Live demo gate | `hostbootstrap run -- test init` then `test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
+| `linux-cpu` substrate gate | the phase's own declared command | inside the realized Linux substrate — native Linux, a Lima/Colima VM, WSL2, or a container in which the selected lifecycle effects execute | that the gated process and its POSIX/container effects actually ran on the baseline substrate | that the same sources build and self-test on another outer host |
+| Derived-image `check-code` | `<project> check-code` in the derived image build | inside the image build | the project's formatter, linter, and warning-clean build checks over its own sources | behaviour; it is a build-time guardrail |
+| Live demo gate | the Python bootstrapper's `poetry run hostbootstrap run -- test init`, then `poetry run hostbootstrap run -- test run all` | a disposable host with real Docker, provider, and cluster state | end-to-end lifecycle over real infrastructure | anything on a host it did not run on |
 
-A container is named in that list because § JJ identifies a gate host by what it *is* rather than by how
-it came to exist. It is not a cheaper substrate gate, and § JJ says so directly: what qualifies a run is
-where the *effects of the lifecycle under test* execute, not where the binary happens to sit. Running a
-static suite inside a container establishes nothing about a provider or a cluster. A selection whose cases
-kill real processes and observe convergence, take the protected store's run-liveness lock under a real
-project root, or dispatch a signed service to its exit does execute those effects in that Linux, and is
-evidence for it. The distinction is worth stating because the difference between the two is invisible in
-the run's output: both print the same green line.
+Whether a container run is substrate evidence follows one rule from § JJ: what qualifies a run is where
+the *effects of the lifecycle under test* execute, not where the binary happens to sit.
+
+- A container is a valid `linux-cpu` substrate gate host for a selection whose lifecycle effects execute
+  inside it: cases that kill real processes and observe convergence, take the protected store's
+  run-liveness lock under a real project root, or dispatch a signed service to its exit.
+- A static suite run in a container is host static gate evidence for a Linux gate host of that
+  architecture, and is not substrate evidence: it establishes nothing about a provider or a cluster.
+- The live demo gate needs a guest VM, because that gate brings up its own provider guest and therefore
+  needs nested virtualization rather than only a namespace.
+
+The rule is worth stating because the two container runs are indistinguishable in their output: both
+print the same green line.
 
 One consequence is easy to miss on a developer workstation. An outer Linux host with a visible
-accelerator realizes `linux-gpu`, so it is not itself a `linux-cpu` gate host, however Linux it is. The
-`linux-cpu` gate host there is a Linux with no accelerator marker of its own: a container started with no
-accelerator device passed to it, or a guest VM on that workstation, which `doctor` classifies as
-`linux-cpu` because it reports neither `/proc/driver/nvidia/version` nor `/dev/nvidiactl`. A guest VM is
-the realization the **live** demo gate needs, because that gate brings up its own provider guest and
-therefore needs nested virtualization rather than only a namespace; a container is enough for a static
-leg. Either way the gate host's toolchain is the one inside it, and is recorded as such. The base ships the pinned family compiler, which is
-the one every workspace here selects, so a container leg builds with the image's own GHC and its
-evidence row names that. A leg that supplies a compiler from outside the image is doing something the
-pin exists to make unnecessary, and says so.
+accelerator realizes `linux-gpu`, so it is not itself a `linux-cpu` gate host, however Linux it is.
+Detection, absent a bootstrapper statement, classifies a Linux as `linux-cpu` only when neither
+`/proc/driver/nvidia/version` nor `/dev/nvidiactl` exists **and** `nvidia-smi -L` reports no device. The
+`linux-cpu` gate host on such a workstation is therefore a container started with no accelerator device
+passed to it, or a guest VM that passes the same three checks. A WSL2 distribution on an NVIDIA Windows
+host whose `nvidia-smi -L` reports the paravirtualized GPU realizes `linux-gpu`, not `linux-cpu`. Either
+way the gate host's toolchain is the one inside it, and is recorded as such. The base ships the pinned family
+compiler, which is the one every workspace here selects, so a container leg builds with the image's own
+GHC and its evidence row names that. A leg that supplies a compiler from outside the image is doing
+something the pin exists to make unnecessary, and says so.
 
-The independent cluster-phase live gate is the bare binary's `hostbootstrap test run cluster-live` case.
-It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
+The independent cluster-phase live gate is the bare Haskell binary's `hostbootstrap test run cluster-live`
+case, not a Python bootstrapper verb. It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
 run-scoped cluster; the assertion performs read-only Kubernetes observation and concurrently asks Docker to
 assign loopback ports to two isolated same-listener containers without supplying host numbers; the allocation
 bracket requires distinct inspected ports and proves both exact containers absent. The ordinary exact reverse
 then proves labelled-node absence plus survival of the run's durable sentinel.
 
-The host static gate is not the complete quality gate: `fourmolu` and `hlint` live only in the container
-`check-code`. See [code-check doctrine](code_check_doctrine.md).
+The host static gate is not the complete quality gate: it runs neither `fourmolu` nor `hlint`. Those run
+in the repository source gate that `base build` and `base build-and-push` run on the host before Docker,
+in a derived image's `check-code`, and in the base image's tool smoke;
+[code-check doctrine](code_check_doctrine.md#where-the-style-tools-run) is canonical for which sources
+each reads.
 
 A host static gate run is evidence for its **gate host**: the operating system, architecture, and toolchain
 of the process running the gate. Bare metal, a virtual machine, a container, and a WSL2 distribution each
@@ -79,7 +91,7 @@ count as a gate host of their own OS family and architecture. The Linux family i
 because every binary is built host-native and an x86_64 and an arm64 Linux gate host therefore compile and
 self-test different code from one source tree. This is distinct from the outer host's provider and
 substrate; a macOS static pass proves neither Windows portability nor a Linux/container lifecycle. The
-[host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-28-host-portability-acceptance.md) owns the
+[host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md) owns the
 separate dated Windows, macOS, x86_64 Linux, and arm64 Linux runs, including component durations, totals,
 and platform-row coverage. A hardware set is visited once and records every gate-host result it can
 produce, so those runs are collected on the substrate-acceptance visits rather than by convening extra
@@ -88,11 +100,15 @@ machines. The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns co
 ### One toolkit for reading this repository's own sources
 
 A source guard asserts something about a set of modules, so a guard that is wrong about which modules it
-enumerated asserts nothing and does so silently. `core/hostbootstrap-core/test/SourceGuard.hs` is the one
-place the suites read their own sources through, in two halves: a lexical reader (tokens, imports,
-exports, identifier and token-sequence counts, repo-relative paths and module names) and a structural one
-(the package-root bracket, the source-tree walker, the main-library stanza reader, the module-field
-reader, and the significant-line counter). A guard writes what it is asserting, not another file reader.
+enumerated asserts nothing and does so silently. `core/hostbootstrap-core/test/SourceGuard.hs` is the
+core suite's shared toolkit for enumerating and analysing its own sources, in two halves: a lexical
+reader (tokens, imports, exports, identifier and token-sequence counts, repo-relative paths and module
+names) and a structural one (the package-root bracket, the source-tree walker and bulk source reader, the
+main-library stanza reader, the module-field reader, and the significant-line counter). A guard that
+enumerates modules or turns a path into a module name does so through it rather than writing another
+walker. A guard over one named module reads that file with an ordinary `readFile` under the driver's
+UTF-8 locale and, where it needs tokens, hands the text to the lexical half; the demo suite's source guards read the same way but
+without that locale fix (see [Current Status](#current-status)).
 
 The enumeration is checked rather than frozen: the modules the main library declares are exactly the
 module files under its source roots, so a reader that under-reads a field reports the difference as a
@@ -106,10 +122,11 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
 
 - **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
   bytes rather than by decoding to text and re-encoding, so it is a property of the file and not of the
-  process locale or the platform's newline translation. The suite driver additionally fixes the locale
-  encoding to UTF-8 before the runner starts, so a spec that reads a source file or captured command
-  output decodes the same text on every gate host and a governed golden containing non-ASCII text
-  compares equal everywhere.
+  process locale or the platform's newline translation. The core suite driver additionally fixes the
+  locale encoding to UTF-8 before the runner starts, so a spec that reads a source file or captured
+  command output decodes the same text on every gate host and a governed golden containing non-ASCII
+  text compares equal everywhere. The demo suite driver does not apply the fix (see
+  [Current Status](#current-status)).
 - **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
   module-ownership list compares canonical forward-slash paths, so a native path separator cannot make a
   satisfied allow-list fail.
@@ -121,8 +138,9 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
 - **A conditional expectation follows the subject, not the package.** A platform row exists on every gate
   host, so what varies is what it *answers* there: the kernel result where the row can hold its
   obligations, the total refusal where it cannot. A case reads that from the row's own declaration —
-  `posixOwnershipSupported`, `windowsOwnershipSupported`, `windowsGlobalWallSupported` — rather than from a build symbol the suite
-  repeats, so the expectation cannot drift from the subject it is about. A compile-fail fixture expects
+  `posixOwnershipSupported`, `windowsOwnershipSupported`, `hostOwnershipSupported`,
+  `windowsGlobalWallSupported`, and `localGuestAliasSupported` — rather than from a build symbol the
+  suite repeats, so the expectation cannot drift from the subject it is about. A compile-fail fixture expects
   one diagnostic, because the module it names is built everywhere.
 - **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable on
   this gate host asserts the refusal its row declares; it does not disappear. A conditional that changes
@@ -140,8 +158,10 @@ the total both stay honest.
 `CoverageManifest` is where that declaration lives. Each row names a family, the number of cases it has
 on *every* gate host, how many of those drive a platform row, and why the row is conditional; the driver
 assembles the manifest from the same list it hands the runner, so what the manifest counts is what runs.
-The report is the case name itself, which is why reading a gate's output tells you which families
-exercised a real kernel and which recorded a refusal:
+The report is the case name itself, so a gate's output states, per family, whether its row is declared
+to exercise a real kernel or to assert a refusal on that gate host. The outcome a row reports is read
+from its declaration (`familyRowHolds`), not observed from which branch the cases took (see
+[Current Status](#current-status)):
 
 ```text
 CoverageManifest
@@ -170,6 +190,12 @@ The protected-store liveness case separately launches an executed child that rem
 leaves the liveness extent. The parent immediately reacquires the same kernel lock before terminating the
 child. That observation proves the lock descriptor is close-on-exec; a subprocess fixture that exited first
 would not distinguish non-inheritance from ordinary process cleanup.
+
+The protected-store contention probe (the suite re-invoked with its protected-entry probe argument) and
+that liveness case carry no Windows condition, unlike the POSIX ownership row's lock probe. The store's
+exclusive entry is `base`'s portable `hLock`/`hTryLock`, which is `flock`/`fcntl` on POSIX and `LockFileEx`
+on Windows, and the probes reach it through the suite's own re-invocation route rather than a POSIX-only
+primitive, so they exercise the real kernel lock on every gate host.
 
 ### What counts as evidence
 
@@ -211,7 +237,14 @@ Where a capability cannot be exercised on any available gate host, the honest di
 pure classification with values and record the live confirmation as **owed to the acceptance phase that
 declares that hardware**. Coverage that is owed and named is a smaller claim than coverage that is
 simulated, and it is a true one. The normative statement is
-[development_plan_standards.md § NN](../../DEVELOPMENT_PLAN/development_plan_standards.md).
+[development_plan_standards.md § NN](../../DEVELOPMENT_PLAN/development_plan_standards.md#nn-evidence-and-what-cannot-count-as-it).
+
+The two ownership rows are not symmetric. Seven clauses the POSIX row's families assert have no Windows
+case at all — four symbolic-link behaviours and three that are not platform-specific (a probe that
+cannot answer is a fault, the kernel releases the exclusion when the holding process dies, and removing
+an absent object is a fault). `CoverageManifest` freezes the
+deficit at that size, so a Windows row that loses another clause fails, but the deficit is a coverage gap
+in the Windows row rather than a property of Windows (see [Current Status](#current-status)).
 
 ## Current Status
 
@@ -223,9 +256,10 @@ Harness state under project liveness, then evaluates the safety precondition bef
 fresh lease, data root, config, or plan. The engine invokes its forward action,
 opens the assertion environment, runs the selected cases, and for `AssertAcrossRestart` cases invokes an
 intermediate reverse, a protected fresh same-run forward, and an `AfterRestart` assertion before its one final
-reverse and absence assertion. Both assertion phases retain one report row. A non-refusal bring-up failure still enters the same reverse path. Only a refusal that
-the command independently verifies preceded project-resource acquisition becomes `SafetyRefusal` and
-skips reverse; a late refusal is classified as refused but still tears down. The demo generates two
+reverse and absence assertion. Both assertion phases retain one report row. A non-refusal bring-up
+failure still enters the same reverse path. Only a refusal that the command independently verifies
+preceded project-resource acquisition becomes `SafetyRefusal` and skips reverse; a late refusal is
+classified as refused but still tears down. The demo generates two
 project-config variants with different messages and runs the selected compiled cases against each.
 
 The demo's post-reverse assertion checks the host daemon through its current protected claim store,
@@ -273,11 +307,57 @@ records the concrete parser and filesystem command checks. These exercise the ge
 the [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns the live provider, cluster,
 workload, recursive reverse, and same-run durable recreate gate. Dated totals belong in those phase records.
 
-The [Apple Silicon acceptance phase](../../DEVELOPMENT_PLAN/phase-25-apple-silicon-substrate.md) combines
+The [Apple Silicon acceptance phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md) combines
 the pristine demo matrix through Lima and Metal with the native exact-plan direct-Colima lane. Its terminal
 audit checks closed leases, released config and run-data ownership, absent demo VM and daemon, and unchanged
-ambient Colima profiles and Docker context. Both live lanes exercise the same covered tree; their dated
-results and source measurement belong in that phase.
+ambient Colima profiles and Docker context. The same visit hard-kills the demo's host accelerator daemon,
+and separately the `project up` launching it before readiness, on the Darwin kernel, and requires the
+next `project up` to resolve the stale claims without an operator deleting records. Both
+live lanes exercise the same covered tree; their dated results and source measurement belong in that phase.
+
+The [Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md) runs
+the live demo matrix on a native Windows host through the durable launcher
+([durable Windows runs](durable_windows_runs.md)), then a terminal ownership and WSL wall audit: closed
+leases, an empty per-user WSL registration inventory, no active wall record, the original `.wslconfig`
+bytes and file identity restored, and WSL shut down only after that restoration is verified. The same
+visit hard-kills the demo's host accelerator daemon, and separately the `project up` holding its lifecycle
+operation, and requires the supported `project down` and `project up` sequence to resolve the stale claims
+without an operator deleting records. Its dated results and source measurement belong in that phase.
+
+Six gaps separate the tree from this page's target contract:
+
+- **No root gate.** The `test` command's description calls the surface root-only, but the parser applies
+  no binary-context root gate to `test init` or `test run`; root authority rests on the harness safety
+  preconditions and the invocation location. No test pins an off-root refusal. The
+  [`test` and `context` commands phase](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md)
+  owns this gap; [harness workflow](../architecture/harness_workflow.md#current-status) states it in full.
+- **No runtime tripwire on `.data` or the production cluster.** The Harness profile derives the run-scoped
+  cluster name and `.test_data/<runId>`, so no Harness plan names either production target, but no
+  runtime check fails a run that touches them. The
+  [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
+  owns this gap.
+- **The demo suite driver does not fix the locale.** `demo/test/Spec.hs` sets no UTF-8 locale encoding,
+  while `CommandsSpec` reads sources with a locale-decoding `readFile`, so on a gate host whose code page
+  is not UTF-8 the demo leg of the host static gate is outside the portability rule above. The
+  [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns this gap.
+- **Two host-tool cases are compiled out off Windows.** `HostToolSpec.windowsResolutionCases` holds the
+  two Windows `System32` discovery cases inside an `#ifdef mingw32_HOST_OS` region whose `#else` arm is
+  the empty list, so a non-Windows gate host removes both cases rather than asserting what `discover`
+  answers there, and its total stays green two cases smaller, against the
+  [harness portability](#harness-portability) rule that no case is skipped. The
+  [host tools and substrate detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
+  owns this gap.
+- **The Windows ownership row asserts fewer clauses than the POSIX row.** The seven clauses named under
+  [What counts as evidence](#what-counts-as-evidence) have no Windows case. The
+  [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)
+  owns closing it, against a Windows gate host.
+- **The coverage manifest reports declared outcomes, not observed ones.** `CoverageManifest` checks each
+  conditional family's case count, but which branch a row reports comes from `familyRowHolds`; no case
+  records which branch each conditional case completed, so a refusal branch reduced to a no-op still
+  prints a passing report. The target compares the observed row-branch and refusal-branch completions per
+  family against `familyRowCases` and `familyRowHolds`. The
+  [Haskell core scaffolding phase](../../DEVELOPMENT_PLAN/phase-2-haskell-core-scaffolding.md) owns this
+  gap.
 
 ## Supported Fast Test Entries
 
@@ -310,8 +390,10 @@ Cabal-stanza assertion so removing that runtime contract fails the same canonica
 These static suites validate pure plans, argv builders, schema round trips, exact Harness lifecycle
 ordering, private-constructor/public-surface separation, generated-config lifetime, closure-evidence gates,
 and many failure branches. They cannot substitute for native provider, recursive teardown, or durable
-readback gates. They are the host static gate described above, so they are expected to pass host-native on
-macOS, Linux, and Windows.
+readback gates. With the Python `check_code` leg (`poetry run python -m hostbootstrap.check_code`, which
+runs `ruff`, `black`, and `mypy`) they make up the host static gate described above, whose four legs
+[§ JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness)
+spells once, so they are expected to pass host-native on macOS, Linux, and Windows.
 
 ## Demo Command Surface
 
@@ -322,7 +404,9 @@ macOS, Linux, and Windows.
 ```
 
 `test init` requires no production `<project>.dhall`; it writes the executable-sibling
-`<project>.test.dhall`. `test run` reads that file, validates the project-owned typed matrix projection,
+`<project>.test.dhall`. When that file already exists, `test init` refuses and leaves it unchanged;
+`test init --replace` is the only route that overwrites it, for example to regenerate it after a
+test-config schema change. `test run` reads that file, validates the project-owned typed matrix projection,
 owns and writes each selected variant's generated `<project>.dhall`, admits one exact Harness plan, drives
 the common forward interpreter, runs compiled assertions, and drives that plan's reverse projection.
 Terminal close is not inferred from a successful callback: the command must produce settled-destroy
@@ -341,14 +425,16 @@ decoded configuration: `demoTestMatrix` reads `testVariants` and validates each 
 `VariantId`, so adding, renaming, or removing a variant is an edit to the generated
 `<project>.test.dhall` rather than to a Haskell module. Both registries are then validated into one total
 relation: both non-empty and unique, every case has exactly one non-empty row, every reference exists, and
-every variant is used. Construction also rejects duplicate rows/pairs and unknown/orphan references. A
-declaration that is empty, duplicated, or not a valid identity is refused while the matrix is being built —
-`EmptyVariantRegistry`, `DuplicateVariantIds`, and `InvalidVariantDeclaration` respectively — which is
-before the run acquires anything. Selection, generation, and reporting consume that relation.
+every variant is used. Construction also rejects duplicate rows/pairs and unknown/orphan references. An
+empty variant list, duplicate variant names, or a name that is not a valid identity (an empty name among
+them) is refused while the matrix is being built — `EmptyVariantRegistry`, `DuplicateVariantIds`, and
+`InvalidVariantDeclaration` respectively — which is before the run acquires anything. Selection, generation, and reporting consume that relation.
 
 ## Current Safety Boundaries
 
-- `test init` and `test run` are admitted only at the rooted Harness entry.
+- `test init` and `test run` carry no binary-context root gate (see [Current Status](#current-status));
+  `test run` refuses without `<project>.test.dhall`, and its Harness safety preconditions run inside the
+  protected transaction before any variant's lease, data root, config, or plan is allocated.
 - A Harness run deliberately creates real provider VMs, Docker state, and clusters. Its exact plan derives the
   run-scoped cluster name, removable state, semantic exposure intents, and `.test_data/<run-id>` root together;
   runtime-selected ports remain opaque results rather than profile fields. The long gate therefore runs only
@@ -377,24 +463,45 @@ rehydration, is canonical in
 
 ## Live Gate Contract
 
-1. An off-root command is refused before any lifecycle read or mutation.
-2. The documented `<project>.test.dhall` schema and selector have one source of truth.
-3. Instrumented demo bring-up records the exact Harness plan/profile, run-scoped name, and
-   `.test_data/<runId>` path, with an IO tripwire on `.data` and the production cluster.
-4. Concurrent runs prove exclusive ownership; fault injection proves only matching owned resources are
-   rolled back.
-5. `down` and `destroy` visit all child frames before stopping or deleting the parent.
-6. The engine allocates a fresh same-run lifecycle invocation, a workload writes durable bytes, the full
-   stack is destroyed and recreated, and both host and pod read the same bytes before the final settled
-   destroy closes the run.
+The live demo gate is held to the items below, each labelled with how the tree holds it.
+[Harness workflow](../architecture/harness_workflow.md#safety-contract) is canonical for the command-side
+safety contract, and its [Validation](../architecture/harness_workflow.md#validation) section names the
+tests.
+
+| # | Item | How the tree holds it |
+|---|---|---|
+| 1 | an off-root command is refused before any lifecycle read or mutation | **owed**: no root gate exists (see [Current Status](#current-status)) |
+| 2 | the documented `<project>.test.dhall` schema and selector have one source of truth | held: the compiled case registry and the typed matrix projection, pinned by the schema and matrix tests |
+| 3 | demo bring-up records the exact Harness plan/profile, run-scoped name, and `.test_data/<runId>` path, and touches neither `.data` nor the production cluster | recording held by the demo gate; exclusion held by profile derivation alone, with no runtime tripwire (see [Current Status](#current-status)) |
+| 4 | concurrent runs prove exclusive ownership, and an interrupted run releases only resources whose ownership receipts match | held without a production fault hook: cross-profile race and run-lease tests prove exclusion, and interruption is reached either by killing a real process (`RecoveryInterruptionSpec`) or by writing the durable state an interrupted transaction leaves through [`HostBootstrap.Lifecycle.Session.Testing`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs) and re-entering the ordinary entry point |
+| 5 | `down` and `destroy` visit all child frames before stopping or deleting the parent | held: the local root/VM/container process cases, and the live recursive reverse of the worked demo gate |
+| 6 | the engine allocates a fresh same-run lifecycle invocation, a workload writes durable bytes, the full stack is destroyed and recreated, and both host and pod read the same bytes before the final settled destroy closes the run | held: `AssertAcrossRestart` in the engine, exercised live by the worked demo gate |
+
+## Validation
+
+- The host static gate's suites hold every static claim on this page; [§ JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness)
+  spells the gate.
+- `CoverageManifest` holds the per-family case counts and declared refusals of
+  [Harness portability](#harness-portability); `PortabilitySpec` holds its absence guards.
+- `CLISpec` holds the `test init` overwrite policy and the `test run` missing-config and unknown-case
+  refusals.
+- The prepare kill-point is the `SessionSpec` case "a prepare records the unknown phase before the adapter
+  runs": the durable operation record names the effect that may be in flight before any adapter effect
+  runs, so a crash after that point leaves a journaled unknown phase rather than an unrecorded effect.
+- `CompileFailSpec` holds the prepared-pair fixtures: `ForgePreconditionSet.hs` (a caller cannot build an
+  `OperationPreconditionSet` or a `DependencySnapshot`), `ForgePreparedGate.hs` (nor construct or relabel a
+  `PreparedGate`), and `MismatchPreparedPairRoles.hs` (nor pair a `PreparedOperation` with
+  `PreparedPreconditions` from a different operation or attempt).
+- The live items above are held by the phase gates named in [Current Status](#current-status); their dated
+  runs belong in those phases.
 
 ## Related
 
 - [build and run model](../architecture/build_and_run_model.md) — the host-native build the gate kinds follow from.
-- [code-check doctrine](code_check_doctrine.md) — the container-only formatter and linter leg.
+- [code-check doctrine](code_check_doctrine.md) — where the formatter and linter run: the base publisher's host source gate, a derived image's `check-code`, and the base image smoke.
 - [durable Windows runs](durable_windows_runs.md) — why only the long gate needs a durable launcher on Windows.
 - [Haskell toolchain](../languages/haskell.md) — the host-portability idioms a suite uses.
 - [harness workflow](../architecture/harness_workflow.md) — command/DSL/profile contract.
-- [durable state](../architecture/durable_state.md) — `.data` carry and readback gap.
-- [readiness](../architecture/readiness.md) — delivered opaque witness foundation and remaining live-effect integration.
+- [durable state](../architecture/durable_state.md) — the durable root, `.data` carry, and the gates that prove destroy/up/readback.
+- [readiness](../architecture/readiness.md) — readiness witnesses and legible failure.
 - [demo runbook](../operations/demo_runbook.md) — operator-facing demo commands and cautions.

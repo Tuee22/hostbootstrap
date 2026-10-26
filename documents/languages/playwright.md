@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md), [node.md](node.md)
+**Referenced by**: [../README.md](../README.md), [../engineering/derived_dockerfile.md](../engineering/derived_dockerfile.md)
 
 > **Purpose**: Document the Playwright browsers and runtime the base image ships.
 
@@ -22,7 +22,9 @@ local `node_modules` tree runs with
 `NODE_PATH=/opt/build/node/global/lib/node_modules` so Node resolves the
 base-provided package.
 
-`/root/.npm` is removed after install to keep the image lean.
+The npm package cache stays in the image at `/opt/cache/npm` (`NPM_CONFIG_CACHE`, see [node.md](node.md)).
+The install layer's `rm -rf /root/.npm` removes only npm's default per-user directory, which that setting
+leaves unused for the cache; it does not prune the cache.
 
 The `hostbootstrap-demo` worked consumer (`demo/`) runs its end-to-end suite with
 this Playwright runtime through the standardized test harness. The Harness-scoped plan's common
@@ -32,9 +34,11 @@ current-frame Chain brings up the kind cluster, loads the already-built
 `Web` variant — to bind the warp/wai webservice on its configured public port, default `:8080`), so the cluster's
 NodePort serves before any case runs. The `e2e-tabs` case in the harness's case
 matrix does not bring up its own stack; it only starts the same project image as
-a one-off container with `--network host` (the VM host network). That container
-receives `BASE_URL` only from the exact runtime-resolved web exposure in its own scope, sets `NODE_PATH` to
-`/opt/build/node/global/lib/node_modules` as above, and runs `playwright test`
+a one-off container joined to the Docker `kind` network (`--network kind`). That container receives
+`BASE_URL=http://<run-scoped control-plane node>:30080`, the web Service's cluster-internal NodePort reached
+by node name on that network; `EXPECTED_MESSAGE` for the active variant; `EXPECTED_ACCELERATOR_BACKEND`
+only when the harness's daemon probe has reported a serving backend; and `NODE_PATH` set to
+`/opt/build/node/global/lib/node_modules` as above. It then runs `playwright test`
 from `/workspace/demo/playwright`. Its `playwright.config.ts` declares one project
 per engine, so every spec runs on all three browsers the base image installs
 (Chromium, Firefox, WebKit) with no extra download at validation time. The config

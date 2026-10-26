@@ -28,7 +28,7 @@ Every governed Markdown document under `documents/` starts with this block:
 # Title
 
 **Status**: Authoritative source | Supporting reference | Draft
-**Supersedes**: N/A | relative/path/to/old.md
+**Supersedes**: N/A | relative/path/to/old.md | short statement of the description this page replaces
 **Referenced by**: [name](relative/link.md), [other](relative/other.md)
 
 > **Purpose**: One-sentence summary.
@@ -38,7 +38,8 @@ Rules:
 
 - the `# Title` line is the first non-empty line in the file
 - `**Status**:` is required
-- `**Supersedes**:` is required; use `N/A` when nothing is superseded
+- `**Supersedes**:` is required; use `N/A` when nothing is superseded, a relative path when a file is,
+  and a short statement when the page replaces a description that had no file of its own
 - `**Referenced by**:` is required, even when there is only one cross-reference
 - `**Referenced by**:` is a curated, non-exhaustive ownership/navigation list of documents that
   conceptually consume the page's contract; it is not a mechanically reciprocal graph, and a listed
@@ -127,9 +128,14 @@ Rules:
 
 ## Naming And Linking
 
-- file names are lowercase `snake_case` with a `.md` suffix
-- `README.md`, `AGENTS.md`, `CLAUDE.md`, and `LICENSE` are the only permitted ALL-CAPS file names
-- avoid dates, version numbers, and project names in filenames — they rot; describe the topic
+- under `documents/`, file names are lowercase `snake_case` with a `.md` suffix, and `README.md` is the
+  one exception
+- at the repository root, `README.md`, `AGENTS.md`, `CLAUDE.md`, and `LICENSE` are the only ALL-CAPS
+  file names
+- these naming rules do not govern other trees: `DEVELOPMENT_PLAN/` phase documents follow the plan standard's
+  `phase-NN-name.md` form, and source files follow their language's conventions
+- avoid dates and version numbers in `documents/` file names — they rot; name the topic, which may be
+  a component of this repository
 - relative Markdown links are required for in-repo references; references to consuming repositories
   use absolute URLs
 - each governed doc links to at least one other governed source
@@ -142,15 +148,24 @@ Rules:
 - keep one canonical home per topic
 - *substrate*, *frame*, and *cordon* are defined once, in the
   [documents index](README.md#glossary). A page using one of them in a narrower sense says which sense
-  it means rather than redefining the term
+  it means rather than redefining the term; for *frame*, the glossary names three senses (topology,
+  host frame, frame table), and an unqualified "frame" means the topology sense
 - keep mutable phase/sprint status, dependency order, closure criteria, and dated implementation
   evidence in `DEVELOPMENT_PLAN/`; a topic document may summarize the current defect only as needed to
   prevent its target contract from being mistaken for implemented behavior
+- outside `DEVELOPMENT_PLAN/`, cite a phase by its name and a link to its phase document, never by a
+  bare number, and do not cite sprints
+  ([§ J](../DEVELOPMENT_PLAN/development_plan_standards.md#j-readme-and-documents-harmony)). The rule
+  covers comments and strings in the source and test trees as well as `documents/`, and
+  `checkArchitectureDrift` refuses the word "phase" or "sprint" followed by a space and a digit there
+  (see [Validation](#validation))
 - describe `hostbootstrap` as the reusable host-management layer: a Haskell `hostbootstrap-core`
   library plus a thin Python bootstrapper, consumed by project binaries that extend the core
-- the supported configuration substrate is typed Dhall; no governed doc may present shell-inherited
-  environment values as a supported configuration source, except the documented invocation-context
-  seam between the Python bootstrapper and the project binary
+- the supported configuration format is typed Dhall; no governed doc may present shell-inherited
+  environment values as a supported configuration source. The one environment input the Python
+  bootstrapper sets on the project binary is the host statement — the detected substrate and
+  architecture pair — which is a statement about the host, not configuration; its canonical home is
+  [who detects the host](architecture/python_haskell_boundary.md#who-detects-the-host)
 - when a rule is non-obvious, a tight WRONG/RIGHT example pair is encouraged, but a WRONG example
   must always be paired with the reason it is wrong
 - link the owning module as the signature reference and describe its contract; do not maintain a
@@ -158,7 +173,7 @@ Rules:
   it drifts silently, and a reader designing against a drifted sketch designs against nothing. Named
   types, constructors and functions in backticks, a table of the cases a closed kind admits, and a
   link to the module are the supported way to describe an API; a fenced `haskell` block restating its
-  declarations is not
+  declarations is not. The validator does not yet enforce this rule (see [Current Status](#current-status))
 
 ## Brevity
 
@@ -188,129 +203,159 @@ it. Ask the question; do not expect the validator to ask it for you.
 ## Validation
 
 The mechanical documentation validator is the `HostBootstrap.DocValidator` module in
-`hostbootstrap-core`, exercised by the `hostbootstrap-core-test` suite (`DocValidatorSpec`) so it
-runs through the project's canonical code-check. It verifies:
+`hostbootstrap-core`. Its entry point `validateRepo` takes a repository root and returns every
+`Violation` it finds — a repository-relative file and a one-line message, which `renderViolation`
+prints — sorted by file. `findRepoRoot` locates that root by walking up from a directory to the first
+one that holds both `documents/` and `DEVELOPMENT_PLAN/`. Every check below is exported with the same
+root-first argument shape, so a project in the family reuses the floor by calling `validateRepo` on its
+own root or by composing the individual checks.
 
-- required metadata lines for governed `documents/` content
-- required structure for the broad doctrine docs (the `documents/architecture/` suite carries a
-  `## TL;DR` or `## Executive Summary`)
-- governed root-document metadata lines (`Status`, `Supersedes`, `Canonical homes`, purpose)
-- relative link resolution for governed docs, governed root docs, and phase-plan docs; external URLs,
-  pure anchors, and placeholder-shaped targets are intentionally skipped
-- root `README.md` references to both `documents/` and `DEVELOPMENT_PLAN/`
-- `DEVELOPMENT_PLAN/` phase documents retaining their `## Documentation Requirements` section
-- lowercase `snake_case` file naming under `documents/` (only `README.md` is exempt)
-- the canonical `documents/` taxonomy: every top-level category is one of
-  `architecture`, `engineering`, `operations`, `languages` (the declared
-  `allowedTaxonomy` set)
+`DocValidatorSpec`, in the `hostbootstrap-core-test` suite, runs `validateRepo` over this repository and
+fails on any violation. The validator therefore runs wherever `cabal test all` runs from `core/`: the
+first leg of the host static gate
+([§ JJ](../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness)),
+and one of the repository quality gates that `hostbootstrap base build` and
+`hostbootstrap base build-and-push` complete before any image is built.
+`poetry run python -m hostbootstrap.check_code` does not run it. `cabal test all` is the test leg, not
+the whole Haskell quality gate: [code-check doctrine](engineering/code_check_doctrine.md) is the
+canonical home of where the formatter and linter run, and every `cabal build` already holds `-Werror`
+through each package's `common warnings` stanza.
 
-It additionally enforces the plan doctrine that
+### Checks over governed documents
+
+| Check | Rule | What it reads |
+|---|---|---|
+| `checkGovernedMeta` | The first non-empty line is a `# Title`; the `**Status**:`, `**Supersedes**:` and `**Referenced by**:` lines and the `> **Purpose**:` blockquote are present; there is no YAML front-matter. It checks presence only: the Status value and the Supersedes form are not read. | every Markdown file under `documents/` |
+| `checkBroadDoctrine` | A `## TL;DR` or `## Executive Summary` heading is present. | `documents/architecture/` only |
+| `checkNaming` | The file name is lowercase `snake_case` with a `.md` suffix; `README.md` is exempt. | `documents/` |
+| `checkTaxonomy` | Every directory directly under `documents/` is one of `allowedTaxonomy`: `architecture`, `engineering`, `operations`, `languages`. | `documents/` |
+| `checkRootDoc` | The document exists; its first non-empty line is a `# Title`; its `**Status**:` line reads `Governed orientation document` (`README.md`) or `Governed entry document` (`AGENTS.md`, `CLAUDE.md`); the `**Supersedes**:` and `**Canonical homes**:` lines and the purpose blockquote are present. | the three root documents |
+| `checkReadmeRefs` | The root `README.md` mentions both `documents/` and `DEVELOPMENT_PLAN/`. | root `README.md` |
+| `checkLinks` | Every relative link target resolves to a file or a directory. Skipped: links inside fenced blocks; external targets (`http://`, `https://`, `mailto:`); pure `#fragment` links; root-absolute targets starting with `/`; and targets containing `...`, `<`, `>` or a space. | `documents/`, every Markdown file under `DEVELOPMENT_PLAN/`, and the root documents |
+| `checkLinkAnchors` | A cross-document link's `#fragment` names a heading of its `.md` target, under `headingSlug`. A same-page `#fragment` link is not checked, and a link to a missing or non-Markdown target is left to `checkLinks`. | the same files as `checkLinks` |
+| `checkIdentifierResolution` | The leading token of each inline code span, when it is shaped `CapWords`, `camelCase` or dotted, appears as a word of the source corpus, or (dotted) as a module name or with its last component a word, or is in `identifierAllowlist`. | inline code spans outside fenced blocks, in `documents/` only |
+| `checkRootDocStatus` | A line that both references a phase by number (a `phase-NN-` link, or "Phase" followed by the number) and names `Done`, `Active` or `Planned` agrees with that phase's row in [the plan index](../DEVELOPMENT_PLAN/README.md). A status claim with no numbered reference is not seen. | the three root documents |
+| `checkEntryDocAgreement` | `AGENTS.md` and `CLAUDE.md` have the same number of lines, and each `CLAUDE.md` line equals its `AGENTS.md` line after the declared `audienceMapping` replacements. | `AGENTS.md`, `CLAUDE.md` |
+| `checkArchitectureDrift` | Two rules. The modules the architecture removed do not exist, and the forbidden boundary names do not appear in the modules that once carried them; each refusal names the phase document to rewrite and its rationale anchor. And no line carries the word "phase" or "sprint" followed by a space and a digit. | the named source modules; then `documents/` and every `.hs` and `.py` file under `driftSourceRoots` — `src`, `internal`, `app`, `test` and `provider-live` of `hostbootstrap-core`, the demo's `src`, `app` and `test`, `hostbootstrap/` and `tests/` — except `DocValidatorSpec.hs`, the one name in `driftCitationExemptions` |
+
+`checkIdentifierResolution` answers a narrower question than "does this name exist". Its corpus is every
+word, comments and string literals included, of the `.hs`, `.py`, `.dhall`, `.purs` and `.cabal` files
+under `corpusRoots`: the source, internal, app, test, provider-live and Dhall trees of
+`hostbootstrap-core`, the demo's source, app, test and web-source trees, `hostbootstrap/`, and `tests/`.
+A resolved name is one somebody has written somewhere in those trees; it is not proved declared or
+exported, so a name the validator's own forbidden lists spell resolves. A span that starts with `--`, or
+whose leading token is lowercase, `snake_case` or kebab-case, is not a candidate, so command-line flags
+and lowercase function names are not resolved. What it cannot resolve is compared against
+`identifierAllowlist` — reviewed, grouped by reason, and deliberately small — rather than skipped.
+
+### Checks over the development plan
+
+These hold the doctrine that
 [development_plan_standards.md](../DEVELOPMENT_PLAN/development_plan_standards.md) states, because a
-doctrine nothing checks is a preference:
+doctrine nothing checks is a preference. Each reads the `phase-NN-*.md` documents unless the table says
+otherwise.
 
-- § A and § E: the `phase-NN-*.md` set is contiguous from 0; a phase's `Depends on` names only strictly
-  lower-numbered phases; no phase title announces a reversal; and no `Remaining Work` section — phase-level
-  or sprint-level — cites a higher-numbered phase. That last one is where the ordering rule is actually
-  broken: "this closes when a later phase lands", written in prose, is a claim the `Depends on` field never
-  sees. A forward link in `## Phase Objective` or `#### Validation` says who owns what and stays legal.
-- § C and § G: every phase carries its header fields and a `## Documentation Requirements` section; each
-  phase's status matches its `DEVELOPMENT_PLAN/README.md` row; every sprint declares a status from the
-  closed vocabulary and carries no `Blocked by`; an `Active` phase and an `Active` sprint each carry a
-  non-empty `Remaining Work`; and a `Done` sprint's begins "None".
-- § I: every legacy-ledger row names exactly one deleting phase, read from its `Deleted by` cell, and that
-  phase resolves.
-- § II: no phase declares more than one non-baseline substrate.
-- The contracts' own rule: every lettered section beneath `## hostbootstrap-Specific Contracts` opens with
-  an `**Owning phase**:` line linking one phase document.
+| Check | Rule (plan section) |
+|---|---|
+| `checkDocRequirements` | Every phase document has a `## Documentation Requirements` section (§ C). |
+| `checkPhaseNumbering` | The phase documents are numbered contiguously from 0, with no duplicate (§ E). |
+| `checkPhaseHeader` | The `**Status**`, `**Depends on**`, `**Substrates**`, `**Gate**` and `**Gate kind**` header fields are present; the status is `Done`, `Active` or `Planned`; the gate kind is `self-verifying` or `deferred` (§ G). |
+| `checkPhaseHeaderFields` | The header carries no field outside the declared set: those five plus `**Gate evidence**` and `**Evidence covers**` (§ G). |
+| `checkPhaseStatusHarmony` | The status table in `DEVELOPMENT_PLAN/README.md` has exactly one well-formed row per phase, joined on number and link, and each row's status equals that phase's header (§ J). |
+| `checkPhaseOrdering` | `**Depends on**` names only strictly lower-numbered phases (§ A). |
+| `checkAcceptanceTerminal` | No phase depends on a phase whose `**Substrates**` is `apple-silicon`, `nvidia` or `windows` (§ II). |
+| `checkRemainingWorkOrdering` | No phase-level `## Remaining Work` or sprint-level `#### Remaining Work` links a higher-numbered phase document. A forward link in `## Phase Objective` or `#### Validation` says who owns what and stays legal (§ A). |
+| `checkNoReversal` | No phase or sprint title carries a reversal word such as `Superseded`, `Historical` or `Retired` (§ A). |
+| `checkSprintStructure` | Every sprint title carries a `Done`, `Active` or `Planned` tag that equals its `**Status**` field; no sprint carries `**Blocked by**`; an `Active` sprint's `#### Remaining Work` is not empty (§ C, § G). |
+| `checkDoneSprintRemainingWork` | A `Done` sprint has a `#### Remaining Work` that begins with `None` (§ C, § G). |
+| `checkDonePhaseRemainingWork` | A `Done` phase's `## Remaining Work` begins with `None`, the same shape as the sprint rule (§ C). |
+| `checkActivePhaseRemainingWork` | An `Active` phase has a non-empty section headed exactly `## Remaining Work` (§ C). |
+| `checkActivePhaseOwnsRemainingWork` | An `Active` phase's `## Remaining Work` names at least one sprint, every sprint it names is defined in the phase, and at least one of them is `Active` (§ C). |
+| `checkSubstrateBudget` | Every `**Substrates**` value is one of `none`, `none (static)`, `linux-cpu`, `apple-silicon`, `nvidia`, `windows`, and no phase declares more than one non-baseline substrate (§ II). |
+| `checkImplementationPaths` | Every path a sprint's `**Implementation**` field cites exists from the repository root; a globbed citation is a scope and is not resolved (§ D). |
+| `checkGateEvidence` | A `Done` phase records at least one `**Gate evidence**` row, and every row has the form date ; host ; backticked command ; `pass` ; covers value. A self-verifying phase covers `in-gate`; a deferred phase covers a SHA-256 digest, names `**Evidence covers**` paths, and the digest measured over those paths today equals the recorded one (§ II). |
+| `checkGateEvidenceLegs` | When a phase records evidence, every command leg its `**Gate**` names appears in some evidence row, compared on non-flag tokens as a subsequence. A leg is one `&&`-separated part of a backticked span whose first word is `cabal`, `poetry`, `hostbootstrap`, `python`, `python3` or `docker` (§ G). |
+| `checkLegacyLedger` | Each row of [the legacy ledger](../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md) names exactly one deleting phase in its `Deleted by` cell, and that phase document exists (§ I). Reads the ledger. |
+| `checkContractOwnership` | Every lettered section beneath `## hostbootstrap-Specific Contracts` carries an `**Owning phase**:` line linking one phase document. Reads the plan standard. |
+
+`checkImplementationPaths`, `checkArchitectureDrift`, `checkIdentifierResolution` and `checkGateEvidence`
+relate a document to the tree rather than to another document, which is what makes a green run mean
+something: the first three ask whether a name is still there, and the last asks whether the source a run
+measured has changed since — the question a status field cannot answer about itself.
 
 The validator checks that `**Referenced by**:` exists and that its links resolve. It deliberately does
 not enforce literal backlink reciprocity: this field is curated conceptual-consumer metadata, not a
 complete graph. Remove an entry when the named document no longer consumes the contract conceptually;
 do not manufacture a reciprocal prose link solely to satisfy metadata.
 
-The individual checks (`checkGovernedMeta`, `checkRootDoc`, `checkBroadDoctrine`,
-`checkDocRequirements`, `checkLinks`, `checkReadmeRefs`, `checkNaming`, `checkTaxonomy`) are exported
-from `HostBootstrap.DocValidator` so the same mechanical floor can be reused across the project
-family. The plan-doctrine checks (`checkPhaseNumbering`, `checkPhaseHeader`, `checkPhaseStatusHarmony`,
-`checkPhaseOrdering`, `checkRemainingWorkOrdering`, `checkNoReversal`, `checkSprintStructure`,
-`checkActivePhaseRemainingWork`, `checkActivePhaseOwnsRemainingWork`, `checkDoneSprintRemainingWork`,
-`checkDonePhaseRemainingWork`,
-`checkSubstrateBudget`, `checkAcceptanceTerminal`, `checkLegacyLedger`, `checkContractOwnership`) are
-exported alongside them.
+### Negative fixtures
 
-`checkDonePhaseRemainingWork` is the newest and exists because of a gap the others left open. Its three
-neighbours cover a sprint that is `Done`, a phase that is `Active`, and a sprint's owner; the one
-combination nothing read was a *phase-level* `## Remaining Work` against the phase's own `**Status**`,
-and that is the combination that occurred — a phase sat `Done`, with a current gate-evidence row, above a
-section still declaring its live half owed. A check family is only as good as its least-covered corner,
-so the rule is stated in the same shape as its sprint counterpart: the section must begin with `None`.
+`DocValidatorSpec` also builds miniature repositories in temporary directories and asserts that each
+broken shape produces its violation, so a check that silently stops firing fails the suite. Every check
+in the two tables has such a fixture except those [Current Status](#current-status) lists. Three
+fixtures also assert an **absence**, because a check that flags everything means nothing:
 
-Four checks relate a document to the tree rather than to another document, which is the
-distinction that decides whether a green validator means anything: `checkImplementationPaths` resolves
-every path a sprint cites, `checkArchitectureDrift` refuses a shape the architecture removed,
-`checkIdentifierResolution` refuses a backticked name no source declares, and
-`checkGateEvidence` recomputes the digest a phase's gate evidence claims to cover. The first three answer
-"does this name still exist"; the last answers "has the source this run measured changed since", which
-is the question a status field cannot answer about itself.
+- `checkRemainingWorkOrdering`: a sprint's `#### Validation` that links a higher-numbered phase produces
+  no violation; only the two `Remaining Work` citations are reported.
+- `checkContractOwnership`: a core principle with no owner, and a contract that declares its
+  `**Owning phase**:` line, produce no violation, while a contract that only mentions a phase is still
+  reported. Citing a phase inside a contract does not stand in for the declared field.
+- `checkLegacyLedger`: a phase cited in a row's reason column does not count toward that row's deleting
+  phases.
 
-`checkIdentifierResolution` is the one with the widest reach, because a canonical contract page can
-otherwise describe a vocabulary the compiler has never seen while every other check passes above it. It
-reads the backticked spans of every governed page, outside fenced blocks, and resolves the identifier
-each one starts with against the words and module names of the source tree. Prose legitimately names
-things abbreviated or owned elsewhere, so what it cannot resolve is compared against the explicit
-`identifierAllowlist` — reviewed, grouped by reason, and deliberately small — rather than skipped.
+### Rules held by review
 
-Five further checks compare a document against another document, or against the standard's own
-declarations: `checkRootDocStatus` compares a root document's status claims with the plan's table,
-`checkEntryDocAgreement` compares `AGENTS.md` and `CLAUDE.md` modulo the declared `audienceMapping`,
-`checkLinkAnchors` resolves a link's `#fragment` against the target document's own headings,
-`checkPhaseHeaderFields` refuses a phase-header field § G does not declare, and
-`checkGateEvidenceLegs` requires every command leg a `**Gate**` names to appear in that phase's
-`**Gate evidence**` row. The architecture drift guard also reads the suites, not only the source, with
-one reviewed by-name exemption for the validator's own fixture — which authors synthetic plan documents
-and so legitimately contains plan text.
+These rules of this standard are not read by any check. A green validator says nothing about them.
 
-Each has a negative fixture proving it fires. The two scoped checks also assert an **absence** — a
-forward link in a `#### Validation` section, and a bare phase citation inside a contract, must produce no
-violation — because a check that flags everything is not a check that means anything.
+| Rule | Why no check reads it |
+|---|---|
+| The `**Status**:` value is one of the metadata-block values, and `**Supersedes**:` takes one of its three forms | `checkGovernedMeta` reads presence only |
+| A broad page outside `documents/architecture/` carries a summary section | convention there; `checkBroadDoctrine` reads only `documents/architecture/` |
+| A page mixing current and target behaviour carries `## Current Status`; a gated contract carries `## Validation` | needs a judgement about the page's content |
+| Each governed page links at least one other governed source | not implemented; reviewed |
+| `**Referenced by**:` is reciprocal | deliberately not a rule (above) |
+| One canonical home per topic, declarative present tense, no chronology, a narrower sense of a glossary term is declared | needs a judgement about the prose |
+| A page past roughly 300 lines asks whether it should split | advisory ([Brevity](#brevity)) |
+| No fenced `haskell` block restates declarations | owed (see [Current Status](#current-status)) |
 
-From `core/`, `cabal test all` exercises the validator through the Haskell test suites and fails when a
-governed document drifts from the rules above. That command is the test leg, not the complete Haskell
-quality gate: the canonical code-check also runs the formatter check, linter, and a warnings-as-errors
-build.
+## Current Status
 
-### Rules the validator enforces mechanically
+The checks in the two tables above are implemented and run in every `cabal test all` from `core/`. The
+following parts of the documentation and plan doctrine are stated but not yet checked, and the
+[documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-25-documentation-reconciliation.md) owes
+each of them:
 
-Each rule below is normative, and each has a check and a negative fixture. The
-[documentation reconciliation phase](../DEVELOPMENT_PLAN/phase-29-documentation-reconciliation.md) owns
-the implementations, one check per sprint.
-
-- **A backticked identifier in governed prose names something that exists.** A module, type, function,
-  constructor or CLI flag written in backticks resolves against the tree. This is the rule with the
-  widest reach: a canonical contract page can otherwise describe a vocabulary the compiler has never
-  seen, and every other check here will pass while it does. Prose that names a type abstractly is
-  legitimate — [the plan standard](../DEVELOPMENT_PLAN/development_plan_standards.md) says so about its
-  own shortened names — so the check carries an explicit reviewed allowlist rather than a silent skip.
-  (`checkIdentifierResolution`.)
-- **A root document does not contradict the plan's status table.** `README.md`, `AGENTS.md` and
-  `CLAUDE.md` may summarize status and must not restate it; where they do make a claim, it agrees with
-  [the plan index](../DEVELOPMENT_PLAN/README.md). (`checkRootDocStatus`.)
-- **`AGENTS.md` and `CLAUDE.md` agree.** The two are one document with two audiences. They differ only
-  in the words naming that audience, and that mapping is declared rather than inferred.
-  (`checkEntryDocAgreement`, `audienceMapping`.)
-- **A relative link resolves including its anchor.** A `#section-name` fragment names a heading the
-  target actually has. (`checkLinkAnchors`.)
-- **A phase header carries no field § G does not declare.** An undeclared field is a convention one
-  phase invented and the others do not share. (`checkPhaseHeaderFields`.)
-- **An evidence row records every leg its gate names.** A phase that names a composed gate and records
-  one half of it is claiming the whole. (`checkGateEvidenceLegs`.)
-- **The architecture-drift guard reads the test tree as well as the source tree.** A rule about how
-  source may cite a phase applies to the suites too, or it is a rule about where the check looks.
-  (`checkArchitectureDrift`, `driftSourceRoots`.)
-
-### Prior extensions
-
-The reconciliation phase also carries architecture absence guards and phase-name citation checks over
-governed documents and production source. Each architecture refusal names the constructive phase to
-rewrite and its rationale; negative fixtures prove the checks detect removed authority modules and
-unrestricted service handlers.
+- **identifier resolution beyond `documents/`, against declarations.** `checkIdentifierResolution` reads
+  only `documents/`, so a backticked name in `DEVELOPMENT_PLAN/` or a root document is never resolved,
+  and it resolves against a word corpus rather than against the exact declarations of the tree;
+- **resolution of cited test cases.** No check confirms that a spec or test case a sprint's
+  `#### Validation` cites exists in the suites;
+- **gate legs for every declared command.** `checkGateEvidenceLegs` compares only legs whose first word
+  is one of its six recognized commands, so a leg run through any other command — a project binary, for
+  example — is not compared against the evidence row;
+- **the fenced-`haskell` ban** in [Content Rules](#content-rules), which no check enforces;
+- **anchor resolution at its full reach.** `checkLinkAnchors` does not check a same-page `#fragment`,
+  counts a `#`-prefixed line inside a fenced block as a heading, drops underscores from a slug where
+  the GitHub renderer keeps them, and gives a repeated heading no `-1`, `-2` suffix;
+- **the plan-doctrine checks without gaps.** `checkSprintStructure` passes an `Active` sprint that has no
+  `#### Remaining Work` section at all, and a sprint whose body has no `**Status**` field, so its title
+  tag is its only status. The phase header block ends only at a literal `## ` line, so a phase with no
+  header `**Status**` can take its first sprint's. `checkGateEvidence` takes its evidence rows and
+  `**Evidence covers**` from anywhere in the document rather than from the header block.
+  `checkRemainingWorkOrdering` reads only links, so a later phase cited in prose inside a Remaining Work
+  section passes. `checkContractOwnership` passes a plan standard whose contracts heading is renamed or
+  holds no lettered section. `checkLegacyLedger` skips a row with too few cells, and for a row whose
+  `Deleted by` cell is blank it reads the last non-blank cell instead, so a phase the `Why` cell links
+  counts as the deleting phase. `checkSubstrateBudget` refuses a
+  comma-separated declaration such as `linux-cpu, nvidia` that the plan standard permits;
+- **one verdict on every host.** Path resolution in `checkLinks`, `checkLinkAnchors`,
+  `checkImplementationPaths` and the ledger check inherits the host filesystem's case rule, so a link
+  whose case differs from the file passes on a case-insensitive host. Files are decoded under the
+  process locale and its native newline mode rather than as strict UTF-8 with any trailing carriage
+  return stripped, and `checkReadmeRefs` reads lazily. `checkRootDocStatus` pairs every phase a line
+  references with every status word on it, so a line naming two phases can report a false disagreement;
+- **negative fixtures for the deferred-evidence rules** of `checkGateEvidence`: an `in-gate` row on a
+  deferred phase, a digest row on a self-verifying one, a deferred `Done` phase naming no
+  `**Evidence covers**` paths, and a recorded digest that no longer matches; and likewise fixtures for
+  `checkDonePhaseRemainingWork`, `checkActivePhaseOwnsRemainingWork`, and the drift guard's reading of
+  the test roots, whose fixture writes numeric citations only under `documents/` and the source tree.

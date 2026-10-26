@@ -2,7 +2,7 @@
 
 **Status**: Supporting reference
 **Supersedes**: harbor.md
-**Referenced by**: [../README.md](../README.md), [../architecture/network_reachability.md](../architecture/network_reachability.md), [derived_project_standards.md](derived_project_standards.md), [build_release.md](build_release.md)
+**Referenced by**: [../README.md](../README.md), [../architecture/network_reachability.md](../architecture/network_reachability.md), [derived_project_standards.md](derived_project_standards.md), [cluster_lifecycle.md](cluster_lifecycle.md), [registry_credentials.md](registry_credentials.md), [../languages/cluster_tooling.md](../languages/cluster_tooling.md)
 
 > **Purpose**: Document the in-cluster OCI registry a downstream project stands up to push its own
 > arch-explicit image, describe the legal proxy route, and explain how the downstream
@@ -22,7 +22,22 @@ operation, and topology-specific plan. For this topology, proxy delivery is sele
 and rendering necessarily emits `storage.redirect.disable: true`. The
 [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
 owns the generic proof-gated plan; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
-owns its renderer, adoption, and live repeated-push/persistence evidence.
+owns its renderer, adoption, and live push and persistence evidence.
+
+Two demo bindings are weaker than that plan contract; the canonical statement is in
+[network reachability](../architecture/network_reachability.md#current-status). The registry's S3
+`regionendpoint` is rendered from `objectStoreClusterEndpoint`, a second mint of the same literal the plan's
+store endpoint is minted from, not read from the plan, so the plan and the rendered registry configuration
+agree by convention only. The blob-route observation carries runtime information only in the probe's HTTP
+status and in whether a `Location` was issued: `parseBlobRouteAnswer` copies the service, port, runtime
+identity, and revision from the plan, so nothing in the registry's answer identifies the registry, store,
+plan, or revision. The composition-and-network-algebra phase owns the core side of both gaps and the
+worked-demo phase owns their adoption in the demo.
+
+The demo's live gate does not pull the pushed image back through the resolved registry exposure, before or
+after a registry pod restart, and has no separate repeated-push case; its persistence case reads only the tag
+list over the internal NodePort (see [Validation](#validation)). The
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns that pull-after-restart proof.
 
 The hostbootstrap core **does not build or push your project image.** The thin Python bootstrapper
 materializes the host-native project binary. Once that binary is running, a project-supplied build-image
@@ -49,9 +64,9 @@ projected only from the exact runtime-owned loopback relay; there is no registry
 Kind/nvkind config. Relay inspection proves the selected loopback mapping before a client receives it. There
 is no registry authentication or TLS boundary.
 
-The `hostbootstrap-demo` consumer (`demo/`) is intended to drive this end-to-end. Its
-`deploy-registry` and `push-image` steps belong to the container frame of
-`demoChainFor :: Substrate -> ProjectConfig -> [Step]`, the demo's contributed chain, and `project
+The `hostbootstrap-demo` consumer (`demo/`) drives this end-to-end. Its
+`deploy-registry` and `push-image` steps belong to the container frame of `demoChainFor`, the demo's
+contributed chain (its signature is spelled in [run models](../architecture/run_models.md)), and `project
 up` interprets them as it descends into that frame. `deploy-registry` applies a
 single Deployment + internal NodePort Service with `kubectl` and waits for the
 Deployment to be Ready; the registry pod **pulls** `registry:2` itself
@@ -60,15 +75,17 @@ platform from the multi-arch manifest. It is **not** `kind load`-ed: `kind load
 docker-image` (a `docker save` + `ctr import --all-platforms`) cannot import a
 multi-arch image (it fails `content digest … not found`).
 `push-image` loads the project image into the kind nodes, tags it, and pushes it through the exact resolved
-registry exposure as `library/hostbootstrap-demo:demo`. The push is registered in the
+registry exposure as `library/hostbootstrap-demo:demo` (the tag names neither substrate nor arch; see
+[the convention](#recommended-convention-arch-explicit-tags-only) for why the demo is exempt). The push is registered in the
 live stack that `project up` stands up, but registration and `/v2/` readiness are
 not proof that the blob route works.
 
 `hostbootstrap-core` does not own the registry resource — it is a property of the demo's
 contributed chain step (`deployRegistryAction` in
 `demo/src/HostBootstrapDemo/Commands.hs`). A derived project that deploys a registry contributes its
-own resource step, but the target API requires it to construct that step from core's opaque registry
-plan rather than independently choosing endpoint strings and redirect flags.
+own resource step, and the API requires it to construct that step from core's opaque registry plan rather
+than independently choosing endpoint strings and redirect flags: `deployRegistryAction` and `pushImageAction`
+both derive their plan from the resolved exposure through `registryPlanFromExposure`.
 
 ## Persistent storage: S3-backed
 
@@ -81,7 +98,9 @@ default `local-path` StorageClass) + an `object-store-credentials` Secret, follo
 the container frame reusing the base image's `mc` client through the exact resolved store exposure. A client
 spelling of localhost is not itself listener or ownership proof; the relay inspection supplies both. The registry's storage
 stanza is supplied by a mounted `registry-config` ConfigMap declaring only the `s3`
-driver pointing at `object-store.default.svc:9000`; the two S3 credentials are layered in by
+driver pointing at `object-store.default.svc:9000` (its `regionendpoint` is rendered from
+`objectStoreClusterEndpoint`, not from the registry plan; see [Current Status](#current-status)); the two S3
+credentials are layered in by
 env from the Secret. Those Secret values are currently hardcoded source constants
 (`hostbootstrap` / `hostbootstrap-demo-secret`) in
 `demo/src/HostBootstrapDemo/Commands.hs`; Kubernetes Secret encoding is not secret generation or
@@ -104,11 +123,11 @@ and verified by the cluster backend; spelling a client address as `localhost` al
 **Why.** With the default ephemeral filesystem driver a registry pod restart (crash,
 eviction, node reboot) loses every pushed blob — `GET /v2/<repo>/tags/list` 404s.
 S3-backed, the restarted pod can re-read the blobs from the store and the pushed tag
-survives. The `registry-persistence` harness case proves exactly this: push → delete the registry pod →
-the tag is still served. The phase's live gate must additionally confirm the initial and repeated pushes on
-the current native substrate. The S3 store PVC lives on the kind node's
-`local-path` volume, so durability spans **pod** restarts — but not `project destroy`,
-which deletes the cluster (the in-VM cluster is ephemeral by design; the registry's
+survives. The `registry-persistence` harness case checks this: it reads the pushed image's tag list over
+the internal registry NodePort, deletes the registry pod, waits for the new rollout, and reads the tag list
+again. The S3 store PVC lives on the kind node's `local-path` volume, so durability spans **registry pod**
+restarts only. Both `project down` and `project destroy` delete the kind cluster, and the store PVC with it,
+so the registry contents do not survive either (the in-VM cluster is ephemeral by design; the registry's
 durable state lives inside the cluster, and the demo mirrors none of it back to the
 host — see [../architecture/durable_state.md](../architecture/durable_state.md)).
 
@@ -123,7 +142,14 @@ When a downstream project does push, push **arch-explicit single-arch tags** and
 nothing else. The substrate is always known at push time, so the correct tag is
 always nameable — there is never a reason to assemble a cross-arch manifest list.
 
-`<project>-<substrate>-<arch>` is the recommended tag shape.
+The canonical reference form is `<registry>/<project>:<substrate>-<arch>`: the repository names the
+project, and the tag names the substrate and architecture.
+
+The worked demo is exempt. Its registry lives inside one single-architecture Kind cluster, is reached only
+through that cluster's own exposure, and is deleted with the cluster by `project down` and
+`project destroy`; no other substrate or architecture ever reads it, so its single tag
+`library/hostbootstrap-demo:demo` cannot be resolved for the wrong architecture. The convention binds any
+registry that outlives one cluster or is shared across substrates.
 
 > **WRONG**
 >
@@ -139,18 +165,18 @@ always nameable — there is never a reason to assemble a cross-arch manifest li
 > **RIGHT**
 >
 > ```sh
-> docker build --tag registry.example/app-linux-cpu-amd64 .
-> docker push registry.example/app-linux-cpu-amd64
+> docker build --tag registry.example/app:linux-cpu-amd64 .
+> docker push registry.example/app:linux-cpu-amd64
 > ```
 >
 > Single-arch, host-native, with the substrate and arch named explicitly.
 
 ## No orphans
 
-When the project pushes a new arch-explicit tag, it should delete any prior tag
-*it owns* that now points at a superseded digest. Reclaiming the untagged digest
-itself depends on the registry's garbage collection (`registry garbage-collect`
-for `distribution`). Keeping this discipline in the project (rather than the tool)
+When the project pushes to an arch-explicit tag it already owns, the tag moves to the new digest and the
+previous digest becomes untagged. When the project retires a tag (for example a substrate it no longer
+builds for), it deletes that tag. Reclaiming untagged digests depends on the registry's garbage collection
+(`registry garbage-collect` for `distribution`). Keeping this discipline in the project (rather than the tool)
 means the project owns its registry namespace end-to-end.
 
 ## Base-image publication is separate
@@ -164,22 +190,29 @@ layer(s).
 
 ## Validation
 
-The registry topology is closed only when one live supported host proves all of the following through
-the same finalized plan:
+The registry topology is checked by:
 
-1. the exact host Docker client reaches the exact published registry exposure;
-2. the registry reaches the exact S3 store endpoint and bucket;
-3. an initial push and a repeated push of the same image both complete;
-4. blob responses expose no cluster-only S3 store URL to the host client;
-5. a pull and tag lookup succeed after deleting and recreating the registry pod;
-6. compile-fail and golden tests prove the illegal redirect topology and an independent raw redirect
-   flag cannot be constructed.
+1. `RegistryPlanSpec` and the `HostLocalClusterRedirect` and `RawRegistryPlan` compile-fail fixtures, which
+   prove the illegal redirect topology and an independent raw redirect flag cannot be constructed and that
+   the host-served plan renders `storage.redirect.disable: true` (the full list is in
+   [network reachability](../architecture/network_reachability.md#validation));
+2. the demo's `push-image` step, which takes `/v2/` readiness through the resolved registry exposure, then
+   uploads a canary blob and issues a non-following blob `HEAD` from the pushing frame, and admits the route
+   only for a `2xx` status with no `Location` (any redirect is refused) before it pushes the project image
+   through the same exposure;
+3. the `registry-persistence` case, which reads the pushed image's tag list over the internal registry
+   NodePort, deletes the registry pod, and reads the tag list again after the new rollout.
 
-A successful `GET /v2/`, Deployment Ready condition, or initial empty-registry push is insufficient.
+A successful `GET /v2/` or Deployment Ready condition alone is not proof that the blob route works; the
+canary-blob check above is the route check. It does not identify the registry, store, plan, or revision
+that answered, because the observation's identity fields are copied from the plan (see
+[Current Status](#current-status)). No case pulls the pushed image back through the resolved exposure, before or
+after the registry pod restart, and no case pushes the same image twice (see [Current Status](#current-status)).
+The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) records the live runs.
 
 ## See also
 
 * [derived_project_standards.md](derived_project_standards.md) — the five
   rules every derived project follows, including the build-time code-check
-  and warm-store cache-hit contract that govern what gets compiled into the
+  and the opportunistic warm-store cache rule that govern what gets compiled into the
   thin layer this page is about.

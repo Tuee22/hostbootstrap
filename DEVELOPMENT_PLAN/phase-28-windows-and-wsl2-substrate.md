@@ -1,6 +1,6 @@
-# Phase 27 — Windows and WSL2 substrate
+# Phase 28 — Windows and WSL2 substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: windows
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -16,8 +16,9 @@ and `wsl.exe --shutdown` after verified wall restoration ; pass ;
 covers ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7
 **Evidence covers**: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `core/hostbootstrap-core/app` `core/hostbootstrap-core/test` `core/hostbootstrap-core/provider-live` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/cabal.project` `hostbootstrap` `pyproject.toml` `demo/src` `demo/app` `demo/test` `demo/hostbootstrap-demo.cabal` `demo/cabal.project` `demo/docker` `demo/chart` `demo/playwright/package.json` `demo/playwright/playwright.config.ts` `demo/playwright/tests` `demo/web/spago.yaml` `demo/web/src/Main.purs` `demo/web/src/index.js` `.dockerignore` `fourmolu.yaml` `.hlint.yaml`
 
-> **Purpose**: Add the Windows-only native host-wall backend and CUDA worker, exercise WSL2 as the Windows
-> realization of the universal `linux-cpu` substrate, and confirm the additional Windows behavior.
+> **Purpose**: Confirm the Windows-only native host-wall backend and CUDA worker against a native Windows
+> host, exercise WSL2 as the Windows realization of the universal `linux-cpu` substrate, and confirm the
+> additional Windows behavior. Lower phases build both; this phase adds no implementation of either.
 
 ## Phase Objective
 
@@ -34,9 +35,20 @@ all.
 - the Windows ownership row — declared by the
   [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md)
   and compiled on every gate host — against the real Win32 surface, with exact status preservation;
-- the managed wall body whose idle timeouts determine whether the wall can be released, sized against the
-  observed gate duration rather than an assumed one;
-- host-native accelerator placement behind a local-only node port with the CUDA worker on Windows;
+- the managed wall body whose finite idle timeouts determine whether the wall can be released: each timeout
+  bounds the idle gap after the last WSL session rather than the whole run, and the six-hour value
+  (`managedWslIdleTimeoutHours`) holds the guest across every gap of the observed gate, whose longest
+  recorded run lasts 4 hours 3 minutes end to end (2026-10-22);
+- host-native accelerator placement behind a local-only node port with the CUDA worker on Windows, the
+  host-accelerator listener taking its own runtime-assigned loopback port, distinct from the registry, web,
+  and S3 store listeners of the same generation; the Incus-backed realization that closes the
+  [worked-demo phase](phase-24-worked-demo.md) places the daemon in-cluster and has no such listener;
+- the WSL2 durable share and guest alias settled through the exact provider route alone, the route the Incus
+  and Lima providers already take (Sprint 28.7);
+- the demo's host accelerator daemon claims on the Win32 kernel: a hard kill of the daemon or of the
+  `project up` holding its lifecycle operation leaves state the next supported command resolves without an
+  operator deleting records, the behavioural kill-and-restart confirmation that
+  [Sprint 24.43](phase-24-worked-demo.md) assigns to the substrate acceptance declaring the host;
 - that a long-running gate launched from an agent harness survives, using the durable-run mechanism rather than a
   naive background launch.
 
@@ -48,7 +60,7 @@ matrix. The same machine is also a Windows gate host, so a visit to it records t
 | Cell | Owned by |
 |---|---|
 | Windows substrate acceptance | this phase |
-| Windows gate host, host static gate | [phase 28](phase-28-host-portability-acceptance.md) |
+| Windows gate host, host static gate | [phase 29](phase-29-host-portability-acceptance.md) |
 
 A Windows host can additionally present an x86_64 Linux gate host through WSL2, which § JJ admits as a
 Linux gate host in its own right. That is a convenience rather than a requirement: the x86_64 Linux cell
@@ -61,7 +73,7 @@ declared substrate. This phase's gate is the live `10/10` demo run and the Windo
 
 ## Sprints
 
-### Sprint 27.1: WSL2 provider acceptance [Done]
+### Sprint 28.1: WSL2 provider acceptance [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Wsl2.hs`,
@@ -77,26 +89,35 @@ native Windows/WSL host surface.
 
 #### Deliverables
 
-- `ensure wsl2` reconciles the distro; provisioning applies the project's declared sizing.
+- The `ensure-wsl2` chain step makes the WSL2 platform ready (`wsl --status`, firmware virtualization and
+  the hypervisor launch, `Microsoft.WSL` installed with `wsl --install --no-distribution`); it creates no
+  distro, and `ensure` is a chain-step id rather than a CLI verb. The provider launch installs the named
+  distro through `wslInstallArgs` with the project's declared VHD size, and the managed wall body applies
+  its CPU and memory sizing.
 - The durable host-path share is mounted through the per-substrate primitive, so the guest sees the host's durable
   root rather than a copy.
 - Teardown restores the host wall before `wsl --shutdown`, in that order, because the shutdown is what makes a
   wall change take effect.
 - The guest alias uses the shared clause-holding backend; all three provider guests run the same Linux image, so
   one backend serves every lane.
-- The target record and inner `wsl -d ... --` renderer come from the lower lift-context phase, prerequisite
+- The target record and the inner `wslExecArgs` renderer come from the lower lift-context phase, prerequisite
   diagnostics come from the ensure-reconcilers phase, and the provider lifecycle builders come from the
   host-providers phase; this sprint confirms rather than redefines those boundaries.
 
 #### Validation
 
-`Wsl2Spec` covers the argument shapes, the share primitive, and the restore-before-shutdown order.
+`Wsl2Spec` covers the lifecycle argument shapes, the platform diagnostic classifiers, the `wsl --list`
+parsers, and the import boundary to the lower target and renderer. `ProviderSpec` covers the share
+primitive ("VM shell and Windows mount folds are descriptive", `windowsPathToWslMount`) and the
+restore-before-shutdown order ("stop and guarded delete are explicit": Windows stop is
+`ReleaseGlobalWslWall` then `wsl --shutdown`, Windows delete is `wsl --unregister` then
+`ReleaseGlobalWslWall`).
 
 #### Remaining Work
 
 None.
 
-### Sprint 27.2: The Windows row against a real Windows kernel [Done]
+### Sprint 28.2: The Windows row against a real Windows kernel [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/WslGlobalWallWindowsSpec.hs`
@@ -124,14 +145,33 @@ Confirm the Windows ownership row against the kernel it names, which no other ho
 
 #### Validation
 
-`WslGlobalWallWindowsSpec` covers the entrypoints, status preservation, and the shared transformer. Dated
-evidence: the row passed its focused entrypoint gate and passed inside the complete Windows core suite.
+The confirmation lives in four core specs, each of which drives the Win32 row against the kernel on a
+native Windows host and asserts the row's declared refusal elsewhere:
+
+- `WslGlobalWallWindowsSpec` covers the two wall entrypoints: an absent origin published and restored to
+  absence, a present origin restored byte-for-byte, and a replacement refused and preserved.
+- `OwnershipWindowsSpec` covers `Win32` handle identity ("a created directory and a created file have their
+  own identities", "linking preserves the identity the staged object had"), atomic no-replace publication
+  ("linking refuses rather than replacing, and leaves the target intact"), the write-through file creation
+  path ("a file is written whole and the second attempt is occupied"), and exact status preservation: a
+  second directory create, a second file create, a no-replace link onto an occupied target, and opening a
+  directory as a file each classify as occupied rather than as a flattened failure.
+- `WslGlobalWallHostSpec` "a symbolic-link target is refused rather than followed" is the live reparse-point
+  refusal: on a Windows host `ownershipRowForHost` selects the Win32 row, the case creates a real link at the
+  target, and the apply refuses without touching the linked bytes. Creating the link needs symbolic-link
+  privilege on the gate host (an elevated shell or Developer Mode). `OwnershipWindowsSpec` "every observation
+  opens without following a reparse point" is the source guard that holds on every gate host.
+- `WslGlobalWallConfigBytesSpec` covers the shared `.wslconfig` byte transformer.
+
+The finite idle timeouts and the restore-then-shutdown order are observed live in the acceptance runs of
+Sprints 28.4 to 28.6. Dated evidence: the row passed its focused entrypoint gate and passed inside the
+complete Windows core suite.
 
 #### Remaining Work
 
 None.
 
-### Sprint 27.3: Windows acceptance [Done]
+### Sprint 28.3: Windows acceptance [Done]
 
 **Status**: Done
 **Implementation**: the whole tree
@@ -150,17 +190,12 @@ Confirm the current build on this substrate.
   the distro removed.
 - The gate is launched out of the agent harness's process tree using the durable-run mechanism and polled by its
   exit sentinel; a naive background launch is reaped mid-run and produces a false failure.
-- Record the observed duration against the same envelope the other lanes use.
+- Record the observed wall-clock duration of the complete matrix.
 
 #### Validation
 
 The `10/10` report plus the audited end state, recorded together with the current matrix size and live applied
 wall observation on the WSL distro.
-
-On 2026-08-27, the current execution workspace identified itself as native Linux and exposed none of
-`powershell.exe`, `wsl.exe`, or `cmd.exe`. It therefore cannot launch the Windows durable-run mechanism,
-exercise the Win32 ownership row, observe the WSL utility-VM wall, or prove restore-before-shutdown. No Linux
-result is substituted for this native Windows acceptance requirement.
 
 On 2026-09-05, a native Windows run used the documented WMI durable launcher and passed the complete
 `10/10` matrix in 2 hours 54 minutes. Both `hello-world` and `hello-universe` passed pristine bootstrap,
@@ -173,7 +208,7 @@ accelerator daemon and typed frame-indexed teardown across the WSL boundary. Its
 
 None.
 
-### Sprint 27.4: The Windows acceptance run [Done]
+### Sprint 28.4: The Windows acceptance run [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -254,9 +289,9 @@ The terminal 208-file source measurement still matches the in-run
 None. This run confirms the Windows-only wall, ownership, and accelerator behavior; the
 [worked-demo phase](phase-24-worked-demo.md) owns the same run's universal `linux-cpu` matrix claim.
 
-### Sprint 27.5: The Windows and WSL2 acceptance against the current tree [Done]
+### Sprint 28.5: The Windows and WSL2 acceptance against the current tree [Active]
 
-**Status**: Done
+**Status**: Active
 **Implementation**: none — this sprint records a run
 **Substrates**: windows
 **Docs to update**: `documents/engineering/testing.md`
@@ -266,7 +301,11 @@ None. This run confirms the Windows-only wall, ownership, and accelerator behavi
 This phase's evidence covers the host-portable tree, so ordinary source change expires its claim —
 which § G names as the expected state for an acceptance phase between runs rather than as an unclosed
 phase. The claim is re-established by running the gate on a Windows host, not by re-recording a digest
-over a tree nothing re-tested. That visit also carries the Windows gate host, and it confirms the demo's daemon claims survive a killed predecessor.
+over a tree nothing re-tested. That visit also carries the Windows gate host, and it confirms on the
+Win32 kernel the behavioural kill-and-restart that [Sprint 24.43](phase-24-worked-demo.md) assigns to the
+substrate acceptance: a hard kill of the demo's host accelerator daemon, or of the `project up` holding its
+lifecycle operation, leaves claims the next supported command resolves without an operator deleting
+records.
 
 #### Deliverables
 
@@ -275,8 +314,45 @@ over a tree nothing re-tested. That visit also carries the Windows gate host, an
 - The row names which program ran where two share a name, and prefers an invocation against the tree over a separately installed one.
 - The covers digest is re-measured over this phase's own paths and recorded.
 - Every cell this hardware can produce is recorded in the same visit, so the machine is not owed a second one.
+- The run records, for each generation, the host-accelerator listener's runtime-assigned loopback port
+  beside the registry, web, and S3 store endpoints of the same generation, and the four ports differ.
+- The kill-and-restart runs against the live Production lifecycle on the Windows gate host. The daemon's
+  claims live in the protected store `demo/.build/accelerator-daemon/.claims`: the lifecycle operation is a
+  `withProtectedEntry` lock and the ownership claim is the record `hostbootstrap-demo.accelerator.owner`,
+  beside the pid file `demo/.build/accelerator-daemon/hostbootstrap-demo.accelerator.pid`. After each forced
+  kill the supported `project down` then `project up` sequence resolves the stale claims and launches a fresh
+  Ready daemon, and the final `project down` and `project destroy` leave neither the owner record nor the
+  pid file.
 
 #### Validation
+
+Closure criteria for the kill-and-restart. On the native Windows gate host, after
+[Sprint 24.43](phase-24-worked-demo.md)'s stale-claim release is in the tree, the visit records each of the
+following with its UTC times, PIDs, command exit codes, and the owner-record and pid-file presence read
+back from the store:
+
+- daemon kill: with Production up and its daemon Ready, `Stop-Process -Force` on the PID in the pid file;
+  the next `project down` exits 0 and leaves neither the owner record nor the pid file; the following
+  `project up` exits 0, prints `accelerator-daemon: prior host-daemon lifecycle is clear`, starts a daemon
+  with a new PID that reaches Ready, and a direct accelerator request through the web relay answers from
+  backend `windows-gpu`;
+- operation-holder kill: `Stop-Process -Force` on the host `hostbootstrap-demo.exe` process running
+  `project up` after it prints `accelerator-daemon: entering the host-daemon lifecycle operation` and before
+  the daemon reports Ready; the next `project down` acquires the operation entry the kernel released and
+  exits 0, and the following `project up` exits 0 with its daemon Ready and exactly one owner record
+  published;
+- teardown: `project down` and `project destroy` exit 0, the owner record and pid file are absent, no
+  `hostbootstrap-demo.exe` daemon or `accelerator-worker.exe` process remains, and the terminal ownership and
+  WSL wall audit passes as in the 2026-10-16 entry below.
+
+The same visit's matrix records, per generation, the resolved `ws://127.0.0.1:<port>/api/accelerator/daemon`
+exposure together with the registry, web, and S3 store loopback endpoints, and closure requires the four
+ports to differ.
+
+No step deletes or edits a claim record or pid file by hand. A refusal such as
+`accelerator-daemon: pid and lifecycle ownership disagree; refusing ambiguous cleanup` or
+`accelerator-daemon: lifecycle ownership already held` fails the confirmation and is a defect of the
+worked-demo phase's daemon claims, not of this phase.
 
 The live gate's scope includes the core and consumer components compiled by the in-image
 `check-code`, package/project and bootstrap metadata, authored chart, browser and SPA inputs, and
@@ -288,7 +364,8 @@ The 25 roots contain 845 files and remeasure unchanged after the gate on 2026-10
 The source and authored fixture bytes remain unchanged throughout `phase24-matrix-20261015`.
 The completed native static gate, Production sequence, complete passing matrix, and terminal audit
 establish this expanded Windows acceptance.
-The 212-file measurements below retain their original narrower subset meaning.
+The 211-file measurements below, and the 208-file measurement of the 2026-09-11 pass, retain their
+original narrower subset meaning.
 
 The earlier Windows pass retains its original narrower scope: `core/hostbootstrap-core/src` `core/hostbootstrap-core/internal` `demo/src` `demo/app` `demo/test` `demo/docker` `hostbootstrap`.
 Its dated result and original digest are preserved without restamping:
@@ -299,6 +376,10 @@ Its dated result and original digest are preserved without restamping:
   `poetry run hostbootstrap run --project-root demo test run all`, launched through the harness-owned
   durable Windows launcher ; pass ; covers
   dbd7ee8515737e4c8391a9337a1815eb7db8de2d6dc28a4893e0b099b669b83e
+
+**Failed attempts, 2026-09-16 to 2026-09-30.** The dated entries from here to the 2026-10-16 pass record
+attempts that did not pass the gate. Each "pending", "owed", or "still required" statement in them refers
+to the complete matrix at that date, and the 2026-10-16 pass below discharges it; none of them is open work.
 
 The 2026-09-16 visit is on native x86_64 Windows 11 Home 10.0.26200 with an AMD Ryzen 7 5700G,
 NVIDIA GeForce RTX 3090 driver 616.64, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, and
@@ -315,7 +396,7 @@ is stopped before any live infrastructure is created when the native core prefli
 compilation defects. The live matrix and terminal audit have not run; the recorded preflight digest
 precedes those source corrections.
 
-The ownership phase then closes on the complete native Windows static gate, recorded in Sprint 28.5.
+The ownership phase then closes on the complete native Windows static gate, recorded in Sprint 29.5.
 The corrected 211-file tree measures
 `8da152c4d873b944b38e6edde69f838150ff75ad0e3f2218970bba2d4c5da689`.
 Initialization resumes its isolated dependency cache through the harness-owned WMI durable launcher
@@ -390,10 +471,11 @@ kills the holder without running its bracket finalizer, a successor immediately 
 observes the unchanged store identity and owner bytes, refuses an `ExpectAbsent` overwrite, and removes
 the owner only with its observed version. All assertions pass. This is evidence for the native claim
 primitives used by the daemon; the complete demo suite separately verifies those are its two claim
-implementations. It does not claim a live daemon was killed during the acceptance matrix.
+implementations. It does not claim a live daemon was killed during the acceptance matrix, the probe is not
+retained in the repository, and it does not discharge the kill-and-restart closure criteria above.
 
 The protected short-close correction then passes the complete native Windows and independent x86_64
-Linux static gates, recorded in Sprint 28.5. The worked demo's complete Production sequence also passes
+Linux static gates, recorded in Sprint 29.5. The worked demo's complete Production sequence also passes
 on Windows through WSL2, including an unmodified image import, native daemon startup, and terminal wall
 restoration. The new 211-file covered-source measurement is
 `4e2da7028532e4bfc2b87064e4ea19ebe2342c2ac6d53473e763757ced5fdd0f`.
@@ -444,7 +526,7 @@ the unresolved Harness lease still excludes Production and subsequent Harness ru
 211-file source measurement is
 `a8d4c1f2c21b08381d6a4b2cd7c6c2268aea7c1ef7512435a18e0454be852e90`.
 
-On 2026-09-17, the native Linux visit reaches this phase after closing phases 24 and 26 with their
+On 2026-09-17, the native Linux visit reaches this phase after closing phases 24 and 27 with their
 complete gates. No Windows connection is configured in this workspace, and no connection details
 have been supplied. The preserved Windows resource forest cannot be inspected or settled from this
 host. No recovery mutation, new Windows run, or refreshed Windows acceptance claim is made. The
@@ -688,7 +770,7 @@ restored and the verified sole WSL guest GUID
 no active wall remain; `.wslconfig` matches its original SHA-256. The complete
 Windows matrix is still owed.
 
-On 2026-10-16, the fresh native Windows/CUDA matrix exits 0 with `10/10 passed`: all five cases
+**Closing pass, 2026-10-16.** On 2026-10-16, the fresh native Windows/CUDA matrix exits 0 with `10/10 passed`: all five cases
 (`pristine-bootstrap`, `web-build`, `e2e-tabs`, `registry-persistence`, and `durable-readback`) pass
 for both `hello-world` and `hello-universe`. The repository Python bootstrapper runs
 `poetry run hostbootstrap run --project-root demo test run all` through the WMI durable runner,
@@ -835,9 +917,21 @@ covers cb608a90e5ca585ddd064cfc69010e02283159d44c926bda4b273a8bb8f3e10b
 
 #### Remaining Work
 
-None.
+- At the next native Windows visit, once [Sprint 24.43](phase-24-worked-demo.md)'s release of an owner record
+  left without a pid is in the tree, run the daemon-kill and operation-holder-kill sequences in the closure
+  criteria above against the live Production lifecycle, then `project down`, `project destroy`, and the
+  terminal ownership and WSL wall audit, and record each step's UTC time, PIDs, exit code, and the presence
+  of the owner record and the pid file read back after it. The visit
+  re-runs the phase's declared gate in full first, since the source change expires the recorded digest.
+- The visit's tree also carries the lower-phase source changes that re-owe this gate on Windows: Sprint 7.9's
+  `wslExecArgs` rendering `-d <distro> --exec`, which changes the argv of every WSL2 command-fold crossing;
+  Sprint 6.5's Win32 host-capacity reads and Sprint 16.61's idle-timeout Haddocks in
+  `Cluster/Cordon/Foundation.hs`. It carries this phase's own Sprint 28.7 exact-only WSL2 `copy-source`
+  route as well, which lands and passes the host static gate before the visit starts the declared gate, so
+  the one visit closes Sprints 28.5 and 28.7 together. The matrix run records each generation's
+  host-accelerator, registry, web, and S3 store loopback ports as the closure criteria above state.
 
-### Sprint 27.6: Revalidate Windows acceptance against shared source [Done]
+### Sprint 28.6: Revalidate Windows acceptance against shared source [Done]
 
 **Status**: Done
 **Implementation**: none — this sprint records a run
@@ -862,7 +956,7 @@ HLint 3.10 for minimal source corrections. These include formatter findings in s
 specs, a demo `valueLines` spelling accepted by Fourmolu 0.19.0.1 and 0.21, Windows-only guards for the
 `EmptyCase` and `OverloadedStrings` pragmas used by those branches. This phase was
 reopened before those covered inputs changed. No Windows run against the changed tree is claimed.
-Sprint 27.5 preserves the complete preceding pass, terminal audit, and original 845-file source scope
+Sprint 28.5 preserves the complete preceding pass, terminal audit, and original 845-file source scope
 and digest.
 
 On 2026-10-16, the shared assertion-frame durable-root adoption changes covered demo source.
@@ -884,7 +978,6 @@ this phase in numerical order and stops: the available session is native Linux w
 and cannot exercise the native Windows/WSL2 matrix or global WSL wall. No native Windows pass
 or refreshed gate evidence is claimed. The unchanged 25-root, 845-file scope remeasures to
 `ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`.
-Sprint 27.6 remains Active for its declared native Windows gate.
 
 On 2026-10-22, native Windows host `DESKTOP-R6BTBVS` completes the declared acceptance.
 `poetry run hostbootstrap doctor` reports `windows-gpu (amd64)`; the RTX 3090 is available
@@ -958,20 +1051,89 @@ restoration and empty registration inventory, supported `wsl.exe --shutdown` exi
 The post-gate 18:13:01 UTC measurement covers all 25 roots and 845 files at
 `ecf6b4522ebbd983f3f702fe6b95e14c7d1c3843811b7fb0c781b3a5a094d0e7`, matching the
 pre-gate and 16:41 UTC measurements. No covered source changes during the run. This closes
-Sprint 27.6 and the Windows acceptance before native Windows host-static validation begins.
+Sprint 28.6 and the Windows acceptance before native Windows host-static validation begins.
 
 After recording the complete evidence and Done statuses, native
 `cabal test hostbootstrap-core-test --test-options="--pattern DocValidator" --test-show-details=direct`
 from `core/` passes 11/11 in 6.62 seconds. This verifies documentation, status harmony,
-complete gate evidence, and covered-source currency before phase 28 begins.
+complete gate evidence, and covered-source currency before phase 29 begins.
 
 #### Remaining Work
 
 None.
 
+### Sprint 28.7: WSL2 copy-source settles its durable alias through the exact route alone [Planned]
+
+**Status**: Planned
+**Implementation**: `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`
+**Substrates**: windows
+**Docs to update**: `documents/architecture/durable_state.md`,
+`documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+The WSL2 provider's fully indexed backend (`mkWsl2BackendSpec`) is the provider-only realization this
+acceptance phase completes (§ II). In the tree today, `runCopySource` branches on `providerKind`: Incus and
+Lima run only `runExactVmShare`, while WSL2 first runs the compatibility route (`reconcileDurableShare`,
+`awaitDurableShareMounted`, then `reconcileShippedDurableAlias`) and then `runExactVmShare`, so the WSL2 guest
+alias has two producers. After this sprint, the demo's `copy-source` action reaches the durable share and the
+guest alias for every VM provider through one route: `runExactVmShare`, which settles the exact provider share
+inside `withProviderShareSettlement` and reconciles the alias through `reconcileNodeGuestAlias`, whose share
+probe runs `awaitDurableShareMounted`. A WSL2 guest's alias then has one producer, so its ownership record has
+one writer (§ W).
+
+This sprint and Sprint 28.5 close on the same native Windows visit. This sprint's code and its
+`CommandsSpec` case land, and pass the host static gate, before that visit starts the declared gate; the
+visit's matrix is the live confirmation both sprints record. `documents/engineering/wsl2.md` § Durable share
+already names `runExactVmShare` as the `copy-source` route and needs no change.
+
+#### Deliverables
+
+- `runCopySource` calls `runExactVmShare` for `ProviderIncus`, `ProviderLima`, and `ProviderWsl2` without a
+  per-provider branch, then mints the provider witness after the share settles.
+- `reconcileShippedDurableAlias` and `reconcileDurableShare`, whose only caller is the WSL2 branch of
+  `runCopySource`, are absent from `HostBootstrapDemo.Commands`, together with the Haddock that assigns the
+  route's completion to a substrate acceptance phase, and the module imports nothing only they used.
+- The live Windows matrix of Sprint 28.5's visit runs against this tree, so the WSL2 share mount probe and alias
+  reconciliation inside `runExactVmShare` are confirmed on the native WSL2 surface.
+
+#### Validation
+
+Closure requires, under `cd demo && cabal test all`, a `CommandsSpec` case "copy-source settles every VM
+provider's durable alias through the exact route alone". It reads `src/HostBootstrapDemo/Commands.hs` and takes
+the `runCopySource` body as the text from the first occurrence of `"runCopySource ::"` up to the next
+occurrence of `"mintVmProviderWitness ::"`, located with `substringOffset` the way the existing copy-source
+guard slices it. It asserts that this body contains `runExactVmShare` exactly once and contains neither
+`providerKind` nor `reconcileShippedDurableAlias`, and that neither `reconcileShippedDurableAlias` nor
+`reconcileDurableShare` occurs anywhere in `Commands.hs`. The existing case "copy-source keeps the exact
+writable share lexical before VM descent", including its assertion that `runExactVmShare` precedes
+`mintVmProviderWitness`, keeps passing. The `-Wall -Werror` demo build passes with the pruned imports, the
+four-command host static gate passes, and the native Windows matrix of Sprint 28.5's visit reports
+`10/10 passed` with this change in the tree.
+
+#### Remaining Work
+
+- Before Sprint 28.5's visit starts the declared gate, `demo/src/HostBootstrapDemo/Commands.hs`: replace the
+  `providerKind` branch in `runCopySource` with one `runExactVmShare projectCfg cfg execution durableShare`
+  call for every VM provider; delete `reconcileShippedDurableAlias`, `reconcileDurableShare`, and their
+  Haddocks; and drop the imports only they use, which `-Werror` otherwise rejects as unused:
+  `ShipTakeSymbolicLink` from the `ShippedAct` import, `ShippedSymbolicLinkCreated` and
+  `ShippedSymbolicLinkRetained` from the `ShippedOutcome` import, and `ShareReconcile (..)` and
+  `shareReconcileEffects` from the `HostBootstrap.ProjectPlan` import.
+- `demo/test/CommandsSpec.hs`: add the case "copy-source settles every VM provider's durable alias through the
+  exact route alone" as Validation states.
+- Rewrite the WSL2 sentences of `documents/architecture/durable_state.md` and
+  `documents/architecture/ownership_invariant.md` so every VM provider runs only `runExactVmShare`.
+
 ## Remaining Work
 
-None.
+- Sprint 28.5: run and record the demo daemon's kill-and-restart on the Win32 kernel (daemon kill and
+  operation-holder kill, each resolved through supported commands), re-run the declared gate against the tree
+  carrying Sprints 6.5, 7.9, 16.61, 24.43, and 28.7 while recording each generation's four distinct loopback
+  ports.
+- Sprint 28.7: route WSL2 `copy-source` through `runExactVmShare` alone, deleting `reconcileShippedDurableAlias`,
+  `reconcileDurableShare`, and their now-unused imports, with the `CommandsSpec` case that pins the single
+  route; it lands before Sprint 28.5's visit and closes on that visit's matrix.
 
 ## Documentation Requirements
 

@@ -2,24 +2,31 @@
 
 **Status**: Supporting reference
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../engineering/base_image.md](../engineering/base_image.md)
+**Referenced by**: [../README.md](../README.md)
 
 > **Purpose**: Document the Python toolchain the base image ships and how the thin Python
 > bootstrapper stays isolated from project runtimes.
 
 This page documents what the base image ships for Python.
 
-The base image carries the Ubuntu 24.04 default Python 3 with Poetry as the
-**only** global Python package. Everything else lives inside the project's
-own dependencies.
+The base image carries the Ubuntu 24.04 default Python 3. The only Python tooling it installs globally is
+Poetry, together with Poetry's own dependencies and pip, setuptools, and wheel, which the same
+`pip install --ignore-installed --upgrade` step upgrades to their latest releases. Everything else lives
+inside the project's own dependencies.
 
 ## Caches
 
-The image sets the standard cache directories under `/opt/cache`:
+The image sets these cache directories under `/opt/cache`:
 
 * `PIP_CACHE_DIR=/opt/cache/python/pip`
 * `POETRY_CACHE_DIR=/opt/cache/python/pypoetry`
+
+Bytecode is a build output, so it goes under `/opt/build` rather than `/opt/cache`:
+
 * `PYTHONPYCACHEPREFIX=/opt/build/python/pycache`
+
+Two Poetry behaviour flags complete the set:
+
 * `POETRY_VIRTUALENVS_CREATE=false`
 * `POETRY_VIRTUALENVS_IN_PROJECT=false`
 
@@ -35,11 +42,13 @@ exposes only the `hostbootstrap` command on `PATH`. Once the project binary is
 built and handed off, the bootstrapper's job is done; it has no place inside a
 project's runtime environment.
 
-The bootstrap build itself is not offline today: it refreshes the Cabal index, and missing toolchains
-trigger downloads. Linux uses a `curl | sh` GHCup fallback and Windows downloads GHCup with PowerShell
-without an independent digest check. See
-[Python/Haskell boundary](../architecture/python_haskell_boundary.md) for the current behavior and
-provenance target.
+An online bootstrap build refreshes the Cabal index only when it is missing or stale, and installs a
+missing toolchain. On Linux and on Windows `amd64` it downloads a pinned GHCup binary (with `curl` or
+PowerShell `Invoke-WebRequest`) and verifies its SHA-256 before installing it; Apple Silicon installs
+GHCup through Homebrew, whose formula is not pinned here. `--offline` is explicit and fail-closed: it needs
+a cached Cabal index and an already-installed toolchain, and refuses rather than downloading. See
+[Python/Haskell boundary](../architecture/python_haskell_boundary.md#network-and-offline-behavior) for the
+full behavior.
 
 ## hostbootstrap itself
 
@@ -69,21 +78,33 @@ The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
 ### Maintainer command capability gate
 
 `base`, `check-code`, and `test-all` are **maintainer** commands: the CLI registers them only when the
-dev toolchain (ruff/black/mypy/pytest) is importable. The gate is
-`cli._maintainer_cli_enabled()`; an ordinary pipx environment lacks those modules, so the names are
-absent from `--help` and resolve to `No such command`. Importability is not proof of Poetry/repository
-provenance, however: injecting all four modules into a pipx environment also satisfies the current gate.
-The supported maintainer context is this repository's Poetry `.venv`; the current importability gate does not
-establish stronger environment provenance. The Poetry environment exposes
+running interpreter is this repository checkout's in-project Poetry environment. The gate is
+`cli._maintainer_cli_enabled()`, which holds only when `_maintainer_command_authority` finds all of:
+
+- the `pyproject.toml` next to the package names the Poetry project `hostbootstrap`;
+- the checkout root carries `.git` and a `poetry.lock` file;
+- `sys.prefix` is that checkout's `.venv`, it is a virtual environment, and the running executable lies
+  inside it;
+- the dev toolchain modules (ruff, black, mypy, pytest) are importable.
+
+A pipx install fails the checkout and prefix conditions even with those four modules injected, so the
+names are absent from `--help` and resolve to `No such command`. The Poetry environment exposes
 two convenience subcommands that wrap the module runners:
 
 - `poetry run hostbootstrap check-code` — same gate as `python -m hostbootstrap.check_code`.
 - `poetry run hostbootstrap test-all [pytest args...]` — same runner as `python -m hostbootstrap.test_all`
   (forwards args to pytest; still goes through the `HOSTBOOTSTRAP_TEST_ALL` sentinel).
 
-In the supported repository Poetry environment, `base` runs its pre-build self-check directly in the
-current interpreter (`sys.executable -m hostbootstrap.check_code`) rather than shelling out to
-`poetry run` — see [../engineering/code_check_doctrine.md](../engineering/code_check_doctrine.md).
+Before any Docker build, `base build` and `base build-and-push` run the repository source gate on the
+maintainer's host, in order: `check_code` and `test_all` in the current interpreter
+(`sys.executable -m hostbootstrap.check_code`, then `-m hostbootstrap.test_all`, rather than shelling out
+to `poetry run`); `fourmolu --mode check` and `hlint` over the Haskell roots; then
+`cabal build all --ghc-options=-Werror` and `cabal test all --ghc-options=-Werror` in `core/` and then in
+`demo/`. A maintainer therefore needs `fourmolu`, `hlint`, and a working Cabal with the pinned GHC on
+`PATH`, and the command runs both Haskell suites before it builds an image. The first failing step stops
+it with no image built or pushed.
+[Where the style tools run](../engineering/code_check_doctrine.md#where-the-style-tools-run) is the
+canonical home for the style legs.
 
 Do not invoke `pytest` directly; `tests/conftest.py` requires the
 `hostbootstrap.test_all` runner. See
