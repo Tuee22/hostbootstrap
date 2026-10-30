@@ -1,6 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# OPTIONS_GHC -Wno-missing-signatures #-}
 
 module ClusterWorkloadSpec (tests) where
 
@@ -98,6 +97,7 @@ tests =
                 Left refusal -> assertFailure (show refusal)
         ]
 
+runtimeRefusal :: Text.Text -> Text.Text -> IO (Either ReconcileError ())
 runtimeRefusal route nonce =
     ClusterReconcileSpec.withChartWorkloadFixture $ \_plan cluster _chart _workloads _partition execution _readiness _exposures _backend _root -> do
         result <- withFreshClusterRuntimeDependency execution "fixture-chart-successor" cluster "core:deploy-kind" route 1 nonce (\_ _ -> ())
@@ -112,6 +112,7 @@ runArmed :: (FilePath -> IO ()) -> IO (Either ReconcileError ChangeView)
 runArmed arm =
     prepareRun "apiVersion: v1\n" (Just arm)
 
+prepareRun :: String -> Maybe (FilePath -> IO ()) -> IO (Either ReconcileError ChangeView)
 prepareRun values arming =
     ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness _exposures _backend root -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
@@ -133,6 +134,7 @@ prepareRun values arming =
 resultView :: Either ReconcileError (ReconcileResult scope planId resourceId resource phase) -> Either ReconcileError ChangeView
 resultView = fmap (\result -> withReconcileResult result (\_ _ change -> change) (\_ _ -> error "chart workload unexpectedly became foreign"))
 
+cleanupCase :: Maybe (FilePath -> IO ()) -> IO (Either ReconcileError ((), ()))
 cleanupCase arming =
     ClusterReconcileSpec.withChartWorkloadFixture $ \plan cluster chart _workloads _partition execution readiness _exposures backend root -> do
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)

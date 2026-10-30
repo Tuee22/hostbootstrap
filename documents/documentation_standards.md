@@ -273,7 +273,7 @@ otherwise.
 | `checkActivePhaseOwnsRemainingWork` | An `Active` phase's `## Remaining Work` names at least one sprint, every sprint it names is defined in the phase, and at least one of them is `Active` (§ C). |
 | `checkSubstrateBudget` | Every `**Substrates**` value is one of `none`, `none (static)`, `linux-cpu`, `apple-silicon`, `nvidia`, `windows`, and no phase declares more than one non-baseline substrate (§ II). |
 | `checkImplementationPaths` | Every path a sprint's `**Implementation**` field cites exists from the repository root; a globbed citation is a scope and is not resolved (§ D). |
-| `checkGateEvidence` | A `Done` phase records at least one `**Gate evidence**` row, and every row has the form date ; host ; backticked command ; `pass` ; covers value. A self-verifying phase covers `in-gate`; a deferred phase covers a SHA-256 digest, names `**Evidence covers**` paths, and the digest measured over those paths today equals the recorded one (§ II). |
+| `checkGateEvidence` | A `Done` phase records at least one `**Gate evidence**` row, and every row has the form date ; host ; backticked command ; `pass` ; covers value. A self-verifying phase covers `in-gate`; a deferred phase covers a SHA-256 digest, names `**Evidence covers**` paths, and the digest measured over those paths today equals the recorded one (§ II). A covers path that is missing, unlistable, or contributes no files is refused. |
 | `checkGateEvidenceLegs` | When a phase records evidence, every command leg its `**Gate**` names appears in some evidence row, compared on non-flag tokens as a subsequence. A leg is one `&&`-separated part of a backticked span whose first word is `cabal`, `poetry`, `hostbootstrap`, `python`, `python3` or `docker` (§ G). |
 | `checkLegacyLedger` | Each row of [the legacy ledger](../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md) names exactly one deleting phase in its `Deleted by` cell, and that phase document exists (§ I). Reads the ledger. |
 | `checkContractOwnership` | Every lettered section beneath `## hostbootstrap-Specific Contracts` carries an `**Owning phase**:` line linking one phase document. Reads the plan standard. |
@@ -292,9 +292,10 @@ do not manufacture a reciprocal prose link solely to satisfy metadata.
 
 `DocValidatorSpec` also builds miniature repositories in temporary directories and asserts that each
 broken shape produces its violation, so a check that silently stops firing fails the suite. Every check
-in the two tables has such a fixture except those [Current Status](#current-status) lists. Three
+in the two tables has such a fixture except those [Current Status](#current-status) lists. The following
 fixtures also assert an **absence**, because a check that flags everything means nothing:
 
+- `checkLinks`: a link inside a fenced example produces no unresolved-link violation.
 - `checkRemainingWorkOrdering`: a sprint's `#### Validation` that links a higher-numbered phase produces
   no violation; only the two `Remaining Work` citations are reported.
 - `checkContractOwnership`: a core principle with no owner, and a contract that declares its
@@ -344,9 +345,7 @@ each of them:
   `**Evidence covers**` from anywhere in the document rather than from the header block.
   `checkRemainingWorkOrdering` reads only links, so a later phase cited in prose inside a Remaining Work
   section passes. `checkContractOwnership` passes a plan standard whose contracts heading is renamed or
-  holds no lettered section. `checkLegacyLedger` skips a row with too few cells, and for a row whose
-  `Deleted by` cell is blank it reads the last non-blank cell instead, so a phase the `Why` cell links
-  counts as the deleting phase. `checkSubstrateBudget` refuses a
+  holds no lettered section. `checkLegacyLedger` skips a row with too few cells. `checkSubstrateBudget` refuses a
   comma-separated declaration such as `linux-cpu, nvidia` that the plan standard permits;
 - **one verdict on every host.** Path resolution in `checkLinks`, `checkLinkAnchors`,
   `checkImplementationPaths` and the ledger check inherits the host filesystem's case rule, so a link
@@ -356,6 +355,6 @@ each of them:
   references with every status word on it, so a line naming two phases can report a false disagreement;
 - **negative fixtures for the deferred-evidence rules** of `checkGateEvidence`: an `in-gate` row on a
   deferred phase, a digest row on a self-verifying one, a deferred `Done` phase naming no
-  `**Evidence covers**` paths, and a recorded digest that no longer matches; and likewise fixtures for
+  `**Evidence covers**` paths; and likewise fixtures for
   `checkDonePhaseRemainingWork`, `checkActivePhaseOwnsRemainingWork`, and the drift guard's reading of
   the test roots, whose fixture writes numeric citations only under `documents/` and the source tree.

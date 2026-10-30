@@ -1,12 +1,8 @@
 module OpenValidatedLifecycleContextAuthority where
 
-import HostBootstrap.Lifecycle.Context (
-    validatedLifecycleContextCurrentFrame,
-    validatedLifecycleContextFrameName,
-    validatedLifecycleContextIsRoot,
-    validatedLifecycleContextProjectFrame,
-    validatedLifecycleContextStore,
- )
+-- Validated lifecycle evidence is minted and eliminated only by its private owner.
 
-bad :: ()
-bad = ()
+import HostBootstrap.Lifecycle.Context (
+    mintValidatedLifecycleContext,
+    withValidatedRootLifecycleContext,
+ )

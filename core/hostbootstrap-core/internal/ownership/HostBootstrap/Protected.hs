@@ -1,6 +1,8 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | The protected, versioned record store the lifecycle authority machinery
 compare-and-swaps against.
@@ -13,10 +15,13 @@ any of those records, it only guarantees that
 
 * no read or write happens outside an OS-released exclusive entry (clause 1 —
   a 'ProtectedSession' is the only key to 'readProtectedRecord' /
-  'compareAndSwapProtectedRecord', and it exists only inside
-  'withProtectedEntry');
-* a write publishes a fully written, flushed temporary by atomic rename, so a
-  crash leaves either the old record or the new one and never a torn one;
+  'compareAndSwapProtectedRecord', and every operation checks that its entry
+  remains live in the owning thread);
+* a write syncs a complete temporary before atomic rename, uses write-through
+  replacement on Windows, and syncs the parent directory on POSIX, so after
+  process death, an OS crash, or power loss a
+  record is the old one or the complete new one, provided storage honors the
+  requested flushes. Darwin requests the drive flush with @F_FULLFSYNC@;
 * a write lands only against the exact version the caller observed, so two
   cooperating runs cannot both win, and the successor version is returned to
   the winner (this is the "sole successor state/permit pair" the callers
@@ -61,7 +66,9 @@ module HostBootstrap.Protected (
     mkRecordKey,
     recordKeyText,
     mkRecordName,
+    mkRecordSegment,
     recordNameIdentity,
+    recordTupleSeparator,
     RecordVersion,
     recordVersionWord,
     ProtectedRecord (..),
@@ -77,18 +84,19 @@ module HostBootstrap.Protected (
 ) where
 
 import Control.Concurrent (ThreadId, myThreadId)
-import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception (bracket, finally, onException)
+import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar, withMVar)
+import Control.Exception (bracket, finally, mask, onException)
 import Control.Exception.Safe (try)
 import qualified Control.Exception.Safe as Safe
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
-import Data.Char (isAlphaNum)
+import Data.Char (isAsciiLower, isAsciiUpper, isControl, isSpace, toLower, toUpper)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (isSuffixOf, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock, hTryLock)
@@ -98,7 +106,6 @@ import System.Directory (
     listDirectory,
     makeAbsolute,
     removeFile,
-    renameFile,
  )
 import System.FilePath ((<.>), (</>))
 import System.IO (
@@ -113,7 +120,43 @@ import System.IO (
 import qualified System.IO as IO
 import System.IO.Error (isDoesNotExistError)
 #if !defined(mingw32_HOST_OS)
-import System.Posix.IO (FdOption (CloseOnExec), closeFd, fdToHandle, handleToFd, setFdOption)
+import System.Directory (renameFile)
+import System.FilePath (takeDirectory)
+import System.Posix.IO (
+    FdOption (CloseOnExec),
+    OpenFileFlags (cloexec),
+    OpenMode (ReadOnly, ReadWrite),
+    closeFd,
+    defaultFileFlags,
+    fdToHandle,
+    handleToFd,
+    openFd,
+    setFdOption,
+ )
+import System.Posix.Unistd (fileSynchronise)
+#if defined(darwin_HOST_OS)
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.Types (CInt (..))
+import System.Posix.Types (Fd (Fd))
+#else
+import System.Posix.Types (Fd)
+#endif
+#else
+import Data.Bits ((.|.))
+import Data.List (isPrefixOf)
+import System.Win32.File (
+    MoveFileFlag,
+    closeHandle,
+    createFile,
+    fILE_ATTRIBUTE_NORMAL,
+    fILE_SHARE_READ,
+    flushFileBuffers,
+    gENERIC_WRITE,
+    mOVEFILE_REPLACE_EXISTING,
+    moveFileEx,
+    oPEN_EXISTING,
+ )
+import System.Win32.Info (getFullPathName)
 #endif
 
 -- The store --------------------------------------------------------------------
@@ -148,7 +191,9 @@ protectedStoreIdentity = storeIdentity
 {- | Open (creating if necessary) the protected store under an absolute
 directory. The identity file is created exactly once and read thereafter, so
 every later process observes the same store identity — and a store that was
-removed and recreated presents a different one.
+removed and recreated presents a different one. Its envelope also names the
+record-name encoding; an incompatible envelope or identity-less populated
+store is refused without interpreting its records.
 -}
 openProtectedStore :: FilePath -> IO (Either ProtectedError ProtectedStore)
 openProtectedStore rawRoot
@@ -160,8 +205,8 @@ openProtectedStore rawRoot
             mutex <- newMVar ()
             holder <- newIORef Nothing
             identity <- establishIdentity root mutex holder
-            pure (ProtectedStore root identity mutex holder)
-        pure (either (Left . ioFailure "open the protected store") Right outcome)
+            pure (fmap (\value -> ProtectedStore root value mutex holder) identity)
+        pure (either (Left . ioFailure "open the protected store") id outcome)
 
 recordsDirectory :: FilePath
 recordsDirectory = "records"
@@ -184,31 +229,47 @@ establishIdentity ::
     FilePath ->
     MVar () ->
     IORef (Maybe ThreadId) ->
-    IO ProtectedStoreIdentity
+    IO (Either ProtectedError ProtectedStoreIdentity)
 establishIdentity root mutex holder = do
     existing <- readIdentity path
     case existing of
-        Just identity -> pure identity
-        Nothing -> withStoreLock root mutex holder $ do
+        Left failure -> pure (Left failure)
+        Right (Just identity) -> pure (Right identity)
+        Right Nothing -> withStoreLock root mutex holder $ do
             raced <- readIdentity path
             case raced of
-                Just identity -> pure identity
-                Nothing -> do
-                    nonce <- freshNonce
-                    publishBytes path (encodeUtf8 nonce)
-                    pure (ProtectedStoreIdentity nonce)
+                Left failure -> pure (Left failure)
+                Right (Just identity) -> pure (Right identity)
+                Right Nothing -> do
+                    entries <- listDirectory (root </> recordsDirectory)
+                    if null entries
+                        then do
+                            nonce <- freshNonce
+                            publishBytes path (TextEncoding.encodeUtf8 ("hbps2 " <> nonce <> "\n"))
+                            pure (Right (ProtectedStoreIdentity nonce))
+                        else
+                            pure
+                                (Left (ProtectedInvalid "the protected store identity envelope is missing from a populated store"))
   where
     path = root </> identityFileName
 
-readIdentity :: FilePath -> IO (Maybe ProtectedStoreIdentity)
+readIdentity :: FilePath -> IO (Either ProtectedError (Maybe ProtectedStoreIdentity))
 readIdentity path = do
     present <- doesFileExist path
     if not present
-        then pure Nothing
+        then pure (Right Nothing)
         else do
             raw <- ByteString.readFile path
-            let value = Text.strip (decodeUtf8Lenient raw)
-            pure (if Text.null value then Nothing else Just (ProtectedStoreIdentity value))
+            pure $ case TextEncoding.decodeUtf8' raw of
+                Right envelope
+                    | Just terminated <- Text.stripPrefix "hbps2 " envelope
+                    , Just nonce <- Text.stripSuffix "\n" terminated
+                    , not (Text.null nonce)
+                    , Text.all (\character -> not (isSpace character || isControl character)) nonce ->
+                        Right (Just (ProtectedStoreIdentity nonce))
+                _ ->
+                    Left
+                        (ProtectedInvalid "the protected store identity envelope is incompatible with record-name encoding hbps2")
 
 {- | A generative nonce for one store. It is durable after the first write, so
 its only requirement is that two stores created on one host do not collide.
@@ -230,18 +291,44 @@ showHex64 value = go value ""
 
 -- Exclusive entry ---------------------------------------------------------------
 
-{- | Proof that the caller is inside the store's exclusive entry. The @session@
-parameter is bound by 'withProtectedEntry' so a session cannot be smuggled from
-one bracket into another, and the record operations accept nothing else.
+{- | Entry-bound authority for record operations. The nominal @session@ index
+is bound by the entry bracket. Ordinary IO can retain a session in a closure,
+so each effectful operation also checks its private live token and owner thread.
+The token is revoked before the bracket releases the store lock.
 -}
-data ProtectedSession session = ProtectedSession ProtectedStore
+type role ProtectedSession nominal
+data ProtectedSession session = ProtectedSession ProtectedStore ThreadId (IORef Bool)
 
 sessionStoreIdentity :: ProtectedSession session -> ProtectedStoreIdentity
-sessionStoreIdentity (ProtectedSession store) = storeIdentity store
+sessionStoreIdentity (ProtectedSession store _ _) = storeIdentity store
 
 -- | The store's absolute root, for the operator check that must inspect it.
 sessionStoreRoot :: ProtectedSession session -> FilePath
-sessionStoreRoot (ProtectedSession store) = storeRoot store
+sessionStoreRoot (ProtectedSession store _ _) = storeRoot store
+
+withFreshProtectedSession ::
+    ProtectedStore ->
+    (forall session. ProtectedSession session -> IO result) ->
+    IO result
+withFreshProtectedSession store action = mask $ \restore -> do
+    owner <- myThreadId
+    live <- newIORef True
+    restore (action (ProtectedSession store owner live))
+        `finally` writeIORef live False
+
+withActiveProtectedSession ::
+    ProtectedSession session ->
+    (ProtectedStore -> IO (Either ProtectedError result)) ->
+    IO (Either ProtectedError result)
+withActiveProtectedSession (ProtectedSession store owner live) action = do
+    active <- readIORef live
+    self <- myThreadId
+    if not active
+        then pure (Left (ProtectedInvalid "the protected session is no longer live"))
+        else
+            if self /= owner
+                then pure (Left (ProtectedInvalid "the protected session belongs to another thread"))
+                else action store
 
 {- | Ask the operating system whether the current principal can create and
 remove a file in the exact records directory this session protects.
@@ -255,7 +342,8 @@ operation.
 verifyProtectedStoreWritable ::
     ProtectedSession session ->
     IO (Either ProtectedError ())
-verifyProtectedStoreWritable (ProtectedSession store) = do
+verifyProtectedStoreWritable session = withActiveProtectedSession session $ \store -> do
+    let recordsRoot = storeRoot store </> recordsDirectory
     outcome <-
         try $
             bracket
@@ -263,12 +351,12 @@ verifyProtectedStoreWritable (ProtectedSession store) = do
                 (\(path, handle) -> hClose handle `finally` removeFile path)
                 (const (pure ()))
     pure (either (Left . ioFailure "verify write access to the protected record store") Right outcome)
-  where
-    recordsRoot = storeRoot store </> recordsDirectory
 
 {- | Run an action under the store's OS-released exclusive lock (clause 1). The
 lock spans the whole observe/mutate/settle bracket, and the kernel releases it
 if this process dies mid-bracket.
+
+Re-entry by the holding thread is refused: use its existing session instead.
 -}
 withProtectedEntry ::
     ProtectedStore ->
@@ -292,13 +380,16 @@ withProtectedEntry store action = do
                         (storeRoot store)
                         (storeMutex store)
                         (storeHolder store)
-                        (action (ProtectedSession store))
+                        (withFreshProtectedSession store action)
                     )
             pure (either (Left . ioFailure "enter the protected store") id outcome)
 
 {- | Attempt the exclusive entry without blocking. 'Nothing' means another
 process (or another thread of this one) holds it right now; the caller decides
 whether that is contention to wait on or a live peer to report.
+
+The holding thread's own re-entry is a 'ProtectedInvalid' refusal rather than
+contention, because it must keep using the session it already holds.
 -}
 tryProtectedEntry ::
     ProtectedStore ->
@@ -322,7 +413,7 @@ tryProtectedEntry store action = do
                         (storeRoot store)
                         (storeMutex store)
                         (storeHolder store)
-                        (action (ProtectedSession store))
+                        (withFreshProtectedSession store action)
                     )
             pure $ case outcome of
                 Left failure -> Left (ioFailure "enter the protected store" failure)
@@ -335,23 +426,28 @@ tryStoreLock ::
     IORef (Maybe ThreadId) ->
     IO result ->
     IO (Maybe result)
-tryStoreLock root mutex holder action =
-    withMVar mutex $ \() ->
-        bracket open closeIfHeld run
+tryStoreLock root mutex holder action = Safe.mask $ \restore ->
+    bracket (tryTakeMVar mutex) restoreMutex $ \acquired ->
+        case acquired of
+            Nothing -> pure Nothing
+            Just () -> bracket open closeIfHeld (run restore)
   where
+    restoreMutex Nothing = pure ()
+    restoreMutex (Just ()) = putMVar mutex ()
     open = do
         handle <- openLockHandle (root </> lockFileName)
-        hSetBuffering handle NoBuffering
-        taken <- hTryLock handle ExclusiveLock `onException` hClose handle
+        taken <-
+            (hSetBuffering handle NoBuffering >> hTryLock handle ExclusiveLock)
+                `onException` hClose handle
         pure (handle, taken)
-    closeIfHeld (handle, taken) = do
+    closeIfHeld (handle, _) = do
         writeIORef holder Nothing
-        if taken then hClose handle else hClose handle
-    run (_, False) = pure Nothing
-    run (_, True) = do
+        hClose handle
+    run _ (_, False) = pure Nothing
+    run restore (_, True) = do
         self <- myThreadId
         writeIORef holder (Just self)
-        Just <$> action
+        Just <$> restore action
 
 {- | Hold a named liveness lock for the whole of @body@, or report that another
 process holds it.
@@ -366,6 +462,8 @@ instant.
 
 @Nothing@ means another process holds it right now. That is deliberately not an
 error here: the caller decides whether a live peer is contention or a refusal.
+The name is validated as a 'RecordKey' before any directory or file is opened.
+Acquisition is masked, and the caller's body runs with its original masking state.
 -}
 withRunLiveness ::
     ProtectedStore ->
@@ -373,26 +471,29 @@ withRunLiveness ::
     Text ->
     IO result ->
     IO (Either ProtectedError (Maybe result))
-withRunLiveness store name body = do
-    -- Only the ACQUISITION is wrapped: the body's own exceptions must propagate
-    -- to the caller unchanged, because the harness engine classifies them. The
-    -- lock is still released on that path, by 'finally'.
-    prepared <- try acquire
-    case prepared of
-        Left failure -> pure (Left (ioFailure "take the run liveness lock" failure))
-        Right (handle, False) -> do
-            hClose handle
-            pure (Right Nothing)
-        Right (handle, True) ->
-            (Right . Just <$> body) `finally` hClose handle
+withRunLiveness store name body = case mkRecordKey name of
+    Left refusal -> pure (Left refusal)
+    Right key -> mask $ \restore -> do
+        -- Only acquisition's IOError becomes a typed store refusal. Body
+        -- exceptions propagate, with the handle closed even at the handoff.
+        prepared <- try (acquire key)
+        case prepared of
+            Left failure -> pure (Left (ioFailure "take the run liveness lock" failure))
+            Right (handle, False) -> do
+                hClose handle
+                pure (Right Nothing)
+            Right (handle, True) ->
+                (Right . Just <$> restore body) `finally` hClose handle
   where
-    acquire = do
+    acquire key = do
         let directory = protectedStoreRoot store </> livenessDirectoryName
         createDirectoryIfMissing True directory
-        handle <- openLockHandle (directory </> Text.unpack name <.> "lock")
-        hSetBuffering handle NoBuffering
-        taken <- hTryLock handle ExclusiveLock `onException` hClose handle
-        pure (handle, taken)
+        handle <- openLockHandle (directory </> Text.unpack (recordKeyText key) <.> "lock")
+        (do
+            hSetBuffering handle NoBuffering
+            taken <- hTryLock handle ExclusiveLock
+            pure (handle, taken)
+            ) `onException` hClose handle
 
 livenessDirectoryName :: FilePath
 livenessDirectoryName = "liveness"
@@ -445,7 +546,7 @@ markCloseOnExec handle = do
 
 {- | A validated record name. Keys are restricted to characters that are safe as
 a single path segment on every supported host, so a key can never traverse out
-of the store.
+of the store or alias another key through ASCII case folding or trailing dots.
 -}
 newtype RecordKey = RecordKey Text
     deriving (Eq, Ord)
@@ -458,8 +559,9 @@ recordKeyText (RecordKey value) = value
 
 {- | Validate a record key.
 
-The length cap is derived from the filesystem, which is what a key ultimately
-names: a record is written as @\<key\>.rec@ and published from
+The ASCII lowercase alphabet makes the length cap a byte cap, independent of
+locale. Reserved Windows device prefixes and trailing dots are refused. The
+cap is derived from the filesystem, which is what a key ultimately names: a record is written as @\<key\>.rec@ and published from
 @\<key\>.rec.tmp-\<16 hex\>@, so the on-disk component is the key plus 25 bytes,
 against the 255-byte component limit APFS and ext4 both impose. 200 leaves
 headroom for that suffix and for the longest key the lifecycle actually forms —
@@ -472,7 +574,7 @@ mkRecordKey raw
     | Text.length raw > 200 =
         Left
             ( ProtectedInvalid
-                ( "a record key must be at most 200 characters (observed "
+                ( "a record key must be at most 200 ASCII bytes (observed "
                     <> Text.pack (show (Text.length raw))
                     <> ", namespace "
                     <> Text.takeWhile (/= '.') raw
@@ -482,12 +584,19 @@ mkRecordKey raw
     | not (Text.all legal raw) =
         Left
             ( ProtectedInvalid
-                ("a record key may contain only alphanumerics, '-', '_', and '.': " <> raw)
+                ("a record key may contain only ASCII lowercase letters, digits, '-', '_', and '.': " <> raw)
             )
     | Text.isPrefixOf "." raw = Left (ProtectedInvalid "a record key must not start with '.'")
+    | Text.isSuffixOf "." raw = Left (ProtectedInvalid "a record key must not end with '.'")
+    | Text.takeWhile (/= '.') raw `elem` reservedDevices =
+        Left (ProtectedInvalid "a record key must not name a reserved Windows device")
     | otherwise = Right (RecordKey raw)
   where
-    legal character = isAlphaNum character || character `elem` ("-_." :: String)
+    legal character =
+        isAsciiLower character || ('0' <= character && character <= '9') || character `elem` ("-_." :: String)
+    reservedDevices =
+        ["con", "prn", "aux", "nul"]
+            <> [prefix <> Text.pack (show number) | prefix <- ["com", "lpt"], number <- [(1 :: Int) .. 9]]
 
 {- | Encode one **namespaced identity**, or a path of them, as a record-name
 component.
@@ -510,8 +619,12 @@ This is the one encoding, and it is **injective**:
   encoded one;
 * an encoded segment's namespace may contain no @.@, so the first @.@ is always
   the separator and @ns.token@ determines @(ns, token)@ uniquely;
-* no segment may contain @..@, so an encoded segment holds no adjacent pair of
-  dots and @..@ unambiguously separates path segments.
+* a namespaced token may neither begin nor end with @.@, and no raw segment may
+  contain @..@, so an encoded segment holds no adjacent dots and does not end in
+  a dot; @..@ therefore unambiguously separates path segments;
+* ASCII uppercase @C@ becomes @_c@ and a literal @_@ becomes @__@ in every
+  component, so case folding cannot merge distinct ASCII identities and the
+  escapes themselves remain unambiguous.
 
 At most one colon per segment is admitted; a second would make the namespace
 separator ambiguous. Two distinct identities can therefore never share one
@@ -523,28 +636,56 @@ mkRecordName raw
     | otherwise =
         Text.intercalate ".." <$> traverse (recordNameSegment raw) (Text.splitOn "/" raw)
 
+{- | Encode one identity segment with the same codec as 'mkRecordName'. A
+runtime name offered as one component cannot introduce another path segment.
+-}
+mkRecordSegment :: Text -> Either ProtectedError Text
+mkRecordSegment raw
+    | Text.any (== '/') raw = refuse raw "a single record segment may not contain '/'"
+    | otherwise = recordNameSegment raw raw
+
 recordNameSegment :: Text -> Text -> Either ProtectedError Text
 recordNameSegment raw segment
     | Text.null segment = refuse raw "must not contain an empty path segment"
     | not (Text.all admitted segment) =
-        refuse raw "may contain only alphanumerics, '-', '_', '.', '/', and one ':' per segment"
+        refuse raw "may contain only ASCII alphanumerics, '-', '_', '.', '/', and one ':' per segment"
     | Text.isInfixOf ".." segment =
         refuse raw "a path segment may not contain '..'"
     | otherwise = case Text.splitOn ":" segment of
         [plain]
             | Text.any (== '.') plain ->
                 refuse raw "a segment with no namespace may not contain '.'"
-            | otherwise -> Right plain
+            | otherwise -> Right (encodeRecordCase plain)
         [namespace, token]
             | Text.null namespace -> refuse raw "a namespaced segment needs a namespace"
             | Text.null token -> refuse raw "a namespaced segment needs a token"
             | Text.any (== '.') namespace ->
                 refuse raw "a segment's namespace may not contain '.'"
-            | otherwise -> Right (namespace <> "." <> token)
+            | Text.isPrefixOf "." token || Text.isSuffixOf "." token ->
+                refuse raw "a namespaced token may neither begin nor end with '.'"
+            | otherwise -> Right (encodeRecordCase namespace <> "." <> encodeRecordCase token)
         _ -> refuse raw "a segment has at most one namespace"
   where
     admitted character = legal character || character == ':'
-    legal character = isAlphaNum character || character `elem` ("-_." :: String)
+    legal character =
+        isAsciiLower character || isAsciiUpper character || ('0' <= character && character <= '9') || character `elem` ("-_." :: String)
+
+encodeRecordCase :: Text -> Text
+encodeRecordCase = Text.concatMap escape
+  where
+    escape '_' = "__"
+    escape character
+        | isAsciiUpper character = Text.pack ['_', toLower character]
+        | otherwise = Text.singleton character
+
+decodeRecordCase :: Text -> Text
+decodeRecordCase = Text.pack . decode . Text.unpack
+  where
+    decode ('_' : '_' : rest) = '_' : decode rest
+    decode ('_' : character : rest)
+        | isAsciiLower character = toUpper character : decode rest
+    decode (character : rest) = character : decode rest
+    decode [] = []
 
 refuse :: Text -> Text -> Either ProtectedError result
 refuse raw reason = Left (ProtectedInvalid ("record name " <> raw <> " " <> reason))
@@ -552,15 +693,24 @@ refuse raw reason = Left (ProtectedInvalid ("record name " <> raw <> " " <> reas
 {- | The identity a record-name component denotes. Total inverse of
 'mkRecordName' on its image: @..@ separates path segments, the first @.@ of a
 segment is the namespace separator, and a segment with no @.@ was never
-namespaced.
+namespaced. @__@ denotes a literal underscore and @_c@ denotes ASCII uppercase
+@C@; their decoding does not alter the namespace or path separators.
 -}
 recordNameIdentity :: Text -> Text
 recordNameIdentity name =
-    Text.intercalate "/" (map segmentIdentity (Text.splitOn ".." name))
+    decodeRecordCase (Text.intercalate "/" (map segmentIdentity (Text.splitOn ".." name)))
   where
     segmentIdentity segment = case Text.breakOn "." segment of
         (_, rest) | Text.null rest -> segment
         (namespace, rest) -> namespace <> ":" <> Text.drop 1 rest
+
+{- | Separate complete encoded identities in a tuple. This delimiter is absent
+from the image of 'mkRecordName': a component has no adjacent or edge dots, and
+path separators contain exactly two dots between non-dot component edges.
+Callers therefore split the tuple here before decoding each identity.
+-}
+recordTupleSeparator :: Text
+recordTupleSeparator = "..."
 
 {- | A record's monotonic version. Version 1 is the first published value; a
 record that has never existed has no version at all, which is why 'Expectation'
@@ -596,7 +746,7 @@ readProtectedRecord ::
     ProtectedSession session ->
     RecordKey ->
     IO (Either ProtectedError (Maybe ProtectedRecord))
-readProtectedRecord (ProtectedSession store) key = do
+readProtectedRecord session key = withActiveProtectedSession session $ \store -> do
     outcome <- try (ByteString.readFile (recordPath store key))
     case outcome of
         Left failure
@@ -608,7 +758,7 @@ readProtectedRecord (ProtectedSession store) key = do
 listProtectedRecords ::
     ProtectedSession session ->
     IO (Either ProtectedError [RecordKey])
-listProtectedRecords (ProtectedSession store) = do
+listProtectedRecords session = withActiveProtectedSession session $ \store -> do
     outcome <- try (listDirectory (storeRoot store </> recordsDirectory))
     case outcome of
         Left failure
@@ -634,7 +784,7 @@ compareAndSwapProtectedRecord ::
     Expectation ->
     ByteString ->
     IO (Either ProtectedError RecordVersion)
-compareAndSwapProtectedRecord session@(ProtectedSession store) key expectation bytes = do
+compareAndSwapProtectedRecord session key expectation bytes = withActiveProtectedSession session $ \store -> do
     observed <- readProtectedRecord session key
     case observed of
         Left failure -> pure (Left failure)
@@ -661,7 +811,7 @@ compareAndDeleteProtectedRecord ::
     RecordKey ->
     Expectation ->
     IO (Either ProtectedError ())
-compareAndDeleteProtectedRecord session@(ProtectedSession store) key expectation = do
+compareAndDeleteProtectedRecord session key expectation = withActiveProtectedSession session $ \store -> do
     observed <- readProtectedRecord session key
     case observed of
         Left failure -> pure (Left failure)
@@ -746,19 +896,100 @@ decodeRecord key raw =
   where
     malformed reason = Left (ProtectedMalformedRecord key reason)
 
-{- | Write bytes to a fully flushed, invocation-indexed temporary in the same
-directory and rename it over the destination, so a reader sees either the old
-record or the complete new one.
+{- | Write and sync an invocation-indexed temporary in the destination's own
+directory, atomically rename it with write-through replacement on Windows, and
+sync the POSIX parent directory. The
+temporary is removed on any failure during writing, closing, syncing, or
+publication; a reader sees either the old record or the complete new one.
 -}
 publishBytes :: FilePath -> ByteString -> IO ()
 publishBytes destination bytes = do
     stamp <- getMonotonicTimeNSec
     let temporary = destination <.> ("tmp-" <> showHex64 stamp)
-    withFile temporary IO.WriteMode $ \handle -> do
-        ByteString.hPut handle bytes
-        hFlush handle
-    renameFile temporary destination
+    ( do
+        withFile temporary IO.WriteMode $ \handle -> do
+            ByteString.hPut handle bytes
+            hFlush handle
+        syncPublishedFile temporary
+        renamePublishedFile temporary destination
+        syncPublishedParent destination
+        )
         `onException` Safe.catchIO (removeFile temporary) (const (pure ()))
+
+-- | Reopen the closed temporary, sync its data, and close the native handle.
+syncPublishedFile :: FilePath -> IO ()
+#if defined(mingw32_HOST_OS)
+syncPublishedFile path = do
+    nativePath <- windowsPublishedPath path
+    bracket
+        (createFile nativePath gENERIC_WRITE fILE_SHARE_READ Nothing oPEN_EXISTING fILE_ATTRIBUTE_NORMAL Nothing)
+        closeHandle
+        flushFileBuffers
+#else
+syncPublishedFile path =
+    bracket (openFd path ReadWrite defaultFileFlags{cloexec = True}) closeFd syncPublishedDescriptor
+#endif
+
+-- | Replace in the same directory, without a cross-volume copy fallback.
+renamePublishedFile :: FilePath -> FilePath -> IO ()
+#if defined(mingw32_HOST_OS)
+renamePublishedFile source destination = do
+    nativeSource <- windowsPublishedPath source
+    nativeDestination <- windowsPublishedPath destination
+    moveFileEx nativeSource (Just nativeDestination) (mOVEFILE_REPLACE_EXISTING .|. moveFileWriteThrough)
+
+-- Native Win32 wrappers encode strings without furnishing long paths. Preserve
+-- explicit namespaces, and normalize ordinary absolute local/UNC paths before
+-- adding their extended prefix, independently of the host's registry policy.
+windowsPublishedPath :: FilePath -> IO FilePath
+windowsPublishedPath path
+    | isPrefixOf "\\\\?\\" path || isPrefixOf "\\\\.\\" path = pure path
+    | otherwise = do
+        absolute <- getFullPathName path
+        pure $
+            if isPrefixOf "\\\\" absolute
+                then "\\\\?\\UNC\\" <> drop 2 absolute
+                else "\\\\?\\" <> absolute
+
+-- Win32 exposes moveFileEx but omits this SDK constant from its public module.
+foreign import capi unsafe "windows.h value MOVEFILE_WRITE_THROUGH"
+    moveFileWriteThrough :: MoveFileFlag
+#else
+renamePublishedFile = renameFile
+#endif
+
+-- | Sync the POSIX directory after rename. Darwin then requests the drive-wide
+-- flush through the published regular file, after the directory's changes,
+-- without assuming F_FULLFSYNC accepts directory descriptors.
+syncPublishedParent :: FilePath -> IO ()
+#if defined(mingw32_HOST_OS)
+syncPublishedParent _destination = pure ()
+#else
+syncPublishedParent destination = do
+    bracket (openFd (takeDirectory destination) ReadOnly defaultFileFlags{cloexec = True}) closeFd fileSynchronise
+#if defined(darwin_HOST_OS)
+    syncPublishedFile destination
+#endif
+#endif
+
+#if !defined(mingw32_HOST_OS)
+-- Darwin's stronger operation includes fsync and asks the drive to flush its
+-- cache too. Failure propagates; falling back would weaken the acknowledged
+-- publication's guarantee. Other POSIX kernels use their file sync primitive.
+syncPublishedDescriptor :: Fd -> IO ()
+#if defined(darwin_HOST_OS)
+syncPublishedDescriptor (Fd descriptor) =
+    throwErrnoIfMinus1_ "fcntl(F_FULLFSYNC)" (c_fcntlFullSync descriptor fullFsyncCommand)
+
+foreign import capi safe "fcntl.h fcntl"
+    c_fcntlFullSync :: CInt -> CInt -> IO CInt
+
+foreign import capi unsafe "fcntl.h value F_FULLFSYNC"
+    fullFsyncCommand :: CInt
+#else
+syncPublishedDescriptor = fileSynchronise
+#endif
+#endif
 
 -- Failures --------------------------------------------------------------------------
 
@@ -795,11 +1026,3 @@ protectedErrorMessage failure = case failure of
 ioFailure :: Text -> IOError -> ProtectedError
 ioFailure operation failure =
     ProtectedIOFailure operation (Text.pack (show failure))
-
--- Small helpers ---------------------------------------------------------------------
-
-encodeUtf8 :: Text -> ByteString
-encodeUtf8 = ByteStringChar8.pack . Text.unpack
-
-decodeUtf8Lenient :: ByteString -> Text
-decodeUtf8Lenient = Text.pack . ByteStringChar8.unpack

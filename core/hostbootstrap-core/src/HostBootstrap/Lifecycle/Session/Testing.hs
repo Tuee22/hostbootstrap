@@ -17,7 +17,8 @@ only thing the fixture supplies is a record.
 It mints no authority. There is no 'HostBootstrap.Lifecycle.Transaction.TransactionPermit'
 constructor, no record-key minter beyond the coordinator's own, and no
 transaction runner; a caller holding a descriptor holds a description of work,
-never permission to perform it.
+never permission to perform it. The private unit exposes only this module;
+its Transaction implementation is hidden in @other-modules@.
 -}
 module HostBootstrap.Lifecycle.Session.Testing (
     -- * The interrupted coordinator record
@@ -26,6 +27,8 @@ module HostBootstrap.Lifecycle.Session.Testing (
     TxnKind (..),
     coordinatorKey,
     encodeCoordinator,
+    -- | Observe canonical coordinator data without producing transaction authority.
+    decodeCoordinator,
 
     -- * The targets it names
     TransactionTarget,
@@ -53,6 +56,7 @@ import HostBootstrap.Lifecycle.Transaction (
     TxnKind (..),
     coordinatorKey,
     encodeCoordinator,
+    decodeCoordinator,
     operationTransactionTarget,
     productionIntentTransactionTarget,
     productionLeaseTransactionTarget,

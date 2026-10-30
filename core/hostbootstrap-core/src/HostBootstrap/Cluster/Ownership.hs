@@ -168,7 +168,10 @@ import HostBootstrap.Protected (
     ProtectedSession,
     RecordKey,
     mkRecordKey,
+    mkRecordSegment,
     protectedErrorMessage,
+    recordKeyText,
+    recordTupleSeparator,
  )
 import System.Directory (doesFileExist, getTemporaryDirectory, removeDirectory, removeFile, renameFile)
 import System.FilePath (takeDirectory, takeFileName, (</>))
@@ -228,7 +231,8 @@ The cluster name, because that is what the plan declares and what the driver
 answers about.
 -}
 ownedClusterRecordKey :: OwnedCluster -> Either ProtectedError RecordKey
-ownedClusterRecordKey = mkRecordKey . Text.pack . ownedClusterName
+ownedClusterRecordKey owned =
+    mkRecordSegment ("cluster:" <> Text.pack (ownedClusterName owned)) >>= mkRecordKey
 
 {- | The protected-store key one node's own durable record lives under.
 
@@ -237,8 +241,10 @@ from the cluster's own name and a node record can never be mistaken for a
 cluster's.
 -}
 ownedNodeRecordKey :: OwnedCluster -> String -> Either ProtectedError RecordKey
-ownedNodeRecordKey owned node =
-    mkRecordKey (Text.pack (ownedClusterName owned <> "." <> node))
+ownedNodeRecordKey owned node = do
+    cluster <- ownedClusterRecordKey owned
+    component <- mkRecordSegment ("node:" <> Text.pack node)
+    mkRecordKey (recordKeyText cluster <> recordTupleSeparator <> component)
 
 {- | The key one declared node's record lives under, control plane included.
 
@@ -314,10 +320,10 @@ data ClusterReleaseOutcome
 
 {- | The closed set of reasons a transaction stopped short of an outcome.
 
-Four, and each names a different authority: the protected store, the answering
-tool's own report, the standing three values decide, and the seam that mints the
-clause tokens. A driver above this module maps them onto its own vocabulary
-through the one renderer, so no reason is described twice.
+Each names what stopped the transaction: the protected store, a tool's report,
+the ownership standing, a clause, credential publication, or the resource budget.
+A driver above this module maps them onto its own vocabulary through the one
+renderer, so no reason is described twice.
 -}
 data ClusterOwnershipFault
     = -- | the protected store could not be read or written
@@ -330,6 +336,8 @@ data ClusterOwnershipFault
       ClusterOwnershipClause OwnershipFault
     | -- | the credential could not be staged or atomically published
       ClusterOwnershipKubeconfig Text
+    | -- | the canonical budget cannot be expressed by the runtime
+      ClusterOwnershipBudget Text
     deriving (Eq, Show)
 
 -- | One rendering, so no caller writes a second description of a refusal.
@@ -340,6 +348,7 @@ clusterOwnershipFaultMessage fault = case fault of
     ClusterOwnershipStanding inner -> clusterStandingConflictMessage inner
     ClusterOwnershipClause inner -> ownershipFaultMessage inner
     ClusterOwnershipKubeconfig inner -> "cluster kubeconfig: " <> inner
+    ClusterOwnershipBudget inner -> "cluster budget: " <> inner
 
 -- ---------------------------------------------------------------------------
 -- What the authorities are currently reporting
@@ -458,17 +467,19 @@ publishEveryRecord ::
     RecordKey ->
     OwnedCluster ->
     IO (Either ClusterOwnershipFault ())
-publishEveryRecord _cfg session key owned = go (ownedClusterNodeNames owned)
-  where
-    go [] = pure (Right ())
-    go (node : rest) = case nodeRecordKey owned key node of
+publishEveryRecord _cfg session key owned =
+    case traverse address (ownedClusterNodeNames owned) of
         Left failure -> pure (Left (ClusterOwnershipStore failure))
-        Right nodeKey -> do
-            published <-
-                withRecordedNode session nodeKey owned node (\_recorded -> pure (Right ()))
-            case published of
-                Left fault -> pure (Left fault)
-                Right () -> go rest
+        Right addresses -> go addresses
+  where
+    address node = (,) node <$> nodeRecordKey owned key node
+    go [] = pure (Right ())
+    go ((node, nodeKey) : rest) = do
+        published <-
+            withRecordedNode session nodeKey owned node (\_recorded -> pure (Right ()))
+        case published of
+            Left fault -> pure (Left fault)
+            Right () -> go rest
 
 {- | Create the cluster, then bind what the runtime reports for every node.
 
@@ -846,26 +857,27 @@ cordonOwnedCluster ::
     OwnedCluster ->
     ResourceBudget ->
     IO (Either ClusterOwnershipFault [String])
-cordonOwnedCluster cfg session key owned budget = do
-    entered <- ownedClusterNodes cfg session key owned
-    case entered of
-        Left fault -> pure (Left fault)
-        Right standing -> do
-            applied <- applyEach standing
-            case applied of
+cordonOwnedCluster cfg session key owned budget =
+    case kindNodeCordonLimits budget of
+        Left refusal -> pure (Left (ClusterOwnershipBudget (Text.pack refusal)))
+        Right limits -> do
+            entered <- ownedClusterNodes cfg session key owned
+            case entered of
                 Left fault -> pure (Left fault)
-                Right () -> do
-                    after <- ownedClusterNodes cfg session key owned
-                    pure (fmap (const [node | (node, _, _) <- standing]) after)
+                Right standing -> do
+                    applied <- applyEach limits standing
+                    case applied of
+                        Left fault -> pure (Left fault)
+                        Right () -> do
+                            after <- ownedClusterNodes cfg session key owned
+                            pure (fmap (const [node | (node, _, _) <- standing]) after)
   where
-    limits = kindNodeCordonLimits budget
-
-    applyEach [] = pure (Right ())
-    applyEach ((_, _, identity) : rest) = do
+    applyEach _limits [] = pure (Right ())
+    applyEach limits ((_, _, identity) : rest) = do
         updated <- interpret cfg (updateNodeContainerCommand limits (containerReference identity))
         case classifyClusterReport clusterReportLineBound updated of
             Left fault -> pure (Left (ClusterOwnershipReport fault))
-            Right _ -> applyEach rest
+            Right _ -> applyEach limits rest
 
 -- ---------------------------------------------------------------------------
 -- Releasing

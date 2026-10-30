@@ -413,13 +413,8 @@ withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
 readProductionSources sourceRoot = do
-    paths <- listHaskellSources sourceRoot
-    traverse
-        ( \path -> do
-            source <- readFile path
-            pure (moduleNameFromPath sourceRoot path, path, source)
-        )
-        paths
+    sources <- SourceGuard.readHaskellSources sourceRoot
+    pure [(moduleNameFromPath sourceRoot path, path, source) | (path, source) <- sources]
 
 readPublicModuleExports :: FilePath -> FilePath -> IO [(String, [String])]
 readPublicModuleExports packageRoot sourceRoot = do

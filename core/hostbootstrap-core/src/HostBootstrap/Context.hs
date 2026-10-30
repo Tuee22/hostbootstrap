@@ -53,41 +53,29 @@ module HostBootstrap.Context
     imageBuildContainerContext,
     standaloneContainerContext,
     contextRequirement,
-    decodeContextText,
-    decodeContextFile,
-    readContextFile,
     renderComposition,
-    renderContext,
-    writeContextFile,
     validateContext,
     validateRuntimeContext,
     validateLifecycleContext,
     commandAllowed,
-    readAndValidateContextFile,
-    requireContextFile,
-    withValidatedContext,
     contextErrorMessage,
     vocabUnions,
   )
 where
 
-import Control.Exception (SomeException, try)
 import Data.Foldable (traverse_)
-import Data.List (find, union)
+import Data.List (find, intercalate, union)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as TIO
-import Dhall (FromDhall, ToDhall, auto, inputFile)
-import qualified Dhall
+import Dhall (FromDhall, ToDhall)
 import GHC.Generics (Generic)
 import HostBootstrap.Dhall.Hoist (NamedUnion)
 import qualified HostBootstrap.Dhall.Hoist as Hoist
 import Numeric.Natural (Natural)
 import System.Directory (doesFileExist, findExecutable)
 import System.Environment (lookupEnv)
-import System.Exit (ExitCode (ExitFailure), exitWith)
-import System.IO (hPutStrLn, stderr)
 #ifndef mingw32_HOST_OS
+import Control.Exception (SomeException, try)
 import System.Posix.Files (FileStatus, getFileStatus, isSocket)
 #endif
 
@@ -283,6 +271,9 @@ addRole role ctx
   | role == contextKind ctx = Right ctx
   | not (roleAdditionAllowed (contextKind ctx) role) =
       Left (ContextRoleAdditionRefused (contextKind ctx) role)
+  | role == ClusterService,
+    contextPlacement ctx `notElem` [Right ClusterDaemonPlacement, Right ClusterServicePlacement] =
+      Left (ContextRoleAdditionRefused (contextKind ctx) role)
   | otherwise =
       Right
         ctx
@@ -342,7 +333,9 @@ deriveVMContextWithProvider provider parent root =
     (commandClassesForKind VMOrchestrator)
     (childKindsForKind VMOrchestrator)
 
--- | Derive a project-container context from its parent.
+-- | Derive a project-container context from its parent. 'placementFor' uses
+-- the parent kind to select direct-host or VM-backed placement; the role label
+-- is the ordinary project-container label.
 deriveContainerContext :: BinaryContext -> Text -> BinaryContext
 deriveContainerContext parent root =
   childContext
@@ -354,10 +347,9 @@ deriveContainerContext parent root =
     (commandClassesForKind VMProjectContainer)
     (childKindsForKind VMProjectContainer)
 
--- | Derive the explicit Linux-GPU direct-host project-container context:
--- @host -> docker project container -> nvkind cluster@. This is intentionally a
--- separate constructor rather than a generic HostOrchestrator child, so ordinary
--- VM-backed runtime containers still require a VM ancestor.
+-- | Derive a project-container context with the Linux-GPU role label. Placement
+-- follows the parent kind through 'placementFor', exactly as for
+-- 'deriveContainerContext'; the different label does not select placement.
 deriveLinuxGpuContainerContext :: BinaryContext -> Text -> BinaryContext
 deriveLinuxGpuContainerContext parent root =
   childContextWith
@@ -557,7 +549,6 @@ childKindsForKind Daemon = []
 childKindsForKind OneShotJob = []
 childKindsForKind TestHarness = [ClusterService]
 
--- | The default stable role label used in generated configs and logs.
 {- | Every role a config may declare.
 
 Derived from the sum rather than listed beside it, so a role added to the type
@@ -567,6 +558,7 @@ new role parseable and undiscoverable.
 allContextKinds :: [ContextKind]
 allContextKinds = [minBound .. maxBound]
 
+-- | The default stable role label used in generated configs and logs.
 defaultRoleName :: ContextKind -> Text
 defaultRoleName HostOrchestrator = "host-orchestrator"
 defaultRoleName VMOrchestrator = "vm-orchestrator"
@@ -600,9 +592,9 @@ a Kubernetes daemon pod versus a host-resident daemon, a VM-backed project
 container versus the direct Linux GPU one — are separate placements with
 separate required sets.
 
-It is derived from the *validated topology graph*, never from the declared
-witness list, so a config cannot select a weaker placement by editing the facts
-it claims.
+It is derived from the declared topology, never from the declared witness list.
+The required witnesses prove facts about that placement's local environment
+when 'validateRuntimeContext' checks them.
 -}
 data ContextPlacement
   = HostOrchestratorPlacement
@@ -784,11 +776,9 @@ contextRequirement binaryName commandClass caps =
       requiredCapabilities = caps
     }
 
--- | Fail-fast context loading and validation errors.
+-- | Fail-fast context validation errors.
 data BinaryContextError
-  = ContextMissing FilePath
-  | ContextDecodeFailed FilePath String
-  | ContextProjectMismatch Text Text
+  = ContextProjectMismatch Text Text
   | ContextBinaryMismatch Text Text
   | ContextCurrentFrameMissing Text
   | ContextCurrentFrameKindMismatch Text ContextKind ContextKind
@@ -805,8 +795,6 @@ data BinaryContextError
     ContextTopologyRootCount Int
   | -- | following parents from this frame revisits it
     ContextTopologyCycle Text
-  | -- | a frame is not reachable from the root
-    ContextTopologyUnreachable Text
   | -- | a child frame's kind is not a legal child of its parent's kind
     ContextTopologyIllegalChild Text ContextKind ContextKind
   | -- | the declared @parentChain@ disagrees with the edge-derived ancestry
@@ -826,31 +814,8 @@ data BinaryContextError
     ContextPlacementRefusesCommand CommandClass ContextPlacement Bool
   deriving (Eq, Show)
 
--- | Decode a context from Dhall source text. Throws a Dhall exception on
--- malformed or ill-typed input.
-decodeContextText :: Text -> IO BinaryContext
-decodeContextText = Dhall.input auto
-
--- | Decode a context from a Dhall file. Throws a Dhall exception on malformed
--- or ill-typed input.
-decodeContextFile :: FilePath -> IO BinaryContext
-decodeContextFile = inputFile auto
-
--- | Read a context file, returning structured errors instead of throwing.
-readContextFile :: FilePath -> IO (Either BinaryContextError BinaryContext)
-readContextFile path = do
-  exists <- doesFileExist path
-  if not exists
-    then pure (Left (ContextMissing path))
-    else do
-      result <- try (decodeContextFile path) :: IO (Either SomeException BinaryContext)
-      pure $ case result of
-        Left err -> Left (ContextDecodeFailed path (show err))
-        Right ctx -> Right ctx
-
--- | The vocabulary unions hoisted into top-level @let@ bindings when rendering a
--- context or the project config that embeds it. Shared so both renderers
--- de-duplicate the same unions (see "HostBootstrap.Dhall.Hoist").
+-- | The vocabulary unions hoisted into top-level @let@ bindings when rendering
+-- the project config (see "HostBootstrap.Dhall.Hoist").
 vocabUnions :: [NamedUnion]
 vocabUnions =
   [ Hoist.unionOf @ContextKind "ContextKind",
@@ -859,15 +824,6 @@ vocabUnions =
     Hoist.unionOf @Capability "Capability",
     Hoist.unionOf @CommandClass "CommandClass"
   ]
-
--- | Render a context to Dhall source text, hoisting the repeated vocabulary
--- unions into top-level @let@ bindings.
-renderContext :: BinaryContext -> Text
-renderContext = Hoist.renderHoisted vocabUnions
-
--- | Write a context file.
-writeContextFile :: FilePath -> BinaryContext -> IO ()
-writeContextFile path ctx = TIO.writeFile path (renderContext ctx <> "\n")
 
 -- | Check whether a command class is allowed by the context.
 commandAllowed :: BinaryContext -> CommandClass -> Bool
@@ -916,25 +872,24 @@ command is authorized (§ 15.9).
 A decoded @<project>.dhall@ is untrusted input, so the frame list is checked as
 a graph rather than trusted as one: identifiers are non-empty and unique, every
 non-root frame resolves to exactly one declared parent, there is exactly one
-root, no parent walk revisits a frame, every frame is reachable from the root,
-each child's kind is a legal child of its parent's kind, and the declared
-@parentChain@ agrees with the ancestry the edges actually describe.
+root, and no parent walk revisits a frame; together those checks establish that
+every frame is reachable from that root. Each child's kind is a legal child of
+its parent's kind, and the declared @parentChain@ agrees with the ancestry the
+edges actually describe.
 
 The cycle check is load-bearing rather than defensive: the ancestor walk follows
 @topologyParentId@ with no memory of where it has been, so a topology whose
 frames name each other as parents would loop forever. A hand-edited or
-maliciously supplied config could reach it. Here every traversal carries a
-visited set and terminates.
+maliciously supplied config could reach it. The cycle check carries a visited
+set and terminates before the ancestor walk.
 -}
 validateTopology :: BinaryContext -> Either BinaryContextError ()
 validateTopology ctx = do
   traverse_ requireFrameId frames
   traverse_ requireUniqueId ids
-  root <- requireSingleRoot
+  requireSingleRoot
   traverse_ requireResolvableParent frames
   traverse_ (requireAcyclic []) frames
-  reachable <- Right (descendantsOf root)
-  traverse_ (requireReachable reachable) ids
   traverse_ requireLegalChild frames
   traverse_ requireLegalProvider frames
   requireParentChainAgrees
@@ -954,7 +909,7 @@ validateTopology ctx = do
     roots = [frame | frame <- frames, T.null (topologyParentId frame)]
 
     requireSingleRoot = case roots of
-      [root] -> Right root
+      [_] -> Right ()
       other -> Left (ContextTopologyRootCount (length other))
 
     frameById frameId = find ((== frameId) . topologyFrameId) frames
@@ -980,23 +935,6 @@ validateTopology ctx = do
             Nothing -> Right ()
             Just parent -> requireAcyclic (topologyFrameId frame : seen) parent
 
-    descendantsOf root = go [] [topologyFrameId root]
-      where
-        go acc [] = acc
-        go acc (frameId : rest)
-          | frameId `elem` acc = go acc rest
-          | otherwise =
-              let children =
-                    [ topologyFrameId child
-                    | child <- frames
-                    , topologyParentId child == frameId
-                    ]
-               in go (frameId : acc) (children ++ rest)
-
-    requireReachable reachable frameId
-      | frameId `elem` reachable = Right ()
-      | otherwise = Left (ContextTopologyUnreachable frameId)
-
     requireLegalChild frame
       | T.null (topologyParentId frame) = Right ()
       | otherwise =
@@ -1005,13 +943,10 @@ validateTopology ctx = do
             Just parent
               | topologyKind frame `elem` childKindsForKind (topologyKind parent) ->
                   Right ()
-              -- The direct Linux GPU lane really does hang a project container
-              -- off the host orchestrator with no VM between them. That edge is
-              -- structurally permitted here and policed by
-              -- 'requiredAncestorError', which refuses it unless the explicit
-              -- direct-container witness is present — so the refusal keeps its
-              -- specific diagnostic instead of being masked by a generic
-              -- illegal-child error.
+              -- This host-to-project-container edge selects
+              -- DirectLinuxGpuContainerPlacement through 'placementFor'. Its
+              -- derived witness set is checked by 'validateContext' and verified
+              -- against the environment by 'validateRuntimeContext'.
               | topologyKind parent == HostOrchestrator
               , topologyKind frame == VMProjectContainer ->
                   Right ()
@@ -1126,23 +1061,25 @@ ancestorKinds ctx =
 requiredAncestorError :: BinaryContext -> [ContextKind] -> Maybe BinaryContextError
 requiredAncestorError ctx ancestors =
   case contextKind ctx of
+    HostOrchestrator -> Nothing
+    VMOrchestrator -> Nothing
     VMProjectContainer
       | VMOrchestrator `elem` ancestors -> Nothing
       | isExplicitLinuxGpuContainer ctx -> Nothing
       | otherwise -> Just (ContextRequiredAncestorMissing VMProjectContainer VMOrchestrator)
-    _ -> Nothing
+    ImageBuildContainer -> Nothing
+    ClusterService -> Nothing
+    Daemon -> Nothing
+    OneShotJob -> Nothing
+    TestHarness -> Nothing
 
 {- | Whether the current frame is the explicit direct Linux GPU project
 container — the one lane that legitimately hangs a container off the host
 orchestrator with no VM between them.
 
-This is a **structural** question about the validated topology, not a claim the
-config makes. It previously required @directLinuxGpuWitness@ to appear in the
-declared 'runtimeWitnesses', which meant a hand-edited config could opt out of
-the VM-ancestor requirement simply by listing that witness. The placement is now
-derived from the graph, and the witness is instead *required* by that placement
-('requiredWitnesses') and verified against the real environment by
-'validateRuntimeContext'.
+This is a structural question about the declared topology. The placement is
+derived independently of 'runtimeWitnesses'; 'requiredWitnesses' derives its
+required facts, which 'validateRuntimeContext' verifies against the environment.
 -}
 isExplicitLinuxGpuContainer :: BinaryContext -> Bool
 isExplicitLinuxGpuContainer ctx =
@@ -1257,40 +1194,10 @@ checkRuntimeWitness witness =
     firstLine = takeWhile (/= '\n')
 #endif
 
--- | Load and validate a context file.
-readAndValidateContextFile :: FilePath -> ContextRequirement -> IO (Either BinaryContextError BinaryContext)
-readAndValidateContextFile path req = do
-  loaded <- readContextFile path
-  case loaded of
-    Left err -> pure (Left err)
-    Right ctx -> validateRuntimeContext req ctx
-
--- | Load and validate a context file, exiting with status 1 on failure.
-requireContextFile :: FilePath -> ContextRequirement -> IO BinaryContext
-requireContextFile path req = do
-  result <- readAndValidateContextFile path req
-  case result of
-    Right ctx -> pure ctx
-    Left err -> do
-      hPutStrLn stderr (contextErrorMessage err)
-      exitWith (ExitFailure 1)
-
--- | Run an action only when the decoded context satisfies the command
--- requirement. This keeps command tests side-effect-free on gate failure.
-withValidatedContext :: BinaryContext -> ContextRequirement -> IO a -> IO (Either BinaryContextError a)
-withValidatedContext ctx req action =
-  case validateContext req ctx of
-    Left err -> pure (Left err)
-    Right _ -> Right <$> action
-
 -- | A one-line diagnostic suitable for fail-fast CLI exits.
 contextErrorMessage :: BinaryContextError -> String
 contextErrorMessage err =
   case err of
-    ContextMissing path ->
-      "binary context: missing " ++ path
-    ContextDecodeFailed path detail ->
-      "binary context: failed to decode " ++ path ++ ": " ++ firstLine detail
     ContextProjectMismatch expected actual ->
       "binary context: project mismatch (expected " ++ txt expected ++ ", got " ++ txt actual ++ ")"
     ContextBinaryMismatch expected actual ->
@@ -1317,8 +1224,6 @@ contextErrorMessage err =
         ++ show count
     ContextTopologyCycle frame ->
       "binary context: topology parent chain revisits frame " ++ txt frame
-    ContextTopologyUnreachable frame ->
-      "binary context: topology frame " ++ txt frame ++ " is not reachable from the root"
     ContextTopologyIllegalChild frame parent child ->
       "binary context: topology frame "
         ++ txt frame
@@ -1369,6 +1274,8 @@ contextErrorMessage err =
         ++ " does not host it"
   where
     describe _ [] = ""
-    describe label ws = "; " ++ label ++ " " ++ show (map witnessName ws)
+    describe label ws = "; " ++ label ++ " [" ++ intercalate ", " (map describeWitness ws) ++ "]"
+    describeWitness witness =
+      show (witnessKind witness) ++ " " ++ show (witnessName witness)
+        ++ (if witnessKind witness == WitnessEnvEquals then " " ++ show (witnessValue witness) else "")
     txt = T.unpack
-    firstLine = takeWhile (/= '\n')

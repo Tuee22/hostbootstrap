@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module ForgeTransactionPermitFromDescriptor where
 
 -- The seam that describes the durable state an interrupted transaction leaves

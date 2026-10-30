@@ -1,3 +1,4 @@
 module OpenRecordedBrokerEpoch where
 
-import HostBootstrap.Authority (withRecordedBrokerEpoch)
+import HostBootstrap.Authority (withReifiedAllocatedBrokerEpochKernel)
+import HostBootstrap.Lifecycle.Mode (withReifiedAllocatedBrokerEpochKernel)

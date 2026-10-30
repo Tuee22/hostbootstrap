@@ -47,18 +47,17 @@
 ## The `ConfigArtifact` Registry
 
 [`HostBootstrap.Dhall.Gen`](../../core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs) is the
-generation module. Its artifact record has three `Text` fields:
+generation module. An artifact stores three `Text` values behind ordinary readers:
 
-| Field | Value `artifactOf name codec value` stores |
+| Reader | Value `artifactOf name codec value` stores |
 |---|---|
 | `artifactName` | `name`, the label `context schema` prints |
 | `schemaText` | `codecSchemaText codec`, admitted only after the normalized decoder and encoder type expressions are judgmentally equal |
 | `renderText` | `renderValue codec value`, using the same admitted encoder |
 
-The constructor is hidden, so `artifactOf` is the only way to build an artifact from nothing. The three
-field names are exported as record labels, though, so record-update syntax can copy an existing artifact
-and replace its `schemaText` or `renderText` with arbitrary text; that path bypasses the witness (see
-[Current Status](#current-status)).
+The constructor and record fields are hidden, so `artifactOf` builds an artifact from its admitted
+`CodecWitness`. The exported `artifactName`, `schemaText`, and `renderText` functions inspect it without
+exposing record-update syntax; callers cannot replace its admitted schema or rendering.
 
 Matching type expressions do not prove semantic encode/decode behavior. Representative
 render → decode → re-render tests retain that separate responsibility.
@@ -95,11 +94,11 @@ service activations:
 
 The parser also supports `--role ROLE`, repeatable `--also-role ROLE`, `--output FILE` (or `-o FILE`),
 `--dockerfile PATH` (the Dockerfile path recorded in the config; the project default when omitted),
-`--source-root DIR` (the source root recorded in the generated context; the current working directory when
+`--source-root DIR` (the source root recorded in the generated context; the project assembler's default when
 omitted), and the resource and deploy overrides `--cpu`, `--memory`, `--storage`, and `--ha-replicas`
 (project defaults when omitted). `--force` and `--if-missing` are mutually exclusive spellings of one
 `ExistingOutputPolicy`: `--force` overwrites an existing output, `--if-missing` leaves it byte-for-byte
-untouched, neither refuses it, and supplying both is a parse error. Thus fresh-root behavior is the
+untouched, omitting both refuses an existing output, and supplying both is a parse error. Thus fresh-root behavior is the
 default, not a restriction on every explicit writer invocation. The parser uses one shared `InitArgs`
 value; role additions pass through the closed `roleAdditionAllowed` relation and `addRole` validating
 smart constructor before a config is rendered.
@@ -110,15 +109,22 @@ repairs a missing public half of the handoff or activation pair from the retaine
 orphaned public half of either pair, a malformed key, or a mismatched pair. Explicit child roles,
 `service init`, and arbitrary output paths never mint root secrets.
 
-The two steps run in order: the config write (or the `--if-missing` keep) comes first, then identity
+The two steps run in order: config publication (or the `--if-missing` keep) comes first, then identity
 provisioning. A refused identity therefore exits 1 and leaves the newly written root config in place, and a
 plain rerun refuses that existing output. After repairing the identity files, rerun with `--if-missing`,
 which keeps the written config and runs identity provisioning again.
 
-The config write is a lockless check-then-write: `initAction` tests the output with `doesFileExist`, then
-writes it in place with `writeScopedProjectConfigFile`, which truncates and rewrites the destination. A file another writer
-creates between the check and the write is overwritten even under the default or `--if-missing` policy, and
-a crash during the write leaves a truncated config (see [Current Status](#current-status)).
+`publishScopedProjectConfigFile` renders through the scoped codec into a binary temporary in the output's
+directory, flushes and closes it, then decides the policy at publication. The default and `--if-missing`
+use a no-replace hard link; a taken name returns `ConfigRefusedExisting` or `ConfigKeptExisting`.
+`--force` atomically renames the complete temporary over the output. Success returns `ConfigPublished`;
+`initAction` handles those three outcomes without an earlier existence decision. A failed link re-inspects
+the destination, including a dangling link; if the name is absent, the original IO failure propagates.
+Publication and failure both run temporary-file cleanup.
+
+An omitted source root reaches `psAssemble` unchanged. The project owns its default; a relative root
+resolves against the config's anchor directory when admitted, rather than being filled from the writer's
+working directory by core.
 
 This ordinary initializer is not resource ownership evidence. Harness-generated config uses the stronger
 `HostBootstrap.Harness.GeneratedConfig` bracket. It refuses an object already at the path before any record
@@ -165,7 +171,13 @@ runtime selection decodes that exact narrowed role wire.
 The on-disk config is normally **absent** after a build: nothing creates it as a side effect of building
 the binary, and Python does not initialize or trigger config creation. Existing-frame commands
 (`project up|down|destroy` and `check-code`) fail fast (exit 1) when their sibling
-`<project>.dhall` is missing. The other inputs are intentionally different: `project init`,
+`<project>.dhall` is missing. They classify the descriptive framework record before full-config decoding.
+A positive service-role declaration exits 1 with `project config: <path> holds a service role wire; this
+command requires a full project config`, before the command action runs. Missing or malformed framework
+records go to the existing full-project decoder, which retains its own diagnostic for invalid input.
+That decoder is retained by `FrameworkEnvelopeCodec`; sibling gates derive its descriptive scope tag from
+the codec's scope index through `KnownScopeKind` and reuse the same source/import-root settings at both
+stages. The other inputs are intentionally different: `project init`,
 `service init`, and `test init` are config-free writers; `service schema` and
 `context path|schema|render` are static and config-free; `context inspect` reads the sibling;
 `context show [FILE]` reads its selected/default file; and `test run` reads `<project>.test.dhall`,
@@ -283,21 +295,13 @@ Parent-to-child projection happens at composite bootstrap, the plan-declared des
 workload deployment actions; the chain's `context-init` action body is only an announcement, though it is
 the node that carries the container descent. `context schema`/`context render` are ungated static
 inspection verbs; `context inspect` and `context show` perform the decode-only reads described above.
-VM/container child-config delivery uses in-place streaming over the relevant bootstrap/handoff `stdin`
-channel (see [binary_context_config](../architecture/binary_context_config.md)). The root coordinator's
+Ordinary container config delivery encodes the explicitly supplied stdin as a ustar projection for
+`docker cp` into a stopped container, then starts its image entry point; the child binary does not receive
+the projection on stdin. Authenticated lifecycle children instead receive their canonical config inside
+the Offer over their protocol channel (see
+[binary_context_config](../architecture/binary_context_config.md) and the
+[ordinary delivery contract](../architecture/composition_methodology.md#the-recursive-project-up-interpreter)).
+The root coordinator's
 catalog admission, authenticated scope, storeless child execution, and root-signed node grants are built;
 see the
 [authenticated handoff and child admission phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md).
-
-Two gaps separate the tree from the contracts above. First, `HostBootstrap.Dhall.Gen` exports
-`artifactName`, `schemaText`, and `renderText` as record labels, so record-update syntax on an existing
-`ConfigArtifact` can replace its schema or render text without a `CodecWitness`, and a project can register
-such an artifact in `ProjectSpec`. Witness-only construction therefore holds by convention, not by the
-type. Closing it is owed by the
-[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md).
-
-Second, `project init` decides its `ExistingOutputPolicy` against an earlier existence check and writes the
-output in place, holding no lock, rather than publishing a temporary file through the no-replace link (or,
-under `--force`, an atomic rename) at the moment of publication. The
-[Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
-owns the existing-output policy and owes this publication.

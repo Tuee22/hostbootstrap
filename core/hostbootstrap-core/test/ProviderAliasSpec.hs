@@ -3,6 +3,7 @@
 
 module ProviderAliasSpec (tests, aliasGuest, localGuestAliasSupported) where
 
+import ConditionalCase (conditionalCase)
 import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
 import qualified FakeProvider
@@ -168,7 +169,14 @@ data AliasFrame = AliasFrame
 
 kernelCase :: TestName -> (AliasFrame -> IO ()) -> TestTree
 kernelCase name body =
-    testCase name $
+    conditionalCase
+        ["ProviderAliasSpec", "the shipped guest alias ownership row"]
+        localGuestAliasSupported
+        name
+        (withFrame body)
+        (withFrame refusal)
+  where
+    withFrame action =
         withSystemTempDirectory "hb-provider-alias" $ \root -> do
             let frame =
                     AliasFrame
@@ -176,13 +184,12 @@ kernelCase name body =
                         , frameLinkTarget = root </> "durable-target"
                         , frameAuthority = root </> "durable-target" </> ".hostbootstrap-alias-authority-v1"
                         }
-            if localGuestAliasSupported
-                then body frame
-                else do
-                    outcome <- runShippedOwnership ownershipRowForHost (takeTransaction frame)
-                    case outcome of
-                        ShippedRefused (OwnershipUnsupported _) -> pure ()
-                        other -> assertFailure ("expected this host's row to refuse, got " <> show other)
+            action frame
+    refusal frame = do
+        outcome <- runShippedOwnership ownershipRowForHost (takeTransaction frame)
+        case outcome of
+            ShippedRefused (OwnershipUnsupported _) -> pure ()
+            other -> assertFailure ("expected this host's row to refuse, got " <> show other)
 
 takeTransaction :: AliasFrame -> ShippedOwnership
 takeTransaction frame = transaction frame (ShipTakeSymbolicLink (frameLinkTarget frame))

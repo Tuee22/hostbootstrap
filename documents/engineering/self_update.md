@@ -35,13 +35,11 @@ Local checkout installs are development-only and use:
 pipx install --force /path/to/hostbootstrap
 ```
 
-`hostbootstrap update --check` compares the installed commit against the `--ref` it is given (default
-`main`), whatever revision was originally installed. It resolves that ref with `git ls-remote`, preferring
-a peeled annotated-tag line and otherwise taking the first line listed, without selecting by exact ref name.
-The target is a check that compares the commit pip would install: against the installed requested
-revision when `--ref` is not given, resolving the ref branch-first as pip does, and printing the ref it
-compared against. That gap is owed by the
-[Python pre-binary floor phase](../../DEVELOPMENT_PLAN/phase-1-python-pre-binary-floor.md).
+`hostbootstrap update --check` compares the installed commit against the commit pip would install for
+the selected ref. An explicit `--ref` selects that ref; otherwise the installed VCS metadata's
+`requested_revision` selects it, falling back to `main` when no requested revision is recorded. The
+result prints the compared ref alongside the installed and remote commits, or the matching installed
+commit when up to date.
 
 ## Ownership
 
@@ -72,13 +70,25 @@ The command exposes these options:
 
 | Option | Contract |
 |---|---|
-| `--ref REF` | Reinstall from the canonical repository at `REF`; defaults to `main`. |
+| `--ref REF` | Reinstall from the canonical repository at `REF`; defaults to `main`. With `--check`, an explicit value overrides the installed requested revision. |
 | `--spec SPEC` | Reinstall from an explicit pip requirement spec, for development or recovery. Refused together with an explicit `--ref`. |
-| `--check` | Explicitly compare the installed VCS commit to the remote `--ref` without mutating the pipx environment. Refused together with `--spec`. |
+| `--check` | Compare the installed VCS commit to the explicit ref, installed requested revision, or `main`, in that order, and print the selected ref. Refused together with `--spec`. |
 
 `--check` is an explicit network operation. It reports that freshness is unknown, rather than pretending
 the install is comparable to the canonical repository, when the installed package has no direct git VCS
 metadata (a local or wheel install) and when its recorded source URL is not the canonical repository.
+
+The remote query asks `git ls-remote` for `refs/heads/<ref>`, `refs/tags/<ref>`, and
+`refs/tags/<ref>^{}`. Resolution selects exact ref names in pip's order: the branch head first, then
+the peeled annotated-tag commit, then the unpeeled tag. A similarly named branch such as
+`refs/heads/backup/main` cannot satisfy a check of `main`. Conflicting commits for the selected exact
+name, or output with no exact match, produce `SelfUpdateError`.
+
+Malformed `direct_url.json` input also produces `SelfUpdateError`: invalid JSON or a non-object
+document is malformed, a non-object `vcs_info` has malformed VCS metadata, a git source without a
+string `url` and `commit_id` is missing git source metadata, and a non-string `requested_revision`
+is a malformed requested revision. A subprocess timeout is reported as a timeout, with its deadline
+and command, rather than as a missing executable.
 
 Exit status:
 
@@ -112,6 +122,9 @@ The test suite covers the implementation:
 
 - unit tests cover the generated pipx argv without mutating the user's pipx environment;
 - failure tests cover missing `pipx`, non-pipx/local installs, and failed subprocesses;
-- freshness-check tests cover direct URL metadata with and without a VCS `commit_id`;
+- freshness-check tests cover malformed direct URL metadata, exact branch and tag selection,
+  ambiguous and unmatched output, and explicit, installed, and fallback ref selection;
+- subprocess tests distinguish missing executables, nonzero exits, and timeouts;
+- CLI tests assert the compared ref appears for both current and outdated installations;
 - CLI smoke tests prove `hostbootstrap --help` lists `update`;
-- the Python code-check and test runner pass.
+- the Python code-check and supported test runner execute these checks.

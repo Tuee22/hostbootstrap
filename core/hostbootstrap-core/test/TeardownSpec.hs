@@ -14,6 +14,7 @@ module TeardownSpec (tests) where
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (isNothing)
 import Data.Text (Text)
@@ -45,6 +46,7 @@ import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId, withCurren
 import HostBootstrap.Step
 import HostBootstrap.Substrate (detect)
 import HostBootstrap.Teardown
+import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Unsafe (unsafePerformIO)
@@ -170,6 +172,38 @@ sourceShapeTests =
                     </> "Teardown"
                     </> "Internal.hs"
                 )
+        collector <-
+            either assertFailure pure $
+                SourceGuard.haskellDefinitionTokens
+                    "withReverseDescentLiftContextKernel"
+                    (Text.unpack internalSource)
+        let collectorContains label fragment =
+                assertBool label (SourceGuard.haskellTokens fragment `isInfixOf` collector)
+        -- rationale.md: Reverse routes are reconstructed from retained plan edges.
+        -- Catalog admission owns the opaque input; this pins the real collector's
+        -- checked adoption without adding a producer for malformed authority.
+        collectorContains
+            "the collector checks the complete collected route"
+            "rootedRouteTo derived target = do layers <- collect target [] case liftContextFromLayers layers of"
+        collectorContains
+            "the collector returns the checked context"
+            "Right context -> Right context"
+        collectorContains
+            "the collector preserves the checked refusal as a route diagnostic"
+            "Left failure -> Left (\"the retained topology route is invalid: \" <> Text.pack failure)"
+        collectorContains
+            "the collector reads the retained edge's ordinary layer view"
+            "liftLayers context | (edgeParent, edgeChild, context) <- topologyDescentEdges derived"
+        collectorContains
+            "the prepared boundary passes only the collected context to its continuation"
+            "Right context -> context `seq` use context"
+        mapM_
+            ( \forbidden ->
+                assertBool
+                    ("the collector retains raw construction or a local fallback: " <> forbidden)
+                    (forbidden `notElem` collector)
+            )
+            ["LiftContext", "localContext", "error", "undefined", "fromJust"]
         let declarations = map Text.strip (Text.lines source)
             normalized = Text.unwords (Text.words source)
             declaration name expected =

@@ -1,7 +1,7 @@
 module OpenRecoveryChildPackageDecoder where
 
-import HostBootstrap.Handoff
+-- A raw recovery package is decoded only at the package-owned recovery boundary.
 
-decodeRecoveryChildPackage = recoveryChildPackageFromWire
-
-openRecoveryChildPackage = withRecoveryChildPackageFields
+import HostBootstrap.Handoff (
+    recoveryChildPackageFromWireKernel,
+ )

@@ -31,6 +31,7 @@ class CheckStatus:
     installed_commit: str
     remote_commit: str
     requested_revision: str | None
+    compared_ref: str = DEFAULT_REF
 
     @property
     def up_to_date(self) -> bool:
@@ -62,6 +63,8 @@ def run_update(*, ref: str = DEFAULT_REF, spec: str | None = None) -> str:
     outcome = process.probe(argv, stdio=process.Stdio.INHERIT)
     if isinstance(outcome, process.CommandUnavailable):
         raise SelfUpdateError("`pipx` not found in PATH; install pipx and retry.")
+    if isinstance(outcome, process.CommandTimedOut):
+        raise SelfUpdateError(process.describe(outcome))
     if not outcome.ok:
         raise SelfUpdateError(f"`pipx install --force` failed (exit {outcome.returncode}).")
     return install_spec
@@ -70,7 +73,10 @@ def run_update(*, ref: str = DEFAULT_REF, spec: str | None = None) -> str:
 def parse_direct_url(text: str | None) -> InstalledVCS | None:
     if text is None:
         return None
-    data_object: object = json.loads(text)
+    try:
+        data_object: object = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SelfUpdateError("installed direct_url.json is malformed.") from exc
     if not isinstance(data_object, dict):
         raise SelfUpdateError("installed direct_url.json is malformed.")
     data = cast(Mapping[str, object], data_object)
@@ -101,35 +107,40 @@ def installed_vcs_source(package: str = PACKAGE_NAME) -> InstalledVCS | None:
     return parse_direct_url(distribution.read_text("direct_url.json"))
 
 
-def parse_ls_remote(stdout: str) -> str:
+def parse_ls_remote(stdout: str, *, ref: str = DEFAULT_REF) -> str:
     entries = [parts for line in stdout.splitlines() if len(parts := line.split()) >= 2]
-    # Prefer the peeled commit of an annotated tag (the ``<ref>^{}`` line) — that is
-    # the commit pip records in direct_url.json. A branch head or lightweight tag
-    # advertises no ``^{}`` line and already names a commit, so fall back to it.
-    for sha, name in ((parts[0], parts[1]) for parts in entries):
-        if name.endswith("^{}"):
-            return sha
-    for parts in entries:
-        return parts[0]
-    raise SelfUpdateError("remote ref did not resolve to a git commit.")
+    for target in (f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}"):
+        commits = {parts[0] for parts in entries if parts[1] == target}
+        if len(commits) > 1:
+            raise SelfUpdateError(f"remote ref {ref!r} resolved ambiguously.")
+        if commits:
+            return commits.pop()
+    raise SelfUpdateError(f"remote ref {ref!r} did not resolve to a git commit.")
 
 
 def remote_commit(*, repo_url: str = DEFAULT_REPO_URL, ref: str = DEFAULT_REF) -> str:
     outcome = process.probe(
-        # Request the ref and its peeled form so an annotated tag also emits its
-        # ``<ref>^{}`` commit line; parse_ls_remote prefers that peeled commit.
-        ["git", "ls-remote", repo_url, ref, f"{ref}^{{}}"]
+        [
+            "git",
+            "ls-remote",
+            repo_url,
+            f"refs/heads/{ref}",
+            f"refs/tags/{ref}",
+            f"refs/tags/{ref}^{{}}",
+        ]
     )
     if isinstance(outcome, process.CommandUnavailable):
         raise SelfUpdateError("`git` not found in PATH; install git and retry.")
+    if isinstance(outcome, process.CommandTimedOut):
+        raise SelfUpdateError(process.describe(outcome))
     if not outcome.ok:
         detail = outcome.stderr.strip() or outcome.stdout.strip()
         suffix = f": {detail}" if detail else "."
         raise SelfUpdateError(f"`git ls-remote` failed (exit {outcome.returncode}){suffix}")
-    return parse_ls_remote(outcome.stdout)
+    return parse_ls_remote(outcome.stdout, ref=ref)
 
 
-def check_status(*, ref: str = DEFAULT_REF) -> CheckStatus:
+def check_status(*, ref: str | None = None) -> CheckStatus:
     installed = installed_vcs_source()
     if installed is None:
         raise SelfUpdateError(
@@ -140,8 +151,10 @@ def check_status(*, ref: str = DEFAULT_REF) -> CheckStatus:
             "installed hostbootstrap came from "
             f"{installed.url!r}, not the canonical {DEFAULT_REPO_URL!r}; freshness is unknown."
         )
+    compared_ref = ref if ref is not None else installed.requested_revision or DEFAULT_REF
     return CheckStatus(
         installed_commit=installed.commit_id,
-        remote_commit=remote_commit(ref=ref),
+        remote_commit=remote_commit(ref=compared_ref),
         requested_revision=installed.requested_revision,
+        compared_ref=compared_ref,
     )

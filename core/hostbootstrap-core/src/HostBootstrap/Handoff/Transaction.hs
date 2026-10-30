@@ -85,7 +85,7 @@ import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
 import HostBootstrap.HostTool (absExePath, hostToolProcessArguments)
 import HostBootstrap.Lift (
     LiftContext,
-    LiftDispatch (DispatchLocal, DispatchTool),
+    LiftDispatch (DispatchContainerDelivery, DispatchLocal, DispatchLocalRaw, DispatchTool),
     SelfRef,
     foldLift,
  )
@@ -271,6 +271,10 @@ withFrameChildTransaction ::
 withFrameChildTransaction config self context transaction =
     case foldLift self context frameChildArguments of
         DispatchLocal executable arguments -> spawned executable arguments
+        DispatchLocalRaw{} ->
+            pure (Left (frameChildFailure "the frame transaction cannot launch a local raw command"))
+        DispatchContainerDelivery{} ->
+            pure (Left (frameChildFailure "the frame transaction cannot launch staged container config delivery"))
         DispatchTool tool arguments ->
             case resolveMaybe config tool of
                 Nothing ->

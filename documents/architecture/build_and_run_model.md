@@ -145,6 +145,24 @@ deploy-kind
   -> accelerator-daemon placement (host or in-cluster; absent on Windows CPU)
 ```
 
+Before the VM runs the installed project binary, `Ensure.GuestBootstrap` establishes the guest floor,
+pinned toolchain, Python bootstrapper, host-native build, and installed binary. Its plan enumerates the
+closed `GuestStepKind` axis in order. Ordinary steps probe, act on absence, and verify; the bootstrapper
+always reinstalls the staged source with `pipx install --force` and then verifies it. The floor reads
+each package's installed state from `dpkg-query`, rather than accepting its exit status alone. Path
+grammar admission through `mkGuestPath` precedes six opaque purpose roles: source root, project directory,
+toolchain home, bootstrapper executable, built binary and installed binary. Every factory argument,
+ordinary target reader and matching step payload retains its role and original POSIX path spelling.
+The demo admits and labels all six paths at its actual target call.
+
+All target record labels and step constructors are private; the provided plan and driver fix the
+bootstrap order. Target admission checks the empty toolchain pin, then the home's `.ghcup` component,
+and the installer receives the home's parent as its install-base prefix. Existing argv and target/step
+presentation remain compatible. The roles distinguish coordinate purposes; installation and readiness
+remain runtime observations. The installed destination reaches its label, comparison and installation
+argv through `GuestInstalledBinary`. See
+[guest bootstrap vocabulary](../engineering/ensure_reconcilers.md#guest-bootstrap-vocabulary).
+
 The direct Linux GPU lane skips the provider VM, builds the CUDA project image on the host, enters that
 container with GPU access, creates nvkind, and deploys the in-cluster GPU daemon.
 
@@ -168,24 +186,53 @@ consumers as `HostBootstrap.Effect`.
 
 Two grammars are there because two interpreters read them. POSIX `sh` closes a single-quoted string at the
 first quote and offers no escape inside it, so `shellQuoteArg` leaves and re-enters the quoting; Windows
-PowerShell doubles the quote in place, so `powerShellQuoteArg` is a separate function rather than a flag.
+PowerShell doubles ASCII apostrophes and its four typographic single-quote characters in place, so
+`powerShellQuoteArg` is a separate function rather than a flag.
 `shellQuoteArgs` joins a quoted argv, so an argv built in Haskell reaches the far side as the same argv.
 
 A second copy is the defect the rule exists to prevent. Two quoters agree on every input both were
 written for and disagree on the first character only one of them met, and no gate compares them, because
 each passes its own test. `EffectSpec` guards the rule over the library, its private sublibraries, and
 the demo consumer's sources, but the guard is a name check, not a structural one: it requires exactly one
-definition site for `shellQuoteArg` and for `powerShellQuoteArg`, and it refuses three listed retired
+definition site for `shellQuoteArg` and for `powerShellQuoteArg` by signatures and binding heads,
+including local bindings, and it refuses three listed retired
 spellings. A quoter defined under any other name passes it; the demo's `powerShellQuote` is such a copy
 (see [Current Status](#current-status)). The
 [host-tools-and-substrate-detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
 owns the quoter and its single definition site; the [worked demo
 phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns removing the demo's copy and widening the guard.
 
+## Host tools resolve once per invocation
+
+`buildHostConfig` records the absolute paths selected by the closed `HostTool` resolver. `AbsExe` has a
+private constructor and an ordinary `absExePath` accessor, so neither construction nor record update
+can admit a bare command. `resolveInstalled` preserves a configured path and discovers a tool again
+only when its entry is absent, allowing an `ensure` step to install a missing tool during an invocation.
+
+For `Ghc` and `Ghcup` on POSIX hosts, discovery tries `PATH` first and then ghcup's install directory:
+`$GHCUP_INSTALL_BASE_PREFIX/.ghcup/bin` when configured, otherwise `$HOME/.ghcup/bin`. The config-free
+Apple GHC reconciler installs the recommended compiler and sets it as default; this is separate from
+the guest toolchain pin and the Python bootstrapper's pre-binary host pin.
+
+Toolkit discovery compares numeric version components and prefers the stable POSIX CUDA symlink.
+Windows system tools and compiler fallbacks derive their roots from the host's own system and program
+folders. The [host-tool resolution contract](hostbootstrap_core_library.md#host-tool-resolution-and-substrate-ownership)
+states the candidate order, refusals, and ownership of discovery. The pre-binary host minimums remain
+Python-owned; binary-owned dependencies are `ensure` reconcilers.
+
+The direct-binary substrate fallback uses the same per-frame evidence as Python: Linux reads the two
+NVIDIA kernel markers before trying a listing, Windows uses only the listing, and macOS performs no
+NVIDIA probe. The listing resolves `NvidiaSmi` through `HostTool.discover` and uses the bounded runner
+with a five-second wall budget. A missing tool, timeout, launch refusal, output ceiling, nonzero exit, or
+listing without a device answers no GPU. `SubstrateSpec` checks the pure probe plan and observed-result
+classification; real bounded-runner cases exercise the process behavior independently.
+
 ## One command vocabulary, one interpreter, one runner
 
 The third axis is more than quoting. A host-level command is a value: `HostCommand` names the target, the
-exact argument vector, the stdio disposition, and the frame whose process will interpret it. The type is
+exact argument vector, the stdio disposition, and a descriptive frame label. `hostCommand` begins at
+`OuterHost`; the lift fold records crossings on the label. The interpreter and production validators do
+not read that label as authority or dispatch. The type is
 pure and names no runner, so building an argument vector and running one are different things a caller
 cannot confuse. There is no constructor for a bare command name; a target is a resolved `HostTool` or the
 binary's own path — the latter being how the binary reaches itself at another frame, which is a
@@ -199,10 +246,10 @@ guest's local capability vocabulary.
 
 `HostBootstrap.Effect.Interpreter` is the one interpreter. `resolveLaunch` is pure and total: it turns a
 described command into the executable and argument vector the host launches, and it is where the single
-outer-host reframing lives — on Windows a WSL command is launched through PowerShell, built with the one
-PowerShell quoter. `interpretHostEffects` runs an effect list under one of two failure policies:
+outer-host reframing lives — WSL runs the resolved `wsl.exe` directly with `hostToolProcessArguments Wsl`,
+preserving every argument without a PowerShell intermediary. `interpretHostEffects` runs an effect list under one of two failure policies:
 `FailFast` stops a launch or staging list at the first failure, and `BestEffort` continues an idempotent
-teardown, printing the policy's intent line before each command and a `(skipped: …)` line for each
+teardown, printing the policy's intent line once per effect list and a `(skipped: …)` line for each
 failure. A consumer supplies only what a library cannot know — the global WSL wall's project-owned
 ownership identity, and where a run's transcript goes.
 
@@ -221,7 +268,7 @@ The names a consumer uses, all re-exported by `HostBootstrap.Effect`:
 | `BoundedRun` | `BoundedCompleted`, `BoundedTimedOut`, `BoundedOutputLimit`, or `BoundedFailed` |
 
 `runBoundedGroupedWithInput`, the bounded capture that writes a request to the leader's standard input,
-is exported by `HostBootstrap.Effect.Run` inside `effect-internal` and is not re-exported to consumers.
+is re-exported by `HostBootstrap.Effect` alongside the same bounded runner.
 
 `HostBootstrap.Effect.Run` is the one process runner, and it offers exactly two dispositions because two
 are genuinely distinct. `runCaptured` feeds a stdin string and reads both output streams. `runBoundedGrouped`
@@ -230,18 +277,39 @@ process group, receives a complete environment and working directory rather than
 and is bounded by a wall clock, a per-stream output ceiling, and a termination grace. A caller that needs
 different numbers supplies a different `RunBounds` row, not a different runner. No bound wraps a process
 wait in a timeout, because a process wait is a foreign call an asynchronous exception cannot bring the
-launcher back out of under the non-threaded runtime. The wall clock times out the interruptible drain of
-the two pipes; the per-stream ceiling is enforced by the pipe readers; and the child's exit after the
-drain and the termination grace are polled with `getProcessExitCode`. On POSIX hosts the termination
+launcher back out of under the non-threaded runtime. One monotonic wall budget covers input, both output drains, and exit. Readers start before the input
+writer, capture bytes with lenient UTF-8 decoding, and enforce each stream's byte ceiling. Exit and the
+termination grace are polled with `getProcessExitCode`. On POSIX hosts the termination
 grace ends when the child's whole process *group* is empty, so a leader that exits leaving a grandchild
-on the pipes still reaches the escalation to a group `SIGKILL`. On Windows there is no process-group
-probe or group signal: teardown calls `terminateProcess` on the leader and waits a bounded grace, and the
-leader's descendants are not guaranteed to be reaped. On macOS the child is started through `/bin/sh`,
-which changes to the requested working directory and then execs the leader, because the process library
-cannot combine a new process group, an explicit environment, and a working directory there; the exec
-keeps the new group identity. The two other lawful shapes
+on the pipes still reaches the escalation to a group `SIGKILL`. On Windows `use_process_jobs` gives the runner a job object whose teardown includes descendants.
+On macOS the child is started through the current executable's native working-directory entry,
+which changes directory then execs the leader without a shell, retaining the new group identity and
+complete environment. A missing directory reports a runner failure rather than a command exit. The two other lawful shapes
 are separately sealed: `HostBootstrap.Detached` owns a child that outlives its launcher, and the handoff
 process route owns a child holding an inherited descriptor pair.
+
+[The detached boundary](../../core/hostbootstrap-core/src/HostBootstrap/Detached.hs) fixes standard input
+to an open null-device handle and appends both output streams to one retained sink. Its launch also
+supplies the complete environment and absolute working directory and fixes descriptor, session, and
+console disposition. `DetachedSpec` observes the child's actual arguments, environment, working
+directory, and streams, including a launcher whose own input contains pending bytes.
+
+`withDetachedChild` binds a fresh child extent, and every operation on `DetachedChild` runs in
+`DetachedIO child`. Both extent roles are nominal and both constructors are private. The bracket is the
+only interpreter of that indexed action, so a closure retaining a child operation cannot be returned
+and run after the body. `liftDetachedIO` brings ordinary IO into the body without providing a way to
+unwrap a child action; `tryDetachedIO` and `onDetachedException` retain the same extent through exception
+handling and ownership cleanup.
+
+Acquisition, spawn, release of launcher handles, and construction of the body action run masked. A
+failure before handoff aborts the exact spawned child; the body then runs with the caller's masking
+state restored. Any body exception also triggers exact-child cleanup, including an exception delivered
+before the body's first action. Cleanup requests termination, polls within a fixed grace, and escalates
+to hard termination with a second bounded poll. It preserves the original exception and claims no
+descendant cleanup. A normal return releases only the launcher's resources: the child may continue
+running. `terminateDetachedChild` explicitly requests termination.
+`awaitDetachedChild` polls `getProcessExitCode` against a monotonic deadline, so its bound holds under
+the non-threaded runtime as well.
 
 Failure to *start* stays distinct from failure to *succeed*. A child that ran and exited non-zero carries
 its own diagnostic in the streams it wrote; only a child that never existed is a launch failure. Collapsing
@@ -255,9 +323,11 @@ every frame reached through a host-provider command uses. The deciding question 
 interpret the path, never which frame constructed the string: a path derived from a host value is still a
 guest path when a guest process reads it.
 
-The crossing itself is rendered once. `foldLeafCommand` pairs the lift fold's own dispatch with
-`liftContextFrame`'s description of where it lands, so nothing re-derives a frame-crossing argument vector
-in order to explain it.
+The crossing itself is rendered once. `foldLeafCommand` returns `Either String HostCommand`, pairing
+an admitted lift dispatch with `liftContextFrame`'s description of where it lands, so nothing re-derives a
+frame-crossing argument vector in order to explain it. A local raw command must exactly name a registered
+`HostTool`; it becomes a `ToolTarget`, while an unregistered name or absolute raw path is refused before
+the interpreter runs. Local self-reference and lifecycle leaves keep their binary `SelfTarget`.
 
 ## Provider dispatch
 
@@ -433,20 +503,22 @@ context render [--artifact NAME]
 and the selector (one case ID or `all`).
 
 That surface is the whole of the parsed command tree, and it is not the whole of how this binary is
-started. Before the parser runs, `runCLI` checks the argument vector against five private entries, none
+started. Before the parser runs, `runCLI` checks the argument vector against six private entries, none
 of which appears in `--help`:
 
 | Entry | Launched by | Precondition |
 |---|---|---|
 | `--hostbootstrap-install-identity` (whole argument vector) | the thin builder, after stable installation | none on stdio: it provisions the installed identity of the invoked executable |
 | the exposure relay marker followed by relay targets | the cluster backend, inside the relay container it creates | well-formed targets; malformed input refuses rather than falling through |
+| the native working-directory marker followed by directory, executable, and arguments | the bounded runner on macOS | absolute paths and the exact argument vector; changes directory and execs, retaining the runner's environment and group |
 | the Colima command-transaction marker (whole argument vector) | the Colima bounded runner, through its own bounded capture | a framed request on standard input; refused on Windows |
 | `--hostbootstrap-lifecycle-child` (whole argument vector) | the root lifecycle's crossing into a child frame | the installed handoff public key and the isolated protocol channel |
 | `--hostbootstrap-frame-child` (whole argument vector) | a frame-crossing transaction folded from the lift context | standard input and output are the handoff protocol channel |
 
 The lifecycle-child and frame-child entries refuse outside a protocol channel, and the Colima entry
 refuses without a framed request. The install-identity entry needs neither, so it is reachable from an
-operator's shell, and the relay entry needs only its targets. The near side of a frame crossing folds the lift context to the
+operator's shell, and the relay entry needs only its targets. The working-directory entry needs its paths and argument vector,
+mints no authority, and has no shell interpreter. The near side of a frame crossing folds the lift context to the
 invocation that performs it, so the argument vector, the executable, and the frame all come from the one
 fold rather than from a caller. The command surface and every pre-parser entry are canonical in
 [hostbootstrap core library](hostbootstrap_core_library.md); see also

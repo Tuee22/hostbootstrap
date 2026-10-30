@@ -688,7 +688,7 @@ guard keeps shell text out of `Registry.hs`. The sprint closes when the cases be
 - `demo/src/HostBootstrapDemo/Commands.hs`: `buildProjectImage` and `resolvePublishedBaseInVM` forward the
   credential through the typed operation instead of `dockerAuthStdinWrapper`.
 - `RegistrySpec`: the anonymous-lift case compares `liftSubcommandWithAuth cfg Nothing` with
-  `liftSubcommand` on `inContainer authContainer (inVM (IncusVM "incus-vm" "image") localContext)`, a
+  `liftSubcommand` on `inContainer authContainer (inVM (IncusVM "incus-vm" "image") emptyVMStack)`, a
   context that has an authenticated plan. The comparison is of described dispatches, not two tool-resolution
   failures. The no-secret substring checks on functions that never receive the credential are removed; the
   remaining checks are exact golden comparisons.

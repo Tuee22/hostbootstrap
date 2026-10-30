@@ -13,7 +13,9 @@ badPlanOwnedClusterConfig = PlanOwnedClusterConfig
 
 badPreparedClusterReconcile = PreparedClusterReconcile
 
-badClusterReconcileSettlement = ClusterReconcileSettlement
+badManagedClusterProvision = ManagedClusterProvision
+
+badForeignClusterProvision = ForeignClusterProvision
 
 badClusterReconcileCallResult = ClusterReconcileCallResult
 

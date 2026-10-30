@@ -14,11 +14,13 @@ module RecursiveLifecycleSpec (
     tests,
 ) where
 
+import ConditionalCase (conditionalAction)
 import Control.Concurrent (threadDelay)
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Char (toUpper)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
 import qualified Fixture
 import HostBootstrap.Authority (normalizeExecutableIdentity)
 import qualified HostBootstrap.CLI as CLI
@@ -38,9 +40,10 @@ import HostBootstrap.Lift.Context (
     ContainerPlacement (ProviderGuestContainer),
     IncusVM (IncusVM),
     LiftContext,
+    emptyVMStack,
     inContainer,
     inVM,
-    localContext,
+    vmContext,
  )
 import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
 import HostBootstrap.Ownership.Posix (posixOwnershipRow, posixOwnershipSupported)
@@ -61,35 +64,70 @@ import HostBootstrap.Step (
  )
 import PlatformPath (hostPathAsPosixDescriptor)
 import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesFileExist)
-import System.Environment (getEnv, getEnvironment, getExecutablePath, lookupEnv, withArgs)
+import System.Environment (getArgs, getEnv, getEnvironment, getExecutablePath, lookupEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath (searchPathSeparator, takeFileName, (<.>), (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 import System.Process (CreateProcess (env), ProcessHandle, createProcess, proc, rawSystem, readCreateProcessWithExitCode, waitForProcess)
-import Test.Tasty (TestTree, testGroup)
+import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Text.Read (readMaybe)
 
 tests :: TestTree
 tests =
     testGroup
         "RecursiveLifecycleSpec (real root/VM/container lifecycle)"
         [ testCase "public up crosses two real authenticated process boundaries" $
-            withLocalGuestFrame $
-                withFixtureEnvironment False $ \root _ ->
-                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
-        , testCase "public down unwinds the same two real process boundaries child-first" $
-            withLocalGuestFrame $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
                 withFixtureEnvironment False $ \root _ -> do
                     runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    executable <- fixtureExecutable root
+                    let guestBinary = "/usr/local/bin/" <> Text.unpack (normalizeExecutableIdentity executable)
+                    readCrossingEvents root
+                        >>= ( @?= [ ( "incus"
+                                    , ["exec", "fixture-vm", "--cwd", "/", "-T", "--", guestBinary, "--hostbootstrap-lifecycle-child"]
+                                    )
+                                  , ( "docker"
+                                    , [ "run", "--rm", "-i", "--network=host"
+                                      , "-e", "HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2"
+                                      , "-e", "HOSTBOOTSTRAP_REGISTRY_AUTH", "-w", "/"
+                                      , "fixture:image", "--hostbootstrap-lifecycle-child"
+                                      ]
+                                    )
+                                  ]
+                            )
+        , testCase "public down unwinds the same two real process boundaries child-first" $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
+                withFixtureEnvironment False $ \root _ -> do
+                    runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                    forwardCrossings <- readCrossingEvents root
                     runPublicProcess root False "down" >>= (@?= ExitSuccess)
+                    allCrossings <- readCrossingEvents root
+                    take (length forwardCrossings) allCrossings @?= forwardCrossings
+                    executable <- fixtureExecutable root
+                    let targetBinary = "/usr/local/bin/" <> Text.unpack (normalizeExecutableIdentity executable)
+                        vmArguments = ["exec", "fixture-vm", "--cwd", "/", "-T", "--", targetBinary, "--hostbootstrap-lifecycle-child"]
+                        composedArguments =
+                            [ "exec", "fixture-vm", "--cwd", "/", "-T", "--"
+                            , "docker", "run", "--rm", "-i", "--network=host"
+                            , "-e", "HOSTBOOTSTRAP_CURRENT_FRAME=vm-project-container-2"
+                            , "-e", "HOSTBOOTSTRAP_REGISTRY_AUTH", "-w", "/"
+                            , "fixture:image", "--hostbootstrap-lifecycle-child"
+                            ]
+                    -- These are the arguments the existing native proxies
+                    -- actually received, not a second call to the route fold.
+                    drop (length forwardCrossings) allCrossings
+                        @?= [("incus", vmArguments), ("incus", composedArguments)]
+                    Text.lines <$> TextIO.readFile (root </> "reverse-attempts")
+                        >>= (@?= ["container", "vm", "root"])
         , testCase "public destroy unwinds the same two real process boundaries child-first" $
-            withLocalGuestFrame $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
                 withFixtureEnvironment False $ \root _ -> do
                     runPublicProcess root False "up" >>= (@?= ExitSuccess)
                     runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
         , testCase "public down then destroy preserves the recursive source across separate root processes" $
-            withLocalGuestFrame $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
                 withFixtureEnvironment False $ \root _ -> do
                     runPublicProcess root False "up" >>= (@?= ExitSuccess)
                     runPublicProcess root False "down" >>= (@?= ExitSuccess)
@@ -99,12 +137,12 @@ tests =
                     runPublicProcess root False "up" >>= (@?= ExitSuccess)
                     runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
         , testCase "failed up preserves its failure and admits exact reverse recovery" $
-            withLocalGuestFrame $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
                 withFixtureEnvironment True $ \root _ -> do
                     runPublicProcess root True "up" >>= (@?= ExitFailure 1)
                     runPublicProcess root True "destroy" >>= (@?= ExitSuccess)
         , testCase "a failed reverse operation is settled once and terminates the child" $
-            withLocalGuestFrame $
+            withLocalGuestFrame ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"] $
                 withFixtureEnvironmentFor False True $ \root _ -> do
                     runPublicProcessFor root False True "up" >>= (@?= ExitSuccess)
                     runPublicProcessFor root False True "destroy" >>= (@?= ExitFailure 1)
@@ -267,7 +305,25 @@ protocol pipes intact. It exercises transport, not a live provider substrate.
 runLifecycleFixtureClient :: IO ()
 runLifecycleFixtureClient = do
     executable <- getEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_EXE"
+    root <- getEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
+    tool <- takeFileName <$> getExecutablePath
+    arguments <- getArgs
+    appendFile (root </> "crossing-events") (show (tool, arguments) <> "\n")
     rawSystem executable ["--hostbootstrap-recursive-lifecycle-child"] >>= exitWith
+
+-- | Read only the owned fixture's actual proxy observations. Each native
+-- invocation records its complete vector before entering the child process.
+readCrossingEvents :: FilePath -> IO [(FilePath, [String])]
+readCrossingEvents root = do
+    events <- Text.lines <$> TextIO.readFile (root </> "crossing-events")
+    traverse
+        ( \event ->
+            maybe
+                (assertFailure ("malformed fixture crossing event: " <> Text.unpack event))
+                pure
+                (readMaybe (Text.unpack event))
+        )
+        events
 
 fixtureSpec :: FilePath -> Bool -> Bool -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec fixtureRoot failContainer failCleanup =
@@ -287,8 +343,8 @@ projectChild fixtureRoot failContainer failCleanup parent _parent child _route =
 
 fixtureSteps :: FilePath -> Bool -> Bool -> Fixture.ProjectConfig scope -> [Step]
 fixtureSteps fixtureRoot failContainer failCleanup config =
-    [ reversible "root" $ descendsVia (inVM (IncusVM "fixture-vm" "fixture:image") localContext) (node "root" "host-orchestrator-0" StepChanged)
-    , reversible "vm" $ descendsVia (inContainer _container localContext) (node "vm" "vm-orchestrator-1" StepChanged)
+    [ reversible "root" $ descendsVia (vmContext (inVM (IncusVM "fixture-vm" "fixture:image") emptyVMStack)) (node "root" "host-orchestrator-0" StepChanged)
+    , reversible "vm" $ descendsVia (inContainer _container emptyVMStack) (node "vm" "vm-orchestrator-1" StepChanged)
     , reversible "container" $ node "container" "vm-project-container-2" (if failContainer then StepConflict "ready" "failed" "fixture failure" else StepChanged)
     ]
   where
@@ -313,7 +369,7 @@ fixtureSteps fixtureRoot failContainer failCleanup config =
             []
             []
             True
-            (Just (ConfigDelivery "/workspace/container/project.dhall" "/workspace/container/pb" deliveryPayload))
+            (Just (ConfigDelivery "/workspace/container/project.dhall" deliveryPayload))
 
 projectDescriptorRoot :: FilePath -> FilePath
 projectDescriptorRoot = hostPathAsPosixDescriptor
@@ -323,26 +379,26 @@ cannot execute locally, assert its actual refusal and then prove that the
 native receiver rejects the incompatible canonical root before child work.
 CoverageManifest reports these outcomes separately from recursive execution.
 -}
-withLocalGuestFrame :: IO () -> IO ()
-withLocalGuestFrame action
-    | posixOwnershipSupported = action
-    | otherwise = withFixtureEnvironment False $ \root _ -> do
-        observed <- withOwnershipRow posixOwnershipRow $ \row -> rowObserveIdentity row (root </> "vm")
-        case observed of
-            Left (OwnershipUnsupported _) -> pure ()
-            other -> assertFailure ("expected the guest row's declared refusal, got " ++ show other)
-        executable <- fixtureExecutable root
-        childEnvironment <- recursiveFixtureEnvironment root False False
-        (status, _, diagnostic) <-
-            readCreateProcessWithExitCode
-                (proc executable ["--hostbootstrap-recursive-lifecycle-root", "up"]){env = Just childEnvironment}
-                ""
-        status @?= ExitFailure 1
-        assertBool
-            "the native receiver refuses the different guest-root snapshot"
-            ( "PlanHandoffEvidenceMismatch" `Text.isInfixOf` Text.pack diagnostic
-                && "stable plan digest" `Text.isInfixOf` Text.pack diagnostic
-            )
+withLocalGuestFrame :: [TestName] -> IO () -> IO ()
+withLocalGuestFrame family action =
+    conditionalAction family posixOwnershipSupported action $
+        withFixtureEnvironment False $ \root _ -> do
+            observed <- withOwnershipRow posixOwnershipRow $ \row -> rowObserveIdentity row (root </> "vm")
+            case observed of
+                Left (OwnershipUnsupported _) -> pure ()
+                other -> assertFailure ("expected the guest row's declared refusal, got " ++ show other)
+            executable <- fixtureExecutable root
+            childEnvironment <- recursiveFixtureEnvironment root False False
+            (status, _, diagnostic) <-
+                readCreateProcessWithExitCode
+                    (proc executable ["--hostbootstrap-recursive-lifecycle-root", "up"]){env = Just childEnvironment}
+                    ""
+            status @?= ExitFailure 1
+            assertBool
+                "the native receiver refuses the different guest-root snapshot"
+                ( "PlanHandoffEvidenceMismatch" `Text.isInfixOf` Text.pack diagnostic
+                    && "stable plan digest" `Text.isInfixOf` Text.pack diagnostic
+                )
 
 node :: String -> String -> StepObservation -> Step
 node name frame observation =

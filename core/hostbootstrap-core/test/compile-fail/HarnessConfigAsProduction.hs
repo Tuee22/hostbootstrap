@@ -1,29 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
 module HarnessConfigAsProduction where
 
 import HostBootstrap.Config.Vocab (
     HarnessAuthority,
+    Harness,
     Production,
+    ProductionSecretRefWire,
     SecretRef,
     TestSecret (TestSecret),
     harnessConfigAuthority,
+    productionSecretRefWire,
     testPlaintextSecret,
  )
 
 data Project
 
-newtype Config scope = Config (SecretRef scope)
-
-consumeProduction :: Config (Production Project) -> ()
-consumeProduction _ = ()
-
-harnessConfigAsProduction :: HarnessAuthority Project runId -> ()
+harnessConfigAsProduction :: HarnessAuthority Project runId -> ProductionSecretRefWire
 harnessConfigAsProduction authority =
-    consumeProduction
-        ( Config
-            ( testPlaintextSecret
-                (harnessConfigAuthority authority)
-                (TestSecret "fixture")
-            )
+    productionSecretRefWire @Project
+        ( testPlaintextSecret
+            (harnessConfigAuthority authority)
+            (TestSecret "fixture")
         )

@@ -6,15 +6,17 @@ import qualified ClusterConfigSpec
 import qualified CommandsSpec
 import qualified ConfigSpec
 import Data.List (isInfixOf)
+import GHC.IO.Encoding (getLocaleEncoding, setLocaleEncoding, textEncodingName, utf8)
 import HostBootstrap.DocValidator (findRepoRoot)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, defaultMain, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase)
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import qualified WebServerSpec
 
 main :: IO ()
-main =
+main = do
+    setLocaleEncoding utf8
     defaultMain $
         testGroup
             "hostbootstrap-demo"
@@ -25,7 +27,14 @@ main =
             , ConfigSpec.tests
             , WebServerSpec.tests
             , componentContract
+            , localeEncodingContract
             ]
+
+localeEncodingContract :: TestTree
+localeEncodingContract =
+    testCase "the demo suite uses UTF-8 locale encoding" $ do
+        encoding <- getLocaleEncoding
+        textEncodingName encoding @?= "UTF-8"
 
 componentContract :: TestTree
 componentContract =

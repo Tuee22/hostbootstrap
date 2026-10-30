@@ -210,20 +210,87 @@ operates over that stack:
    then constructs its `FrameExecutor`; it executes only nodes granted through the closed rooted
    request/response protocol. Durable record selection and settlement remain at the root.
 
-A frame boundary has two renderings from the same `LiftContext` layer. The lifecycle hand-off uses the
-sanitized `LifecycleProcessRoute`; the ordinary lift fold (`foldLeaf` over a self-reference or raw command)
-serves non-lifecycle subcommands and is never the lifecycle channel:
+`HostBootstrap.Lift.Context` exposes an opaque `VMStack`. Start with `emptyVMStack`; `inVM`, `inLimaVM`
+and `inWsl2VM` consume and return that open stack, appending only a VM crossing as the innermost layer.
+The outermost-first order is retained. `vmContext` closes the stack as a VM-only `LiftContext`, while
+`localContext` closes the empty stack. `inContainer` closes a `VMStack` with one terminal container.
+Both the context module and `HostBootstrap.Lift` expose the stack API and opaque `LiftContext`; neither
+exports its constructor or a record label. The ordinary `liftLayers` reader derives the ordered layers,
+and `liftVMStack` returns the retained open prefix. The fold, requested stdin and landed frame read that
+same prefix and optional container; delivery uses `vmContext (liftVMStack context)` as its VM route.
+
+The shared `liftContextFromLayers` constructor accepts an empty list, VM crossings only, or VM crossings
+followed by one terminal container. It preserves the original layers, order, equality and presentation
+without effects. A VM after a container or a second container is refused; the duplicate-container refusal
+takes precedence when both violations occur.
+
+`terminalContainer` reads the retained optional container. `mapTerminalContainer` changes only that
+container and preserves the VM prefix; for a VM-only context it returns the original context without
+calling its function. Illegal container ordering is refused while reconstructing a raw layer list,
+before a `LiftContext` exists. The ordinary readers permit inspection without enabling record update.
+Equality, outermost-first order and the record-style `Show` presentation, including nested parentheses,
+remain stable.
+
+A VM crossing uses one provider renderer with placement data from the leaf. The lifecycle hand-off
+uses the sanitized `LifecycleProcessRoute`; the ordinary lift fold (`foldLeaf` over a self-reference or
+raw command) serves non-lifecycle subcommands and is never the lifecycle authority channel:
 
 | `LiftContext` layer | Lifecycle hand-off (`LifecycleProcessRoute`) | Ordinary lift fold (non-lifecycle) | The binary in that frame |
 |---|---|---|---|
 | empty stack (metal) | run directly | run directly | the running executable (`getExecutablePath`) |
 | `ViaLimaVM` | `limactl shell --workdir / <instance> -- sudo -n -H <pb> --hostbootstrap-lifecycle-child` | `limactl shell <instance> -- sudo -H <pb> <subcommand>` | the `pb` the VM descent installed in the Lima VM |
 | `ViaVM` (Incus) | `incus exec <vm> --cwd / -T -- <pb> --hostbootstrap-lifecycle-child` | `incus exec <vm> -- <pb> <subcommand>` | the `pb` the VM descent installed in the Incus VM |
-| `ViaWsl2VM` | `wsl -d <distro> --cd / -- sudo -n -H <pb> --hostbootstrap-lifecycle-child` | `wsl -d <distro> -- <pb> <subcommand>` | the `pb` the VM descent installed in the WSL2 Ubuntu-24.04 distro |
-| `ViaContainer` | `docker run` with standard input attached and working directory `/`, then `<image> --hostbootstrap-lifecycle-child` | `docker run <image> <subcommand>`; with config delivery, `docker run -i --entrypoint sh …` writes stdin then `exec`s the `pb` | the installed project binary |
+| `ViaWsl2VM` | `wsl -d <distro> --cd / --exec sudo -n -H <pb> --hostbootstrap-lifecycle-child` | `wsl -d <distro> --exec <pb> <subcommand>` | the `pb` the VM descent installed in the WSL2 Ubuntu-24.04 distro |
+| `ViaContainer` | `docker run` with standard input attached and working directory `/`, then `<image> --hostbootstrap-lifecycle-child` | `docker run <image> <subcommand>`; with config delivery, `docker create <image> <subcommand>`, `docker cp - <id>:<directory>`, then `docker start -a <id>` | the image's project-binary entry point |
 
-In the `ViaContainer` row, the lifecycle hand-off and the ordinary lift fold without config delivery keep the
-image's tini entry point; the `--entrypoint sh` form replaces it.
+`VMPlacement` carries an optional working directory, non-interactivity and elevation. The three
+`execVMArgsAt`, `shellVMArgsAt` and `wslExecArgsAt` renderers consume those fields; ordinary leaves use
+`foldPlacement`, and lifecycle leaves use `lifecyclePlacement` with working directory `/`,
+non-interactivity and elevation enabled. Lima's ordinary wrapper and each Lima crossing in the fold
+enable elevation because its default guest user is not root, retaining `sudo -H`. Direct
+`shellVMArgsAt foldPlacement` has no sudo prefix. Lima and WSL add the whole sudo prefix only when
+elevated, adding `-n` only when that placement is also non-interactive; Incus already executes as root.
+The same inner fold applies these renderers to outer and nested VM layers.
+
+Config delivery adds no entry-point override, so the image's tini entry point remains in the launch path.
+The ordinary fold describes delivery as staged work; `foldLeafCommand` refuses that description because
+it cannot represent it as one command. The effectful stdin entrypoints retain their signatures and run
+each stage through the same outer VM crossings and resolved host-tool boundary.
+
+Before creation, the runner validates the write path and archive bounds. It encodes the explicit supplied
+stdin as one regular ustar entry under the write path's basename, with UTF-8 byte sizes, checksum, padding
+and trailer. Only `docker cp` receives this archive; creation and attached start receive empty stdin.
+The destination directory must already exist: [Docker's copy contract](https://docs.docker.com/reference/cli/docker/container/cp/)
+permits stdin tar extraction into a stopped container but does not create missing parent directories.
+Successful creation must return one full container ID before copy or start can run. Successful intermediate
+output is hidden, and the attached start's exit code, stdout and stderr become the returned result.
+
+Once that ID is known, a copy/start refusal, nonzero result or exception attempts `docker rm -f <id>`
+through the same route when `clRemoveAfter` is true; false retains the container. An actual cleanup
+refusal is appended to a returned failure's diagnostic without changing its original exit code or stdout.
+For an exception, cleanup refusal is reported before the original exception is rethrown. An already
+auto-removed container may refuse removal, so that refusal does not establish residue. No cleanup
+guarantee covers creation without a usable ID, and the workflow adds no timeout guarantee to the runner.
+Static tests inspect the actual commands, archive bytes, stage order and cleanup attempts; they do not
+establish live Docker extraction, entry-point execution or container absence.
+
+`ConfigDelivery` contains only its write destination and projection payload; invocation belongs to the
+image entry point. Canonical snapshot format 8 binds a two-field delivery record containing `write-path`
+and `payload-digest`. The payload itself remains absent from those snapshot bytes. The parser consumes
+that same shape and refuses format 7 rather than reinterpreting its former executable coordinate.
+Canonical lift binding reads the ordinary `liftLayers` view, preserving the `lift-layers` tag, list count,
+layer order and member coordinates under the same format-8 byte, digest and parser contract.
+
+A raw leaf in that container contributes its executable name and arguments after the image; they are
+arguments to the image's project-binary entry point. At the local frame, raw leaves instead require an
+exact registered `HostTool` name. The fallible `foldLeafCommand` returns a `ToolTarget` for that tool or a
+refusal before launch; local self-reference and lifecycle leaves retain their binary `SelfTarget`.
+Both ordinary and lifecycle WSL2 crossings append the command vector after `--exec`, without asking the
+distro's default shell to parse it. The shared renderer supplies the working-directory and sudo options
+from placement; the lifecycle authority channel remains distinct as shown in the table.
+`vmShellArgs` checked-reconstructs its singleton layer through `liftContextFromLayers` before the shared
+fold. It describes only non-empty VM commands; empty commands and both container placements return
+`Nothing`, with outer-tool resolution left to the effectful caller.
 [Derived Dockerfile § The runtime launch](../engineering/derived_dockerfile.md#the-runtime-launch) is canonical
 for which launches keep tini as PID 1.
 
@@ -286,7 +353,18 @@ child-executed local settlement, completed deeper descent, canonical close, and 
 Recursive admission is implemented on that same footing. One shared immediate-target kernel,
 `withImmediateTargetKernel`, which takes no `ValidatedLifecycleContext`, owns descriptor, context,
 configuration, and target-plan validation for a single declared descent, and both the
-inert planned-forward package and the recursive catalog delegate to it. `RootedPlanCatalog` joins the root's
+inert planned-forward package and the recursive catalog delegate to it.
+
+That projection workflow reads route shape through `liftLayers`. Edge selection and child-context
+derivation require exactly one layer; direct-host rebasing requires both compared routes to be singleton
+containers before its mount checks. Payload comparison also retains its singleton-container boundary.
+Delivery stripping invokes `mapTerminalContainer` only inside that same singleton guard, leaving every
+other route, including a VM prefix followed by a container, unchanged. Source guards hold direct-host
+rebasing, refusal ordering and the other private checks; the public Linux proxy fixture exercises
+host-to-VM and VM-to-container projection and payload stripping. Native Windows retains its declared
+fixture refusal.
+
+`RootedPlanCatalog` joins the root's
 finalized specification, invocation authority, plan, current frame, and root-resident lifecycle context,
 rechecks root residency and the authority's installed project and store identity, and then admits each
 declared edge in turn — each level's admitted target becoming the next level's parent — until a frame
@@ -307,8 +385,14 @@ catalog refuse before any continuation runs. `CatalogForwardHandoff` then rechec
 against the evidence the entry itself retains: the child frame must be the target plan's own current frame
 and its validated configuration's endpoint, the retained child plan digest must be both the digest that plan
 still renders and the digest its binding carries, and the retained configuration and payload digests must
-equal one another and the digest the canonical payload still hashes to. Its eight indices are nominal; it
-retains no lifecycle context, parent plan, or specification index, and its one eliminator exposes only the
+equal one another and the digest the canonical payload still hashes to. Both the retained raw route and
+the stripped launch route must also have exactly one layer, read through ordinary `liftLayers`.
+The private zero/multiple-layer rechecks are source-guard evidence: immediate-target catalog projection
+already blocks those malformed inputs before producing the opaque entry. The public Linux proxy
+fixture traverses the accepted VM and container edges.
+
+The package's eight indices are nominal; it retains no lifecycle context, parent plan, or specification
+index, and its one eliminator exposes only the
 stripped route, binding input, and canonical payload under a fixed unit result. No plan, digest binding,
 current frame, catalog, or projected node key escapes through that eliminator. Its consumers are the
 process-route derivation in
@@ -318,8 +402,8 @@ and the root lifecycle entry in
 so the package feeds the production process route while exposing nothing beyond those three values.
 
 Launching that child is a separate closed decision from describing where it runs. The ordinary lift route in
-the table above is free to keep a container's standard input open for an in-place configuration payload, to
-carry plan-authored extra arguments, and to inherit whatever descriptors the host frame held; the rooted
+the table above can consume supplied input as a configuration archive before starting a container,
+carry plan-authored extra arguments, and inherit whatever descriptors the host frame held; the rooted
 lifecycle protocol travels on exactly those descriptors, so a route that does any of that is a channel
 somebody else is also writing to. `LifecycleProcessRoute` is therefore derived from a catalog forward package
 or a recovery package and its plan-owned lift route rather than assembled, and it renders exactly one
@@ -331,6 +415,35 @@ request, so the detach, TTY, attach, standard-input, entrypoint, working-directo
 no path into the rendered vector. The child's command is the fixed coordinate-free
 `--hostbootstrap-lifecycle-child` entry marker; the authenticated Offer is the sole source of its verb.
 Every rendered path is absolute and free of the mount delimiter.
+
+Route derivation reads `liftLayers` and clears valid terminal delivery through `mapTerminalContainer`.
+Existing frame, phase and launch-grammar checks retain their order; only their validated, sanitized
+single or composed layer lists enter `liftContextFromLayers` before the lifecycle fold. The closed
+context already fixes terminal placement. The private composed-list validator retains its prefix-name
+checks and nonterminal-container refusal before any later terminal-delivery policy check.
+The native Linux proxy fixture exercises accepted immediate and composed routes. Lima/WSL vectors and
+private malformed-route or interactivity decisions remain lower-layer/source evidence; these controls
+make no live-provider execution claim.
+
+`Command.Child` reads the ordinary `liftLayers` view when selecting its next child's binary text.
+Exactly one `ViaContainer` yields an empty target for the image entry point; every other layer shape
+retains the guest binary coordinate derived from the validated config. The Linux public-up fixture
+exercises that container arm from its VM child. Source review holds the fallback spelling; the initial
+root-to-VM selection belongs to a separate lifecycle-entry helper. Native Windows retains the fixture's
+declared guest-row and canonical-root refusal.
+
+The forward lifecycle coordinator shares one `liftLayers`-based target selector between normal child
+launch and failed-Up unwind. Exactly one container yields an empty target; every other shape retains
+the `SelfRef` guest path through `selfRefInVMPath`. Recorded Linux public-up argv exercises that guest
+coordinate at the root-to-VM boundary and the separate `Command.Child` container launch. Source review
+holds the forward selector's exact-single-container arm, while the existing failed-Up recovery controls
+regress its second caller. The reverse-root selector remains independent.
+
+The independent reverse-root selector reads the last layer through `liftLayers`. A final `ViaContainer`,
+including one after a VM prefix, selects an empty target; other endings retain the `SelfRef` guest path.
+Down and Destroy use that rule for the complete retained root-relative route. Recorded Linux public-down
+argv exercises both the VM guest-coordinate arm and the composed Incus/Docker image-entry arm; native
+Windows retains the declared fixture refusal.
 
 Launching that route is one bracket's whole job. The owner resolves the route's host tool to an absolute
 path through the installed configuration, spawns it into a new process group with private stdin/stdout pipes
@@ -451,6 +564,22 @@ public indices name the selected parent/child edge in that same root plan. Prepa
 the command against the root context and independently validates the edge against topology and the recursive
 catalog. Deeper descent neither forges a child command authority nor coerces the root frame into its parent.
 
+The private reverse-descent route collector reads each retained topology edge through `liftLayers`,
+collects the complete root-relative crossing sequence in plan order, and admits that sequence through
+`liftContextFromLayers` before exposing a context to its continuation. A checked-shape refusal becomes
+a descriptive retained-route refusal. Parent, child, subtree and verb checks, together with the existing
+cycle, missing-parent, missing-edge and duplicate-edge diagnostics, remain part of that boundary.
+
+Its prepared descent has no public constructor. Rooted catalog admission checks each immediate edge and
+permits host-to-VM, host-to-container or VM-to-container descent, rejecting container descendants before
+a prepared collector input exists. Invalid-shape tests therefore exercise the public checked constructor;
+a scoped source guard holds the actual private collector's adoption. The native-filesystem Linux
+recursive fixture drives the public CLI and records the composed crossing argv at its compiled test proxy,
+including the Incus prefix before Docker, while observing child-first reverse work. Native Windows
+retains its declared guest-row and canonical-root refusal. These controls establish the static process
+and route contract, with live provider execution owned by the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
+
 Production `project down` and `project destroy` enter that machinery at one call site. The reverse-entry
 producer reconstructs the committed target plan, retains the target lease, and lends the command driver an
 opaque entry plus a terminalization continuation. The driver opens the plan forest once, executes siblings in
@@ -535,6 +664,17 @@ but cannot make arbitrary OS-level disclosure unrepresentable. The demo forwards
 `stdin` into the VM, and container-frame pulls are anonymous (see
 [registry_credentials](../engineering/registry_credentials.md#current-status)). The active composition-and-network boundary places `liftSubcommandWithAuth` in
 `HostBootstrap.Registry`, which consumes the lower generic Lift; generic Lift imports no credential policy.
+
+The pure `registryAuthLiftPlan` supports a non-empty subcommand and one Incus, Lima or WSL2 crossing
+followed by one container without config delivery. It reads the complete pair through `liftLayers` and
+`terminalContainer`, then uses `liftContextFromLayers` to reconstruct each singleton context for its two
+existing `foldLeaf` calls. The credential-reading script and supported argv are unchanged; the effectful
+caller resolves only the outer host tool, and nested tool names belong to the guest. Empty argv, staged
+config delivery and multiple VM crossings
+produce `Nothing`; the effectful caller retains its ordinary-lift fallback. The credential script remains
+an interpreter program. Invalid container ordering belongs to checked layer-list refusal rather than
+an inhabitable context passed to this planner.
+
 See
 [registry_credentials](../engineering/registry_credentials.md).
 
@@ -624,7 +764,7 @@ host-side `docker run <image> project up` is rejected when the config says `curr
 The Windows substrate folds the *same* shape with the WSL2 VM provider: on `windows-cpu`/`windows-gpu`
 the `vm-orchestrator-1` frame carries `topologyProvider = ProviderKind.Wsl2VMProvider` (the peer of
 `LimaVMProvider`/`IncusVMProvider`) and the host `pb` launches the lifecycle child with
-`wsl -d <distro> --cd / -- sudo -n -H <pb> --hostbootstrap-lifecycle-child` into the Ubuntu-24.04 distro, where the `vm-project-container-2` frame is reached exactly as on the
+`wsl -d <distro> --cd / --exec sudo -n -H <pb> --hostbootstrap-lifecycle-child` into the Ubuntu-24.04 distro, where the `vm-project-container-2` frame is reached exactly as on the
 Lima/Incus chains — only the provider builders differ. See [wsl2](../engineering/wsl2.md).
 
 ## Deploy ≡ Business-Logic Unification

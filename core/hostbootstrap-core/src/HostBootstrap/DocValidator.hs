@@ -93,6 +93,7 @@ import System.FilePath (
     addTrailingPathSeparator,
     makeRelative,
     normalise,
+    splitDirectories,
     takeDirectory,
     takeExtension,
     takeFileName,
@@ -196,14 +197,15 @@ validateRepo root = do
 
 {- | Architecture reconciliation adds absence guards to the lower doctrine
 checks. Each refusal points to the owning phase and the design rationale.
-Missing source files are valid while earlier phases are being constructed.
+Boundary checks follow every matching module suffix under the public and private
+production roots. Missing modules remain valid while earlier phases are constructed.
 -}
 checkArchitectureDrift :: FilePath -> IO [Violation]
 checkArchitectureDrift root = do
     removed <- concatMapM removedModule obsoleteModules
-    boundaries <- concatMapM boundary forbiddenBoundaries
-    docs <- listMarkdown (root </> "documents")
     sources <- concatMapM sourceFiles (map (root </>) driftSourceRoots)
+    boundaries <- concatMapM (boundary (filter isProductionSource sources)) forbiddenBoundaries
+    docs <- listMarkdown (root </> "documents")
     let citable = filter ((`notElem` driftCitationExemptions) . takeFileName) sources
     references <- concatMapM phaseReferences (docs ++ citable)
     pure (removed ++ boundaries ++ references)
@@ -218,6 +220,12 @@ checkArchitectureDrift root = do
         , ("Authority/Kernel.hs", ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "childCommandReservationKernel"], "phase-18-recovery-and-migration.md", "only-a-proven-pre-effect-refusal-takes-the-short-close")
         ]
     sourcePath name = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> name
+    productionRoots =
+        map
+            (splitDirectories . normalise . (root </>))
+            ["core/hostbootstrap-core/src", "core/hostbootstrap-core/internal"]
+    isProductionSource file =
+        any (`isPrefixOf` splitDirectories (normalise file)) productionRoots
     refusal file shape owner rationale =
         Violation
             (rrel root file)
@@ -232,15 +240,14 @@ checkArchitectureDrift root = do
         let file = sourcePath name
         exists <- doesFileExist file
         pure [refusal file name owner rationale | exists]
-    boundary (name, forbidden, owner, rationale) = do
-        let file = sourcePath name
-        exists <- doesFileExist file
-        if not exists
-            then pure []
-            else do
-                contents <- Text.unpack <$> TextIO.readFile file
-                let identifiers = words (map (\c -> if isAlphaNum c || c == '_' || c == '\'' then c else ' ') contents)
-                pure [refusal file identifier owner rationale | identifier <- forbidden, identifier `elem` identifiers]
+    boundary sources (name, forbidden, owner, rationale) =
+        concatMapM check [file | file <- sources, suffix `isSuffixOf` splitDirectories (normalise file)]
+      where
+        suffix = splitDirectories (normalise ("HostBootstrap" </> name))
+        check file = do
+            contents <- Text.unpack <$> TextIO.readFile file
+            let identifiers = words (map (\c -> if isAlphaNum c || c == '_' || c == '\'' then c else ' ') contents)
+            pure [refusal file identifier owner rationale | identifier <- forbidden, identifier `elem` identifiers]
     phaseReferences file = do
         contents <- Text.unpack <$> TextIO.readFile file
         pure
@@ -1232,7 +1239,8 @@ Taking the last cell rather than indexing keeps this robust to a pipe inside an
 earlier cell's code span.
 -}
 deletingCell :: String -> String
-deletingCell row = case reverse (filter (not . null . trim) (splitOn '|' row)) of
+deletingCell row = case reverse (splitOn '|' (trim row)) of
+    ("" : cell : _) -> cell
     (cell : _) -> cell
     [] -> row
 

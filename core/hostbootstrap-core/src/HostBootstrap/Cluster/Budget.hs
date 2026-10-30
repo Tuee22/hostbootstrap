@@ -70,8 +70,6 @@ module HostBootstrap.Cluster.Budget (
     LiveProviderWall,
     settleProviderWallCall,
     withLiveProviderWall,
-    StorageWallMechanism (..),
-    StorageWallUnsupported (..),
     PreparedStorageWallCall,
     prepareStorageWallCall,
     storageWallCallArgs,
@@ -250,14 +248,16 @@ validateBackendExactness backend budget =
         -- No quota or image-GC wall exists to size against, so there is nothing to
         -- admit rather than a budget that trivially fits.
         BareLinuxBackend ->
-            Left
-                ( UnsupportedBudgetWall
-                    BareLinuxBackend
-                    "bare Linux has no quota/image-GC storage wall"
-                )
-        -- A kind node is cordoned in bytes by the container runtime, so it accepts
-        -- any positive budget the canonical constructor already admitted.
-        DockerNodeBackend -> pure ()
+            case backendStorageCordon backend of
+                Cordon.StorageCordonSupported _ -> Right ()
+                Cordon.StorageCordonUnsupported reason ->
+                    Left (UnsupportedBudgetWall backend (storageUnsupportedMessage backend reason))
+        -- A kind node uses the runtime renderer's signed bounds, daemon minimum,
+        -- and CLI precision checks before its wall or effective budget exists.
+        DockerNodeBackend ->
+            case Cordon.kindNodeCordonLimitsForBudget budget of
+                Left reason -> Left (InvalidBudget reason)
+                Right _ -> Right ()
         -- Colima additionally reserves a fixed writable root disk inside the
         -- declared ceiling, so its own renderer is part of admission.
         ColimaBackend -> do
@@ -302,11 +302,11 @@ providerWallArgs name (ProviderWallSpec providerKey budget) =
         DockerNodeProviderKey ->
             render (Cordon.kindNodeCordonArgsForBudget name budget)
         BareLinuxProviderKey ->
-            Left
-                ( UnsupportedBudgetWall
-                    BareLinuxBackend
-                    "bare Linux has no complete provider wall"
-                )
+            case backendStorageCordon BareLinuxBackend of
+                Cordon.StorageCordonSupported mechanism ->
+                    render (storageWallMechanismArgs name budget mechanism)
+                Cordon.StorageCordonUnsupported reason ->
+                    Left (UnsupportedBudgetWall BareLinuxBackend (storageUnsupportedMessage BareLinuxBackend reason))
   where
     render = either (Left . InvalidBudget) Right
 
@@ -948,33 +948,23 @@ withLiveProviderWall live ordinary wsl =
 
 -- The storage wall ------------------------------------------------------------
 
-{- | The concrete mechanism that enforces a declared storage ceiling. Each one
-is a real provider argument, not a preflight check: a mechanism named here
-/applies/ the ceiling.
--}
-data StorageWallMechanism
-    = ColimaDiskArgument
-    | LimaDiskArgument
-    | IncusRootSizeArgument
-    | Wsl2VhdSizeArgument
-    deriving (Eq, Show)
-
-{- | Why a provider cannot enforce the declared ceiling. These are the honest
-gaps: @docker update@ has no storage flag, so a kind node container cannot be
-capped after creation, and bare Linux has neither a quota'd project path nor an
-image-GC wall (§ O, the canonical-quantities-and-reconcile-results phase).
--}
-data StorageWallUnsupported
-    = DockerNodeHasNoStorageFlag
-    | BareLinuxHasNoStorageQuota
-    deriving (Eq, Show)
+-- | Resolve the canonical storage decision at each provider's actual boundary.
+backendStorageCordon :: ProviderBackend -> Cordon.StorageCordonResult
+backendStorageCordon backend =
+    Cordon.storageCordonPolicy $ case backend of
+        ColimaBackend -> Cordon.ColimaVmStorage
+        LimaBackend -> Cordon.LimaVmStorage
+        IncusBackend -> Cordon.IncusVmStorage
+        Wsl2Backend -> Cordon.Wsl2DistroStorage
+        DockerNodeBackend -> Cordon.DockerNodeStorage
+        BareLinuxBackend -> Cordon.BareLinuxStorage
 
 {- | An opaque prepared storage-wall call. It exists only for a provider whose
 mechanism can actually apply the ceiling, and it carries the exact declared
 byte value the observation must match.
 -}
 data PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence
-    = PreparedStorageWallCall StorageWallMechanism [String] Integer Word64
+    = PreparedStorageWallCall Cordon.StorageCordonMechanism [String] Integer Word64
 
 type role PreparedStorageWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
@@ -997,9 +987,11 @@ prepareStorageWallCall
     (ProviderWallSpec providerKey budget)
     _partition
     (ProviderWallReservation _plan _operation _session fenceValue _attempt _journalVersion) =
-        case providerKey of
-            ColimaProviderKey ->
-                case Cordon.colimaSizingArgsForBudget name budget of
+        case backendStorageCordon backend of
+            Cordon.StorageCordonUnsupported reason ->
+                unsupportedStorageWall backend reason
+            Cordon.StorageCordonSupported mechanism ->
+                case storageWallMechanismArgs name budget mechanism of
                     Left reason ->
                         Left
                             ( Failure
@@ -1011,35 +1003,25 @@ prepareStorageWallCall
                             )
                     Right args ->
                         exactStorageWall
-                            ColimaDiskArgument
+                            mechanism
                             args
                             storageBytes
                             fenceValue
-            LimaProviderKey ->
-                exactStorageWall
-                    LimaDiskArgument
-                    ["--disk", show storageGiB]
-                    storageBytes
-                    fenceValue
-            IncusProviderKey ->
-                exactStorageWall
-                    IncusRootSizeArgument
-                    ["-d", "root,size=" ++ show storageGiB ++ "GiB"]
-                    storageBytes
-                    fenceValue
-            Wsl2ProviderKey ->
-                exactStorageWall
-                    Wsl2VhdSizeArgument
-                    ["--vhd-size", show storageGiB ++ "GB"]
-                    storageBytes
-                    fenceValue
-            DockerNodeProviderKey ->
-                unsupportedStorageWall DockerNodeBackend DockerNodeHasNoStorageFlag
-            BareLinuxProviderKey ->
-                unsupportedStorageWall BareLinuxBackend BareLinuxHasNoStorageQuota
       where
+        backend = providerBackend providerKey
         storageBytes = budgetStorageBytes budget
-        storageGiB = storageBytes `div` storageGibibyte
+
+-- | Render the mechanism selected by the canonical policy, with no second
+-- provider-to-mechanism decision.
+storageWallMechanismArgs :: String -> ResourceBudget -> Cordon.StorageCordonMechanism -> Either String [String]
+storageWallMechanismArgs name budget mechanism =
+    case mechanism of
+        Cordon.ColimaDiskFlag -> Cordon.colimaSizingArgsForBudget name budget
+        Cordon.LimaDiskFlag -> Right ["--disk", show storageGiB]
+        Cordon.IncusRootDiskLimit -> Right ["-d", "root,size=" ++ show storageGiB ++ "GiB"]
+        Cordon.Wsl2VhdSize -> Right ["--vhd-size", show storageGiB ++ "GB"]
+  where
+    storageGiB = budgetStorageBytes budget `div` storageGibibyte
 
 storageGibibyte :: Integer
 storageGibibyte = 1024 ^ (3 :: Integer)
@@ -1048,7 +1030,7 @@ storageGibibyte = 1024 ^ (3 :: Integer)
 because rounding a hard ceiling upward is the failure § O forbids.
 -}
 exactStorageWall ::
-    StorageWallMechanism ->
+    Cordon.StorageCordonMechanism ->
     [String] ->
     Integer ->
     Word64 ->
@@ -1072,21 +1054,20 @@ exactStorageWall mechanism args storageBytes fenceValue
 
 unsupportedStorageWall ::
     ProviderBackend ->
-    StorageWallUnsupported ->
+    Cordon.StorageCordonUnsupportedReason ->
     Either ReconcileError result
 unsupportedStorageWall backend reason =
     Left
         ( Unsupported
             ( UnsupportedDetail
                 "apply storage wall"
-                ( "the "
-                    <> Text.pack (show backend)
-                    <> " backend cannot enforce a storage ceiling ("
-                    <> Text.pack (show reason)
-                    <> ")"
-                )
+                (Text.pack (storageUnsupportedMessage backend reason))
             )
         )
+
+storageUnsupportedMessage :: ProviderBackend -> Cordon.StorageCordonUnsupportedReason -> String
+storageUnsupportedMessage backend reason =
+    "the " <> show backend <> " backend cannot enforce a storage ceiling (" <> show reason <> ")"
 
 storageWallCallArgs ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
@@ -1095,7 +1076,7 @@ storageWallCallArgs (PreparedStorageWallCall _ args _ _) = args
 
 storageWallCallMechanism ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
-    StorageWallMechanism
+    Cordon.StorageCordonMechanism
 storageWallCallMechanism (PreparedStorageWallCall mechanism _ _ _) = mechanism
 
 -- | The exact declared ceiling in bytes the observation must reproduce.

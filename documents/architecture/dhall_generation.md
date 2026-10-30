@@ -45,30 +45,13 @@
 
 ## Current Status
 
-The codec, vocabulary, and assembly model on this page is implemented. Four points fall short of it:
+The codec, vocabulary, and assembly model on this page is implemented, with one exception:
 
-- `HostBootstrap.Dhall.Gen` exports the `ConfigArtifact` field labels `artifactName`, `schemaText`, and
-  `renderText`, so record-update syntax on an existing artifact replaces its schema or render text without a
-  `CodecWitness`; witness-only construction holds by convention, not by the type. See
-  [config_generation](../engineering/config_generation.md#current-status); the
-  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
-  owns the fix.
 - The bare core binary's cluster-live gate reads its sibling project config with `readBareConfig`, which
   decodes it with the plain Dhall decoder rather than through `decodeProjectCodecFile`, so that read bypasses
   the codec witness and the installed-identity and scope binding. The
   [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns
   `HostBootstrap.CLI.Bare`.
-- `project init` checks whether its output exists and then writes it in place with
-  `writeScopedProjectConfigFile`, holding no lock. A concurrent writer can be overwritten between the check
-  and the write, and a crash can leave a truncated config; the atomic no-replace publication the harness's
-  generated-config writer uses is not applied. The
-  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
-  owns the existing-output policy and its atomic publication.
-- `project init` fills an omitted `--source-root` with the working directory in core (`initAction` in
-  `HostBootstrap.Command` calls `getCurrentDirectory`) before the project's `psAssemble` runs, so that one
-  default is a core value rather than the project's. The
-  [Dhall configuration and project model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md)
-  owns passing the omitted root through to the project assembler.
 
 ## Three Roles Of `.dhall`: Parameters, Context, Witness
 
@@ -133,15 +116,17 @@ separate and pin both the bare and representative consumer registries.
 `project init` is a config-free writer. Its no-flag behavior is the **fresh-root default**:
 write the executable-sibling `<project>.dhall` as a host orchestrator with no parent, using the project's
 defaults, and refuse an existing output. Explicit role, output, and write-policy flags select other writer
-modes, and root identity provisioning follows the write step.
+modes, and root identity provisioning follows config publication or an explicit keep.
 [config_generation](../engineering/config_generation.md#project-init-fresh-root-default-and-explicit-writes)
 is the home of the writer, its flags (including the mutually exclusive `--force` and `--if-missing`), and the
-write-then-identity order; the
-[surfaced commands](hostbootstrap_core_library.md#surfaced-commands) table lists the command. The write step
-is a check-then-write with no lock (see [Current Status](#current-status)).
+publication-then-identity order; the
+[surfaced commands](hostbootstrap_core_library.md#surfaced-commands) table lists the command. The ordinary
+writer publishes a flushed same-directory temporary by no-replace hard link or atomic rename, returning
+`ConfigPublishOutcome`. Identity provisioning follows separately: failure leaves the published config,
+and `--if-missing` can keep it while retrying provisioning.
 
-Defaults are **not** core values, with the one exception of the source root that core fills before
-assembly (see [Current Status](#current-status)). `project init` obtains its complete
+Defaults belong to the project. An omitted `--source-root` remains unfilled until assembly; a relative
+root resolves against the config's anchor directory. `project init` obtains its complete
 Production value from `psAssemble (ProductionAssembly args)`; the harness obtains each exact-run-scoped
 config from `psAssemble (HarnessAssembly authority root tcfg draft)`, where `root` is the canonical
 project root of the run's ownership scope, and `test init` independently builds
@@ -190,8 +175,8 @@ nothing:
 
 `Core.dhall` is the reusable L0 vocabulary. It is a committed, hand-written file, not generated wholesale
 from Haskell. It is **self-contained**—no Prelude import—so it
-evaluates with no network access, both in-process via the Haskell `dhall` library and via
-`dhall-to-json`. It exports the record/union types `Resources`, `Budget`, `PodResources`, `KindNode`,
+evaluates with no network access. Runtime decoding uses the Haskell `dhall` library in-process.
+It exports the record/union types `Resources`, `Budget`, `PodResources`, `KindNode`,
 `Mount`, `ProductionSecretRef`, and `HarnessSecretRef` (plus the `Weight = Natural` synonym), and the
 functions `lessThanEqual`, `requestsWithinLimits`, `fitsWithin`, and `split` (the last two also under
 the aliases `Budget/fitsWithin` and `Budget/split`). `divFloor` is deliberately not exported: it is
@@ -204,6 +189,10 @@ codec whose schema is judgmentally equal, and the other requires every remaining
 the function inventory, so neither half can be renamed or dropped unnoticed. Execution shape is deliberately absent from the vocabulary;
 lifecycle steps are its sole representation.
 
+`dhall/example.dhall` is the `renderProjectConfig` golden, with the example's real `docker/Dockerfile`
+path. Its `ContextKind`, `ProviderKind`, and `CommandClass` unions come from the context codec, not
+`Core.dhall` exports. The example is a concrete fixture, not a core-owned project default.
+
 ## The Load-Bearing Nuance: Validated Types, Hand-Written Functions
 
 The vocabulary splits into two halves with **different** drift-control disciplines. This is the key
@@ -213,10 +202,10 @@ nuance of the model:
   normalized decoder `expected` and encoder `declared` expressions before it can exist. Schema printing,
   decoding, and rendering accept that value rather than independent constraints; every config writer
   forces admission before it writes. The harness's generated-config writer then publishes inside its
-  ownership bracket, while `project init` holds no lock (see [Current Status](#current-status)).
-  `artifactOf` builds a `ConfigArtifact` from a witness plus a canonical value and is the only way to build
-  one from nothing; the exported field labels still let record update replace an existing artifact's text
-  (see [Current Status](#current-status)). Every hand-written `Core.dhall` type is exhaustively named and
+  ownership bracket; ordinary init uses publication-time `ExistingOutputPolicy` outcomes.
+  `artifactOf` builds an opaque `ConfigArtifact` from a witness plus a canonical value. Its exported
+  `artifactName`, `schemaText`, and `renderText` readers are ordinary functions over private fields, so
+  record update cannot replace an artifact's schema or rendering. Every hand-written `Core.dhall` type is exhaustively named and
   judgmentally equality-gated. This makes type-expression mismatch unrepresentable after admission;
   semantic encode/decode behavior still requires round-trip/property tests. At the project
   boundary, installed identity and lifecycle scope additionally wrap the witness as
@@ -259,8 +248,8 @@ child-projection seams that realize this, and
 
 One admitted codec owns schema, decode, and render for each artifact and for the command and harness
 project/test config paths; the bare binary's live-gate reader is the exception named in
-[Current Status](#current-status). `decodeContextText` and `decodeContextFile` decode a standalone
-`BinaryContext`, not a project config, with the plain Dhall decoder. The
+[Current Status](#current-status). Runtime context is decoded inside the sibling project config through
+the scoped project codec; `Context` exposes no separate context-file decoder. The
 `Core.dhall` tests equality-check every exported type, while `fitsWithin` and `split` have evaluation tests.
 Role-schema tests compare the finalized Production and Harness families with their exact decoders.
 

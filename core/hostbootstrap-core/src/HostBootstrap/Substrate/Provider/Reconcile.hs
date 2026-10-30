@@ -125,8 +125,6 @@ import HostBootstrap.Reconcile (
     ForeignObservation (..),
     Managed,
     Observed,
-    OperationDescriptor,
-    OperationPreconditionSet,
     OwnershipReceipt,
     PhaseTransition,
     PlannedResourceKind (DurableShareResourceKind, ProviderResourceKind),
@@ -166,9 +164,9 @@ import HostBootstrap.Reconcile (
     withPhaseAdvance,
     withPlannedReboundManagedResourceEvidence,
     withPreparedOperation,
-    withPreparedPhaseTransition,
+    withPreparedZeroDependencyOperation,
+    withPreparedZeroDependencyPhaseTransition,
     withReconcileResult,
-    zeroDependencyPreconditions,
  )
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
     ProviderShareDependency (..),
@@ -359,8 +357,7 @@ withPreparedProviderProvision ::
 withPreparedProviderProvision execution backend planned handle gate consume = do
     let callDigest = providerCallDigest "provider:provision/v2" backend
     descriptor <- plannedNodeOperation execution planned handle callDigest
-    preconditions <- zeroDependencyPreconditions descriptor
-    withPreparedOperation descriptor preconditions gate $ \prepared sealed ->
+    withPreparedZeroDependencyOperation descriptor gate $ \prepared sealed ->
         consume
             ( PreparedProviderProvision
                 (providerBinding execution backend handle callDigest)
@@ -1450,20 +1447,13 @@ prepareProviderPhase execution planned handle receipt transition callDigest gate
             receipt
             transition
             callDigest
-    preconditions <- zeroProviderDependencies descriptor
-    withPreparedPhaseTransition
+    withPreparedZeroDependencyPhaseTransition
         handle
         receipt
         transition
         descriptor
-        preconditions
         gate
         consume
-
-zeroProviderDependencies ::
-    OperationDescriptor scope planId providerId ProviderResource fromPhase toPhase ->
-    Either ReconcileError (OperationPreconditionSet scope planId providerId ProviderResource)
-zeroProviderDependencies = zeroDependencyPreconditions
 
 phaseNotAtTarget :: Text -> Text -> Either ReconcileError result
 phaseNotAtTarget operation reason =

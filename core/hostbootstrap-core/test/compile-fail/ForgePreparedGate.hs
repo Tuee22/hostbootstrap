@@ -1,21 +1,12 @@
-{- | The durable unknown-phase write is the only producer of a 'PreparedGate'
-(§ EE): a caller can neither construct one from an attempt and journal
-version of its own nor update the indices on one it was handed.
+{- | A caller cannot name the 'PreparedGate' constructor to choose its own
+durable coordinates (§ EE).
 -}
 module ForgePreparedGate where
 
-import HostBootstrap.Lifecycle.Prepared
+import Data.Text (Text)
+import Data.Word (Word64)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate (PreparedGate))
 
-forgedGate :: PreparedGate
-forgedGate =
-    PreparedGate
-        { preparedGatePlan = "plan"
-        , preparedGateOperation = "core:deploy-kind"
-        , preparedGateSession = "session-1"
-        , preparedGateFence = 1
-        , preparedGateAttempt = 1
-        , preparedGateJournalVersion = 1
-        }
-
-relabelledGate :: PreparedGate -> PreparedGate
-relabelledGate gate = gate{preparedGateOperation = "core:deploy-vm"}
+forgedGate :: Text -> Text -> Text -> Word64 -> Word64 -> Word64 -> PreparedGate
+forgedGate plan operation session fence attempt version =
+    PreparedGate plan operation session fence attempt version

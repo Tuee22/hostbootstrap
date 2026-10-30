@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from hostbootstrap import resources
 
 _GIB = 1024**3
@@ -76,16 +75,42 @@ def test_detect_meminfo_without_available_falls_back_to_total(
     assert res.mem_available_bytes == res.mem_total_bytes == 16384 * 1024
 
 
-def test_assert_build_minimums_passes_above_floor() -> None:
-    res = resources.HostResources(
-        cpu_count=8, mem_total_bytes=16 * _GIB, mem_available_bytes=12 * _GIB
-    )
+@pytest.mark.parametrize(
+    "res",
+    [
+        resources.HostResources(
+            cpu_count=8, mem_total_bytes=16 * _GIB, mem_available_bytes=12 * _GIB
+        ),
+        resources.HostResources(
+            cpu_count=8, mem_total_bytes=14 * _GIB, mem_available_bytes=8 * _GIB
+        ),
+    ],
+)
+def test_assert_build_minimums_passes_above_floor(res: resources.HostResources) -> None:
     resources.assert_build_minimums(res)  # no raise
 
 
 @pytest.mark.parametrize(
     ("res", "needle"),
     [
+        (
+            resources.HostResources(
+                cpu_count=7, mem_total_bytes=14 * _GIB, mem_available_bytes=8 * _GIB
+            ),
+            "CPUs",
+        ),
+        (
+            resources.HostResources(
+                cpu_count=8, mem_total_bytes=14 * _GIB - 1, mem_available_bytes=8 * _GIB
+            ),
+            "total memory",
+        ),
+        (
+            resources.HostResources(
+                cpu_count=8, mem_total_bytes=14 * _GIB, mem_available_bytes=8 * _GIB - 1
+            ),
+            "available memory",
+        ),
         (
             resources.HostResources(
                 cpu_count=1, mem_total_bytes=16 * _GIB, mem_available_bytes=12 * _GIB

@@ -5,6 +5,7 @@ module HarnessSpec (
     tests,
     runHarnessAcquireProbe,
     runHarnessAbandonProbe,
+    runHarnessIdentityProbe,
     runRecoveryInterruptionProbe,
     runRecoveryInterruptionSuccessor,
 ) where
@@ -14,7 +15,7 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, finally,
 import Control.Monad (when)
 import Data.ByteString (ByteString)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf, isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf, nub)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -47,7 +48,6 @@ import HostBootstrap.Lifecycle.Mode (
     harnessRootUnboundLease,
     leaseConflictMessage,
     persistCanonicalPlanSnapshot,
-    persistPlanSnapshot,
     recordOpenRevisionMigration,
     recoverAbandonedHarnessRuns,
     runIdText,
@@ -67,8 +67,10 @@ import HostBootstrap.Protected (
     ProtectedStore,
     compareAndSwapProtectedRecord,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
     protectedStoreRoot,
+    recordTupleSeparator,
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (CanonicalPlanSnapshot)
@@ -78,7 +80,9 @@ import HostBootstrap.Step (
  )
 import ResourceRecordSpec (withCanonicalReleasedResourceFixture, withCanonicalResourceFixture)
 import System.Directory (
+    copyFile,
     createDirectory,
+    createDirectoryIfMissing,
     doesDirectoryExist,
     doesFileExist,
     getCurrentDirectory,
@@ -88,7 +92,7 @@ import System.Directory (
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die, exitSuccess, exitWith)
-import System.FilePath ((</>))
+import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
@@ -740,6 +744,31 @@ runHarnessAbandonProbe stateRoot readyPath = do
     outcome <- either (die . show) pure prepared
     die ("the abandon probe was expected to be killed, not to finish: " ++ show outcome)
 
+-- | Use the invoked executable's real project identity for all three origin
+-- families, then leave a bound, pre-effect run for exact successor recovery.
+runHarnessIdentityProbe :: FilePath -> FilePath -> IO ()
+runHarnessIdentityProbe stateRoot readyPath = do
+    prepared <-
+        Fixture.withFixtureInstalledProject $ \project ->
+            withCanonicalProjectRoot stateRoot stateRoot $ \canonicalRoot -> do
+                let ownership = protectedProjectRunOwnership project canonicalRoot stateRoot (stateRoot </> ".test_data")
+                runWithOwnedRun ownership $ \owned -> do
+                    installed <- acquireOwnedRunConfig owned "-- generated for the project identity probe\n"
+                    either die (const (pure ())) installed
+                    withOwnedHarnessRoot owned $ \_store _project root _closeControl -> do
+                        let unbound = harnessRootUnboundLease root
+                        canonical <- canonicalHarnessSnapshot
+                        persisted <- persistCanonicalPlanSnapshot unbound 1 canonical
+                        either (die . show) pure persisted
+                        verified <- verifyPlanSnapshot unbound $ \snapshot -> do
+                            bound <- bindRunLease unbound snapshot (\_ -> pure ())
+                            either (die . T.unpack . leaseConflictMessage) (const (pure (Right ()))) bound
+                        either (die . show) pure verified
+                    writeFile readyPath (ownedHarnessConfigPath owned)
+                    threadDelay 600000000
+    outcome <- either (die . show) pure prepared
+    die ("the identity probe was expected to be killed: " ++ show outcome)
+
 {- | Leave one real protected-store recovery boundary behind, publish readiness,
 and wait to be hard-killed. The successor entry below opens the same store; no
 production crash hook or in-process exception participates in this fixture.
@@ -968,6 +997,11 @@ withAbandonedResourceOwnership released body =
                         else withCanonicalResourceFixture prepare
         either (assertFailure . show) pure prepared
 
+-- Obtain ordinary canonical data while its genuine plan fixture is alive, then
+-- finish that fixture before any caller's deliberate hard-kill waiting point.
+canonicalHarnessSnapshot :: IO CanonicalPlanSnapshot
+canonicalHarnessSnapshot = withCanonicalResourceFixture (\snapshot _records -> pure snapshot)
+
 abandonBoundRunWithResources ::
     ProtectedStore ->
     Authority.InstalledProjectIdentity projectId ->
@@ -1032,7 +1066,8 @@ abandonBoundRunWithMigration store project kind recordEffect = do
             ( \harnessRoot -> do
                 let run = harnessRootRunId harnessRoot
                     unbound = harnessRootUnboundLease harnessRoot
-                persisted <- persistPlanSnapshot unbound 1 "spec-1" "plan-1"
+                canonical <- canonicalHarnessSnapshot
+                persisted <- persistCanonicalPlanSnapshot unbound 1 canonical
                 case persisted of
                     Left failure -> pure (Left failure)
                     Right () -> do
@@ -1064,14 +1099,17 @@ recordRunEffect ::
     RunId runId ->
     IO (Either ModeError ())
 recordRunEffect session project run = do
+    encodedProject <- either (assertFailure . show) pure (mkRecordName (Authority.installedProjectName project))
+    encodedRun <- either (assertFailure . show) pure (mkRecordName (runIdText run))
     key <-
         either (assertFailure . show) pure $
             mkRecordKey
                 ( "effect."
-                    <> Authority.installedProjectName project
-                    <> "."
-                    <> runIdText run
-                    <> ".seeded"
+                    <> encodedProject
+                    <> recordTupleSeparator
+                    <> encodedRun
+                    <> recordTupleSeparator
+                    <> "seeded"
                 )
     written <- compareAndSwapProtectedRecord session key ExpectAbsent "seeded effect"
     pure (either (Left . ModeStoreFailure) (const (Right ())) written)
@@ -1112,6 +1150,11 @@ ownershipCases =
     [ testCase "self-created .test_data is removed; a found one is preserved" $ do
         selfCreatedTestDataRemoval False testDataRoot @?= [testDataRoot]
         selfCreatedTestDataRemoval True testDataRoot @?= []
+    , testCase "real case and underscore project identities keep exact origin records and recovery" $
+        withSystemTempDirectory "hostbootstrap-project-key-cases" $ \directory -> do
+            self <- getExecutablePath
+            identities <- mapM (harnessIdentityRecoveryCase self directory) ["Build", "build", "a_b", "aB"]
+            length (nub (map T.toCaseFold identities)) @?= 4
     , testCase "typed ownership carries one exact project/root/store authority tuple" $
         withSystemTempDirectory "hostbootstrap-typed-ownership" $ \root -> do
             projectName <- Fixture.fixtureExecutableName
@@ -1426,11 +1469,7 @@ ownershipCases =
                             bound <-
                                 do
                                     persisted <-
-                                        persistPlanSnapshot
-                                            unbound
-                                            1
-                                            "specdigestfixture"
-                                            "plandigestfixture"
+                                        canonicalHarnessSnapshot >>= persistCanonicalPlanSnapshot unbound 1
                                     case persisted of
                                         Left failure -> pure (Left failure)
                                         Right () ->
@@ -1544,6 +1583,42 @@ ownershipCases =
                         assertFailure
                             ("each run must own exactly one generation: " ++ show (first, second))
     ]
+
+harnessIdentityRecoveryCase :: FilePath -> FilePath -> T.Text -> IO T.Text
+harnessIdentityRecoveryCase self directory projectName = do
+    -- Separate directories admit both case spellings on a case-insensitive
+    -- filesystem; each executable still verifies its actual invoked basename.
+    encodedProject <- either (assertFailure . show) pure (mkRecordName projectName)
+    let uniqueDirectory = directory </> T.unpack encodedProject
+        uniqueBinary = uniqueDirectory </> "binary" </> T.unpack projectName <> takeExtension self
+        uniqueRoot = uniqueDirectory </> "state"
+        uniqueRecords = uniqueRoot </> harnessAuthorityStoreDirectory </> T.unpack projectName </> "records"
+        uniqueReady attempt = uniqueRoot </> ("ready-" <> attempt)
+    createDirectoryIfMissing True (uniqueDirectory </> "binary")
+    createDirectoryIfMissing True uniqueRoot
+    copyFile self uniqueBinary
+    let inspect attempt = do
+            child <- spawnProcess uniqueBinary ["--hostbootstrap-harness-identity-probe", uniqueRoot, uniqueReady attempt]
+            ( do
+                awaitFile (uniqueReady attempt)
+                generations <- listDirectory (uniqueRoot </> ".test_data")
+                run <- case generations of
+                    [one] -> pure (T.pack one)
+                    other -> assertFailure ("expected one live generation, got " <> show other)
+                encodedRun <- either (assertFailure . show) pure (mkRecordName run)
+                files <- listDirectory uniqueRecords
+                let suffix = T.unpack (encodedProject <> recordTupleSeparator <> encodedRun) <> ".rec"
+                filter ("config." `isPrefixOf`) files @?= ["config." <> suffix]
+                filter ("dataroot." `isPrefixOf`) files @?= ["dataroot." <> suffix]
+                assertBool "the exact project/run snapshot is separately retained" (("snapshot." <> suffix) `elem` files)
+                listDirectory (uniqueRoot </> harnessAuthorityStoreDirectory </> T.unpack projectName </> "liveness")
+                    >>= (@?= [T.unpack encodedProject <> ".lock"])
+                pure run
+              ) `finally` (terminateProcess child >> waitForProcess child >> pure ())
+    firstRun <- inspect "first"
+    secondRun <- inspect "second"
+    assertBool "the successor recovered the first exact identity and owns a new generation" (firstRun /= secondRun)
+    pure encodedProject
 
 representationCases :: [TestTree]
 representationCases =

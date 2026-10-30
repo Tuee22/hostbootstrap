@@ -1,10 +1,6 @@
 module ForgeProjectModeLease where
 
-import HostBootstrap.Lifecycle.Mode (ProductionMode, ProjectModeLease)
-
-data Project
-data BrokerGeneration
-
--- A mode lease exists only after the protected mode compare-and-swap wins.
-forgedModeLease :: ProjectModeLease Project ProductionMode BrokerGeneration
-forgedModeLease = ProjectModeLease
+-- The actual constructor stays behind the protected mode transition.
+import HostBootstrap.Lifecycle.Mode (
+    ProjectModeLease (ProjectModeLease),
+ )

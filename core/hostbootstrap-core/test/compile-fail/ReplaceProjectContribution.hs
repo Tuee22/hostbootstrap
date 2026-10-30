@@ -1,8 +1,9 @@
 module ReplaceProjectContribution where
 
-import HostBootstrap.CLI
+-- Project contributions remain additive; callers cannot replace the builder's private fields.
 
-replaceChain = withChain
-replaceContext = withFrameContext
-replaceTeardown = withTeardown
-replaceServiceSelector = withServiceConfig
+import HostBootstrap.CLI (
+    pbStepFragments,
+    pbServiceRegistries,
+    pbForwardChildPlan,
+ )

@@ -88,6 +88,7 @@ import HostBootstrap.Dhall.Gen (
     coreArtifacts,
  )
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
+import HostBootstrap.Effect.Run (runWorkingDirectoryEntry, workingDirectoryEntryArguments)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Harness (
     TestSuite,
@@ -463,7 +464,7 @@ runBareHostBootstrapCLI progName = do
                                 (putStrLn "check-code: bare core binary has no project checks")
                                 []
                                 (bareAssemble progName invocationRoot)
-                                (either fail pure . bareInit progName invocationRoot)
+                                (either die pure . bareInit progName invocationRoot)
                                 bareTestInit
                         )
     either (die . T.unpack . authorityErrorMessage) pure admitted
@@ -507,14 +508,17 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
         else case runExposureRelayEntry argv of
             Just relay -> relay
             Nothing ->
-                if argv == shippedCommandEntryArguments
-                    then runShippedCommandEntry
+                if take 1 argv == workingDirectoryEntryArguments
+                    then runWorkingDirectoryEntry (drop 1 argv)
                     else
-                        if argv == lifecycleChildArguments
-                            then runForwardLifecycleChild project finalizedSpec
-                            else case classifyFrameChild argv of
-                                Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
-                                Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
+                        if argv == shippedCommandEntryArguments
+                            then runShippedCommandEntry
+                            else
+                                if argv == lifecycleChildArguments
+                                    then runForwardLifecycleChild project finalizedSpec
+                                    else case classifyFrameChild argv of
+                                        Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
+                                        Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
         coreCommands

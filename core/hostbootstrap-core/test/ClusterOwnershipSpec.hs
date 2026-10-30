@@ -16,13 +16,15 @@ gate host (§ JJ).
 -}
 module ClusterOwnershipSpec (tests) where
 
+import Control.Monad (forM_)
+import qualified Data.ByteString.Char8 as Bytes
 import Data.Either (isLeft)
-import Data.List (isPrefixOf, isSuffixOf)
+import Data.List (isPrefixOf, isSuffixOf, sortOn)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
 import HostBootstrap.Cluster.Command (ClusterDriver (KindDriver))
-import HostBootstrap.Cluster.Cordon (ResourceBudget, mkResourceBudget, renderQuantityError)
+import HostBootstrap.Cluster.Cordon (ResourceBudget, kindNodeCordonLimits, mkResourceBudget, renderQuantityError)
 import HostBootstrap.Cluster.Ownership hiding (reconcileOwnedCluster)
 import qualified HostBootstrap.Cluster.Ownership as Ownership
 import HostBootstrap.Cluster.Report (
@@ -36,8 +38,13 @@ import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl), mkAbsExe)
 import HostBootstrap.Ownership.Object (Origin (OriginAbsent, OriginPresent))
 import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedError (ProtectedInvalid),
+    ProtectedRecord (protectedRecordBytes),
     ProtectedSession,
     RecordKey,
+    compareAndSwapProtectedRecord,
+    readProtectedRecord,
     listProtectedRecords,
     openProtectedStore,
     recordKeyText,
@@ -101,10 +108,49 @@ ownedAt root = owned{ownedClusterKubeconfig = root </> "store" </> "cluster.kube
 objectTests :: [TestTree]
 objectTests =
     [ testCase "the cluster's record lives under its own declared name" $
-        fmap recordKeyText (ownedClusterRecordKey owned) @?= Right (Text.pack clusterName)
+        fmap recordKeyText (ownedClusterRecordKey owned) @?= Right ("cluster." <> Text.pack clusterName)
     , testCase "a node's record is discoverable from the cluster's own key" $
         fmap recordKeyText (ownedNodeRecordKey owned worker)
-            @?= Right (Text.pack (clusterName <> "." <> worker))
+            @?= Right ("cluster." <> Text.pack clusterName <> "...node." <> Text.pack worker)
+    , testCase "case and tuple variants keep independent cluster and node records" $
+        withSystemTempDirectory "hostbootstrap-cluster-record-names" $ \root -> do
+            let subjects =
+                    [ ("Build", "Build_worker"), ("build", "build_worker")
+                    , ("a_b", "a_b_worker"), ("aB", "aB_worker")
+                    , ("a.b", "c"), ("a", "b.c")
+                    , ("a.node.b", "c"), ("a", "b.node.c")
+                    ]
+                keyResults = Map.elems . Map.fromList . concat $
+                    [ [ ((("cluster" :: String), name, ""), ownedClusterRecordKey subject)
+                      , (("node", name, node), ownedNodeRecordKey subject node)
+                      ]
+                    | (name, node) <- subjects
+                    , let subject = owned{ownedClusterName = name}
+                    ]
+                -- Deduplicate only identical source identities, never their
+                -- encoded answers: a collision must remain visible.
+            keys <- traverse (either (assertFailure . show) pure) keyResults
+            Map.size (Map.fromList [(Text.toLower (recordKeyText key), ()) | key <- keys]) @?= length keys
+            store <- openProtectedStore root >>= either (assertFailure . show) pure
+            result <- withProtectedEntry store $ \session -> do
+                forM_ (zip keys [(1 :: Int) ..]) $ \(key, number) -> do
+                    let bytes = Bytes.pack (show number)
+                    compareAndSwapProtectedRecord session key ExpectAbsent bytes >>= either (assertFailure . show) (const (pure ()))
+                    observed <- readProtectedRecord session key
+                    fmap (fmap protectedRecordBytes) observed @?= Right (Just bytes)
+                listed <- listProtectedRecords session
+                fmap length listed @?= Right (length keys)
+                pure (Right ())
+            either (assertFailure . show) pure result
+            let nodeKey name node = ownedNodeRecordKey (owned{ownedClusterName = name}) node
+            assertBool "dotted component tuples collided" (nodeKey "a.b" "c" /= nodeKey "a" "b.c")
+            assertBool "namespace text cannot substitute for the tuple boundary" (nodeKey "a.node.b" "c" /= nodeKey "a" "b.node.c")
+    , testCase "invalid cluster and node identity scalars are typed refusals" $
+        forM_ ["bad/name", replicate 120 'A'] $ \name -> do
+            let refused = [ownedClusterRecordKey owned{ownedClusterName = name}, ownedNodeRecordKey owned name]
+            forM_ refused $ \result -> case result of
+                Left (ProtectedInvalid _) -> pure ()
+                other -> assertFailure ("expected an invalid scalar/address refusal, got " <> show other)
     , testCase "the declared nodes are the control plane first, then the workers" $
         ownedClusterNodeNames owned @?= [controlPlane, worker]
     , testCase "one generation derives one claim and another derives a different one" $ do
@@ -190,6 +236,16 @@ reconcileTests =
                     Right (ClusterAlreadyOwned _) -> pure ()
                     other -> assertFailure ("expected an already-owned cluster, got " <> show other)
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "an oversized node address publishes no partial origin records" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                let oversized = (ownedAt root){ownedClusterWorkers = [replicate 120 'A']}
+                outcome <- reconcileOwnedCluster config session key oversized
+                case outcome of
+                    Left (ClusterOwnershipStore (ProtectedInvalid _)) -> pure ()
+                    other -> assertFailure ("expected complete address preflight, got " <> show other)
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
     , testCase "a client that dies after its create is recovered without creating again" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
@@ -344,6 +400,58 @@ cordonTests =
                 assertBool ("an unclaimed cluster is refused, got " <> show outcome) (isLeft outcome)
                 FakeCluster.recordedClusterMutations root >>= (@?= [])
     ]
+        <> invalidCordonBudgetCases
+
+invalidCordonBudgetCases :: [TestTree]
+invalidCordonBudgetCases =
+    [ invalidBudgetCase "CPU overflow" 9223372037 (4 * gib)
+    , invalidBudgetCase "swap overflow" 2 4611686018427387904
+    , invalidBudgetCase "memory below the daemon minimum" 2 6291455
+    , invalidBudgetCase "CLI byte precision loss" 2 9007199254740993
+    ]
+  where
+    gib = 1024 ^ (3 :: Integer)
+    invalidBudgetCase label cpu memory =
+        testCase (label <> " is refused before any ownership query") $ do
+            budget <- either (assertFailure . renderQuantityError) pure (mkResourceBudget cpu memory (20 * gib))
+            -- The policy's own cases pin its numeric bounds and exact reasons;
+            -- this transaction must propagate that complete canonical refusal.
+            refusal <- case kindNodeCordonLimits budget of
+                Left reason -> pure (Text.pack reason)
+                Right arguments -> assertFailure ("the invalid canonical budget was rendered: " <> show arguments)
+            withFixture $ \config root ->
+                withEntry root $ \session key -> do
+                    reconcileOwnedCluster config session key (ownedAt root) >>= \case
+                        Right (ClusterCreated _) -> pure ()
+                        other -> assertFailure ("expected a real owned cluster, got " <> show other)
+                    before <- protectedImage session
+                    assertBool "the owned fixture has no protected records" (not (null before))
+                    nodesBefore <- FakeCluster.readNodes root
+                    FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+                    let noTools = config{hcToolPaths = Map.empty}
+                    -- With a valid budget the same entry reaches its first
+                    -- ownership query, whose concrete unresolved tool refuses.
+                    cordonOwnedCluster noTools session key (ownedAt root) declaredBudget
+                        >>= (@?= Left (ClusterOwnershipReport (ClusterCommandUnrun "kind not found on this host")))
+                    outcome <- cordonOwnedCluster noTools session key (ownedAt root) budget
+                    outcome @?= Left (ClusterOwnershipBudget refusal)
+                    either clusterOwnershipFaultMessage (const "unexpected success") outcome
+                        @?= ("cluster budget: " <> refusal)
+                    protectedImage session >>= (@?= before)
+                    FakeCluster.readNodes root >>= (@?= nodesBefore)
+                    FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+
+-- Keep keys, versions, and bytes, so a refused wall cannot rewrite any record.
+protectedImage :: ProtectedSession session -> IO [(Text.Text, ProtectedRecord)]
+protectedImage session = do
+    keys <- sortOn recordKeyText <$> remainingRecords session
+    traverse readOne keys
+  where
+    readOne key =
+        readProtectedRecord session key >>= \case
+            Left failure -> assertFailure (show failure)
+            Right Nothing -> assertFailure "a listed protected record disappeared from the held entry"
+            Right (Just record) -> pure (recordKeyText key, record)
 
 -- ---------------------------------------------------------------------------
 -- Releasing

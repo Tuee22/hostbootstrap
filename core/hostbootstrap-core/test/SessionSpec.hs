@@ -20,7 +20,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
-import Data.List (find, sortOn)
+import Data.List (find, nub, sort, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -39,6 +39,8 @@ import HostBootstrap.Authority (
     rootScopeAuthority,
  )
 import qualified HostBootstrap.Authority as Authority
+import HostBootstrap.Authority.Kernel (commandReservationKernel)
+import qualified HostBootstrap.Authority.Testing as AuthorityFixture
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import HostBootstrap.Config.Schema (withValidatedConfig)
@@ -56,6 +58,7 @@ import HostBootstrap.Lifecycle.Mode (
     BoundRunLease,
     LifecycleCursor,
     LifecycleError,
+    ModeError (ModeMalformedRecord),
     acquisitionJournalBrokerGeneration,
     acquisitionJournalRecordVersion,
     acquisitionJournalRootVerb,
@@ -88,6 +91,7 @@ import HostBootstrap.Lifecycle.Mode (
     withTeardownLifecycleCursor,
  )
 import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields)
+import qualified HostBootstrap.Lifecycle.Prepared as Prepared
 import HostBootstrap.Lifecycle.Session hiding (
     AcquisitionJournal,
     LifecycleCursor,
@@ -132,6 +136,7 @@ import HostBootstrap.ProjectPlan.Frame (
 import HostBootstrap.ProjectPlan.Snapshot (
     BoundPlanSnapshot,
     PlanDigestBinding,
+    SnapshotError (SnapshotVerificationError),
     withBoundPlanSnapshot,
     withFreshBoundPlanSnapshot,
  )
@@ -151,6 +156,7 @@ import HostBootstrap.Protected (
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
     protectedStoreIdentity,
     protectedStoreIdentityText,
@@ -158,6 +164,7 @@ import HostBootstrap.Protected (
     readProtectedRecord,
     recordKeyText,
     recordNameIdentity,
+    recordTupleSeparator,
     recordVersionWord,
     sessionStoreRoot,
     withProtectedEntry,
@@ -184,6 +191,8 @@ import HostBootstrap.Substrate (
     Substrate (..),
     SubstrateName (LinuxCpu),
  )
+import qualified PrepareFixture
+import qualified SourceGuard
 import System.Directory (
     copyFile,
     createDirectoryIfMissing,
@@ -370,10 +379,34 @@ tests =
         , testGroup "the project journal" journalTests
         , testGroup "fence rotation" fenceTests
         , testGroup "phase classification" classificationTests
+        , testGroup "recorded operation numeric admission" numericOperationTests
+        , testGroup "prepared record field codec" preparedRecordCodecTests
+        , testGroup "prepared fixture addresses" preparedFixtureAddressTests
         , testGroup "the prepare compare-and-swap" prepareTests
+        , testGroup "live operation admission" liveOperationAdmissionTests
         , testGroup "recovery" recoveryTests
+        , testGroup "recordless session members" recordlessMemberTests
         , testGroup "abandoned-run admission" admissionTests
+        , testGroup "canonical transaction wire" transactionWireTests
         , testGroup "transaction recovery" transactionRecoveryTests
+        , testCase "the transaction testing unit exposes only descriptor data" $ do
+            description <- SourceGuard.readPackageDescription
+            let requiredStanza name =
+                    maybe (assertFailure ("missing stanza: " <> name)) pure
+                        (SourceGuard.namedStanza name description)
+                transactionModule = "HostBootstrap.Lifecycle.Transaction"
+            testingUnit <- requiredStanza "library lifecycle-transaction-internal"
+            SourceGuard.fieldValues "visibility" testingUnit @?= ["private"]
+            SourceGuard.fieldModules "exposed-modules" testingUnit
+                @?= ["HostBootstrap.Lifecycle.Session.Testing"]
+            assertBool "the testing unit retains its hidden Transaction implementation"
+                (transactionModule `elem` SourceGuard.fieldModules "other-modules" testingUnit)
+            mainLibrary <- requiredStanza "library"
+            assertBool "the main library retains its own hidden Transaction implementation"
+                (transactionModule `elem` SourceGuard.fieldModules "other-modules" mainLibrary)
+            assertBool "the main library does not expose Transaction"
+                (transactionModule `notElem` SourceGuard.fieldModules "exposed-modules" mainLibrary)
+        , testGroup "encoded record identities" encodedRecordIdentityTests
         ]
 
 -- ---------------------------------------------------------------------------
@@ -422,7 +455,7 @@ acquisitionJournalTests =
             Right _ -> assertFailure "the reverse acquisition opener accepted a bottom admission"
     , testCase "fresh admission persists the exact Prepare binding after releasing the lock" $
         withAcquisitionPlanFixture $ \store project root lease bound binding projectPlan _projectRoot -> do
-            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> ".production")
+            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
             leaseRecord <- readRequiredRecord store leaseKey
             opened <-
                 withAcquisitionJournal root lease bound binding projectPlan $ \journal -> do
@@ -453,7 +486,7 @@ acquisitionJournalTests =
             recordKeyText key
                 @?= "acquisition."
                     <> installedProjectName project
-                    <> ".production."
+                    <> recordTupleSeparator <> "production" <> recordTupleSeparator
                     <> Text.pack (show (brokerEpochWord (rootAuthorityEpoch root)))
             evidence
                 @?= AcquisitionEvidence
@@ -639,7 +672,7 @@ acquisitionJournalTests =
     , testCase "a same-content lease CAS invalidates retained bound-lease evidence" $
         withAcquisitionPlanFixture $ \store project root lease bound binding projectPlan _projectRoot -> do
             callbacks <- newIORef 0
-            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> ".production")
+            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
             _ <- rewriteRecordBytes store leaseKey id
             assertLifecycleRefusalNoMutation store callbacks $
                 withAcquisitionJournal
@@ -657,8 +690,8 @@ acquisitionJournalTests =
         withAcquisitionPlanFixture $ \store project root lease bound binding projectPlan _projectRoot ->
             withAcquisitionPlanFixtureFor acquisitionDriftStepPlan $ \otherStore otherProject _otherRoot _otherLease _otherBound _otherBinding _otherPlan _otherProjectRoot -> do
                 callbacks <- newIORef 0
-                snapshotKey <- recordKeyFor ("snapshot." <> installedProjectName project <> ".production")
-                otherSnapshotKey <- recordKeyFor ("snapshot." <> installedProjectName otherProject <> ".production")
+                snapshotKey <- recordKeyFor ("snapshot." <> installedProjectName project <> recordTupleSeparator <> "production")
+                otherSnapshotKey <- recordKeyFor ("snapshot." <> installedProjectName otherProject <> recordTupleSeparator <> "production")
                 otherSnapshot <- readRequiredRecord otherStore otherSnapshotKey
                 _ <- rewriteRecordBytes store snapshotKey (const (protectedRecordBytes otherSnapshot))
                 assertLifecycleRefusalNoMutation store callbacks $
@@ -673,9 +706,9 @@ acquisitionJournalTests =
                 assertBool
                     "snapshot drift opened an acquisition record"
                     (Map.null (Map.filterWithKey (\key _ -> "acquisition." `Text.isPrefixOf` key) image))
-    , testCase "recovered current-version evidence still rejects noncanonical live lease bytes" $
-        withAcquisitionPlanFixture $ \store project _root _lease _bound _binding _projectPlan projectRoot -> do
-            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> ".production")
+    , testCase "recovery refuses a noncanonical lease epoch before acquisition" $
+        withAcquisitionPlanFixture $ \store project _root _lease _bound _binding _projectPlan _projectRoot -> do
+            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
             leaseRecord <- readRequiredRecord store leaseKey
             let fields = decodeFields (protectedRecordBytes leaseRecord)
             _ <-
@@ -684,14 +717,22 @@ acquisitionJournalTests =
                     leaseKey
                     (replaceField 1 ("0" <> fields !! 1))
             reopened <- reopenStore store
-            callbacks <- newIORef 0
-            assertLifecycleRefusalNoMutation reopened callbacks $
-                attemptRecoveredAcquisition
+            before <- protectedImage reopened
+            terminalCallbacks <- newIORef (0 :: Int)
+            openCallbacks <- newIORef (0 :: Int)
+            -- Strict decoding refuses before current-version recovered evidence
+            -- exists; retained-evidence and CAS controls above hold the journal.
+            refused <-
+                withBoundPlanSnapshot
                     reopened
                     project
-                    projectRoot
-                    (countingCallback callbacks)
+                    (countingCallback terminalCallbacks)
+                    (\_ _ _ _ _ _ _ -> countingCallback openCallbacks ())
+            refused @?= Left (SnapshotVerificationError (ModeMalformedRecord (recordKeyText leaseKey)))
+            readIORef terminalCallbacks >>= (@?= 0)
+            readIORef openCallbacks >>= (@?= 0)
             image <- protectedImage reopened
+            image @?= before
             assertBool
                 "the noncanonical lease opened an acquisition record"
                 (Map.null (Map.filterWithKey (\key _ -> "acquisition." `Text.isPrefixOf` key) image))
@@ -708,7 +749,7 @@ acquisitionJournalTests =
                         (pure . journalEvidence)
             callbacks <- newIORef 0
             (key, canonicalRecord) <- soleRecordWithPrefix store "acquisition."
-            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> ".production")
+            leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
             leaseRecord <- readRequiredRecord store leaseKey
             let canonical = protectedRecordBytes canonicalRecord
                 differentPlan = "different-plan-digest"
@@ -881,9 +922,67 @@ exerciseReverseLifecycleCursor verb =
         recovered @?= ("teardown", teardownEvidence)
         afterTeardownResume @?= beforeTeardownResume
 
+foreignProjectReservationCase :: IO ()
+foreignProjectReservationCase =
+    Fixture.withFixtureInstalledProject $ \verifiedProject -> do
+        let verifiedName = installedProjectName verifiedProject
+            foreignName = if verifiedName == "foreign-installed-project" then "other-installed-project" else "foreign-installed-project"
+        exercise <-
+            expect $
+                AuthorityFixture.withInstalledProjectKernel foreignName $ \foreignProject ->
+                    withAcquisitionPlanFixtureForConfigUsing
+                        (\use -> use foreignProject)
+                        cursorStepPlan
+                        (\name rootPath -> projectConfigForFrame name rootPath "host-orchestrator-0")
+                        Authority.ProjectUp
+                        $ \store project root lease bound binding projectPlan projectRoot -> do
+                            installedProjectName project @?= foreignName
+                            assertBool "the two raw installed project names differ" (verifiedName /= foreignName)
+                            let supplied =
+                                    Fixture.context $
+                                        projectConfigForFrame
+                                            foreignName
+                                            (Text.pack (canonicalProjectRootPath projectRoot))
+                                            "host-orchestrator-0"
+                            frameAction <-
+                                expect $
+                                    withCurrentFrame projectPlan supplied $ \_current frame _validated -> do
+                                        opened <- withAcquisitionJournal root lease bound binding projectPlan $ \journal -> do
+                                            cursored <- withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
+                                                executed <- withExecuteLifecycleCursor prepareCursor $ \cursor -> do
+                                                    let reservation =
+                                                            commandReservationKernel
+                                                                root
+                                                                (acquisitionJournalSnapshotDigest journal)
+                                                                (lifecycleCursorPhase cursor)
+                                                                (lifecycleCursorFrame cursor)
+                                                        invocations = Map.filterWithKey (\key _ -> "invocation." `Text.isPrefixOf` key)
+                                                    before <- protectedImage store
+                                                    refused <- reserveCurrentLifecycleCommandKernel verifiedProject journal cursor reservation
+                                                    case refused of
+                                                        Left (Authority.AuthorityStoreNotOurs expected observed) -> do
+                                                            expected @?= verifiedName
+                                                            observed @?= foreignName
+                                                        Left failure -> assertFailure ("the reservation bridge refused before the exact project comparison: " <> show failure)
+                                                        Right _ -> assertFailure "the reservation bridge adopted the journal's foreign project identity"
+                                                    after <- protectedImage store
+                                                    after @?= before
+                                                    invocations after @?= invocations before
+                                                    admitted <- expect =<< reserveCurrentLifecycleCommandKernel project journal cursor reservation
+                                                    Authority.commandAuthorityFrame admitted @?= lifecycleCursorFrame cursor
+                                                    lifecyclePhaseName (Authority.commandAuthorityPhase admitted) @?= "execute"
+                                                    committed <- protectedImage store
+                                                    Map.size (invocations committed) @?= Map.size (invocations before) + 1
+                                                expect executed
+                                            expect cursored
+                                        expect opened
+                            frameAction
+        exercise
+
 lifecycleCursorTests :: [TestTree]
 lifecycleCursorTests =
-    [ testCase "fresh admission atomically hands the acquisition seed to one exact frame" $
+    [ testCase "the reservation bridge refuses a foreign journal against the independently verified executable identity" foreignProjectReservationCase
+    , testCase "fresh admission atomically hands the acquisition seed to one exact frame" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             (sourceKey, sourceBefore) <- soleRecordWithPrefix store "acquisition."
             opened <-
@@ -1747,10 +1846,35 @@ withAcquisitionPlanFixtureForConfig ::
       IO result
     ) ->
     IO result
-withAcquisitionPlanFixtureForConfig stepPlan configFor verb use =
+withAcquisitionPlanFixtureForConfig =
+    withAcquisitionPlanFixtureForConfigUsing Fixture.withFixtureInstalledProject
+
+withAcquisitionPlanFixtureForConfigUsing ::
+    ((forall projectId. InstalledProjectIdentity projectId -> IO result) -> IO result) ->
+    StepPlan ->
+    (forall scope. Text -> Text -> Fixture.ProjectConfig scope) ->
+    Authority.ProjectVerb verb ->
+    ( forall projectId brokerGeneration specDigest planDigest planId rootId configId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      RootInvocationAuthority (Production projectId) brokerGeneration verb ->
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      BoundPlanSnapshot (Production projectId) specDigest planDigest planId ->
+      PlanDigestBinding (Production projectId) specDigest planDigest planId ->
+      ProjectPlan
+        (Production projectId)
+        specDigest
+        planId
+        configId
+        Fixture.ProjectConfig ->
+      CanonicalProjectRoot (Production projectId) rootId ->
+      IO result
+    ) ->
+    IO result
+withAcquisitionPlanFixtureForConfigUsing openIdentity stepPlan configFor verb use =
     withSystemTempDirectory "hostbootstrap-acquisition-journal" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= expect
-        Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
+        openIdentity $ \(project :: InstalledProjectIdentity projectId) -> do
             rooted <-
                 withCanonicalProjectRoot
                     (directory </> "fixture.dhall")
@@ -2080,6 +2204,86 @@ countingCallback callbacks _ = modifyIORef' callbacks (+ 1)
 -- ---------------------------------------------------------------------------
 -- Journal and sessions
 
+encodedRecordIdentityTests :: [TestTree]
+encodedRecordIdentityTests =
+    [ testCase "session and operation tuple fields recover exact independent identities" $
+        withStore $ \store -> do
+            let identities = [("a:b", "c"), ("a", "b:c"), ("Session_A", "Op_A"), ("session_a", "op_a")]
+            mapM_
+                ( \(sid, operation) -> do
+                    runEntry store $ \session -> withEpoch session $ \epoch -> do
+                        permit <- expect' =<< openProjectJournal session plan
+                        (opened, next) <- expect' =<< openOperationSession session epoch plan sid permit
+                        _ <- expect' =<< registerOperationIntent session opened operation NoHistory next
+                        pure (Right ())
+                    _ <- expect =<< inEntry store interpretHere
+                    pure ()
+                )
+                identities
+            reopened <- reopenStore store
+            manifest <- expect =<< inEntry reopened (\session -> verifySessionManifest session plan)
+            [ (sessionIdText (manifestSessionId member), manifestSessionOperations member)
+              | member <- manifestSessions manifest
+              ] @?= sortOn fst [(sid, [operation]) | (sid, operation) <- identities]
+            manifestOperationCount manifest @?= length identities
+            image <- protectedImage reopened
+            let operations = Map.keys (Map.filterWithKey (\key _ -> "op." `Text.isPrefixOf` key) image)
+            length operations @?= length identities
+            expected <- traverse (\(sid, operation) -> expect (testOperationKey sid operation)) identities
+            sortOn id operations @?= sortOn id (map recordKeyText expected)
+    , testCase "session enumeration refuses a noncanonical identity instead of adopting its inverse" $
+        withStore $ \store -> do
+            runEntry store $ \session -> do
+                _ <- expect' =<< openProjectJournal session plan
+                pure (Right ())
+            encoded <- expect (mkRecordName plan)
+            key <- recordKeyFor ("session." <> encoded <> recordTupleSeparator <> "_")
+            _ <- expect =<< withProtectedEntry store (\session -> compareAndSwapProtectedRecord session key ExpectAbsent "not adopted")
+            before <- protectedImage store
+            refused <- inEntry store (\session -> (() <$) <$> verifySessionManifest session plan)
+            refused @?= Left (SessionRecordCorrupt "record identity")
+            protectedImage store >>= (@?= before)
+    , testCase "invalid and oversized session addresses refuse before durable effects" $
+        withStore $ \store -> do
+            runEntry store $ \session -> do
+                _ <- expect' =<< openProjectJournal session plan
+                pure (Right ())
+            before <- protectedImage store
+            mapM_
+                ( \sid -> do
+                    refused <- inEntry store $ \session -> withEpoch session $ \epoch -> do
+                        permit <- expect' =<< openProjectJournal session plan
+                        result <- openOperationSession session epoch plan sid permit
+                        pure (() <$ result)
+                    assertInvalidAddress refused
+                    protectedImage store >>= (@?= before)
+                )
+                ["session..bad", Text.replicate 100 "A"]
+            mapM_
+                ( \oversized -> do
+                    refused <- inEntry store (\session -> (() <$) <$> verifySessionManifest session oversized)
+                    assertInvalidAddress refused
+                    protectedImage store >>= (@?= before)
+                )
+                ["plan..bad", Text.replicate 100 "A"]
+    , testCase "invalid and oversized operation addresses leave the open session unchanged" $
+        withStore $ \store -> do
+            SomeOpenSession opened permit <- openSessionFixture store
+            before <- protectedImage store
+            mapM_
+                ( \operation -> do
+                    refused <- inEntry store $ \session ->
+                        (() <$) <$> registerOperationIntent session opened operation NoHistory permit
+                    assertInvalidAddress refused
+                    protectedImage store >>= (@?= before)
+                )
+                ["vendor:operation..bad", Text.replicate 100 "A"]
+    ]
+  where
+    assertInvalidAddress :: Either SessionError () -> IO ()
+    assertInvalidAddress (Left (SessionStoreFailure (ProtectedInvalid _))) = pure ()
+    assertInvalidAddress other = assertFailure ("expected an invalid encoded address refusal, got " <> show other)
+
 journalTests :: [TestTree]
 journalTests =
     [ testCase "rooted durable coordinates remain bounded and distinct at maximum input size" $ do
@@ -2112,16 +2316,94 @@ journalTests =
                     (projectPermitVersion next > projectPermitVersion permit)
                 pure (Right ())
     , testCase "a retained older permit cannot advance the journal a second time" $
-        withStore $ \store -> runEntry store $ \s -> do
-            permit <- expect' =<< openProjectJournal s plan
-            withEpoch s $ \epoch -> do
-                (_, _) <- expect' =<< openOperationSession s epoch plan "session-a" permit
-                -- The same (now stale) permit is presented again.
-                again <- openOperationSession s epoch plan "session-b" permit
-                case again of
-                    Left (SessionOlderStillOpen sid) -> sessionIdText sid @?= "session-a"
-                    other -> assertFailure ("expected an older-open refusal, got " <> show other)
-                pure (Right ())
+        withStore $ \store -> do
+            (old, live) <- expect =<< inEntry store (\s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch -> do
+                    (sess, afterOpen) <- expect' =<< openOperationSession s epoch plan "session-a" permit
+                    afterClose <- expect' =<< closeOperationSession s sess afterOpen
+                    pure (Right (permit, afterClose)))
+            manifest <- expect =<< inEntry store (\s -> verifySessionManifest s plan)
+            [(sessionIdText (manifestSessionId member), manifestSessionIsOpen member) | member <- manifestSessions manifest]
+                @?= [("session-a", False)]
+            before <- protectedImage store
+            again <- inEntry store $ \s -> withEpoch s $ \epoch ->
+                (() <$) <$> openOperationSession s epoch plan "session-b" old
+            again @?= Left (SessionStaleProjectPermit (projectPermitVersion old))
+            protectedImage store >>= (@?= before)
+            -- With no older Open session, the actual successor still admits work.
+            runEntry store $ \s -> withEpoch s $ \epoch ->
+                (() <$) <$> openOperationSession s epoch plan "session-b" live
+    , testCase "a session open wins against a close presented the same permit" $
+        withStore $ \store -> do
+            (old, successor) <- expect =<< inEntry store (\s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch -> do
+                    (_, next) <- expect' =<< openOperationSession s epoch plan "session-a" permit
+                    pure (Right (permit, next)))
+            assertBool "session opening advances the shared version" (projectPermitVersion successor > projectPermitVersion old)
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> beginClosingProject s plan 7 old
+            refused @?= Left (SessionStaleProjectPermit (projectPermitVersion old))
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= Right OpenProject)
+            observed <- expect =<< inEntry store (\s -> openProjectJournal s plan)
+            projectPermitVersion observed @?= projectPermitVersion successor
+            manifest <- expect =<< inEntry store (\s -> verifySessionManifest s plan)
+            [(sessionIdText (manifestSessionId member), manifestSessionIsOpen member) | member <- manifestSessions manifest]
+                @?= [("session-a", True)]
+            protectedImage store >>= (@?= before)
+    , testCase "a close wins against a session open presented the same permit" $
+        withStore $ \store -> do
+            old <- expect =<< inEntry store (\s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                _ <- expect' =<< beginClosingProject s plan 7 permit
+                pure (Right permit))
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> withEpoch s $ \epoch ->
+                (() <$) <$> openOperationSession s epoch plan "session-a" old
+            refused @?= Left (SessionProjectClosing plan)
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= Right (ClosingProject 7))
+            assertBool "the losing opener created no session record" (all (not . Text.isPrefixOf "session.") (Map.keys before))
+            protectedImage store >>= (@?= before)
+    , closedSessionRefusalCase "a closed session cannot be reopened with the live permit" $ \s sess permit ->
+        withEpoch s $ \epoch ->
+            (() <$) <$> openOperationSession s epoch plan (sessionIdText (operationSessionId sess)) permit
+    , closedSessionRefusalCase "a closed session cannot register an operation intent" $ \s sess permit ->
+        (() <$) <$> registerOperationIntent s sess "op-after-close" NoHistory permit
+    , closedSessionRefusalCase "a closed session cannot be closed a second time" $ \s sess permit ->
+        (() <$) <$> closeOperationSession s sess permit
+    , testCase "beginning project close refuses a zero epoch" $
+        withStore $ \store -> do
+            SomeProjectPermit permit <- openProjectFixture store
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> beginClosingProject s plan 0 permit
+            refused @?= Left (SessionRecordCorrupt "closing epoch must be positive")
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= Right OpenProject)
+            protectedImage store >>= (@?= before)
+    , testCase "beginning project close refuses a missing project" $
+        withStore $ \store -> do
+            SomeProjectPermit permit <- openProjectFixture store
+            let missingPlan = "missing-project-plan"
+            -- A missing read initializes only the coordinator; baseline afterwards.
+            inEntry store (\s -> readProjectJournalState s missingPlan)
+                >>= (@?= Left (SessionProjectMissing missingPlan))
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> beginClosingProject s missingPlan 7 permit
+            refused @?= Left (SessionProjectMissing missingPlan)
+            protectedImage store >>= (@?= before)
+    , testCase "an Open project cannot be recorded Closed with another plan's Closing permit" $
+        withStore $ \store -> do
+            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
+            let otherPlan = "another-project-plan"
+            closing <- expect =<< inEntry store (\s -> do
+                permit <- expect' =<< openProjectJournal s otherPlan
+                beginClosingProject s otherPlan 7 permit)
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> recordClosedProject s plan 7 closing
+            refused @?= Left (SessionRecordCorrupt "project is not closing")
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= Right OpenProject)
+            inEntry store (\s -> readProjectJournalState s otherPlan) >>= (@?= Right (ClosingProject 7))
+            protectedImage store >>= (@?= before)
     , testCase "an older Open session blocks a new one even with no operations" $
         withStore $ \store -> runEntry store $ \s -> do
             permit <- expect' =<< openProjectJournal s plan
@@ -2152,18 +2434,258 @@ journalTests =
                         phase @?= "IntentRecorded"
                     other -> assertFailure ("expected a duplicate-intent refusal, got " <> show other)
                 pure (Right ())
-    , testCase "reacquisition is refused from a phase that is not Released" $
-        withStore $ \store -> runEntry store $ \s ->
-            withOpenSession s $ \_ sess permit -> do
-                afterIntent <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
-                again <- registerOperationIntent s sess "op-1" ReleasedReacquisition afterIntent
-                case again of
-                    Left (SessionIntentOriginRefused opKey phase) -> do
-                        opKey @?= "op-1"
-                        phase @?= "IntentRecorded"
-                    other -> assertFailure ("expected an origin refusal, got " <> show other)
-                pure (Right ())
+    , testGroup "observed Released origins" releasedIntentOriginTests
+    , testGroup "canonical Closing epochs" closingEpochRecordTests
     ]
+
+releasedIntentOriginTests :: [TestTree]
+releasedIntentOriginTests =
+    [ testCase "a Released observation registers exactly once against its live successor" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- terminalSessionFixture store "TeardownOutcomeUnknown" "Released"
+            (_, original, released) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload released @?= encodeFields ["Released", sessionIdText (operationSessionId sess), "1", "1"]
+            beforeObservation <- protectedImage store
+            origin <- expect =<< inEntry store (\s -> readReleasedIntentOrigin s sess "op-1")
+            protectedImage store >>= (@?= beforeObservation)
+            successor <- expect =<< inEntry store (\s -> registerOperationIntent s sess "op-1" origin permit)
+            assertBool "registration returns a newer journal permit" (projectPermitVersion successor > projectPermitVersion permit)
+            (_, updated, intent) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload intent @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            assertBool "registration replaces the observed physical record" (protectedRecordVersion updated /= protectedRecordVersion original)
+            manifest <- expect =<< inEntry store (\s -> verifySessionManifest s plan)
+            [ (sessionIdText (manifestSessionId member), manifestSessionIsOpen member, manifestSessionOperations member)
+              | member <- manifestSessions manifest
+              ] @?= [("session-a", True, ["op-1"])]
+            manifestOperationCount manifest @?= 1
+            live <- expect =<< inEntry store (\s -> openProjectJournal s plan)
+            projectPermitVersion live @?= projectPermitVersion successor
+            -- Reusing the ordinary value reaches the phase check on the live permit.
+            assertIntentOriginRefusal store sess "op-1" origin successor "IntentRecorded"
+    , testCase "reacquisition is refused from a phase that is not Released" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- openSessionFixture store
+            _ <- expect =<< inEntry store (\s -> registerOperationIntent s sess "op-1" NoHistory permit)
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> readReleasedIntentOrigin s sess "op-1"
+            refused @?= Left (SessionIntentOriginRefused "op-1" "IntentRecorded")
+            protectedImage store >>= (@?= before)
+    , testCase "an AdoptionReleased record cannot mint a Released origin" $
+        withStore $ \store -> do
+            SomeOpenSession sess _ <- terminalSessionFixture store "AdoptionTeardownOutcomeUnknown" "AdoptionReleased"
+            (_, _, adopted) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload adopted @?= encodeFields ["AdoptionReleased", sessionIdText (operationSessionId sess), "1", "1"]
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> readReleasedIntentOrigin s sess "op-1"
+            refused @?= Left (SessionIntentOriginRefused "op-1" "AdoptionReleased")
+            protectedImage store >>= (@?= before)
+    , testCase "a same-content operation rewrite invalidates a Released origin" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- terminalSessionFixture store "TeardownOutcomeUnknown" "Released"
+            origin <- expect =<< inEntry store (\s -> readReleasedIntentOrigin s sess "op-1")
+            (key, original, _) <- sessionOperationRecord store sess "op-1"
+            version <- rewriteRecordBytes store key id
+            rewritten <- readRequiredRecord store key
+            protectedRecordBytes rewritten @?= protectedRecordBytes original
+            recordVersionWord (protectedRecordVersion rewritten) @?= version
+            assertBool "the same-content CAS changes only the physical version" (version > recordVersionWord (protectedRecordVersion original))
+            assertIntentOriginRefusal store sess "op-1" origin permit "a changed record version"
+            -- A fresh observation of that new version is accepted by the same live permit.
+            fresh <- expect =<< inEntry store (\s -> readReleasedIntentOrigin s sess "op-1")
+            _ <- expect =<< inEntry store (\s -> registerOperationIntent s sess "op-1" fresh permit)
+            (_, _, intent) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload intent @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+    , testCase "a Released origin is refused after its record disappears" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- terminalSessionFixture store "TeardownOutcomeUnknown" "Released"
+            origin <- expect =<< inEntry store (\s -> readReleasedIntentOrigin s sess "op-1")
+            (key, original, _) <- sessionOperationRecord store sess "op-1"
+            _ <- expect =<< withProtectedEntry store (\s -> compareAndDeleteProtectedRecord s key (ExpectVersion (protectedRecordVersion original)))
+            missing <- expect =<< withProtectedEntry store (\s -> readProtectedRecord s key)
+            fmap protectedRecordBytes missing @?= Nothing
+            assertIntentOriginRefusal store sess "op-1" origin permit "absent"
+    , testCase "a Released origin cannot name another Released operation" $
+        withStore $ \store -> do
+            (SomeOpenSession sess permit, origin) <- expect =<< inEntry store (\s ->
+                withOpenSession s $ \epoch opened afterOpen -> do
+                    fence <- expect =<< establishInitialFence s plan 1
+                    afterOne <- expect =<< recordTerminalOperation s epoch opened fence "op-1" "TeardownOutcomeUnknown" "Released" afterOpen
+                    observed <- expect =<< readReleasedIntentOrigin s opened "op-1"
+                    afterTwo <- expect =<< recordTerminalOperation s epoch opened fence "op-2" "TeardownOutcomeUnknown" "Released" afterOne
+                    pure (Right (SomeOpenSession opened afterTwo, observed)))
+            (firstKey, first, firstTarget) <- sessionOperationRecord store sess "op-1"
+            (secondKey, second, secondTarget) <- sessionOperationRecord store sess "op-2"
+            assertBool "the actual operation keys differ" (firstKey /= secondKey)
+            protectedRecordVersion first @?= protectedRecordVersion second
+            let released = encodeFields ["Released", sessionIdText (operationSessionId sess), "1", "1"]
+            transactionRecordPayload firstTarget @?= released
+            transactionRecordPayload secondTarget @?= released
+            live <- expect =<< inEntry store (\s -> openProjectJournal s plan)
+            projectPermitVersion live @?= projectPermitVersion permit
+            assertIntentOriginRefusal store sess "op-2" origin permit "another operation key"
+    , testCase "a Released origin cannot cross stores with matching key and version" $
+        withStore $ \firstStore -> withStore $ \secondStore -> do
+            SomeOpenSession firstSession _ <- terminalSessionFixture firstStore "TeardownOutcomeUnknown" "Released"
+            origin <- expect =<< inEntry firstStore (\s -> readReleasedIntentOrigin s firstSession "op-1")
+            SomeOpenSession secondSession permit <- terminalSessionFixture secondStore "TeardownOutcomeUnknown" "Released"
+            (firstKey, first, _) <- sessionOperationRecord firstStore firstSession "op-1"
+            (secondKey, second, _) <- sessionOperationRecord secondStore secondSession "op-1"
+            firstKey @?= secondKey
+            protectedRecordVersion first @?= protectedRecordVersion second
+            protectedRecordBytes first @?= protectedRecordBytes second
+            assertBool "the two protected stores have different identities" (protectedStoreIdentity firstStore /= protectedStoreIdentity secondStore)
+            firstImage <- protectedImage firstStore
+            assertIntentOriginRefusal secondStore secondSession "op-1" origin permit "another protected store"
+            protectedImage firstStore >>= (@?= firstImage)
+    , testCase "a Released origin is refused when its recorded phase changes" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- terminalSessionFixture store "TeardownOutcomeUnknown" "Released"
+            origin <- expect =<< inEntry store (\s -> readReleasedIntentOrigin s sess "op-1")
+            (key, original, target) <- sessionOperationRecord store sess "op-1"
+            stamp <- maybe (assertFailure "the released operation has no transaction stamp") pure (transactionRecordStamp target)
+            let changedPayload = encodeFields ["AdoptionReleased", sessionIdText (operationSessionId sess), "1", "1"]
+            version <- rewriteRecordBytes store key (const (stampTarget stamp changedPayload))
+            assertBool "the phase mutation also advances the physical version" (version > recordVersionWord (protectedRecordVersion original))
+            (_, changed, readable) <- sessionOperationRecord store sess "op-1"
+            recordVersionWord (protectedRecordVersion changed) @?= version
+            transactionRecordStamp readable @?= Just stamp
+            transactionRecordPayload readable @?= changedPayload
+            assertIntentOriginRefusal store sess "op-1" origin permit "AdoptionReleased"
+    ]
+
+-- These are genuine journal transitions; no provider/backend release is claimed.
+terminalSessionFixture :: ProtectedStore -> Text -> Text -> IO SomeOpenSession
+terminalSessionFixture store unknownPhase observedPhase =
+    expect =<< inEntry store (\session ->
+        withOpenSession session $ \epoch sess permit -> do
+            fence <- expect =<< establishInitialFence session plan 1
+            next <- expect =<< recordTerminalOperation session epoch sess fence "op-1" unknownPhase observedPhase permit
+            pure (Right (SomeOpenSession sess next)))
+
+recordTerminalOperation ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    OperationSession scope planId ->
+    FenceEpoch scope planId ->
+    Text ->
+    Text ->
+    Text ->
+    ProjectPermit scope planId ->
+    IO (Either SessionError (ProjectPermit scope planId))
+recordTerminalOperation session epoch sess fence operation unknownPhase observedPhase permit = do
+    registered <- expect =<< registerOperationIntent session sess operation NoHistory permit
+    withPreparedGate session sess epoch fence operation unknownPhase registered $ \gate prepared -> do
+        advance <- expect =<< acknowledgeOutcome session sess gate observedPhase () prepared
+        withOperationAdvance advance (\() next -> pure (Right next))
+
+sessionOperationRecord ::
+    ProtectedStore ->
+    OperationSession scope planId ->
+    Text ->
+    IO (RecordKey, ProtectedRecord, TransactionRecord)
+sessionOperationRecord store sess operation = do
+    key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) operation)
+    raw <- readRequiredRecord store key
+    observed <- expect =<< inEntry store (\session -> either (Left . SessionRecordCorrupt . transactionErrorMessage) Right <$> readTransactionRecord session key)
+    target <- maybe (assertFailure "the fixture operation target is missing") pure observed
+    transactionRecordVersion target @?= protectedRecordVersion raw
+    stamp <- maybe (assertFailure "the fixture operation target is unstamped") pure (transactionRecordStamp target)
+    assertBool "the operation's actual transaction stamp is positive" (stamp > 0)
+    protectedRecordBytes raw @?= stampTarget stamp (transactionRecordPayload target)
+    pure (key, raw, target)
+
+assertIntentOriginRefusal ::
+    ProtectedStore ->
+    OperationSession scope planId ->
+    Text ->
+    IntentOrigin ->
+    ProjectPermit scope planId ->
+    Text ->
+    IO ()
+assertIntentOriginRefusal store sess operation origin permit detail = do
+    live <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+    projectPermitVersion live @?= projectPermitVersion permit
+    before <- protectedImage store
+    refused <- inEntry store $ \session -> (() <$) <$> registerOperationIntent session sess operation origin permit
+    refused @?= Left (SessionIntentOriginRefused operation detail)
+    protectedImage store >>= (@?= before)
+
+closingEpochRecordTests :: [TestTree]
+closingEpochRecordTests =
+    [ closingEpochRecordCase label raw (Left (SessionRecordCorrupt "project journal"))
+    | (label, raw) <-
+        [ ("refuses a negative decimal", "-1")
+        , ("refuses an explicit positive sign", "+7")
+        , ("refuses hexadecimal", "0x7")
+        , ("refuses leading whitespace", " 7")
+        , ("refuses trailing whitespace", "7 ")
+        , ("refuses parenthesized decimal", "(7)")
+        , ("refuses a leading zero", "07")
+        , ("refuses Word64 overflow", "18446744073709551623")
+        , ("refuses an overlong decimal", "100000000000000000000")
+        ]
+    ]
+        <> [ closingEpochRecordCase "refuses zero as a Closing epoch" "0" (Left (SessionRecordCorrupt "project journal"))
+           , closingEpochRecordCase "accepts canonical seven" "7" (Right (ClosingProject 7))
+           , closingEpochRecordCase "accepts maximum Word64" "18446744073709551615" (Right (ClosingProject 18446744073709551615))
+           ]
+
+closingEpochRecordCase :: String -> Text -> Either SessionError ProjectJournalState -> TestTree
+closingEpochRecordCase label raw expected =
+    testCase label $
+        withStore $ \store -> do
+            SomeClosingPermit _ <- closingProjectFixture store
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= Right (ClosingProject 7))
+            (key, original) <- soleRecordWithPrefix store "project."
+            encodedPlan <- expect (mkRecordName plan)
+            recordKeyText key @?= "project." <> encodedPlan
+            originalTarget <- expect =<< inEntry store readProjectTarget
+            target <- maybe (assertFailure "the actual Closing target is missing") pure originalTarget
+            transactionRecordPayload target @?= encodeFields ["closing", "7"]
+            transactionRecordVersion target @?= protectedRecordVersion original
+            stamp <- maybe (assertFailure "the actual Closing target has no transaction stamp") pure (transactionRecordStamp target)
+            assertBool "the real transaction stamp is positive" (stamp > 0)
+            let payload = encodeFields ["closing", raw]
+                seededBytes = stampTarget stamp payload
+            seededVersion <- rewriteRecordBytes store key (const seededBytes)
+            assertBool "the fixture CAS advances the target's physical version" (seededVersion > recordVersionWord (protectedRecordVersion original))
+            seeded <- readRequiredRecord store key
+            protectedRecordBytes seeded @?= seededBytes
+            recordVersionWord (protectedRecordVersion seeded) @?= seededVersion
+            decodedSeed <- expect =<< inEntry store readProjectTarget
+            readable <- maybe (assertFailure "the seeded Closing target is missing") pure decodedSeed
+            transactionRecordStamp readable @?= Just stamp
+            transactionRecordPayload readable @?= payload
+            recordVersionWord (transactionRecordVersion readable) @?= seededVersion
+            before <- protectedImage store
+            inEntry store (\s -> readProjectJournalState s plan) >>= (@?= expected)
+            after <- readRequiredRecord store key
+            protectedRecordBytes after @?= seededBytes
+            recordVersionWord (protectedRecordVersion after) @?= seededVersion
+            protectedImage store >>= (@?= before)
+
+closedSessionRefusalCase ::
+    String ->
+    ( forall session scope planId.
+      ProtectedSession session ->
+      OperationSession scope planId ->
+      ProjectPermit scope planId ->
+      IO (Either SessionError ())
+    ) ->
+    TestTree
+closedSessionRefusalCase name action =
+    testCase name $
+        withStore $ \store -> do
+            (sess, live) <- expect =<< inEntry store (\s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                withEpoch s $ \epoch -> do
+                    (opened, afterOpen) <- expect' =<< openOperationSession s epoch plan "session-a" permit
+                    afterClose <- expect' =<< closeOperationSession s opened afterOpen
+                    pure (Right (opened, afterClose)))
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> action s sess live
+            refused @?= Left (SessionNotOpen (operationSessionId sess))
+            protectedImage store >>= (@?= before)
 
 -- ---------------------------------------------------------------------------
 -- Fences
@@ -2177,24 +2699,59 @@ fenceTests =
             observed <- expect' =<< currentFence s plan
             fenceEpochWord observed @?= 1
             pure (Right ())
-    , testCase "re-establishing resumes the persisted epoch, not the caller's" $
+    , testCase "re-establishing an observed fence keeps its persisted epoch" $
         withStore $ \store -> do
-            _ <- inEntry store (\s -> establishInitialFence s plan 1)
-            -- A later invocation proposes a different epoch; the durable
-            -- proposal wins, so an interrupted run converges on one epoch.
+            first <- expect =<< inEntry store (\s -> establishInitialFence s plan 1)
+            fenceEpochWord first @?= 1
+            before <- protectedImage store
+            -- The settled durable epoch wins over a later caller's proposal.
             resumed <- inEntry store (\s -> establishInitialFence s plan 99)
             fence <- expect resumed
             fenceEpochWord fence @?= 1
-    , testCase "a resumed establishment survives reopening the store" $
+            protectedImage store >>= (@?= before)
+    , testCase "an observed establishment survives reopening the store" $
         withStore $ \store -> do
-            _ <- inEntry store (\s -> establishInitialFence s plan 4)
-            reopened <- openProtectedStore (protectedStoreRoot store)
-            case reopened of
-                Left failure -> assertFailure (show failure)
-                Right store' -> do
-                    again <- inEntry store' (\s -> establishInitialFence s plan 77)
-                    fence <- expect again
-                    fenceEpochWord fence @?= 4
+            first <- expect =<< inEntry store (\s -> establishInitialFence s plan 4)
+            fenceEpochWord first @?= 4
+            before <- protectedImage store
+            reopened <- reopenStore store
+            fence <- expect =<< inEntry reopened (\s -> establishInitialFence s plan 77)
+            fenceEpochWord fence @?= 4
+            protectedImage reopened >>= (@?= before)
+    , resumeFenceCase "FenceIntentRecorded"
+    , resumeFenceCase "FenceOutcomeUnknown"
+    , unsettledCurrentFenceCase "FenceIntentRecorded" FenceIntentRecorded
+    , unsettledCurrentFenceCase "FenceOutcomeUnknown" FenceOutcomeUnknown
+    , testCase "currentFence refuses an absent fence" $
+        withStore $ \store -> do
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> (() <$) <$> currentFence s plan
+            refused @?= Left (SessionFenceMissing plan)
+            protectedImage store >>= (@?= before)
+    , testCase "rotation refuses after its observed fence record disappears" $
+        withStore $ \store -> do
+            fence <- expect =<< inEntry store (\s -> establishInitialFence s plan 1)
+            fenceEpochWord fence @?= 1
+            (key, record) <- soleRecordWithPrefix store "fence."
+            _ <- expect =<< withProtectedEntry store (\s -> compareAndDeleteProtectedRecord s key (ExpectVersion (protectedRecordVersion record)))
+            missing <- expect =<< withProtectedEntry store (\s -> readProtectedRecord s key)
+            fmap protectedRecordBytes missing @?= Nothing
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s plan fence)
+            refused @?= Left (SessionFenceMissing plan)
+            protectedImage store >>= (@?= before)
+    , testCase "rotation refuses the maximum observed fence epoch without wrapping" $
+        withStore $ \store -> do
+            (key, original) <- seedFenceRecord store "FenceObserved" "18446744073709551615"
+            fence <- expect =<< inEntry store (\s -> currentFence s plan)
+            fenceEpochWord fence @?= 18446744073709551615
+            before <- protectedImage store
+            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s plan fence)
+            refused @?= Left (SessionFenceInvalid "a fence epoch cannot rotate past its maximum")
+            after <- readRequiredRecord store key
+            protectedRecordBytes after @?= protectedRecordBytes original
+            protectedRecordVersion after @?= protectedRecordVersion original
+            protectedImage store >>= (@?= before)
     , testCase "rotation is strictly increasing" $
         withStore $ \store -> runEntry store $ \s -> do
             first <- expect' =<< establishInitialFence s plan 1
@@ -2259,35 +2816,276 @@ fenceTests =
                 pure (Right ())
     ]
 
+-- Fence rows are plain codec records, not transaction-stamped targets.
+seedFenceRecord :: ProtectedStore -> Text -> Text -> IO (RecordKey, ProtectedRecord)
+seedFenceRecord store phase epoch = do
+    name <- expect (mkRecordName plan)
+    key <- recordKeyFor ("fence." <> name)
+    let bytes = encodeFields [phase, epoch]
+    version <- expect =<< withProtectedEntry store (\session -> compareAndSwapProtectedRecord session key ExpectAbsent bytes)
+    record <- readRequiredRecord store key
+    protectedRecordBytes record @?= bytes
+    protectedRecordVersion record @?= version
+    pure (key, record)
+
+resumeFenceCase :: Text -> TestTree
+resumeFenceCase phase =
+    testCase ("resuming " <> Text.unpack phase <> " keeps the persisted proposal") $
+        withStore $ \store -> do
+            (key, seeded) <- seedFenceRecord store phase "4"
+            reopened <- reopenStore store
+            resumed <- expect =<< inEntry reopened (\session -> establishInitialFence session plan 77)
+            fenceEpochWord resumed @?= 4
+            observed <- expect =<< inEntry reopened (\session -> currentFence session plan)
+            fenceEpochWord observed @?= 4
+            final <- readRequiredRecord reopened key
+            protectedRecordBytes final @?= encodeFields ["FenceObserved", "4"]
+            assertBool "resumption advances the seeded physical record" (protectedRecordVersion final > protectedRecordVersion seeded)
+
+unsettledCurrentFenceCase :: Text -> FencePhase -> TestTree
+unsettledCurrentFenceCase rawPhase phase =
+    testCase ("currentFence refuses " <> Text.unpack rawPhase) $
+        withStore $ \store -> do
+            _ <- seedFenceRecord store rawPhase "3"
+            before <- protectedImage store
+            refused <- inEntry store $ \session -> (() <$) <$> currentFence session plan
+            refused @?= Left (SessionFenceUnsettled phase)
+            protectedImage store >>= (@?= before)
+
 -- ---------------------------------------------------------------------------
 -- Classification
 
 classificationTests :: [TestTree]
 classificationTests =
-    [ testCase "the five pre-call phases are continuable" $
-        mapM_
-            (\phase -> classifyRecordedPhase phase @?= Continuable)
-            [ "IntentRecorded"
-            , "AdoptionIntentRecorded"
-            , "RepairIntentRecorded"
-            , "PhaseIntentRecorded"
-            , "ReservationRetryFenced"
-            ]
-    , testCase "the observed-absence whitelist is fenced-retryable" $
-        mapM_
-            (\phase -> classifyRecordedPhase phase @?= FencedRetryable)
-            ["ReservationAbsent", "EffectAbsent", "AdoptionObservedAbsent", "RepairObservedOriginal", "PhaseObservedFrom"]
-    , testCase "committed and released phases are settled" $
-        mapM_
-            (\phase -> classifyRecordedPhase phase @?= Settled)
-            ["Committed", "AdoptionCommitted", "RepairCommitted", "PhaseCommitted", "Released"]
-    , testCase "foreign, refused, and unexpected branches are terminal" $
-        mapM_
-            (\phase -> classifyRecordedPhase phase @?= TerminalDisposition)
-            ["ObservedForeign", "AdoptionRefused", "RepairObservedUnexpected", "PhaseObservedForeign"]
+    [ testGroup
+        "recorded phase dispositions"
+        [ testCase (Text.unpack phase) (classifyRecordedPhase phase @?= expected)
+        | (phase, expected) <- recordedPhaseRows
+        ]
     , testCase "an unrecognised phase is Unknown, not optimistically safe" $ do
         classifyRecordedPhase "SomethingThisBinaryDoesNotKnow" @?= UnknownDisposition
         classifyRecordedPhase "" @?= UnknownDisposition
+    , testCase "phase spellings are exact rather than normalized" $
+        mapM_
+            (\raw -> classifyRecordedPhase raw @?= UnknownDisposition)
+            [ "intentRecorded"
+            , " IntentRecorded"
+            , "IntentRecorded "
+            , "\tIntentRecorded"
+            , "IntentRecorded\n"
+            , "(IntentRecorded)"
+            , "\"IntentRecorded\""
+            , "Reconcile.IntentRecorded"
+            ]
+    , testCase "the literal phase rows cover both authoritative declarations" phaseVocabularyParity
+    , testGroup "nullary phase vocabulary reader" nullaryPhaseReaderTests
+    ]
+
+recordedPhaseRows :: [(Text, OperationDisposition)]
+recordedPhaseRows =
+    [ ("IntentRecorded", Continuable)
+    , ("ReservationOutcomeUnknown", UnknownDisposition)
+    , ("ReservationAbsent", FencedRetryable)
+    , ("ReservationRetryFenced", Continuable)
+    , ("Reserved", Continuable)
+    , ("EffectOutcomeUnknown", UnknownDisposition)
+    , ("EffectAbsent", FencedRetryable)
+    , ("EffectRetryFenced", FencedRetryable)
+    , ("ObservedManaged", Settled)
+    , ("ObservedForeign", TerminalDisposition)
+    , ("Committed", Settled)
+    , ("TeardownOutcomeUnknown", UnknownDisposition)
+    , ("TeardownObservedForeign", TerminalDisposition)
+    , ("Released", Settled)
+    , ("AdoptionIntentRecorded", Continuable)
+    , ("AdoptionOutcomeUnknown", UnknownDisposition)
+    , ("AdoptionObservedManaged", Settled)
+    , ("AdoptionObservedAbsent", FencedRetryable)
+    , ("AdoptionRetryFenced", FencedRetryable)
+    , ("AdoptionObservedForeign", TerminalDisposition)
+    , ("AdoptionRefused", TerminalDisposition)
+    , ("AdoptionCommitted", Settled)
+    , ("AdoptionTeardownOutcomeUnknown", UnknownDisposition)
+    , ("AdoptionTeardownObservedForeign", TerminalDisposition)
+    , ("AdoptionReleased", Settled)
+    , ("RepairIntentRecorded", Continuable)
+    , ("RepairEffectOutcomeUnknown", UnknownDisposition)
+    , ("RepairObservedOriginal", FencedRetryable)
+    , ("RepairRetryFenced", FencedRetryable)
+    , ("RepairObservedTarget", Settled)
+    , ("RepairObservedAbsent", TerminalDisposition)
+    , ("RepairObservedUnexpected", TerminalDisposition)
+    , ("RepairObservedForeign", TerminalDisposition)
+    , ("RepairCommitted", Settled)
+    , ("PhaseIntentRecorded", Continuable)
+    , ("PhaseEffectOutcomeUnknown", UnknownDisposition)
+    , ("PhaseObservedFrom", FencedRetryable)
+    , ("PhaseRetryFenced", FencedRetryable)
+    , ("PhaseObservedTo", Settled)
+    , ("PhaseObservedAbsent", TerminalDisposition)
+    , ("PhaseObservedUnexpected", TerminalDisposition)
+    , ("PhaseObservedForeign", TerminalDisposition)
+    , ("PhaseCommitted", Settled)
+    , ("StepObservedTerminal", TerminalDisposition)
+    , ("RecoveryAbandoned", TerminalDisposition)
+    ]
+
+-- DEVELOPMENT_PLAN/rationale.md#unresolved-outcomes-are-classified-explicitly
+-- Declaration parity detects new vocabulary without deriving its expected class.
+phaseVocabularyParity :: IO ()
+phaseVocabularyParity =
+    SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+        description <- SourceGuard.readPackageDescription
+        reconcilePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Reconcile"
+        sessionPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Session"
+        reconcileSource <- readFile reconcilePath
+        sessionSource <- readFile sessionPath
+        produced <- expect (SourceGuard.nullaryDataConstructorNames "PersistedJournalPhase" reconcileSource)
+        recorded <- expect (SourceGuard.nullaryDataConstructorNames "RecordedPhase" sessionSource)
+        let allNames = map (Text.unpack . fst) recordedPhaseRows
+            producerNames = filter (`notElem` ["StepObservedTerminal", "RecoveryAbandoned"]) allNames
+        length allNames @?= 45
+        length (nub allNames) @?= 45
+        sort produced @?= sort producerNames
+        sort recorded @?= sort allNames
+
+nullaryPhaseReaderTests :: [TestTree]
+nullaryPhaseReaderTests =
+    [ testCase "comments, strings and another datatype do not enter the ordered sum" $ do
+        let source = unlines
+                [ "-- data Phase = CommentPretender"
+                , "description = \"data Phase = StringPretender\""
+                , "data Other = OtherFirst | OtherSecond"
+                , "data Phase"
+                , "    = First {- | FalseAlternative -}"
+                , "    | Second"
+                , "    deriving (Eq, Show, Enum, Bounded)"
+                ]
+        SourceGuard.nullaryDataConstructorNames "Phase" source @?= Right ["First", "Second"]
+        SourceGuard.nullaryDataConstructorNames "Phase" "data Phase = Only deriving Eq" @?= Right ["Only"]
+    , testCase "a missing datatype refuses" $
+        assertRefused "missing" "data Other = First | Second"
+    , testCase "ambiguous datatype declarations refuse" $
+        assertRefused "ambiguous" "data Phase = First\ndata Phase = Second\n"
+    , testCase "non-nullary and unfamiliar declaration shapes refuse" $
+        mapM_ (uncurry assertRefused)
+            [ ("payload", "data Phase = First Int | Second")
+            , ("record", "data Phase = First { field :: Int }")
+            , ("GADT", "data Phase where\n    First :: Phase\n")
+            , ("parameterized", "data Phase a = First | Second")
+            , ("newtype", "newtype Phase = First Int")
+            ]
+    , testCase "empty data declarations refuse" $
+        mapM_ (assertRefused "empty") ["data Phase", "data Phase =", "data Phase = | First"]
+    , testCase "duplicate constructors refuse" $
+        assertRefused "duplicate constructor" "data Phase = First | First deriving (Eq, Show)"
+    , testCase "malformed delimiters and trailing alternatives refuse" $
+        mapM_ (uncurry assertRefused)
+            [ ("unbalanced deriving", "data Phase = First | Second deriving (Eq, Show")
+            , ("trailing alternative", "data Phase = First | Second |")
+            , ("extra deriving tokens", "data Phase = First deriving (Eq) Other")
+            ]
+    ]
+  where
+    assertRefused :: String -> String -> IO ()
+    assertRefused label source = case SourceGuard.nullaryDataConstructorNames "Phase" source of
+        Left _ -> pure ()
+        Right names -> assertFailure (label <> " was accepted as " <> show names)
+
+-- ---------------------------------------------------------------------------
+-- Prepared record field codec
+
+preparedRecordCodecTests :: [TestTree]
+preparedRecordCodecTests =
+    [ testCase "Unicode fields encode to independently pinned UTF-8 bytes" $
+        encodeFields ["phase", "\x0100", "tail"]
+            @?= ByteString.pack [112, 104, 97, 115, 101, 9, 0xc4, 0x80, 9, 116, 97, 105, 108]
+    , testCase "literal UTF-8 field bytes decode exactly and re-encode unchanged" $ do
+        let bytes = ByteString.pack [0xc4, 0x80] <> "\tleft  right\t"
+            fields = ["\x0100", "left  right", ""]
+            decoded = decodeFields bytes
+        decoded @?= fields
+        encodeFields decoded @?= bytes
+    , testCase "malformed UTF-8 fields return the failure sentinel" $
+        mapM_
+            (\bytes -> decodeFields (ByteString.pack bytes) @?= [])
+            [[0xff], [0xc3, 0x28], [0xc4]]
+    , testCase "ASCII whitespace and empty fields retain exact spelling" $
+        -- Only nonempty field lists are in this round-trip domain. Empty
+        -- bytes denote one empty field; they cannot also identify an empty list.
+        mapM_
+            ( \(fields, bytes) -> do
+                encodeFields fields @?= bytes
+                decodeFields bytes @?= fields
+            )
+            [ (["IntentRecorded", "session-1", "0"], "IntentRecorded\tsession-1\t0")
+            , ([" leading ", "trailing "], " leading \ttrailing ")
+            , ([""], "")
+            , (["", ""], "\t")
+            , (["", "middle", ""], "\tmiddle\t")
+            ]
+    ]
+
+-- ---------------------------------------------------------------------------
+-- Prepared fixture addresses
+
+preparedFixtureAddressTests :: [TestTree]
+preparedFixtureAddressTests =
+    [ testCase "the fixture writes each exact independently derived operation key" $ do
+        let coordinates =
+                [ ("spec:plan.v1", "core:deploy-vm", "session-1", "session-1", "core.deploy-vm")
+                , ("spec:other.v1", "core:deploy-vm", "session-1", "session-1", "core.deploy-vm")
+                , ("spec:plan.v1", "core:deploy-vm", "vendor:session.v2/child", "vendor.session.v2..child", "core.deploy-vm")
+                , ("spec:plan.v1", "core:deploy-vm/core:copy-source/guest-alias", "session-1", "session-1", "core.deploy-vm..core.copy-source..guest-alias")
+                , ("spec:plan.v1", "Vendor:Thing_v2.part", "Session_A", "_session___a", "_vendor._thing__v2.part")
+                ]
+        observedKeys <- newIORef ([] :: [Text])
+        mapM_
+            ( \(requestedPlan, requestedOperation, requestedSession, encodedSession, encodedOperation) ->
+                PrepareFixture.withGateForValuesStore requestedPlan requestedOperation requestedSession 3 4 $ \store gate -> do
+                    -- The expected key uses literal identity spellings and a
+                    -- separate Crypto.Hash digest, never the fixture's key helper.
+                    let digest = Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 requestedPlan) :: Hash.Digest Hash.SHA256))
+                        expectedKey = "op." <> digest <> "." <> encodedSession <> "..." <> encodedOperation
+                    keys <- expect =<< withProtectedEntry store listProtectedRecords
+                    map recordKeyText keys @?= [expectedKey]
+                    key <- recordKeyFor expectedKey
+                    record <- readRequiredRecord store key
+                    protectedRecordBytes record @?= "EffectOutcomeUnknown\t" <> TextEncoding.encodeUtf8 requestedSession <> "\t3\t4"
+                    recordVersionWord (protectedRecordVersion record) @?= 1
+                    ( Prepared.preparedGatePlan gate, Prepared.preparedGateOperation gate, Prepared.preparedGateSession gate
+                        , Prepared.preparedGateFence gate, Prepared.preparedGateAttempt gate, Prepared.preparedGateJournalVersion gate
+                        ) @?= (requestedPlan, requestedOperation, requestedSession, 3, 4, recordVersionWord (protectedRecordVersion record))
+                    modifyIORef' observedKeys (<> map recordKeyText keys)
+            )
+            coordinates
+        keys <- readIORef observedKeys
+        length keys @?= length coordinates
+        length (nub keys) @?= length coordinates
+    , testCase "the successor advances the same canonical record from version one to two" $ do
+        let requestedPlan = "spec:plan.v1"
+            requestedOperation = "core:deploy-vm/core:copy-source/guest-alias"
+            requestedSession = "vendor:session.v2/child"
+            digest = Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 requestedPlan) :: Hash.Digest Hash.SHA256))
+            expectedKey = "op." <> digest <> ".vendor.session.v2..child...core.deploy-vm..core.copy-source..guest-alias"
+        PrepareFixture.withSuccessorGate requestedPlan requestedOperation requestedSession 3 4 5 $ \store initial nextGate -> do
+            let inspect gate attempt version = do
+                    keys <- expect =<< withProtectedEntry store listProtectedRecords
+                    map recordKeyText keys @?= [expectedKey]
+                    key <- recordKeyFor expectedKey
+                    record <- readRequiredRecord store key
+                    protectedRecordBytes record
+                        @?= "EffectOutcomeUnknown\t" <> TextEncoding.encodeUtf8 requestedSession <> "\t3\t" <> ByteStringChar8.pack (show attempt)
+                    recordVersionWord (protectedRecordVersion record) @?= version
+                    ( Prepared.preparedGatePlan gate, Prepared.preparedGateOperation gate, Prepared.preparedGateSession gate
+                        , Prepared.preparedGateFence gate, Prepared.preparedGateAttempt gate, Prepared.preparedGateJournalVersion gate
+                        ) @?= (requestedPlan, requestedOperation, requestedSession, 3, attempt, recordVersionWord (protectedRecordVersion record))
+                    pure record
+            initialRecord <- inspect initial 4 1
+            successor <- nextGate
+            successorRecord <- inspect successor 5 2
+            recordVersionWord (protectedRecordVersion successorRecord)
+                @?= recordVersionWord (protectedRecordVersion initialRecord) + 1
     ]
 
 -- ---------------------------------------------------------------------------
@@ -2301,6 +3099,29 @@ prepareTests =
                 preparedGateAttemptIs gate 1
                 preparedGateFenceIs gate (fenceEpochWord fence)
                 -- The durable record already says an effect may be in flight.
+                key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) "op-1")
+                recorded <- expect =<< readTransactionRecord s key
+                target <- maybe (assertFailure "the adapter entered without a durable unknown record") pure recorded
+                let sid = sessionIdText (operationSessionId sess)
+                    version = recordVersionWord (transactionRecordVersion target)
+                    expectedFields = [plan, "op-1", sid, "1", "1", Text.pack (show version)]
+                    expectedShow =
+                        "PreparedGate {preparedGatePlan = " <> show plan
+                            <> ", preparedGateOperation = " <> show ("op-1" :: Text)
+                            <> ", preparedGateSession = " <> show sid
+                            <> ", preparedGateFence = 1, preparedGateAttempt = 1, preparedGateJournalVersion = "
+                            <> show version
+                            <> "}"
+                transactionRecordPayload target @?= encodeFields ["EffectOutcomeUnknown", sid, "1", "1"]
+                Prepared.preparedGatePlan gate @?= plan
+                Prepared.preparedGateOperation gate @?= "op-1"
+                Prepared.preparedGateSession gate @?= sid
+                Prepared.preparedGateJournalVersion gate @?= version
+                Prepared.preparedGateFields gate @?= expectedFields
+                show gate @?= expectedShow
+                showsPrec 10 gate "" @?= expectedShow
+                showsPrec 11 gate "" @?= "(" <> expectedShow <> ")"
+                show (Just gate) @?= "Just (" <> expectedShow <> ")"
                 advance <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
                 withOperationAdvance advance (\() next -> pure (Right next)) >>= \_ -> pure ()
                 pure (Right ())
@@ -2368,6 +3189,56 @@ prepareTests =
                     (usedFence, _) <- expect' allowed
                     usedFence @?= fenceEpochWord rotated
                 pure (Right ())
+    , testCase "a prepare refuses an unsettled fence without changing its operation" $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            (fenceKey, _) <- soleRecordWithPrefix store "fence."
+            let unsettled = encodeFields ["FenceIntentRecorded", "2"]
+            _ <- rewriteRecordBytes store fenceKey (const unsettled)
+            seeded <- readRequiredRecord store fenceKey
+            protectedRecordBytes seeded @?= unsettled
+            (operationKey, original, target) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload target @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            callbacks <- newIORef (0 :: Int)
+            before <- protectedImage store
+            refused <- inEntry store $ \session ->
+                withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \_ _ -> do
+                    modifyIORef' callbacks (+ 1)
+                    pure (Right ())
+            refused @?= Left (SessionFenceUnsettled FenceIntentRecorded)
+            readIORef callbacks >>= (@?= 0)
+            after <- readRequiredRecord store operationKey
+            protectedRecordBytes after @?= protectedRecordBytes original
+            protectedRecordVersion after @?= protectedRecordVersion original
+            protectedImage store >>= (@?= before)
+    , testCase "a prepare presenting the fence that fenceOldPermits superseded is refused" $
+        withStore $ \store -> do
+            callbacks <- newIORef (0 :: Int)
+            runEntry store $ \session ->
+                withOpenSession session $ \epoch sess permit -> do
+                    fence <- expect =<< establishInitialFence session plan 1
+                    fenceEpochWord fence @?= 1
+                    afterIntent <- expect =<< registerOperationIntent session sess "op-1" NoHistory permit
+                    key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) "op-1")
+                    present <- expect =<< readProtectedRecord session key
+                    original <- maybe (assertFailure "the registered operation is missing") pure present
+                    fenced <- expect =<< fenceOldPermits session plan
+                    oldPermitsFencedFrom fenced @?= 1
+                    oldPermitsFencedTo fenced @?= 2
+                    refused <-
+                        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" afterIntent $ \_ _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right ())
+                    refused @?= Left (SessionFenceSuperseded 1 2)
+                    readIORef callbacks >>= (@?= 0)
+                    observed <- expect =<< readProtectedRecord session key
+                    after <- maybe (assertFailure "the refused prepare lost its operation") pure observed
+                    protectedRecordBytes after @?= protectedRecordBytes original
+                    protectedRecordVersion after @?= protectedRecordVersion original
+                    decoded <- expect =<< readTransactionRecord session key
+                    target <- maybe (assertFailure "the operation target is missing") pure decoded
+                    transactionRecordPayload target @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+                    pure (Right ())
     , testCase "a prepare against a superseded fence is refused" $
         withStore $ \store -> runEntry store $ \s ->
             withOpenSession s $ \epoch sess permit -> do
@@ -2419,20 +3290,17 @@ prepareTests =
                 _ <- expect' allowed
                 pure (Right ())
     , testCase "an operation at an unrecognised phase blocks rather than proceeding" $
-        withStore $ \store -> runEntry store $ \s ->
-            withPrepared s $ \epoch sess fence gate permit -> do
-                advance <- expect' =<< acknowledgeOutcome s sess gate "SomeFuturePhase" () permit
-                next <- withOperationAdvance advance (\() p -> pure p)
-                do
-                    blocked <-
-                        withPreparedGate s sess epoch fence "op-1" "EffectOutcomeUnknown" next $
-                            \_ _ -> pure (Right ())
-                    case blocked of
-                        Left (SessionUnclassifiedPhase opKey phase) -> do
-                            opKey @?= "op-1"
-                            phase @?= "SomeFuturePhase"
-                        other -> assertFailure ("expected an unclassified refusal, got " <> show other)
-                pure (Right ())
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- unknownOperationFixture store
+            callbacks <- newIORef (0 :: Int)
+            before <- protectedImage store
+            blocked <- inEntry store $ \session ->
+                withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \_ _ -> do
+                    modifyIORef' callbacks (+ 1)
+                    pure (Right ())
+            blocked @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
+            readIORef callbacks >>= (@?= 0)
+            protectedImage store >>= (@?= before)
     , testCase "a terminally closed project refuses every prepare" $
         withStore $ \store -> runEntry store $ \s ->
             withPrepared s $ \epoch sess fence gate permit -> do
@@ -2636,7 +3504,7 @@ recoveryTests :: [TestTree]
 recoveryTests =
     [ testCase "an abandoned session is closed and its continuable work counted" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
+            runEntry store $ \s ->
                 withOpenSession s $ \_ sess permit -> do
                     _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
                     -- Stop here: the session is Open with one continuable
@@ -2659,23 +3527,72 @@ recoveryTests =
                     assertBool "a fresh session opens after recovery" (isRight opened)
     , testCase "an unrecognised recorded phase blocks the sweep instead of being swept" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
-                withPrepared s $ \_ sess _ gate permit -> do
-                    _ <- expect' =<< acknowledgeOutcome s sess gate "SomeFuturePhase" () permit
-                    pure (Right ())
+            _ <- unknownOperationFixture store
+            before <- protectedImage store
             swept <- inEntry store (\s -> recoverAbandonedSessions s plan)
-            case swept of
-                Left (SessionUnclassifiedPhase opKey phase) -> do
-                    opKey @?= "op-1"
-                    phase @?= "SomeFuturePhase"
-                other -> assertFailure ("expected an unclassified refusal, got " <> show other)
+            swept @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
+            protectedImage store >>= (@?= before)
     , testCase "a sweep with nothing open reports no work" $
         withStore $ \store -> do
-            _ <- inEntry store (\s -> openProjectJournal s plan)
+            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
             swept <- inEntry store (\s -> recoverAbandonedSessions s plan)
             recovered <- expect swept
             recoveredSessionCount recovered @?= 0
     ]
+
+-- ---------------------------------------------------------------------------
+-- Recordless session members
+
+recordlessMemberTests :: [TestTree]
+recordlessMemberTests =
+    [ recordlessMemberCase "a listed operation without its record prevents session close" $ \session sess permit ->
+        (() <$) <$> closeOperationSession session sess permit
+    , recordlessMemberCase "a listed operation without its record prevents abandoned-session recovery" $ \session _ _ ->
+        (() <$) <$> recoverAbandonedSessions session plan
+    ]
+
+recordlessMemberCase ::
+    String ->
+    ( forall session scope planId.
+      ProtectedSession session ->
+      OperationSession scope planId ->
+      ProjectPermit scope planId ->
+      IO (Either SessionError ())
+    ) ->
+    TestTree
+recordlessMemberCase label action =
+    testCase label $
+        withStore $ \store -> do
+            SomeOpenSession sess opened <- openSessionFixture store
+            permit <- expect =<< inEntry store (\session -> registerOperationIntent session sess "op-1" NoHistory opened)
+            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+            [ (sessionIdText (manifestSessionId member), manifestSessionIsOpen member, manifestSessionOperations member)
+              | member <- manifestSessions manifest
+              ] @?= [("session-a", True, ["op-1"])]
+            manifestOperationCount manifest @?= 1
+            (operationKey, operation, target) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload target @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            (sessionKey, sessionRecord) <- soleRecordWithPrefix store "session."
+            sessionTarget <- readLiveTarget store sessionKey
+            let openMembers = encodeFields ["open", "1", "members", "op-1"]
+            transactionRecordPayload sessionTarget @?= openMembers
+            _ <- expect =<< withProtectedEntry store (\session ->
+                compareAndDeleteProtectedRecord session operationKey (ExpectVersion (protectedRecordVersion operation)))
+            absent <- expect =<< withProtectedEntry store (\session -> readProtectedRecord session operationKey)
+            fmap protectedRecordBytes absent @?= Nothing
+            live <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            projectPermitVersion live @?= projectPermitVersion permit
+            before <- protectedImage store
+            refused <- inEntry store $ \session -> action session sess permit
+            refused @?= Left (SessionOperationUnregistered "op-1")
+            -- A manifest query would itself refuse this recordless state. Read
+            -- the actual retained session row instead, without minting evidence.
+            after <- readRequiredRecord store sessionKey
+            protectedRecordBytes after @?= protectedRecordBytes sessionRecord
+            protectedRecordVersion after @?= protectedRecordVersion sessionRecord
+            retained <- readLiveTarget store sessionKey
+            transactionRecordPayload retained @?= openMembers
+            protectedImage store >>= (@?= before)
 
 -- ---------------------------------------------------------------------------
 -- Abandoned-run admission
@@ -2691,7 +3608,7 @@ admissionTests :: [TestTree]
 admissionTests =
     [ testCase "fencing enumerates the outstanding permits and then supersedes them" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
+            runEntry store $ \s ->
                 withOpenSession s $ \_ sess permit -> do
                     _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
                     pure (Right ())
@@ -2704,26 +3621,41 @@ admissionTests =
             oldPermitsFencedFrom fenced @?= 1
             oldPermitsFencedTo fenced @?= 2
             oldPermitsFencedPlanDigest fenced @?= plan
-            -- A permit minted under the superseded epoch is now refused.
             live <- expect =<< inEntry reopened (\s -> currentFence s plan)
             fenceEpochWord live @?= 2
     , testCase "a settled operation holds no authority, so it is not in the fence set" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
+            runEntry store $ \s ->
                 withPrepared s $ \_ sess _ gate permit -> do
                     _ <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
                     pure (Right ())
             reopened <- reopenStore store
             fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
             oldPermitsFencedOperations fenced @?= []
-    , testCase "the fence protocol is completed idempotently when it was left unsettled" $
+    , testCase "fencing completes an unsettled proposal before successive rotations" $
         withStore $ \store -> do
-            -- No fence record at all: the classifier completes the stable
-            -- initial-fence protocol rather than refusing.
-            _ <- inEntry store (\s -> openProjectJournal s plan)
+            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
+            (key, _) <- seedFenceRecord store "FenceIntentRecorded" "3"
+            first <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            oldPermitsFencedFrom first @?= 3
+            oldPermitsFencedTo first @?= 4
+            afterFirst <- readRequiredRecord store key
+            protectedRecordBytes afterFirst @?= encodeFields ["FenceObserved", "4"]
+            second <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            oldPermitsFencedFrom second @?= 4
+            oldPermitsFencedTo second @?= 5
+            afterSecond <- readRequiredRecord store key
+            protectedRecordBytes afterSecond @?= encodeFields ["FenceObserved", "5"]
+    , testCase "fencing establishes an absent fence before rotating" $
+        withStore $ \store -> do
+            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
+            before <- protectedImage store
+            assertBool "the fence is genuinely absent" (all (not . Text.isPrefixOf "fence.") (Map.keys before))
             fenced <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
             oldPermitsFencedFrom fenced @?= 1
             oldPermitsFencedTo fenced @?= 2
+            live <- expect =<< inEntry store (\s -> currentFence s plan)
+            fenceEpochWord live @?= 2
     , testCase "the manifest pairs the independently enumerated session and operation sets" $
         withStore $ \store -> do
             _ <- inEntry store $ \s ->
@@ -2766,7 +3698,7 @@ admissionTests =
                     @?= map (\name -> OperationAbandonedPreCall name "IntentRecorded") operations
                 closed <- inEntry reopened (\s -> verifyAllSessionsClosed s plan)
                 assertBool "recovered namespaced operations leave the session closed" (isRight closed)
-        | sessionName <- ["session-a", "vendor:session.v2/child"]
+        | sessionName <- ["session-a", "vendor:session.v2/child", "Vendor:Session_A.v2/Child"]
         ]
     , testCase "operation enumeration refuses a payload naming another session" $
         withStore $ \store -> do
@@ -2776,7 +3708,7 @@ admissionTests =
                         store
                         ( \s -> withOpenSession s $ \_ sess permit -> do
                             _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
-                            key <- expect' (either (Left . SessionStoreFailure) Right (mkRecordKey ("op." <> planKeyDigest <> ".session-a.op-1")))
+                            key <- expect' (either (Left . SessionStoreFailure) Right (testOperationKey "session-a" "op-1"))
                             observed <- readProtectedRecord s key
                             case observed of
                                 Right (Just record) -> do
@@ -2787,7 +3719,8 @@ admissionTests =
                         )
             manifested <- inEntry store (\s -> verifySessionManifest s plan)
             case manifested of
-                Left (SessionRecordCorrupt _) -> pure ()
+                Left (SessionRecordCorrupt detail) ->
+                    detail @?= "operation ownership at op." <> planKeyDigest <> ".session-a...op-1"
                 other -> assertFailure ("expected inconsistent record ownership refusal, got " <> show other)
     , testCase "a zero-operation Open session is still a required manifest member" $
         withStore $ \store -> do
@@ -2879,17 +3812,15 @@ admissionTests =
                 @?= [OperationAlreadySettled "op-1" "Committed"]
     , testCase "an unrecognised phase blocks the interpretation instead of being swept" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
-                withPrepared s $ \_ sess _ gate permit -> do
-                    _ <- expect' =<< acknowledgeOutcome s sess gate "SomeFuturePhase" () permit
-                    pure (Right ())
-            reopened <- reopenStore store
-            outcome <- inEntry reopened (\s -> interpretHere s)
-            case outcome of
-                Left (SessionUnclassifiedPhase opKey phase) -> do
-                    opKey @?= "op-1"
-                    phase @?= "SomeFuturePhase"
-                other -> assertFailure ("expected an unclassified refusal, got " <> show other)
+            _ <- unknownOperationFixture store
+            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            before <- protectedImage store
+            outcome <- inEntry store $ \session -> withEpoch session $ \epoch ->
+                (() <$) <$> interpretRecordedSessions session epoch manifest fenced permit
+            outcome @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
+            protectedImage store >>= (@?= before)
     , testCase "an interrupted effect is settled as abandoned under the new fence" $
         withStore $ \store -> do
             -- EffectAbsent is on the fenced-retryable whitelist: an effect was
@@ -2950,13 +3881,19 @@ This is how the two manifest refusals are reached: both need the store to hold a
 operation record the session-membership path would never have created, which is
 exactly the torn state a killed writer can leave.
 -}
+testOperationKey :: Text -> Text -> Either ProtectedError RecordKey
+testOperationKey sid opKey = do
+    sessionName <- mkRecordName sid
+    operationName <- mkRecordName opKey
+    mkRecordKey ("op." <> planKeyDigest <> "." <> sessionName <> recordTupleSeparator <> operationName)
+
 writeOrphanOperation ::
     ProtectedSession session ->
     Text ->
     Text ->
     IO (Either SessionError ())
 writeOrphanOperation session sid opKey =
-    case mkRecordKey ("op." <> planKeyDigest <> "." <> sid <> "." <> opKey) of
+    case testOperationKey sid opKey of
         Left failure -> pure (Left (SessionStoreFailure failure))
         Right key -> do
             written <-
@@ -2966,6 +3903,690 @@ writeOrphanOperation session sid opKey =
                     ExpectAbsent
                     (encodeFields ["IntentRecorded", sid, "0"])
             pure (either (Left . SessionStoreFailure) (const (Right ())) written)
+
+-- ---------------------------------------------------------------------------
+-- Live operation admission
+
+liveOperationAdmissionTests :: [TestTree]
+liveOperationAdmissionTests =
+    [ testCase ("prepare admits " <> Text.unpack phase) $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            callbacks <- newIORef (0 :: Int)
+            _ <- expect =<< inEntry store (\session ->
+                withPreparedGate session sess epoch fence "op-1" phase permit $ \_ next -> do
+                    key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) "op-1")
+                    recorded <- expect =<< readTransactionRecord session key
+                    target <- maybe (assertFailure "the admitted unknown target is absent") pure recorded
+                    transactionRecordPayload target @?= encodeFields [phase, sessionIdText (operationSessionId sess), "1", "1"]
+                    modifyIORef' callbacks (+ 1)
+                    pure (Right (projectPermitVersion next)))
+            readIORef callbacks >>= (@?= 1)
+    | phase <-
+        [ "ReservationOutcomeUnknown", "EffectOutcomeUnknown", "AdoptionOutcomeUnknown"
+        , "RepairEffectOutcomeUnknown", "PhaseEffectOutcomeUnknown", "TeardownOutcomeUnknown"
+        , "AdoptionTeardownOutcomeUnknown"
+        ]
+    ]
+        <> [ testCase ("prepare refuses requested phase " <> label) $
+                withStore $ \store -> do
+                    SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+                    (key, original, target) <- sessionOperationRecord store sess "op-1"
+                    transactionRecordPayload target @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+                    callbacks <- newIORef (0 :: Int)
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session ->
+                        withPreparedGate session sess epoch fence "op-1" phase permit $ \_ _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right ())
+                    assertOutcomePhaseRefusal "IntentRecorded" phase refused
+                    readIORef callbacks >>= (@?= 0)
+                    after <- readRequiredRecord store key
+                    protectedRecordBytes after @?= protectedRecordBytes original
+                    protectedRecordVersion after @?= protectedRecordVersion original
+                    protectedImage store >>= (@?= before)
+           | (label, phase) <-
+                [ ("Committed", "Committed")
+                , ("SomeFuturePhase", "SomeFuturePhase")
+                , ("containing a tab", "EffectOutcomeUnknown\tbad")
+                , ("containing a newline", "EffectOutcomeUnknown\nbad")
+                , ("containing U+0100", "EffectOutcomeUnknown\x0100")
+                ]
+           ]
+        <> [ testCase ("acknowledgement refuses target phase " <> Text.unpack phase) $
+                withStore $ \store -> do
+                    SomeAcknowledgeInput sess gate permit <- acknowledgeInputFixture store
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate phase () permit
+                    assertOutcomePhaseRefusal "EffectOutcomeUnknown" phase refused
+                    protectedImage store >>= (@?= before)
+           | phase <- ["IntentRecorded", "ReservationRetryFenced", "EffectOutcomeUnknown"]
+           ]
+        <> [ testCase "a gate matching a recorded Committed phase cannot acknowledge" $
+                withStore $ \store -> do
+                    SomePrepareInput _ sess fence permit <- prepareInputFixture store
+                    (key, original, _) <- sessionOperationRecord store sess "op-1"
+                    -- Adversarial use of the existing public producer; its legacy gap is owned by 17.72.
+                    gate <- expect =<< withProtectedEntry store (\session ->
+                        Prepared.recordDurableUnknown session key (ExpectVersion (protectedRecordVersion original))
+                            "Committed" plan "op-1" (sessionIdText (operationSessionId sess)) (fenceEpochWord fence) 1)
+                    actual <- readRequiredRecord store key
+                    preparedGateJournalVersion gate @?= recordVersionWord (protectedRecordVersion actual)
+                    target <- readLiveTarget store key
+                    transactionRecordPayload target @?= encodeFields ["Committed", sessionIdText (operationSessionId sess), "1", "1"]
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate "Committed" () permit
+                    assertOutcomePhaseRefusal "Committed" "Committed" refused
+                    protectedImage store >>= (@?= before)
+           , testCase "prepare refuses an actual epoch from a different broker generation" $
+                withStore $ \store -> do
+                    SomePrepareInput opened sess fence permit <- prepareInputFixture store
+                    brokerEpochWord opened @?= 1
+                    withForeignBrokerEpoch store $ \presented -> do
+                        brokerEpochWord presented @?= 2
+                        callbacks <- newIORef (0 :: Int)
+                        before <- protectedImage store
+                        refused <- inEntry store $ \session ->
+                            withPreparedGate session sess presented fence "op-1" "EffectOutcomeUnknown" permit $ \_ _ -> do
+                                modifyIORef' callbacks (+ 1)
+                                pure (Right ())
+                        refused @?= Left (SessionBrokerEpochMismatch 1 2)
+                        readIORef callbacks >>= (@?= 0)
+                        protectedImage store >>= (@?= before)
+           , durableBrokerMarkerCase "prepare revalidates the durable broker marker" "2" (SessionBrokerEpochMismatch 2 1)
+           , durableBrokerMarkerCase "prepare refuses a noncanonical durable broker marker" "01" (SessionRecordCorrupt "session")
+           , testCase "a closed session refuses prepare with its live close successor" $
+                withStore $ \store -> do
+                    SomeSettledSession epoch sess fence _ _ acknowledged <- settledSessionFixture store
+                    live <- expect =<< inEntry store (\session -> closeOperationSession session sess acknowledged)
+                    callbacks <- newIORef (0 :: Int)
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session ->
+                        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" live $ \_ _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right ())
+                    refused @?= Left (SessionNotOpen (operationSessionId sess))
+                    readIORef callbacks >>= (@?= 0)
+                    protectedImage store >>= (@?= before)
+           , testCase "a closed session refuses acknowledgement before a stale gate version" $
+                withStore $ \store -> do
+                    SomeSettledSession _ sess _ gate _ acknowledged <- settledSessionFixture store
+                    live <- expect =<< inEntry store (\session -> closeOperationSession session sess acknowledged)
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate "Committed" () live
+                    refused @?= Left (SessionNotOpen (operationSessionId sess))
+                    protectedImage store >>= (@?= before)
+           , testCase "acknowledgement refuses the fence superseded by fenceOldPermits" $
+                withStore $ \store -> do
+                    SomeAcknowledgeInput sess gate permit <- acknowledgeInputFixture store
+                    (key, original, target) <- sessionOperationRecord store sess "op-1"
+                    transactionRecordPayload target @?= encodeFields ["EffectOutcomeUnknown", sessionIdText (operationSessionId sess), "1", "1"]
+                    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+                    oldPermitsFencedTo fenced @?= 2
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate "Committed" () permit
+                    refused @?= Left (SessionFenceSuperseded 1 2)
+                    assertNumericOperationUnchanged store key original before
+           , foreignGateCase "acknowledgement refuses a gate from another plan" "another-plan-digest" "session-a" "plan"
+           , foreignGateCase "acknowledgement refuses a gate from another session" plan "session-b" "session"
+           ]
+
+assertOutcomePhaseRefusal :: Text -> Text -> Either SessionError () -> IO ()
+assertOutcomePhaseRefusal recorded presented outcome = case outcome of
+    Left failure -> do
+        failure @?= SessionOutcomePhaseRefused "op-1" recorded presented
+        sessionErrorMessage failure @?=
+            "session: operation op-1 refuses outcome phase " <> Text.unpack presented <> " from " <> Text.unpack recorded
+    Right () -> assertFailure ("admitted outcome phase " <> Text.unpack presented <> " from " <> Text.unpack recorded)
+
+durableBrokerMarkerCase :: String -> Text -> SessionError -> TestTree
+durableBrokerMarkerCase label marker expected =
+    testCase label $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            brokerEpochWord epoch @?= 1
+            (key, _) <- soleRecordWithPrefix store "session."
+            original <- readLiveTarget store key
+            transactionRecordPayload original @?= encodeFields ["open", "1", "members", "op-1"]
+            _ <- rewriteStampedPayload store key ["open", marker, "members", "op-1"]
+            live <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            projectPermitVersion live @?= projectPermitVersion permit
+            callbacks <- newIORef (0 :: Int)
+            before <- protectedImage store
+            refused <- inEntry store $ \session ->
+                withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \_ _ -> do
+                    modifyIORef' callbacks (+ 1)
+                    pure (Right ())
+            refused @?= Left expected
+            readIORef callbacks >>= (@?= 0)
+            protectedImage store >>= (@?= before)
+
+withForeignBrokerEpoch :: ProtectedStore -> (forall brokerGeneration. BrokerEpoch brokerGeneration -> IO result) -> IO result
+withForeignBrokerEpoch store use =
+    Fixture.withFixtureInstalledProject $ \project -> do
+        broker <- expect =<< openProtectedStore (protectedStoreRoot store </> "foreign-broker")
+        first <- withProductionRoot broker project Authority.ProjectUp $ \root ->
+            pure (Right (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority root))))
+        expect first >>= (@?= 1)
+        second <- withProductionRoot broker project Authority.ProjectUp $ \root ->
+            Right <$> use (rootAuthorityEpoch (productionRootAuthority root))
+        expect second
+
+foreignGateCase :: String -> Text -> Text -> Text -> TestTree
+foreignGateCase label foreignPlan foreignSession mismatch =
+    testCase label $
+        withStore $ \foreignStore -> withStore $ \store -> do
+            (_, gate) <- gateForSessionFixture foreignStore foreignPlan foreignSession
+            (SomePrepareInput _ sess _ permit, _) <- gateForSessionFixture store plan "session-a"
+            (_, actual, target) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload target @?= encodeFields ["EffectOutcomeUnknown", "session-a", "1", "1"]
+            preparedGateJournalVersion gate @?= recordVersionWord (protectedRecordVersion actual)
+            preparedGateFence gate @?= 1
+            preparedGateAttempt gate @?= 1
+            before <- protectedImage store
+            refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate "Committed" () permit
+            refused @?= Left (SessionPreparedGateMismatch mismatch)
+            protectedImage store >>= (@?= before)
+
+gateForSessionFixture :: ProtectedStore -> Text -> Text -> IO (SomePrepareInput, PreparedGate)
+gateForSessionFixture store digest sid =
+    expect =<< inEntry store (\session -> do
+        permit <- expect =<< openProjectJournal session digest
+        withEpoch session $ \epoch -> do
+            (sess, opened) <- expect =<< openOperationSession session epoch digest sid permit
+            fence <- expect =<< establishInitialFence session digest 1
+            registered <- expect =<< registerOperationIntent session sess "op-1" NoHistory opened
+            withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" registered $ \gate next ->
+                pure (Right (SomePrepareInput epoch sess fence next, gate)))
+
+data SomeSettledSession where
+    SomeSettledSession ::
+        BrokerEpoch brokerGeneration -> OperationSession scope planId -> FenceEpoch scope planId -> PreparedGate ->
+        ProjectPermit scope planId -> ProjectPermit scope planId -> SomeSettledSession
+
+settledSessionFixture :: ProtectedStore -> IO SomeSettledSession
+settledSessionFixture store = do
+    SomePrepareInput epoch sess fence beforePrepare <- prepareInputFixture store
+    expect =<< inEntry store (\session ->
+        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" beforePrepare $ \gate prepared -> do
+            assertBool "prepare consumes the registered permit" (projectPermitVersion prepared > projectPermitVersion beforePrepare)
+            advance <- expect =<< acknowledgeOutcome session sess gate "Committed" () prepared
+            withOperationAdvance advance $ \() next ->
+                pure (Right (SomeSettledSession epoch sess fence gate beforePrepare next)))
+
+readLiveTarget :: ProtectedStore -> RecordKey -> IO TransactionRecord
+readLiveTarget store key = do
+    observed <- expect =<< inEntry store (\session ->
+        either (Left . SessionRecordCorrupt . transactionErrorMessage) Right <$> readTransactionRecord session key)
+    maybe (assertFailure "the live target is missing") pure observed
+
+rewriteStampedPayload :: ProtectedStore -> RecordKey -> [Text] -> IO ProtectedRecord
+rewriteStampedPayload store key fields = do
+    original <- readLiveTarget store key
+    stamp <- maybe (assertFailure "the live target has no transaction stamp") pure (transactionRecordStamp original)
+    let payload = encodeFields fields
+        bytes = stampTarget stamp payload
+    version <- rewriteRecordBytes store key (const bytes)
+    record <- readRequiredRecord store key
+    protectedRecordBytes record @?= bytes
+    recordVersionWord (protectedRecordVersion record) @?= version
+    target <- readLiveTarget store key
+    transactionRecordStamp target @?= Just stamp
+    transactionRecordPayload target @?= payload
+    transactionRecordVersion target @?= protectedRecordVersion record
+    pure record
+
+unknownOperationFixture :: ProtectedStore -> IO SomePrepareInput
+unknownOperationFixture store = do
+    input@(SomePrepareInput _ sess _ _) <- expect =<< inEntry store (\session ->
+        withPrepared session $ \epoch opened fence _ permit ->
+            pure (Right (SomePrepareInput epoch opened fence permit)))
+    (key, _, _) <- sessionOperationRecord store sess "op-1"
+    _ <- rewriteStampedPayload store key ["SomeFuturePhase", sessionIdText (operationSessionId sess), "1", "1"]
+    pure input
+
+-- ---------------------------------------------------------------------------
+-- Recorded operation numeric admission
+
+numericOperationTests :: [TestTree]
+numericOperationTests =
+    [ testCase "a genuine three-field initial intent prepares attempt one" $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            (_, _, initial) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload initial @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            callbacks <- newIORef (0 :: Int)
+            advanced <- expect =<< inEntry store (\session ->
+                withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \gate next -> do
+                    modifyIORef' callbacks (+ 1)
+                    preparedGateAttempt gate @?= 1
+                    pure (Right (projectPermitVersion next)))
+            readIORef callbacks >>= (@?= 1)
+            assertBool "the initial prepare advances its journal permit" (advanced > projectPermitVersion permit)
+            (_, _, prepared) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload prepared @?= encodeFields ["EffectOutcomeUnknown", sessionIdText (operationSessionId sess), "1", "1"]
+    , testCase "a genuine three-field initial intent abandons with attempt zero" $
+        withStore $ \store -> do
+            SomePrepareInput _ sess _ _ <- prepareInputFixture store
+            (_, _, initial) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload initial @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+            oldPermitsFencedTo fenced @?= 2
+            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            interpreted <- expect =<< inEntry store (\session -> withEpoch session $ \epoch ->
+                fmap (fmap fst) (interpretRecordedSessions session epoch manifest fenced permit))
+            interpretedRecoveryOperations interpreted @?= [OperationAbandonedPreCall "op-1" "IntentRecorded"]
+            (_, _, abandoned) <- sessionOperationRecord store sess "op-1"
+            transactionRecordPayload abandoned @?= encodeFields ["RecoveryAbandoned", sessionIdText (operationSessionId sess), "2", "0"]
+            closed <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+            map manifestSessionIsOpen (manifestSessions closed) @?= [False]
+    ]
+        <> concat
+            [ [ testCase ("prepare refuses " <> label) (numericPrepareRefusal fields)
+              , testCase ("recovery refuses " <> label) (numericRecoveryRefusal fields)
+              ]
+            | (label, fields) <- numericOperationMutations
+            ]
+        <> [ testCase "an eligible maximum attempt refuses before recording unknown or entering the adapter" $
+                withStore $ \store -> do
+                    SomePrepareInput epoch sess fence permit <- numericRetryFixture store True
+                    (key, seeded) <- seedNumericOperation store sess ["EffectAbsent", sessionIdText (operationSessionId sess), "1", "18446744073709551615"]
+                    callbacks <- newIORef (0 :: Int)
+                    before <- protectedImage store
+                    outcome <- inEntry store $ \session ->
+                        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \gate _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right (preparedGateAttempt gate))
+                    -- Pin both the typed refusal and the operator-facing message.
+                    case outcome of
+                        Left failure -> do
+                            failure @?= SessionAttemptExhausted "op-1"
+                            sessionErrorMessage failure @?= "session: operation op-1 has exhausted its attempt counter"
+                        Right attempt -> do
+                            entered <- readIORef callbacks
+                            (_, _, written) <- sessionOperationRecord store sess "op-1"
+                            assertFailure ("expected exhaustion before effects; gate attempt=" <> show attempt <> ", callbacks=" <> show entered <> ", payload=" <> show (transactionRecordPayload written))
+                    readIORef callbacks >>= (@?= 0)
+                    assertNumericOperationUnchanged store key seeded before
+           , testCase "maximum minus one advances to the maximum attempt exactly" $
+                withStore $ \store -> do
+                    SomePrepareInput epoch sess fence permit <- numericRetryFixture store True
+                    (key, original) <- seedNumericOperation store sess ["EffectAbsent", sessionIdText (operationSessionId sess), "1", "18446744073709551614"]
+                    callbacks <- newIORef (0 :: Int)
+                    advanced <- expect =<< inEntry store (\session ->
+                        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \gate next -> do
+                            modifyIORef' callbacks (+ 1)
+                            preparedGateAttempt gate @?= 18446744073709551615
+                            pure (Right (projectPermitVersion next)))
+                    readIORef callbacks >>= (@?= 1)
+                    assertBool "the maximum successor advances its journal permit" (advanced > projectPermitVersion permit)
+                    after <- readRequiredRecord store key
+                    assertBool "the successful maximum attempt advances the operation" (protectedRecordVersion after > protectedRecordVersion original)
+                    (_, _, prepared) <- sessionOperationRecord store sess "op-1"
+                    transactionRecordPayload prepared @?= encodeFields ["EffectOutcomeUnknown", sessionIdText (operationSessionId sess), "2", "18446744073709551615"]
+           , testCase "a same-fence maximum attempt keeps the fresh-fence refusal priority" $
+                withStore $ \store -> do
+                    SomePrepareInput epoch sess fence permit <- numericRetryFixture store False
+                    (key, seeded) <- seedNumericOperation store sess ["EffectAbsent", sessionIdText (operationSessionId sess), "1", "18446744073709551615"]
+                    callbacks <- newIORef (0 :: Int)
+                    before <- protectedImage store
+                    refused <- inEntry store $ \session ->
+                        withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \gate _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right (preparedGateAttempt gate))
+                    refused @?= Left (SessionRetryNeedsFreshFence "op-1" 1 1)
+                    readIORef callbacks >>= (@?= 0)
+                    assertNumericOperationUnchanged store key seeded before
+           , testCase "recovery preserves a maximum attempt without incrementing it" $
+                withStore $ \store -> withNumericRecoveryInput store $ \sess fenced manifest permit -> do
+                    _ <- seedNumericOperation store sess ["EffectAbsent", sessionIdText (operationSessionId sess), "1", "18446744073709551615"]
+                    interpreted <- expect =<< inEntry store (\session -> withEpoch session $ \epoch ->
+                        fmap (fmap fst) (interpretRecordedSessions session epoch manifest fenced permit))
+                    interpretedRecoveryOperations interpreted @?= [OperationAbandonedRetryable "op-1" "EffectAbsent"]
+                    (_, _, abandoned) <- sessionOperationRecord store sess "op-1"
+                    transactionRecordPayload abandoned @?= encodeFields ["RecoveryAbandoned", sessionIdText (operationSessionId sess), "2", "18446744073709551615"]
+                    closed <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+                    map manifestSessionIsOpen (manifestSessions closed) @?= [False]
+           ]
+
+numericOperationMutations :: [(String, Text -> [Text])]
+numericOperationMutations =
+    [ ("a corrupt retryable fence", \sid -> ["EffectAbsent", sid, "x", "1"])
+    , ("a missing retryable fence", \sid -> ["EffectAbsent", sid, "", "1"])
+    , ("a noncanonical retryable fence", \sid -> ["EffectAbsent", sid, "01", "1"])
+    , ("a corrupt continuable attempt", \sid -> ["Reserved", sid, "1", "x"])
+    , ("a missing continuable attempt", \sid -> ["Reserved", sid, "1"])
+    , ("a noncanonical continuable attempt", \sid -> ["Reserved", sid, "1", "01"])
+    ]
+
+numericPrepareRefusal :: (Text -> [Text]) -> IO ()
+numericPrepareRefusal fields =
+    withStore $ \store -> do
+        SomePrepareInput epoch sess fence permit <- numericRetryFixture store True
+        (key, seeded) <- seedNumericOperation store sess (fields (sessionIdText (operationSessionId sess)))
+        live <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+        projectPermitVersion live @?= projectPermitVersion permit
+        callbacks <- newIORef (0 :: Int)
+        before <- protectedImage store
+        refused <- inEntry store $ \session ->
+            withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" permit $ \gate _ -> do
+                modifyIORef' callbacks (+ 1)
+                pure (Right (preparedGateAttempt gate))
+        refused @?= Left (SessionRecordCorrupt "operation record")
+        readIORef callbacks >>= (@?= 0)
+        assertNumericOperationUnchanged store key seeded before
+
+numericRecoveryRefusal :: (Text -> [Text]) -> IO ()
+numericRecoveryRefusal fields =
+    withStore $ \store -> withNumericRecoveryInput store $ \sess fenced manifest permit -> do
+        (key, seeded) <- seedNumericOperation store sess (fields (sessionIdText (operationSessionId sess)))
+        before <- protectedImage store
+        refused <- inEntry store $ \session -> withEpoch session $ \epoch ->
+            (() <$) <$> interpretRecordedSessions session epoch manifest fenced permit
+        refused @?= Left (SessionRecordCorrupt "operation record")
+        assertNumericOperationUnchanged store key seeded before
+
+-- Each fixture starts with a real EffectAbsent acknowledgement and its successor.
+numericRetryFixture :: ProtectedStore -> Bool -> IO SomePrepareInput
+numericRetryFixture store fresh =
+    expect =<< inEntry store (\session ->
+        withPrepared session $ \epoch sess fence gate prepared -> do
+            advance <- expect =<< acknowledgeOutcome session sess gate "EffectAbsent" () prepared
+            withOperationAdvance advance $ \() permit -> do
+                liveFence <- if fresh then expect =<< rotateFence session plan fence else pure fence
+                fenceEpochWord liveFence @?= if fresh then 2 else 1
+                pure (Right (SomePrepareInput epoch sess liveFence permit)))
+
+-- Fence/manifest production precedes corruption; the refusal baseline excludes
+-- those legitimate setup writes and covers one session with one operation.
+withNumericRecoveryInput ::
+    ProtectedStore ->
+    ( forall scope planId.
+      OperationSession scope planId ->
+      OldPermitsFenced scope planId ->
+      VerifiedSessionManifest scope planId ->
+      ProjectPermit scope planId ->
+      IO result
+    ) ->
+    IO result
+withNumericRecoveryInput store use = do
+    SomeOpenSession sess _ <- terminalSessionFixture store "EffectOutcomeUnknown" "EffectAbsent"
+    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+    oldPermitsFencedFrom fenced @?= 1
+    oldPermitsFencedTo fenced @?= 2
+    manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+    [(sessionIdText (manifestSessionId member), manifestSessionOperations member) | member <- manifestSessions manifest]
+        @?= [("session-a", ["op-1"])]
+    permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+    use sess fenced manifest permit
+
+seedNumericOperation :: ProtectedStore -> OperationSession scope planId -> [Text] -> IO (RecordKey, ProtectedRecord)
+seedNumericOperation store sess fields = do
+    (key, original, target) <- sessionOperationRecord store sess "op-1"
+    transactionRecordPayload target @?= encodeFields ["EffectAbsent", sessionIdText (operationSessionId sess), "1", "1"]
+    stamp <- maybe (assertFailure "the numeric fixture operation has no transaction stamp") pure (transactionRecordStamp target)
+    let payload = encodeFields fields
+        bytes = stampTarget stamp payload
+    version <- rewriteRecordBytes store key (const bytes)
+    assertBool "the numeric fixture CAS advances the physical version" (version > recordVersionWord (protectedRecordVersion original))
+    (actualKey, seeded, readable) <- sessionOperationRecord store sess "op-1"
+    actualKey @?= key
+    protectedRecordBytes seeded @?= bytes
+    recordVersionWord (protectedRecordVersion seeded) @?= version
+    transactionRecordStamp readable @?= Just stamp
+    transactionRecordPayload readable @?= payload
+    pure (key, seeded)
+
+assertNumericOperationUnchanged :: ProtectedStore -> RecordKey -> ProtectedRecord -> ProtectedImage -> IO ()
+assertNumericOperationUnchanged store key seeded before = do
+    after <- readRequiredRecord store key
+    protectedRecordBytes after @?= protectedRecordBytes seeded
+    protectedRecordVersion after @?= protectedRecordVersion seeded
+    protectedImage store >>= (@?= before)
+
+-- ---------------------------------------------------------------------------
+-- Canonical transaction wire
+
+transactionWireTests :: [TestTree]
+transactionWireTests =
+    [ testCase "Unicode descriptor data uses exact UTF-8 in both codec directions" unicodeTransactionDataCase
+    , testCase "a Cyrillic session identity retains the public ASCII refusal" unicodeSessionIdentityCase
+    , testCase "canonical Idle zero and bounded sequences are observed without writes" canonicalIdleWireCase
+    , testCase "an actual ASCII Applying session recovers its sole exact target" canonicalApplyingWireCase
+    , testCase "stamped and unstamped target payloads preserve opaque bytes" opaqueTransactionTargetCase
+    , testCase "invalid coordinator UTF-8 refuses before target observation" $
+        withWireProject $ \store coordinator _ ->
+            assertJournalWireRefusal store coordinator ("transaction-v1\tidle\t" <> ByteString.pack [0xff]) "transaction text is not UTF-8"
+    ]
+        <> map
+            ( \(label, raw) ->
+                testCase ("an Idle sequence refuses " <> label) $
+                    withWireProject $ \store coordinator _ ->
+                        assertJournalWireRefusal store coordinator ("transaction-v1\tidle\t" <> raw) "the Idle sequence is invalid"
+            )
+            [ ("a negative sign", "-1")
+            , ("a positive sign", "+7")
+            , ("hexadecimal", "0x7")
+            , ("parentheses", "(7)")
+            , ("leading whitespace", " 7")
+            , ("trailing whitespace", "7 ")
+            , ("a leading zero", "07")
+            , ("Word64 overflow", "18446744073709551616")
+            , ("twenty-one digits", "100000000000000000000")
+            ]
+        <> [ testCase "Applying sequence count and expectations require canonical numbers" applyingWireNumbersCase
+           , testCase "an overflowing target stamp cannot wrap to one" $
+                withWireProject $ \store _ project ->
+                    assertJournalWireRefusal store project "hbtx-target-v1\t18446744073709551617\nopen" "a stamped target has an invalid transaction id"
+           , testCase "recognized target envelopes require canonical positive stamps and a newline" recognizedStampWireCase
+           , testCase "an otherwise valid coordinator refuses a trailing newline" $
+                withWireProject $ \store coordinator _ ->
+                    assertJournalWireRefusal store coordinator "transaction-v1\tidle\t7\n" "the coordinator record is not canonical"
+           , testCase "otherwise valid Applying payload hex must retain its lowercase spelling" uppercaseApplyingHexCase
+           ]
+
+unicodeTransactionDataCase :: IO ()
+unicodeTransactionDataCase = do
+    -- This descriptor is scalar codec data, not an admitted plan or redo request.
+    let unicodePlan = "data-с"
+        descriptor = TransactionDescriptor 7 unicodePlan TxnOpenSession []
+        expected = "transaction-v1\tapplying\t7\topen-session\tdata-" <> ByteString.pack [0xd1, 0x81] <> "\t0"
+        actual = encodeCoordinator (CoordinatorApplying descriptor)
+    actual @?= expected
+    decoded <- expect (decodeCoordinator actual)
+    decoded @?= CoordinatorApplying descriptor
+    case decoded of
+        CoordinatorApplying observed -> descriptorPlan observed @?= unicodePlan
+        CoordinatorIdle _ -> assertFailure "Unicode Applying data decoded as Idle"
+    encodeCoordinator decoded @?= expected
+
+unicodeSessionIdentityCase :: IO ()
+unicodeSessionIdentityCase =
+    withStore $ \store -> do
+        SomePrepareInput epoch _ _ permit <- prepareInputFixture store
+        before <- protectedImage store
+        refused <- inEntry store $ \session ->
+            (() <$) <$> openOperationSession session epoch plan "session-с" permit
+        refused
+            @?= Left
+                ( SessionStoreFailure
+                    (ProtectedInvalid "record name session-с may contain only ASCII alphanumerics, '-', '_', '.', '/', and one ':' per segment")
+                )
+        protectedImage store >>= (@?= before)
+
+withWireProject :: (ProtectedStore -> RecordKey -> RecordKey -> IO ()) -> IO ()
+withWireProject use =
+    withStore $ \store -> do
+        _ <- openProjectFixture store
+        coordinator <- expect (coordinatorKey plan)
+        (project, _) <- soleRecordWithPrefix store "project."
+        use store coordinator project
+
+canonicalIdleWireCase :: IO ()
+canonicalIdleWireCase =
+    withWireProject $ \store coordinator _ ->
+        mapM_
+            ( \(sequenceNumber, expected) -> do
+                let encoded = encodeCoordinator (CoordinatorIdle sequenceNumber)
+                encoded @?= expected
+                version <- rewriteRecordBytes store coordinator (const encoded)
+                seeded <- readRequiredRecord store coordinator
+                protectedRecordBytes seeded @?= expected
+                recordVersionWord (protectedRecordVersion seeded) @?= version
+                decodeCoordinator expected @?= Right (CoordinatorIdle sequenceNumber)
+                before <- protectedImage store
+                permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+                projectPermitVersion permit @?= version
+                protectedImage store >>= (@?= before)
+            )
+            [ (0, "transaction-v1\tidle\t0")
+            , (7, "transaction-v1\tidle\t7")
+            , (maxBound, "transaction-v1\tidle\t18446744073709551615")
+            ]
+
+assertJournalWireRefusal :: ProtectedStore -> RecordKey -> ByteString -> Text -> IO ()
+assertJournalWireRefusal store key bytes reason = do
+    version <- rewriteRecordBytes store key (const bytes)
+    seeded <- readRequiredRecord store key
+    protectedRecordBytes seeded @?= bytes
+    recordVersionWord (protectedRecordVersion seeded) @?= version
+    before <- protectedImage store
+    refused <- inEntry store (\session -> (() <$) <$> openProjectJournal session plan)
+    refused @?= Left (SessionRecordCorrupt reason)
+    after <- readRequiredRecord store key
+    protectedRecordBytes after @?= bytes
+    protectedRecordVersion after @?= protectedRecordVersion seeded
+    protectedImage store >>= (@?= before)
+
+-- The new session target was absent before this real transition. Rebuilding
+-- that expectation needs no existing-target version reconstruction; this case
+-- does not certify the other interruption fixtures' faithfulness.
+withWireApplying :: (ProtectedStore -> TransactionDescriptor -> PublishedTransaction -> IO ()) -> IO ()
+withWireApplying use =
+    withStore $ \store -> do
+        SomeProjectPermit current <- openProjectFixture store
+        published <- newIORef Nothing
+        reopened <-
+            withInterruptedTransaction AfterApplying TxnOpenSession store $ do
+                runEntry store $ \session -> withEpoch session $ \epoch ->
+                    (() <$) <$> openOperationSession session epoch plan "session-a" current
+                captured <- publishedTransaction store
+                modifyIORef' published (const (Just captured))
+        captured <- readIORef published >>= maybe (assertFailure "the real session transition was not captured") pure
+        coordinator <- expect (coordinatorKey plan)
+        applying <- readRequiredRecord reopened coordinator
+        decoded <- expect (decodeCoordinator (protectedRecordBytes applying))
+        encodeCoordinator decoded @?= protectedRecordBytes applying
+        case decoded of
+            CoordinatorIdle _ -> assertFailure "the interruption did not retain Applying"
+            CoordinatorApplying descriptor -> do
+                descriptorSequence descriptor @?= publishedSequence captured
+                descriptorPlan descriptor @?= plan
+                descriptorKind descriptor @?= TxnOpenSession
+                use reopened descriptor captured
+
+canonicalApplyingWireCase :: IO ()
+canonicalApplyingWireCase =
+    withWireApplying $ \store descriptor captured -> do
+        encodedPlan <- expect (mkRecordName plan)
+        encodedSession <- expect (mkRecordName "session-a")
+        expectedKey <- recordKeyFor ("session." <> encodedPlan <> recordTupleSeparator <> encodedSession)
+        (capturedKey, capturedPayload) <- case publishedTargets captured of
+            [target] -> pure target
+            _ -> assertFailure "the real session transition must publish exactly one target"
+        capturedKey @?= expectedKey
+        publishedSequence captured @?= 2
+        coordinator <- expect (coordinatorKey plan)
+        applying <- readRequiredRecord store coordinator
+        protectedRecordBytes applying @?= encodeCoordinator (CoordinatorApplying descriptor)
+        before <- protectedImage store
+        Map.lookup (recordKeyText expectedKey) before @?= Nothing
+        permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+        materialized <- readRequiredRecord store expectedKey
+        protectedRecordBytes materialized @?= stampTarget 2 capturedPayload
+        targetResult <- withProtectedEntry store (\session -> Right <$> readTransactionRecord session expectedKey)
+        target <- expect targetResult >>= expect >>= maybe (assertFailure "the recovered session target disappeared") pure
+        transactionRecordStamp target @?= Just 2
+        transactionRecordPayload target @?= capturedPayload
+        transactionRecordVersion target @?= protectedRecordVersion materialized
+        after <- protectedImage store
+        Map.keys (Map.filterWithKey (\key _ -> "session." `Text.isPrefixOf` key) after) @?= [recordKeyText expectedKey]
+        committed <- readRequiredRecord store coordinator
+        protectedRecordBytes committed @?= "transaction-v1\tidle\t2"
+        projectPermitVersion permit @?= recordVersionWord (protectedRecordVersion committed)
+
+opaqueTransactionTargetCase :: IO ()
+opaqueTransactionTargetCase =
+    withStore $ \store -> do
+        key <- recordKeyFor "wire-target"
+        let payload = ByteString.pack [0xff, 0, 9, 10, 65]
+            stamped = stampTarget 7 payload
+            maximumStamp = stampTarget maxBound payload
+        stamped @?= "hbtx-target-v1\t7\n" <> payload
+        maximumStamp @?= "hbtx-target-v1\t18446744073709551615\n" <> payload
+        written <- withProtectedEntry store (\session -> compareAndSwapProtectedRecord session key ExpectAbsent payload)
+        _ <- expect written
+        mapM_
+            ( \(bytes, stamp) -> do
+                version <- rewriteRecordBytes store key (const bytes)
+                seeded <- readRequiredRecord store key
+                protectedRecordBytes seeded @?= bytes
+                recordVersionWord (protectedRecordVersion seeded) @?= version
+                before <- protectedImage store
+                observed <- withProtectedEntry store (\session -> Right <$> readTransactionRecord session key)
+                target <- expect observed >>= expect >>= maybe (assertFailure "the opaque target disappeared") pure
+                transactionRecordStamp target @?= stamp
+                transactionRecordPayload target @?= payload
+                transactionRecordVersion target @?= protectedRecordVersion seeded
+                protectedImage store >>= (@?= before)
+            )
+            [(payload, Nothing), (stamped, Just 7), (maximumStamp, Just maxBound)]
+
+applyingWireNumbersCase :: IO ()
+applyingWireNumbersCase =
+    withWireApplying $ \store descriptor _ -> do
+        coordinator <- expect (coordinatorKey plan)
+        case map (ByteString.split 9) (ByteStringChar8.lines (encodeCoordinator (CoordinatorApplying descriptor))) of
+            [[magic, state, sequenceNumber, kind, planText, count], [target, role, key, expectation, payload]] -> do
+                let wire number cardinality expected =
+                        ByteString.intercalate "\t" [magic, state, number, kind, planText, cardinality]
+                            <> "\n"
+                            <> ByteString.intercalate "\t" [target, role, key, expected, payload]
+                mapM_
+                    (\(bytes, reason) -> assertJournalWireRefusal store coordinator bytes reason)
+                    [ (wire "02" count expectation, "the Applying sequence is invalid")
+                    , (wire sequenceNumber "01" expectation, "the target count is invalid")
+                    , (wire sequenceNumber count "version:01", "a target expectation is invalid")
+                    , (wire sequenceNumber count "exact:01:6f70656e", "an exact target expectation is invalid")
+                    ]
+            _ -> assertFailure "the real one-target Applying encoding has an unexpected shape"
+
+recognizedStampWireCase :: IO ()
+recognizedStampWireCase =
+    withWireProject $ \store _ project ->
+        mapM_
+            (\(bytes, reason) -> assertJournalWireRefusal store project bytes reason)
+            [ ("hbtx-target-v1\t1", "a stamped target is not canonical")
+            , ("hbtx-target-v1\t01\nopen", "a stamped target has an invalid transaction id")
+            , ("hbtx-target-v1\t+1\nopen", "a stamped target has an invalid transaction id")
+            , ("hbtx-target-v1\t0\nopen", "a stamped target has an invalid transaction id")
+            , ("hbtx-target-v1\nopen", "a stamped target has no transaction id")
+            ]
+
+uppercaseApplyingHexCase :: IO ()
+uppercaseApplyingHexCase =
+    withWireApplying $ \store descriptor _ -> do
+        coordinator <- expect (coordinatorKey plan)
+        case ByteStringChar8.lines (encodeCoordinator (CoordinatorApplying descriptor)) of
+            [header, targetLine] -> case ByteString.split 9 targetLine of
+                [target, role, key, expectation, payload] -> do
+                    let uppercase = ByteString.map (\byte -> if byte >= 97 && byte <= 102 then byte - 32 else byte) payload
+                        changed = header <> "\n" <> ByteString.intercalate "\t" [target, role, key, expectation, uppercase]
+                    assertBool "the actual valid payload hex contains a changed letter" (uppercase /= payload)
+                    assertJournalWireRefusal store coordinator changed "the coordinator record is not canonical"
+                _ -> assertFailure "the actual session target does not have five wire fields"
+            _ -> assertFailure "the actual Applying encoding does not have one target line"
 
 -- ---------------------------------------------------------------------------
 -- Recoverable lifecycle transactions
@@ -2983,9 +4604,251 @@ transactionRecoveryTests =
         , map recordProjectClosedRecoveryCase oneTargetPoints
         ]
         <> [ testCase "exact session membership ignores an unregistered prefix-shaped record" exactMembershipCase
-           , testCase "a prepare/session-close race yields exactly one successor permit" prepareCloseRaceCase
+           , testCase "an acknowledged prepare excludes close with its retained permit" acknowledgedPrepareExcludesCloseCase
+           , testCase "a closed session excludes prepare with its pre-close permit" closedPermitExcludesPrepareCase
            , testCase "the reproduced interruption is the transition's own descriptor" faithfulDescriptorCase
+           , testGroup "plan-bound transaction redo" transactionRedoRefusalTests
+           , testGroup
+                "Production target identity framing"
+                ( [ testCase (show kind <> " " <> Text.unpack identity) $ do
+                        encoded <- expect (mkRecordName identity)
+                        productionTargetIdentityCase kind encoded encoded encoded recordTupleSeparator True
+                  | kind <- [TxnFinalizeProductionProject, TxnFinalizeProductionPreEffect]
+                  , identity <- ["Build", "build", "a_b", "aB"]
+                  ]
+                    <> [ testCase "a case-mixed lease target refuses before materialization" $
+                            productionTargetIdentityCase TxnFinalizeProductionPreEffect "_build" "build" "_build" recordTupleSeparator False
+                       , testCase "an underscore-mixed lease target refuses before materialization" $
+                            productionTargetIdentityCase TxnFinalizeProductionPreEffect "a__b" "a_b" "a__b" recordTupleSeparator False
+                       , testCase "a mixed reverse-intent target refuses before materialization" $
+                            productionTargetIdentityCase TxnFinalizeProductionProject "_build" "_build" "build" recordTupleSeparator False
+                       , testCase "a noncanonical mode identity refuses before materialization" $
+                            productionTargetIdentityCase TxnFinalizeProductionProject "a_" "a_" "a_" recordTupleSeparator False
+                       , testCase "a historical lease separator refuses before materialization" $
+                            productionTargetIdentityCase TxnFinalizeProductionProject "alpha" "alpha" "alpha" "." False
+                       ]
+                )
+           , testCase "a historical session plan separator refuses before materialization" historicalSessionTargetCase
            ]
+
+-- | The package-private seam supplies only an interrupted durable descriptor.
+-- Recovery runs through the public journal reader; the fixture creates no
+-- transaction permit or installed-project authority.
+transactionRedoRefusalTests :: [TestTree]
+transactionRedoRefusalTests =
+    [ testCase "an Applying descriptor cannot name another coordinator" foreignCoordinatorDescriptorCase
+    , testCase "an Applying target cannot escape its transaction plan" outOfPlanRedoTargetCase
+    , testCase "RegisterIntent target order matches its closed kind" reversedRegisterTargetsCase
+    , testCase "a third-state Session target refuses redo" thirdStateSessionTargetCase
+    , testCase "a Production conflict retains the descriptor sequence" productionConflictSequenceCase
+    ]
+
+readApplyingDescriptor :: ProtectedStore -> IO (TransactionDescriptor, ProtectedRecord)
+readApplyingDescriptor store = do
+    key <- expect (coordinatorKey plan)
+    record <- readRequiredRecord store key
+    decoded <- expect (decodeCoordinator (protectedRecordBytes record))
+    encodeCoordinator decoded @?= protectedRecordBytes record
+    case decoded of
+        CoordinatorApplying descriptor -> pure (descriptor, record)
+        CoordinatorIdle _ -> assertFailure "the actual coordinator is not Applying"
+
+assertRedoRefusal :: ProtectedStore -> TransactionDescriptor -> SessionError -> IO ()
+assertRedoRefusal store descriptor failure = do
+    key <- expect (coordinatorKey plan)
+    let bytes = encodeCoordinator (CoordinatorApplying descriptor)
+    version <- rewriteRecordBytes store key (const bytes)
+    record <- readRequiredRecord store key
+    protectedRecordBytes record @?= bytes
+    recordVersionWord (protectedRecordVersion record) @?= version
+    decodeCoordinator bytes @?= Right (CoordinatorApplying descriptor)
+    before <- protectedImage store
+    refused <- inEntry store (\session -> (() <$) <$> openProjectJournal session plan)
+    refused @?= Left failure
+    protectedImage store >>= (@?= before)
+
+withOtherProjectTarget :: (ProtectedStore -> RecordKey -> TransactionRecord -> IO ()) -> IO ()
+withOtherProjectTarget use =
+    withWireProject $ \store _ _ -> do
+        runEntry store $ \session -> (() <$) <$> openProjectJournal session "other-plan"
+        encoded <- expect (mkRecordName "other-plan")
+        key <- recordKeyFor ("project." <> encoded)
+        target <- readLiveTarget store key
+        use store key target
+
+foreignCoordinatorDescriptorCase :: IO ()
+foreignCoordinatorDescriptorCase =
+    withOtherProjectTarget $ \store key target -> do
+        let descriptor =
+                TransactionDescriptor 17 "other-plan" TxnBeginProjectClose
+                    [projectTransactionTarget key (Just target) (encodeFields ["closing", "7"])]
+        assertRedoRefusal store descriptor (SessionRecordCorrupt "a descriptor names another coordinator")
+
+outOfPlanRedoTargetCase :: IO ()
+outOfPlanRedoTargetCase =
+    withOtherProjectTarget $ \store key target -> do
+        let descriptor =
+                TransactionDescriptor 17 plan TxnOpenProject
+                    [projectTransactionTarget key (Just target) (encodeFields ["open"])]
+        assertRedoRefusal store descriptor
+            (SessionTransactionFailure "transaction: invalid open-project descriptor: a target key is outside the transaction plan")
+
+reversedRegisterTargetsCase :: IO ()
+reversedRegisterTargetsCase =
+    withStore $ \store -> do
+        SomeOpenSession sess permit <- openSessionFixture store
+        reopened <-
+            withInterruptedTransaction AfterApplying TxnRegisterIntent store $
+                runEntry store $ \session -> (() <$) <$> registerOperationIntent session sess "op-1" NoHistory permit
+        (descriptor, _) <- readApplyingDescriptor reopened
+        descriptorKind descriptor @?= TxnRegisterIntent
+        reversed <- case descriptorTargets descriptor of
+            [operation, member] -> pure [member, operation]
+            _ -> assertFailure "the real RegisterIntent descriptor does not have two targets"
+        assertRedoRefusal reopened descriptor{descriptorTargets = reversed}
+            (SessionTransactionFailure "transaction: invalid register-intent descriptor: the target roles do not match the closed transaction kind")
+
+thirdStateSessionTargetCase :: IO ()
+thirdStateSessionTargetCase =
+    withStore $ \store -> do
+        SomeProjectPermit permit <- openProjectFixture store
+        reopened <-
+            withInterruptedTransaction AfterApplying TxnBeginProjectClose store $
+                runEntry store $ \session -> (() <$) <$> beginClosingProject session plan 7 permit
+        (descriptor, _) <- readApplyingDescriptor reopened
+        descriptorKind descriptor @?= TxnBeginProjectClose
+        descriptorSequence descriptor @?= 2
+        (key, _) <- soleRecordWithPrefix reopened "project."
+        _ <- rewriteStampedPayload reopened key ["closed"]
+        assertRedoRefusal reopened descriptor
+            (SessionTransactionFailure ("transaction: target " <> recordKeyText key <> " conflicts while redoing transaction 2"))
+
+productionConflictSequenceCase :: IO ()
+productionConflictSequenceCase =
+    withWireProject $ \store _ projectKey -> do
+        -- These canonical records are seeded admission inputs. They do not
+        -- claim a genuine Production finalizer or any reverse authority.
+        modeKey <- recordKeyFor "mode.alpha"
+        leaseKey <- recordKeyFor ("lease.alpha" <> recordTupleSeparator <> "production")
+        let originalMode = encodeFields ["production", "7"]
+            originalLease = encodeFields ["unbound", "7"]
+            closedLease = encodeFields ["closed", "7"]
+        seeded <- withProtectedEntry store $ \session -> do
+            modeVersion <- expect =<< compareAndSwapProtectedRecord session modeKey ExpectAbsent originalMode
+            leaseVersion <- expect =<< compareAndSwapProtectedRecord session leaseKey ExpectAbsent originalLease
+            mode <- readProtectedRecord session modeKey >>= expect >>= maybe (assertFailure "the seeded Mode record disappeared") pure
+            lease <- readProtectedRecord session leaseKey >>= expect >>= maybe (assertFailure "the seeded lease disappeared") pure
+            protectedRecordVersion mode @?= modeVersion
+            protectedRecordVersion lease @?= leaseVersion
+            pure (Right (mode, lease))
+        (mode, lease) <- expect seeded
+        project <- readLiveTarget store projectKey
+        let payload = transactionRecordPayload project
+            descriptor =
+                TransactionDescriptor 41 plan TxnFinalizeProductionPreEffect
+                    [ projectTransactionTarget projectKey (Just project) payload
+                    , productionLeaseTransactionTarget leaseKey lease closedLease
+                    , productionModeTransactionTarget modeKey mode
+                    ]
+        prefixVersion <- rewriteRecordBytes store projectKey (const (stampTarget 41 payload))
+        prefix <- readLiveTarget store projectKey
+        transactionRecordStamp prefix @?= Just 41
+        transactionRecordPayload prefix @?= payload
+        recordVersionWord (transactionRecordVersion prefix) @?= prefixVersion
+        changedVersion <- rewriteRecordBytes store leaseKey id
+        changed <- readRequiredRecord store leaseKey
+        protectedRecordBytes changed @?= originalLease
+        recordVersionWord (protectedRecordVersion changed) @?= changedVersion
+        changedVersion @?= recordVersionWord (protectedRecordVersion lease) + 1
+        -- The earlier valid project prefix precedes the preservation baseline
+        -- inside assertRedoRefusal; this does not assert batch rollback.
+        assertRedoRefusal store descriptor
+            (SessionTransactionFailure ("transaction: target " <> recordKeyText leaseKey <> " conflicts while redoing transaction 41"))
+
+productionTargetIdentityCase :: TxnKind -> Text -> Text -> Text -> Text -> Bool -> IO ()
+productionTargetIdentityCase kind modeProject leaseProject intentProject leaseSeparator admitted =
+    withStore $ \store -> do
+        runEntry store $ \session -> (() <$) <$> openProjectJournal session plan
+        encodedPlan <- expect (mkRecordName plan)
+        journalKey <- recordKeyFor ("project." <> encodedPlan)
+        modeKey <- recordKeyFor ("mode." <> modeProject)
+        leaseKey <- recordKeyFor ("lease." <> leaseProject <> leaseSeparator <> "production")
+        intentKey <- recordKeyFor ("reverse-root." <> intentProject <> ".production")
+        let originalMode = encodeFields ["production", "7"]
+            originalLease = encodeFields ["unbound", "7"]
+            closedLease = encodeFields ["closed", "7"]
+            originalIntent = "original-intent"
+            closedIntent = "closed-intent"
+            fullClose = kind == TxnFinalizeProductionProject
+        installed <- withProtectedEntry store $ \session -> do
+            let seed key bytes = do
+                    _ <- expect =<< compareAndSwapProtectedRecord session key ExpectAbsent bytes
+                    present <- expect =<< readProtectedRecord session key
+                    maybe (assertFailure "a seeded target disappeared") pure present
+            modeRecord <- seed modeKey originalMode
+            leaseRecord <- seed leaseKey originalLease
+            intentTargets <-
+                if fullClose
+                    then do
+                        intentRecord <- seed intentKey originalIntent
+                        pure [productionIntentTransactionTarget intentKey intentRecord closedIntent]
+                    else pure []
+            journal <- expect =<< readTransactionRecord session journalKey
+            observedJournal <- maybe (assertFailure "the real project journal disappeared") pure journal
+            let targets =
+                    [projectTransactionTarget journalKey journal (transactionRecordPayload observedJournal)]
+                        <> intentTargets
+                        <> [ productionLeaseTransactionTarget leaseKey leaseRecord closedLease
+                           , productionModeTransactionTarget modeKey modeRecord
+                           ]
+            coord <- expect (coordinatorKey plan)
+            current <- expect =<< readProtectedRecord session coord
+            coordinator <- maybe (assertFailure "the real coordinator disappeared") pure current
+            _ <- expect =<< compareAndSwapProtectedRecord session coord (ExpectVersion (protectedRecordVersion coordinator)) (encodeCoordinator (CoordinatorApplying (TransactionDescriptor 2 plan kind targets)))
+            pure (Right ())
+        _ <- expect installed
+        before <- protectedImage store
+        recovered <- inEntry store (\session -> readProjectJournalState session plan)
+        if admitted
+            then do
+                recovered @?= Right OpenProject
+                after <- protectedImage store
+                Map.lookup (recordKeyText modeKey) after @?= Nothing
+                fmap snd (Map.lookup (recordKeyText leaseKey) after) @?= Just closedLease
+                if fullClose
+                    then fmap snd (Map.lookup (recordKeyText intentKey) after) @?= Just closedIntent
+                    else pure ()
+                coord <- expect (coordinatorKey plan)
+                fmap snd (Map.lookup (recordKeyText coord) after) @?= Just (encodeCoordinator (CoordinatorIdle 2))
+            else do
+                case recovered of
+                    Left (SessionTransactionFailure reason) ->
+                        assertBool "the exact Production identity guard refused" ("Production targets do not name one exact project generation" `Text.isInfixOf` reason)
+                    other -> assertFailure ("expected the exact target identity refusal, got " <> show other)
+                protectedImage store >>= (@?= before)
+
+historicalSessionTargetCase :: IO ()
+historicalSessionTargetCase =
+    withStore $ \store -> do
+        runEntry store $ \session -> (() <$) <$> openProjectJournal session plan
+        encodedPlan <- expect (mkRecordName plan)
+        historical <- recordKeyFor ("session." <> encodedPlan <> ".other")
+        installed <- withProtectedEntry store $ \session -> do
+            coord <- expect (coordinatorKey plan)
+            current <- expect =<< readProtectedRecord session coord
+            coordinator <- maybe (assertFailure "the real coordinator disappeared") pure current
+            let target = sessionTransactionTarget historical Nothing "not materialized"
+                descriptor = TransactionDescriptor 2 plan TxnOpenSession [target]
+            _ <- expect =<< compareAndSwapProtectedRecord session coord (ExpectVersion (protectedRecordVersion coordinator)) (encodeCoordinator (CoordinatorApplying descriptor))
+            pure (Right ())
+        _ <- expect installed
+        before <- protectedImage store
+        refused <- inEntry store (\session -> readProjectJournalState session plan)
+        case refused of
+            Left (SessionTransactionFailure reason) ->
+                assertBool "the exact plan boundary refused" ("a target key is outside the transaction plan" `Text.isInfixOf` reason)
+            other -> assertFailure ("expected historical session target refusal, got " <> show other)
+        protectedImage store >>= (@?= before)
 
 oneTargetPoints :: [InterruptionPoint]
 oneTargetPoints =
@@ -3006,14 +4869,20 @@ openProjectRecoveryCase :: InterruptionPoint -> TestTree
 openProjectRecoveryCase point =
     testCase ("open project recovers when " <> show point) $
         withStore $ \store -> do
+            completedVersion <- newIORef Nothing
             reopened <-
                 withInterruptedTransaction point TxnOpenProject store $
-                    runEntry store $ \session ->
-                        fmap (fmap (const ())) (openProjectJournal session plan)
-            permit <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
-            assertBool "recovery returns the committed successor permit" (projectPermitVersion permit > 0)
+                    runEntry store $ \session -> do
+                        permit <- expect =<< openProjectJournal session plan
+                        modifyIORef' completedVersion (const (Just (projectPermitVersion permit)))
+                        pure (Right ())
             state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
             state @?= OpenProject
+            expected <- readIORef completedVersion >>= maybe (assertFailure "the uninterrupted project permit was not captured") pure
+            beforeOpen <- protectedImage reopened
+            permit <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
+            projectPermitVersion permit @?= expected
+            protectedImage reopened >>= (@?= beforeOpen)
 
 openSessionRecoveryCase :: InterruptionPoint -> TestTree
 openSessionRecoveryCase point =
@@ -3161,7 +5030,7 @@ exactMembershipCase =
                     ( either
                         (Left . SessionStoreFailure)
                         Right
-                        (mkRecordKey ("op." <> planKeyDigest <> ".session-a.stray"))
+                        (testOperationKey "session-a" "stray")
                     )
             case key of
                 Left failure -> pure (Left failure)
@@ -3180,53 +5049,47 @@ exactMembershipCase =
         proof <- expect verified
         allSessionsClosedCount proof @?= 1
 
-prepareCloseRaceCase :: IO ()
-prepareCloseRaceCase =
+acknowledgedPrepareExcludesCloseCase :: IO ()
+acknowledgedPrepareExcludesCloseCase =
     withStore $ \store -> do
-        SomePrepareInput epoch sess fence permit <- prepareInputFixture store
-        start <- newEmptyMVar
-        prepareResult <- newEmptyMVar
-        closeResult <- newEmptyMVar
+        SomeSettledSession _ sess _ _ beforePrepare acknowledged <- settledSessionFixture store
+        (key, committed, target) <- sessionOperationRecord store sess "op-1"
+        transactionRecordPayload target @?= encodeFields ["Committed", sessionIdText (operationSessionId sess), "1", "1"]
+        before <- protectedImage store
+        refused <- inEntry store $ \session -> (() <$) <$> closeOperationSession session sess beforePrepare
+        refused @?= Left (SessionStaleProjectPermit (projectPermitVersion beforePrepare))
+        manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+        map manifestSessionIsOpen (manifestSessions manifest) @?= [True]
+        protectedImage store >>= (@?= before)
+        closed <- expect =<< inEntry store (\session -> closeOperationSession session sess acknowledged)
+        assertBool "the live acknowledgement successor authorizes close" (projectPermitVersion closed > projectPermitVersion acknowledged)
+        final <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+        map manifestSessionIsOpen (manifestSessions final) @?= [False]
+        after <- readRequiredRecord store key
+        protectedRecordBytes after @?= protectedRecordBytes committed
+        protectedRecordVersion after @?= protectedRecordVersion committed
+        observed <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+        projectPermitVersion observed @?= projectPermitVersion closed
 
-        _ <-
-            forkFinally
-                ( do
-                    takeMVar start
-                    inEntry store $ \session ->
-                        withPreparedGate
-                            session
-                            sess
-                            epoch
-                            fence
-                            "op-1"
-                            "EffectOutcomeUnknown"
-                            permit
-                            (\_ _ -> pure (Right ()))
-                )
-                (putMVar prepareResult)
-        _ <-
-            forkFinally
-                ( do
-                    takeMVar start
-                    inEntry store $ \session ->
-                        fmap (fmap (const ())) (closeOperationSession session sess permit)
-                )
-                (putMVar closeResult)
-
-        putMVar start ()
-        putMVar start ()
-        preparedThread <- takeMVar prepareResult
-        closedThread <- takeMVar closeResult
-        prepared <- either (assertFailure . show) pure preparedThread
-        closed <- either (assertFailure . show) pure closedThread
-        assertBool
-            ("expected exactly one successor permit, got prepare=" <> show prepared <> ", close=" <> show closed)
-            (isRight prepared /= isRight closed)
-        assertBool "the registered continuable operation lets prepare win" (isRight prepared)
-
-        reopened <- reopenStore store
-        current <- inEntry reopened (\session -> openProjectJournal session plan)
-        assertBool "reopening observes the committed successor" (isRight current)
+closedPermitExcludesPrepareCase :: IO ()
+closedPermitExcludesPrepareCase =
+    withStore $ \store -> do
+        SomeSettledSession epoch sess fence _ _ acknowledged <- settledSessionFixture store
+        closed <- expect =<< inEntry store (\session -> closeOperationSession session sess acknowledged)
+        assertBool "closing advances the shared project permit" (projectPermitVersion closed > projectPermitVersion acknowledged)
+        manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+        map manifestSessionIsOpen (manifestSessions manifest) @?= [False]
+        callbacks <- newIORef (0 :: Int)
+        before <- protectedImage store
+        refused <- inEntry store $ \session ->
+            withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" acknowledged $ \_ _ -> do
+                modifyIORef' callbacks (+ 1)
+                pure (Right ())
+        refused @?= Left (SessionStaleProjectPermit (projectPermitVersion acknowledged))
+        readIORef callbacks >>= (@?= 0)
+        protectedImage store >>= (@?= before)
+        observed <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+        projectPermitVersion observed @?= projectPermitVersion closed
 
 {- | The reproduction is faithful: it is the transition's own descriptor.
 
@@ -3241,10 +5104,33 @@ produces.
 faithfulDescriptorCase :: IO ()
 faithfulDescriptorCase =
     withStore $ \store -> do
+        encodedPlan <- expect (mkRecordName plan)
+        expectedKey <- recordKeyFor ("project." <> encodedPlan)
+        capture <- newIORef Nothing
         reopened <-
-            withInterruptedTransaction BeforeCommit TxnOpenProject store $
-                runEntry store $ \session ->
-                    fmap (fmap (const ())) (openProjectJournal session plan)
+            withInterruptedTransaction BeforeCommit TxnOpenProject store $ do
+                observed <- withProtectedEntry store (\session -> Right <$> readTransactionRecord session expectedKey)
+                original <- expect observed >>= expect
+                runEntry store $ \session -> (() <$) <$> openProjectJournal session plan
+                published <- publishedTransaction store
+                modifyIORef' capture (const (Just (original, published)))
+        (original, published) <- readIORef capture >>= maybe (assertFailure "the uninterrupted transition was not captured") pure
+        original @?= Nothing
+        (capturedKey, capturedPayload) <- case publishedTargets published of
+            [target] -> pure target
+            _ -> assertFailure "the real OpenProject transition must publish one target"
+        capturedKey @?= expectedKey
+        capturedPayload @?= encodeFields ["open"]
+        publishedSequence published @?= 1
+        publishedCoordinatorVersion published @?= 3
+
+        -- Read the actual Applying bytes before any ordinary reader recovers it.
+        (descriptor, applying) <- readApplyingDescriptor reopened
+        descriptorSequence descriptor @?= publishedSequence published
+        descriptorPlan descriptor @?= plan
+        descriptorKind descriptor @?= TxnOpenProject
+        descriptorTargets descriptor @?= [projectTransactionTarget capturedKey original capturedPayload]
+        recordVersionWord (protectedRecordVersion applying) @?= 2
 
         -- The project target carries exactly the bytes the completed transition
         -- wrote, stamped with that transition's own id.
@@ -3252,13 +5138,45 @@ faithfulDescriptorCase =
         case materialized of
             Nothing -> assertFailure "expected the project target to be materialized"
             Just record -> do
-                transactionRecordPayload record @?= encodeFields ["open"]
-                transactionRecordStamp record @?= Just 1
+                transactionRecordPayload record @?= capturedPayload
+                transactionRecordStamp record @?= Just (publishedSequence published)
+                recordVersionWord (transactionRecordVersion record) @?= 1
+
+        -- Exercise the same fixture publisher with invalid inputs. It must
+        -- refuse before a coordinator or target publication, even in this
+        -- otherwise valid store.
+        mapM_
+            ( \(point, kind, captured, reason) -> do
+                before <- protectedImage reopened
+                refused <- installApplying reopened point kind captured
+                refused @?= Left reason
+                protectedImage reopened >>= (@?= before)
+            )
+            [ (AfterTarget (-1), TxnOpenProject, published, "the target prefix is outside the captured transaction")
+            , (AfterTarget 2, TxnOpenProject, published, "the target prefix is outside the captured transaction")
+            , (AfterApplying, TxnOpenProject, published{publishedTargets = []}, "the captured target count does not match the transaction kind")
+            , (AfterApplying, TxnRebindSession, published, "the interruption fixture does not support this transaction kind")
+            ]
 
         -- And the coordinator has not committed. The journal reader drives
         -- recovery itself, so the state it reports is the recovered one.
         state <- expect =<< inEntry reopened (\session -> readProjectJournalState session plan)
         state @?= OpenProject
+        permit <- expect =<< inEntry reopened (\session -> openProjectJournal session plan)
+        projectPermitVersion permit @?= publishedCoordinatorVersion published
+
+        -- Zero is an actual empty prefix, distinct from a negative take.
+        withStore $ \emptyStore -> do
+            emptyPrefix <-
+                withInterruptedTransaction (AfterTarget 0) TxnOpenProject emptyStore $
+                    runEntry emptyStore $ \session -> (() <$) <$> openProjectJournal session plan
+            image <- protectedImage emptyPrefix
+            Map.lookup (recordKeyText expectedKey) image @?= Nothing
+            (emptyDescriptor, _) <- readApplyingDescriptor emptyPrefix
+            descriptorKind emptyDescriptor @?= TxnOpenProject
+            length (descriptorTargets emptyDescriptor) @?= 1
+            recovered <- inEntry emptyPrefix (\session -> readProjectJournalState session plan)
+            recovered @?= Right OpenProject
 
 -- | The project journal record, read through the transaction stamp decoder.
 readProjectTarget ::
@@ -3427,15 +5345,26 @@ withInterruptedTransaction ::
     IO () ->
     IO ProtectedStore
 withInterruptedTransaction point kind store transition = do
+    case kind of
+        TxnOpenProject -> do
+            missing <- inEntry store (\session -> readProjectJournalState session plan)
+            missing @?= Left (SessionProjectMissing plan)
+            key <- expect (coordinatorKey plan)
+            initial <- readRequiredRecord store key
+            protectedRecordBytes initial @?= "transaction-v1\tidle\t0"
+            recordVersionWord (protectedRecordVersion initial) @?= 1
+        _ -> pure ()
     let root = protectedStoreRoot store
         snapshot = takeDirectory root </> "interrupted-snapshot"
+    before <- protectedImage store
     copyTree root snapshot
     transition
     published <- publishedTransaction store
     removePathForcibly root
     copyTree snapshot root
     restored <- reopenStore store
-    installApplying restored point kind published
+    protectedImage restored >>= (@?= before)
+    installApplying restored point kind published >>= expect
     reopenStore restored
 
 {- | Reproduce each physical prefix of the actual Production close, retaining
@@ -3544,6 +5473,7 @@ copyTree from to = do
 data PublishedTransaction = PublishedTransaction
     { publishedSequence :: Word64
     , publishedTargets :: [(RecordKey, ByteString)]
+    , publishedCoordinatorVersion :: Word64
     }
 
 publishedTransaction :: ProtectedStore -> IO PublishedTransaction
@@ -3558,10 +5488,14 @@ publishedTransaction store = do
                     | (key, sequenceNumber, payload) <- stamped
                     , sequenceNumber == latest
                     ]
+            key <- expect (coordinatorKey plan)
+            committed <- readRequiredRecord store key
+            protectedRecordBytes committed @?= encodeCoordinator (CoordinatorIdle latest)
             pure
                 PublishedTransaction
                     { publishedSequence = latest
                     , publishedTargets = sortOn (roleOf . fst) mine
+                    , publishedCoordinatorVersion = recordVersionWord (protectedRecordVersion committed)
                     }
 
 -- | Every record carrying a transaction stamp, with that stamp and its payload.
@@ -3590,38 +5524,68 @@ The expectation each target carries is read from the restored store, so it is
 the expectation the real transition recorded: the descriptor is rebuilt against
 the same pre-transition versions the coordinator saw.
 -}
-installApplying :: ProtectedStore -> InterruptionPoint -> TxnKind -> PublishedTransaction -> IO ()
-installApplying store point kind published = do
-    outcome <- withProtectedEntry store $ \session -> do
-        targets <- traverse (restoredTarget session) (publishedTargets published)
-        let descriptor =
-                TransactionDescriptor
-                    { descriptorSequence = publishedSequence published
-                    , descriptorPlan = plan
-                    , descriptorKind = kind
-                    , descriptorTargets = targets
-                    }
-        key <-
-            either
-                (assertFailure . Text.unpack . transactionErrorMessage)
-                pure
-                (coordinatorKey plan)
-        current <- readProtectedRecord session key >>= either (assertFailure . show) pure
-        -- A first transition creates the coordinator on the way in, so before
-        -- it there is no record at all; every later one finds the committed
-        -- Idle record it advances from.
-        let expectation = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) current
-        applying <-
-            compareAndSwapProtectedRecord
-                session
-                key
-                expectation
-                (encodeCoordinator (CoordinatorApplying descriptor))
-        _ <- either (assertFailure . show) pure applying
-        mapM_ (materialize session) (take materializedCount (publishedTargets published))
-        pure (Right ())
-    either (assertFailure . show) pure outcome
+installApplying :: ProtectedStore -> InterruptionPoint -> TxnKind -> PublishedTransaction -> IO (Either String ())
+installApplying store point kind published = case checkedPrefix of
+    Left reason -> pure (Left reason)
+    Right materializedCount -> publish materializedCount
   where
+    expectedCount = case kind of
+        TxnOpenProject -> Right 1
+        TxnOpenSession -> Right 1
+        TxnRegisterIntent -> Right 2
+        TxnPrepareOperation -> Right 1
+        TxnAcknowledgeOutcome -> Right 1
+        TxnCloseSession -> Right 1
+        TxnBeginProjectClose -> Right 1
+        TxnRecordProjectClosed -> Right 1
+        _ -> Left "the interruption fixture does not support this transaction kind"
+    checkedPrefix = do
+        count <- expectedCount
+        if length (publishedTargets published) /= count
+            then Left "the captured target count does not match the transaction kind"
+            else case point of
+                AfterApplying -> Right 0
+                BeforeCommit -> Right count
+                AfterTarget prefix
+                    | prefix >= 0 && prefix <= count -> Right prefix
+                    | otherwise -> Left "the target prefix is outside the captured transaction"
+
+    publish materializedCount = do
+        outcome <- withProtectedEntry store $ \session -> do
+            targets <- traverse (restoredTarget session) (publishedTargets published)
+            let descriptor =
+                    TransactionDescriptor
+                        { descriptorSequence = publishedSequence published
+                        , descriptorPlan = plan
+                        , descriptorKind = kind
+                        , descriptorTargets = targets
+                        }
+            key <-
+                either
+                    (assertFailure . Text.unpack . transactionErrorMessage)
+                    pure
+                    (coordinatorKey plan)
+            current <- readProtectedRecord session key >>= either (assertFailure . show) pure
+            coordinator <- maybe (assertFailure "the pre-transition coordinator is missing") pure current
+            let expectation = ExpectVersion (protectedRecordVersion coordinator)
+            applying <-
+                compareAndSwapProtectedRecord
+                    session
+                    key
+                    expectation
+                    (encodeCoordinator (CoordinatorApplying descriptor))
+            applyingVersion <- either (assertFailure . show) pure applying
+            recordVersionWord applyingVersion + 1 @?= publishedCoordinatorVersion published
+            observed <- readProtectedRecord session key >>= expect
+            actual <- maybe (assertFailure "the reconstructed Applying record disappeared") pure observed
+            protectedRecordVersion actual @?= applyingVersion
+            protectedRecordBytes actual @?= encodeCoordinator (CoordinatorApplying descriptor)
+            decodeCoordinator (protectedRecordBytes actual) @?= Right (CoordinatorApplying descriptor)
+            mapM_ (materialize session) (take materializedCount (publishedTargets published))
+            pure (Right ())
+        _ <- either (assertFailure . show) pure outcome
+        pure (Right ())
+
     restoredTarget ::
         ProtectedSession session ->
         (RecordKey, ByteString) ->
@@ -3655,11 +5619,6 @@ installApplying store point kind published = do
                 (stampTarget (publishedSequence published) payload)
         _ <- either (assertFailure . show) pure written
         pure ()
-
-    materializedCount = case point of
-        AfterApplying -> 0
-        AfterTarget count -> count
-        BeforeCommit -> length (publishedTargets published)
 
 reopenStore :: ProtectedStore -> IO ProtectedStore
 reopenStore store = do

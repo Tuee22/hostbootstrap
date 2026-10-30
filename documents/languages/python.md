@@ -73,7 +73,13 @@ The Poetry project is rooted at the **repository root** (`pyproject.toml`, the
   (runs `ruff check hostbootstrap`, `black --check hostbootstrap`, then `mypy hostbootstrap`).
 - Tests: `poetry run python -m hostbootstrap.test_all`.
 - Coverage: `poetry run python -m coverage run -m hostbootstrap.test_all && poetry run python -m coverage report -m`
-  (configured with `fail_under = 100`).
+  (configured with `branch = true` and `fail_under = 100`). The ordinary test runner already enforces
+  both coverage floors when invoked without forwarded pytest arguments. Forwarded paths and node ids
+  replace its default `tests` target; forwarded options otherwise keep that target.
+
+The code-check runner invokes each tool as `sys.executable -m <tool>` from the repository root, so it
+uses the active development environment even when launched from another working directory. CLI help
+text is ASCII and is tested through a cp1252 console, including every maintainer command's help page.
 
 ### Maintainer command capability gate
 

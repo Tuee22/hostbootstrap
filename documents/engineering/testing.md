@@ -103,16 +103,44 @@ A source guard asserts something about a set of modules, so a guard that is wron
 enumerated asserts nothing and does so silently. `core/hostbootstrap-core/test/SourceGuard.hs` is the
 core suite's shared toolkit for enumerating and analysing its own sources, in two halves: a lexical
 reader (tokens, imports, exports, identifier and token-sequence counts, repo-relative paths and module
-names) and a structural one (the package-root bracket, the source-tree walker and bulk source reader, the
-main-library stanza reader, the module-field reader, and the significant-line counter). A guard that
+names) and a structural one (the package-root bracket, sorted source walkers, component and common-stanza
+readers, module fields, and significant-line counts). A guard that
 enumerates modules or turns a path into a module name does so through it rather than writing another
 walker. A guard over one named module reads that file with an ordinary `readFile` under the driver's
-UTF-8 locale and, where it needs tokens, hands the text to the lexical half; the demo suite's source guards read the same way but
-without that locale fix (see [Current Status](#current-status)).
+UTF-8 locale and, where it needs tokens, hands the text to the lexical half. Both the core and demo
+suite drivers initialize that locale before tests run.
 
-The enumeration is checked rather than frozen: the modules the main library declares are exactly the
-module files under its source roots, so a reader that under-reads a field reports the difference as a
-named set instead of as an absence.
+`componentStanzas` reads every library, executable, test suite, benchmark, and foreign library, including
+source directories inherited through common stanzas. `namedStanza`, `fieldValues`, and `fieldModules`
+share case-insensitive field reading across inline, continued, and comma-separated values.
+`listComponentSources` walks those effective roots; `listTestSources` and `forEachTestSourceBut` cover
+every test-suite root while excluding compile-fail inputs that are compiled separately.
+
+Library module readers use the source directories declared by every library stanza, deduplicate
+overlapping paths, and retain the module declaration's identity when its file moves. A lookup that
+expects one module home refuses a missing or ambiguous result. The architecture drift validator
+checks every matching forbidden-boundary module under the production `src` and `internal` trees,
+so moving a kernel into a private unit cannot silently remove its absence checks. Synthetic cases
+exercise main-library, private-unit, and simultaneous homes and assert the reported source paths.
+
+`transitiveHostBootstrapImports` resolves a module's complete first-party import closure against
+that same library inventory. Qualified imports follow the same path as unqualified ones, cycles
+terminate, and a missing or ambiguous module reports its importing module and source path. The
+authority kernel's dependency guard therefore includes private library roots and rejects configuration
+or reconciliation dependencies reached through another module.
+
+Compile-fail registration uses that library inventory to check first-party modules and imported names
+against genuine definition positions. Declaration readers include private constructors, fields, class
+members and foreign binders, and reject unsupported forms; an identifier occurrence in a type, pattern,
+import, comment or literal is insufficient. The registered fixture set must match the files exactly once.
+A separate token inventory pins the exposed facades that import hidden/private implementation and the
+locally sealed registry plan, while every named library stanza must explicitly remain private.
+
+The enumeration is checked rather than frozen: each declared module resolves under its component's
+effective source directories, and every enumerated module file belongs to a component. The same inventory
+drives warning-policy checks across the core and demo packages: every component imports the shared
+warnings stanza, component flags cannot weaken it, and source modules carry no `OPTIONS_GHC` or `OPTIONS`
+pragma. The package metadata supplies `-Werror` and `-Wpartial-fields`.
 
 ### Harness portability
 
@@ -122,11 +150,12 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
 
 - **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
   bytes rather than by decoding to text and re-encoding, so it is a property of the file and not of the
-  process locale or the platform's newline translation. The core suite driver additionally fixes the
-  locale encoding to UTF-8 before the runner starts, so a spec that reads a source file or captured
-  command output decodes the same text on every gate host and a governed golden containing non-ASCII
-  text compares equal everywhere. The demo suite driver does not apply the fix (see
-  [Current Status](#current-status)).
+  process locale or the platform's newline translation. Both suite drivers make
+  `setLocaleEncoding utf8` their first IO action, before argument dispatch, source reads or the
+  runner's first demand of a standard handle. A spec therefore reads source or captured command
+  output using the same locale encoding on every gate host. The demo's runtime locale assertion
+  checks that selected encoding; its unchanged Unicode case names also exercise Tasty output in
+  the complete demo gate.
 - **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
   module-ownership list compares canonical forward-slash paths, so a native path separator cannot make a
   satisfied allow-list fail.
@@ -134,7 +163,8 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
   tool is resolved and invoked by the outer host and is admitted by the same total absolute-path
   constructor production uses. A guest path names a file on a different machine reached through one
   host-provider command, so it is unaffected. Fixtures respect the same split the invocation boundary
-  does.
+  does. `PlatformPath.hostFixturePath` supplies the host root and discards drive or root decorations
+  from the supplied segments, including drive-letter spellings, so its result remains host-absolute.
 - **A conditional expectation follows the subject, not the package.** A platform row exists on every gate
   host, so what varies is what it *answers* there: the kernel result where the row can hold its
   obligations, the total refusal where it cannot. A case reads that from the row's own declaration —
@@ -147,28 +177,34 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
   an *expectation* keeps the evidence, while one that removes the case removes it — and a green total that
   quietly shrank on one family is the most complete form of spoofing available, because the number reads
   the same. Platform rows are therefore compiled everywhere and stubbed to a total refusal where they
-  cannot apply, so the package description carries no `os()`- or `arch()`-conditional module or
-  `buildable` field; only the platform library a row binds to is conditional.
+  cannot apply, so the package description carries no `os()`-, `arch()`-, or `flag()`-conditional module
+  or `buildable` field, including `elif` branches and mixed-case field names; only the platform library
+  a row binds to is conditional.
 
 Cases that genuinely need POSIX — the real kernel lock namespace, process-group signal and reap probes,
 symlink-root probes, and the fork-based cross-process races — carry explicit platform conditions. On a
 gate host that cannot run one, the case asserts the declared refusal and is counted, so the manifest and
 the total both stay honest.
 
+The host-tool System32 resolution family keeps its two cases on every host: Windows checks the actual
+SystemRoot-derived paths and other hosts assert the exact unavailable answers. The effect runner's
+POSIX process family similarly retains five cases, with direct probe or native-entry refusals where
+POSIX execution is unavailable. Both families participate in the observed-completion manifest.
+
 `CoverageManifest` is where that declaration lives. Each row names a family, the number of cases it has
 on *every* gate host, how many of those drive a platform row, and why the row is conditional; the driver
 assembles the manifest from the same list it hands the runner, so what the manifest counts is what runs.
-The report is the case name itself, so a gate's output states, per family, whether its row is declared
-to exercise a real kernel or to assert a refusal on that gate host. The outcome a row reports is read
-from its declaration (`familyRowHolds`), not observed from which branch the cases took (see
-[Current Status](#current-status)):
+Each structural case names the expected branch. The shared `ConditionalCase` combinators record which
+row or refusal callback completes without an exception; the driver resets those counters before the
+suite starts. The manifest's final case, "every conditional family ran the branch its row declares",
+runs after the other groups finish through tasty `after AllFinish`, reports each family's observed
+row/refusal completion counts, and compares them with `familyRowCases` and `familyRowHolds`.
 
-```text
-CoverageManifest
-  WslGlobalWallHostSpec / crash resume: 3 cases, 3 asserting the row's declared refusal
-    on this gate host (the POSIX row needs fcntl record locks and device:inode identity): OK
-  WslGlobalWallWindowsSpec: 4 cases, 3 exercising the row against this gate host's kernel: OK
-```
+Missing recording, missing executions, opposite-branch completions, extra completions, and callbacks
+that throw cannot satisfy those counts. A callback that returns `()` supplies completion evidence only:
+the combinator cannot establish that an arbitrary callback contains a meaningful assertion. The refusal
+callbacks retain their real row calls and refusal assertions, whose contents remain part of review and
+the behavioral cases.
 
 A family that lost a case on one host fails its declared count there rather than reporting a smaller
 total. A family whose subject is available everywhere is not declared, because a manifest listing every
@@ -197,6 +233,38 @@ exclusive entry is `base`'s portable `hLock`/`hTryLock`, which is `flock`/`fcntl
 on Windows, and the probes reach it through the suite's own re-invocation route rather than a POSIX-only
 primitive, so they exercise the real kernel lock on every gate host.
 
+The suite's liveness probe returns 0 for acquisition, 3 for a live peer and 4 for a typed refusal.
+Authority cases exercise a live peer before/after release, invalid names before filesystem effects,
+timeouts and short acquisition interruptions, and the original body's exception after release.
+Separate cases retain each record-operation IO action past an entry, invoke it inside a later entry,
+and try a live session from a foreign thread; each must refuse before touching records. These test the
+private revocable session token, beyond rank-2 provenance or a compile-fail coercion fixture.
+
+Command-reservation cases allocate and bind a real broker epoch, leave its entry, and give each
+competitor a fresh protected entry that verifies the principal, reifies the allocated epoch, and
+reopens the existing root. Thread and process races require one authority and one consumed refusal
+with one invocation record. The process probe signals readiness before its entry attempt; the parent
+holds the entry until both competitors are ready, then releases them to contend. Identity-field,
+project/store mismatch, conflict and reverse-root replay cases exercise the same reservation kernel.
+
+The protected-store codec cases exhaustively enumerate short one- and two-segment identity paths,
+checking the inverse, case-fold injectivity and exclusion of the tuple separator. Real records cover
+case/underscore/dotted tuples, and actual copied executables provide installed project identities for
+mode, Harness ownership, liveness and hard-kill recovery; no installed identity is forged for a fixture.
+Old/unknown/empty identity envelopes and populated identity-less stores must refuse with their bytes
+unchanged. Runtime ownership cases exercise exact encoded provider-share recovery against the fixture
+client process and the real protected store.
+
+Durable publication has a source-order guard over the complete publisher and its platform helpers:
+write/close, file synchronization, rename, parent synchronization, and Darwin's subsequent regular-file
+full device flush remain inside the temporary cleanup extent. Existing record/CAS cases additionally
+check for no `.rec.tmp-` leftovers. This checks implementation order and actual record operations;
+power loss and mid-write disk failure are not simulated as passing runtime evidence.
+
+The suite recognizes its probe arguments before ordinary test parsing. An unrecognized argument beginning
+with `--hostbootstrap-` writes an "unrecognized probe" diagnostic to standard error, leaves standard
+output empty, and exits with status 97, so a misspelled probe cannot silently run the whole suite.
+
 ### What counts as evidence
 
 A gate is worth exactly what its evidence is worth. The rule above governs whether a guard proves the same
@@ -213,8 +281,9 @@ Four things count as evidence:
   function;
 - **exercising a platform row against the real kernel**, in a temporary directory the case created. The
   ownership invariant's "the OS releases the lock on process death" is proved by a real process dying;
-- **a compile-fail fixture that fails for its named reason**, expecting one contiguous diagnostic phrase
-  rather than a token list an unrelated error could also satisfy;
+- **a compile-fail fixture that fails for its named reason**, with a nonempty list of contiguous phrases
+  matched to distinct error diagnostics. The compiler suppresses caret/source excerpts, and the matcher
+  normalizes wrapping and quotes within each block before assigning one block per expected rejection;
 - **a row reporting `Unsupported` on a gate host where it genuinely cannot hold a clause** — the row is
   real; only the host differs.
 
@@ -324,7 +393,7 @@ visit hard-kills the demo's host accelerator daemon, and separately the `project
 operation, and requires the supported `project down` and `project up` sequence to resolve the stale claims
 without an operator deleting records. Its dated results and source measurement belong in that phase.
 
-Six gaps separate the tree from this page's target contract:
+Three gaps separate the tree from this page's target contract:
 
 - **No root gate.** The `test` command's description calls the surface root-only, but the parser applies
   no binary-context root gate to `test init` or `test run`; root authority rests on the harness safety
@@ -336,28 +405,10 @@ Six gaps separate the tree from this page's target contract:
   runtime check fails a run that touches them. The
   [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
   owns this gap.
-- **The demo suite driver does not fix the locale.** `demo/test/Spec.hs` sets no UTF-8 locale encoding,
-  while `CommandsSpec` reads sources with a locale-decoding `readFile`, so on a gate host whose code page
-  is not UTF-8 the demo leg of the host static gate is outside the portability rule above. The
-  [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns this gap.
-- **Two host-tool cases are compiled out off Windows.** `HostToolSpec.windowsResolutionCases` holds the
-  two Windows `System32` discovery cases inside an `#ifdef mingw32_HOST_OS` region whose `#else` arm is
-  the empty list, so a non-Windows gate host removes both cases rather than asserting what `discover`
-  answers there, and its total stays green two cases smaller, against the
-  [harness portability](#harness-portability) rule that no case is skipped. The
-  [host tools and substrate detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
-  owns this gap.
 - **The Windows ownership row asserts fewer clauses than the POSIX row.** The seven clauses named under
   [What counts as evidence](#what-counts-as-evidence) have no Windows case. The
   [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)
   owns closing it, against a Windows gate host.
-- **The coverage manifest reports declared outcomes, not observed ones.** `CoverageManifest` checks each
-  conditional family's case count, but which branch a row reports comes from `familyRowHolds`; no case
-  records which branch each conditional case completed, so a refusal branch reduced to a no-op still
-  prints a passing report. The target compares the observed row-branch and refusal-branch completions per
-  family against `familyRowCases` and `familyRowHolds`. The
-  [Haskell core scaffolding phase](../../DEVELOPMENT_PLAN/phase-2-haskell-core-scaffolding.md) owns this
-  gap.
 
 ## Supported Fast Test Entries
 
@@ -367,9 +418,16 @@ From the repository root:
 poetry run python -m hostbootstrap.test_all
 ```
 
-`hostbootstrap.test_all` sets the required sentinel and invokes `pytest tests` in-process. Pytest
-selectors may be forwarded after the module name. Direct `pytest` invocation is intentionally rejected
-by `tests/conftest.py`.
+`hostbootstrap.test_all` sets the required sentinel and invokes `pytest tests` in-process. With no
+forwarded arguments it measures line and branch coverage of `hostbootstrap` and fails below the
+configured 100% floor. Modules imported before measurement are reloaded in dependency order so their
+module bodies count and their imported class identities agree. Forwarded pytest options retain the
+default `tests` target; a forwarded path or node id replaces that target. Runs with forwarded arguments
+do not enforce whole-suite coverage. Direct `pytest` invocation is intentionally rejected by
+`tests/conftest.py`.
+
+`hostbootstrap.check_code` invokes Ruff, Black and strict mypy through the current interpreter's
+`-m` entries, with the repository root as their working directory.
 
 From `core/`:
 
@@ -449,9 +507,17 @@ The harness obtains opaque `HarnessAuthority projectId runId`, active Harness mo
 lease. The protected profile opener combines only matching values into
 `LifecycleProfile (Harness projectId runId)`; authority alone cannot construct it. Plan construction derives a
 run-scoped cluster identity and `.test_data/<run-id>` together, and Command retains that exact plan through
-common forward/reverse interpretation. Every adapter consumes a freshly prepared operation/preconditions pair
+common forward/reverse interpretation. Every adapter consumes a matching operation/preconditions pair
 and returns an explicit reconcile result with owned evidence or a foreign observation. Cleanup accepts only
 verified records and walks child-to-parent while each child remains reachable.
+
+The explicit pure zero-dependency operation and phase entries derive their empty preconditions rather
+than accepting a retained set, and refuse any descriptor with dependencies. Their empty branch needs
+no dependency probe IO. Generic operation and phase preparation still accept caller-retainable sets;
+the matching step does not establish when their observations ran. Complete gate-first snapshot
+admission is the target owned by the
+[prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md), separately from
+the already checked protected journal gate and the still-public low-level gate-writer limitation.
 
 The durable-readback program uses the engine-owned two-phase assertion form and a protected fresh
 lifecycle-invocation generation under the same run, config, durable root, and plan. No lifecycle action enters
@@ -473,21 +539,68 @@ tests.
 | 1 | an off-root command is refused before any lifecycle read or mutation | **owed**: no root gate exists (see [Current Status](#current-status)) |
 | 2 | the documented `<project>.test.dhall` schema and selector have one source of truth | held: the compiled case registry and the typed matrix projection, pinned by the schema and matrix tests |
 | 3 | demo bring-up records the exact Harness plan/profile, run-scoped name, and `.test_data/<runId>` path, and touches neither `.data` nor the production cluster | recording held by the demo gate; exclusion held by profile derivation alone, with no runtime tripwire (see [Current Status](#current-status)) |
-| 4 | concurrent runs prove exclusive ownership, and an interrupted run releases only resources whose ownership receipts match | held without a production fault hook: cross-profile race and run-lease tests prove exclusion, and interruption is reached either by killing a real process (`RecoveryInterruptionSpec`) or by writing the durable state an interrupted transaction leaves through [`HostBootstrap.Lifecycle.Session.Testing`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs) and re-entering the ordinary entry point |
+| 4 | concurrent runs prove exclusive ownership, and an interrupted run releases only resources whose ownership receipts match | held without a production fault hook: cross-profile race and run-lease tests prove exclusion, and interruption is reached either by killing a real process (`RecoveryInterruptionSpec`) or by reconstructing an Applying descriptor from a real transition's records and original physical versions through [`HostBootstrap.Lifecycle.Session.Testing`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs) and re-entering the ordinary entry point |
 | 5 | `down` and `destroy` visit all child frames before stopping or deleting the parent | held: the local root/VM/container process cases, and the live recursive reverse of the worked demo gate |
 | 6 | the engine allocates a fresh same-run lifecycle invocation, a workload writes durable bytes, the full stack is destroyed and recreated, and both host and pod read the same bytes before the final settled destroy closes the run | held: `AssertAcrossRestart` in the engine, exercised live by the worked demo gate |
+
+Transaction codec and redo evidence are separate. The existing `Session.Testing` vocabulary forwards
+the real pure `decodeCoordinator` beside its encoder; this observes data and adds no permit producer
+or runner. The already private `lifecycle-transaction-internal` unit exposes only `Session.Testing`;
+`Lifecycle.Transaction` is in its `other-modules`, and the main library retains its own hidden copy.
+The bounded reconstruction matrix below supplies its own redo observations, separately from this
+module-list boundary.
 
 ## Validation
 
 - The host static gate's suites hold every static claim on this page; [§ JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md#jj-host-portable-static-gate-and-test-harness)
   spells the gate.
-- `CoverageManifest` holds the per-family case counts and declared refusals of
-  [Harness portability](#harness-portability); `PortabilitySpec` holds its absence guards.
+- `CoverageManifest` holds the per-family case inventory and observed successful branch completions of
+  [Harness portability](#harness-portability). Its comparator and callback cases prove missing or wrong
+  counts and throwing callbacks are detected. `PortabilitySpec` holds source-byte, locale-order,
+  host-path, probe-refusal, component-enumeration, warning-policy, and conditional-build absence guards.
 - `CLISpec` holds the `test init` overwrite policy and the `test run` missing-config and unknown-case
   refusals.
 - The prepare kill-point is the `SessionSpec` case "a prepare records the unknown phase before the adapter
   runs": the durable operation record names the effect that may be in flight before any adapter effect
   runs, so a crash after that point leaves a journaled unknown phase rather than an unrecorded effect.
+- `ReconcileSpec`'s explicit zero-dependency preparation controls require a genuine matching pair,
+  direct nonempty-edge refusal, exact gate-coordinate/attempt refusals and a managed force-destroy
+  preparation. A dependency-bearing managed phase must still succeed through the generic factory
+  while the zero-phase entry refuses the same descriptor without delivering its continuation.
+  These validation targets preserve the full phase capability; they claim no generic fresh-probe
+  timing, live cleanup or hardware confirmation.
+- Transaction wire controls independently observe Unicode descriptor-plan data through the actual
+  encoder and pure decoder, the public ASCII-only session-name refusal, and a genuine ASCII
+  `TxnOpenSession` AfterApplying recovery with an absent new target. Only the last exercises journal
+  recovery; the Unicode data case grants no identity or redo authority.
+- Coordinator text is strict UTF-8 and numeric fields are bounded canonical `Word64` spellings.
+  Accepted coordinator and recognized stamped-envelope bytes must round-trip their complete encoders;
+  coordinator trailing line feeds and valid uppercase hex distinguish this from scalar-only validation. Ordinary
+  journal/target readers pin exact `SessionRecordCorrupt` projections and post-mutation preservation,
+  including coordinator and stamp overflow. Canonical stamped and legitimate unstamped payloads
+  containing FF/NUL remain opaque; Session's Prepared Char8 fields are unchanged. These controls claim
+  neither a process killed at each write nor live provider acceptance.
+- The redo matrix retains twenty-five prefix cases across eight kinds, plus its shared
+  `faithfulDescriptorCase` (twenty-six checks). A real transition supplies target keys, roles, payloads,
+  sequence and committed successor; the fixture restores the original directory snapshot and physical
+  versions before publishing Applying and a bounded prefix. The initial project case obtains Idle 0
+  through the ordinary missing-journal read before its snapshot. Applying readback precedes recovery,
+  recovered Open state is observed before journal opening, and the successor version must equal the
+  uninterrupted capture. The fixture checks one target per kind except two for register-intent, with
+  `0 <= prefix <= target count` before publication; those counts are specific to these eight kinds.
+- Descriptor refusals independently cover requested-plan mismatch, out-of-plan ownership, wrong role
+  order, an ordinary third state and a raw Production third state. Exact mapped errors and post-setup
+  images hold admission and conflict behavior. The Production conflict baseline follows a valid earlier
+  project-target prefix and a same-byte lease version change, so it proves the real sequence diagnostic
+  without claiming rollback of a previously applied prefix.
+- `PortabilitySpec` retains the shipped-source named crash-point absence guard. The well-typed
+  `ForgeTransactionPermitFromDescriptor.hs` controls require DATA compilation with only the testing
+  unit exposed and hidden-package refusal in the ordinary public context. In that testing-unit-only
+  context, `ImportTransactionRunnerFromTestingUnit.hs` must instead refuse for a hidden Transaction
+  module; a hidden-package refusal does not establish this boundary. `SessionSpec`'s SourceGuard
+  stanza check requires private visibility, the exact Testing-only exposed list, Transaction in
+  `other-modules`, and the main library's hidden copy. These controls construct no transaction permit.
+  The runtime path has no fixture stop branch or injected crash counter.
 - `CompileFailSpec` holds the prepared-pair fixtures: `ForgePreconditionSet.hs` (a caller cannot build an
   `OperationPreconditionSet` or a `DependencySnapshot`), `ForgePreparedGate.hs` (nor construct or relabel a
   `PreparedGate`), and `MismatchPreparedPairRoles.hs` (nor pair a `PreparedOperation` with

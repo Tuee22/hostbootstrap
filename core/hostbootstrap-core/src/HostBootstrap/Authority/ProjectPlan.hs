@@ -13,11 +13,13 @@ module HostBootstrap.Authority.ProjectPlan (
 
 import qualified Data.Text as Text
 import HostBootstrap.Authority (
-    AuthorityError (AuthorityMalformedBinding),
+    AuthorityError (AuthorityMalformedBinding, AuthorityStoreNotOurs),
     CommandAuthority,
+    InstalledProjectIdentity,
     ProjectVerb,
     RootInvocationAuthority,
     brokerEpochWord,
+    installedProjectName,
     projectVerbName,
     rootAuthorityEpoch,
     rootAuthorityProjectName,
@@ -91,6 +93,7 @@ import HostBootstrap.ProjectPlan.Frame (
 
 {- | Reserve one root-project invocation for the exact current frame.
 
+The independently verified installed identity supplies the expected project.
 Every retained term is checked before the protected reservation bridge is
 entered.  The bridge then revalidates the journal and cursor against live
 protected state and performs the one-use reservation in that same entry.
@@ -106,28 +109,32 @@ authorizeRootProject ::
     AcquisitionJournal scope planId brokerGeneration ->
     LifecycleCursor scope planId frame brokerGeneration verb phase ->
     ValidatedLifecycleContext scope specDigest planId configId frame ->
+    InstalledProjectIdentity projectId ->
     IO
         ( Either
             AuthorityError
             (CommandAuthority scope planId frame brokerGeneration verb phase)
         )
-authorizeRootProject root verb verified bound binding lease plan journal cursor lifecycleContext =
-    case withValidatedRootLifecycleContext
-        lifecycleContext
-        (\_canonicalRoot _store _current frame validated -> authorize frame validated) of
-        Left failure ->
-            pure
-                ( Left
-                    (AuthorityMalformedBinding (Text.pack (lifecycleContextErrorMessage failure)))
-                )
-        Right admitted -> admitted
+authorizeRootProject root verb verified bound binding lease plan journal cursor lifecycleContext project
+    | rootProject /= rootAuthorityProjectName root =
+        pure (Left (AuthorityStoreNotOurs rootProject (rootAuthorityProjectName root)))
+    | otherwise =
+        case withValidatedRootLifecycleContext
+            lifecycleContext
+            (\_canonicalRoot _store _current frame validated -> authorize frame validated) of
+            Left failure ->
+                pure
+                    ( Left
+                        (AuthorityMalformedBinding (Text.pack (lifecycleContextErrorMessage failure)))
+                    )
+            Right admitted -> admitted
   where
     canonical = projectPlanCanonicalSnapshotKernel plan
     canonicalSpecDigest = canonicalPlanSnapshotSpecDigest canonical
     canonicalConfigDigest = canonicalPlanSnapshotConfigDigest canonical
     canonicalPlanDigest = canonicalPlanSnapshotDigest canonical
     canonicalBytes = canonicalPlanSnapshotBytes canonical
-    rootProject = rootAuthorityProjectName root
+    rootProject = installedProjectName project
     rootStore = rootAuthorityStoreIdentity root
     rootEpoch = brokerEpochWord (rootAuthorityEpoch root)
     leaseRun = boundRunLeaseRunText lease
@@ -138,6 +145,7 @@ authorizeRootProject root verb verified bound binding lease plan journal cursor 
             Left failure -> pure (Left failure)
             Right () ->
                 reserveCurrentLifecycleCommandKernel
+                    project
                     journal
                     cursor
                     ( commandReservationKernel

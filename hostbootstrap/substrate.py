@@ -4,9 +4,10 @@ Frozen values describe the host detected at runtime so the bootstrapper can
 select the provider that realizes the universal ``linux-cpu`` project
 substrate. They are provider-dispatch facts, not competing project execution
 contracts; projects do not declare a host matrix in the Python bootstrapper.
-Detection reads the platform and a small set of files
+Detection reads the platform and, on Linux, a small set of files
 (``/proc/driver/nvidia/version`` etc.), falling back to an ``nvidia-smi -L``
-command probe when those markers are absent, and returns one frozen value.
+command probe when those markers are absent. Windows uses only that command
+probe. Detection returns one frozen value.
 It does not mutate host state.
 """
 
@@ -95,13 +96,13 @@ def _docker_arch() -> Arch:
 
 
 def _has_nvidia_gpu() -> bool:
-    if any(marker.exists() for marker in _NVIDIA_MARKERS):
+    if platform.system() == "Linux" and any(marker.exists() for marker in _NVIDIA_MARKERS):
         return True
     nvidia_smi = shutil.which("nvidia-smi")
     if nvidia_smi is None:
         return False
     outcome = process.probe([nvidia_smi, "-L"], timeout=5)
-    if isinstance(outcome, process.CommandUnavailable):
+    if isinstance(outcome, (process.CommandUnavailable, process.CommandTimedOut)):
         return False
     return outcome.ok and "GPU" in outcome.stdout
 

@@ -58,7 +58,7 @@ Harness confirmation.
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
@@ -739,7 +739,7 @@ cases in Remaining Work exist and pass in the warning-clean `cabal test all` fro
 ### Sprint 17.14: Sealed reverse-root lifecycle entry [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`
@@ -1240,7 +1240,7 @@ and pass in the warning-clean `cabal test all` from `core/`.
   Match the `(psStepPlan spec) (psForwardChildPlan spec)` and
   `(bareStepPlan progName) refuseForwardChildPlan` fragments against comment-stripped `SourceGuard` tokens.
 - Drop the `< 400` and `>= 424` assertions that follow the exact `(216, 217)` and `(631, 226)` pins, and the
-  `< 400` after `@?= 338`, or keep the size budgets and drop the exact counts; name the remaining CLI count a
+  `< 400` after the exact forward-package size pin, or keep the size budgets and drop the exact counts; name the remaining CLI count a
   pin rather than a sprint attribution.
 
 ### Sprint 17.24: Exact projected child plan [Active]
@@ -3989,8 +3989,8 @@ projected-relation evidence.
   `Left` from `withRootBroker`/`runRootFailedUpUnwind` are appended to the returned failure detail, not
   dropped through `Left _ -> pure ()` and `_ <-`.
 - Failed-Up route (`launchFailed`): use the reverse coordinator's `targetBinary` rule, which is empty when the
-  innermost layer is `ViaContainer`, through one helper shared with the reverse coordinator. Delete the
-  forward-only `LiftContext [ViaContainer _]` match from the failed-Up path.
+  innermost layer is `ViaContainer`, through one helper shared with the reverse coordinator. Remove dependence on the
+  forward coordinator's singleton-only target rule from the failed-Up path.
 - Correct the `runRootProjectUpLifecycleEntry` Haddock. Only Chain success moves the cursor to Teardown. A
   controlled failure and an unexpected exception both stay at Execute, and the reverse entry's
   Execute-to-Teardown bridge recovers them.
@@ -4687,7 +4687,7 @@ commands pass.
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 

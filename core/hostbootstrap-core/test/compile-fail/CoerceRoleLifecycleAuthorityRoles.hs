@@ -6,89 +6,259 @@ import Data.Coerce (coerce)
 import HostBootstrap.RoleLifecycle (
     EffectAuthorization,
     RoleCursor,
-    RoleEffect (DurableStore, NetworkListen),
+    RoleEffect (NetworkListen),
     RolePlan,
     RolePlanDigestBinding,
     VerifiedServicePlacement,
  )
 
-data A
-data B
+data CursorScopeA
+data CursorScopeB
+data CursorPlanA
+data CursorPlanB
+data CursorFrameA
+data CursorFrameB
+data CursorInstanceA
+data CursorInstanceB
+data CursorPhaseA
+data CursorPhaseB
 
 type Cursor s p f i ph = RoleCursor s p f i ph
-cursorScope :: Cursor A A A A A -> Cursor B A A A A
+
+cursorScope ::
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA ->
+    Cursor CursorScopeB CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA
 cursorScope = coerce
-cursorPlan :: Cursor A A A A A -> Cursor A B A A A
+
+cursorPlan ::
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA ->
+    Cursor CursorScopeA CursorPlanB CursorFrameA CursorInstanceA CursorPhaseA
 cursorPlan = coerce
-cursorFrame :: Cursor A A A A A -> Cursor A A B A A
+
+cursorFrame ::
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA ->
+    Cursor CursorScopeA CursorPlanA CursorFrameB CursorInstanceA CursorPhaseA
 cursorFrame = coerce
-cursorInstance :: Cursor A A A A A -> Cursor A A A B A
+
+cursorInstance ::
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA ->
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceB CursorPhaseA
 cursorInstance = coerce
-cursorPhase :: Cursor A A A A A -> Cursor A A A A B
+
+cursorPhase ::
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseA ->
+    Cursor CursorScopeA CursorPlanA CursorFrameA CursorInstanceA CursorPhaseB
 cursorPhase = coerce
 
+data PlanScopeA
+data PlanScopeB
+data PlanSpecA
+data PlanSpecB
+data PlanIdentityA
+data PlanIdentityB
+data PlanConfigA
+data PlanConfigB
+data PlanSecretA
+data PlanSecretB
+data PlanFrameA
+data PlanFrameB
+data PlanRevisionA
+data PlanRevisionB
+data PlanInstanceA
+data PlanInstanceB
+
 type Plan s sd p c sec f r i = RolePlan s sd p c sec f r i
-planScope :: Plan A A A A A A A A -> Plan B A A A A A A A
+
+planScope ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeB PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA
 planScope = coerce
-planSpec :: Plan A A A A A A A A -> Plan A B A A A A A A
+
+planSpec ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecB PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA
 planSpec = coerce
-planIdentity :: Plan A A A A A A A A -> Plan A A B A A A A A
+
+planIdentity ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityB PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA
 planIdentity = coerce
-planConfig :: Plan A A A A A A A A -> Plan A A A B A A A A
+
+planConfig ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigB PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA
 planConfig = coerce
-planSecret :: Plan A A A A A A A A -> Plan A A A A B A A A
+
+planSecret ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretB PlanFrameA PlanRevisionA PlanInstanceA
 planSecret = coerce
-planFrame :: Plan A A A A A A A A -> Plan A A A A A B A A
+
+planFrame ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameB PlanRevisionA PlanInstanceA
 planFrame = coerce
-planRevision :: Plan A A A A A A A A -> Plan A A A A A A B A
+
+planRevision ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionB PlanInstanceA
 planRevision = coerce
-planInstance :: Plan A A A A A A A A -> Plan A A A A A A A B
+
+planInstance ::
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceA ->
+    Plan PlanScopeA PlanSpecA PlanIdentityA PlanConfigA PlanSecretA PlanFrameA PlanRevisionA PlanInstanceB
 planInstance = coerce
 
+data BindingScopeA
+data BindingScopeB
+data BindingSpecA
+data BindingSpecB
+data BindingPlanDigestA
+data BindingPlanDigestB
+data BindingRoleDigestA
+data BindingRoleDigestB
+data BindingPlanA
+data BindingPlanB
+
 type Binding s sd pd rd p = RolePlanDigestBinding s sd pd rd p
-bindingScope :: Binding A A A A A -> Binding B A A A A
+
+bindingScope ::
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA ->
+    Binding BindingScopeB BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA
 bindingScope = coerce
-bindingSpec :: Binding A A A A A -> Binding A B A A A
+
+bindingSpec ::
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA ->
+    Binding BindingScopeA BindingSpecB BindingPlanDigestA BindingRoleDigestA BindingPlanA
 bindingSpec = coerce
-bindingPlanDigest :: Binding A A A A A -> Binding A A B A A
+
+bindingPlanDigest ::
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA ->
+    Binding BindingScopeA BindingSpecA BindingPlanDigestB BindingRoleDigestA BindingPlanA
 bindingPlanDigest = coerce
-bindingRoleDigest :: Binding A A A A A -> Binding A A A B A
+
+bindingRoleDigest ::
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA ->
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestB BindingPlanA
 bindingRoleDigest = coerce
-bindingPlan :: Binding A A A A A -> Binding A A A A B
+
+bindingPlan ::
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanA ->
+    Binding BindingScopeA BindingSpecA BindingPlanDigestA BindingRoleDigestA BindingPlanB
 bindingPlan = coerce
 
+data PlacementScopeA
+data PlacementScopeB
+data PlacementSpecA
+data PlacementSpecB
+data PlacementPlanA
+data PlacementPlanB
+data PlacementFrameA
+data PlacementFrameB
+data PlacementRevisionA
+data PlacementRevisionB
+data PlacementInstanceA
+data PlacementInstanceB
+data PlacementServiceA
+data PlacementServiceB
+data PlacementEffectsA
+data PlacementEffectsB
+
 type Placement s sd p f r i svc eff = VerifiedServicePlacement s sd p f r i svc eff
-placementScope :: Placement A A A A A A A A -> Placement B A A A A A A A
+
+placementScope ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeB PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA
 placementScope = coerce
-placementSpec :: Placement A A A A A A A A -> Placement A B A A A A A A
+
+placementSpec ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecB PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA
 placementSpec = coerce
-placementPlan :: Placement A A A A A A A A -> Placement A A B A A A A A
+
+placementPlan ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanB PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA
 placementPlan = coerce
-placementFrame :: Placement A A A A A A A A -> Placement A A A B A A A A
+
+placementFrame ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameB PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA
 placementFrame = coerce
-placementRevision :: Placement A A A A A A A A -> Placement A A A A B A A A
+
+placementRevision ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionB PlacementInstanceA PlacementServiceA PlacementEffectsA
 placementRevision = coerce
-placementInstance :: Placement A A A A A A A A -> Placement A A A A A B A A
+
+placementInstance ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceB PlacementServiceA PlacementEffectsA
 placementInstance = coerce
-placementService :: Placement A A A A A A A A -> Placement A A A A A A B A
+
+placementService ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceB PlacementEffectsA
 placementService = coerce
-placementEffects :: Placement A A A A A A A A -> Placement A A A A A A A B
+
+placementEffects ::
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsA ->
+    Placement PlacementScopeA PlacementSpecA PlacementPlanA PlacementFrameA PlacementRevisionA PlacementInstanceA PlacementServiceA PlacementEffectsB
 placementEffects = coerce
 
+data AuthorizationScopeA
+data AuthorizationScopeB
+data AuthorizationSpecA
+data AuthorizationSpecB
+data AuthorizationPlanA
+data AuthorizationPlanB
+data AuthorizationFrameA
+data AuthorizationFrameB
+data AuthorizationRevisionA
+data AuthorizationRevisionB
+data AuthorizationInstanceA
+data AuthorizationInstanceB
+data AuthorizationServiceA
+data AuthorizationServiceB
+
 type Authorization s sd p f r i svc es = EffectAuthorization s sd p f r i svc es
-authorizationScope :: Authorization A A A A A A A '[NetworkListen] -> Authorization B A A A A A A '[NetworkListen]
+
+authorizationScope ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeB AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen]
 authorizationScope = coerce
-authorizationSpec :: Authorization A A A A A A A '[NetworkListen] -> Authorization A B A A A A A '[NetworkListen]
+
+authorizationSpec ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecB AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen]
 authorizationSpec = coerce
-authorizationPlan :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A B A A A A '[NetworkListen]
+
+authorizationPlan ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanB AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen]
 authorizationPlan = coerce
-authorizationFrame :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A A B A A A '[NetworkListen]
+
+authorizationFrame ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameB AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen]
 authorizationFrame = coerce
-authorizationRevision :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A A A B A A '[NetworkListen]
+
+authorizationRevision ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionB AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen]
 authorizationRevision = coerce
-authorizationInstance :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A A A A B A '[NetworkListen]
+
+authorizationInstance ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceB AuthorizationServiceA '[ 'NetworkListen]
 authorizationInstance = coerce
-authorizationService :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A A A A A B '[NetworkListen]
+
+authorizationService ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA '[ 'NetworkListen] ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceB '[ 'NetworkListen]
 authorizationService = coerce
-authorizationEffects :: Authorization A A A A A A A '[NetworkListen] -> Authorization A A A A A A A '[DurableStore]
+
+authorizationEffects ::
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA authorizationEffectsA ->
+    Authorization AuthorizationScopeA AuthorizationSpecA AuthorizationPlanA AuthorizationFrameA AuthorizationRevisionA AuthorizationInstanceA AuthorizationServiceA authorizationEffectsB
 authorizationEffects = coerce

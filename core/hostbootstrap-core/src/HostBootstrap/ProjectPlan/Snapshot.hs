@@ -92,6 +92,7 @@ import HostBootstrap.ProjectScope (Production)
 import HostBootstrap.Protected (
     ProtectedError,
     ProtectedStore,
+    mkRecordName,
     withRunLiveness,
  )
 
@@ -472,12 +473,14 @@ withReauthorizedBoundPlanSnapshotKernel admission =
                         Left failure -> pure (Left (SnapshotVerificationError failure))
                         Right outcome -> pure outcome
 
-                underLiveness = do
-                    held <- withRunLiveness store (installedProjectName project) select
-                    pure $ case held of
-                        Left failure -> Left (SnapshotLivenessFailure failure)
-                        Right Nothing -> Left SnapshotLivenessContended
-                        Right (Just outcome) -> outcome
+                underLiveness = case mkRecordName (installedProjectName project) of
+                    Left failure -> pure (Left (SnapshotLivenessFailure failure))
+                    Right livenessName -> do
+                        held <- withRunLiveness store livenessName select
+                        pure $ case held of
+                            Left failure -> Left (SnapshotLivenessFailure failure)
+                            Right Nothing -> Left SnapshotLivenessContended
+                            Right (Just outcome) -> outcome
              in case verb of
                     ProjectUp ->
                         pure

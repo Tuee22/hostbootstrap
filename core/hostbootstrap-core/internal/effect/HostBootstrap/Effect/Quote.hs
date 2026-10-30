@@ -54,11 +54,13 @@ shellQuoteArgs = unwords . map shellQuoteArg
 {- | Quote one argument for Windows PowerShell.
 
 PowerShell's single-quoted string is also fully literal, but it spells an
-embedded quote by doubling it rather than by leaving the quoting, so the POSIX
-escape above would end the string and start a new one.
+embedded quote by doubling it rather than by leaving the quoting. Its tokenizer
+recognizes U+0027, U+2018, U+2019, U+201A, and U+201B as single quotes; each is
+doubled in place. The POSIX escape above would end the string and start a new one.
 -}
 powerShellQuoteArg :: String -> String
 powerShellQuoteArg value = "'" ++ concatMap escape value ++ "'"
   where
-    escape '\'' = "''"
+    escape character
+        | character `elem` ['\'', '\x2018', '\x2019', '\x201a', '\x201b'] = [character, character]
     escape character = [character]

@@ -1,8 +1,14 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ForeignFunctionInterface #-}
+
 -- | The @ensure wsl2@ reconciler: the Windows VM-provider substrate.
 module HostBootstrap.Ensure.Wsl2 (
     reconciler,
     installSteps,
-    powerShellBoolArgs,
+    WslPlatformStatus (..),
+    classifyWslStatus,
+    WslAction (..),
+    wslNextAction,
     wsl2Ready,
     bcdeditHypervisorLaunchArgs,
     normalizeWslText,
@@ -11,22 +17,28 @@ module HostBootstrap.Ensure.Wsl2 (
 )
 where
 
-import Data.Char (toLower)
 import Data.List (isInfixOf)
+import Foreign.C.Types (CInt (..))
 import HostBootstrap.Ensure (
     FramePlan (InstallHere),
     InstallStep (..),
     Reconciler (..),
+    StepOutcome (..),
+    classifyStepOutcome,
     frameTable,
     installAndVerify,
+    normalizeWslText,
     reconcilerInstallSteps,
     runTool,
     windowsRow,
  )
-import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Bcdedit, PowerShell, Winget, Wsl), toolCommandName)
+import HostBootstrap.HostConfig (HostConfig (hcSubstrate), buildHostConfig)
+import HostBootstrap.HostTool (HostTool (Bcdedit, Winget, Wsl), toolCommandName)
 import HostBootstrap.Substrate (Substrate)
 import System.Exit (ExitCode (ExitSuccess), die)
+#ifdef mingw32_HOST_OS
+import System.Win32.Info.Computer (ProcessorFeature, isProcessorFeaturePresent)
+#endif
 
 wslReportsVirtualizationDisabled :: (ExitCode, String, String) -> Bool
 wslReportsVirtualizationDisabled (_, out, err) =
@@ -40,8 +52,50 @@ wslReportsNoInstalledDistributions (_, out, err) =
     "has no installed distributions"
         `isInfixOf` normalizeWslText (out ++ "\n" ++ err)
 
-normalizeWslText :: String -> String
-normalizeWslText = map toLower . filter (/= '\0')
+-- | What the captured platform status establishes, independently of a distro.
+data WslPlatformStatus
+    = WslPlatformReady
+    | WslVirtualizationUnavailable
+    | WslPlatformAbsent
+    deriving (Eq, Show)
+
+{- | Classify only @wsl --status@. Virtualization diagnostics take precedence
+over success and no-distribution text; a platform with no installed distro is
+otherwise ready. An unrunnable command or other non-zero result is absent.
+-}
+classifyWslStatus :: Either String (ExitCode, String, String) -> WslPlatformStatus
+classifyWslStatus result = case result of
+    Left _ -> WslPlatformAbsent
+    Right status@(code, _, _)
+        | wslReportsVirtualizationDisabled status -> WslVirtualizationUnavailable
+        | code == ExitSuccess || wslReportsNoInstalledDistributions status -> WslPlatformReady
+        | otherwise -> WslPlatformAbsent
+
+-- | The next prerequisite action selected from the platform observations.
+data WslAction
+    = WslSetDefaultVersion InstallStep
+    | WslInstallPlatform
+    | WslEnableHypervisorLaunch
+    | WslFirmwareUnavailable
+    deriving (Eq, Show)
+
+{- | Choose from status, hypervisor presence, and OS-reported firmware
+availability. Ready ignores both machine facts; a present hypervisor ignores
+the firmware flag.
+-}
+wslNextAction :: WslPlatformStatus -> Bool -> Bool -> WslAction
+wslNextAction status hypervisor firmware = case status of
+    WslPlatformReady -> WslSetDefaultVersion defaultVersionStep
+    WslPlatformAbsent
+        | hypervisor || firmware -> WslInstallPlatform
+        | otherwise -> WslFirmwareUnavailable
+    WslVirtualizationUnavailable
+        | hypervisor -> WslInstallPlatform
+        | firmware -> WslEnableHypervisorLaunch
+        | otherwise -> WslFirmwareUnavailable
+
+defaultVersionStep :: InstallStep
+defaultVersionStep = InstallStep Wsl ["--set-default-version", "2"]
 
 bcdeditHypervisorLaunchArgs :: [String]
 bcdeditHypervisorLaunchArgs = ["/set", "hypervisorlaunchtype", "auto"]
@@ -59,53 +113,76 @@ reconciler =
                     ( InstallHere
                         [ InstallStep Winget ["install", "--id", "Microsoft.WSL", "--exact", "--accept-package-agreements", "--accept-source-agreements"]
                         , InstallStep Wsl ["--install", "--no-distribution"]
-                        , InstallStep Wsl ["--set-default-version", "2"]
+                        , defaultVersionStep
                         ]
                     )
                 ]
         , reconcile = reconcileWsl2
         }
 
+-- | Observe platform readiness from one status result, without an online query.
 wsl2Ready :: HostConfig -> IO Bool
 wsl2Ready cfg = do
     result <- runTool cfg Wsl ["--status"]
-    case result of
-        Right status@(ExitSuccess, _, _) ->
-            pure (not (wslReportsVirtualizationDisabled status))
-        Right status
-            | wslReportsNoInstalledDistributions status ->
-                pure True
-        _ -> wsl2OnlineListReady cfg
-
-wsl2OnlineListReady :: HostConfig -> IO Bool
-wsl2OnlineListReady cfg = do
-    result <- runTool cfg Wsl ["--list", "--online"]
-    pure $ case result of
-        Right online@(ExitSuccess, out, err) ->
-            not (wslReportsVirtualizationDisabled online)
-                && "ubuntu-24.04" `elem` words (normalizeWslText (out ++ "\n" ++ err))
-        _ -> False
+    pure (classifyWslStatus result == WslPlatformReady)
 
 reconcileWsl2 :: HostConfig -> IO ()
 reconcileWsl2 cfg = do
-    satisfied <- wsl2Ready cfg
-    if satisfied
-        then putStrLn "ensure wsl2: present (no-op)"
-        else reconcileHypervisorLaunch cfg
+    status <- classifyWslStatus <$> runTool cfg Wsl ["--status"]
+    action <- case status of
+        WslPlatformReady -> pure (wslNextAction status False False)
+        _ -> do
+            hypervisor <- readHypervisorPresent >>= requireObservation
+            if hypervisor
+                then pure (wslNextAction status True False)
+                else do
+                    firmware <- readFirmwareVirtualization >>= requireObservation
+                    pure (wslNextAction status False firmware)
+    runAction cfg action
+  where
+    requireObservation = either (die . ("ensure wsl2: " ++)) pure
 
-reconcileHypervisorLaunch :: HostConfig -> IO ()
-reconcileHypervisorLaunch cfg = do
-    firmware <- runPowerShellBool cfg "(Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty VirtualizationFirmwareEnabled)"
-    case firmware of
-        Right False ->
-            die "ensure wsl2: firmware virtualization is disabled; enable virtualization in BIOS/UEFI and retry"
-        Left err -> die ("ensure wsl2: " ++ err)
-        Right True -> do
-            hypervisor <- runPowerShellBool cfg "(Get-ComputerInfo -Property HyperVisorPresent).HyperVisorPresent"
-            case hypervisor of
-                Right True -> installAndVerify "wsl2" wsl2Ready installSteps cfg
-                Right False -> setHypervisorLaunch cfg
-                Left err -> die ("ensure wsl2: " ++ err)
+    runAction currentHostConfig (WslSetDefaultVersion (InstallStep tool args)) = do
+        result <- runTool currentHostConfig tool args
+        case classifyStepOutcome tool args result of
+            StepContinue -> reportReady
+            StepAlreadyInstalled -> reportReady
+            StepRebootRequired ->
+                die "ensure wsl2: host reboot required after WSL2 install; reboot and retry"
+            StepFailed reason -> die ("ensure wsl2: " ++ reason)
+    runAction currentHostConfig WslInstallPlatform = do
+        installAndVerify "wsl2" wsl2Ready installSteps currentHostConfig
+        refreshed <- buildHostConfig (hcSubstrate currentHostConfig)
+        runAction refreshed (WslSetDefaultVersion defaultVersionStep)
+    runAction currentHostConfig WslEnableHypervisorLaunch = setHypervisorLaunch currentHostConfig
+    runAction _ WslFirmwareUnavailable =
+        die "ensure wsl2: Windows reports firmware virtualization as unavailable; check BIOS/UEFI virtualization and host configuration, then retry"
+
+    reportReady = putStrLn "ensure wsl2: platform ready; default version is 2"
+
+foreign import ccall unsafe "hostbootstrap_wsl_hypervisor_present"
+    c_wslHypervisorPresent :: IO CInt
+
+readHypervisorPresent :: IO (Either String Bool)
+readHypervisorPresent = do
+    observed <- c_wslHypervisorPresent
+    pure $ case observed of
+        0 -> Right False
+        1 -> Right True
+        _ -> Left "WSL hypervisor observation requires a Windows x86 processor with CPUID leaf 1"
+
+{- | Feature 21 reports firmware virtualization made available by the OS. A
+false result does not by itself identify a disabled BIOS/UEFI setting.
+-}
+readFirmwareVirtualization :: IO (Either String Bool)
+#ifdef mingw32_HOST_OS
+readFirmwareVirtualization = Right <$> isProcessorFeaturePresent firmwareVirtualizationFeature
+
+firmwareVirtualizationFeature :: ProcessorFeature
+firmwareVirtualizationFeature = 21
+#else
+readFirmwareVirtualization = pure (Left "WSL firmware virtualization observation requires Windows")
+#endif
 
 setHypervisorLaunch :: HostConfig -> IO ()
 setHypervisorLaunch cfg = do
@@ -116,31 +193,6 @@ setHypervisorLaunch cfg = do
         Right (_, _, errOut) ->
             die ("ensure wsl2: install step `" ++ toolCommandName Bcdedit ++ " " ++ unwords bcdeditHypervisorLaunchArgs ++ "` failed " ++ errOut)
         Left err -> die ("ensure wsl2: " ++ err)
-
-runPowerShellBool :: HostConfig -> String -> IO (Either String Bool)
-runPowerShellBool cfg expr = do
-    result <- runTool cfg PowerShell (powerShellBoolArgs expr)
-    pure $ case result of
-        Right (ExitSuccess, out, _) -> parsePowerShellBool expr out
-        Right (_, _, errOut) -> Left ("powershell probe failed for " ++ expr ++ ": " ++ errOut)
-        Left err -> Left err
-
-powerShellBoolArgs :: String -> [String]
-powerShellBoolArgs expr =
-    ["-NoProfile", "-Command", expr]
-
-parsePowerShellBool :: String -> String -> Either String Bool
-parsePowerShellBool expr out =
-    case map toLower (trim out) of
-        "true" -> Right True
-        "false" -> Right False
-        other -> Left ("could not parse boolean powershell output for " ++ expr ++ ": " ++ other)
-  where
-    trim =
-        reverse
-            . dropWhile (`elem` [' ', '\r', '\n', '\t'])
-            . reverse
-            . dropWhile (`elem` [' ', '\r', '\n', '\t'])
 
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler

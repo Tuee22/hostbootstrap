@@ -1,6 +1,6 @@
 # Phase 2 — Haskell core scaffolding
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 1 (Python pre-binary floor)
 **Substrates**: none (static)
 **Gate**: `cabal build all` and `cabal test all` from `core/`, on the gate host
@@ -8,7 +8,7 @@ that runs it — § C forbids a baseline phase owing evidence from a family it d
 cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-29-host-portability-acceptance.md)
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all && cabal test all` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal build all && cabal test all --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Establish the `hostbootstrap-core` package, its pinned compiler, and the generic CLI
 > entrypoint every consuming project binary is built from.
@@ -50,9 +50,9 @@ One self-contained Haskell workspace with a pinned toolchain.
 - `core/cabal.project` names the single package and pins `with-compiler: ghc-9.12.4`.
 - `optimization: 2` matches the warm Cabal store baked into the base image, so derived builds reuse the
   pre-built dependency unfoldings.
-- The package declares the main library, seven private sublibraries (`effect-internal`,
+- The package declares the main library and private sublibraries, including `effect-internal`,
   `harness-lifecycle-internal`, `ownership-internal`, `colima-backend-internal`,
-  `lifecycle-transaction-internal`, `network-port-internal`, `lifecycle-dependency-internal`), one
+  `lifecycle-transaction-internal`, `network-port-internal`, and `lifecycle-dependency-internal`, one
   executable (`hostbootstrap`), and two test suites: `hostbootstrap-core-test` and the live-provider suite
   `hostbootstrap-provider-live-linux-cpu`. `documents/engineering/cabal_layout.md` carries the full
   component list.
@@ -108,9 +108,9 @@ where the last verb exists.
 
 None.
 
-### Sprint 2.3: Host-portable test harness foundation [Active]
+### Sprint 2.3: Host-portable test harness foundation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/Spec.hs`,
 `core/hostbootstrap-core/test/SourceGuard.hs`, `core/hostbootstrap-core/test/PlatformPath.hs`,
 `core/hostbootstrap-core/test/PortabilitySpec.hs`,
@@ -163,65 +163,53 @@ The work is test-harness only: no production module, no named production type, a
 
 #### Validation
 
-The three helpers are exercised by the suites that consume them rather than in isolation, because a
-harness helper with only its own unit test proves nothing about the guards it is there to make portable.
-The evidence is the gate itself: `cabal build all` and `cabal test all` from `core/`, run host-native and
-recorded against the gate host that ran it (§ JJ). Closure requires these cases to exist and pass there:
+`core/hostbootstrap-core/test/PortabilitySpec.hs` contains these cases:
 
-- `PortabilitySpec` "no frozen digest is derived from a locale-decoded read" fails on the point-free
-  spelling `childConfigDigest . TextEncoding.encodeUtf8 . Text.pack` and on the `$` spelling as well as the
-  parenthesised one, and passes over the tree because `HandoffSpec` takes no such digest.
-- `PortabilitySpec` "the suite driver fixes the locale encoding before the runner starts" asserts that the
-  token index of `setLocaleEncoding utf8` in `Spec.hs` precedes the first `readFile`, `getArgs`, and
-  `defaultMain` token of `main`.
-- `PortabilitySpec`'s separator case, renamed "a separator rewrite lives only in SourceGuard and
-  PlatformPath", fails on a backslash character literal, a `"\\"` string literal, a `splitDirectories`
-  identifier, or an `import System.FilePath.Posix` outside those two modules (a `splitDirectories` inside a
-  string literal is not an occurrence).
-- A `PortabilitySpec` case "hostFixturePath is absolute for a drive-letter segment" asserts
-  `isAbsolute (hostFixturePath "D:/x")` and `isAbsolute (hostFixturePath "/D:/x")` on every gate host.
-- A `PortabilitySpec` case "an unrecognized probe flag is refused" launches the suite executable with
-  `["--hostbootstrap-no-such-probe"]` and asserts the distinctive exit status and empty standard output.
-- Each `PortabilitySpec` case's failure message contains the heading of its rationale.md § Gates and
-  validation entry, and a case asserts that every heading so named exists in `DEVELOPMENT_PLAN/rationale.md`.
+- "the suite driver fixes the locale encoding before the runner starts" checks token order before
+  argument reads, source reads, and `defaultMain` in `Spec.hs`.
+- "no frozen digest is derived from a locale-decoded read" checks the test-source corpus;
+  "digest detection covers application, composition, and dollar application" and
+  "digest detection leaves byte digests and unrelated encodings alone" exercise positive and negative
+  scanner inputs. The frozen `HandoffSpec` measurements read bytes directly.
+- "a separator rewrite lives only in SourceGuard and PlatformPath",
+  "separator detection covers literals, splitDirectories, and POSIX imports", and
+  "a quoted separator helper name is not an identifier" cover the separator guard and its lexical scope.
+  "only the harness helper turns a source path into a comparable name" checks source-path ownership.
+- "no host tool fixture bypasses the fixture-path constructor" checks host fixture admission;
+  "hostFixturePath is absolute for a drive-letter segment" covers drive-qualified, drive-relative,
+  rooted, and backslash spellings.
+- "an unrecognized probe flag is refused" re-invokes the suite and checks exit status 97, empty stdout,
+  and the distinctive stderr diagnostic.
+- "each portability guard names an existing rationale heading" resolves every guard's explanation.
 
-Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
-passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native — all 1,878
-tests in 503.74 seconds — alongside `poetry run python -m hostbootstrap.check_code` and
-`poetry run python -m hostbootstrap.test_all` at 231 passed. That run includes the `PortabilitySpec`
-absence guards this sprint ships — the byte-read guard among them — and every suite its helpers reach. It
-is a native-Windows pass of the complete host static gate.
+`core/hostbootstrap-core/test/AuthoritySpec.hs`'s "run liveness is close-on-exec and cannot be retained
+by a provider child" checks that the child still has no exit status while the parent reacquires.
+On 2026-10-26, the focused `PortabilitySpec` selection passes 25/25 on native Windows with GHC 9.12.4
+and Cabal 3.16.1.0. This is focused static evidence, not a completed host static gate or another
+gate host's acceptance.
 
-Confirming the same gate on a macOS and a Linux gate host is not this sprint's obligation and not this
-phase's: it needs three machines, which § C forbids a baseline phase owing, and the
-[host-portability acceptance phase](phase-29-host-portability-acceptance.md) owns it.
+On 2026-10-26, `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4,
+Cabal 3.16.1.0, passed the complete declared phase gate: plain `cabal build all`, then
+`cabal test all --test-options=--hide-successes` from `core/`, with all 2,570 cases passing in
+406.22 seconds. The display option hides successful case lines and retains the full suite.
+The complete host static gate also passes: the `demo/` build and test commands pass, including
+164 consumer cases (5.90 seconds) and the included 2,570 core cases (402.11 seconds);
+`poetry run python -m hostbootstrap.check_code` passes; and
+`poetry run python -m hostbootstrap.test_all` passes 376 cases at 100% line and branch coverage.
+The Cabal command consoles use `chcp 65001` and restore their original code page.
+
+The final manifest observes all 61 conditional callbacks: 31 row completions and 30 refusal
+completions across its 17 declared families. Every family matches its own expected pair. The
+provider-live component is compiled and reports its declared unrequested-lane `Unsupported`;
+this static gate establishes no live provider acceptance.
 
 #### Remaining Work
 
-- `core/hostbootstrap-core/test/HandoffSpec.hs` (the two `digest = childConfigDigest .
-  TextEncoding.encodeUtf8 . Text.pack` bindings): read the frozen sources with `Data.ByteString.readFile`
-  and digest the bytes directly. Then extend `reencodedDigestSequences` in `PortabilitySpec` (or replace it
-  with a window search) so any `encodeUtf8` token within the same binding as a `childConfigDigest` or
-  `sha256Text` token fails, whether joined by `(`, `.`, or `$`.
-- `PortabilitySpec` locale case: compare token positions in `Spec.hs` so `setLocaleEncoding utf8` must
-  precede the first `getArgs`, `readFile`, and `defaultMain` token after `main =`.
-- `PortabilitySpec` separator case: rename it and widen it to the four shapes named in Validation, with an
-  allow-list of exactly `SourceGuard.hs` and `PlatformPath.hs`.
-- `core/hostbootstrap-core/test/PlatformPath.hs` `posixSegments`: drop a segment that ends in `:` (or
-  refuse it with `error` naming the argument), so `hostFixturePath` cannot yield a drive-relative path on
-  Windows; add the drive-letter case named in Validation.
-- `core/hostbootstrap-core/test/Spec.hs`: after every existing probe branch (including the
-  `shippedCommandEntryArguments` branch) and immediately before the catch-all, add a branch that matches any argv whose
-  head begins with `--hostbootstrap-`, writes `unrecognized probe: <argv>` to standard error, and exits
-  with `ExitFailure 97`; add the launch case named in Validation. In `AuthoritySpec`'s case that launches
-  `--hostbootstrap-liveness-inheritance-probe`, assert `getProcessExitCode` on the probe answers `Nothing`
-  at the moment the parent reacquires, so the case judges a running probe rather than an absent one.
-- Give every `PortabilitySpec` failure message its rationale.md heading (the guards of Sprints 2.3, 2.4,
-  and 2.6 alike) and add the case that checks each named heading exists.
+None.
 
-### Sprint 2.4: The fifth rule and the coverage manifest [Active]
+### Sprint 2.4: The fifth rule and the coverage manifest [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/CoverageManifest.hs`,
 `core/hostbootstrap-core/test/PortabilitySpec.hs`, `core/hostbootstrap-core/test/Spec.hs`,
 `core/hostbootstrap-core/test/WslGlobalWallHostSpec.hs`,
@@ -250,8 +238,10 @@ disappearing, and give the gate the two § NN absence guards whose shapes are th
   the same list the runner is given, so what it counts is what runs. Each row's report is observed, not
   declared: every conditional case reaches its row-or-refusal branch through one recording combinator,
   and a final manifest case compares the observed number of row-branch and refusal-branch completions per
-  family against `familyRowCases` and `familyRowHolds`, so a refusal branch cut to `pure ()` or a branch
-  that never ran fails the gate rather than printing a passing report.
+  family against `familyRowCases` and `familyRowHolds`, so a case that bypasses recording, never runs,
+  throws, or completes the wrong branch fails the gate. A successful callback's completion cannot prove
+  the callback contains its intended assertion; the row-specific refusal assertions remain part of each
+  case's reviewed contract.
 - Platform rows are compiled on every host and answer a total refusal where they cannot apply. The POSIX
   ownership row declares `HostBootstrap.Ownership.Posix.posixOwnershipSupported`, and the WSL global-wall
   host families read `HostBootstrap.Ownership.Row.hostOwnershipSupported`; the global-wall modules are
@@ -279,55 +269,37 @@ disappearing, and give the gate the two § NN absence guards whose shapes are th
 
 #### Validation
 
-`PortabilitySpec` proves each guard is non-vacuous by naming the shape it forbids and finding none; the
-package-description guard was additionally exercised against a reintroduced `if !os(linux) buildable`
-stanza and reported it. The manifest is proved by the gate itself: the declared per-family size is part of
-the run, so a suite that silently stopped running a group fails on the count rather than passing with a
-smaller one. Closure requires these cases to exist and pass under `cabal test all` from `core/`:
+`core/hostbootstrap-core/test/CoverageManifest.hs` contains:
 
-- A `CoverageManifest` case "every conditional family ran the branch its row declares", sequenced after
-  every declared family with tasty `after AllFinish`, which reads the recorded branch completions and
-  fails when a family's refusal-branch count is not `familyRowCases` where `familyRowHolds` is `False`, or
-  its row-branch count is not `familyRowCases` where it is `True`.
-- `PortabilitySpec` unit cases over `hostConditionalFields` with literal package-description fragments:
-  `if flag(x)` followed by `elif os(windows)` with an `other-modules:` body, `if os(windows)` with
-  `Buildable: False`, `if flag(live)` with `buildable: False`, and `if arch(aarch64)` with
-  `Exposed-Modules:` each report the offending field; `if !os(windows)` with only `build-depends:` reports
-  nothing.
-- `PortabilitySpec` unit cases over the `PATH` binding scanner with literal fragments: `setEnv "PATH" dir`,
-  `[("PATH", tools)]`, `[("Path", tools)]`, and `(proc exe []){env = Just [("PATH", tools)]}` are each
-  reported; `lookup "PATH" inherited` is not; and the guard case "no spec binds PATH outside the
-  allow-list" passes over the tree with `RecursiveLifecycleSpec.recursiveFixtureEnvironment` as its only
-  allow-list entry, failing if that entry no longer binds `PATH` (so a stale entry cannot linger).
+- The structural per-family inventory checks over the same suite list supplied to the runner.
+- "branch comparisons reject missing, opposite, and excess completions", which applies the count
+  comparison to valid counts and each invalid shape for both possible declarations.
+- "only callbacks returning successfully record their selected branch", which observes both successful
+  branches and proves a throwing callback contributes no completion.
+- "every conditional family ran the branch its row declares", sequenced after the other groups with
+  tasty `after AllFinish`, which reports and checks each family's actual successful row/refusal counts.
+  `ConditionalCase` supplies the shared recording path, and `Spec.hs` resets it before the suite.
 
-Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
-passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
-1,950/1,950 in 235.04 seconds, plus `poetry run python -m hostbootstrap.check_code` and
-`poetry run python -m hostbootstrap.test_all` at 231 passed. Twenty of those cases are the POSIX row's,
-which this gate host previously did not compile at all. On this gate host the manifest reports the POSIX
-row's 17 row-driven cases asserting its declared refusal and the Win32 row's 3 exercising the kernel; on a
-POSIX gate host the same cases run with the two reports exchanged.
+Those counts detect absent recording or execution, opposite or excess completions, and thrown
+callbacks. They establish that the selected callback returned successfully. The `IO ()` callback API
+cannot establish that an arbitrary callback contains a meaningful assertion: replacing its assertions
+with `pure ()` still records completion. The retained refusal bodies call the real row and match its
+refusal; their assertions remain subject to review and behavioral coverage.
+
+`core/hostbootstrap-core/test/PortabilitySpec.hs` contains
+"no host condition decides which modules the package builds" and
+"host condition fields include elif, flags, and mixed field case" for conditional-build scanning.
+"no spec binds PATH outside the allow-list" checks the live binding corpus and its single non-stale
+exception; "PATH binding detection distinguishes writes and tuple bindings from lookup" proves the
+scanner's positive and negative cases. The focused native-Windows 25/25 result is recorded in Sprint
+2.3; observed completion counts are established by the complete suite.
+
+The complete declared phase gate and host static gate passed on 2026-10-26; Sprint 2.3 records
+the commands, gate host, case totals, and observed conditional completions.
 
 #### Remaining Work
 
-- Add a harness module `test/ConditionalCase.hs` (listed in the test suite's `other-modules`, imported by
-  both the specs and `CoverageManifest`, so no import cycle forms with `ProviderAliasSpec`) exporting
-  `conditionalCase :: [TestName] -> Bool -> TestName -> IO () -> IO () -> TestTree` (family path, row
-  holds, case name, row body, refusal body). It records into a process-global `IORef (Map [TestName]
-  (Int, Int))` which branch completed without an exception. Route every row-driven case of the declared
-  families through it: `WslGlobalWallHostSpec.rowCase`, `WslGlobalWallWindowsSpec`'s row cases,
-  `RecursiveLifecycleSpec.withLocalGuestFrame`, the `recovery-interruption` row case,
-  `OwnershipPosixSpec`/`OwnershipWindowsSpec` row cases, and `ProviderAliasSpec.kernelCase`.
-- Add the sequenced manifest case named in Validation to `CoverageManifest.tests`.
-- `PortabilitySpec.hostConditionalFields`: treat a line beginning `elif ` like `if `, treat `flag(` like
-  `os(` and `arch(`, and lowercase the field name before comparing it with `build-depends`; add the unit
-  cases named in Validation.
-- `PortabilitySpec` case "no spec points the suite's own PATH at an executable it wrote": widen it from the
-  `setEnv`/`unsetEnv` token pairs to every `"PATH"` or `"Path"` string token in an environment-binding
-  position (a token sequence `(`, `"PATH"`, `,`, or such a tuple inside an `env = Just` list), rename it
-  "no spec binds PATH outside the allow-list", and give it an explicit allow-list of exactly
-  `RecursiveLifecycleSpec.recursiveFixtureEnvironment` with the § NN process-transport rationale in the
-  entry; add the scanner unit cases named in Validation.
+None.
 
 ### Sprint 2.5: The fifth rule reaches conditional ownership transactions [Done]
 
@@ -387,9 +359,9 @@ alias ownership row: 5 cases" and which carries no cluster row.
 
 None.
 
-### Sprint 2.6: The build description carries the warnings the gate asserts [Active]
+### Sprint 2.6: The build description carries the warnings the gate asserts [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`, `demo/hostbootstrap-demo.cabal`, `core/hostbootstrap-core/test/PortabilitySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/cabal_layout.md`, `documents/engineering/code_check_doctrine.md`
@@ -412,36 +384,34 @@ call site rather than failing to compile.
 
 #### Validation
 
-The host static gate. `cabal build all` and `cabal test all` from `core/` and from `demo/` fail on a
-warning without being asked to, which is the property under test. Closure requires the `PortabilitySpec`
-cases "every component imports the warning stanza and none overrides it" and "no module suppresses a
-warning the policy asserts" to pass over the tree under `cabal test all` from `core/`, the latter
-matching the pragma through `SourceGuard.haskellTokens` (the token after `{-#` compared case-insensitively
-against `OPTIONS_GHC` and `OPTIONS`) and reading the test and provider-live sources as well as production.
-Dated evidence: on 2026-09-12,
-x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, a full reconfigure and rebuild of every
-component of both packages under the package-declared policy compiled warning-clean, and
-`cabal test all` from `core/` passed 2,507 tests in 162.32 seconds.
+`core/hostbootstrap-core/test/PortabilitySpec.hs` contains:
 
-A dated `**Gate evidence**` row records the command that ran on its date and is not rewritten by this
-sprint; the reduced spelling is what a document asks a reader to *run*.
+- "the build description carries the warning policy the gate asserts", checking whole required tokens
+  in both packages' shared warning stanzas.
+- "every component imports the warning stanza and none overrides it", checking every component and
+  its own option fields.
+- "no module suppresses a warning the policy asserts", reading every effective component source root
+  in the core and demo, including test and provider-live modules, excluding compile-fail inputs.
+- "warning pragma detection handles both accepted pragma names", covering case variants of
+  `OPTIONS_GHC` and legacy `OPTIONS` while exempting string content.
+- "warning overrides are matched as whole policy flags", covering weakening flags without treating a
+  stricter unrelated flag as a weakening.
+
+`ClusterWorkloadSpec.hs` supplies signatures for its top-level helpers and carries no suppression
+pragma. Plain `cabal build all` and `cabal test all` use the policy from package metadata; no remembered
+warning flag is needed. The focused native-Windows 25/25 `PortabilitySpec` result is recorded in Sprint
+2.3. Full build and suite evidence is recorded against the complete phase gate.
+
+The complete declared phase gate and host static gate passed on 2026-10-26; Sprint 2.3 records
+the commands, gate host, case totals, and observed conditional completions.
 
 #### Remaining Work
 
-- `core/hostbootstrap-core/test/ClusterWorkloadSpec.hs`: drop `{-# OPTIONS_GHC -Wno-missing-signatures #-}`
-  and give every top-level binding its signature, so the module compiles clean under the stanza's policy.
-- `PortabilitySpec` pragma guard: replace the raw `"{-# OPTIONS_GHC"` substring search with a token
-  search over `SourceGuard.haskellTokens` (the token following `-#` compared case-insensitively with
-  `OPTIONS_GHC` and `OPTIONS`), and widen its corpus from `src`/`app`/`internal` to every Haskell source
-  `SourceGuard.listHaskellSources` yields under `test` (excluding `test/compile-fail`) and `provider-live`.
-- `PortabilitySpec` stanza guard: parse every component stanza of `hostbootstrap-core.cabal`, assert each
-  carries `import: warnings`, assert no component `ghc-options` line carries `-Wwarn`, `-Wno-error`,
-  `-Wno-partial-fields`, or `-Wno-error=`, and match the required flags as whitespace-separated tokens
-  rather than with `isInfixOf`.
+None.
 
-### Sprint 2.7: One source-introspection toolkit for the suites [Active]
+### Sprint 2.7: One source-introspection toolkit for the suites [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/SourceGuard.hs`, `core/hostbootstrap-core/test/SpecIndexSpec.hs`, `core/hostbootstrap-core/test/CordonSpec.hs`,
 `core/hostbootstrap-core/test/PortabilitySpec.hs`
 **Substrates**: linux-cpu
@@ -467,33 +437,33 @@ that suite's owner, the [recursive-lifecycle-command phase](phase-17-recursive-l
 
 #### Validation
 
-The host static gate. Every source-guard case passes unchanged under the one reader, which is the
-evidence that no guard's enumerated set moved when the copies were reconciled. Dated evidence: on
-2026-09-12, x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from
-`core/` passed 2,508 tests.
+`core/hostbootstrap-core/test/PortabilitySpec.hs` contains:
 
-Closure requires, under `cabal test all` from `core/`: a `PortabilitySpec` case "every component declares
-exactly the module files under its source directories" comparing `fieldModules` output per stanza against
-the walked files by exact equality in both directions, so that deleting a module `M` from the main
-library's `exposed-modules` fails it even while a module `M.Internal` remains declared, and a reader that
-returns no modules fails it; and `PortabilitySpec` defining no function of its own that calls
-`listDirectory`.
+- "every component declares exactly the module files under its source directories", resolving each
+  declared module and `main-is` file under its component's effective roots and requiring every
+  enumerated source to have an owning component.
+- "the shared stanza reader accepts inline, continued, and common source fields", covering imported
+  source roots, field-name case, inline and continued values, and comma-separated module lists.
+- "module enumeration distinguishes a module from its nested module", proving an `M.Internal`
+  declaration cannot satisfy the ownership check for `M`.
+
+`SourceGuard.componentStanzas`, `fieldValues`, `fieldModules`, and `listComponentSources` supply that
+inventory; `listTestSources` and `forEachTestSourceBut` cover all test-suite roots recursively while
+excluding compile-fail inputs. `PortabilitySpec` uses the shared walkers, `CordonSpec` consumes shared
+import and exposure readers, and `SpecIndexSpec` delegates its component inventory to the toolkit.
+The focused native-Windows 25/25 `PortabilitySpec` result is recorded in Sprint 2.3. The complete suite
+checks the source guards that consume these helpers.
+
+The complete declared phase gate and host static gate passed on 2026-10-26; Sprint 2.3 records
+the commands, gate host, case totals, and observed conditional completions.
 
 #### Remaining Work
 
-- Route `PortabilitySpec`'s private walkers through `SourceGuard.listHaskellSources`/`readHaskellSources`
-  and `withPackageSourceIn`, and delete them: `haskellSourcesUnder`, `productionSources`,
-  `forEachTestSourceBut` (non-recursive over `test` only), `testRoot`, and `readPackageDescription`.
-- Move `PortabilitySpec.commonWarningsOptions` into `SourceGuard` as a named-stanza reader, and add a
-  reader that returns every component stanza with its `hs-source-dirs`.
-- Make `forEachTestSourceBut` enumerate both test-suite `hs-source-dirs` recursively, excluding
-  `test/compile-fail`.
-- Add the two-directional enumeration case named in Validation to `PortabilitySpec`, using `fieldModules`
-  over every component stanza instead of `isInfixOf` against the whole description.
+None.
 
-### Sprint 2.8: Module contracts state what the code does [Planned]
+### Sprint 2.8: Module contracts state what the code does [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/CoverageManifest.hs`,
 `core/hostbootstrap-core/test/Expect.hs`, `core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Substrates**: none
@@ -518,25 +488,28 @@ module header belongs to the module's owner, the
 
 #### Validation
 
-The host static gate from `core/` (`cabal build all` and `cabal test all`) passes with the edits; the
-deletion of `expectLeft` is proved by the build, and a reviewer can check each rewritten comment against
-the code it describes at the cited definition.
+Source review compares `CoverageManifest.hs`'s alias-row explanation with
+`ProviderAliasSpec.kernelCase` and the shipped ownership transaction: the described requirements are
+POSIX symbolic links and no-replace hard links. The Cabal comparison names the private
+`HostBootstrap.Ensure.Colima.Backend.Resolver.Testing` module. `Expect.hs` exports only
+`expectRight`, `expectRightLabelled`, `expectOwned`, and `expectOccupied`, each with callers, and
+carries the `expectRight` Haddock once.
+
+The core test build checks the remaining helper signatures through their consumers, including
+`OwnershipPosixSpec` and `OwnershipWindowsSpec`; the complete host static gate validates the assembled
+tree. No automated case proves that a prose comment accurately describes its subject: the named source
+comparison is the review evidence for that part.
+
+The complete declared phase gate and host static gate passed on 2026-10-26; Sprint 2.3 records
+the commands, gate host, case totals, and observed conditional completions.
 
 #### Remaining Work
 
-- Rewrite the paragraph of the `manifest` Haddock in `CoverageManifest.hs` that begins "One ownership
-  /driver/ is conditional", replacing the `O_NOFOLLOW` / `flock(2)`-across-`exec` description.
-- Replace "the direct-provider testing seam" in the `hostbootstrap-core.cabal` comment with the module name.
-- Delete `expectLeft` and its export from `core/hostbootstrap-core/test/Expect.hs`, and delete the
-  duplicated "The value, or a failure naming what came back instead." comment line above `expectRight`.
+None.
 
 ## Remaining Work
 
-- Sprint 2.3: `HandoffSpec` digests file bytes; the digest, locale, and separator guards close their gaps; `hostFixturePath` refuses drive-relative output; the driver refuses an unknown probe flag; each guard names its rationale heading.
-- Sprint 2.4: the coverage manifest observes which branch each conditional case ran, the host-condition guard reads `elif`, `flag()`, and any field-name case, and the `PATH` guard covers environment-binding positions with an explicit allow-list.
-- Sprint 2.6: `ClusterWorkloadSpec` drops its warning suppression; the pragma guard is token-based over test sources; every component's stanza import and overrides are checked.
-- Sprint 2.7: `PortabilitySpec`'s private source-tree walkers and package-description readers move into `SourceGuard`, and `PortabilitySpec` checks the module enumeration in both directions by exact name.
-- Sprint 2.8: the `CoverageManifest` and package-description comments state what the code does, and `Expect` drops its unused `expectLeft`.
+None.
 
 ## Documentation Requirements
 

@@ -1,10 +1,7 @@
 module RepointSelfReference where
 
-import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), SelfRef)
+-- An opaque self-reference cannot be rebuilt by naming its private constructor.
 
--- A self-reference names where this binary is on the host and where it is
--- inside the guest, and both feed process dispatch. A caller that was handed one
--- cannot re-point it: the constructor is package-private and there are no field
--- selectors, so record update has no field to name.
-repointed :: SelfRef -> SelfRef
-repointed self = self{inVMSelfPath = InVMSelfPath "/tmp/attacker"}
+import HostBootstrap.Lift (
+    SelfRef (SelfRef),
+ )

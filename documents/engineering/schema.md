@@ -18,6 +18,9 @@
   downstream projection, and help text for the local config. An opaque `CodecWitness` rejects unequal
   normalized encoder/decoder type expressions before decode or mutation; representative round trips
   separately test semantics.
+- Registered `ConfigArtifact` values are opaque and built by `artifactOf` from that witness. Their
+  `artifactName`, `schemaText`, and `renderText` readers are ordinary functions, so record update cannot
+  replace an artifact's admitted schema or rendering.
 - Normal commands fail fast when the sibling config is missing or incompatible. Ungated exceptions are
   limited to help and explicit config inspection/initialization commands, including static
   `context render`. `service run` never reads the sibling: it is configured by its signed activation
@@ -356,6 +359,9 @@ refuse. See [binary context](../architecture/binary_context_config.md),
 - `DhallGenSpec` (core) rejects a mismatched decoder/encoder pair before decode or side effects, proves an
   artifact's schema and rendering come from one witness, compares every `Core.dhall` type with its admitted
   codec, and checks byte-identical render → decode → re-render for representative values.
+- Compile-fail [UpdateConfigArtifactSchema](../../core/hostbootstrap-core/test/compile-fail/UpdateConfigArtifactSchema.hs)
+  imports the real `schemaText` reader and rejects replacing the schema of an actual `coreArtifacts` member
+  by record update.
 - `SchemaSpec` (core) decodes valid project-local configs, refuses malformed and wrong-typed fields with
   typed errors, re-renders every default role config stably, and checks child projection and role
   authority.

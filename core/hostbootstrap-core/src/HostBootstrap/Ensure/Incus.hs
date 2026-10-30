@@ -7,21 +7,37 @@
 Install-and-verify (see @development_plan_standards.md § L, § U@):
 on apple-silicon, @brew install incus@ + @brew install colima@ and
 @colima start incus --runtime incus@, because macOS ships only the client and
-the daemon must run inside Colima's Linux VM; on ubuntu-24.04,
-@apt-get install incus@ + @sudo incus admin init --minimal@, plus the linux
-invoking user in @incus-admin@ so the user can reach the daemon socket. A
-verified no-op when the provider is usable; the permission step is still
-reconciled on linux. The pure 'installSteps' planner is unit-tested.
+the daemon must run inside Colima's Linux VM. On Linux, install a missing client
+and observe architecture-specific VM support and the root daemon before
+selecting packages, initialization, or a restart. The invoking user's
+@incus-admin@ membership and socket access remain reconciled separately. A
+usable observation requires no VM-package install or daemon restart. The pure
+plans and argument vectors are unit-tested.
 -}
 module HostBootstrap.Ensure.Incus (
     reconciler,
     installSteps,
     appleIncusProfile,
-    IncusProviderStatus (..),
+    IncusProviderStatus (
+        IncusClientMissing,
+        IncusDaemonAbsent,
+        IncusPermissionDenied,
+        IncusDaemonUnreachable,
+        IncusVMIncapable,
+        IncusNoEgress
+    ),
     IncusProviderCapability,
     classifyIncusProviderStatus,
+    incusProviderStatusResult,
     virtiofsdCandidatePaths,
-    linuxVmCapabilityProbeScript,
+    LinuxIncusObservation (..),
+    linuxVmPackages,
+    linuxVmCapabilityProbes,
+    linuxVmCapabilitySatisfied,
+    linuxIncusDaemonProbeArgs,
+    linuxIncusConvergence,
+    incusBridgeForwardingArgs,
+    kvmModuleLoadArgs,
     withIncusProviderCapability,
     probeIncusProviderStatus,
     ensureKvmAccess,
@@ -46,8 +62,8 @@ import HostBootstrap.Ensure (
     withInvokingGroupMember,
  )
 import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig, resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Brew, Colima, Incus, Sudo), absExePath)
-import HostBootstrap.Substrate (Substrate, isAppleSilicon, isLinux)
+import HostBootstrap.HostTool (AbsExe, HostTool (Brew, Colima, Incus, Sudo, Virtiofsd), absExePath)
+import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate, isAppleSilicon, isLinux, substrateArch)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die)
 #ifndef mingw32_HOST_OS
@@ -90,14 +106,26 @@ data IncusProviderStatus
 -- | Opaque capability minted only from the complete ready observation.
 data IncusProviderCapability capabilityId = IncusProviderCapability
 
+{- | Observe the configured provider before admitting its opaque capability.
+The pure continuation supplies a result; admission does not execute an IO action
+that the continuation returns. Descriptive statuses cannot mint the capability.
+-}
 withIncusProviderCapability ::
-    IncusProviderStatus ->
+    HostConfig ->
     (forall capabilityId. IncusProviderCapability capabilityId -> result) ->
-    Either String result
-withIncusProviderCapability IncusProviderReady consume =
-    Right (consume IncusProviderCapability)
-withIncusProviderCapability status _ =
-    Left ("Incus provider is not usable: " ++ show status)
+    IO (Either String result)
+withIncusProviderCapability cfg consume = do
+    status <- probeIncusProviderStatus cfg
+    pure $ do
+        incusProviderStatusResult status
+        pure (consume IncusProviderCapability)
+
+{- | Read a descriptive readiness result. A caller-built classification remains
+data; only 'withIncusProviderCapability' performs capability admission.
+-}
+incusProviderStatusResult :: IncusProviderStatus -> Either String ()
+incusProviderStatusResult IncusProviderReady = Right ()
+incusProviderStatusResult status = Left ("Incus provider is not usable: " ++ show status)
 
 {- | Where Incus looks for @virtiofsd@, in its own search order. Pure so the
 list is pinned by a test rather than restated at a call site.
@@ -109,26 +137,60 @@ virtiofsdCandidatePaths =
     , "/usr/lib/virtiofsd"
     ]
 
-{- | The Linux VM-capability probe: the QEMU binary, an OVMF firmware image, and
-a @virtiofsd@ Incus can actually exec.
-
-The @virtiofsd@ conjunct is what makes this probe answer the question § L asks —
-whether the provider is *usable* — rather than merely whether a binary is
-installed. A host with QEMU and OVMF but no @virtiofsd@ can launch a VM and then
-fail every durable-share attach, so reporting it ready is the exact "installed
-but not usable" claim the doctrine forbids.
+{- | The resolved Incus executable, observed VM capability, and root-daemon
+responsiveness used by Linux convergence. This is descriptive input, not a
+provider capability.
 -}
-linuxVmCapabilityProbeScript :: String
-linuxVmCapabilityProbeScript =
-    intercalate
-        " && "
-        [ "test -x /usr/bin/qemu-system-x86_64"
-        , "(test -f /usr/share/OVMF/OVMF_CODE.fd || test -f /usr/share/OVMF/OVMF_CODE_4M.fd)"
-        , "(" ++ intercalate " || " (map candidate virtiofsdCandidatePaths ++ [onPath]) ++ ")"
-        ]
+data LinuxIncusObservation = LinuxIncusObservation AbsExe Bool Bool
+    deriving (Eq, Show)
+
+-- | VM support packages for the host architecture, including share and ACL tools.
+linuxVmPackages :: Arch -> [String]
+linuxVmPackages Amd64 = ["qemu-system-x86", "ovmf", "virtiofsd", "acl"]
+linuxVmPackages Arm64 = ["qemu-system-arm", "qemu-efi-aarch64", "virtiofsd", "acl"]
+
+{- | Sudo argument vectors for QEMU, alternative firmware images, and alternative
+virtiofsd executables. A configured virtiofsd path is still tested for execution;
+its presence in the configuration alone establishes no capability.
+-}
+linuxVmCapabilityProbes :: Arch -> Maybe AbsExe -> ([String], [[String]], [[String]])
+linuxVmCapabilityProbes architecture resolvedVirtiofsd =
+    ( ["test", "-x", qemu]
+    , [["test", "-f", image] | image <- firmware]
+    , [["test", "-x", path] | path <- virtiofsdCandidatePaths ++ [absExePath exe | Just exe <- [resolvedVirtiofsd]]]
+    )
   where
-    candidate path = "test -x " ++ path
-    onPath = "command -v virtiofsd >/dev/null 2>&1"
+    (qemu, firmware) = case architecture of
+        Amd64 -> ("/usr/bin/qemu-system-x86_64", ["/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_CODE_4M.fd"])
+        Arm64 -> ("/usr/bin/qemu-system-aarch64", ["/usr/share/AAVMF/AAVMF_CODE.fd"])
+
+-- | QEMU and one successful result from each alternative group are required.
+linuxVmCapabilitySatisfied :: Bool -> [Bool] -> [Bool] -> Bool
+linuxVmCapabilitySatisfied qemu firmware virtiofsd = qemu && or firmware && or virtiofsd
+
+-- | The root daemon probe uses the exact Incus executable retained by the plan.
+linuxIncusDaemonProbeArgs :: AbsExe -> [String]
+linuxIncusDaemonProbeArgs executable = [absExePath executable, "list", "--format", "csv", "-c", "n"]
+
+-- | Repair only observed gaps, restarting once when either repair ran.
+linuxIncusConvergence :: Arch -> LinuxIncusObservation -> [InstallStep]
+linuxIncusConvergence architecture (LinuxIncusObservation executable vmReady daemonReady) =
+    [InstallStep Sudo (["apt-get", "install", "-y"] ++ linuxVmPackages architecture) | not vmReady]
+        ++ [InstallStep Sudo [absExePath executable, "admin", "init", "--minimal"] | not daemonReady]
+        ++ [InstallStep Sudo ["systemctl", "restart", "incus"] | not vmReady || not daemonReady]
+
+-- | The shared chain observation and each direction's check/insert vectors.
+incusBridgeForwardingArgs :: ([String], [([String], [String])])
+incusBridgeForwardingArgs =
+    ( ["iptables", "-nL", "DOCKER-USER"]
+    , [(rule "-C" direction, rule "-I" direction) | direction <- ["-i", "-o"]]
+    )
+  where
+    rule operation direction = ["iptables", operation, "DOCKER-USER", direction, "incusbr0", "-j", "ACCEPT"]
+
+-- | Try each module until the KVM device exists, regardless of a command's exit.
+kvmModuleLoadArgs :: [[String]]
+kvmModuleLoadArgs = [["modprobe", "kvm_intel"], ["modprobe", "kvm_amd"], ["modprobe", "kvm"]]
 
 classifyIncusProviderStatus ::
     Bool ->
@@ -201,7 +263,6 @@ reconciler =
                 , linuxRow
                     ( InstallHere
                         [ InstallStep Sudo ["apt-get", "install", "-y", "incus", "acl"]
-                        , InstallStep Sudo ["incus", "admin", "init", "--minimal"]
                         ]
                     )
                 ]
@@ -236,41 +297,32 @@ reconcileLinuxIncus :: HostConfig -> IO ()
 reconcileLinuxIncus cfg = do
     installAndVerify "incus client" (\candidate -> pure (toolPresent candidate Incus)) installSteps cfg
     refreshed <- buildHostConfig (hcSubstrate cfg)
-    ensureKvmAccess refreshed
-    -- @virtiofsd@ is not optional and is not pulled in by @incus@ or
-    -- @qemu-system-x86@. Incus needs it to share a host directory into a *VM*,
-    -- which is exactly the § DD Incus @ShareReconcile@ (a disk device attached
-    -- post-create). Without it a hot-plugged share fails with
-    -- @Failed to start device "...": Virtiofsd isn't running@ -- observed on a
-    -- pristine Ubuntu 24.04 host, where every other part of this convergence
-    -- reported ready.
-    runRequired
-        refreshed
-        Sudo
-        ["apt-get", "install", "-y", "qemu-system-x86", "ovmf", "virtiofsd", "acl"]
-    ensureLinuxDaemon refreshed
-    runRequired refreshed Sudo ["systemctl", "restart", "incus"]
-    ensureIncusAdminGroup refreshed
-    ensureBridgeForwarding refreshed
-    verifyUsableProvider refreshed
+    executable <-
+        maybe
+            (die "ensure incus: client disappeared before daemon initialization")
+            pure
+            (resolveMaybe refreshed Incus)
+    capability <- probeLinuxVmCapability refreshed
+    daemon <- runTool refreshed Sudo (linuxIncusDaemonProbeArgs executable)
+    let observation = LinuxIncusObservation executable (probeSucceeded capability) (probeSucceeded daemon)
+        steps = linuxIncusConvergence (substrateArch (hcSubstrate refreshed)) observation
+    converged <- runLinuxConvergence refreshed steps
+    ensureKvmAccess converged
+    ensureIncusAdminGroup converged
+    ensureBridgeForwarding converged
+    verifyUsableProvider converged
 
-ensureLinuxDaemon :: HostConfig -> IO ()
-ensureLinuxDaemon cfg =
-    case resolveMaybe cfg Incus of
-        Nothing -> die "ensure incus: client disappeared before daemon initialization"
-        Just incusExe -> do
-            let listArgs = [absExePath incusExe, "list", "--format", "csv", "-c", "n"]
-            rootProbe <- runTool cfg Sudo listArgs
-            case rootProbe of
-                Right (ExitSuccess, _, _) -> pure ()
-                _ -> do
-                    runRequired cfg Sudo [absExePath incusExe, "admin", "init", "--minimal"]
-                    runRequired cfg Sudo listArgs
+runLinuxConvergence :: HostConfig -> [InstallStep] -> IO HostConfig
+runLinuxConvergence cfg [] = pure cfg
+runLinuxConvergence cfg (InstallStep tool arguments : remaining) = do
+    runRequired cfg tool arguments
+    refreshed <- buildHostConfig (hcSubstrate cfg)
+    runLinuxConvergence refreshed remaining
 
 verifyUsableProvider :: HostConfig -> IO ()
 verifyUsableProvider cfg = do
-    status <- probeIncusProviderStatus cfg
-    case withIncusProviderCapability status (const ()) of
+    admitted <- withIncusProviderCapability cfg (const ())
+    case admitted of
         Right () -> putStrLn "ensure incus: daemon, VM capability, and image-source egress ready"
         Left err -> die ("ensure incus: " ++ err)
 
@@ -283,8 +335,7 @@ probeIncusProviderStatus cfg
         capability <-
             if isAppleSilicon (hcSubstrate cfg)
                 then runTool cfg Colima ["status", appleIncusProfile]
-                else
-                    runTool cfg Sudo ["sh", "-c", linuxVmCapabilityProbeScript]
+                else probeLinuxVmCapability cfg
         egress <- runTool cfg Incus ["image", "info", "images:ubuntu/24.04"]
         pure
             ( classifyIncusProviderStatus
@@ -293,6 +344,30 @@ probeIncusProviderStatus cfg
                 capability
                 egress
             )
+
+probeLinuxVmCapability :: HostConfig -> IO (Either String (ExitCode, String, String))
+probeLinuxVmCapability cfg = do
+    let (qemuArgs, firmwareArgs, virtiofsdArgs) =
+            linuxVmCapabilityProbes (substrateArch (hcSubstrate cfg)) (resolveMaybe cfg Virtiofsd)
+    qemu <- runTool cfg Sudo qemuArgs
+    firmware <- mapM (runTool cfg Sudo) firmwareArgs
+    virtiofsd <- mapM (runTool cfg Sudo) virtiofsdArgs
+    let qemuReady = probeSucceeded qemu
+        firmwareReady = map probeSucceeded firmware
+        virtiofsdReady = map probeSucceeded virtiofsd
+        missing =
+            [ name
+            | (name, ready) <- [("QEMU executable", qemuReady), ("firmware image", or firmwareReady), ("virtiofsd executable", or virtiofsdReady)]
+            , not ready
+            ]
+    pure $
+        if linuxVmCapabilitySatisfied qemuReady firmwareReady virtiofsdReady
+            then Right (ExitSuccess, "", "")
+            else Left ("missing Linux VM capability: " ++ intercalate ", " missing)
+
+probeSucceeded :: Either String (ExitCode, String, String) -> Bool
+probeSucceeded (Right (ExitSuccess, _, _)) = True
+probeSucceeded _ = False
 
 runRequired :: HostConfig -> HostTool -> [String] -> IO ()
 runRequired cfg tool args = do
@@ -311,30 +386,27 @@ runRequired cfg tool args = do
         Left err -> die ("ensure incus: " ++ err)
 
 ensureBridgeForwarding :: HostConfig -> IO ()
-ensureBridgeForwarding cfg =
-    mapM_ ensureRule ["-i", "-o"]
+ensureBridgeForwarding cfg = do
+    let (chainArgs, rules) = incusBridgeForwardingArgs
+    chain <- runTool cfg Sudo chainArgs
+    case chain of
+        Right (ExitSuccess, _, _) -> mapM_ ensureRule rules
+        Right _ -> pure ()
+        Left err -> die ("ensure incus: " ++ err)
   where
-    ensureRule direction =
-        runRequired
-            cfg
-            Sudo
-            [ "bash"
-            , "-c"
-            , "iptables -nL DOCKER-USER >/dev/null 2>&1 || exit 0; "
-                ++ "iptables -C DOCKER-USER "
-                ++ direction
-                ++ " incusbr0 -j ACCEPT 2>/dev/null "
-                ++ "|| iptables -I DOCKER-USER "
-                ++ direction
-                ++ " incusbr0 -j ACCEPT"
-            ]
+    ensureRule (checkArgs, insertArgs) = do
+        checked <- runTool cfg Sudo checkArgs
+        case checked of
+            Right (ExitSuccess, _, _) -> pure ()
+            Right _ -> runRequired cfg Sudo insertArgs
+            Left err -> die ("ensure incus: " ++ err)
 installSteps :: Substrate -> Either String [InstallStep]
 installSteps = reconcilerInstallSteps reconciler
 
 ensureIncusAdminGroup :: HostConfig -> IO ()
 ensureIncusAdminGroup cfg =
-    withInvokingGroupMember cfg incusLabel "incus-admin" $ \user -> do
-        grantSocketAccess cfg incusLabel incusSocketPath user
+    withInvokingGroupMember cfg incusLabel "incus-admin" $ \checkedStep user -> do
+        grantSocketAccess checkedStep incusSocketPath user
         putStrLn (incusLabel ++ ": daemon socket access verified for the current invocation")
 
 -- | The reconciler's name in every message it prints or dies with.
@@ -361,20 +433,20 @@ ensureKvmAccess cfg = do
         KvmOk -> putStrLn "ensure kvm: /dev/kvm read-write (no-op)"
         KvmAbsent -> do
             putStrLn "ensure kvm: /dev/kvm absent; loading the kvm kernel module"
-            _ <-
-                runTool
-                    cfg
-                    Sudo
-                    ["sh", "-c", "modprobe kvm_intel 2>/dev/null || modprobe kvm_amd 2>/dev/null || modprobe kvm 2>/dev/null || true"]
-            afterModprobe <- kvmDeviceStatus
-            case afterModprobe of
-                KvmAbsent -> die kvmFirmwareResidue
-                _ -> grantKvmReadWrite cfg
+            loadUntilPresent kvmModuleLoadArgs
         KvmUnwritable -> grantKvmReadWrite cfg
+  where
+    loadUntilPresent [] = die kvmFirmwareResidue
+    loadUntilPresent (arguments : remaining) = do
+        _ <- runTool cfg Sudo arguments
+        afterModprobe <- kvmDeviceStatus
+        case afterModprobe of
+            KvmAbsent -> loadUntilPresent remaining
+            _ -> grantKvmReadWrite cfg
 
 {- | Grant the invoking user @rw@ on @/dev/kvm@ via @setfacl@, then re-verify.
 Root already has @rw@ (so a root euid never reaches an unwritable status and
-'targetIncusAdminUser' returning 'Nothing' just re-verifies).
+'invokingNonRootUser' returning 'Nothing' just re-verifies).
 -}
 grantKvmReadWrite :: HostConfig -> IO ()
 grantKvmReadWrite cfg = do

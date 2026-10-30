@@ -63,7 +63,7 @@ import HostBootstrap.Lifecycle.RootedPlan (
     RootedPlanCatalog,
     withRootedPlanCatalogEdgeKernel,
  )
-import HostBootstrap.Lift.Context (LiftContext (LiftContext))
+import HostBootstrap.Lift.Context (LiftContext, liftContextFromLayers, liftLayers)
 import HostBootstrap.ProjectPlan
 import HostBootstrap.ProjectPlan.Frame
 import HostBootstrap.Protected
@@ -153,8 +153,11 @@ withReverseDescentLiftContextKernel reverseDescent use = case reverseDescent of
                                 Left failure -> pure (Left failure)
                                 Right context -> context `seq` use context
   where
-    rootedRouteTo derived target =
-        LiftContext <$> collect target []
+    rootedRouteTo derived target = do
+        layers <- collect target []
+        case liftContextFromLayers layers of
+            Left failure -> Left ("the retained topology route is invalid: " <> Text.pack failure)
+            Right context -> Right context
       where
         root = fst (NonEmpty.head (topologyFrameOrder derived))
         collect current visited
@@ -162,8 +165,8 @@ withReverseDescentLiftContextKernel reverseDescent use = case reverseDescent of
             | current `elem` visited = Left "the retained topology route contains a cycle"
             | otherwise = case topologyParentFrame derived current of
                 Nothing -> Left "the retained descent child is not reachable from the root frame"
-                Just parent -> case [ layers
-                                    | (edgeParent, edgeChild, LiftContext layers) <- topologyDescentEdges derived
+                Just parent -> case [ liftLayers context
+                                    | (edgeParent, edgeChild, context) <- topologyDescentEdges derived
                                     , edgeParent == parent
                                     , edgeChild == current
                                     ] of

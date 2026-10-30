@@ -1,3 +1,0 @@
-module OpenGenericCommandAuthority where
-
-import HostBootstrap.Authority (authorizeProjectCommand)

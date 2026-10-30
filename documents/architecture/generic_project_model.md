@@ -88,6 +88,22 @@ concrete-config and pre-existing-config alternatives are explained in
 [design rationale](../../DEVELOPMENT_PLAN/rationale.md). The canonical
 contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PLAN/development_plan_standards.md).
 
+The public `KnownScopeKind scope` class supplies `scopeKindOf`: `Production projectId` maps to
+`ProductionScope`, and `Harness projectId runId` maps to `HarnessScope`. This descriptive tag follows
+the scope index and carries no authority. Sibling-config gates derive their envelope's tag through this
+class. The public envelope factory and project finalization retain their explicit scope-tag arguments;
+their signature changes remain planned.
+
+Project lifecycle and `check-code` sibling reads first use `inspectConfigWireKind` to inspect the
+descriptive framework record. A positively decoded `ServiceRoleWire` declaration is refused before the
+full-config decoder or command callback runs. A full project wire carries no framework record; absent or
+malformed declarations leave that input to the full decoder and preserve its diagnostic.
+
+The full-config route uses `FrameworkEnvelopeCodec`, which retains the existing scoped `ProjectCodec`,
+its specification digest, and the scope-derived tag. `decodeFrameworkEnvelopeWithSettings` delegates to
+that retained codec with the same source and import-root settings used for classification. This staged
+selection changes which decoder receives a wire; it supplies no authority from the descriptive record.
+
 The recursive coordinator extends this finalized-project boundary without giving a child durable authority. A real
 project installs `addForwardChildPlan` exactly once; the exact `FinalizedProjectSpec` retains that
 scope-polymorphic projector and the bare default refuses. Cabal-hidden
@@ -244,17 +260,24 @@ The static specification cannot choose an installed project identity. `runHostBo
 declared name against the actual executable basename through `withInstalledProjectIdentity`, then keeps the
 resulting generative `InstalledProjectIdentity projectId` inside its continuation while it instantiates the
 Production codec, service registry, assembler, plan, command tree, and every Harness run.
-The `InstalledProjectIdentity` constructor lives in `HostBootstrap.Authority.Kernel`, a Cabal
-`other-modules` entry; `HostBootstrap.Authority` exports the type abstractly, with
+The `InstalledProjectIdentity` constructor lives in `HostBootstrap.Authority.Kernel`, inside the
+Cabal-private `authority-internal` library; `HostBootstrap.Authority` exports the type abstractly, with
 `withInstalledProjectIdentity` as its only producer and `installedProjectName` as an observer. Neither a config family nor project source declares a marker type that
 fixes `projectId`.
 
 The project config is a family `cfg :: Type -> Type`. Production init/decode/dispatch uses only
 `cfg (Production projectId)`; Harness projection requires opaque
 `HarnessAuthority projectId runId` and returns only
-`cfg (Harness projectId runId)`. The single default-bearing seam is `psAssemble`:
+`cfg (Harness projectId runId)`. `HarnessAuthority` and its narrowed `HarnessConfigAuthority` both
+declare their project and run indices nominal in
+[`Config.Authority.Internal`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Authority/Internal.hs),
+so `coerce` cannot transfer authority between runs. Their constructors and minting functions remain
+private. `HarnessConfigAuthority` is a nullary proof with no stored run name; `HarnessAuthority` retains
+the descriptive name that public `harnessRunName` observes without recreating authority.
+The single default-bearing seam is `psAssemble`:
 `ProductionAssembly args` and `HarnessAssembly authority root tcfg draft` are the disjoint constructors of
-that sole closed `AssemblyRequest`. `ProductionAssembly` carries only the parsed `InitArgs`.
+that sole closed `AssemblyRequest`. `ProductionAssembly` carries only the parsed `InitArgs`; an omitted
+source root reaches the project assembler unfilled, so its default remains project-owned.
 `HarnessAssembly` carries the run's `HarnessAuthority projectId runId`, the canonical project root path,
 the decoded test config, and one already-validated `VariantDraft`. The constructor fixes the result scope,
 and the draft is the run's validated variant selection: its stable identity and typed override payload
@@ -269,14 +292,25 @@ re-decodes it while jointly yielding the root-local verified wire identity and
 `ValidatedConfig scope specDigest configId (cfg scope)`. That validated value retains the canonical digest
 derived from those same bytes; `validatedConfigDigest` observes it without accepting a second caller-supplied
 digest.
+
+Ordinary init publishes the scoped codec's complete bytes through `publishScopedProjectConfigFile`.
+Its `ConfigPublishOutcome` records whether publication, keeping, or refusal occurred at the destination;
+the publisher uses a same-directory temporary and no-replace link or atomic rename according to policy.
+Root identity provisioning follows publication or an explicit keep and is not rolled back with the config.
+A provisioning failure leaves the published config; rerunning with `--if-missing` can finish provisioning.
+[Config generation](../engineering/config_generation.md#project-init-fresh-root-default-and-explicit-writes)
+owns that publication contract.
+
 `ProjectPlan scope specDigest planId configId cfg` construction requires
 `ValidatedConfig scope specDigest configId (cfg scope)` and a
 `NonEmpty (PlanDraft scope specDigest (cfg scope))`. Child projection preserves the exact scope and stable plan
 revision but, because the narrowed child bytes differ, mints a fresh child `configId`; the link back to
 the parent is the `childConfigDigest` and the `PlanDigestBinding` joined at projection time, not a
 reused exact-byte parent identity. A
-secrets-strict config uses `SecretRef scope`, whose `ScopedTestPlaintext` constructor requires the
-matching harness authority; the reflected Production Dhall schema has no plaintext alternative. A
+secrets-strict config uses `SecretRef scope`. Its public `testPlaintextSecret` producer requires the
+exact `HarnessConfigAuthority projectId runId`; the private `ScopedTestPlaintext` constructor retains
+only the `TestSecret`. The nominal scope indices bind it to the run, without a second stored run-name
+field. The reflected Production Dhall schema has no plaintext alternative. A
 harness Dhall secret reference decodes only to untrusted `HarnessSecretRefWire`. The standalone `AuthenticatedRootScope` primitive and
 its unchanged four-field Offer/Relay/Receiver transport are implemented. The root link mints the capsule,
 nested links copy its exact canonical bytes, and the receiver first verifies
@@ -288,6 +322,11 @@ verification through `ProjectCodec (Harness projectId runId) specDigest cfg` sep
 `HarnessConfigAuthority projectId runId`, and
 `ValidatedConfig (Harness projectId runId) specDigest childConfigId
 (cfg (Harness projectId runId))`.
+`Config.Schema.withAuthenticatedConfigWire` checks the signed digest and UTF-8 before parsing the
+original expression. Any import, including one in an unused `let`, returns `ConfigWireCodecRejected`
+before file, environment, or network resolution and before its continuation runs. Import-free payloads
+still pass through the exact scoped codec and must re-render to the authenticated bytes before a fresh
+local config identity is minted; no independent caller-supplied digest replaces that comparison.
 `Config.Schema.withVerifiedConfigHandoff` checks the signed payload kind, wire/config and specification
 digests, closed verb, and lifecycle phase and alone yields fully indexed `VerifiedConfigHandoff` inside a
 rank-2 continuation. Those values do not directly authorize dispatch:
@@ -541,10 +580,14 @@ invariants; the full host static gate is canonical in
 | Invariant | Checked by |
 |---|---|
 | Builder finalization refusals (missing or duplicate forward-child projector, duplicate assembly inputs, empty suite) | [CLISpec](../../core/hostbootstrap-core/test/CLISpec.hs) |
+| One complete specification field set and no raw context updater anywhere in package sources | [SchemaSpec](../../core/hostbootstrap-core/test/SchemaSpec.hs), using the balanced record and identifier checks in [SourceGuard](../../core/hostbootstrap-core/test/SourceGuard.hs) |
+| The public scope-kind class maps Production and Harness indices to their descriptive tags | [SchemaSpec](../../core/hostbootstrap-core/test/SchemaSpec.hs) |
+| Runtime executable identity matches the declared project before dispatch | [CLISpec](../../core/hostbootstrap-core/test/CLISpec.hs): mismatching-name subprocess with valid arguments and matching-name control; [AuthoritySpec](../../core/hostbootstrap-core/test/AuthoritySpec.hs) |
 | Raw `ProjectSpec`, `Step`, and unfinished-builder dispatch are unrepresentable | compile-fail [RawProjectSpec](../../core/hostbootstrap-core/test/compile-fail/RawProjectSpec.hs), [RawStep](../../core/hostbootstrap-core/test/compile-fail/RawStep.hs), [DispatchUnfinishedBuilder](../../core/hostbootstrap-core/test/compile-fail/DispatchUnfinishedBuilder.hs) |
 | `mkStepPlan` ordering, duplicate, and descent rules | [StepSpec](../../core/hostbootstrap-core/test/StepSpec.hs), [ProjectPlanSpec](../../core/hostbootstrap-core/test/ProjectPlanSpec.hs) |
 | Recovered-specification bridge and reindex kernels, including an empty service registry | [ProjectPlanSpec](../../core/hostbootstrap-core/test/ProjectPlanSpec.hs); compile-fail [OpenFinalizedServiceRegistryReindex](../../core/hostbootstrap-core/test/compile-fail/OpenFinalizedServiceRegistryReindex.hs), [CoerceFinalizedProjectSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceFinalizedProjectSpec.hs), [CoerceProjectCodecSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceProjectCodecSpec.hs) |
 | Harness config never becomes Production; plaintext only under the matching run | compile-fail [HarnessConfigAsProduction](../../core/hostbootstrap-core/test/compile-fail/HarnessConfigAsProduction.hs), [ProductionPlaintext](../../core/hostbootstrap-core/test/compile-fail/ProductionPlaintext.hs), [CrossRunPlaintext](../../core/hostbootstrap-core/test/compile-fail/CrossRunPlaintext.hs), [ForgeHarnessAuthority](../../core/hostbootstrap-core/test/compile-fail/ForgeHarnessAuthority.hs); [SchemaSpec](../../core/hostbootstrap-core/test/SchemaSpec.hs) |
+| Harness root and config authority cannot be coerced to another run | compile-fail [CoerceHarnessAuthorityRun](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessAuthorityRun.hs), [CoerceHarnessConfigAuthorityRun](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessConfigAuthorityRun.hs) |
 | Typed test matrix validation | [HarnessSpec](../../core/hostbootstrap-core/test/HarnessSpec.hs) |
 | Generated-config release only on identity and payload match | [GeneratedConfigSpec](../../core/hostbootstrap-core/test/GeneratedConfigSpec.hs) |
 | Handler receives only `RoleParams`, cannot forge them, runs no raw `IO`, and declares every effect | [ServiceProgramSpec](../../core/hostbootstrap-core/test/ServiceProgramSpec.hs), [ActivationSpec](../../core/hostbootstrap-core/test/ActivationSpec.hs); compile-fail [ForgeRoleParams](../../core/hostbootstrap-core/test/compile-fail/ForgeRoleParams.hs), [IOServiceHandler](../../core/hostbootstrap-core/test/compile-fail/IOServiceHandler.hs), [UndeclaredServiceEffect](../../core/hostbootstrap-core/test/compile-fail/UndeclaredServiceEffect.hs) |

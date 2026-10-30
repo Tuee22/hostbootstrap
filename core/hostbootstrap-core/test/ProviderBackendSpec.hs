@@ -15,10 +15,14 @@ module ProviderBackendSpec (tests, backendGuest) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar)
 import Control.Monad (forM_, void, when)
+import qualified Data.ByteString as ByteString
 import Data.List (isSuffixOf, sort)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import Expect (expectRight)
 import qualified FakeProvider
 import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
@@ -32,11 +36,29 @@ import qualified HostBootstrap.Lifecycle.Execution as Execution
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import qualified HostBootstrap.Lima as Lima
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent),
+    ProtectedError (ProtectedInvalid),
+    ProtectedRecord (protectedRecordBytes),
+    ProtectedSession,
+    ProtectedStore,
+    RecordKey,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    openProtectedStore,
+    readProtectedRecord,
+    recordKeyText,
+    recordTupleSeparator,
+    recordVersionWord,
+    withProtectedEntry,
+ )
 import HostBootstrap.Reconcile
 import HostBootstrap.Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (..), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
 import HostBootstrap.Substrate.Provider (HostPathShare (..), ProviderKind (..), SubstrateProvider, VMHandles (..), selectProviderKind)
 import HostBootstrap.Substrate.Provider.Backend
+import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
+import qualified HostBootstrap.Substrate.Provider.Ownership as Owned
 import HostBootstrap.Substrate.Provider.Reconcile
 import qualified HostBootstrap.Wsl2 as Wsl2
 import PlatformPath (hostFixturePath)
@@ -55,7 +77,7 @@ tests :: TestTree
 tests =
     testGroup
         "ProviderBackendSpec"
-        (portableCases <> lifecycleCases)
+        (portableCases <> lifecycleCases <> providerRecordCases)
 
 {- | The lifecycle a provider transaction really performs, against a real client.
 
@@ -175,6 +197,207 @@ portableCases =
     , testCase "the backend reaches every process through the one interpreter" backendHasNoExecutionSeamCase
     , testCase "settled Ready publishes one pending provider package and live reprobe" providerRuntimePackageCase
     ]
+
+providerRecordCases :: [TestTree]
+providerRecordCases =
+    [ testCase "provider share address admission precedes every store-opening route" $ do
+        source <-
+            SourceGuard.withPackageSourceIn ["src"] $ \_ sourceRoot ->
+                readFile (sourceRoot </> "HostBootstrap" </> "Substrate" </> "Provider" </> "Backend.hs")
+        let instanceEntry =
+                unlines
+                    [ "withOwnedProviderTransaction _cfg spec owner transaction ="
+                    , "case providerOwnershipAddress spec owner of"
+                    , "Left fault -> pure (Left fault)"
+                    , "Right (stateDirectory, key, owned) -> do"
+                    , "opened <- openProtectedStore stateDirectory"
+                    ]
+            shareEntry =
+                unlines
+                    [ "withOwnedShareTransaction cfg spec owner device binding source target ="
+                    , "case providerOwnershipAddress spec owner of"
+                    , "Left fault -> pure (Left fault)"
+                    , "Right (_, _, owned) ->"
+                    , "let share = OwnedProviderShare owned device source target binding"
+                    , "in case ownedShareRecordKey share of"
+                    , "Left failure -> pure (Left (ProviderOwnershipStore failure))"
+                    , "Right shareKey ->"
+                    , "withOwnedProviderTransaction cfg spec owner $ \\session _key _owned ->"
+                    , "attachOwnedShare cfg session shareKey share"
+                    , "data OwnedProviderRefusal"
+                    ]
+        SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens instanceEntry) source @?= 1
+        SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens shareEntry) source @?= 1
+    , testCase "invalid provider declarations create no store directory or provider mutation" $
+        withFakeHost $ \host -> do
+            config <- resolvedHostConfig
+            forM_ (zip ["bad/name", replicate 100 'A'] [1 :: Int ..]) $ \(name, index) -> do
+                let state = hostRoot host </> ("unopened-declaration-" <> show index)
+                case mkIncusBackendSpec name imageName name config state 2 "2GiB" "12GiB" of
+                    Left (Failure detail) -> do
+                        failedOperation detail @?= "validate Incus provider backend"
+                        recoveryDisposition detail @?= DoNotRetry
+                    other -> assertFailure ("expected an invalid provider declaration, got " <> showEither other)
+                doesPathExist state >>= (@?= False)
+                FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= [])
+                FakeProvider.readInstances (hostRoot host) >>= (@?= [])
+    , testCase "invalid provider instance addresses refuse before creating store metadata" $
+        withFakeHost $ \host -> do
+            config <- resolvedHostConfig
+            forM_
+                (zip [(".leading", "namespaced token"), ("trailing.", "namespaced token"), ("bad..name", "may not contain '..'")] [1 :: Int ..])
+                $ \((name, expectedReason), index) -> do
+                    let state = hostRoot host </> ("unopened-address-" <> show index)
+                    spec <- expectRight (mkIncusBackendSpec name imageName name config state 2 "2GiB" "12GiB")
+                    result <- expectRight =<< discoverStrongProviderBackend config spec runRetainedProviderDelete
+                    case result of
+                        Left (Failure detail) -> do
+                            failedOperation detail @?= "delete retained provider"
+                            assertBool ("the address refusal lost its reason: " <> show detail) (expectedReason `Text.isInfixOf` failureCause detail)
+                            recoveryDisposition detail @?= ReprobeBeforeRetry
+                        other -> assertFailure ("expected a provider address refusal, got " <> show other)
+                    doesPathExist state >>= (@?= False)
+                    FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= [])
+                    FakeProvider.readInstances (hostRoot host) >>= (@?= [])
+    , testCase "provider case, underscore and internal-dot identities keep independent records" $
+        withFakeHost $ \host -> do
+            store <- expectRight =<< openProtectedStore (statePath host)
+            let names = ["Build", "build", "a_b", "aB", "a.b"]
+                base = providerRecordInstance "Base_vm"
+            instances <- traverse (expectRight . Owned.ownedInstanceRecordKey . providerRecordInstance) names
+            shares <- traverse (expectRight . Owned.ownedShareRecordKey . providerRecordShare host base) names
+            assertIndependentProviderRecords store (instances <> shares)
+    , testCase "provider instance and device tuple boundaries cannot share a record" $
+        withFakeHost $ \host -> do
+            store <- expectRight =<< openProtectedStore (statePath host)
+            keys <-
+                traverse
+                    (\(name, device) -> expectRight (Owned.ownedShareRecordKey (providerRecordShare host (providerRecordInstance name) device)))
+                    [("a.b", "c"), ("a", "b.c"), ("a.device.b", "c"), ("a", "b.device.c")]
+            assertIndependentProviderRecords store keys
+    , testCase "invalid and expanded oversized provider keys leave every record untouched" $
+        withFakeHost $ \host -> do
+            store <- expectRight =<< openProtectedStore (statePath host)
+            sentinel <- expectRight (mkRecordKey "provider-sentinel")
+            assertIndependentProviderRecords store [sentinel]
+            before <- snapshotProviderRecords host
+            let owned = providerRecordInstance "valid-instance"
+                invalid =
+                    [ (Owned.ownedInstanceRecordKey (providerRecordInstance "bad/name"), "single record segment")
+                    , (Owned.ownedShareRecordKey (providerRecordShare host owned "bad/device"), "single record segment")
+                    , (Owned.ownedInstanceRecordKey (providerRecordInstance (replicate 100 'A')), "at most 200")
+                    , (Owned.ownedShareRecordKey (providerRecordShare host owned (replicate 100 'A')), "at most 200")
+                    ]
+            forM_ invalid $ \(result, expectedReason) -> do
+                case result of
+                    Left (ProtectedInvalid reason) ->
+                        assertBool ("the key refusal lost its reason: " <> show reason) (expectedReason `Text.isInfixOf` reason)
+                    other -> assertFailure ("expected an invalid provider key, got " <> show other)
+                snapshotProviderRecords host >>= (@?= before)
+            FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= [])
+            FakeProvider.readInstances (hostRoot host) >>= (@?= [])
+    , testCase "retained provider deletion recovers literal case, dot and underscore device identities" $
+        withFakeHost $ \host -> do
+            store <- expectRight =<< openProtectedStore (statePath host)
+            config <- resolvedHostConfig
+            let owned = providerRecordInstance "Guard.Vm_A"
+                neighbor = providerRecordInstance "Guard.Vm_A.peer"
+                devices = ["Disk.A_b", "disk.a_b", "a_b", "aB"]
+                shares = map (providerRecordShare host owned) devices
+                neighborShare = providerRecordShare host neighbor "Other.Disk_A"
+            instanceKey <- provisionRecordInstance config store owned
+            neighborKey <- provisionRecordInstance config store neighbor
+            shareKeys <- traverse (attachRecordShare config store) shares
+            neighborShareKey <- attachRecordShare config store neighborShare
+            held <- heldInstance host (Owned.ownedInstanceName owned)
+            fmap (sort . map fst . FakeProvider.instanceDevices) held @?= Just (sort devices)
+            neighborBefore <- heldInstance host (Owned.ownedInstanceName neighbor)
+            assertBool "the neighboring instance was not provisioned" (maybe False (const True) neighborBefore)
+            let neighborFiles = sort (map providerRecordFile [neighborKey, neighborShareKey])
+            before <- snapshotProviderRecords host
+            let retained = filter ((`elem` neighborFiles) . fst) before
+            deleted <- withProviderOwnershipEntry store $ \session ->
+                Owned.deleteRetainedOwnedInstance config session instanceKey owned
+            deleted @?= Owned.DeleteRemoved
+            heldInstance host (Owned.ownedInstanceName owned) >>= (@?= Nothing)
+            heldInstance host (Owned.ownedInstanceName neighbor) >>= (@?= neighborBefore)
+            snapshotProviderRecords host >>= (@?= retained)
+            durableRecords host >>= (@?= neighborFiles)
+            forM_ (instanceKey : shareKeys) $ \key -> do
+                observed <- withProtectedEntry store (\session -> readProtectedRecord session key)
+                observed @?= Right Nothing
+            mutationsOf host "delete" >>= (@?= 1)
+    , testCase "retained provider deletion refuses a noncanonical device record key" $
+        withFakeHost $ \host -> do
+            store <- expectRight =<< openProtectedStore (statePath host)
+            config <- resolvedHostConfig
+            let owned = providerRecordInstance "Guard.Vm_A"
+            instanceKey <- provisionRecordInstance config store owned
+            invalidKey <- expectRight (mkRecordKey (recordKeyText instanceKey <> recordTupleSeparator <> "device._"))
+            _ <- expectRight =<< withProtectedEntry store (\session -> compareAndSwapProtectedRecord session invalidKey ExpectAbsent "not an ownership record")
+            before <- snapshotProviderRecords host
+            attempted <- expectRight =<< withProtectedEntry store (\session -> Right <$> Owned.deleteRetainedOwnedInstance config session instanceKey owned)
+            case attempted of
+                Left (Owned.ProviderOwnershipStore (ProtectedInvalid reason)) ->
+                    reason @?= "the provider device record key is not canonical for this instance"
+                other -> assertFailure ("expected a canonical-device-key refusal, got " <> show other)
+            snapshotProviderRecords host >>= (@?= before)
+            held <- heldInstance host (Owned.ownedInstanceName owned)
+            assertBool "the refused deletion removed the instance" (maybe False (const True) held)
+            mutationsOf host "delete" >>= (@?= 0)
+    ]
+
+providerRecordInstance :: String -> Owned.OwnedProviderInstance
+providerRecordInstance name =
+    Owned.OwnedProviderInstance name imageName name (ProviderSizing 2 "2GiB" "12GiB") ("provider-record:" <> Text.pack name)
+
+providerRecordShare :: FakeHost -> Owned.OwnedProviderInstance -> String -> Owned.OwnedProviderShare
+providerRecordShare host owned device =
+    Owned.OwnedProviderShare owned device (shareRoot host) shareGuestPath ("share-record:" <> Text.pack device)
+
+assertIndependentProviderRecords :: ProtectedStore -> [RecordKey] -> IO ()
+assertIndependentProviderRecords store keys = do
+    Map.size (Map.fromList [(Text.toLower (recordKeyText key), ()) | key <- keys]) @?= length keys
+    forM_ (zip keys [1 :: Int ..]) $ \(key, index) -> do
+        written <- withProtectedEntry store $ \session ->
+            compareAndSwapProtectedRecord session key ExpectAbsent (payload index)
+        recordVersionWord <$> written @?= Right 1
+    forM_ (zip keys [1 :: Int ..]) $ \(key, index) -> do
+        observed <- withProtectedEntry store $ \session -> readProtectedRecord session key
+        fmap (fmap protectedRecordBytes) observed @?= Right (Just (payload index))
+  where
+    payload index = TextEncoding.encodeUtf8 ("independent provider row " <> Text.pack (show index))
+
+withProviderOwnershipEntry ::
+    ProtectedStore ->
+    (forall session. ProtectedSession session -> IO (Either Owned.ProviderOwnershipFault result)) ->
+    IO result
+withProviderOwnershipEntry store action = do
+    entered <- withProtectedEntry store (\session -> Right <$> action session)
+    expectRight entered >>= expectRight
+
+provisionRecordInstance :: HostConfig -> ProtectedStore -> Owned.OwnedProviderInstance -> IO RecordKey
+provisionRecordInstance config store owned = do
+    key <- expectRight (Owned.ownedInstanceRecordKey owned)
+    provisioned <- withProviderOwnershipEntry store $ \session -> Owned.provisionOwnedInstance config session key owned
+    case provisioned of
+        Owned.ProvisionCreated _ -> pure key
+        other -> assertFailure ("expected a fresh fixture instance, got " <> show other)
+
+attachRecordShare :: HostConfig -> ProtectedStore -> Owned.OwnedProviderShare -> IO RecordKey
+attachRecordShare config store share = do
+    key <- expectRight (Owned.ownedShareRecordKey share)
+    attached <- withProviderOwnershipEntry store $ \session -> Owned.attachOwnedShare config session key share
+    attached @?= Owned.ShareAttached
+    pure key
+
+providerRecordFile :: RecordKey -> FilePath
+providerRecordFile key = Text.unpack (recordKeyText key) <> ".rec"
+
+snapshotProviderRecords :: FakeHost -> IO [(FilePath, ByteString.ByteString)]
+snapshotProviderRecords host = do
+    paths <- durableRecords host
+    traverse (\path -> (,) path <$> ByteString.readFile (statePath host </> "records" </> path)) paths
 
 providerRuntimePackageCase :: IO ()
 providerRuntimePackageCase = withFakeHost $ \host ->

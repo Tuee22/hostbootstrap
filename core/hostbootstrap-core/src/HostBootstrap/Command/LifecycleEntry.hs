@@ -227,9 +227,10 @@ import HostBootstrap.Lifecycle.Session (
     withReverseRootTargetLifecycleCursorKernel,
  )
 import HostBootstrap.Lift (
-    LiftContext (LiftContext),
+    LiftContext,
     LiftLayer (ViaContainer),
     SelfRef,
+    liftLayers,
     selfRefInVMPath,
  )
 import HostBootstrap.ProjectPlan (
@@ -424,6 +425,7 @@ withRootProjectUpLifecycleEntry ::
     BoundRunLease scope specDigest planDigest brokerGeneration ->
     ProjectPlan scope specDigest planId configId cfg ->
     ValidatedLifecycleContext scope specDigest planId configId frame ->
+    InstalledProjectIdentity projectId ->
     (LifecycleEntry scope planId frame brokerGeneration VerbUp -> IO (Either String ())) ->
     IO (Either String ())
 withRootProjectUpLifecycleEntry
@@ -436,6 +438,7 @@ withRootProjectUpLifecycleEntry
     lease
     plan
     lifecycleContext
+    project
     use =
         case withValidatedRootLifecycleContext
             lifecycleContext
@@ -508,6 +511,7 @@ withRootProjectUpLifecycleEntry
                                         journal
                                         executeCursor
                                         lifecycleContext
+                                        project
                                 case reserved of
                                     Left failure ->
                                         pure (Left (Authority.authorityErrorMessage failure))
@@ -535,7 +539,7 @@ plan, and lifecycle context from the live invocation.  No plan is rebuilt and
 the returned entry can only drive the authenticated reverse-child protocol.
 -}
 withBoundProjectDestroyLifecycleEntry ::
-    forall scope specDigest cfg brokerGeneration planDigest planId configId frame.
+    forall scope specDigest cfg brokerGeneration planDigest planId configId frame projectId.
     (ProjectCfg cfg) =>
     FinalizedProjectSpec scope specDigest cfg ->
     RootInvocationAuthority scope brokerGeneration VerbDestroy ->
@@ -545,12 +549,13 @@ withBoundProjectDestroyLifecycleEntry ::
     BoundRunLease scope specDigest planDigest brokerGeneration ->
     ProjectPlan scope specDigest planId configId cfg ->
     ValidatedLifecycleContext scope specDigest planId configId frame ->
+    InstalledProjectIdentity projectId ->
     ( LifecycleEntry scope planId frame brokerGeneration VerbDestroy ->
       CurrentFrame scope planId frame ->
       IO (Either String ())
     ) ->
     IO (Either String ())
-withBoundProjectDestroyLifecycleEntry finalized rootAuthority verified bound binding lease plan lifecycleContext use =
+withBoundProjectDestroyLifecycleEntry finalized rootAuthority verified bound binding lease plan lifecycleContext project use =
     case withValidatedRootLifecycleContext lifecycleContext admit of
         Left failure -> pure (Left (lifecycleContextErrorMessage failure))
         Right action -> action
@@ -596,6 +601,7 @@ withBoundProjectDestroyLifecycleEntry finalized rootAuthority verified bound bin
                                                 journal
                                                 teardownCursor
                                                 lifecycleContext
+                                                project
                                     reserved <- reauthorize
                                     case reserved of
                                         Left failure ->
@@ -883,6 +889,7 @@ withRootProjectReverseLifecycleEntry
                                                                                                                     journal
                                                                                                                     teardownCursor
                                                                                                                     lifecycleContext
+                                                                                                                    project
                                                                                                         reserved <- reauthorize
                                                                                                         case reserved of
                                                                                                             Left failure ->
@@ -1476,8 +1483,9 @@ runRootProjectReverseLifecycleEntry cfg self scope loadSigningKey entry runLocal
                     settled <- readIORef settledRef
                     pure $ maybe (Left "reverse child returned without verified subtree settlement") Right settled
 
-    targetBinary (LiftContext layers) =
-        case reverse layers of
+    targetBinary :: LiftContext -> Text
+    targetBinary context =
+        case reverse (liftLayers context) of
             ViaContainer _ : _ -> Text.empty
             _ -> Text.pack (selfRefInVMPath self)
     refused owner = pure (Left ("reverse lifecycle: " ++ owner ++ " is not a root reverse entry"))
@@ -1758,8 +1766,10 @@ runRootForwardCoordinator cfg self scope loadSigningKey loadActivationSigningKey
                     withForwardLifecycleProcessRouteKernel package verb (targetBinary descent) $ \route ->
                         withCarriedProviderDependencyFromCarrierKernel cfg link route 1 input payload carrier
 
-    targetBinary (LiftContext [ViaContainer _]) = Text.empty
-    targetBinary _ = Text.pack (selfRefInVMPath self)
+    targetBinary :: LiftContext -> Text
+    targetBinary route = case liftLayers route of
+        [ViaContainer _] -> Text.empty
+        _ -> Text.pack (selfRefInVMPath self)
 
     runFailedUpUnwind ::
         forall failedCatalogId.

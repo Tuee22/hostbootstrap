@@ -12,8 +12,8 @@ import HostBootstrap.RegistryPlan
 
 forged ::
     NetworkClient 'HostLocal ->
-    Endpoint 'HostLocal ->
+    Exposure 'HostLocal lifecycleScope planId clusterId service ->
     Endpoint 'ClusterOnly ->
-    RegistryPlan 'HostLocal 'ClusterOnly
-forged client endpoint store =
-    RegistryPlan client endpoint store proxyThroughRegistry 1
+    RegistryPlan 'HostLocal 'ClusterOnly lifecycleScope planId clusterId service
+forged client exposure store =
+    RegistryPlan client exposure store proxyThroughRegistry 1

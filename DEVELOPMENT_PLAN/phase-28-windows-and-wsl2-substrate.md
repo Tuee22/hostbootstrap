@@ -493,7 +493,7 @@ Those records remain recoverable, and all five `hello-universe` cases are refuse
 is unresolved. No passing acceptance or clean terminal ownership audit is claimed.
 The ordinary recovery retry at 22:11:32 UTC exits 1 with `0/10 passed` before creating a guest. It
 misparses `project:ensure-vm-provider` as an operation of session `project`, exposing the session-key
-enumeration defect now owned by Sprint 10.5. That correction expires the preceding source measurements.
+enumeration defect now owned by Sprint 10.11. That correction expires the preceding source measurements.
 Independent inspection of the exact failing layer downloaded from Docker Hub verifies its SHA-256,
 gzip CRC, and all 16,895 tar entries; this does not identify the local extraction failure's cause.
 

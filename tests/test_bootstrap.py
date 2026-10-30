@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +14,8 @@ import pytest
 from hostbootstrap import bootstrap
 from hostbootstrap import substrate as substrate_module
 from hostbootstrap.substrate import Arch, Substrate, SubstrateName
+
+RecordedCommand = tuple[tuple[str, ...], Path | None, str]
 
 APPLE = Substrate(SubstrateName.APPLE_SILICON, Arch.ARM64)
 LINUX_CPU = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
@@ -99,6 +103,7 @@ def test_discover_project_rejects_invalid_explicit_selection(
     [
         "name: other\n\nexecutable demo\n  main-is: Main.hs\n",
         "name: demo\n\nexecutable other\n  main-is: Main.hs\n",
+        "name: other\n\nexecutable other\n  main-is: Main.hs\n",
     ],
 )
 def test_discover_project_rejects_every_identity_mismatch(tmp_path: Path, contents: str) -> None:
@@ -113,6 +118,13 @@ def test_discover_project_rejects_missing_executable_stanza(tmp_path: Path) -> N
 
     with pytest.raises(bootstrap.ProjectDiscoveryError, match="no executable stanza"):
         bootstrap.discover_project(tmp_path)
+
+
+def test_discover_project_accepts_cabal_section_keyword_case(tmp_path: Path) -> None:
+    (tmp_path / "demo.cabal").write_text(
+        "Name: demo\n\nExecutable demo\n  main-is: Main.hs\n", encoding="utf-8"
+    )
+    assert bootstrap.discover_project(tmp_path).identity == "demo"
 
 
 def test_discover_project_rejects_missing_package_name(tmp_path: Path) -> None:
@@ -301,6 +313,16 @@ async def test_verified_ghcup_download_installs_only_matching_digest(
     monkeypatch.setattr(bootstrap.shutil, "which", lambda name: f"/usr/bin/{name}")
 
     async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        assert command == (
+            "/usr/bin/curl",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "https://downloads.haskell.org/ghcup/pinned",
+            "-o",
+            command[-1],
+        )
         Path(command[-1]).write_bytes(payload)
         return SimpleNamespace(ok=True)
 
@@ -346,10 +368,19 @@ async def test_verified_ghcup_download_supports_windows_powershell(
         ("https://downloads.haskell.org/ghcup/pinned.exe", digest),
     )
     commands: list[tuple[str, ...]] = []
+    temporary_directory = tempfile.TemporaryDirectory
+    monkeypatch.setattr(
+        bootstrap.tempfile,
+        "TemporaryDirectory",
+        lambda **kwargs: temporary_directory(dir=tmp_path, prefix="ghcup's-"),
+    )
 
     async def _download(command: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
         commands.append(command)
-        downloaded = Path(command[-1].rsplit("'", 2)[1])
+        assert command[3] == "& { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o }"
+        assert command[4] == "https://downloads.haskell.org/ghcup/pinned.exe"
+        assert "'" in command[5]
+        downloaded = Path(command[5])
         downloaded.write_bytes(payload)
         return SimpleNamespace(ok=True)
 
@@ -380,10 +411,11 @@ async def test_verified_ghcup_download_requires_curl(
         await bootstrap._install_verified_ghcup(LINUX_CPU)
 
 
-def test_native_build_command() -> None:
+@pytest.mark.parametrize("os_name, cabal", [("nt", r"C:\ghcup\bin\cabal.exe"), ("posix", "cabal")])
+def test_native_build_command(monkeypatch: pytest.MonkeyPatch, os_name: str, cabal: str) -> None:
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name=os_name))
     spec = _project(Path("/proj"))
     assert spec.project == "demo"
-    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_build_command(spec, Path("/proj")) == (
         cabal,
         "--store-dir",
@@ -394,9 +426,12 @@ def test_native_build_command() -> None:
     )
 
 
-def test_native_build_command_offline() -> None:
+@pytest.mark.parametrize("os_name, cabal", [("nt", r"C:\ghcup\bin\cabal.exe"), ("posix", "cabal")])
+def test_native_build_command_offline(
+    monkeypatch: pytest.MonkeyPatch, os_name: str, cabal: str
+) -> None:
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name=os_name))
     spec = _project(Path("/proj"))
-    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_build_command(spec, Path("/proj"), offline=True) == (
         cabal,
         "--store-dir",
@@ -408,8 +443,9 @@ def test_native_build_command_offline() -> None:
     )
 
 
-def test_cabal_update_command() -> None:
-    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
+@pytest.mark.parametrize("os_name, cabal", [("nt", r"C:\ghcup\bin\cabal.exe"), ("posix", "cabal")])
+def test_cabal_update_command(monkeypatch: pytest.MonkeyPatch, os_name: str, cabal: str) -> None:
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name=os_name))
     assert bootstrap.cabal_update_command() == (cabal, "update")
 
 
@@ -420,7 +456,9 @@ def test_cabal_index_path_honors_cabal_dir(monkeypatch: pytest.MonkeyPatch, tmp_
     )
 
     monkeypatch.delenv("CABAL_DIR")
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name="posix", environ=os.environ))
     monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    (tmp_path / ".cabal").mkdir()
     assert bootstrap.cabal_index_path() == (
         tmp_path / ".cabal/packages/hackage.haskell.org/01-index.tar"
     )
@@ -444,9 +482,10 @@ def test_cabal_index_state_distinguishes_missing_fresh_and_stale(tmp_path: Path)
     assert bootstrap.cabal_index_state(index, now=modified - 1) is bootstrap.CabalIndexState.FRESH
 
 
-def test_native_listbin_command() -> None:
+@pytest.mark.parametrize("os_name, cabal", [("nt", r"C:\ghcup\bin\cabal.exe"), ("posix", "cabal")])
+def test_native_listbin_command(monkeypatch: pytest.MonkeyPatch, os_name: str, cabal: str) -> None:
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name=os_name))
     spec = _project(Path("/proj"))
-    cabal = bootstrap._WINDOWS_CABAL if bootstrap.os.name == "nt" else "cabal"
     assert bootstrap.native_listbin_command(spec, Path("/proj")) == (
         cabal,
         "--store-dir",
@@ -583,7 +622,7 @@ def _patch_seams(
 
 async def test_bootstrap_states_the_detected_host_to_the_binary_it_launches(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     """§ M: the bootstrapper detects, the binary receives — it does not re-classify."""
@@ -601,7 +640,7 @@ async def test_bootstrap_states_the_detected_host_to_the_binary_it_launches(
 
 async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -611,7 +650,7 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("play",))
 
     assert doctored == [LINUX_CPU]
-    assert recorded_commands == [
+    assert [argv for argv, _cwd, _kind in recorded_commands] == [
         # A satisfied host runs the library probe and installs nothing.
         bootstrap.linux_build_library_probe(),
         ("ghcup", "--version"),
@@ -629,7 +668,7 @@ async def test_bootstrap_linux_builds_host_native_without_writing_dhall(
 
 async def test_build_binary_builds_without_exec_or_dhall(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -643,7 +682,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
     # build_binary builds and locates the binary, then asks that installed
     # binary to provision its own cryptographic identity. It does not run any
     # ``project init`` / config-init step (no auto-init).
-    assert recorded_commands == [
+    assert [argv for argv, _cwd, _kind in recorded_commands] == [
         # A satisfied host runs the library probe and installs nothing.
         bootstrap.linux_build_library_probe(),
         ("ghcup", "--version"),
@@ -654,7 +693,7 @@ async def test_build_binary_builds_without_exec_or_dhall(
         bootstrap.native_listbin_command(spec, tmp_path),
         (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
     ]
-    assert all("init" not in cmd for cmd in recorded_commands)
+    assert all("init" not in argv for argv, _cwd, _kind in recorded_commands)
     assert binary == bootstrap.binary_path(spec, tmp_path)
     assert not any(path.suffix == ".dhall" for path in (tmp_path / ".build").iterdir())
     assert execed == []
@@ -806,7 +845,7 @@ def test_copy_if_changed_handles_missing_size_and_digest_differences(
 
 async def test_bootstrap_and_build_share_one_doctor(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     # `run` and `build` assert the SAME floor -- there is no separate build
@@ -825,7 +864,7 @@ async def test_bootstrap_and_build_share_one_doctor(
 
 async def test_bootstrap_linux_gpu_builds_host_native(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -835,7 +874,11 @@ async def test_bootstrap_linux_gpu_builds_host_native(
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path)
 
-    assert recorded_commands[-4:] == [
+    assert [argv for argv, _cwd, _kind in recorded_commands] == [
+        bootstrap.linux_build_library_probe(),
+        ("ghcup", "--version"),
+        ("ghcup", "whereis", "ghc", "9.12.4"),
+        ("ghcup", "whereis", "cabal"),
         bootstrap.cabal_update_command(),
         bootstrap.native_build_command(spec, tmp_path),
         bootstrap.native_listbin_command(spec, tmp_path),
@@ -846,7 +889,7 @@ async def test_bootstrap_linux_gpu_builds_host_native(
 
 async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -857,7 +900,7 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
     assert doctored == [APPLE]
-    assert recorded_commands == [
+    assert [argv for argv, _cwd, _kind in recorded_commands] == [
         ("ghcup", "--version"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
         ("ghcup", "whereis", "cabal"),
@@ -876,7 +919,7 @@ async def test_bootstrap_apple_provisioned_host_probes_then_builds_native(
 
 async def test_bootstrap_linux_fresh_host_installs_toolchain(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands_fresh_host: list[tuple[str, ...]],
+    recorded_commands_fresh_host: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -894,7 +937,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
 
     # The C build libraries are installed FIRST, before GHC: GHC itself links
     # gmp and ncurses, and the project's closure links zlib.
-    assert recorded_commands_fresh_host == [
+    assert [argv for argv, _cwd, _kind in recorded_commands_fresh_host] == [
         bootstrap.linux_build_library_probe(),
         *bootstrap.linux_build_library_install_commands(),
         ("ghcup", "--version"),
@@ -913,7 +956,7 @@ async def test_bootstrap_linux_fresh_host_installs_toolchain(
 
 async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
     monkeypatch: pytest.MonkeyPatch,
-    recorded_commands_fresh_host: list[tuple[str, ...]],
+    recorded_commands_fresh_host: list[RecordedCommand],
     tmp_path: Path,
 ) -> None:
     doctored: list[Substrate] = []
@@ -923,7 +966,7 @@ async def test_bootstrap_apple_fresh_host_installs_homebrew_toolchain(
     spec = _project(tmp_path)
     await bootstrap.bootstrap(spec, project_root=tmp_path, args=("--help",))
 
-    assert recorded_commands_fresh_host == [
+    assert [argv for argv, _cwd, _kind in recorded_commands_fresh_host] == [
         ("ghcup", "--version"),
         ("brew", "install", "ghcup"),
         ("ghcup", "whereis", "ghc", "9.12.4"),
@@ -1012,10 +1055,35 @@ async def test_already_present_false_when_probe_binary_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _missing(cmd: object, **_: object) -> bootstrap.process.CommandResult:
-        raise FileNotFoundError(2, "No such file or directory", "ghcup")
+        error = FileNotFoundError(2, "No such file or directory", "ghcup")
+        raise bootstrap.process.CommandError(
+            bootstrap.process.CommandUnavailable(tuple(cmd), str(error))
+        ) from error
 
     monkeypatch.setattr(bootstrap.process, "run", _missing)
     assert await bootstrap._already_present(("ghcup", "--version")) is False
+
+
+def test_toolchain_environment_without_an_existing_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(**(vars(os) | {"name": "posix"})))
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    assert bootstrap._toolchain_env()["PATH"] == os.pathsep.join(
+        str(tmp_path / directory) for directory in (".ghcup/bin", ".cabal/bin", ".local/bin")
+    )
+
+
+def test_copy_missing_source_preserves_the_installed_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    destination = tmp_path / "destination"
+    destination.write_bytes(b"installed")
+    with pytest.raises(FileNotFoundError):
+        bootstrap._copy_if_changed(tmp_path / "missing", destination)
+    assert destination.read_bytes() == b"installed"
+    assert list(tmp_path.iterdir()) == [destination]
 
 
 async def test_already_present_gives_up_after_windows_sharing_violations(
@@ -1032,7 +1100,9 @@ async def test_already_present_gives_up_after_windows_sharing_violations(
     async def _busy(cmd: object, **_: object) -> bootstrap.process.CommandResult:
         err = OSError("file is in use by another process")
         err.winerror = 32  # type: ignore[attr-defined]
-        raise err
+        raise bootstrap.process.CommandError(
+            bootstrap.process.CommandUnavailable(tuple(cmd), str(err))
+        ) from err
 
     monkeypatch.setattr(bootstrap.process, "run", _busy)
     assert await bootstrap._already_present(("ghcup", "--version")) is False
@@ -1047,8 +1117,280 @@ async def test_already_present_reraises_non_sharing_oserror(
     async def _boom(cmd: object, **_: object) -> bootstrap.process.CommandResult:
         err = OSError("permission denied")
         err.winerror = 5  # type: ignore[attr-defined]
-        raise err
+        raise bootstrap.process.CommandError(
+            bootstrap.process.CommandUnavailable(tuple(cmd), str(err))
+        ) from err
 
     monkeypatch.setattr(bootstrap.process, "run", _boom)
-    with pytest.raises(OSError, match="permission denied"):
+    with pytest.raises(bootstrap.process.CommandError, match="permission denied"):
         await bootstrap._already_present(("ghcup", "--version"))
+
+
+@pytest.mark.parametrize(
+    "os_name, legacy, cache, expected",
+    [
+        ("nt", False, None, "appdata/cabal"),
+        ("posix", True, None, ".cabal"),
+        ("posix", False, "xdg", "xdg/cabal"),
+        ("posix", False, None, ".cache/cabal"),
+    ],
+)
+def test_cabal_index_location_follows_cabal_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    os_name: str,
+    legacy: bool,
+    cache: str | None,
+    expected: str,
+) -> None:
+    environment = {"APPDATA": str(tmp_path / "appdata")}
+    if cache is not None:
+        environment["XDG_CACHE_HOME"] = str(tmp_path / cache)
+    if legacy:
+        (tmp_path / ".cabal").mkdir()
+    monkeypatch.setattr(bootstrap, "os", SimpleNamespace(name=os_name, environ=environment))
+    monkeypatch.setattr(bootstrap.Path, "home", lambda: tmp_path)
+    assert (
+        bootstrap.cabal_index_path()
+        == tmp_path / expected / "packages/hackage.haskell.org/01-index.tar"
+    )
+
+
+@pytest.mark.parametrize("driver", [bootstrap.bootstrap, bootstrap.build_binary])
+@pytest.mark.parametrize("offline", [False, True])
+async def test_driver_threads_offline_and_preserves_build_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded_commands: list[RecordedCommand],
+    driver: object,
+    offline: bool,
+) -> None:
+    _patch_seams(monkeypatch, LINUX_CPU, doctored=[], execed=[])
+    monkeypatch.setattr(
+        bootstrap, "cabal_index_state", lambda _index: bootstrap.CabalIndexState.STALE
+    )
+    monkeypatch.setenv("PATH", "parent-path")
+    spec = _project(tmp_path)
+    await driver(spec, project_root=tmp_path, offline=offline)  # type: ignore[operator]
+    expected: list[RecordedCommand] = [
+        (
+            (
+                "dpkg-query",
+                "-s",
+                "build-essential",
+                "libgmp-dev",
+                "libncurses-dev",
+                "libtinfo-dev",
+                "pkg-config",
+                "zlib1g-dev",
+            ),
+            None,
+            "probe",
+        ),
+        (("ghcup", "--version"), None, "probe"),
+        (("ghcup", "whereis", "ghc", "9.12.4"), None, "probe"),
+        (("ghcup", "whereis", "cabal"), None, "probe"),
+    ]
+    cabal = r"C:\ghcup\bin\cabal.exe" if os.name == "nt" else "cabal"
+    if not offline:
+        expected.append(((cabal, "update"), tmp_path, "checked"))
+    build_command = (
+        cabal,
+        "--store-dir",
+        str(tmp_path / ".build/cabal-store"),
+        "build",
+        "-j1",
+        *(("--offline",) if offline else ()),
+        "exe:demo",
+    )
+    expected.extend(
+        (
+            (build_command, tmp_path, "checked"),
+            (
+                (
+                    cabal,
+                    "--store-dir",
+                    str(tmp_path / ".build/cabal-store"),
+                    "list-bin",
+                    "exe:demo",
+                ),
+                tmp_path,
+                "checked",
+            ),
+            (
+                (str(bootstrap.binary_path(spec, tmp_path)), "--hostbootstrap-install-identity"),
+                tmp_path,
+                "checked",
+            ),
+        )
+    )
+    assert recorded_commands == expected
+
+
+async def test_fresh_host_ghc_install_failure_stops_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    recorded_commands_fresh_host: list[RecordedCommand],
+) -> None:
+    _patch_seams(monkeypatch, APPLE, doctored=[], execed=[])
+    original = bootstrap.process.run_checked
+    failure = bootstrap.process.CommandError(
+        bootstrap.process.CommandResult(
+            ("ghcup", "install", "ghc", "9.12.4", "--set"), 1, "", "install failed"
+        )
+    )
+
+    async def _checked(
+        command: tuple[str, ...], **kwargs: object
+    ) -> bootstrap.process.CommandResult:
+        if command[:3] == ("ghcup", "install", "ghc"):
+            raise failure
+        return await original(command, **kwargs)
+
+    monkeypatch.setattr(bootstrap.process, "run_checked", _checked)
+    with pytest.raises(bootstrap.process.CommandError) as caught:
+        await bootstrap.bootstrap(_project(tmp_path), project_root=tmp_path)
+    assert caught.value is failure
+    assert recorded_commands_fresh_host == [
+        (("ghcup", "--version"), None, "probe"),
+        (("brew", "install", "ghcup"), None, "checked"),
+        (("ghcup", "whereis", "ghc", "9.12.4"), None, "probe"),
+    ]
+
+
+def test_copy_publishes_a_new_file_and_preserves_an_open_old_handle(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"new binary")
+    destination.write_bytes(b"old binary")
+    before = destination.stat().st_ino
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        create = ctypes.windll.kernel32.CreateFileW
+        create.argtypes = (
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        )
+        create.restype = wintypes.HANDLE
+        handle = create(str(destination), 0x80000000, 7, None, 3, 0x80, None)
+        assert handle != wintypes.HANDLE(-1).value
+        previous = os.fdopen(msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY), "rb")
+    else:
+        previous = destination.open("rb")
+    with previous:
+        assert bootstrap._copy_if_changed(source, destination)
+        assert previous.read() == b"old binary"
+        assert destination.read_bytes() == b"new binary"
+        assert destination.stat().st_ino != before
+    assert set(tmp_path.iterdir()) == {source, destination}
+
+
+@pytest.mark.parametrize(
+    "rollback, locked_previous", [(False, False), (False, True), (True, False)]
+)
+def test_windows_busy_binary_is_renamed_before_replacement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, rollback: bool, locked_previous: bool
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+    real_replace = os.replace
+    calls: list[tuple[Path, Path]] = []
+
+    def _replace(left: Path, right: Path) -> None:
+        calls.append((left, right))
+        if len(calls) == 1:
+            raise PermissionError("running image")
+        if len(calls) == 3 and rollback:
+            raise OSError("publication failed")
+        real_replace(left, right)
+
+    real_unlink = Path.unlink
+
+    def _unlink(path: Path, *args: object, **kwargs: object) -> None:
+        if locked_previous and path.suffix == ".previous":
+            raise PermissionError("old image is running")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        bootstrap, "os", SimpleNamespace(**(vars(os) | {"name": "nt", "replace": _replace}))
+    )
+    monkeypatch.setattr(Path, "unlink", _unlink)
+    if rollback:
+        with pytest.raises(OSError, match="publication failed"):
+            bootstrap._copy_if_changed(source, destination)
+        assert destination.read_bytes() == b"old"
+        assert len(calls) == 4
+    else:
+        assert bootstrap._copy_if_changed(source, destination)
+        assert destination.read_bytes() == b"new"
+        assert len(calls) == 3
+    assert calls[1][0] == destination
+    assert calls[1][1].suffix == ".previous"
+    if locked_previous:
+        assert calls[1][1].read_bytes() == b"old"
+        real_unlink(calls[1][1])
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["destination", "source"]
+
+
+@pytest.mark.parametrize("os_name, destination_exists", [("posix", True), ("nt", False)])
+def test_copy_permission_refusal_without_a_replaceable_windows_binary_cleans_up(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, os_name: str, destination_exists: bool
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"new")
+    if destination_exists:
+        destination.write_bytes(b"old")
+
+    def _replace(_left: Path, _right: Path) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(
+        bootstrap, "os", SimpleNamespace(**(vars(os) | {"name": os_name, "replace": _replace}))
+    )
+    with pytest.raises(PermissionError, match="denied"):
+        bootstrap._copy_if_changed(source, destination)
+    assert not any(path.name.startswith(".destination-") for path in tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        bootstrap.process.CommandResult(("tool",), 1, "", "failed"),
+        bootstrap.process.CommandTimedOut(("tool",), 0.1),
+    ],
+)
+async def test_already_present_preserves_a_non_launch_command_error(
+    monkeypatch: pytest.MonkeyPatch, outcome: bootstrap.process.CommandOutcome
+) -> None:
+    failure = bootstrap.process.CommandError(outcome)
+
+    async def _failed(*_args: object, **_kwargs: object) -> bootstrap.process.CommandResult:
+        raise failure
+
+    monkeypatch.setattr(bootstrap.process, "run", _failed)
+    with pytest.raises(bootstrap.process.CommandError) as caught:
+        await bootstrap._already_present(("tool",))
+    assert caught.value is failure
+
+
+async def test_already_present_reads_an_unavailable_outcome_without_an_oserror_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _unavailable(*_args: object, **_kwargs: object) -> bootstrap.process.CommandResult:
+        raise bootstrap.process.CommandError(
+            bootstrap.process.CommandUnavailable(("tool",), "missing")
+        )
+
+    monkeypatch.setattr(bootstrap.process, "run", _unavailable)
+    assert not await bootstrap._already_present(("tool",))

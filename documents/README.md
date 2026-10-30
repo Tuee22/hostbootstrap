@@ -242,8 +242,8 @@ sentence in [cluster lifecycle](engineering/cluster_lifecycle.md) backwards.
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
 and `check-code`. `ensure` is a reconciler library, not a command, and a project adds no verb. The
 canonical statement is [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md).
-It includes the five core entries `runCLI` tests before the parser runs (installed identity, exposure
-relay, Colima command transaction, lifecycle child, frame child), none of which is in the command tree,
+It includes the six core entries `runCLI` tests before the parser runs (installed identity, exposure
+relay, native working-directory entry, Colima command transaction, lifecycle child, frame child), none of which is in the command tree,
 and which of them stay within the bounds of an internal marker; that list is
 [Entries before the parser](architecture/hostbootstrap_core_library.md#entries-before-the-parser).
 `project up` recursively interprets one opaque validated plan. The root owns all durable lifecycle state

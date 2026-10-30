@@ -9,8 +9,6 @@ import HostBootstrap.Handoff (
     adoptLifecycleAcknowledgementThroughLink,
     prepareLifecycleAcknowledgementThroughLink,
     protocolMessage,
-    withReceivedLifecycleAcknowledgementKernel,
-    withReceivedRecoveryLifecycleAcknowledgementKernel,
  )
 
 former :: ()

@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.poetry]
 name = "hostbootstrap"
 version = "0.1.0"
-description = "Host bootstrap CLI for the basecontainer base images"
+description = "Thin host bootstrapper for hostbootstrap project binaries (plus maintainer base-image commands)"
 authors = ["hostbootstrap contributors"]
 license = "MIT"
 readme = "README.md"
@@ -60,13 +60,10 @@ files = ["hostbootstrap"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = [
-    "docker: requires a running Docker daemon (skips if unavailable)",
-    "slow: long-running test",
-]
 
 [tool.coverage.run]
 source = ["hostbootstrap"]
+branch = true
 
 [tool.coverage.report]
 fail_under = 100

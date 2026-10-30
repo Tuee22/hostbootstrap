@@ -2,7 +2,7 @@
 # Canonical storage is LF for all text; Windows scripts use CRLF.
 # This file is authoritative — do not rely on per-machine core.autocrlf.
 
-* text=auto
+* text=auto eol=lf
 
 # Source code
 *.hs     text eol=lf

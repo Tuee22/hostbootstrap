@@ -14,8 +14,17 @@ import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Incus (IncusVM (..))
 import qualified HostBootstrap.Incus as Incus
-import HostBootstrap.Lift (LiftLayer (ViaWsl2VM), inLimaVM, inVM, inWsl2VM, localContext)
+import HostBootstrap.Lift (
+    ContainerLift (..),
+    ContainerPlacement (DirectHostContainer, ProviderGuestContainer),
+    LiftLayer (ViaContainer, ViaLimaVM, ViaVM, ViaWsl2VM),
+    inLimaVM,
+    inVM,
+    inWsl2VM,
+    localContext,
+ )
 import HostBootstrap.Lima (LimaVM (..))
+import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
 import HostBootstrap.Substrate.Provider
@@ -146,11 +155,11 @@ dispatchCases =
     [ testCase "descriptive accessors project each closed provider" $ do
         providerVmId apple @?= "demo-vm"
         providerKind apple @?= ProviderLima
-        providerLiftContext apple @?= inLimaVM (LimaVM "demo-vm") localContext
+        providerLiftContext apple @?= vmContext (inLimaVM (LimaVM "demo-vm") emptyVMStack)
         providerKind linux @?= ProviderIncus
-        providerLiftContext linux @?= inVM (IncusVM "demo-vm" "images:ubuntu/24.04") localContext
+        providerLiftContext linux @?= vmContext (inVM (IncusVM "demo-vm" "images:ubuntu/24.04") emptyVMStack)
         providerKind windows @?= ProviderWsl2
-        providerLiftContext windows @?= inWsl2VM (Wsl2VM "demo-vm") localContext
+        providerLiftContext windows @?= vmContext (inWsl2VM (Wsl2VM "demo-vm") emptyVMStack)
         providerVmId direct @?= "local-host"
         providerKind direct @?= ProviderDirectHost
         providerLiftContext direct @?= localContext
@@ -330,7 +339,7 @@ probeCases =
             (Left "direct")
             (\tool args -> Right (tool, args))
             (providerWaitProbe windows)
-            @?= (Right (Wsl, ["-d", "demo-vm", "--", "true"]) :: Either String (HostTool, [String]))
+            @?= (Right (Wsl, ["-d", "demo-vm", "--exec", "true"]) :: Either String (HostTool, [String]))
     , testCase "closed providers expose exact probe descriptions" $ do
         providerExistsProbe apple @?= ExistsProbe Lima ["list", "-q"] LinesMember
         providerExistsProbe linux @?= ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
@@ -354,7 +363,36 @@ interpreterCases =
             @?= StagedFile [] "/srv/demo/src.tgz" False
     , testCase "VM shell and Windows mount folds are descriptive" $ do
         vmShellArgs (ViaWsl2VM (Wsl2VM "d")) ["true"]
-            @?= Just (Wsl, ["-d", "d", "--", "true"])
+            @?= Just (Wsl, ["-d", "d", "--exec", "true"])
+        let command = ["printf", "%s", "two words; $HOME 'quoted' *.txt"]
+            vmRows =
+                [ ( ViaVM (IncusVM "incus-vm" "image")
+                  , Incus
+                  , ["exec", "incus-vm", "--", "printf", "%s", "two words; $HOME 'quoted' *.txt"]
+                  )
+                , ( ViaLimaVM (LimaVM "lima-vm")
+                  , Lima
+                  , ["shell", "lima-vm", "--", "sudo", "-H", "printf", "%s", "two words; $HOME 'quoted' *.txt"]
+                  )
+                , ( ViaWsl2VM (Wsl2VM "wsl-distro")
+                  , Wsl
+                  , ["-d", "wsl-distro", "--exec", "printf", "%s", "two words; $HOME 'quoted' *.txt"]
+                  )
+                ]
+        forM_ vmRows $ \(layer, tool, arguments) -> do
+            vmShellArgs layer command @?= Just (tool, arguments)
+            vmShellArgs layer [] @?= Nothing
+        forM_ [ProviderGuestContainer, DirectHostContainer] $ \placement -> do
+            let container =
+                    ContainerLift
+                        { clImage = "fixture:image"
+                        , clPlacement = placement
+                        , clMounts = []
+                        , clExtraArgs = []
+                        , clRemoveAfter = True
+                        , clConfigDelivery = Nothing
+                        }
+            vmShellArgs (ViaContainer container) command @?= Nothing
         windowsPathToWslMount "C:\\Users\\Matt\\f.tgz" @?= "/mnt/c/Users/Matt/f.tgz"
     ]
 

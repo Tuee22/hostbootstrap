@@ -26,7 +26,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Effect.Interpreter (resolveLaunch)
 import HostBootstrap.Ensure (runTool)
 import HostBootstrap.Ensure.Incus (
-    IncusProviderStatus (IncusProviderReady),
+    incusProviderStatusResult,
     probeIncusProviderStatus,
  )
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig, resolveMaybe)
@@ -238,8 +238,9 @@ installGuestSelf config vmName staged = do
 requireIncusPreflight :: HostConfig -> IO ()
 requireIncusPreflight config = do
     status <- probeIncusProviderStatus config
-    unless (status == IncusProviderReady) $
-        failGate ("Incus read-only provider preflight is not ready: " ++ show status)
+    case incusProviderStatusResult status of
+        Left _ -> failGate ("Incus read-only provider preflight is not ready: " ++ show status)
+        Right () -> pure ()
     kvmPresent <- doesPathExist "/dev/kvm"
     kvmReadWrite <-
         if kvmPresent

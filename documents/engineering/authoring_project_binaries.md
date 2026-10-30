@@ -110,7 +110,7 @@
    extends the chain and the step vocabulary (the lift-chain stream of the extension-stream contract; see
    [library_hierarchy](../architecture/library_hierarchy.md)). The resulting `ProjectSpec cfg tcfg` does
    not name an installed-identity marker. At dispatch, `runHostBootstrapCLI` verifies its declared name
-   against the actual executable basename and retains the resulting generative identity through codec,
+   against the actual executable basename before ordinary command parsing and retains the resulting generative identity through codec,
    service, plan, command, and Harness construction.
 4. **Declare the boundaries the interpreter crosses.** Each descent is fractal bootstrap: provision the frame, build
    or install the binary in it, then hand the `project up` work off into the next frame. The consumer

@@ -1,11 +1,13 @@
 # Phase 3 — Host tools and substrate detection
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 2 (Haskell core scaffolding)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `hostbootstrap-core-gate-20261026`, x86_64 Ubuntu 24.04.4 CPU-only container on WSL2 Linux 6.18.33.2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the root ; pass ; covers in-gate
 
 > **Purpose**: Close both axes of host invocation — *which* executable a call names, and the *shape* the
 > call takes — and classify the outer host realization on which the binary is running.
@@ -20,9 +22,9 @@ sharply.
 
 ## Sprints
 
-### Sprint 3.1: The closed `HostTool` boundary [Active]
+### Sprint 3.1: The closed `HostTool` boundary [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
@@ -77,39 +79,35 @@ The sprint closes when these cases exist and pass under `cabal test all` from `c
 - `HostToolSpec`: `resolveInstalled` over a configuration holding a path that cannot exist on any host
   (`/nonexistent/hostbootstrap-configured/docker`, or `C:\nonexistent\docker.exe` on Windows) returns
   exactly that path, so a resolver that re-measures first fails the case.
-- `HostToolSpec`: every `Just` answer `discover` gives over `allHostTools` is absolute and names a file
-  whose basename begins with the tool's `toolCommandName` stem; no case asserts only over the fixture
-  map built through `mustAbs`.
+- `HostToolSpec`: every `Just` answer `discover` gives over `allHostTools` is absolute and has a basename
+  beginning with the tool's `toolCommandName` stem. A regular file satisfies `doesFileExist`; a Windows
+  Winget `AppExecutionAlias`, which that predicate cannot follow, must have native alias metadata and
+  successfully execute that exact absolute path with `--version`, producing non-empty output. A dangling
+  link cannot satisfy the launch proof. No case asserts only over the fixture map built through `mustAbs`.
 - `HostToolSpec` (Windows only): `discover Wsl` and `discover Bcdedit` equal the `System32` path built
   from `%SystemRoot%`.
 - `CompileFailSpec`: a registered fixture `test/compile-fail/RelabelAbsExe.hs` that writes
-  `relabel e = e { absExePath = "docker" }` is rejected.
+  `relabel e = e { absExePath = "docker" }` is rejected with
+  `Not in scope: record field 'absExePath'`.
 
 Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
 passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
 1,951/1,951 in 241.11 seconds, plus `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at 231 passed.
 
+Dated closing evidence, 2026-10-26: The actual-discovery cases pass on both hosts, including native SystemRoot paths, configured-first refusal-resistant resolution, numeric CUDA/MSVC ordering, the abstract record-field rejection, and successful exact-path Winget alias execution.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `HostTool.hs`, declare `newtype AbsExe = AbsExe FilePath` without record syntax and define
-  `absExePath :: AbsExe -> FilePath` as an ordinary function, keeping the export list unchanged; add
-  `test/compile-fail/RelabelAbsExe.hs` (record update `e { absExePath = "docker" }`) and register it in
-  `CompileFailSpec` with the "not a record selector" rejection.
-- In `HostTool.hs`, add one pure ordering function that parses the numeric components after the
-  `cuda-` or `v` prefix (and the dotted MSVC version) and sorts newest first; use it in
-  `cudaCandidatePaths`, `discoverWindowsNvcc`, and `firstWindowsVersionedTool` in place of
-  `reverse (sort entries)` and `reverse versions`; add the `HostToolSpec` ordering cases above.
-- In `HostTool.hs`, build the Windows `discover Wsl` and `discover Bcdedit` candidates from the
-  `SystemRoot` environment variable and fall back to `findHostExecutable`; build the CUDA, LLVM,
-  `vswhere`, and MSVC roots from `ProgramFiles` and `ProgramFiles(x86)`; update the two Windows
-  `HostToolSpec` cases to the `%SystemRoot%`-derived path.
-- In `HostToolSpec`, point the "prefers the configured path" case at the non-existent configured path,
-  and replace the `mustAbs` fixture-only case with the `discover`-answer case above.
+None.
 
-### Sprint 3.2: Outer-host realization classification [Active]
+### Sprint 3.2: Outer-host realization classification [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
@@ -131,8 +129,8 @@ Classify the outer host into one closed provider-selection set without redefinin
   `nvidia-smi` is resolved through `discover NvidiaSmi`, never a raw search-path lookup, and the listing
   runs under a five-second wall clock (the bootstrapper's own bound for the same probe), with a timeout
   read as "no GPU".
-- The evidence reads sit behind injected predicates (marker presence, the resolved `nvidia-smi`, and its
-  bounded run), so the per-frame decision is tested without a GPU.
+- The evidence reads sit behind a pure closed probe plan and a pure answer over observed marker and bounded-run values;
+  short IO wiring supplies the real reads. The decision is tested without replacing the executor.
 - Classification is a total function: there is no unknown outer host that later provider code must guess
   about. Apple selects Lima/Colima, Windows selects WSL2, and native Linux selects its native runtime path;
   each CPU route realizes the same project-visible `linux-cpu` substrate.
@@ -144,26 +142,27 @@ Classify the outer host into one closed provider-selection set without redefinin
 `SubstrateSpec` covers each `classify` branch over a literal GPU answer. The sprint closes when these
 cases also exist and pass under `cabal test all` from `core/`:
 
-- The per-frame evidence decision, driven by injected predicates: Linux with a marker present is a GPU
+- The per-frame evidence decision, over observed values: Linux with a marker present is a GPU
   host; Linux with no marker and an `nvidia-smi -L` listing containing `nvidiaDeviceMarker` is a GPU
   host; Windows with a marker path present and no `nvidia-smi` is not; a timed-out `nvidia-smi` run is
-  not; macOS never consults either predicate.
+  not; macOS selects no marker or listing read.
 - A table case: `substrateFrame` over all five names gives `AppleFrame, LinuxFrame, LinuxFrame,
   WindowsFrame, WindowsFrame`, and `isWindows` is `True` exactly for the two Windows names.
 
+Dated closing evidence, 2026-10-26: SubstrateSpec passes its per-frame marker/listing decisions, timeout and other refusal outcomes, all five tag/frame mappings, and derived predicates without replacing a process executor.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `Substrate.hs`, split `hasNvidiaGpu` into a pure per-frame decision over injected predicates and the
-  IO wiring that supplies them: probe `nvidiaMarkerPaths` only when `System.Info.os` is `linux`, resolve
-  `nvidia-smi` with `HostBootstrap.HostTool.discover NvidiaSmi` in place of `findExecutable`, and run
-  `-L` through `runBoundedGrouped` with a five-second wall, treating `BoundedTimedOut` as no GPU; add the
-  evidence cases above to `SubstrateSpec`.
-- Add the `substrateFrame` and `isWindows` table case to `SubstrateSpec`'s predicate group.
+None.
 
-### Sprint 3.3: Host prerequisites after the binary exists [Active]
+### Sprint 3.3: Host prerequisites after the binary exists [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/build_and_run_model.md`,
@@ -193,20 +192,21 @@ source under `core/hostbootstrap-core/src`, `core/hostbootstrap-core/internal`,
 `module HostBootstrap.HostPrereqs`, and the Python suite's `tests/test_prereqs.py` still covers the
 Ubuntu 24.04, sudo, Xcode CLT, Homebrew, winget, and PowerShell floor.
 
+Dated closing evidence, 2026-10-26: The production-root absence guard passes with the dead Haskell prerequisite module and Cabal exposure removed. The complete Python prerequisite cases remain in the passing 376-case Python suite.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- Delete `core/hostbootstrap-core/src/HostBootstrap/HostPrereqs.hs` and its `exposed-modules` entry in
-  `hostbootstrap-core.cabal`; delete `HostToolSpec`'s `HostPrereqs os-release` group and its import.
-- Add the absence case above to `HostToolSpec`.
-- Both `documents/architecture/hostbootstrap_core_library.md` and `documents/engineering/prerequisites.md`
-  describe `HostBootstrap.HostPrereqs` as dead code this phase deletes. With the module deleted, rewrite the
-  `HostBootstrap.HostPrereqs` rows of the first and the "Typed Checks In hostbootstrap-core" section of the
-  second to name `prereqs.py` as the one floor implementation, with no row or section naming the module.
+None.
 
-### Sprint 3.4: The invocation-shape boundary [Active]
+### Sprint 3.4: The invocation-shape boundary [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Detached.hs`,
+`demo/src/HostBootstrapDemo/Commands.hs`,
 `core/hostbootstrap-core/test/DetachedSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeDetachedLaunch.hs`
 **Substrates**: linux-cpu
@@ -230,9 +230,14 @@ directory of every launched child.
 - A `DetachedChild` cannot be used outside the `withDetachedChild` body that produced it: its operations
   run in an indexed monad (`DetachedIO child`) that only `withDetachedChild` runs, the ST pattern, so a
   closure over the child cannot be returned and run later.
+- Both child-extent roles are nominal and both constructors are private. `liftDetachedIO` admits ordinary
+  IO without exposing an interpreter for a child action, and `tryDetachedIO`/`onDetachedException` retain
+  the same extent through exception handling.
 - `withDetachedChild` masks its own acquire, spawn, and hand-off and runs the body restored, so an
   asynchronous exception can neither leak the sink or null-device handle nor leave a running child the
   body never saw.
+- Exceptional handoff or body exit aborts the exact child with bounded polling and hard-termination
+  escalation, preserving the original exception. Normal return leaves the detached child running.
 - `awaitDetachedChild` waits out its budget by polling `getProcessExitCode`, never by wrapping
   `waitForProcess` in `timeout`, so the bound holds under the non-threaded runtime the core suite is
   built with.
@@ -252,38 +257,29 @@ sprint closes when these cases also exist and pass under `cabal test all` from `
   `withProbeLaunch` are replaced by a child-reported `getArgs` check.
 - `terminateDetachedChild` on a lingering child is followed by `awaitDetachedChild` returning `Just`.
 - `awaitDetachedChild` on a lingering child with a 200 ms budget returns `Nothing` within the budget.
+- A real lingering child stops appending after a body exception, and that exception reaches the caller
+  unchanged. On POSIX the child ignores `SIGTERM`, proving hard-termination escalation; Windows termination
+  is already hard.
 - The drift guard scans `core/hostbootstrap-core/internal` as well, fails when any listed source root is
   absent or holds no `.hs` file, and admits exactly the transitional entry named in Remaining Work.
 - `CompileFailSpec`: a registered fixture `test/compile-fail/EscapeDetachedChild.hs` that returns
-  `terminateDetachedChild child` out of the body is rejected.
+  `terminateDetachedChild child` out of the body is rejected with
+  "Couldn't match type 'child' with 'escaped'". `CoerceDetachedChildRole.hs` and `CoerceDetachedIORole.hs`
+  reject child-extent relabelling with "Couldn't match type 'ChildA' with 'ChildB'".
+
+Dated closing evidence, 2026-10-26: Real probes verify pending launcher input does not reach the child, exact argv/environment/cwd, bounded wait, explicit termination, normal detachment, and exceptional exact-child cleanup. Linux exercises the SIGTERM-ignoring child escalation; indexed-child and action coercion/escape fixtures reject for their named boundaries.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
 
 #### Remaining Work
 
-- In `Detached.hs`, replace `awaitDetachedChild`'s `timeout micros (waitForProcess ...)` with a
-  `getProcessExitCode` poll in the shape of `Effect.Run`'s `awaitProcessExit`; add the 200 ms
-  `Nothing` case and the `terminateDetachedChild` case to `DetachedSpec`.
-- In `Detached.hs`, introduce `newtype DetachedIO child a` (not exported as a constructor) for
-  `detachedChildPid`, `detachedChildOutput`, `terminateDetachedChild`, and `awaitDetachedChild`, with
-  `withDetachedChild :: DetachedLaunch -> (forall child. DetachedChild child -> DetachedIO child a) -> IO
-  (Either DetachedLaunchError a)`; port the demo caller in `HostBootstrapDemo.Commands`; add the
-  `EscapeDetachedChild.hs` fixture to `CompileFailSpec`.
-- In `Detached.hs`, wrap the sink and null-device opens, `createProcess`, and the hand-off in `mask`, and
-  run the body through `restore`.
-- In `DetachedSpec`, add the pending-bytes standard-input case and the environment and working-directory
-  case, and replace the `detachedLaunchExecutable`/`detachedLaunchArguments` echo assertions with the
-  child-reported `getArgs` check.
-- In `DetachedSpec`, add `core/hostbootstrap-core/internal` to `productionSourceRoots`, assert each root
-  exists and holds at least one `.hs` file, and admit
-  `internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs` (its shipped command
-  transaction's `std_in = NoStream`) as the one transitional entry, which phase 16's Sprint 16.19 deletes
-  in the same change that gives that transaction a null-device standard input.
-- In `DetachedSpec`, enumerate the production roots through `SourceGuard.listHaskellSources` and delete the
-  private `haskellSourcesUnder` walker, so the drift guard reads the same sorted, recursive set every other
-  source guard reads.
+None.
 
-### Sprint 3.5: The canonical project root [Active]
+### Sprint 3.5: The canonical project root [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/test/ProjectRootSpec.hs`,
@@ -300,6 +296,8 @@ Derive one canonical root for a project's durable state.
 
 - `CanonicalProjectRoot` is an opaque, validated absolute root; its constructor is private, so a caller
   cannot supply an arbitrary path as "the project root".
+- Both `scope` and `rootId` are nominal in `CanonicalProjectRoot` and `CanonicalHostPath`, so neither a
+  root nor a derived host path can be relabelled through `Data.Coerce`.
 - `withCanonicalProjectRoot` mints only a fresh `rootId`, under a rank-2 continuation, so a root identity
   cannot leave the bracket that admitted it. It takes no scope witness: `scope` is whatever the caller's
   types fix. The sibling config admission `withSiblingValidatedProjectConfigRoot` fixes it to its codec's
@@ -307,7 +305,8 @@ Derive one canonical root for a project's durable state.
   another scope; every other admission fixes `scope` by unification with the consumer it hands the root
   to. The module's Haddock says exactly that.
 - The anchor is the parent of the config's directory when that directory is `.build`, and the config's
-  directory otherwise. A relative configured root is confined to the canonicalized anchor by a comparison
+  directory otherwise, compared with the host's filename grammar (`.BUILD` also matches on Windows).
+  A relative configured root is confined to the canonicalized anchor by a comparison
   of trailing-separator-terminated paths, so a sibling such as `../project-evil` is not "under"
   `project`; an absolute configured root is exempt from confinement. Confinement is checked on the
   canonicalized root, so a link inside the project cannot redirect admission outside it.
@@ -337,6 +336,10 @@ on Windows host-native:
 - `ProjectRootSpec`: a config at `workspace/project/demo.dhall` (not under `.build`) with configured root
   `"."` gives `Right <canonical project>`, and with `"../outside"` gives `ProjectRootEscapesAnchor` against
   `project` as the anchor.
+- `ProjectRootSpec`: a config in an actual `workspace/project/.BUILD` directory with configured root
+  `"."` admits the canonical parent project on Windows and the canonical `.BUILD` directory on POSIX.
+  The case runs on every host and derives its expected anchor from the host family independently of the
+  production filename comparator.
 - `ProjectRootSpec`: a configured root carrying an embedded NUL (`"bad\0root"`) gives
   `ProjectRootResolutionFailed` whose first field is the candidate `anchor </> "bad\0root"`; the case
   matches the constructor and that field, not the host's error text.
@@ -348,28 +351,27 @@ on Windows host-native:
   link redirect, the resolution failure) passes a continuation that sets an `IORef Bool`, and asserts it
   is still `False` after the refusal.
 - `CompileFailSpec`: `test/compile-fail/EscapeCanonicalProjectRoot.hs`
-  (`escaped = withCanonicalProjectRoot cfg root pure`) is rejected with "would escape its scope", and
+  (`escaped = withCanonicalProjectRoot cfg root pure`) is rejected with
+  "Couldn't match type 'rootId' with 'escapedRoot'", and
   `test/compile-fail/ForgeCanonicalProjectRoot.hs` (`forged = CanonicalProjectRoot "/tmp"`) is rejected
-  with "Data constructor not in scope: CanonicalProjectRoot".
+  with "Illegal term-level use of the type constructor 'CanonicalProjectRoot'".
+- `CompileFailSpec`: `CoerceCanonicalProjectRootScope.hs` and `CoerceCanonicalHostPathScope.hs` reject
+  relabelling with "Couldn't match type 'ScopeA' with 'ScopeB'"; `CoerceCanonicalProjectRootId.hs` and
+  `CoerceCanonicalHostPathRootId.hs` reject relabelling with "Couldn't match type 'RootA' with 'RootB'".
+
+Dated closing evidence, 2026-10-26: All admission/refusal and untouched-continuation cases pass, including real link redirection, non-.build anchors, absolute-root exemption, sibling-prefix escape, embedded-NUL resolution refusal, and the host-sensitive .BUILD anchor. Constructor, root escape, and four nominal-index coercion fixtures reject for the observed GHC reasons.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
 
 #### Remaining Work
 
-- In `ProjectRoot.hs`, rewrite the `CanonicalProjectRoot` and `withCanonicalProjectRoot` Haddock to say
-  the function mints only `rootId`, takes no scope witness, and leaves `scope` to the caller's types; the
-  sibling config admission (`withSiblingValidatedProjectConfigRoot` in `Config/Schema.hs`) is the
-  admission that binds it to a codec's scope.
-- In `ProjectRootSpec`, add the `../project-evil` sibling-prefix case, the absolute-root exemption case,
-  the non-`.build` anchor case, and the embedded-NUL `ProjectRootResolutionFailed` case above.
-- In `ProjectRootSpec`, delete the `if os == "mingw32" then pure ()` branch of the "replaced relative root"
-  case so it runs `createDirectoryLink` on every host, and drop the now-unused `System.Info (os)` import.
-- In `ProjectRootSpec`, replace `const (pure ())` in every refusal case with a continuation that writes
-  `True` to a fresh `IORef`, and assert the ref reads `False` after the `Left`.
-- Add `test/compile-fail/EscapeCanonicalProjectRoot.hs` and `test/compile-fail/ForgeCanonicalProjectRoot.hs`
-  and register both in `CompileFailSpec` beside `CrossScopeProjectRoot.hs` with the rejections above.
+None.
 
-### Sprint 3.6: The one shell quoter [Active]
+### Sprint 3.6: The one shell quoter [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/Quote.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Effect.hs`,
 `core/hostbootstrap-core/test/EffectSpec.hs`
@@ -422,25 +424,22 @@ Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4
 passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
 1,881/1,881 in 223.77 seconds.
 
+Dated closing evidence, 2026-10-26: The shared source corpus and local binding-head negative fixture pass; each of the five PowerShell quote characters and the empty argument is pinned. The demo quoter under another name remains the explicitly scoped Phase 24 obligation.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `EffectSpec`, count binding heads (an identifier at the start of a declaration or `where` binding
-  followed by its arguments and `=`) alongside the `name ::` signature for `shellQuoteArg`, and add the
-  in-memory fixture case that a `where shellQuoteArg = ...` source is reported.
-- In `Quote.hs`, make `powerShellQuoteArg`'s `escape` double `'\x2018'`, `'\x2019'`, `'\x201A'`, and
-  `'\x201B'` as it doubles `'\''`, and state the five characters in its Haddock; add the five
-  per-character `EffectSpec` cases and the empty-string case above. `EffectSpec`'s "PowerShell quoter has
-  exactly one definition site" case stays.
-- In `EffectSpec`, read `commandComposingSources` through `SourceGuard.readHaskellSources` and delete the
-  private `readSourcesUnder` walker. `EffectSpec.trackedScriptFiles` walks the repository for scripts under
-  `.gitignore` exclusions, names no `".hs"` literal, and stays.
+None.
 
-### Sprint 3.7: The one process runner [Active]
+### Sprint 3.7: The one process runner [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/Run.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Effect.hs`,
-`core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/test/EffectSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/build_and_run_model.md`
@@ -462,8 +461,8 @@ teardown decision is made once rather than at every spawn site.
   directory, and is bounded by a `RunBounds` row of wall clock, per-stream output ceiling, and
   termination grace. Both read the child's output as bytes and decode it as lenient UTF-8, so the same
   bytes give the same `CapturedRun` under either disposition and under any process locale. The Colima
-  backend's shipped command transaction is the one caller of the bounded runner and keeps only its own
-  `RunBounds` row and `RunNamespace`; the cluster backend issues described commands through the
+  backend's shipped command transaction and fallback NVIDIA discovery share the bounded runner, each
+  keeping its own `RunBounds` row and `RunNamespace`; the cluster backend issues described commands through the
   interpreter (Sprint 3.8) and runs no bounded child.
 - Every bound the runner states is one it actually holds. The wall clock is one budget measured from the
   launch, covering the request write, the drain, and the exit wait together. A wall clock, a grace
@@ -532,35 +531,19 @@ passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
 Dated evidence: on 2026-08-18, x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0 passed the same gate
 host-native at 2,121/2,121 in 209.17 seconds, plus both Python commands with 231 passed.
 
+Dated closing evidence, 2026-10-26: The complete Linux gate exercises real timeout, single wall budget, output ceiling, grandchild escalation, cancellation, unread large input, duplex pipes, native cwd/argv entry, missing directory/executable, and locale-independent byte decoding. Windows executes all portable cases and actual process-probe/native-entry refusals. The focused Windows effect run passed 43/43 before the complete gates. The four new CLI lines are excluded from the unrelated projector attribution; frozen projector hashes and 216/217 line totals remain unchanged.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `EffectSpec`, add the bounded-runner behavioural cases above against the public
-  `HostBootstrap.Effect.runBoundedGrouped` and `runBoundedGroupedWithInput` with small `RunBounds` rows,
-  adding the probe modes (sleep, close-then-sleep, flood, ignore-`SIGTERM`-and-fork, exit-unread) to the
-  test executable's dispatch in `test/Spec.hs`.
-- In `Run.hs`, capture both streams of `runCaptured` as `ByteString` (a binary-handle capture in place of
-  `readProcessWithExitCode`) and decode both runners' output with
-  `Data.Text.Encoding.decodeUtf8With lenientDecode` in place of the locale and
-  `Data.ByteString.Char8.unpack`; add the invalid-UTF-8 case.
-- In `Run.hs`, record a monotonic start time and give `awaitProcessExit` only the remaining wall budget;
-  fork both readers before writing the request, write it inside the timed region, and treat
-  `ResourceVanished` on that write as an unread request rather than a spawn failure.
-- In `Run.hs`, set `use_process_jobs = True` on Windows and rewrite the `groupPresent` Windows comment to
-  name the job object.
-- In `Run.hs`, replace the darwin `/bin/sh -c 'cd "$1" && shift && exec "$@"'` leader with the installed
-  binary's hidden working-directory entry (defined in `Run.hs`, dispatched in `HostBootstrap.CLI` beside
-  `shippedCommandEntryArguments`, and in `test/Spec.hs` for the test executable), which calls
-  `setCurrentDirectory` and `System.Posix.Process.executeFile`, exiting on reserved codes the runner maps
-  to `BoundedFailed`. Delete the darwin comment that calls the `/bin/sh` leader "the one
-  platform-limitation seam § KK leaves the runner" with it, since § KK grants the runner no interpreter
-  seam.
-- In `EffectSpec`, extend the launch-boundary spellings to `spawnProcess`, `spawnCommand`, `callProcess`,
-  `callCommand`, `readProcess`, `readCreateProcess`, `readCreateProcessWithExitCode`, `rawSystem`,
-  `system`, `executeFile`, `forkProcess`, and `startProcess`, and add the in-memory `callProcess` case.
+None.
 
-### Sprint 3.8: The closed vocabulary and its one interpreter [Active]
+### Sprint 3.8: The closed vocabulary and its one interpreter [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Effect/Vocabulary.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Effect.hs`,
@@ -629,25 +612,19 @@ when these cases also exist in `EffectSpec` and pass under `cabal test all` from
 - An `EffectSpec` source guard asserts `Effect/Interpreter.hs` names neither `powerShellQuoteArg`,
   `HostBootstrap.Effect.Quote`, nor `powershell`, so the direct `wsl.exe` launch is the only WSL route.
 
+Dated closing evidence, 2026-10-26: Direct WSL resolution preserves empty, quoted, and typographic arguments; missing WSL refuses by name. Recording effect-policy cases verify fail-fast stopping, one best-effort intent, stderr/stdout/exit fallback reasons including CRLF, and trailing release. The interpreter-text and duplicate-interpreter guards pass.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- The tree does not yet launch WSL as the deliverable states: `Interpreter.hs` imports
-  `powerShellQuoteArg` from `HostBootstrap.Effect.Quote` under `mingw32_HOST_OS` and its `resolveTool Wsl`
-  row launches `powershell -NoProfile -Command "& 'wsl' ...; exit $LASTEXITCODE"`. Delete that row and the
-  import, resolve `Wsl` to the `wsl.exe` path with `hostToolProcessArguments Wsl`, and rewrite the
-  `resolveLaunch` Haddock accordingly; add the `resolveLaunch` WSL cases and the `Interpreter.hs` source
-  guard above to `EffectSpec`.
-- In `Interpreter.hs`, announce the `BestEffort` intent once before the first `RunHostCommand` of a list,
-  and fall back to the first line of standard output, then to `exit <n>`, when standard error is empty.
-- Add the `interpretHostEffects` behavioural cases above to `EffectSpec`, with the probe mode added to
-  `test/Spec.hs`'s dispatch.
-- In `Vocabulary.hs`, rewrite the module and `HostCommand` Haddock to say the frame is a descriptive label
-  the lift fold sets, `hostCommand` labels `OuterHost`, and neither the interpreter nor any production
-  validator reads it.
+None.
 
-### Sprint 3.9: The tree carries no script [Active]
+### Sprint 3.9: The tree carries no script [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/EffectSpec.hs`,
 `documents/engineering/durable_windows_runs.md`, `CLAUDE.md`, `AGENTS.md`
 **Substrates**: none
@@ -686,15 +663,19 @@ passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/`
 1,894/1,894 in 226.70 seconds, plus `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` at 231 passed.
 
+Dated closing evidence, 2026-10-26: The repository script-absence guard and directory-only anchored-ignore fixture pass on Linux and Windows. The durable Windows launcher and guard remain outside the repository; their installation procedure is retained in durable_windows_runs.md.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `EffectSpec`'s `trackedScriptFiles`, test `doesDirectoryExist` before consulting the ignore list,
-  and match a pattern with an inner `/` against the repository-relative path rather than its last
-  segment; extend the fixture as stated in Validation.
+None.
 
-### Sprint 3.10: One substrate detection, and a total accelerator answer [Active]
+### Sprint 3.10: One substrate detection, and a total accelerator answer [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
@@ -740,17 +721,19 @@ commands):
 - The seam guard matches the bootstrapper's definition lines, and fails on an in-memory copy of
   `substrate.py` whose spellings survive only in a comment.
 
+Dated closing evidence, 2026-10-26: The Apple Silicon/amd64 statement receives the direct Intel-Mac refusal. The seam guard reads actual Python field/enum assignments and rejects comment-only and both docstring-only fixtures. The complete four-command native host static gate passes.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- In `Substrate.hs`, make `parseStatedHost` refuse `AppleSilicon` paired with any architecture other than
-  `Arm64`, reusing `classify`'s message; add the `SubstrateSpec` refusal case.
-- In `SubstrateSpec`, match `hostbootstrap/substrate.py`'s `SUBSTRATE_ENV_VAR`/`ARCH_ENV_VAR` definition
-  lines and the enum value assignments rather than a whole-file infix, and add the comment-only negative
-  case.
+None.
 
-### Sprint 3.11: The Windows resolution cases exist on every gate host [Planned]
+### Sprint 3.11: The Windows resolution cases exist on every gate host [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/HostToolSpec.hs`,
 `core/hostbootstrap-core/test/CoverageManifest.hs`
 **Substrates**: none
@@ -779,40 +762,49 @@ Closure requires, under `cabal test all` from `core/`: both cases running on the
 `CoverageManifest` row for the family whose declared size equals the counted leaves. The family size is the
 same on a Windows and a POSIX gate host.
 
+Dated closing evidence, 2026-10-26: Both System32 resolution cases exist on both hosts: Linux records two actual unavailable answers and Windows records two native path answers. The manifest observes each selected callback; the five POSIX effect cases are similarly retained and counted.
+The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
+2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
+2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
+line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+
 #### Remaining Work
 
-- Rewrite `HostToolSpec.windowsResolutionCases` without the `#ifdef` region, asserting the non-Windows
-  answer explicitly.
-- Add the family's `CoverageManifest` row with its family path, size, row-case count, and reason.
+None.
 
 ## Remaining Work
 
-- Sprint 3.1: `AbsExe` without an exported record field plus its compile-fail fixture, numeric
-  newest-first toolkit ordering, `%SystemRoot%`/`%ProgramFiles%`-derived Windows fallbacks, and
-  non-tautological `HostToolSpec` resolution cases.
-- Sprint 3.2: per-frame, bounded, `HostTool`-resolved NVIDIA evidence behind injected predicates, with
-  the evidence and frame-table cases.
-- Sprint 3.3: delete the uncalled `HostBootstrap.HostPrereqs` mirror of the pre-binary floor and add its
-  absence guard.
-- Sprint 3.4: polled `awaitDetachedChild`, an indexed `DetachedIO` with an escape fixture, a masked
-  launch, and behavioural standard-input, environment, working-directory, and termination cases, with
-  the `NoStream` drift guard extended to `internal/` and read through `SourceGuard`.
-- Sprint 3.5: a `ProjectRoot` Haddock that says the caller fixes `scope`, sibling-prefix, absolute-root,
-  non-`.build`, resolution-failure, and every-host link-redirect cases that observe the continuation never
-  ran, and the root-escape and forged-constructor compile-fail fixtures.
-- Sprint 3.6: binding-head quoter guard, a PowerShell quoter that doubles all five single-quote
-  characters, with a case per character, and the quoter guard's corpus read through `SourceGuard`.
-- Sprint 3.7: behavioural bounded-runner cases, byte capture with lenient UTF-8 decoding, one wall
-  budget with readers started first, a Windows job object, an interpreter-free macOS working-directory
-  entry, and the full spawn-spelling launch guard.
-- Sprint 3.8: direct `wsl.exe` launch, one `BestEffort` intent line with a non-empty skip reason,
-  `interpretHostEffects` behavioural cases, and a `Vocabulary` Haddock that states the frame is
-  descriptive.
-- Sprint 3.9: a script guard whose ignore list excludes only directories and honours anchored patterns.
-- Sprint 3.10: refuse a stated `apple-silicon`/`amd64` pair, and match the bootstrapper's definition
-  lines in the seam guard.
-- Sprint 3.11: the two Windows `HostToolSpec` resolution cases exist on every gate host, with a
-  `CoverageManifest` row.
+None.
+
+## Closing validation
+
+The 2026-10-26 Linux CPU gate ran in `hostbootstrap-core-gate-20261026`, an x86_64 Ubuntu 24.04.4
+container with no GPU devices or markers; the unmodified detector reports `linux-cpu/amd64`.
+The source mirror was verified byte-for-byte against all 987 current working-tree files. The container
+uses the published CPU base digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8`, GHC 9.12.4 and
+Cabal 3.16.1.0 on WSL2 Linux 6.18.33.2. `cabal test all --test-options=--hide-successes` passed all
+2,633 core cases in 234.60 seconds. The output flag changes reporting only.
+
+The native host is `DESKTOP-R6BTBVS`, x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4 and
+Cabal 3.16.1.0. The full host static gate passed: core 2,626 in 442.17 seconds; demo 164 in 5.80
+seconds plus its included core 2,626 in 430.02 seconds; Python check_code passed and test_all passed
+376 in 6.38 seconds, covering all 1,585 statements and 460 branches. Plain `cabal build all` also
+passed in core and demo. Cabal ran with a UTF-8 console; no case was filtered out of these full runs.
+The existing LiftSpec/LifecycleSpec platform case differences belong to their later owning phases;
+this phase's Windows-resolution and POSIX-process families have the same sizes on both hosts.
+
+All 19 declared conditional families matched their observed completions: Linux 52 row/16 refusal,
+Windows 33 row/35 refusal. The opt-in provider-live and direct-Colima lanes reported their explicit
+unrequested results; this phase claims no provider/Apple acceptance from those messages.
+
+The initial Linux full run failed six expectations (two escape diagnostics, the abstract field
+diagnostic, pre-parser ordering, unrelated CLI attribution, and a malformed plan update); these were
+corrected before the closing run. The initial native core failed 71/2,625, chiefly because the new byte
+capture exposed CRLF from test protocol producers. FakeCluster and FakeProvider now emit explicit
+UTF-8/LF, preserving the production protocol refusals; the affected 271-case native selection passed
+before the complete reruns. Winget's valid native AppExecutionAlias is verified by actual execution.
+The plan update's heading-selection error was repaired with all eleven sprint sections restored.
 
 ## Documentation Requirements
 

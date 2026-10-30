@@ -33,10 +33,15 @@ The owned-cluster backend applies the whole cluster slice to each node rather th
 
 ## Canonical Quantities and Provider Controls
 
-`HostBootstrap.Cluster.Cordon.Foundation` owns `parseQuantity` and the exact-budget sizing renderers.
-`HostBootstrap.Cluster.Cordon`, the configuration-adapter facade over it, reexports them. Positive values that
-cannot be expressed exactly by the selected
-provider are rejected rather than rounded into a different wall.
+`HostBootstrap.Cluster.Cordon.Foundation` owns `parseQuantity`, opaque `ResourceBudget`, and the sizing
+renderers. Its budget readers are ordinary functions, so inspection grants no record-update route; the
+record-shaped `Show` output remains unchanged. `HostBootstrap.Cluster.Cordon`, the configuration-adapter
+facade over it, reexports these APIs. VM sizing renderers refuse inexact whole-gibibyte values. Docker
+node rendering refuses signed CPU/swap overflow, sub-minimum memory, and byte values its CLI would round.
+Docker provider-budget admission delegates to that same renderer and preserves its reason as
+`InvalidBudget`; normal byte-granular memory remains admissible when exactly representable.
+The owned-cluster driver returns the renderer's refusal before probing ownership or issuing a backend command;
+[resource budgeting](resource_budgeting.md#cordoning-per-substrate) records the exact limits.
 
 - Incus and Lima apply the declared VM sizing and retain their managed provider/share identity.
 - Direct Colima uses an isolated home/profile/context and canonical CPU/memory arguments. Its storage total
@@ -61,13 +66,18 @@ whichever rule the wildcard happened to hold. The rules and why each holds:
 | Backend | Admission | Why |
 |---|---|---|
 | Bare Linux | unsupported | no quota or image-GC wall exists to size against |
-| Docker node | any positive budget | the runtime caps CPU and memory in bytes; storage is admitted but not enforced (see [Cluster Node Shares](#cluster-node-shares)) |
+| Docker node | canonical renderer: at most 9223372036 whole CPU cores; at least 6291456 memory bytes, exact through CLI binary64 parsing, with doubled memory at most 9223372036854775807 bytes | retains representable byte-granular memory; unsupported storage enforcement is a separate policy (see [Cluster Node Shares](#cluster-node-shares)) |
 | Colima | whole gibibytes, and its own renderer | it reserves a fixed writable root disk inside the ceiling |
 | Lima | whole gibibytes | `--memory` and `--disk` take whole gibibytes and nothing finer |
 | Incus | whole gibibytes | `limits.memory` and the root volume size render as `<n>GiB` |
 | WSL2 | whole gibibytes | `.wslconfig` takes `memory=<n>GB`, and the VHDX install cap takes the same unit |
 
-The budget suite asserts each of these six answers rather than the three the wildcard once covered.
+The budget suite asserts each of these six answers. Storage decisions come from Foundation's
+`storageCordonPolicy`: the prepared call retains its `StorageCordonMechanism` or reports its canonical
+unsupported reason. `DockerNodeStorage` answers `StorageCordonUnsupported DockerUpdateStorageUnavailable`;
+`BareLinuxStorage` answers `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable`, which provider
+admission reports before preparing a wall. [Resource budgeting](resource_budgeting.md#cordoning-per-substrate)
+owns the complete policy matrix.
 
 ## Cluster Node Shares
 
@@ -92,6 +102,8 @@ cannot authorize a newer generation.
 A free-space or allocatable-resource read is a precondition, not an ownership receipt or applied limit.
 Likewise the descriptive `fitsBudget` helper and static generated artifacts cannot substitute for the
 plan-indexed workload fit, partition, journal-derived reservation, and backend-produced wall authority.
+That helper checks total replicated CPU/memory limits and each request against its own limit, matching
+the numeric Dhall predicate; a successful result is still a descriptive calculation.
 
 Workload declarations and rendered chart requests must describe the same selected role resources. The exact
 demo config binder retains its declared workload alongside the driver, node mapping, and exposure intents.

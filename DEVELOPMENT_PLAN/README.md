@@ -39,18 +39,18 @@ its row here.
 
 | # | Phase | Status | Substrate | Open |
 |---|-------|--------|-----------|------|
-| 0 | [Governance and documentation standards](phase-0-governance-and-documentation-standards.md) | Active | — | Sprint 0.3; 2 Active, 2 Planned |
-| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Active | linux-cpu | Sprint 1.1; 6 Active, 3 Planned |
-| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Active | — | Sprint 2.3; 4 Active, 1 Planned |
-| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Active | linux-cpu | Sprint 3.1; 10 Active, 1 Planned |
-| 4 | [Protected store](phase-4-protected-store.md) | Active | linux-cpu | Sprint 4.1; 2 Active, 2 Planned |
-| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Active | — | Sprint 5.2; 9 Active, 2 Planned |
-| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Active | — | Sprint 6.1; 3 Active, 2 Planned |
-| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Active | — | Sprint 7.1; 9 Active, 5 Planned |
-| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Active | linux-cpu | Sprint 8.2; 6 Active, 7 Planned |
-| 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Active | linux-cpu | Sprint 9.1; 4 Active |
-| 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Active | linux-cpu | Sprint 10.1; 5 Active, 2 Planned |
-| 11 | [Prepared operations](phase-11-prepared-operations.md) | Active | linux-cpu | Sprint 11.1; 3 Active |
+| 0 | [Governance and documentation standards](phase-0-governance-and-documentation-standards.md) | Done | — | — |
+| 1 | [Python pre-binary floor](phase-1-python-pre-binary-floor.md) | Done | linux-cpu | — |
+| 2 | [Haskell core scaffolding](phase-2-haskell-core-scaffolding.md) | Done | — | — |
+| 3 | [Host tools and substrate detection](phase-3-host-tools-and-substrate-detection.md) | Done | linux-cpu | — |
+| 4 | [Protected store](phase-4-protected-store.md) | Done | linux-cpu | — |
+| 5 | [Installed identity, operator verification, and authority kernels](phase-5-installed-identity-and-authority-kernels.md) | Done | — | — |
+| 6 | [Canonical quantities and reconcile results](phase-6-canonical-quantities-and-reconcile-results.md) | Done | — | — |
+| 7 | [Dhall configuration and the generic project model](phase-7-dhall-configuration-and-project-model.md) | Done | — | — |
+| 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
+| 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Done | linux-cpu | — |
+| 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Done | linux-cpu | — |
+| 11 | [Prepared operations](phase-11-prepared-operations.md) | Active | linux-cpu | Sprint 11.4; 2 Active, 3 Planned |
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | Sprint 12.1; 23 Active, 8 Planned |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Active | linux-cpu | Sprint 13.1; 17 Active, 7 Planned |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | Sprint 14.4; 12 Active, 8 Planned |
@@ -66,23 +66,25 @@ its row here.
 | 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.1; 37 Active, 29 Planned |
 | 25 | [Documentation reconciliation](phase-25-documentation-reconciliation.md) | Active | — | Sprint 25.4; 3 Active, 10 Planned |
 | 26 | [Apple Silicon substrate](phase-26-apple-silicon-substrate.md) | Active | **apple-silicon** | Sprint 26.8; 1 Active |
-| 27 | [NVIDIA GPU substrate](phase-27-nvidia-gpu-substrate.md) | Done | **nvidia** | — |
+| 27 | [NVIDIA GPU substrate](phase-27-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 27.11; 1 Active |
 | 28 | [Windows and WSL2 substrate](phase-28-windows-and-wsl2-substrate.md) | Active | **windows** | Sprint 28.5; 1 Active, 1 Planned |
-| 29 | [Host-portability acceptance](phase-29-host-portability-acceptance.md) | Done | — | — |
+| 29 | [Host-portability acceptance](phase-29-host-portability-acceptance.md) | Active | — | Sprint 29.6; 1 Active |
 
 ## The current frontier
 
-Phases 0 through 26 and phase 28 are `Active`; phases 27 and 29 are `Done`. Each Active baseline phase owes
+Phases 0 through 10 are `Done`; phases 11 through 29 are `Active`. Each Active baseline phase owes
 code changes and behavioural tests that its own contracts name. Its `## Remaining Work` lists the owing
 sprints; each owing sprint's `#### Remaining Work` names the change and the case that proves it, and its
-`#### Validation` names the cases that close it. Work resumes at the lowest Active phase, phase 0, and
+`#### Validation` names the cases that close it. Work resumes at the lowest Active phase, phase 11, and
 proceeds in numerical order; inside a phase, the Active sprints come before the Planned ones.
 
 Phases 26 and 28 each owe the live accelerator-daemon kill-and-restart that the worked demo hands to
 hardware it cannot reach, at the next visit to an Apple Silicon host and to a native Windows host
 respectively. Phase 28 also owes Sprint 28.7, which routes the demo's WSL2 `copy-source` through the exact
-provider-share route alone. Their other evidence, and that of phases 27 and 29, stands in each phase's
-`**Gate evidence**` rows against the source digest it covered.
+provider-share route alone. The governance phase's documentation-validator and digest changes expire
+the covered-source evidence of phases 27 and 29; Sprints 27.11 and 29.6 own their complete acceptance
+runs. Each phase's dated `**Gate evidence**` rows retain the source digest they covered and establish
+only those runs.
 
 **The acceptance phases close last.** Phases 26 to 29 cover the host-portable tree, so a source change in a
 lower phase expires their evidence: a `Done` acceptance phase whose digest stops matching is `Active` (§ C)

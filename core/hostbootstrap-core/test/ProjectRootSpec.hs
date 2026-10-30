@@ -2,6 +2,8 @@
 
 module ProjectRootSpec (tests) where
 
+import Control.Exception (IOException, try)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Lift (canonicalHostMount)
@@ -18,7 +20,7 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (testCase, (@?=))
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -65,13 +67,22 @@ tests =
                     withCurrentDirectory other $
                         withCanonicalProjectRoot configPath "." (pure . canonicalProjectRootPath)
                 result @?= Right expected
+        , testCase "a differently cased build-directory name uses the host path grammar" $
+            withSystemTempDirectory "hostbootstrap-project-root-build-case" $ \workspace -> do
+                let project = workspace </> "project"
+                    buildDir = project </> ".BUILD"
+                    configPath = buildDir </> "demo.dhall"
+                createDirectoryIfMissing True buildDir
+                expected <- canonicalizePath (buildAnchorForHost project buildDir)
+                result <- withCanonicalProjectRoot configPath "." (pure . canonicalProjectRootPath)
+                result @?= Right expected
         , testCase "a missing root fails before the callback" $
             withSystemTempDirectory "hostbootstrap-project-root-missing" $ \project -> do
                 let buildDir = project </> ".build"
                     configPath = buildDir </> "demo.dhall"
                     missing = project </> "missing"
                 createDirectory buildDir
-                result <- withCanonicalProjectRoot configPath "missing" (const (pure ()))
+                result <- refusedAdmission configPath "missing"
                 result @?= Left (ProjectRootMissing missing)
         , testCase "a file cannot be admitted as a project root" $
             withSystemTempDirectory "hostbootstrap-project-root-file" $ \project -> do
@@ -80,7 +91,7 @@ tests =
                     wrongKind = project </> "not-a-directory"
                 createDirectory buildDir
                 writeFile wrongKind "not a directory"
-                result <- withCanonicalProjectRoot configPath "not-a-directory" (const (pure ()))
+                result <- refusedAdmission configPath "not-a-directory"
                 result @?= Left (ProjectRootNotDirectory wrongKind)
         , testCase "a relative root cannot escape the config-owned project anchor" $
             withSystemTempDirectory "hostbootstrap-project-root-escape" $ \workspace -> do
@@ -92,24 +103,66 @@ tests =
                 createDirectory outside
                 canonicalOutside <- canonicalizePath outside
                 canonicalProject <- canonicalizePath project
-                result <- withCanonicalProjectRoot configPath "../outside" (const (pure ()))
+                result <- refusedAdmission configPath "../outside"
                 result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+        , testCase "a sibling with the project-name prefix is outside the anchor" $
+            withSystemTempDirectory "hostbootstrap-project-root-prefix" $ \workspace -> do
+                let project = workspace </> "project"
+                    configPath = project </> ".build" </> "demo.dhall"
+                    sibling = workspace </> "project-evil"
+                createDirectoryIfMissing True (project </> ".build")
+                createDirectory sibling
+                canonicalProject <- canonicalizePath project
+                canonicalSibling <- canonicalizePath sibling
+                result <- refusedAdmission configPath "../project-evil"
+                result @?= Left (ProjectRootEscapesAnchor canonicalSibling canonicalProject)
+        , testCase "an absolute configured root is exempt from relative confinement" $
+            withSystemTempDirectory "hostbootstrap-project-root-absolute" $ \workspace -> do
+                let project = workspace </> "project"
+                    configPath = project </> ".build" </> "demo.dhall"
+                    outside = workspace </> "outside"
+                createDirectoryIfMissing True (project </> ".build")
+                createDirectory outside
+                canonicalOutside <- canonicalizePath outside
+                result <- withCanonicalProjectRoot configPath canonicalOutside (pure . canonicalProjectRootPath)
+                result @?= Right canonicalOutside
+        , testCase "a config outside .build anchors its containing directory" $
+            withSystemTempDirectory "hostbootstrap-project-root-sibling" $ \workspace -> do
+                let project = workspace </> "project"
+                    configPath = project </> "demo.dhall"
+                    outside = workspace </> "outside"
+                createDirectory project
+                createDirectory outside
+                canonicalProject <- canonicalizePath project
+                canonicalOutside <- canonicalizePath outside
+                admitted <- withCanonicalProjectRoot configPath "." (pure . canonicalProjectRootPath)
+                admitted @?= Right canonicalProject
+                escaped <- refusedAdmission configPath "../outside"
+                escaped @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+        , testCase "an embedded NUL is a typed resolution refusal before the callback" $
+            withSystemTempDirectory "hostbootstrap-project-root-nul" $ \project -> do
+                let configPath = project </> ".build" </> "demo.dhall"
+                    configured = "bad\0root"
+                createDirectory (project </> ".build")
+                result <- refusedAdmission configPath configured
+                case result of
+                    Left (ProjectRootResolutionFailed candidate _) -> candidate @?= project </> configured
+                    other -> assertFailure ("expected ProjectRootResolutionFailed, got " <> show other)
         , testCase "a replaced relative root cannot redirect admission outside the project anchor" $
-            if os == "mingw32"
-                then pure ()
-                else withSystemTempDirectory "hostbootstrap-project-root-replaced" $ \workspace -> do
-                    let project = workspace </> "project"
-                        buildDir = project </> ".build"
-                        outside = workspace </> "outside"
-                        redirected = project </> "root"
-                        configPath = buildDir </> "demo.dhall"
-                    createDirectoryIfMissing True buildDir
-                    createDirectory outside
-                    createDirectoryLink outside redirected
-                    canonicalOutside <- canonicalizePath outside
-                    canonicalProject <- canonicalizePath project
-                    result <- withCanonicalProjectRoot configPath "root" (const (pure ()))
-                    result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
+            withSystemTempDirectory "hostbootstrap-project-root-replaced" $ \workspace -> do
+                let project = workspace </> "project"
+                    buildDir = project </> ".build"
+                    outside = workspace </> "outside"
+                    redirected = project </> "root"
+                    configPath = buildDir </> "demo.dhall"
+                createDirectoryIfMissing True buildDir
+                createDirectory outside
+                linked <- try (createDirectoryLink outside redirected) :: IO (Either IOException ())
+                either (assertFailure . ("directory-link precondition unavailable: " <>) . show) pure linked
+                canonicalOutside <- canonicalizePath outside
+                canonicalProject <- canonicalizePath project
+                result <- refusedAdmission configPath "root"
+                result @?= Left (ProjectRootEscapesAnchor canonicalOutside canonicalProject)
         , testCase "the direct host bind consumes the canonical .data projection" $
             withSystemTempDirectory "hostbootstrap-project-root-bind" $ \project -> do
                 let buildDir = project </> ".build"
@@ -127,3 +180,15 @@ tests =
                             , readOnly = False
                             }
         ]
+
+refusedAdmission :: FilePath -> FilePath -> IO (Either ProjectRootError ())
+refusedAdmission configPath configuredRoot = do
+    invoked <- newIORef False
+    result <- withCanonicalProjectRoot configPath configuredRoot (const (writeIORef invoked True))
+    readIORef invoked >>= (@?= False)
+    pure result
+
+buildAnchorForHost :: FilePath -> FilePath -> FilePath
+buildAnchorForHost project buildDir
+    | os == "mingw32" = project
+    | otherwise = buildDir

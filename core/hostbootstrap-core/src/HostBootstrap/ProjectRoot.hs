@@ -1,4 +1,5 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 -- | Canonical project-root admission and scope-bound path projections.
 module HostBootstrap.ProjectRoot (
@@ -18,17 +19,20 @@ import Data.List (isPrefixOf)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesPathExist)
 import System.FilePath (addTrailingPathSeparator, equalFilePath, isAbsolute, normalise, takeDirectory, takeFileName, (</>))
 
-{- | A root whose constructor and root identity are private to this module.
-The surrounding admission chooses @scope@; 'withCanonicalProjectRoot' mints
-only @rootId@.  This lets the config/lifecycle bracket retain its exact scope
-while still preventing a root identity from escaping its continuation.
+{- | A root with a private constructor and a fresh rank-2 @rootId@.
+'withCanonicalProjectRoot' mints only @rootId@ and takes no scope witness:
+@scope@ is fixed by the caller's types. The sibling validated-config admission
+binds it to the config codec's scope, retaining that scope through every root
+projection while the root identity remains confined to its continuation.
 -}
+type role CanonicalProjectRoot nominal nominal
 newtype CanonicalProjectRoot scope rootId = CanonicalProjectRoot FilePath
 
 {- | An absolute host path derived from one canonical project-root identity.
 The constructor is private; host adapters consume this type instead of a raw
 'FilePath'.
 -}
+type role CanonicalHostPath nominal nominal
 newtype CanonicalHostPath scope rootId = CanonicalHostPath FilePath
 
 data ProjectRootError
@@ -44,6 +48,9 @@ data ProjectRootError
 the sibling config. Configs next to a @.build@ executable are owned by the
 parent project directory; other config locations own their containing
 directory directly.
+
+Only @rootId@ is fresh. The caller fixes @scope@ by the consumer it supplies;
+the sibling config admission fixes it to that config codec's scope.
 -}
 withCanonicalProjectRoot ::
     FilePath ->
@@ -53,12 +60,18 @@ withCanonicalProjectRoot ::
 withCanonicalProjectRoot configPath configuredRoot action = do
     let configDir = takeDirectory configPath
         anchor
-            | takeFileName configDir == ".build" = takeDirectory configDir
+            | equalFilePath (takeFileName configDir) ".build" = takeDirectory configDir
             | otherwise = configDir
         candidate
             | isAbsolute configuredRoot = configuredRoot
             | otherwise = anchor </> configuredRoot
-    resolved <- try (canonicalizePath (normalise candidate)) :: IO (Either IOException FilePath)
+    resolved <-
+        try
+            ( if '\0' `elem` candidate
+                then ioError (userError "project root contains an embedded NUL")
+                else canonicalizePath (normalise candidate)
+            ) ::
+            IO (Either IOException FilePath)
     case resolved of
         Left err -> pure (Left (ProjectRootResolutionFailed candidate (show err)))
         Right root -> do

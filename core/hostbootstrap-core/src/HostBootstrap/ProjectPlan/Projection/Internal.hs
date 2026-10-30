@@ -54,8 +54,10 @@ import HostBootstrap.Lifecycle.Plan (
 import HostBootstrap.Lift.Context (
     ConfigDelivery (cdPayload),
     ContainerLift (..),
-    LiftContext (..),
+    LiftContext,
     LiftLayer (..),
+    liftLayers,
+    mapTerminalContainer,
  )
 import HostBootstrap.ProjectPlan.Construct.Internal (
     FinalizedProjectSpec,
@@ -119,14 +121,15 @@ withImmediateTargetKernel finalized parent suppliedCurrent parentContext use
              | (edgeParent, child, route) <- topologyDescentEdgesKernel (topologyKernel parent)
              , edgeParent == parentFrameId
              ] of
-            [(child, rawRoute@(LiftContext [_]))] ->
-                withFinalizedForwardChildProjectionKernel
-                    finalized
-                    parentConfig
-                    parentFrameId
-                    child
-                    rawRoute
-                    (admitProjection placement child rawRoute)
+            [(child, rawRoute)]
+                | [_] <- liftLayers rawRoute ->
+                    withFinalizedForwardChildProjectionKernel
+                        finalized
+                        parentConfig
+                        parentFrameId
+                        child
+                        rawRoute
+                        (admitProjection placement child rawRoute)
             [_] -> pure (refusal "the immediate topology edge is not one layer")
             [] -> pure (refusal "the current frame has no forward topology edge")
             _ -> pure (refusal "the current frame has multiple forward topology edges")
@@ -197,26 +200,27 @@ expectedChildContext ::
     FilePath ->
     LiftContext ->
     Either Text Context.BinaryContext
-expectedChildContext placement parent descriptor (LiftContext [layer]) = do
-    expected <- case (placement, layer) of
-        (Context.HostOrchestratorPlacement, ViaVM _) ->
-            Right (Context.deriveVMContextWithProvider Context.IncusVMProvider parent root)
-        (Context.HostOrchestratorPlacement, ViaLimaVM _) ->
-            Right (Context.deriveVMContextWithProvider Context.LimaVMProvider parent root)
-        (Context.HostOrchestratorPlacement, ViaWsl2VM _) ->
-            Right (Context.deriveVMContextWithProvider Context.Wsl2VMProvider parent root)
-        (Context.HostOrchestratorPlacement, ViaContainer _) ->
-            Right (Context.deriveLinuxGpuContainerContext parent root)
-        (Context.VMOrchestratorPlacement _, ViaContainer _) ->
-            Right (Context.deriveContainerContext parent root)
-        _ -> refusal "the selected lift is illegal for the parent placement"
-    case (Context.validateTopology expected, Context.contextPlacement expected) of
-        (Left failure, _) -> Left (failureText "binary context" failure)
-        (_, Left failure) -> Left (failureText "binary context" failure)
-        (Right (), Right _) -> Right expected
+expectedChildContext placement parent descriptor route
+    | [layer] <- liftLayers route = do
+        expected <- case (placement, layer) of
+            (Context.HostOrchestratorPlacement, ViaVM _) ->
+                Right (Context.deriveVMContextWithProvider Context.IncusVMProvider parent root)
+            (Context.HostOrchestratorPlacement, ViaLimaVM _) ->
+                Right (Context.deriveVMContextWithProvider Context.LimaVMProvider parent root)
+            (Context.HostOrchestratorPlacement, ViaWsl2VM _) ->
+                Right (Context.deriveVMContextWithProvider Context.Wsl2VMProvider parent root)
+            (Context.HostOrchestratorPlacement, ViaContainer _) ->
+                Right (Context.deriveLinuxGpuContainerContext parent root)
+            (Context.VMOrchestratorPlacement _, ViaContainer _) ->
+                Right (Context.deriveContainerContext parent root)
+            _ -> refusal "the selected lift is illegal for the parent placement"
+        case (Context.validateTopology expected, Context.contextPlacement expected) of
+            (Left failure, _) -> Left (failureText "binary context" failure)
+            (_, Left failure) -> Left (failureText "binary context" failure)
+            (Right (), Right _) -> Right expected
+    | otherwise = refusal "the selected lift is not exactly one layer"
   where
     root = Text.pack descriptor
-expectedChildContext _ _ _ _ = refusal "the selected lift is not exactly one layer"
 
 validatePlanPrefixes ::
     ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
@@ -254,12 +258,13 @@ validatePlanPrefixes parent targetPlan childContext placement = do
 
 selectedLiftMatches ::
     Context.ContextPlacement -> LiftContext -> LiftContext -> Either Text ()
-selectedLiftMatches
-    Context.HostOrchestratorPlacement
-    (LiftContext [ViaContainer parent])
-    (LiftContext [ViaContainer targetRoute]) = directContainerRebase parent targetRoute
-selectedLiftMatches _ parent targetRoute =
-    require (parent == targetRoute) "the selected VM or VM-container lift differs"
+selectedLiftMatches placement parent targetRoute
+    | Context.HostOrchestratorPlacement <- placement
+    , [ViaContainer parentContainer] <- liftLayers parent
+    , [ViaContainer targetContainer] <- liftLayers targetRoute =
+        directContainerRebase parentContainer targetContainer
+    | otherwise =
+        require (parent == targetRoute) "the selected VM or VM-container lift differs"
 
 directContainerRebase :: ContainerLift -> ContainerLift -> Either Text ()
 directContainerRebase parent targetContainer = do
@@ -286,19 +291,21 @@ directContainerRebase parent targetContainer = do
     canonical = canonicalProjectedRootKernel . Text.unpack
 
 containerPayloadMatches :: LiftContext -> ByteString -> Either Text ()
-containerPayloadMatches (LiftContext [ViaContainer container]) payload =
-    case clConfigDelivery container of
-        Just delivery ->
-            require
-                (TextEncoding.encodeUtf8 (cdPayload delivery) == payload)
-                "container delivery differs from the canonical payload"
-        Nothing -> refusal "container handoff has no canonical config delivery"
-containerPayloadMatches _ _ = Right ()
+containerPayloadMatches route payload
+    | [ViaContainer container] <- liftLayers route =
+        case clConfigDelivery container of
+            Just delivery ->
+                require
+                    (TextEncoding.encodeUtf8 (cdPayload delivery) == payload)
+                    "container delivery differs from the canonical payload"
+            Nothing -> refusal "container handoff has no canonical config delivery"
+    | otherwise = Right ()
 
 withoutConfigDelivery :: LiftContext -> LiftContext
-withoutConfigDelivery (LiftContext [ViaContainer container]) =
-    LiftContext [ViaContainer container{clConfigDelivery = Nothing}]
-withoutConfigDelivery route = route
+withoutConfigDelivery route
+    | [ViaContainer _] <- liftLayers route =
+        mapTerminalContainer (\container -> container{clConfigDelivery = Nothing}) route
+    | otherwise = route
 
 require :: Bool -> Text -> Either Text ()
 require True _ = Right ()

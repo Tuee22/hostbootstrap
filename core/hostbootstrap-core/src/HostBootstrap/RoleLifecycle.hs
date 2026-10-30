@@ -186,11 +186,14 @@ import HostBootstrap.Protected (
     ProtectedStoreIdentity,
     compareAndSwapProtectedRecord,
     mkRecordKey,
+    mkRecordSegment,
     protectedErrorMessage,
     protectedRecordBytes,
     protectedRecordVersion,
     protectedStoreIdentity,
     readProtectedRecord,
+    recordKeyText,
+    recordTupleSeparator,
     sessionStoreIdentity,
     withRunLiveness,
  )
@@ -625,10 +628,11 @@ roleAdmissionKey activation =
             , field nonce
             ]
 
-legalKeyCharacter :: Char -> Bool
-legalKeyCharacter character =
-    character
-        `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." :: String)
+roleLivenessName :: Text -> Text -> Either ProtectedError Text
+roleLivenessName service frame = do
+    encodedService <- mkRecordSegment ("service:" <> service)
+    encodedFrame <- mkRecordSegment ("frame:" <> frame)
+    recordKeyText <$> mkRecordKey ("role-lease." <> encodedService <> recordTupleSeparator <> encodedFrame)
 
 -- ---------------------------------------------------------------------------
 -- The narrowed role plan
@@ -1143,26 +1147,25 @@ runRoleLifecycle store plan placement (RoleCursor _ cursorUse) engine = do
         | otherwise =
             case placementLeaseRequirement placement of
                 NoExclusiveEffects -> drive
-                RequiresGenerationLease -> do
-                    held <- withRunLiveness store leaseName drive
-                    pure $ case held of
-                        Left failure ->
-                            exitWithNoRoleResources
-                                (noRoleResources plan)
-                                ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
-                        Right Nothing ->
-                            exitWithNoRoleResources
-                                (noRoleResources plan)
-                                ( "another live instance holds the exclusive generation lease for "
-                                    <> placementService placement
-                                    <> " in frame "
-                                    <> rolePlanFrame plan
-                                )
-                        Right (Just report) -> report
-    leaseName =
-        Text.filter
-            legalKeyCharacter
-            ("role-lease." <> placementService placement <> "." <> rolePlanFrame plan)
+                RequiresGenerationLease -> case roleLivenessName (placementService placement) (rolePlanFrame plan) of
+                    Left failure -> pure (leaseRefused failure)
+                    Right leaseName -> do
+                        held <- withRunLiveness store leaseName drive
+                        pure $ case held of
+                            Left failure -> leaseRefused failure
+                            Right Nothing ->
+                                exitWithNoRoleResources
+                                    (noRoleResources plan)
+                                    ( "another live instance holds the exclusive generation lease for "
+                                        <> placementService placement
+                                        <> " in frame "
+                                        <> rolePlanFrame plan
+                                    )
+                            Right (Just report) -> report
+    leaseRefused failure =
+        exitWithNoRoleResources
+            (noRoleResources plan)
+            ("the exclusive generation lease is unavailable: " <> protectedErrorMessage failure)
 
     requests = planRequests plan
 

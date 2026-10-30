@@ -9,12 +9,17 @@ the module dependency runs @Session -> Authority -> Reconcile@, so neither can
 name a type the other owns.  The evidence therefore lives here, in the one
 module both can import (§ EE).
 
-'PreparedGate' hides its constructor and has exactly one producer,
-'recordDurableUnknown', which /performs/ the compare-and-swap that publishes an
-operation's unknown phase.  The value cannot exist unless that exact durable
-write landed, so an adapter can no longer be reached with a caller-supplied
-attempt or journal version: the numbers on the gate are the ones the store
-returned.
+'PreparedGate' hides its constructor and exposes ordinary coordinate readers.
+The local production producer, @Lifecycle.Session.withPreparedGate@, checks the
+open journal permit, open session, operation registration, broker generation,
+live fence and recorded phase. It publishes the unknown phase transactionally,
+re-reads the committed operation record and only then mints the gate. The journal
+version comes from that record; the producer checks or selects the other
+coordinates.
+
+'recordDurableUnknown' remains a lower-level writer of caller-supplied fields.
+It performs the protected compare-and-swap and takes the gate's journal version
+from its result; it does not perform the session producer's admission checks.
 
 The gate carries the plan digest and operation key it was recorded under, and
 'HostBootstrap.Reconcile.withPreparedOperation' checks both against the plan
@@ -34,7 +39,7 @@ module HostBootstrap.Lifecycle.Prepared (
     preparedGateFields,
     preparedGateCommitment,
 
-    -- * Its sole producer
+    -- * The retained durable writer
     recordDurableUnknown,
 
     -- * Record encoding
@@ -44,7 +49,6 @@ module HostBootstrap.Lifecycle.Prepared (
 
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
-import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -78,12 +82,6 @@ import HostBootstrap.Protected (
 -- ---------------------------------------------------------------------------
 -- Record encoding
 
-{- | Records are stored as newline-free, tab-separated fields. Field values are
-constrained to the record-key alphabet plus a few punctuation characters, so a
-value can never introduce a separator and shift the meaning of the fields after
-it.
--}
-
 {- | The six fields a gate commits to, in the one order every committer uses.
 
 Two backends projected these fields independently and then hashed them
@@ -116,20 +114,29 @@ preparedGateCommitment gate =
             (map (frameWire . TextEncoding.encodeUtf8) ("hostbootstrap/prepared-gate/v1" : preparedGateFields gate))
         )
 
+{- | Join fields with tabs and encode their exact UTF-8 spelling.
+
+For a nonempty list of delimiter-free fields, 'decodeFields' recovers that list.
+This encoder does not validate fields: admission belongs to the producer. An
+empty list and a singleton empty field both encode as empty bytes.
+-}
 encodeFields :: [Text] -> ByteString
-encodeFields = ByteStringChar8.pack . Text.unpack . Text.intercalate "\t"
+encodeFields = TextEncoding.encodeUtf8 . Text.intercalate "\t"
 
+{- | Decode UTF-8 strictly and split on tabs without trimming.
+
+Invalid UTF-8 yields the record readers' existing empty-list failure sentinel.
+-}
 decodeFields :: ByteString -> [Text]
-decodeFields = Text.splitOn "\t" . Text.pack . ByteStringChar8.unpack
+decodeFields = either (const []) (Text.splitOn "\t") . TextEncoding.decodeUtf8'
 
-{- | Publish one operation's unknown phase and mint the gate from the version
-that write returned.
+{- | Publish caller-supplied phase, session, fence and attempt fields, then mint
+a gate with the journal version returned by that protected compare-and-swap.
 
-This is the only 'PreparedGate' producer.  It writes the exact four-field record
-layout the session recovery classifier reads back — phase, session, fence,
-attempt — so the bytes on disk and the indices on the gate cannot disagree, and
-it needs a 'ProtectedSession', which exists only inside an exclusive protected
-entry (§ EE clause 1).
+The caller supplies the record key and all other gate coordinates. This
+lower-level writer needs a 'ProtectedSession' inside an exclusive entry, but
+does not perform the journal-permit, session, registration, broker or fence
+checks of the local production producer, @Lifecycle.Session.withPreparedGate@.
 -}
 recordDurableUnknown ::
     ProtectedSession session ->

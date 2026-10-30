@@ -7,7 +7,6 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-
 from hostbootstrap import docker_ops, process, substrate
 from hostbootstrap.substrate import Arch, SubstrateName
 
@@ -49,7 +48,7 @@ def test_parse_arch_returns_none_for_an_unsupported_spelling() -> None:
 
 def test_unknown_arch_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform, "machine", lambda: "sparc")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="unsupported host architecture"):
         substrate._docker_arch()
 
 
@@ -62,7 +61,7 @@ def test_detect_apple_silicon(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_detect_darwin_intel_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Darwin")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="only supports Apple Silicon"):
         substrate.detect()
 
 
@@ -96,7 +95,7 @@ def test_detect_windows_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_detect_unknown_system(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Plan9")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="unsupported host platform"):
         substrate.detect()
 
 
@@ -118,8 +117,26 @@ def test_has_nvidia_gpu_from_marker(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     marker = tmp_path / "version"
     marker.touch()
     monkeypatch.setattr(substrate, "_NVIDIA_MARKERS", (marker,))
+    monkeypatch.setattr(substrate.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(substrate.shutil, "which", lambda _cmd: None)
 
     assert substrate._has_nvidia_gpu()
+
+
+def test_windows_gpu_detection_does_not_read_linux_markers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    marker = tmp_path / "version"
+    marker.touch()
+    monkeypatch.setattr(substrate, "_NVIDIA_MARKERS", (marker,))
+    monkeypatch.setattr(substrate.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(substrate.shutil, "which", lambda _cmd: None)
+
+    def _must_not_read(_path: Path) -> bool:
+        raise AssertionError("Windows must not inspect Linux GPU markers")
+
+    monkeypatch.setattr(Path, "exists", _must_not_read)
+    assert not substrate._has_nvidia_gpu()
 
 
 def test_has_nvidia_gpu_false_without_marker_or_smi(
@@ -127,8 +144,33 @@ def test_has_nvidia_gpu_false_without_marker_or_smi(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(substrate, "_NVIDIA_MARKERS", (tmp_path / "missing",))
+    monkeypatch.setattr(substrate.platform, "system", lambda: "Linux")
     monkeypatch.setattr(substrate.shutil, "which", lambda _cmd: None)
 
+    assert not substrate._has_nvidia_gpu()
+
+
+def test_gpu_probe_without_a_gpu_report_is_not_a_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(substrate.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(substrate.shutil, "which", lambda _cmd: "/bin/nvidia-smi")
+    monkeypatch.setattr(
+        substrate.process,
+        "probe",
+        lambda cmd, **_kwargs: process.CommandResult(tuple(cmd), 0, "No devices found", ""),
+    )
+    assert not substrate._has_nvidia_gpu()
+
+
+def test_gpu_probe_timeout_does_not_claim_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(substrate.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(substrate.shutil, "which", lambda _cmd: "/bin/nvidia-smi")
+    monkeypatch.setattr(
+        substrate.process,
+        "probe",
+        lambda cmd, **_kwargs: process.CommandTimedOut(tuple(cmd), 5),
+    )
     assert not substrate._has_nvidia_gpu()
 
 

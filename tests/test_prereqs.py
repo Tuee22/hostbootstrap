@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
-
 from hostbootstrap import prereqs, process
 from hostbootstrap.substrate import Arch, Substrate, SubstrateName
 
@@ -54,25 +54,42 @@ def test_have_uses_path_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_passwordless_sudo_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("root must not inspect or invoke sudo")
+
     monkeypatch.setattr(prereqs.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(prereqs, "_have", _must_not_run)
+    monkeypatch.setattr(prereqs.process, "probe", _must_not_run)
     prereqs._check_passwordless_sudo()
 
     monkeypatch.setattr(prereqs.os, "geteuid", lambda: 501, raising=False)
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="sudo is required"):
+    with pytest.raises(prereqs.PrereqError, match=r"sudo is required.*apt-get install sudo"):
         prereqs._check_passwordless_sudo()
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
 
     monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _never_ran(cmd))
-    with pytest.raises(prereqs.PrereqError, match="could not exec sudo"):
+    with pytest.raises(prereqs.PrereqError, match=r"could not exec sudo.*apt-get install sudo"):
         prereqs._check_passwordless_sudo()
 
     monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd, returncode=1))
-    with pytest.raises(prereqs.PrereqError, match="passwordless sudo"):
+    with pytest.raises(prereqs.PrereqError, match=r"passwordless sudo.*NOPASSWD.*sudoers\.d"):
         prereqs._check_passwordless_sudo()
 
-    monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd))
+    def _probe(cmd: Sequence[str], **kwargs: object) -> process.CommandOutcome:
+        assert list(cmd) == ["sudo", "-n", "true"]
+        assert kwargs["timeout"] == 5
+        return _ran(cmd)
+
+    monkeypatch.setattr(prereqs.process, "probe", _probe)
+    prereqs._check_passwordless_sudo()
+
+
+def test_passwordless_sudo_on_host_without_geteuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr(prereqs.os, "geteuid", raising=False)
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
+    monkeypatch.setattr(prereqs.process, "probe", lambda args, **_kwargs: _ran(args))
     prereqs._check_passwordless_sudo()
 
 
@@ -80,18 +97,20 @@ def test_ubuntu_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _patch_os_release(monkeypatch, tmp_path, 'ID="ubuntu"\nVERSION_ID="24.04"\n')
     prereqs._check_ubuntu_2404()
 
-    _patch_os_release(monkeypatch, tmp_path, 'ID="debian"\nVERSION_ID="12"\n')
-    with pytest.raises(prereqs.PrereqError, match="Ubuntu 24.04"):
-        prereqs._check_ubuntu_2404()
+    for distro, version in (("debian", "12"), ("ubuntu", "22.04"), ("debian", "24.04")):
+        _patch_os_release(monkeypatch, tmp_path, f'ID="{distro}"\nVERSION_ID="{version}"\n')
+        with pytest.raises(prereqs.PrereqError, match=r"Ubuntu 24\.04"):
+            prereqs._check_ubuntu_2404()
 
     _patch_os_release(monkeypatch, tmp_path, None)
     with pytest.raises(prereqs.PrereqError, match="cannot read"):
         prereqs._check_ubuntu_2404()
 
 
-def test_macos_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("machine", ["arm64", "aarch64", "ARM64", " AARCH64 "])
+def test_macos_checks(monkeypatch: pytest.MonkeyPatch, machine: str) -> None:
     monkeypatch.setattr(prereqs.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(prereqs.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(prereqs.platform, "machine", lambda: machine)
     prereqs._check_macos_arm64()
 
     monkeypatch.setattr(prereqs.platform, "machine", lambda: "x86_64")
@@ -112,11 +131,11 @@ def test_xcode_clt_check(monkeypatch: pytest.MonkeyPatch) -> None:
     prereqs._check_xcode_clt()
 
     monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _ran(cmd, returncode=1))
-    with pytest.raises(prereqs.PrereqError, match="Xcode"):
+    with pytest.raises(prereqs.PrereqError, match=r"Xcode.*xcode-select --install"):
         prereqs._check_xcode_clt()
 
     monkeypatch.setattr(prereqs.process, "probe", lambda cmd, **_k: _never_ran(cmd))
-    with pytest.raises(prereqs.PrereqError, match="xcode-select failed"):
+    with pytest.raises(prereqs.PrereqError, match=r"xcode-select failed.*xcode-select --install"):
         prereqs._check_xcode_clt()
 
 
@@ -125,7 +144,7 @@ def test_homebrew_check(monkeypatch: pytest.MonkeyPatch) -> None:
     prereqs._check_homebrew()
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="Homebrew"):
+    with pytest.raises(prereqs.PrereqError, match=r"Homebrew.*https://brew\.sh"):
         prereqs._check_homebrew()
 
 
@@ -134,7 +153,7 @@ def test_curl_check(monkeypatch: pytest.MonkeyPatch) -> None:
     prereqs._check_curl()
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="curl"):
+    with pytest.raises(prereqs.PrereqError, match=r"curl.*apt-get install curl"):
         prereqs._check_curl()
 
 
@@ -143,7 +162,7 @@ def test_winget_check(monkeypatch: pytest.MonkeyPatch) -> None:
     prereqs._check_winget()
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="winget"):
+    with pytest.raises(prereqs.PrereqError, match=r"winget.*Install App Installer"):
         prereqs._check_winget()
 
 
@@ -152,7 +171,7 @@ def test_powershell_check(monkeypatch: pytest.MonkeyPatch) -> None:
     prereqs._check_powershell()
 
     monkeypatch.setattr(prereqs, "_have", lambda _cmd: False)
-    with pytest.raises(prereqs.PrereqError, match="PowerShell"):
+    with pytest.raises(prereqs.PrereqError, match=r"PowerShell.*Enable Windows PowerShell"):
         prereqs._check_powershell()
 
 
@@ -160,7 +179,8 @@ def test_git_long_paths_enabled_reads_config(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(prereqs, "_have", lambda cmd: cmd == "git")
 
     def _probe(args: Sequence[str], **_kwargs: object) -> process.CommandOutcome:
-        assert list(args) == ["git", "config", "--get", "core.longpaths"]
+        assert list(args) == ["git", "config", "--type=bool", "--get", "core.longpaths"]
+        # Git normalizes a configured "1" (and every other true spelling).
         return _ran(args, stdout="true\n")
 
     monkeypatch.setattr(prereqs.process, "probe", _probe)
@@ -296,32 +316,108 @@ async def test_run_windows_long_path_advisory_never_aborts(
     assert not result.reboot_required
 
 
-async def test_run_doctor_dispatches_by_substrate(monkeypatch: pytest.MonkeyPatch) -> None:
-    linux = Substrate(SubstrateName.LINUX_CPU, Arch.AMD64)
-    apple = Substrate(SubstrateName.APPLE_SILICON, Arch.ARM64)
-    windows = Substrate(SubstrateName.WINDOWS_CPU, Arch.AMD64)
+@pytest.mark.parametrize(
+    ("name", "branch"),
+    [
+        (SubstrateName.LINUX_CPU, "linux"),
+        (SubstrateName.LINUX_GPU, "linux"),
+        (SubstrateName.APPLE_SILICON, "apple"),
+        (SubstrateName.WINDOWS_CPU, "windows"),
+        (SubstrateName.WINDOWS_GPU, "windows"),
+    ],
+)
+async def test_run_doctor_dispatches_by_substrate(
+    monkeypatch: pytest.MonkeyPatch, name: SubstrateName, branch: str
+) -> None:
+    detected = Substrate(name, Arch.ARM64 if name is SubstrateName.APPLE_SILICON else Arch.AMD64)
     calls: list[str] = []
 
-    async def _linux(_sub: Substrate) -> prereqs.DoctorResult:
+    async def _linux(sub: Substrate) -> prereqs.DoctorResult:
         calls.append("linux")
-        return prereqs.DoctorResult(linux, ("linux",))
+        return prereqs.DoctorResult(sub, ("linux",))
 
-    async def _apple(_sub: Substrate) -> prereqs.DoctorResult:
+    async def _apple(sub: Substrate) -> prereqs.DoctorResult:
         calls.append("apple")
-        return prereqs.DoctorResult(apple, ("apple",))
+        return prereqs.DoctorResult(sub, ("apple",))
 
-    async def _windows(_sub: Substrate) -> prereqs.DoctorResult:
+    async def _windows(sub: Substrate) -> prereqs.DoctorResult:
         calls.append("windows")
-        return prereqs.DoctorResult(windows, ("windows",))
+        return prereqs.DoctorResult(sub, ("windows",))
 
     monkeypatch.setattr(prereqs, "_run_linux", _linux)
     monkeypatch.setattr(prereqs, "_run_apple", _apple)
     monkeypatch.setattr(prereqs, "_run_windows", _windows)
 
-    assert (await prereqs.run_doctor(linux)).messages == ("linux",)
-    assert (await prereqs.run_doctor(apple)).messages == ("apple",)
-    assert (await prereqs.run_doctor(windows)).messages == ("windows",)
-    assert calls == ["linux", "apple", "windows"]
+    result = await prereqs.run_doctor(detected)
+    assert result.substrate is detected
+    assert result.messages == (branch,)
+    assert calls == [branch]
+
+
+async def test_run_doctor_refuses_an_unknown_substrate() -> None:
+    unknown = Substrate(cast(SubstrateName, "unknown"), Arch.AMD64)
+    with pytest.raises(AssertionError, match="Expected code to be unreachable"):
+        await prereqs.run_doctor(unknown)
+
+
+@pytest.mark.parametrize("check", ["_check_passwordless_sudo", "_check_xcode_clt"])
+def test_required_probe_timeout_reports_timeout(
+    monkeypatch: pytest.MonkeyPatch, check: str
+) -> None:
+    monkeypatch.setattr(prereqs.os, "geteuid", lambda: 501, raising=False)
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
+    monkeypatch.setattr(
+        prereqs.process, "probe", lambda args, **_kwargs: process.CommandTimedOut(tuple(args), 5)
+    )
+    with pytest.raises(prereqs.PrereqError, match="command timed out after 5s"):
+        getattr(prereqs, check)()
+
+
+def test_advisory_probe_timeout_does_not_abort(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(prereqs, "_have", lambda _cmd: True)
+    monkeypatch.setattr(
+        prereqs.process, "probe", lambda args, **_kwargs: process.CommandTimedOut(tuple(args), 5)
+    )
+    assert prereqs._git_long_paths_enabled() is None
+    assert not prereqs._windows_long_paths_policy_enabled()
+
+
+@pytest.mark.parametrize(
+    ("runner", "checks"),
+    [
+        (prereqs._run_linux, ("_check_ubuntu_2404", "_check_passwordless_sudo", "_check_curl")),
+        (
+            prereqs._run_apple,
+            (
+                "_check_macos_arm64",
+                "_check_xcode_clt",
+                "_check_passwordless_sudo",
+                "_check_homebrew",
+            ),
+        ),
+        (prereqs._run_windows, ("_check_winget", "_check_powershell", "_long_paths_status")),
+    ],
+)
+async def test_doctor_stops_at_first_missing_prerequisite(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Callable[[Substrate], Awaitable[prereqs.DoctorResult]],
+    checks: tuple[str, ...],
+) -> None:
+    calls: list[str] = []
+
+    def _refuse() -> None:
+        calls.append(checks[0])
+        raise prereqs.PrereqError("missing prerequisite")
+
+    def _must_not_run() -> None:
+        raise AssertionError("doctor must stop after its first refusal")
+
+    monkeypatch.setattr(prereqs, checks[0], _refuse)
+    for check in checks[1:]:
+        monkeypatch.setattr(prereqs, check, _must_not_run)
+    with pytest.raises(prereqs.PrereqError, match="missing prerequisite"):
+        await runner(Substrate(SubstrateName.LINUX_CPU, Arch.AMD64))
+    assert calls == [checks[0]]
 
 
 def test_run_doctor_sync_wraps_async(monkeypatch: pytest.MonkeyPatch) -> None:

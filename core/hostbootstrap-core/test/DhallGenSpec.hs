@@ -5,7 +5,7 @@
 
 module DhallGenSpec (tests) where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (void)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (sort)
@@ -25,6 +25,7 @@ import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
     CodecWitnessError (CodecTypeMismatch),
+    artifactName,
     artifactOf,
     autoCodecWitness,
     codecSchemaText,
@@ -39,12 +40,15 @@ import HostBootstrap.Dhall.Gen (
     schemaUnion,
  )
 import HostBootstrap.DocValidator (findRepoRoot)
+import Numeric.Natural (Natural)
 import SourceGuard (repoRelativePath)
 import System.Directory (doesPathExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+type DhallTypeError = Dhall.TypeCheck.TypeError Src Void
 
 -- | A relative @Core.dhall@ import, rendered with Dhall's portable '/' separators.
 corePath :: FilePath -> IO Text
@@ -242,6 +246,20 @@ registryCases =
         renderText generated @?= renderValue budgetCodec value
         decoded <- decodeText budgetCodec (renderText generated <> " : " <> schemaText generated)
         decoded @?= value
+    , testCase "artifact readers and Eq/Show retain their public behavior" $ do
+        let naturalCodec = codec @Natural
+            artifact = artifactOf "tiny" naturalCodec 2
+            expectedShow = "ConfigArtifact {artifactName = \"tiny\", schemaText = \"Natural\", renderText = \"2\"}"
+        artifactName artifact @?= "tiny"
+        schemaText artifact @?= "Natural"
+        renderText artifact @?= "2"
+        artifact @?= artifactOf "tiny" naturalCodec 2
+        assertBool "artifact names still participate in equality" (artifact /= artifactOf "other" naturalCodec 2)
+        assertBool "artifact rendering still participates in equality" (artifact /= artifactOf "tiny" naturalCodec 3)
+        show artifact @?= expectedShow
+        showsPrec 10 artifact "" @?= expectedShow
+        showsPrec 11 artifact "" @?= "(" ++ expectedShow ++ ")"
+        show (Just artifact) @?= "Just (" ++ expectedShow ++ ")"
     , testCase "schemaUnion lists every in-scope artifact" $ do
         let unionText = schemaUnion coreArtifacts
         mapM_
@@ -265,9 +283,17 @@ renderCases =
         pure ()
     , testCase "an over-budget deploy config fails to type-check (the assert fires)" $ withRoot $ \root -> do
         cp <- corePath root
-        let badText = deployConfigText cp (V.Budget 2 4 20) [V.PodResources 3 1 2 1 2]
-        result <- try (void (Dhall.inputExpr badText)) :: IO (Either SomeException ())
-        assertBool "over-budget deploy is rejected" (either (const True) (const False) result)
+        badText <- evaluate (deployConfigText cp (V.Budget 2 4 20) [V.PodResources 3 1 2 1 2])
+        T.count "_fitsBudget = assert :" badText @?= 1
+        result <- try (void (Dhall.inputExpr badText)) :: IO (Either DhallTypeError ())
+        case result of
+            Left failure -> case Dhall.TypeCheck.typeMessage failure of
+                Dhall.TypeCheck.AssertionFailed actual expected ->
+                    case (Dhall.Core.normalize actual, Dhall.Core.normalize expected) of
+                        (Dhall.Core.BoolLit False, Dhall.Core.BoolLit True) -> pure ()
+                        _ -> assertFailure ("expected False === True in _fitsBudget, got " ++ show failure)
+                _ -> assertFailure ("expected the _fitsBudget assertion failure, got " ++ show failure)
+            Right () -> assertFailure "the over-budget _fitsBudget assertion was accepted"
     ]
 
 secretRefCases :: [TestTree]
@@ -290,13 +316,24 @@ secretRefCases =
             ]
     , testCase "production schema omits and rejects TestPlaintext" $ do
         let production = codec @V.ProductionSecretRefWire
+            harness = codec @V.HarnessSecretRefWire
+            plaintext = V.HarnessTestPlaintext "hunter2"
         assertBool "production schema has no plaintext constructor" (not ("TestPlaintext" `T.isInfixOf` codecSchemaText production))
+        rendered <- evaluate (renderValue harness plaintext)
+        assertBool "the harness rendering contains TestPlaintext" ("TestPlaintext" `T.isInfixOf` rendered)
+        decodeText harness rendered >>= (@?= plaintext)
         result <-
             try
-                (decodeText production "< TestPlaintext = \"hunter2\" >") ::
-                IO (Either SomeException V.ProductionSecretRefWire)
-        assertBool "production decode rejects plaintext" (either (const True) (const False) result)
-    , testCase "scoped plaintext requires matching rank-2 harness authority" $ do
+                (decodeText production rendered) ::
+                IO (Either DhallTypeError V.ProductionSecretRefWire)
+        case result of
+            Left failure ->
+                assertBool
+                    "the production type error identifies TestPlaintext"
+                    ("TestPlaintext" `T.isInfixOf` T.pack (show failure))
+            Right value -> assertFailure ("production decoded harness plaintext: " ++ show value)
+    , testCase "scoped plaintext under harness authority views as TestPlaintext" $ do
+        -- CrossRunPlaintext.hs and HarnessConfigAsProduction.hs pin the refusals.
         withFixtureHarnessAuthority $
             \_project runAuthority ->
                 V.secretRefView
@@ -305,6 +342,20 @@ secretRefCases =
                         (V.TestSecret "hunter2")
                     )
                     @?= V.SecretTestPlaintext (V.TestSecret "hunter2")
+    , testCase "plaintext construction evaluates its harness authority" $
+        withFixtureHarnessAuthority $ \_project runAuthority -> do
+            let authority = V.harnessConfigAuthority runAuthority
+                missingAuthority =
+                    errorWithoutStackTrace "missing harness authority" `asTypeOf` authority
+            result <-
+                try
+                    ( void $
+                        evaluate (V.testPlaintextSecret missingAuthority (V.TestSecret "hunter2"))
+                    ) ::
+                    IO (Either ErrorCall ())
+            case result of
+                Left failure -> show failure @?= "missing harness authority"
+                Right () -> assertFailure "plaintext construction ignored the missing harness authority"
     , testCase "production wire decodes against Core.dhall's production type" $ withRoot $ \root -> do
         let admitted = codec @V.ProductionSecretRefWire
             value = V.ProductionVault (V.VaultRef "secret" "app/db" "password")
@@ -340,7 +391,7 @@ budgetCases =
                 Dhall.bool
                 ( "let C = "
                     <> cp
-                    <> " in C.fitsWithin { cpu = 4, memory = 8, storage = 20 }"
+                    <> " in C.`Budget/fitsWithin` { cpu = 4, memory = 8, storage = 20 }"
                     <> " [ { replicas = 2, cpuRequest = 1, cpuLimit = 1, memoryRequest = 1, memoryLimit = 2 } ]"
                 )
         ok @?= True
@@ -351,21 +402,19 @@ budgetCases =
                 Dhall.bool
                 ( "let C = "
                     <> cp
-                    <> " in C.fitsWithin { cpu = 2, memory = 4, storage = 20 }"
+                    <> " in C.`Budget/fitsWithin` { cpu = 2, memory = 4, storage = 20 }"
                     <> " [ { replicas = 3, cpuRequest = 1, cpuLimit = 2, memoryRequest = 1, memoryLimit = 4 } ]"
                 )
         ok @?= False
     , testCase "Budget/fitsWithin rejects a pod whose request exceeds its own limit" $ withRoot $ \root -> do
         cp <- corePath root
-        -- Comfortably inside the budget, and still not a workload: Kubernetes
-        -- refuses request > limit at apply time, so the config that would be
-        -- rejected there fails to type-check here instead.
+        -- Totals fit the budget; this Bool refuses the CPU request/limit pair.
         ok <-
             Dhall.input
                 Dhall.bool
                 ( "let C = "
                     <> cp
-                    <> " in C.fitsWithin { cpu = 64, memory = 64, storage = 64 }"
+                    <> " in C.`Budget/fitsWithin` { cpu = 64, memory = 64, storage = 64 }"
                     <> " [ { replicas = 1, cpuRequest = 4, cpuLimit = 1, memoryRequest = 1, memoryLimit = 1 } ]"
                 )
         ok @?= False
@@ -374,7 +423,7 @@ budgetCases =
         parts <-
             Dhall.input
                 (Dhall.list Dhall.auto)
-                ("let C = " <> cp <> " in C.split { cpu = 10, memory = 20, storage = 40 } [ 1, 1 ]") ::
+                ("let C = " <> cp <> " in C.`Budget/split` { cpu = 10, memory = 20, storage = 40 } [ 1, 1 ]") ::
                 IO [V.Budget]
         parts @?= [V.Budget 5 10 20, V.Budget 5 10 20]
     , testCase "Budget/split floors uneven weights and stays within budget" $ withRoot $ \root -> do
@@ -382,7 +431,25 @@ budgetCases =
         parts <-
             Dhall.input
                 (Dhall.list Dhall.auto)
-                ("let C = " <> cp <> " in C.split { cpu = 7, memory = 7, storage = 7 } [ 1, 2 ]") ::
+                ("let C = " <> cp <> " in C.`Budget/split` { cpu = 7, memory = 7, storage = 7 } [ 1, 2 ]") ::
                 IO [V.Budget]
         parts @?= [V.Budget 2 2 2, V.Budget 4 4 4]
+    , predicateCase "fitsWithin refuses CPU-only oversubscription" (V.Budget 2 64 20) [V.PodResources 1 3 3 1 1] False
+    , predicateCase "fitsWithin refuses memory-only oversubscription" (V.Budget 64 2 20) [V.PodResources 1 1 1 3 3] False
+    , predicateCase "fitsWithin accepts exact concurrent CPU and memory totals" (V.Budget 6 10 20) [V.PodResources 2 3 3 5 5] True
+    , predicateCase "fitsWithin checks CPU limits when requests fit the budget" (V.Budget 4 8 20) [V.PodResources 1 1 5 1 1] False
+    , predicateCase "fitsWithin checks memory limits when requests fit the budget" (V.Budget 4 8 20) [V.PodResources 1 1 1 1 9] False
+    , predicateCase "fitsWithin refuses a memory request above its own limit with CPU in order" (V.Budget 64 64 20) [V.PodResources 1 1 1 4 1] False
     ]
+  where
+    predicateCase :: String -> V.Budget -> [V.PodResources] -> Bool -> TestTree
+    predicateCase label budget pods expected =
+        testCase label $ withRoot $ \root -> do
+            cp <- corePath root
+            let expression =
+                    "let C = " <> cp <> " in C.fitsWithin ("
+                        <> renderValue (codec @V.Budget) budget
+                        <> ") ("
+                        <> renderValue (codec @[V.PodResources]) pods
+                        <> ")"
+            Dhall.input Dhall.bool expression >>= (@?= expected)

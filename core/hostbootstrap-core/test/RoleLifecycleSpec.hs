@@ -14,6 +14,7 @@ module RoleLifecycleSpec (tests, withRole, mutatingEffects, storeDraft) where
 import Control.Exception (AsyncException (ThreadKilled), throwIO)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (nub, sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Fixture
@@ -29,6 +30,7 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.RoleLifecycle
+import System.Directory (listDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -759,7 +761,93 @@ engineTests =
                                     other -> assertFailure ("could not reserve both instances: " <> show (describeAdmission (fst other), describeAdmission (snd other)))
                     either (assertFailure . activationErrorMessage) pure peerVerified
             either (assertFailure . activationErrorMessage) pure outerVerified
+    , testCase "case variants hold independent exclusive role leases" $
+        roleLeasePairCase ("Build", "frame") ("build", "frame")
+    , testCase "literal underscores and escaped capitals hold independent role leases" $
+        roleLeasePairCase ("a_b", "frame") ("aB", "frame")
+    , testCase "service and frame tuple boundaries cannot collide" $
+        roleLeasePairCase ("a.b", "c") ("a", "b.c")
+    , testCase "invalid role lease names refuse before callbacks or record changes" $
+        mapM_ roleLeaseRefusalCase
+            [ ("a/b", "frame")
+            , ("a:b", "frame")
+            , (".service", "frame")
+            , ("service", "frame/child")
+            , ("service", Text.replicate 110 "B")
+            ]
     ]
+
+-- | Both plans are genuinely signed and admitted in one store. The second
+-- lifecycle runs while the first holds its kernel lease, so an aliased name
+-- fails at the real exclusion rather than passing through sequential releases.
+roleLeasePairCase :: (Text, Text) -> (Text, Text) -> IO ()
+roleLeasePairCase (firstService, firstFrame) (secondService, secondFrame) = do
+    let manifest service frame =
+            baseManifest
+                { manifestService = service
+                , manifestFrame = frame
+                , manifestPermittedEffects = mutatingEffects
+                , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
+                }
+        first = manifest firstService firstFrame
+        second = manifest secondService secondFrame
+        peerMeasurement = baseMeasurement{measuredInstance = KubernetesInstance "pod-uid-2" 0}
+    withBrokerManifests (nub [first, second]) $ \broker store key -> do
+        firstGrant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker first
+        secondGrant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker second
+        outerVerified <- verifyRuntimeRoleActivation key store first first firstGrant baseMeasurement $ \outerActivation ->
+            withVerifiedDraft outerActivation storeDraft $ \outerDraft -> do
+                peerVerified <- verifyRuntimeRoleActivation key store second second secondGrant peerMeasurement $ \peerActivation ->
+                    withVerifiedDraft peerActivation storeDraft $ \peerDraft ->
+                        entry store $ \session -> do
+                            outerReserved <- withRoleLifecycleAdmission session outerActivation outerDraft
+                            peerReserved <- withRoleLifecycleAdmission session peerActivation peerDraft
+                            case (outerReserved, peerReserved) of
+                                (RoleAdmissionReserved outerAdmission, RoleAdmissionReserved peerAdmission) -> do
+                                    outerOpened <- withRuntimeRolePlan session outerActivation outerDraft outerAdmission $ \outerPlan _ outerPlacement outerCursor -> do
+                                        peerOpened <- withRuntimeRolePlan session peerActivation peerDraft peerAdmission $ \peerPlan _ peerPlacement peerCursor -> do
+                                            peer <- newIORef Nothing
+                                            outerTrace <- newIORef []
+                                            outerReport <-
+                                                runRoleLifecycle store outerPlan outerPlacement outerCursor $
+                                                    (tracingEngine outerTrace)
+                                                        { engineServe = \_ -> do
+                                                            peerTrace <- newIORef []
+                                                            report <- runRoleLifecycle store peerPlan peerPlacement peerCursor (tracingEngine peerTrace)
+                                                            steps <- readIORef peerTrace
+                                                            writeIORef peer (Just (report, steps))
+                                                            pure ServeCompleted
+                                                        }
+                                            assertBool (renderRoleExitReport outerReport) (roleExitReportOk outerReport)
+                                            observed <- readIORef peer
+                                            case observed of
+                                                Nothing -> assertFailure "the independent peer never ran"
+                                                Just (report, steps) -> do
+                                                    assertBool (renderRoleExitReport report) (roleExitReportOk report)
+                                                    assertBool "the peer acquired and served while the first lease was held" ("acquire:store" `elem` steps && "serve:store" `elem` steps)
+                                        either (assertFailure . roleLifecycleErrorMessage) pure peerOpened
+                                    either (assertFailure . roleLifecycleErrorMessage) pure outerOpened
+                                other -> assertFailure ("could not reserve both identities: " <> show (describeAdmission (fst other), describeAdmission (snd other)))
+                either (assertFailure . activationErrorMessage) pure peerVerified
+        either (assertFailure . activationErrorMessage) pure outerVerified
+
+roleLeaseRefusalCase :: (Text, Text) -> IO ()
+roleLeaseRefusalCase (service, frame) =
+    withRoleFrom baseManifest{manifestService = service, manifestFrame = frame} mutatingEffects storeDraft $ \store plan placement cursor -> do
+        before <- recordBytes store
+        trace <- newIORef []
+        report <- runRoleLifecycle store plan placement cursor (tracingEngine trace)
+        exitTurnedAtPhase report @?= Prereq
+        exitOwnedResources report @?= []
+        exitUnknownResources report @?= []
+        assertBool "the typed lease refusal remains visible" (maybe False (Text.isInfixOf "exclusive generation lease") (exitReason report))
+        readIORef trace >>= (@?= [])
+        recordBytes store >>= (@?= before)
+  where
+    recordBytes store = do
+        let directory = protectedStoreRoot store </> "records"
+        files <- sort <$> listDirectory directory
+        mapM (\name -> (,) name <$> ByteString.readFile (directory </> name)) files
 
 -- ---------------------------------------------------------------------------
 -- Engine fixtures
@@ -825,9 +913,21 @@ withActivationFor ::
       IO result
     ) ->
     IO result
-withActivationFor effects draft use =
+withActivationFor = withActivationFrom baseManifest
+
+withActivationFrom ::
+    ActivationManifest ->
+    [Text] ->
+    RolePlanDraft ->
+    ( forall scope planDigest specDigest binaryDigest frame revision instanceId.
+      ProtectedStore ->
+      VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
+      IO result
+    ) ->
+    IO result
+withActivationFrom base effects draft use =
     let manifest =
-            baseManifest
+            base
                 { manifestPermittedEffects = effects
                 , manifestRolePlanDigest = rolePlanDraftDigest draft
                 }
@@ -909,8 +1009,22 @@ withRole ::
       IO ()
     ) ->
     IO ()
-withRole effects draft use =
-    withActivationFor effects draft $ \store activation ->
+withRole = withRoleFrom baseManifest
+
+withRoleFrom ::
+    ActivationManifest ->
+    [Text] ->
+    RolePlanDraft ->
+    ( forall scope specDigest planId configId secretDigest frame revision instanceId service permittedEffects.
+      ProtectedStore ->
+      RolePlan scope specDigest planId configId secretDigest frame revision instanceId ->
+      VerifiedServicePlacement scope specDigest planId frame revision instanceId service permittedEffects ->
+      RoleCursor scope planId frame instanceId PrereqPhase ->
+      IO ()
+    ) ->
+    IO ()
+withRoleFrom manifest effects draft use =
+    withActivationFrom manifest effects draft $ \store activation ->
         withVerifiedDraft activation draft $ \verified -> do
             reserved <- entry store (\session -> withRoleLifecycleAdmission session activation verified)
             case reserved of
@@ -967,7 +1081,18 @@ withBroker ::
       IO result
     ) ->
     IO result
-withBroker manifest use = case activationSigningPolicy [manifest] of
+withBroker manifest = withBrokerManifests [manifest]
+
+withBrokerManifests ::
+    [ActivationManifest] ->
+    ( forall scope brokerGeneration verb.
+      ActivationBroker scope brokerGeneration verb ->
+      ProtectedStore ->
+      ActivationVerificationKey ->
+      IO result
+    ) ->
+    IO result
+withBrokerManifests manifests use = case activationSigningPolicy manifests of
     Left failure -> assertFailure (activationErrorMessage failure)
     Right policy ->
         withSystemTempDirectory "hostbootstrap-role-broker" $ \directory -> do

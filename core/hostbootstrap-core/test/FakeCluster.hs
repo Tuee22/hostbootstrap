@@ -59,12 +59,15 @@ module FakeCluster (
 
 import Control.Exception (bracket_)
 import Control.Monad (forM_, when)
+import qualified Data.ByteString as ByteString
 import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (setEnv, unsetEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
-import System.IO (hPutStrLn, readFile', stderr)
+import System.IO (Handle, readFile', stderr, stdout)
 
 -- ---------------------------------------------------------------------------
 -- Entering the role
@@ -250,11 +253,11 @@ fixtureKubeconfig name = "apiVersion: v1\nclusters: [" <> name <> "]\n"
 runFakeClusterClient :: FilePath -> [String] -> IO ()
 runFakeClusterClient root argv = case argv of
     -- The cluster driver
-    ["--quiet", "get", "clusters"] -> readClusters root >>= mapM_ putStrLn
+    ["--quiet", "get", "clusters"] -> readClusters root >>= mapM_ emitLine
     ["--quiet", "get", "kubeconfig", "--name", name] -> do
         present <- readClusters root
         if name `elem` present
-            then putStr (fixtureKubeconfig name)
+            then writeUtf8 stdout (fixtureKubeconfig name)
             else refuse ("no cluster named " <> name)
     ("--quiet" : "create" : "cluster" : "--name" : name : rest) -> do
         present <- readClusters root
@@ -292,8 +295,8 @@ runFakeClusterClient root argv = case argv of
                 held <- readNodes root
                 relays <- readRelays root
                 case (lookup name held, [relay | relay <- relays, relayName relay == name]) of
-                    (Just node, _) -> putStrLn (nodeIdentity node)
-                    (Nothing, [relay]) -> putStrLn (relayIdentity relay)
+                    (Just node, _) -> emitLine (nodeIdentity node)
+                    (Nothing, [relay]) -> emitLine (relayIdentity relay)
                     (Nothing, []) -> pure ()
                     _ -> refuse "duplicate relay names"
                 replaceIfArmed root "listing" name
@@ -301,7 +304,7 @@ runFakeClusterClient root argv = case argv of
                 Just identity -> do
                     held <- readNodes root
                     relays <- readRelays root
-                    mapM_ putStrLn ([nodeIdentity node | (_, node) <- held, nodeIdentity node == identity] <> [relayIdentity relay | relay <- relays, relayIdentity relay == identity])
+                    mapM_ emitLine ([nodeIdentity node | (_, node) <- held, nodeIdentity node == identity] <> [relayIdentity relay | relay <- relays, relayIdentity relay == identity])
                 Nothing -> refuse ("unrecognized container filter " <> filterArg)
     ("container" : "run" : rest) -> createRelay root rest
     ["container", "rm", "--force", identity] -> do
@@ -309,7 +312,7 @@ runFakeClusterClient root argv = case argv of
         if any ((== identity) . relayIdentity) relays
             then do
                 writeRelays root (filter ((/= identity) . relayIdentity) relays)
-                putStrLn identity
+                emitLine identity
                 recordMutation root "relay-delete"
             else refuse ("no such relay " <> identity)
     ["inspect", "--format", template, identity]
@@ -322,11 +325,11 @@ runFakeClusterClient root argv = case argv of
     ["inspect", "-f", "{{.Id}}", reference] ->
         nodeReferenced root reference >>= \case
             Nothing -> refuse ("no such container " <> reference)
-            Just node -> putStrLn (nodeIdentity node)
+            Just node -> emitLine (nodeIdentity node)
     ["inspect", "-f", "{{.State.Running}}", reference] ->
         nodeReferenced root reference >>= \case
             Nothing -> refuse ("no such container " <> reference)
-            Just node -> putStrLn (if nodeRunning node then "true" else "false")
+            Just node -> emitLine (if nodeRunning node then "true" else "false")
     ("update" : rest)
         | not (null rest) -> do
             let identifier = last rest
@@ -349,10 +352,10 @@ runFakeClusterClient root argv = case argv of
             then do
                 removeFile (apiUnreadyPath root)
                 refuse "the control plane is not ready yet"
-            else putStr "ok"
+            else writeUtf8 stdout "ok"
     ["--kubeconfig=/dev/stdin", "get", "nodes", "-o", "json"] -> do
         held <- readNodes root
-        putStrLn (nodeDocument [(name, nodeRunning node) | (name, node) <- held])
+        emitLine (nodeDocument [(name, nodeRunning node) | (name, node) <- held])
         case held of
             [] -> pure ()
             ((name, _) : _) -> replaceIfArmed root "nodes" name
@@ -362,29 +365,29 @@ runFakeClusterClient root argv = case argv of
             installed = root </> ("helm-release-" <> release)
         ifM
             (doesFileExist noChanges)
-            (removeFile noChanges >> putStrLn "no changes")
+            (removeFile noChanges >> emitLine "no changes")
             ( ifM
                 (doesFileExist malformed)
                 ( do
                     removeFile malformed
-                    putStrLn ("Release \"" <> release <> "\" does not exist. Installing it now.")
-                    putStrLn ("NAME: " <> release)
-                    putStrLn "STATUS: deployed"
-                    putStrLn "REVISION: 1"
+                    emitLine ("Release \"" <> release <> "\" does not exist. Installing it now.")
+                    emitLine ("NAME: " <> release)
+                    emitLine "STATUS: deployed"
+                    emitLine "REVISION: 1"
                 )
                 ( do
                     alreadyInstalled <- doesFileExist installed
                     writeFile installed "installed\n"
                     if alreadyInstalled
-                        then putStrLn ("Release \"" <> release <> "\" has been upgraded")
+                        then emitLine ("Release \"" <> release <> "\" has been upgraded")
                         else do
-                            putStrLn ("Release \"" <> release <> "\" does not exist. Installing it now.")
-                            putStrLn ("NAME: " <> release)
-                            putStrLn "LAST DEPLOYED: Thu Jan  1 00:00:00 1970"
-                            putStrLn "NAMESPACE: fixture"
-                            putStrLn "STATUS: deployed"
-                            putStrLn "REVISION: 1"
-                            putStrLn "DESCRIPTION: Install complete"
+                            emitLine ("Release \"" <> release <> "\" does not exist. Installing it now.")
+                            emitLine ("NAME: " <> release)
+                            emitLine "LAST DEPLOYED: Thu Jan  1 00:00:00 1970"
+                            emitLine "NAMESPACE: fixture"
+                            emitLine "STATUS: deployed"
+                            emitLine "REVISION: 1"
+                            emitLine "DESCRIPTION: Install complete"
                 )
             )
     ["--kubeconfig", _kubeconfig, "rollout", "status", "--namespace", _namespace, target, "--timeout=5m"]
@@ -393,22 +396,22 @@ runFakeClusterClient root argv = case argv of
             ifM
                 (doesFileExist refusal)
                 (removeFile refusal >> refuse "deployment did not become ready")
-                (putStrLn "deployment successfully rolled out")
+                (emitLine "deployment successfully rolled out")
     ["--kubeconfig", _kubeconfig, "uninstall", release, "--namespace", _namespace, "--wait"] -> do
         let malformed = root </> "helm-cleanup-malformed"
             installed = root </> ("helm-release-" <> release)
         ifM
             (doesFileExist malformed)
-            (removeFile malformed >> putStrLn "unfamiliar uninstall success")
+            (removeFile malformed >> emitLine "unfamiliar uninstall success")
             ( do
                 present <- doesFileExist installed
                 if present
-                    then removeFile installed >> putStrLn ("release \"" <> release <> "\" uninstalled")
+                    then removeFile installed >> emitLine ("release \"" <> release <> "\" uninstalled")
                     else refuse ("release " <> release <> " not found")
             )
     ["--kubeconfig", _kubeconfig, "status", release, "--namespace", _namespace] -> do
         present <- doesFileExist (root </> ("helm-release-" <> release))
-        if present then putStrLn "deployed" else refuse ("release " <> release <> " not found")
+        if present then emitLine "deployed" else refuse ("release " <> release <> " not found")
     _ -> refuse ("the cluster fixture does not recognize " <> show argv)
 
 createRelay :: FilePath -> [String] -> IO ()
@@ -425,7 +428,7 @@ createRelay root arguments = case parseRelayRun arguments of
                 writeFile (root </> "next-host-port") (show (nextPort + length listeners))
                 writeRelays root (FakeRelay identity name labels mappings : relays)
                 recordMutation root "relay-create"
-                putStrLn identity
+                emitLine identity
   where
     padNumber number = replicate (8 - length rendered) '0' <> rendered
       where
@@ -457,10 +460,10 @@ parseRelayRun _ = Left "malformed relay run prefix"
 
 renderRelay :: FakeRelay -> IO ()
 renderRelay relay = do
-    putStrLn (relayIdentity relay)
-    putStrLn ('/' : relayName relay)
-    mapM_ (putStrLn . labelValue) ["io.hostbootstrap.owner", "io.hostbootstrap.cluster", "io.hostbootstrap.generation", "io.hostbootstrap.operation", "io.hostbootstrap.spec"]
-    putStrLn
+    emitLine (relayIdentity relay)
+    emitLine ('/' : relayName relay)
+    mapM_ (emitLine . labelValue) ["io.hostbootstrap.owner", "io.hostbootstrap.cluster", "io.hostbootstrap.generation", "io.hostbootstrap.operation", "io.hostbootstrap.spec"]
+    emitLine
         ( "{"
             <> intercalate "," [show (show listener <> "/tcp") <> ":[{\"HostIp\":" <> show address <> ",\"HostPort\":" <> show (show hostPort) <> "}]" | (listener, address, hostPort) <- relayMappings relay]
             <> "}"
@@ -574,8 +577,16 @@ replaceIfArmed root verb name = do
 
 refuse :: String -> IO ()
 refuse reason = do
-    hPutStrLn stderr reason
+    writeUtf8 stderr (reason <> "\n")
     exitWith (ExitFailure 1)
 
 ifM :: (Monad monad) => monad Bool -> monad value -> monad value -> monad value
 ifM condition whenTrue whenFalse = condition >>= \answer -> if answer then whenTrue else whenFalse
+
+-- Protocol fixtures emit UTF-8 bytes with their declared LF terminators.
+-- Text handles translate newlines on Windows and would change the wire.
+writeUtf8 :: Handle -> String -> IO ()
+writeUtf8 handle = ByteString.hPut handle . TextEncoding.encodeUtf8 . Text.pack
+
+emitLine :: String -> IO ()
+emitLine = writeUtf8 stdout . (<> "\n")

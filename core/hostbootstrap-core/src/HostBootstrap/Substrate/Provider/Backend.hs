@@ -1219,49 +1219,49 @@ withOwnedProviderTransaction ::
       IO (Either ProviderOwnershipFault result)
     ) ->
     IO (Either ProviderOwnershipFault result)
-withOwnedProviderTransaction _cfg (DirectHostBackendSpec{}) _owner _transaction =
-    pure
-        ( Left
-            ( ProviderOwnershipReport
-                ( ProviderCommandUnrun
-                    "the Direct realization owns no provider instance to enter"
-                )
-            )
+withOwnedProviderTransaction _cfg spec owner transaction =
+    case providerOwnershipAddress spec owner of
+        Left fault -> pure (Left fault)
+        Right (stateDirectory, key, owned) -> do
+            opened <- openProtectedStore stateDirectory
+            case opened of
+                Left failure -> pure (Left (ProviderOwnershipStore failure))
+                Right store -> do
+                    outcome <-
+                        withProtectedEntry
+                            store
+                            (\session -> Right <$> transaction session key owned)
+                    pure (either (Left . ProviderOwnershipStore) id outcome)
+
+-- | Admit the complete instance address without opening its store or a driver.
+providerOwnershipAddress ::
+    ProviderBackendSpec ->
+    Text ->
+    Either ProviderOwnershipFault (FilePath, RecordKey, OwnedProviderInstance)
+providerOwnershipAddress (DirectHostBackendSpec{}) _owner =
+    Left
+        ( ProviderOwnershipReport
+            (ProviderCommandUnrun "the Direct realization owns no provider instance to enter")
         )
-withOwnedProviderTransaction _cfg (LimaBackendSpec{}) _owner _transaction =
-    pure
-        ( Left
-            ( ProviderOwnershipReport
-                ( ProviderCommandUnrun
-                    "the Lima realization is journaled by the plan interpreter rather than the Incus ownership store"
-                )
-            )
+providerOwnershipAddress (LimaBackendSpec{}) _owner =
+    Left
+        ( ProviderOwnershipReport
+            (ProviderCommandUnrun "the Lima realization is journaled by the plan interpreter rather than the Incus ownership store")
         )
-withOwnedProviderTransaction
-    _cfg
+providerOwnershipAddress
     (IncusBackendSpec name image guardPrefix _executable stateDirectory cpu memory storage)
-    owner
-    transaction = do
-        let owned =
-                OwnedProviderInstance name image guardPrefix (ProviderSizing cpu memory storage) owner
-        case ownedInstanceRecordKey owned of
-            Left failure -> pure (Left (ProviderOwnershipStore failure))
-            Right key -> do
-                opened <- openProtectedStore stateDirectory
-                case opened of
-                    Left failure -> pure (Left (ProviderOwnershipStore failure))
-                    Right store -> do
-                        outcome <-
-                            withProtectedEntry
-                                store
-                                (\session -> Right <$> transaction session key owned)
-                        pure (either (Left . ProviderOwnershipStore) id outcome)
+    owner = do
+        let owned = OwnedProviderInstance name image guardPrefix (ProviderSizing cpu memory storage) owner
+        key <- either (Left . ProviderOwnershipStore) Right (ownedInstanceRecordKey owned)
+        pure (stateDirectory, key, owned)
 
 {- | Run one owned-share transaction inside the instance's own store.
 
 The share's record lives beside the instance's, under its own key, because a
 share is an object of its own: a record that meant two things could not tell a
-resumed entry which of them it had published.
+resumed entry which of them it had published. Admit the complete share address
+before the instance transaction can create store metadata; that transaction
+then attaches exactly the share and key admitted here.
 -}
 withOwnedShareTransaction ::
     HostConfig ->
@@ -1273,11 +1273,15 @@ withOwnedShareTransaction ::
     FilePath ->
     IO (Either ProviderOwnershipFault ProviderShareOutcome)
 withOwnedShareTransaction cfg spec owner device binding source target =
-    withOwnedProviderTransaction cfg spec owner $ \session _key owned -> do
-        let share = OwnedProviderShare owned device source target binding
-        case ownedShareRecordKey share of
-            Left failure -> pure (Left (ProviderOwnershipStore failure))
-            Right shareKey -> attachOwnedShare cfg session shareKey share
+    case providerOwnershipAddress spec owner of
+        Left fault -> pure (Left fault)
+        Right (_, _, owned) ->
+            let share = OwnedProviderShare owned device source target binding
+             in case ownedShareRecordKey share of
+                    Left failure -> pure (Left (ProviderOwnershipStore failure))
+                    Right shareKey ->
+                        withOwnedProviderTransaction cfg spec owner $ \session _key _owned ->
+                            attachOwnedShare cfg session shareKey share
 
 {- | The five shapes a refused ownership transaction takes at a provider call.
 

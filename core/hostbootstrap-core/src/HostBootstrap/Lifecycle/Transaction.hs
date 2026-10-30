@@ -47,6 +47,7 @@ module HostBootstrap.Lifecycle.Transaction (
     TransactionDescriptor (..),
     coordinatorKey,
     encodeCoordinator,
+    decodeCoordinator,
     stampTarget,
     TransactionError (..),
     transactionErrorMessage,
@@ -75,6 +76,8 @@ import HostBootstrap.Protected (
     mkRecordName,
     readProtectedRecord,
     recordKeyText,
+    recordNameIdentity,
+    recordTupleSeparator,
     recordVersionWord,
  )
 import Numeric (readHex, showHex)
@@ -121,12 +124,18 @@ decodeStampedTarget raw =
             | header == targetMagic ->
                 Left (TransactionMalformed "a stamped target has no transaction id")
             | (targetMagic <> "\t") `ByteString.isPrefixOf` header ->
-                case ByteStringChar8.readInteger (ByteString.drop (ByteString.length targetMagic + 1) header) of
-                    Just (value, remainder)
-                        | ByteString.null remainder && value > 0 ->
-                            Right (Just (fromInteger value), ByteString.drop 1 rest)
-                    _ -> Left (TransactionMalformed "a stamped target has an invalid transaction id")
+                case TextEncoding.decodeUtf8' (ByteString.drop (ByteString.length targetMagic + 1) header) of
+                    Left _ -> invalidId
+                    Right number -> case readWord number of
+                        Just value | value > 0 ->
+                            let payload = ByteString.drop 1 rest
+                             in if stampTarget value payload == raw
+                                    then Right (Just value, payload)
+                                    else Left (TransactionMalformed "a stamped target is not canonical")
+                        _ -> invalidId
             | otherwise -> Right (Nothing, raw)
+  where
+    invalidId = Left (TransactionMalformed "a stamped target has an invalid transaction id")
 
 readTransactionRecord ::
     ProtectedSession session ->
@@ -317,8 +326,11 @@ ensureTransactionCoordinator session plan =
                         Left failure -> pure (Left failure)
                         Right (CoordinatorIdle _) ->
                             pure (Right (TransactionPermit (protectedRecordVersion record)))
-                        Right (CoordinatorApplying descriptor) ->
-                            recoverApplying session key record descriptor
+                        Right (CoordinatorApplying descriptor)
+                            | descriptorPlan descriptor /= plan ->
+                                pure (Left (TransactionMalformed "a descriptor names another coordinator"))
+                            | otherwise ->
+                                recoverApplying session key record descriptor
 
 runLifecycleTransaction ::
     ProtectedSession session ->
@@ -440,7 +452,7 @@ applyTarget ::
     Word64 ->
     TransactionTarget ->
     IO (Either TransactionError ())
-applyTarget session _ target | isProductionTarget (targetRole target) = applyProductionTarget session target
+applyTarget session sequenceNumber target | isProductionTarget (targetRole target) = applyProductionTarget session sequenceNumber target
 applyTarget session sequenceNumber target = do
     observed <- readTransactionRecord session (targetKey target)
     case observed of
@@ -467,8 +479,8 @@ applyTarget session sequenceNumber target = do
 isProductionTarget :: TargetRole -> Bool
 isProductionTarget role = role `elem` [ProductionIntentTarget, ProductionLeaseTarget, ProductionModeTarget]
 
-applyProductionTarget :: ProtectedSession session -> TransactionTarget -> IO (Either TransactionError ())
-applyProductionTarget session target = do
+applyProductionTarget :: ProtectedSession session -> Word64 -> TransactionTarget -> IO (Either TransactionError ())
+applyProductionTarget session sequenceNumber target = do
     observed <- readProtectedRecord session (targetKey target)
     case observed of
         Left failure -> pure (Left (TransactionStoreFailure failure))
@@ -485,7 +497,7 @@ applyProductionTarget session target = do
                         else do
                             written <- compareAndSwapProtectedRecord session (targetKey target) (ExpectVersion (protectedRecordVersion record)) (targetDesiredPayload target)
                             pure (either (Left . TransactionStoreFailure) (const (Right ())) written)
-            _ -> pure (Left (TransactionTargetConflict (recordKeyText (targetKey target)) 0))
+            _ -> pure (Left (TransactionTargetConflict (recordKeyText (targetKey target)) sequenceNumber))
   where
     alreadyApplied _ Nothing = targetRole target == ProductionModeTarget
     alreadyApplied version (Just record) =
@@ -527,14 +539,17 @@ validProductionTargets targets =
     case filter (isProductionTarget . targetRole) targets of
         [] -> True
         raw -> case [recordKeyText (targetKey target) | target <- raw, targetRole target == ProductionModeTarget] of
-            [mode] | Just project <- Text.stripPrefix "mode." mode, not (Text.null project) -> all (valid project) raw
+            [mode]
+                | Just project <- Text.stripPrefix "mode." mode
+                , Right canonical <- mkRecordName (recordNameIdentity project)
+                , canonical == project -> all (valid project) raw
             _ -> False
   where
     valid project target =
         let key = recordKeyText (targetKey target)
             expectedKey = case targetRole target of
                 ProductionIntentTarget -> "reverse-root." <> project <> ".production"
-                ProductionLeaseTarget -> "lease." <> project <> ".production"
+                ProductionLeaseTarget -> "lease." <> project <> recordTupleSeparator <> "production"
                 ProductionModeTarget -> "mode." <> project
                 _ -> ""
             payloadValid = ByteString.null (targetDesiredPayload target) == (targetRole target == ProductionModeTarget)
@@ -575,7 +590,7 @@ targetMatchesPlan plan target =
              in case targetRole target of
                     role | isProductionTarget role -> True
                     ProjectTarget -> key == "project." <> digest
-                    SessionTarget -> ("session." <> digest <> ".") `Text.isPrefixOf` key
+                    SessionTarget -> ("session." <> digest <> recordTupleSeparator) `Text.isPrefixOf` key
                     OperationTarget ->
                         ("op." <> Text.pack (show (Hash.hash (TextEncoding.encodeUtf8 plan) :: Hash.Digest Hash.SHA256)) <> ".")
                             `Text.isPrefixOf` key
@@ -601,9 +616,19 @@ encodeCoordinator state = case state of
                 : map encodeTarget (descriptorTargets descriptor)
             )
 
+-- | Decode canonical coordinator data without minting a permit or applying
+-- targets. The decoded plan text is not an authenticated runtime identity.
 decodeCoordinator :: ByteString -> Either TransactionError CoordinatorState
-decodeCoordinator raw =
-    case map decodeLine (ByteStringChar8.lines raw) of
+decodeCoordinator raw = do
+    fields <- traverse decodeLine (ByteStringChar8.lines raw)
+    decoded <- decodeCoordinatorFields fields
+    if encodeCoordinator decoded == raw
+        then Right decoded
+        else Left (TransactionMalformed "the coordinator record is not canonical")
+
+decodeCoordinatorFields :: [[Text]] -> Either TransactionError CoordinatorState
+decodeCoordinatorFields fields =
+    case fields of
         [["transaction-v1", "idle", sequenceText]] ->
             maybe
                 (Left (TransactionMalformed "the Idle sequence is invalid"))
@@ -668,10 +693,12 @@ decodeTarget ["target", rawRole, rawKey, rawExpectation, rawPayload] = do
 decodeTarget _ = Left (TransactionMalformed "a target descriptor is malformed")
 
 encodeLine :: [Text] -> ByteString
-encodeLine = ByteStringChar8.pack . Text.unpack . Text.intercalate "\t"
+encodeLine = TextEncoding.encodeUtf8 . Text.intercalate "\t"
 
-decodeLine :: ByteString -> [Text]
-decodeLine = Text.splitOn "\t" . Text.pack . ByteStringChar8.unpack
+decodeLine :: ByteString -> Either TransactionError [Text]
+decodeLine raw = case TextEncoding.decodeUtf8' raw of
+    Left _ -> Left (TransactionMalformed "transaction text is not UTF-8")
+    Right decoded -> Right (Text.splitOn "\t" decoded)
 
 kindText :: TxnKind -> Text
 kindText kind = case kind of
@@ -752,9 +779,19 @@ showWord :: Word64 -> Text
 showWord = Text.pack . show
 
 readWord :: Text -> Maybe Word64
-readWord raw = case reads (Text.unpack raw) of
-    [(value, "")] -> Just value
-    _ -> Nothing
+readWord raw
+    | Text.null raw || Text.length raw > 20 = Nothing
+    | not (Text.all asciiDigit raw) = Nothing
+    | raw /= "0" && "0" `Text.isPrefixOf` raw = Nothing
+    | otherwise = case (reads (Text.unpack raw) :: [(Integer, String)]) of
+        [(value, "")]
+            | value >= 0
+            , value <= toInteger (maxBound :: Word64)
+            , let word = fromInteger value
+            , showWord word == raw -> Just word
+        _ -> Nothing
+  where
+    asciiDigit character = character >= '0' && character <= '9'
 
 encodeHex :: ByteString -> Text
 encodeHex = Text.pack . concatMap byteHex . ByteString.unpack

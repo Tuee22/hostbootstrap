@@ -3,8 +3,17 @@ module CoerceProductionClosureAuthorization where
 import Data.Coerce (coerce)
 import HostBootstrap.Lifecycle.Mode (ProductionClosureAuthorization)
 
+data FirstProject
+data SecondProject
 data FirstGeneration
 data SecondGeneration
 
-substitute :: ProductionClosureAuthorization project FirstGeneration -> ProductionClosureAuthorization project SecondGeneration
-substitute = coerce
+substituteGeneration ::
+    ProductionClosureAuthorization FirstProject FirstGeneration ->
+    ProductionClosureAuthorization FirstProject SecondGeneration
+substituteGeneration = coerce
+
+substituteProject ::
+    ProductionClosureAuthorization FirstProject FirstGeneration ->
+    ProductionClosureAuthorization SecondProject FirstGeneration
+substituteProject = coerce

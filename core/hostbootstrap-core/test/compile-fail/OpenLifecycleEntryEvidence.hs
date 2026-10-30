@@ -1,16 +1,7 @@
 module OpenLifecycleEntryEvidence where
 
-import HostBootstrap.Command (
-    lifecycleEntryAuthority,
-    lifecycleEntryConfig,
-    lifecycleEntryContext,
-    lifecycleEntryCursor,
-    lifecycleEntryJournal,
-    lifecycleEntryPlan,
-    lifecycleEntryRecoveryDescent,
-    lifecycleEntryRecoveryOrigin,
-    lifecycleEntryStore,
- )
+-- The opaque entry cannot reveal or assemble the authority package retained by its constructors.
 
-hidden :: ()
-hidden = ()
+import HostBootstrap.Command (LifecycleEntry (RootUpLifecycleEntry))
+import HostBootstrap.Command (LifecycleEntry (RootDownLifecycleEntry))
+import HostBootstrap.Command (LifecycleEntry (RootDestroyLifecycleEntry))

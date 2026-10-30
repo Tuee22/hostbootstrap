@@ -120,12 +120,13 @@ host-portable. Four idioms carry most of that weight:
   to the current drive; that is correct for a host path and wrong for a guest one.
 - **Read source bytes for a digest.** A frozen source digest computed by decoding to `String` through
   the locale and re-encoding is a property of the host's active code page and of its newline
-  translation, not of the file. Read the bytes.
-- **Fix the encoding once at an entry point.** `HostBootstrap.CLI` sets `stdout`/`stderr` to UTF-8, and
-  the core suite driver calls `setLocaleEncoding utf8` before the runner starts, so every later text read
-  in that suite decodes the same characters and output containing non-ASCII text neither mojibakes nor
-  throws on a legacy-code-page console. The demo suite driver does not yet follow this idiom (see
-  [Current Status](#current-status)).
+  translation, not of the file. Read the bytes. The core portability guard recognizes parenthesized,
+  composed, and `$` spellings of digesting re-encoded text.
+- **Fix the encoding once at an entry point.** `HostBootstrap.CLI` sets `stdout`/`stderr` to UTF-8.
+  Both core and demo suite drivers make `setLocaleEncoding utf8` their first IO action, before
+  argument dispatch, source reads or the runner's first demand of standard handles. Their text reads
+  and first-opened standard handles therefore use the selected encoding. The demo suite checks its
+  runtime locale and retains Unicode case names in the complete reporter output.
 - **Stub a platform module; do not exclude it.** A module a Cabal `os` condition removes is a module
   nothing on that family asserts, and the suite total reads the same either way — so a platform row is
   compiled everywhere and CPP-stubbed to a total refusal where it cannot apply. Only `build-depends` is
@@ -135,15 +136,25 @@ host-portable. Four idioms carry most of that weight:
 
 The rules these idioms serve are canonical in [testing](../engineering/testing.md#harness-portability).
 
+The test helpers keep the same distinction: `PlatformPath.hostFixturePath` supplies an absolute host
+root and discards caller-supplied drive decorations, while guest descriptors retain POSIX grammar.
+An unrecognized `--hostbootstrap-` probe argument exits with status 97 and a standard-error diagnostic.
+`ConditionalCase` records successful row/refusal callback completions, and the final `CoverageManifest`
+case checks those counts after the suite. Completion records establish that the callback returned;
+the assertions inside the callback establish what it proves.
+
+The core suite's `SourceGuard` supplies the lexical reader, sorted source walkers, and Cabal component
+and common-stanza readers used by repository guards. Effective source roots include imported common
+fields; module fields accept inline, continued, comma-separated, and mixed-case spellings. The inventory
+includes private libraries and every test-suite root, excluding separately compiled negative fixtures.
+The warning guard checks the core and demo components against their shared warnings stanzas: every
+component imports the policy, none weakens it, and no source module supplies an `OPTIONS_GHC` or
+`OPTIONS` pragma. Both packages carry `-Werror` and `-Wpartial-fields`, so ordinary Cabal commands hold
+the warning policy. [Testing](../engineering/testing.md#one-toolkit-for-reading-this-repositorys-own-sources)
+owns the complete harness contract.
+
 ## Current Status
 
-`demo/test/Spec.hs` sets no UTF-8 locale encoding, while `CommandsSpec` reads source files with a
-locale-decoding `readFile`, so on a host whose code page is not UTF-8 the demo leg of the host static gate
-is outside the encoding idiom above. [The worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
-owns this gap; [testing](../engineering/testing.md#current-status) records it with the suite's other gaps.
-
-`HostToolSpec.windowsResolutionCases` is CPP-excluded on non-Windows hosts rather than stubbed: its two
-Windows `System32` discovery cases sit in an `#ifdef mingw32_HOST_OS` region whose `#else` arm is the
-empty list, so a POSIX gate host runs two fewer cases while the suite stays green.
-[The host-tools and substrate-detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
-owns this gap.
+`HostToolSpec.windowsResolutionCases` keeps both System32 cases on every host. Windows checks the
+host's SystemRoot-derived paths; other hosts assert the exact `Nothing` answers. The two-case family
+is counted by `CoverageManifest`, including successful conditional row and refusal observations.

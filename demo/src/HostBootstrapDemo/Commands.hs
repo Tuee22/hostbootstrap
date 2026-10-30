@@ -224,10 +224,13 @@ import HostBootstrap.Detached (
     detachedChildOutput,
     detachedChildPid,
     detachedLaunch,
+    liftDetachedIO,
     mkDetachedOutputSink,
     mkDetachedWorkingDirectory,
     renderDetachedLaunchError,
+    onDetachedException,
     terminateDetachedChild,
+    tryDetachedIO,
     withDetachedChild,
  )
 import HostBootstrap.Dhall.Gen (CodecWitness, ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
@@ -249,6 +252,13 @@ import HostBootstrap.Ensure.GuestBootstrap (
     GuestStepOutcome (GuestStepInstalled, GuestStepSatisfied),
     PinnedToolchain (PinnedToolchain),
     mkGuestBootstrapTarget,
+    mkGuestBootstrapperExe,
+    mkGuestBuiltBinary,
+    mkGuestInstalledBinary,
+    mkGuestPath,
+    mkGuestProjectDir,
+    mkGuestSourceRoot,
+    mkGuestToolchainHome,
     runGuestBootstrap,
     stepLabel,
  )
@@ -286,7 +296,7 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionSignActivationManifest,
  )
 import HostBootstrap.Lifecycle.Prepared (preparedGateFence, preparedGateJournalVersion)
-import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), InVMSelfPath (InVMSelfPath), LiftContext (..), LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, inContainer, liftLeaf, localContext, reachLeaf)
+import HostBootstrap.Lift (ConfigDelivery (..), ContainerLift (..), ContainerPlacement (..), InVMSelfPath (InVMSelfPath), LiftContext, LiftLayer (ViaContainer), LiftLeaf (..), blobHeadLeaf, blobUploadFinishLeaf, blobUploadPatchLeaf, blobUploadSessionLeaf, canonicalHostMount, currentSelfRef, emptyVMStack, inContainer, liftLayers, liftLeaf, localContext, reachLeaf)
 import HostBootstrap.Lima (LimaVM (..))
 import HostBootstrap.Network (
     Exposure,
@@ -968,7 +978,7 @@ demoVmBackedStackAt providerContext cfg =
       -- that says the child config is prepared carries the payload that crosses
       -- the boundary (§ W/§ X), so the two can no longer disagree.
       descendsVia
-        (inContainer (demoDeployImage (clusterProfileOf cfg) ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) localContext)
+        (inContainer (demoDeployImage (clusterProfileOf cfg) ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) emptyVMStack)
         (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame (changed contextInitAnnounce))
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
       deployKindStep "deploy the persistent kind cluster (cordon #2, at the run's own profile)" demoContainerFrame (changed (deployKindAction cfg))
@@ -1073,7 +1083,7 @@ demoLinuxGpuChainAt durableBind descriptor cfg =
       descendsVia
         ( inContainer
             (demoDeployImage (clusterProfileOf cfg) durableBind directContainerRuntimeFrameId True (directContainerConfigPayload cfg))
-            localContext
+            emptyVMStack
         )
         (contextInitStep "prepare the Linux GPU direct project-container config for in-place delivery" demoMetalFrame (changed contextInitDirectAnnounce))
     , reversedBy
@@ -1137,7 +1147,7 @@ demoForwardChildPlan cfg parentId childId suppliedLift = do
                     expectedLift =
                         inContainer
                             (demoDeployImage (clusterProfileOf cfg) ProviderGuestDurable containerRuntimeFrameId False (canonicalProjectConfigPayload childCfg))
-                            localContext
+                            emptyVMStack
                     steps
                         | providerKind provider == ProviderIncus = demoLinuxCpuChainAt (providerLiftContext provider) childCfg
                         | otherwise = demoVmBackedStackAt (providerLiftContext provider) childCfg
@@ -1227,8 +1237,8 @@ retainedProvider cfg =
 
 validateDirectParentLift :: FilePath -> T.Text -> LiftContext -> Either String ()
 validateDirectParentLift childDurable payload supplied =
-    case supplied of
-        LiftContext [ViaContainer container] -> do
+    case liftLayers supplied of
+        [ViaContainer container] -> do
             requireForward (clImage container == clImage expected) "direct lift image differs from the demo child image"
             requireForward (clExtraArgs container == clExtraArgs expected) "direct lift arguments differ from the canonical child route"
             requireForward (clRemoveAfter container == clRemoveAfter expected) "direct lift removal policy differs from the canonical child route"
@@ -3032,14 +3042,14 @@ startHostAcceleratorDaemonAction stepCfg execution
                                 -- the one it created.
                                 launched <- withDetachedChild launch $ \child -> do
                                     let abortUntracked = do
-                                            removed <- try (removeIfExists pidPath) :: IO (Either SomeException ())
-                                            removedReady <- try (removeIfExists readyPath) :: IO (Either SomeException ())
-                                            _ <- try (terminateDetachedChild child) :: IO (Either SomeException ())
-                                            waited <- try (awaitDetachedChild 5000000 child) :: IO (Either SomeException (Maybe ExitCode))
+                                            removed <- liftDetachedIO (try (removeIfExists pidPath) :: IO (Either SomeException ()))
+                                            removedReady <- liftDetachedIO (try (removeIfExists readyPath) :: IO (Either SomeException ()))
+                                            _ <- tryDetachedIO (terminateDetachedChild child)
+                                            waited <- tryDetachedIO (awaitDetachedChild 5000000 child)
                                             case (removed, removedReady, waited) of
-                                                (Right (), Right (), Right (Just _)) -> releaseHostAcceleratorDaemon session
+                                                (Right (), Right (), Right (Just _)) -> liftDetachedIO (releaseHostAcceleratorDaemon session)
                                                 _ ->
-                                                    ioError
+                                                    liftDetachedIO $ ioError
                                                         ( userError
                                                             ( "accelerator-daemon: could not prove cleanup of an untracked daemon; preserving lifecycle ownership (pid cleanup="
                                                                 ++ show removed
@@ -3050,15 +3060,24 @@ startHostAcceleratorDaemonAction stepCfg execution
                                                                 ++ ")"
                                                             )
                                                         )
-                                    mpid <- detachedChildPid child `onException` abortUntracked
+                                    mpid <- detachedChildPid child `onDetachedException` abortUntracked
                                     case mpid of
                                         Nothing -> do
                                             abortUntracked
-                                            die "accelerator-daemon: process id unavailable; terminated untrackable daemon"
+                                            liftDetachedIO (die "accelerator-daemon: process id unavailable; terminated untrackable daemon")
                                         Just pid -> do
-                                            restore (writeFile pidPath (show pid ++ "\n"))
-                                                `onException` abortUntracked
-                                            finishTracked (detachedChildOutput child) (show pid)
+                                            liftDetachedIO (restore (writeFile pidPath (show pid ++ "\n")))
+                                                `onDetachedException` abortUntracked
+                                            readiness <- liftDetachedIO $
+                                                restore (waitForHostAcceleratorDaemonReady cfg (show pid) daemonExe readyPath hostDaemonReadyAttempts)
+                                                    `onException` abortTracked
+                                            case readiness of
+                                                Left err -> do
+                                                    retained <- detachedChildOutput child
+                                                    liftDetachedIO (abortTracked >> die (err ++ renderRetainedDaemonOutput retained))
+                                                Right () -> liftDetachedIO $
+                                                    restore (putStrLn ("accelerator-daemon: host daemon ready at " ++ endpoint ++ " (pid " ++ show pid ++ ")"))
+                                                        `onException` abortTracked
                                 case launched of
                                     Right () -> pure ()
                                     Left err -> do
@@ -4342,8 +4361,8 @@ reconcileShippedDurableAlias _mounted cfg provider share = do
 
 demoGuestShellArgs :: SubstrateProvider -> [String] -> Either String (HostTool, [String])
 demoGuestShellArgs provider command =
-    case providerLiftContext provider of
-        LiftContext [layer] ->
+    case liftLayers (providerLiftContext provider) of
+        [layer] ->
             maybe
                 (Left "the selected provider lift is not a VM guest route")
                 Right
@@ -5517,15 +5536,27 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
     vmReady <- substrateWait cfg provider
     stageSource vmReady cfg provider
     streamVMConfig vmReady cfg provider parentCfg ctx
+    bootstrapSourcePath <- either die pure (mkGuestPath vmRepoRoot)
+    let bootstrapSourceRoot = mkGuestSourceRoot bootstrapSourcePath
+    bootstrapProjectPath <- either die pure (mkGuestPath vmDemoRoot)
+    let bootstrapProjectDir = mkGuestProjectDir bootstrapProjectPath
+    bootstrapHomePath <- either die pure (mkGuestPath "/root/.ghcup")
+    let bootstrapToolchainHome = mkGuestToolchainHome bootstrapHomePath
+    bootstrapperPath <- either die pure (mkGuestPath "/root/.local/bin/hostbootstrap")
+    let bootstrapperExe = mkGuestBootstrapperExe bootstrapperPath
+    bootstrapBuiltPath <- either die pure (mkGuestPath (vmDemoRoot ++ "/.build/hostbootstrap-demo"))
+    let bootstrapBuiltBinary = mkGuestBuiltBinary bootstrapBuiltPath
+    bootstrapInstalledPath <- either die pure (mkGuestPath "/usr/local/bin/hostbootstrap-demo")
+    let bootstrapInstalledBinary = mkGuestInstalledBinary bootstrapInstalledPath
     bootstrapTarget <-
         either die pure $
             mkGuestBootstrapTarget
-                vmRepoRoot
-                vmDemoRoot
-                "/root/.ghcup"
-                "/root/.local/bin/hostbootstrap"
-                (vmDemoRoot ++ "/.build/hostbootstrap-demo")
-                "/usr/local/bin/hostbootstrap-demo"
+                bootstrapSourceRoot
+                bootstrapProjectDir
+                bootstrapToolchainHome
+                bootstrapperExe
+                bootstrapBuiltBinary
+                bootstrapInstalledBinary
                 (PinnedToolchain "9.12.4")
     bootstrapResult <- runGuestBootstrap cfg (providerLiftContext provider) bootstrapTarget
     bootstrap <- case bootstrapResult of
@@ -6248,7 +6279,6 @@ demoDeployImageWithMount durableMount _currentFrameId directLinuxGpu payload =
             Just
                 ( ConfigDelivery
                     "/usr/local/bin/hostbootstrap-demo.dhall"
-                    "/usr/local/bin/hostbootstrap-demo"
                     payload
                 )
         }

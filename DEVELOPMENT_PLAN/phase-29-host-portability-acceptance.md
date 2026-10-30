@@ -1,6 +1,6 @@
 # Phase 29 — Host-portability acceptance
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: none (static)
 **Gate**: `cabal build all` from `core/`, plus all four commands of the
@@ -1084,9 +1084,42 @@ Those measurements covered exactly `core/hostbootstrap-core/src`, `core/hostboot
 
 None.
 
+### Sprint 29.6: Host-portability acceptance of the current source tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: none
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Establish host-portability acceptance against the source tree whose paths this phase's
+`**Evidence covers**` names. The documentation-validator and digest changes in the governance phase
+expire all four recorded gate-host claims under § C. Each dated result retains the digest it exercised;
+a new digest is recorded only with the run that establishes it.
+
+#### Deliverables
+
+- The phase's declared `cabal build all` from `core/` and complete host static gate (§ JJ) pass on each
+  declared gate host: Windows, macOS, x86_64 Linux, and arm64 Linux.
+- Each host's dated evidence records its actual commands, toolchain, results, and measured covers digest.
+
+#### Validation
+
+Run the complete phase gate on all four declared gate hosts, including the `demo/` leg and both Python
+legs of § JJ. Record the source digest before and after each run to confirm it names the tested tree.
+This sprint has no current-tree gate-host runs.
+
+#### Remaining Work
+
+- Run `cabal build all` from `core/` and the complete host static gate (§ JJ) on Windows, macOS,
+  x86_64 Linux, and arm64 Linux gate hosts.
+- Record each actual dated result and measured covers digest before marking the sprint and phase `Done`.
+
 ## Remaining Work
 
-None.
+- Sprint 29.6: re-run the complete declared gate on all four gate hosts and record each host's dated
+  evidence against its measured covered-source digest.
 
 ## Documentation Requirements
 

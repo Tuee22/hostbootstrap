@@ -7,10 +7,9 @@ also being captured into a frozen :class:`CommandResult`. The synchronous
 :func:`probe` is for the short host questions asked before any event loop
 exists, and names the child's stdio disposition with :class:`Stdio`.
 
-A command can fail in two different ways, and the difference matters to every
-caller: it ran and returned non-zero, or it never started at all. :func:`probe`
-returns that distinction as a value — :class:`CommandResult` or
-:class:`CommandUnavailable` — so a caller reads it off the outcome rather than
+A command can return non-zero, fail to start, or exceed its deadline. :func:`probe`
+returns that distinction as a value — :class:`CommandResult`,
+:class:`CommandUnavailable`, or :class:`CommandTimedOut` — so a caller reads the outcome rather than
 off which exception it happened to catch, and wraps the one value into its own
 error type.
 
@@ -21,6 +20,7 @@ command was expected to succeed and did not (fail-fast).
 from __future__ import annotations
 
 import asyncio
+import codecs
 import os
 import subprocess
 import sys
@@ -28,7 +28,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 
 class Stdio(StrEnum):
@@ -62,20 +62,34 @@ class CommandUnavailable:
         return False
 
 
-CommandOutcome = CommandResult | CommandUnavailable
+@dataclass(frozen=True)
+class CommandTimedOut:
+    """The child exceeded the execution deadline and was terminated."""
+
+    args: tuple[str, ...]
+    timeout: float
+
+    @property
+    def ok(self) -> bool:
+        return False
+
+
+CommandOutcome = CommandResult | CommandUnavailable | CommandTimedOut
 
 
 def describe(outcome: CommandOutcome) -> str:
     rendered = " ".join(outcome.args)
     if isinstance(outcome, CommandUnavailable):
         return f"command could not be run ({outcome.reason}): {rendered}"
+    if isinstance(outcome, CommandTimedOut):
+        return f"command timed out after {outcome.timeout:g}s: {rendered}"
     return f"command failed ({outcome.returncode}): {rendered}"
 
 
 class CommandError(RuntimeError):
     """A command expected to succeed did not.
 
-    ``outcome`` says which of the two ways, and ``result`` is the completed run
+    ``outcome`` says which failure occurred, and ``result`` is the completed run
     when there was one.
     """
 
@@ -93,6 +107,11 @@ def merged_environment(env: Mapping[str, str]) -> dict[str, str]:
     merged = dict(os.environ)
     merged.update(env)
     return merged
+
+
+def rendered_windows_commandline_length(args: Sequence[str]) -> int:
+    """Length of the argv rendering passed to Windows CreateProcess."""
+    return len(subprocess.list2cmdline(args))
 
 
 def probe(
@@ -119,7 +138,8 @@ def probe(
                 cwd=where,
                 env=environment,
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 check=False,
             )
@@ -128,6 +148,10 @@ def probe(
             list(argv), cwd=where, env=environment, timeout=timeout, check=False
         )
         return CommandResult(argv, inherited.returncode, "", "")
+    except subprocess.TimeoutExpired:
+        # subprocess may report its remaining wait budget. The outcome retains
+        # the caller's deadline, which is present whenever a timeout can occur.
+        return CommandTimedOut(argv, cast(float, timeout))
     except (OSError, subprocess.SubprocessError) as exc:
         return CommandUnavailable(argv, str(exc))
 
@@ -155,14 +179,27 @@ async def _drain(
 ) -> None:
     if stream is None:
         return
-    while True:
-        chunk = await stream.readline()
-        if not chunk:
-            return
-        text = chunk.decode("utf-8", errors="replace").replace("\r\n", "\n")
-        sink_lines.append(text)  # captured raw, unprefixed
-        mirror.write(prefix + text)  # live mirror is labelled when a prefix is given
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    pending = ""
+
+    def emit(text: str) -> None:
+        sink_lines.append(text)
+        labelled = prefix + text
+        encoding = mirror.encoding or "utf-8"
+        mirror.write(labelled.encode(encoding, errors="replace").decode(encoding))
         mirror.flush()
+
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            pending += decoder.decode(b"", final=True)
+            if pending:
+                emit(pending)
+            return
+        pending += decoder.decode(chunk)
+        while "\n" in pending:
+            line, pending = pending.split("\n", 1)
+            emit(line.removesuffix("\r") + "\n")
 
 
 async def run(
@@ -181,13 +218,17 @@ async def run(
 
     effective_env = merged_environment(env) if env is not None else None
 
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=str(cwd) if cwd is not None else None,
-        env=effective_env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    argv = tuple(cmd)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd) if cwd is not None else None,
+            env=effective_env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise CommandError(CommandUnavailable(argv, str(exc))) from exc
 
     out_lines: list[str] = []
     err_lines: list[str] = []
@@ -195,12 +236,21 @@ async def run(
     out_sink = open(os.devnull, "w") if quiet else sys.stdout  # noqa: SIM115
     err_sink = open(os.devnull, "w") if quiet else sys.stderr  # noqa: SIM115
 
+    drains = [
+        asyncio.create_task(_drain(process.stdout, out_lines, out_sink, prefix)),
+        asyncio.create_task(_drain(process.stderr, err_lines, err_sink, prefix)),
+    ]
     try:
-        await asyncio.gather(
-            _drain(process.stdout, out_lines, out_sink, prefix),
-            _drain(process.stderr, err_lines, err_sink, prefix),
-        )
+        await asyncio.gather(*drains)
         returncode = await process.wait()
+    except BaseException:
+        for task in drains:
+            task.cancel()
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        await asyncio.gather(*drains, return_exceptions=True)
+        raise
     finally:
         if quiet:
             out_sink.close()

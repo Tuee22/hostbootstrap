@@ -26,7 +26,7 @@ tests =
 destroySettlementCase :: TestTree
 destroySettlementCase =
     testCase "destroy-settled survives a real process death with terminal lease and mode" $
-        RecursiveLifecycleSpec.withLocalGuestFrame $
+        RecursiveLifecycleSpec.withLocalGuestFrame ["recovery-interruption"] $
             RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
                 RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 let readyPath = root </> "destroy-ready"

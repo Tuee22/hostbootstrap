@@ -1,21 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications #-}
 
-module CordonSpec (tests) where
+module CordonSpec (tests, nativeCapacitySupported, windowsCapacitySupported) where
 
+import ConditionalCase (conditionalCase)
+import Data.Int (Int64)
 import Data.List (isInfixOf, isPrefixOf, nub, sort)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
+import qualified Dhall
 import HostBootstrap.Cluster.Cordon
 import qualified HostBootstrap.Cluster.Cordon.Foundation as Foundation
+import qualified HostBootstrap.Cluster.Cordon.WindowsCapacity as WindowsCapacity
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (Df, Sysctl), mkAbsExe)
-import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import HostBootstrap.Dhall.Gen (autoCodecWitness, renderValue)
+import HostBootstrap.HostConfig (HostConfig (..), buildHostConfig)
+import HostBootstrap.HostTool (HostTool (Sysctl), mkAbsExe)
+import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..), classify, detectHere)
+import Numeric.Natural (Natural)
 import qualified SourceGuard
-import System.Directory (findExecutable, getCurrentDirectory)
+import System.Directory (getCurrentDirectory)
+import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import qualified System.Info as Info
 import Test.Tasty (TestTree, testGroup)
@@ -38,8 +46,11 @@ tests =
         , testGroup "budget" budgetCases
         , testGroup "verifyBudget" verifyCases
         , testGroup "host capacity source" capacitySourceCases
+        , testGroup "native capacity" nativeCapacityCases
+        , testGroup "Windows capacity" windowsCapacityCases
         , testGroup "fitsBudget" fitsCases
         , testGroup "sizing + applied cordon" sizingCases
+        , testGroup "Docker limit bounds" dockerLimitCases
         , testGroup "lower foundation boundary" foundationCases
         ]
 
@@ -199,7 +210,10 @@ foundationCases =
         let importedModules = sort (hostbootstrapImports source)
         importedModules
             @?= sort
-                [ "HostBootstrap.Effect.Run"
+                [ "HostBootstrap.Cluster.Cordon.WindowsCapacity"
+                , "HostBootstrap.Effect.Interpreter"
+                , "HostBootstrap.Effect.Run"
+                , "HostBootstrap.Effect.Vocabulary"
                 , "HostBootstrap.HostConfig"
                 , "HostBootstrap.HostTool"
                 , "HostBootstrap.Substrate"
@@ -208,6 +222,14 @@ foundationCases =
         assertBool
             "Cordon.Foundation must be exposed by the unnamed main library"
             ("HostBootstrap.Cluster.Cordon.Foundation" `elem` exposedModules)
+    , testCase "capacity observation uses described commands without interpreter text" $
+        -- DEVELOPMENT_PLAN/rationale.md: "A script is a fork of the binary, and it is the fork nothing can check".
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            source <- readFile (packageRoot </> "src" </> "HostBootstrap" </> "Cluster" </> "Cordon" </> "Foundation.hs")
+            assertBool "Foundation still invokes a PowerShell command" $
+                all ((`notElem` SourceGuard.haskellTokens source) . show) (["-Command", "-NoProfile"] :: [String])
+            SourceGuard.countHaskellIdentifier "PowerShell" source @?= 0
+            SourceGuard.countHaskellIdentifier "runCaptured" source @?= 0
     , testCase "foundation import scanner covers every supported import decoration" $ do
         let sample =
                 Text.unlines
@@ -239,15 +261,22 @@ foundationCases =
                     , "  exposed-modules:"
                     , "      HostBootstrap.NotMain"
                     , "library"
-                    , "  exposed-modules: HostBootstrap.PublicInline,"
+                    , "  ExPoSeD-MoDuLeS: HostBootstrap.PublicInline,HostBootstrap.PublicSecond,"
                     , "      HostBootstrap.PublicContinuation"
+                    , "  -- exposed-modules: HostBootstrap.Commented"
                     , "  other-modules:"
                     , "      HostBootstrap.NotExposed"
                     , "test-suite tests"
                     , "  main-is: Spec.hs"
                     ]
         mainLibraryExposedModules sample
-            @?= Right ["HostBootstrap.PublicInline", "HostBootstrap.PublicContinuation"]
+            @?= Right ["HostBootstrap.PublicInline", "HostBootstrap.PublicSecond", "HostBootstrap.PublicContinuation"]
+    , testCase "cabal exposure reader names a missing main library" $
+        mainLibraryExposedModules "library helper\n  exposed-modules: HostBootstrap.Helper\n"
+            @?= Left "hostbootstrap-core.cabal: unnamed main library stanza is missing"
+    , testCase "cabal exposure reader names an absent exposure field" $
+        mainLibraryExposedModules "library\n  other-modules: HostBootstrap.Hidden\n"
+            @?= Left "hostbootstrap-core.cabal: main library exposed-modules field is missing"
     ]
 
 hostbootstrapImports :: Text.Text -> [Text.Text]
@@ -298,6 +327,26 @@ budgetCases =
         isLeft (mkResourceBudget 0 gib gib) @?= True
         isLeft (mkResourceBudget 1 0 gib) @?= True
         isLeft (mkResourceBudget 1 gib 0) @?= True
+    , testCase "public budget construction refuses CPU above its supported bound" $
+        mkResourceBudget (fromIntegral (maxBound :: Int) + 1) gib gib
+            @?= Left (DimensionAboveBound BudgetCpu)
+    , testCase "public budget construction refuses memory above its supported bound" $
+        mkResourceBudget 1 (toInteger (maxBound :: Int64) + 1) gib
+            @?= Left (DimensionAboveBound BudgetMemory)
+    , testCase "public budget construction refuses storage above its supported bound" $
+        mkResourceBudget 1 gib (toInteger (maxBound :: Int64) + 1)
+            @?= Left (DimensionAboveBound BudgetStorage)
+    , testCase "the resource envelope refuses an above-bound memory quantity" $
+        budgetFromResources (ResourceEnvelope 1 "9000000Ti" "1Gi")
+            @?= Left (DimensionAboveBound BudgetMemory)
+    , testCase "opaque budget readers and Show retain the public record rendering" $ do
+        budget <- either (assertFailure . renderQuantityError) pure (mkResourceBudget 4 8 20)
+        let rendered = "ResourceBudget {budgetCpu = 4, budgetMemoryBytes = 8, budgetStorageBytes = 20}"
+        (budgetCpu budget, budgetMemoryBytes budget, budgetStorageBytes budget) @?= (4, 8, 20)
+        show budget @?= rendered
+        showsPrec 10 budget "" @?= rendered
+        showsPrec 11 budget "" @?= "(" <> rendered <> ")"
+        show (Just budget) @?= "Just (" <> rendered <> ")"
     ]
 
 verifyCases :: [TestTree]
@@ -331,14 +380,14 @@ capacitySourceCases :: [TestTree]
 capacitySourceCases =
     [ testCase "apple-silicon reads CPU/memory from sysctl and free disk from df" $
         capacityReadPlan (Substrate AppleSilicon Arm64)
-            @?= CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") (PosixFreeStorage "/")
+            @?= CapacityReadPlan (CpuSysctlKey "hw.ncpu") (MemorySysctlKey "hw.memsize") (PosixFreeStorage "/")
     , testCase "linux-cpu reads CPU/memory from procfs and free disk from df" $
         capacityReadPlan (Substrate LinuxCpu Amd64)
             @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable (PosixFreeStorage "/")
     , testCase "linux-gpu reads CPU/memory from procfs and free disk from df" $
         capacityReadPlan (Substrate LinuxGpu Amd64)
             @?= CapacityReadPlan ProcCpuinfo ProcMemAvailable (PosixFreeStorage "/")
-    , testCase "windows substrates read CPU, total memory, and storage from PowerShell/CIM" $ do
+    , testCase "windows substrates select native CPU, memory, and system-volume sources" $ do
         capacityReadPlan (Substrate WindowsCpu Amd64)
             @?= CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
         capacityReadPlan (Substrate WindowsGpu Amd64)
@@ -347,7 +396,7 @@ capacitySourceCases =
         parseDfAvailableKBytes "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/disk1s1 500000000 100000000 400000000 20% /\n"
             @?= Just 400000000
         parseDfAvailableKBytes "" @?= Nothing
-    , testCase "windows storage shortage fails before WSL2 VHDX pressure" $
+    , testCase "pure capacity preflight refuses a storage shortage" $
         leftHas "storage" $
             preflightBudget
                 (ResourceEnvelope{cpu = 6, memory = "10GiB", storage = "80GiB"})
@@ -357,50 +406,133 @@ capacitySourceCases =
             (ResourceEnvelope{cpu = 10, memory = "8GiB", storage = "20GiB"})
             (HostCapacity 10 (16 * gib) petabyte)
             @?= Right ()
-    , testCase "live apple-silicon sysctl read resolves positive capacity" $ do
-        if Info.os == "darwin" && Info.arch `elem` ["aarch64", "arm64"]
-            then do
-                sysctl <- findExecutable "sysctl"
-                df <- findExecutable "df"
-                let resolvedTools =
-                        ( sysctl >>= either (const Nothing) Just . mkAbsExe
-                        , df >>= either (const Nothing) Just . mkAbsExe
-                        )
-                case resolvedTools of
-                    (Nothing, _) -> assertBool "expected sysctl to resolve to an absolute path" False
-                    (_, Nothing) -> assertBool "expected df to resolve to an absolute path" False
-                    (Just sysctlExe, Just dfExe) -> do
-                        result <-
-                            resolveHostCapacity
-                                HostConfig
-                                    { hcSubstrate = Substrate AppleSilicon Arm64
-                                    , hcToolPaths = Map.fromList [(Sysctl, sysctlExe), (Df, dfExe)]
-                                    }
-                        case result of
-                            Right capacity ->
-                                assertBool "expected positive CPU and memory capacity" $
-                                    totalCpu capacity > 0 && totalMemoryBytes capacity > 0
-                            Left err -> assertBool ("expected sysctl capacity read to succeed, got: " ++ err) False
-            else pure ()
+    , testCase "cpuinfo counts both logical processor entries" $
+        Foundation.parseCpuinfoProcessors "processor\t: 0\nmodel name\t: fixture\nprocessor\t: 1\n"
+            @?= Right 2
+    , testCase "cpuinfo without processors returns its exact refusal" $
+        Foundation.parseCpuinfoProcessors "model name\t: fixture\n"
+            @?= Left "host capacity: no processors found in /proc/cpuinfo"
+    , testCase "MemAvailable converts kernel kilobytes to bytes" $
+        Foundation.parseMemAvailableBytes "MemTotal: 4096 kB\nMemAvailable: 1024 kB\n"
+            @?= Right 1048576
+    , testCase "missing MemAvailable returns its exact refusal" $
+        Foundation.parseMemAvailableBytes "MemTotal: 4096 kB\n"
+            @?= Left "host capacity: MemAvailable not found in /proc/meminfo"
+    , testCase "malformed MemAvailable returns its exact refusal" $
+        Foundation.parseMemAvailableBytes "MemAvailable: invalid kB\n"
+            @?= Left "host capacity: MemAvailable not found in /proc/meminfo"
+    , testCase "positive integer capacity strips CRLF before parsing" $
+        Foundation.parsePositiveInteger "fixture" "16\r\n" @?= Right 16
+    , testCase "zero integer capacity returns its exact refusal" $
+        Foundation.parsePositiveInteger "fixture" "0"
+            @?= Left "host capacity: fixture returned non-positive value 0"
+    , testCase "non-integer capacity returns its exact refusal" $
+        Foundation.parsePositiveInteger "fixture" "abc"
+            @?= Left "host capacity: fixture returned non-integer value \"abc\""
+    , testCase "native Windows capacity errors preserve their exact diagnostics" $ do
+        WindowsCapacity.renderWindowsCapacityError WindowsCapacity.WindowsCapacityUnsupported
+            @?= "native Windows capacity is unavailable on this host"
+        WindowsCapacity.renderWindowsCapacityError (WindowsCapacity.WindowsCapacityApiFailure "GlobalMemoryStatusEx" "denied")
+            @?= "GlobalMemoryStatusEx: denied"
+        WindowsCapacity.renderWindowsCapacityError (WindowsCapacity.WindowsCapacityNonPositive "GetSystemInfo" 0)
+            @?= "GetSystemInfo returned a non-positive capacity: 0"
+    , testCase "an unresolved sysctl refuses before host capacity is available" $ do
+        result <- resolveHostCapacity (HostConfig (Substrate AppleSilicon Arm64) Map.empty)
+        result @?= Left "host capacity: sysctl is not resolved for apple-silicon"
+    , testCase "an unresolved df refuses after the described sysctl reads" $ do
+        executable <- getExecutablePath >>= either assertFailure pure . mkAbsExe
+        let configuration = HostConfig (Substrate AppleSilicon Arm64) (Map.singleton Sysctl executable)
+        result <- resolveHostCapacity configuration
+        result @?= Left "host capacity: df is not resolved for apple-silicon"
     ]
   where
     petabyte = 1024 ^ (5 :: Integer)
 
+-- The manifest imports these test-only declarations, so its branch count
+-- follows the same platform decision as the actual callbacks.
+nativeCapacitySupported :: Bool
+nativeCapacitySupported = case classify Info.os Info.arch False of
+    Right _ -> True
+    Left _ -> False
+
+windowsCapacitySupported :: Bool
+windowsCapacitySupported = Info.os == "mingw32"
+
+nativeCapacityCases :: [TestTree]
+nativeCapacityCases =
+    [ conditionalCase ["CordonSpec", "native capacity"] nativeCapacitySupported
+        "the native host reports positive CPU, memory, and storage"
+        (do
+            substrate <- detectHere >>= either (assertFailure . ("supported native detection failed: " <>)) pure
+            configuration <- buildHostConfig substrate
+            capacity <- resolveHostCapacity configuration >>= either (assertFailure . ("supported native capacity failed: " <>)) pure
+            assertPositiveCapacity capacity
+        )
+        (case classify Info.os Info.arch False of
+            Left refusal -> detectHere >>= (@?= Left refusal)
+            Right substrate -> assertFailure ("the supported host selected its refusal branch: " <> show substrate)
+        )
+    ]
+
+windowsCapacityCases :: [TestTree]
+windowsCapacityCases =
+    [ kernelCase "native logical processor count" WindowsCapacity.readWindowsLogicalProcessors
+    , kernelCase "native total physical memory" WindowsCapacity.readWindowsTotalMemory
+    , kernelCase "native system-volume available bytes" WindowsCapacity.readWindowsSystemDriveFreeSpace
+    , conditionalCase family windowsCapacitySupported
+        "Windows capacity does not need any resolved PowerShell tool"
+        (resolveHostCapacity noTools >>= either (assertFailure . ("native Windows capacity failed: " <>)) assertPositiveCapacity)
+        (resolveHostCapacity noTools >>= (@?= Left (WindowsCapacity.renderWindowsCapacityError WindowsCapacity.WindowsCapacityUnsupported)))
+    ]
+  where
+    family = ["CordonSpec", "Windows capacity"]
+    noTools = HostConfig (Substrate WindowsCpu Amd64) Map.empty
+    kernelCase label readCapacity = conditionalCase family windowsCapacitySupported label
+        (readCapacity >>= either (\failure -> assertFailure (label <> ": " <> show failure)) (\value -> assertBool (label <> " must be positive") (value > 0)))
+        (readCapacity >>= (@?= Left WindowsCapacity.WindowsCapacityUnsupported))
+
+assertPositiveCapacity :: HostCapacity -> IO ()
+assertPositiveCapacity capacity =
+    assertBool ("expected positive CPU, memory, and storage, got " <> show capacity) $
+        totalCpu capacity > 0 && totalMemoryBytes capacity > 0 && totalStorageBytes capacity > 0
+
 fitsCases :: [TestTree]
 fitsCases =
     [ testCase "a fitting pod set is accepted" $
-        fitsBudget (V.Budget 4 8 20) [V.PodResources 2 1 1 1 2] @?= Right ()
+        assertFitsBudgetParity (V.Budget 4 8 20) [V.PodResources 2 1 1 1 2] (Right ())
     , testCase "an over-cpu pod set is rejected naming cpu" $
-        fitsBudget (V.Budget 2 8 20) [V.PodResources 3 1 2 1 1]
-            @?= Left (Overflow "cpu" 6 2)
+        assertFitsBudgetParity (V.Budget 2 8 20) [V.PodResources 3 1 2 1 1] (Left (Overflow "cpu" 6 2))
     , testCase "an over-memory pod set is rejected naming memory" $
-        fitsBudget (V.Budget 8 4 20) [V.PodResources 3 1 1 1 4]
-            @?= Left (Overflow "memory" 12 4)
+        assertFitsBudgetParity (V.Budget 8 4 20) [V.PodResources 3 1 1 1 4] (Left (Overflow "memory" 12 4))
+    , testCase "a CPU request above its own limit is rejected naming cpuRequest" $
+        assertFitsBudgetParity (V.Budget 4 8 20) [V.PodResources 1 4 1 1 1] (Left (Overflow "cpuRequest" 4 1))
+    , testCase "a memory request above its own limit is rejected naming memoryRequest" $
+        assertFitsBudgetParity (V.Budget 4 8 20) [V.PodResources 1 1 1 4 1] (Left (Overflow "memoryRequest" 4 1))
+    , testCase "zero replicas do not admit a CPU request above its own limit" $
+        assertFitsBudgetParity (V.Budget 4 8 20) [V.PodResources 0 4 1 1 1] (Left (Overflow "cpuRequest" 4 1))
+    , testCase "zero replicas do not admit a memory request above its own limit" $
+        assertFitsBudgetParity (V.Budget 4 8 20) [V.PodResources 0 1 1 4 1] (Left (Overflow "memoryRequest" 4 1))
     , testCase "preflightBudget passes within spare capacity" $
         preflightBudget demoResources (HostCapacity 8 (16 * gib) (100 * gib)) @?= Right ()
     , testCase "preflightBudget fails fast when short" $
         leftHas "cpu" (preflightBudget demoResources (HostCapacity 2 (16 * gib) (100 * gib)))
     ]
+
+assertFitsBudgetParity :: V.Budget -> [V.PodResources] -> Either Overflow () -> IO ()
+assertFitsBudgetParity budget pods expected = do
+    fitsBudget budget pods @?= expected
+    SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+        cwd <- getCurrentDirectory
+        let relative = SourceGuard.repoRelativePath cwd (packageRoot </> "dhall" </> "Core.dhall")
+            coreImport = if "." `Text.isPrefixOf` Text.pack relative then relative else "./" <> relative
+        budgetCodec <- either (assertFailure . show) pure (autoCodecWitness @V.Budget)
+        podsCodec <- either (assertFailure . show) pure (autoCodecWitness @[V.PodResources])
+        observed <-
+            Dhall.input Dhall.bool $
+                "let C = " <> Text.pack coreImport
+                    <> " in C.fitsWithin (" <> renderValue budgetCodec budget
+                    <> ") (" <> renderValue podsCodec pods <> ")"
+        observed @?= either (const False) (const True) expected
 
 sizingCases :: [TestTree]
 sizingCases =
@@ -461,6 +593,9 @@ sizingCases =
     , testCase "bare Linux storage policy is explicitly unsupported" $
         storageCordonPolicy BareLinuxStorage
             @?= StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable
+    , testCase "Docker node storage policy is explicitly unsupported" $
+        storageCordonPolicy DockerNodeStorage
+            @?= StorageCordonUnsupported DockerUpdateStorageUnavailable
     , testCase "colima handles the bare 8Gi form" $
         colimaSizingArgs "demo" (ResourceEnvelope{cpu = 2, memory = "8Gi", storage = "40Gi"})
             @?= Right
@@ -498,12 +633,10 @@ sizingCases =
     , testCase "wsl2 sizing emits the .wslconfig [general]+[wsl2] ceiling with swap + both idle timeouts (no vhdx-size key)" $
         wsl2SizingArgs demoResources
             @?= Right ["[general]", "instanceIdleTimeout=21600000", "[wsl2]", "processors=4", "memory=8GB", "swap=8GB", "vmIdleTimeout=21600000"]
-    , testCase "both managed idle timeouts are finite, so the host always recovers the balloon" $ do
+    , testCase "both managed idle timeouts render a finite value" $ do
         -- The wall was previously pinned open with -1, which is why `project down`
         -- could leave the whole budget committed until the next reboot. A finite
         -- duration is the property that matters; the exact value is asserted above.
-        managedWslIdleTimeoutMillis > 0 @?= True
-        managedWslIdleTimeoutMillis @?= managedWslIdleTimeoutHours * 60 * 60 * 1000
         body <- either assertFailure pure (wsl2SizingArgs demoResources)
         let timeouts = filter (\l -> "instanceIdleTimeout=" `isPrefixOf` l || "vmIdleTimeout=" `isPrefixOf` l) body
         length timeouts @?= 2
@@ -526,6 +659,42 @@ sizingCases =
                 Right args -> show (20 * gib) `notElem` args
                 Left _ -> False
     ]
+
+dockerLimitCases :: [TestTree]
+dockerLimitCases =
+    [ dockerLimitCase "ordinary limits retain exact CPU, memory, and swap argv" 4 8589934592 $
+        Right ["--cpus", "4", "--memory", "8589934592", "--memory-swap", "17179869184"]
+    , dockerLimitCase "the largest whole NanoCPUs budget is accepted" 9223372036 6291456 $
+        Right ["--cpus", "9223372036", "--memory", "6291456", "--memory-swap", "12582912"]
+    , dockerLimitCase "one core above the NanoCPUs bound is refused" 9223372037 6291456 $
+        Left "Docker CPU budget 9223372037 cores exceeds the signed 64-bit NanoCPUs limit of 9223372036 whole cores"
+    , dockerLimitCase "the Linux daemon minimum memory is accepted" 4 6291456 $
+        Right ["--cpus", "4", "--memory", "6291456", "--memory-swap", "12582912"]
+    , dockerLimitCase "one byte below the Linux daemon minimum is refused" 4 6291455 $
+        Left "Docker memory budget 6291455 bytes is below the Linux daemon minimum of 6291456 bytes"
+    , dockerLimitCase "the largest CLI-exact memory below the signed swap bound is accepted" 4 4611686018427387392 $
+        Right ["--cpus", "4", "--memory", "4611686018427387392", "--memory-swap", "9223372036854774784"]
+    , dockerLimitCase "the raw half-Int64 memory bound loses CLI precision" 4 4611686018427387903 $
+        Left "Docker memory budget 4611686018427387903 bytes is not exactly representable by the Docker CLI binary64 byte parser"
+    , dockerLimitCase "one byte above the half-Int64 memory bound overflows signed swap" 4 4611686018427387904 $
+        Left "Docker memory budget 4611686018427387904 bytes doubles to 9223372036854775808 bytes, exceeding the signed 64-bit --memory-swap limit of 9223372036854775807 bytes"
+    , dockerLimitCase "two-to-the-53 plus one loses CLI precision" 4 9007199254740993 $
+        Left "Docker memory budget 9007199254740993 bytes is not exactly representable by the Docker CLI binary64 byte parser"
+    , dockerLimitCase "two-to-the-53 plus two remains exactly representable" 4 9007199254740994 $
+        Right ["--cpus", "4", "--memory", "9007199254740994", "--memory-swap", "18014398509481988"]
+    ]
+
+dockerLimitCase :: String -> Natural -> Integer -> Either String [String] -> TestTree
+dockerLimitCase label cores memoryBytes expected =
+    testCase label $ do
+        let resources = ResourceEnvelope cores (Text.pack (show memoryBytes)) "20GiB"
+            expectedNamed = fmap (\limits -> ["update"] <> limits <> ["bounds-control-plane"]) expected
+        canonical <- either (assertFailure . renderQuantityError) pure (budgetFromResources resources)
+        Foundation.kindNodeCordonLimitsForBudget canonical @?= expected
+        kindNodeCordonLimits canonical @?= expected
+        Foundation.kindNodeCordonArgsForBudget "bounds-control-plane" canonical @?= expectedNamed
+        kindNodeCordonArgsFor "bounds-control-plane" resources @?= expectedNamed
+        kindNodeCordonArgs "bounds" resources @?= expectedNamed
 
 leftHas :: String -> Either String a -> IO ()
 leftHas needle e = case e of

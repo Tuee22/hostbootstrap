@@ -72,6 +72,33 @@ observed at the moment it is true
 `storage` fields, so a device dimension is a visible change to a Dhall-facing type rather than a quiet
 addition.
 
+### Tests drive the production polling loop
+
+A second polling driver can pass while the loop the binary runs is wrong. Scripted backend observations,
+a zero-delay policy, and counted recovery calls exercise `pollUntilReadyWith` itself. Reviewed named
+policies use the private validated representation directly; a partial error branch adds no useful runtime
+decision to those constants.
+
+*Absence guard:* `ReadinessSpec` rejects the removed test-only driver and partial named-policy builder
+as source definitions, while its behavioral cases drive the shipped loop.
+
+### Storage ceilings have one policy
+
+A separate storage-mechanism or unsupported-reason enumeration in each consumer gives one provider
+several answers to the same question. Updating a provider's supported wall in one layer can leave another
+layer admitting a ceiling it cannot enforce. A capacity preflight cannot resolve that disagreement: free
+space is an observation, not a quota.
+
+`Cluster.Cordon.Foundation.storageCordonPolicy` therefore owns the mechanism or unsupported reason for
+each storage target. `Cluster.Budget` maps the provider to that target, retains the policy answer, and
+renders arguments for the selected mechanism. A Docker node's missing update flag and bare Linux's missing
+quota/image-GC wall remain distinct unsupported decisions. This pure answer grants no mutation authority;
+the prepared call and backend settlement still own application.
+
+*Absence guards:* `BudgetSpec` compares the actual prepared mechanisms and unsupported refusals with the
+canonical policy, including bare Linux's earlier admission refusal. Its all-library source inventory rejects
+`StorageWallMechanism` and `StorageWallUnsupported` identifiers, keeping those duplicate vocabularies absent.
+
 ### The four ownership clauses do not demand a protected namespace
 
 A natural first formulation of resource ownership is "an OS-protected namespace plus an identity-bound
@@ -114,6 +141,25 @@ Recording only "the path was absent" leaves the crash window between the origin 
 binding unresolvable: recovery finds an object it cannot attribute and must either adopt content of unknown
 provenance or refuse forever. Recording **the digest of the payload this run intends to install** makes the
 window resolvable, because the record names the bytes.
+
+### Receipt rebinding follows the planned resource
+
+A receipt names the resource key, ownership generation, and acquiring operation. Letting a rebinding
+continuation choose an unrelated resource kind or identity turns those verified facts into a new capability
+without checking which planned resource it represents. The target's `PlannedResource` therefore supplies
+the rebound kind and identity; the public receipt bridge checks its exact runtime key and generation before
+delivering the rebound evidence.
+
+The key check is meaningful at the cross-identity bridge. A public same-identity receipt cannot name an
+arbitrary different key. A verified durable resource member can carry a different generation of that same
+planned resource, so generation mismatch is tested through that genuine ingress. Empty operations are
+rejected before receipts exist, at durable-record and journal ingress, rather than checked again on an
+unconstructible empty-operation receipt.
+
+*Absence guard:* `ReconcileSpec` pins the absence of `withReboundManagedResourceEvidence` from the
+`Reconcile` export list and exercises the planned rebinding and cross-identity receipt bridges. The planned
+bridge's phase index remains generic; the [host providers phase](phase-15-host-providers-and-the-lift.md)
+owns its phase-specific recovery restriction.
 
 ### A run settles its owned objects before closing its lease
 
@@ -223,14 +269,89 @@ Recovery reconstructs the same plan **identity** under a new in-process handle. 
 journal, or receipt would let a value outlive the process that can validate it, and a delayed one then
 becomes indistinguishable from a live one.
 
+### Durable record fields preserve exact UTF-8
+
+A durable text field must retain the identity its producer wrote. Char8 narrowing can turn one Unicode
+identity into another, while trimming can turn a refused field into an admitted one. Mode's private
+field codec therefore encodes UTF-8, decodes it strictly, and preserves every character. Invalid bytes
+reach the existing malformed-record refusal instead of a replacement or fallback interpretation.
+
+Field grammar remains separate from transport. Run and invocation-close keys use their bounded ASCII
+alphabets; a Mode migration key can carry Unicode without changing on readback. Mode and Session share
+one numeric grammar: canonical ASCII unsigned decimal within `Word64`, at most 20 digits before bounded
+`Integer` parsing, with a `showWord` round trip. Signs, whitespace, alternate bases, parentheses, leading
+zeros other than `0`, and arithmetic wrapping cannot name another generation. Each caller retains its
+own positivity check. Session's imported Prepared field transport remains Char8 and is not made UTF-8
+by this numeric rule.
+
+*Absence and value guards:* `AuthoritySpec` bounds its source check to the three private field-codec
+declarations, rejects Char8 conversion and trimming, and pins their UTF-8 primitives. Its public ingress
+cases cover identity and numeric refusal while preserving the affected record. `LifecycleSpec` exercises
+existing-bound admission with invalid UTF-8 acknowledgment and migration fields, checks the exact record
+keys and unchanged protected image, and independently recovers a legal Unicode migration key unchanged.
+The writer's encoding is held by source/primitive evidence; these cases do not claim a public Unicode
+writer path or require a new authority producer.
+
+`SessionSpec` separately writes stamped Closing-journal targets and checks exact malformed-number
+refusals with the seeded image preserved. Controls for `7` and the maximum `Word64` retain exact values,
+while zero is refused by the Closing rule. These journal cases exercise Session's numeric admission;
+they do not independently execute fence or gate admission or establish UTF-8 field transport.
+
 ### A proof is compared against the plan digest even when the indices match
 
 Phantom type indices alone admit a proof taken over one plan being presented for another whenever the two
 share an index. The digest comparison is what makes the pairing a fact rather than a convention.
 
+### Snapshot writers consume canonical plans
+
+A snapshot writer that accepts independently chosen digest text can persist a binding to no represented
+plan. The public persistence primitive instead consumes an opaque canonical snapshot and derives its
+specification, configuration, plan digest and bytes from that value. Its revision remains explicit.
+Configuration digest and canonical bytes form one optional material unit in the protected and verified
+carriers; a partial pair has no constructor state. One bounded framed codec writes that unit without an
+alternate tab-separated representation or an encoder-only tag.
+
+An absent material unit remains readable in the framed format for compatibility. That readback is a
+decoded protected record, not independent authentication of an admitted plan. Indexed admission supplies
+the exact plan and compares all canonical bytes and digests. The writer boundary and that semantic join
+therefore state different guarantees.
+
+*Absence and value guards:* the authority suite checks the complete library inventory for the absent
+free-digest writer and alternate decoder definitions and checks the writer's public export boundary.
+The exact sealed export pin holds the same surface. An import of a deleted identifier would fail even
+without this boundary, so no such compile-fail fixture stands in for these checks. Runtime cases retain
+immutable/idempotent persistence, compare canonical readback projections, refuse ordinary and overflowing
+tab-format revisions at their actual keys, and distinguish fresh binding from rebinding. Ordinary revision
+`1` establishes format refusal independently of numeric overflow. These controls establish neither
+whole-store fresh-root refusal ordering nor the remaining profile-slot admission checks.
+
 ---
 
 ## Recovery
+
+### Unresolved outcomes are classified explicitly
+
+A recognized phase can still describe an unresolved effect. Treating every decoded constructor as safe
+to continue would turn recognition into authority; leaving known outcomes to an unknown-text fallback
+would hide an omitted classification arm. Session therefore decodes one private closed vocabulary of
+45 names and handles every constructor. Its seven recognized outcome-unknown phases explicitly return
+`UnknownDisposition`, while an undecodable spelling reaches that disposition separately. Neither path
+grants effect authority.
+
+`Reserved` is continuable before its next backend call, bringing that set to six without asserting that
+no earlier effect occurred. The nine-member fenced-retry whitelist stays unchanged; same-identity
+ordinary/adopted teardown returns to `Committed`/`AdoptionCommitted`. Observed managed success, repair
+target and phase-to success classify as settled with no further effect authority. Classification alone
+does not record a commit or mint prior-commit evidence or a receipt.
+
+*Vocabulary guard:* `SessionSpec` states a literal expected class for every name. A shared strict
+nullary-data-declaration reader compares the 43 producer rows with the actual
+`Reconcile.PersistedJournalPhase` declaration and all 45 rows with private `RecordedPhase`. It reuses
+the source blocks and lexer, so comments, strings and another type cannot manufacture coverage, and
+missing, ambiguous or unsupported declarations refuse the check. Its semantic fixtures hold that
+closed grammar instead of relying on token occurrence. Enum-derived exact decoding and named exhaustive
+unresolved arms also receive source review: public `UnknownDisposition` results alone cannot distinguish
+successful private decoding from fallback. No testing authority seam is needed for this vocabulary check.
 
 ### Recovery runs on a fresh broker generation
 
@@ -315,6 +436,103 @@ A build-then-copy path and a mount path are two representations of one delivery,
 about which bytes the child actually reads. In-place delivery at the announcing node makes the announcement
 and the bytes the same fact.
 
+### A container closes the lift context
+
+A raw layer list permits a container followed by a VM or another container. Separate readers can then
+select different boundaries for dispatch, stdin and the execution frame. Checking one consumer does
+not make every other projection agree.
+
+An opaque `VMStack` admits only VM appenders. `vmContext` closes it without a container, while
+`inContainer` closes it with one terminal container; neither result can be passed to a VM appender.
+The opaque `LiftContext` retains that prefix and optional container as its one representation. Ordinary
+`liftLayers` and `liftVMStack` readers expose descriptive state without exporting a record label.
+Incoming raw lists pass checked reconstruction before a context exists. Folding, stdin, frame and
+delivery consume the retained components, so delivery needs no reparsing or fallback to recover its VM
+prefix. These are shape guarantees, not provider readiness or invocation authority.
+
+*Type and absence proofs:* [VMLayerAfterContainer.hs](../core/hostbootstrap-core/test/compile-fail/VMLayerAfterContainer.hs)
+first builds a legitimate closed container, then attempts to append a VM.
+[RecordUpdateLiftLayers.hs](../core/hostbootstrap-core/test/compile-fail/RecordUpdateLiftLayers.hs)
+uses the in-scope ordinary getter as a record label;
+the actual earlier record module permits that same fixture, while the closed API refuses it.
+[ForgeVMStack.hs](../core/hostbootstrap-core/test/compile-fail/ForgeVMStack.hs) names the real private
+constructor with a well-typed container layer.
+[ForgeLiftContext.hs](../core/hostbootstrap-core/test/compile-fail/ForgeLiftContext.hs) supplies a valid
+VM stack and optional container to the real private context constructor; exposing only that constructor
+makes the unchanged fixture compile, identifying privacy as its rejection. Public compiler
+checks, exact exports in both facades, and ordinary-reader controls hold these boundaries. Closed-value
+tests retain layer order, record-style Show, frame, stdin and delivery behavior; they make no live
+provider-execution claim.
+
+### VM crossings share one placement renderer
+
+Working directory, non-interactivity and elevation describe where a command runs; they do not define
+a second transport. One `VMPlacement` feeds each provider's renderer for both ordinary and lifecycle
+leaves, and one inner fold applies it at every VM layer. Every WSL crossing uses `--exec` so the
+requested command vector reaches the guest without default-shell parsing.
+
+The placement fields remain independent. Lima and WSL emit the whole sudo prefix only when elevated,
+with `-n` only when also non-interactive; Incus already runs as root. Ordinary Lima enables elevation
+to preserve its `sudo -H` behavior, while a direct renderer call with `foldPlacement` does not.
+Lifecycle placement requests `/`, non-interactivity and elevation. Sharing its renderer does not
+merge the authenticated lifecycle authority channel with ordinary command execution.
+
+*Absence and value guards:* `LiftSpec` rejects `insideLifecycleVM` and placement argument literals in
+the generic Lift module. Independent literal vectors in
+`LiftContextSpec` cover every combination of the three placement fields and preserve the ordinary
+wrappers. Lift cases cover single and nested lifecycle crossings and unchanged metacharacter arguments.
+These pure and source controls establish no live provider execution.
+
+### Reverse routes are reconstructed from retained plan edges
+
+A prepared reverse descent retains the exact parent, child, subtree and verb admitted by its rooted
+catalog. Its launch route comes from the retained topology edges, collected from the root in plan
+order. Checking each fragment separately does not establish the shape of their concatenation, so
+checked reconstruction consumes the complete collected list before a context reaches its continuation.
+Graph refusals remain primary; an invalid complete shape is a descriptive route refusal. A partial
+route or a local fallback would launch different work from the retained edge.
+
+Catalog admission already checks each immediate child context and forbids descent from a container.
+The private prepared package therefore cannot lawfully contain a malformed terminal route. Creating
+an authority producer solely to manufacture such a test input would weaken the boundary the test is
+meant to hold. Public checked-constructor negatives establish shape refusal, while the public recursive
+CLI fixture observes real composed crossing arguments and child-first reverse work on its supported
+native guest row. Its Windows refusal branch makes no guest-execution claim.
+
+*Absence and flow guards:* the scoped TeardownSpec collector control rejects raw context construction
+and a replacement local route, and links complete collection, checked reconstruction and its returned
+context. Existing package-privacy controls retain the prepared-descent boundary. RecursiveLifecycleSpec
+observes the existing public route rather than a synthetic private producer.
+
+### Container configuration is copied before its entry point starts
+
+The image owns its entry point. Configuration delivery describes a filesystem projection, so an
+interpreter that writes a file and selects an executable would introduce a second launch authority.
+Native Docker operations express the actual dependency: create the stopped container, copy one regular
+ustar entry, then start attached. Every operation crosses the same VM prefix through the existing lift
+and resolved-tool boundary. A descriptor that can represent only one command refuses this workflow.
+
+Delivery retains only its write path and projection payload. Canonical binding records that destination
+and the payload digest, so changing either changes the binding without recording the raw projection.
+This two-field record belongs to canonical snapshot format 8. The versioned parser refuses format 7
+rather than interpreting a different record shape under the same version. Tests recover an actual
+persisted delivering plan and refuse rehashed incompatible shapes before yielding evidence.
+
+The archive contains the explicit supplied input. UTF-8 byte lengths, checksum, block padding and trailer
+belong to the archive encoder; the existing binary pipe preserves them through UTF-8 encoding. Creation
+and start receive no projection input. The destination directory must exist, and the container ID must
+be admitted before it can name a dependent operation.
+
+Once a usable ID exists, copy/start failure attempts removal only under the requested remove policy.
+The original failure remains primary even when cleanup refuses; an auto-removed container can also
+refuse removal. An exception propagates unchanged after the applicable attempt. No usable creation ID
+means no identity on which this workflow can promise cleanup.
+
+*Absence and flow guards:* `LiftSpec` inspects actual runner commands and stdin, independently checks
+archive bytes, and holds ordering, failure propagation, VM crossings and cleanup attempts. Its source
+check rejects the config-writing interpreter and override. The exact export inventory pins the actual
+public surface. These static controls establish neither live extraction nor the absence of a container.
+
 ### The install is a hard link with no replace, never a symbolic link
 
 The inspector that verifies an installed sibling refuses a symbolic link, so a symlink install is
@@ -347,6 +565,14 @@ arrives through the project's own codec, so a missing value is a refusal rather 
 If one secret type serves both scopes, a test-only plaintext value is representable in production
 configuration and is excluded only by consumer policy. Indexing the type by scope makes it
 *unrepresentable*, which is a stronger guarantee than a policy anyone can forget.
+
+The Harness authority's nominal project and run indices bind fixture plaintext to its run. Copying a
+descriptive run name into each plaintext reference adds a second value that no reader needs. The narrow
+config authority is an opaque token; the root authority retains the descriptive name. Plaintext
+construction evaluates the supplied token before returning a reference.
+
+*Absence guard:* `SchemaSpec` inventories library definitions and rejects `harnessConfigRunName`;
+the two authority run-coercion fixtures reject re-indexing without a constructor.
 
 ---
 
@@ -581,8 +807,7 @@ boundaries), and the effect interpreter each have exactly one definition site; e
 `ProviderSpec`, `LiftSpec`, and `RegistrySpec` pin the crossing shapes. § KK's further requirement, that
 interpreter-invocation tokens appear only in the guest bootstrap module, has no guard and does not hold:
 production modules outside that module still compose `sh -c` and `bash -lc` programs — the registry
-credential lift, the container config-delivery entrypoint, and probes in the Incus, Docker, and CUDA
-reconcilers and the provider backend. § KK is owned by the
+credential lift and programs in the provider backend. § KK is owned by the
 [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md).
 
 ### A provider is a row, not a workflow, because two copies drift where no gate looks
@@ -613,6 +838,18 @@ distribution shares, so its wall is host-global — which is a real, and realist
 *Absence guard:* one crossing renderer; no per-substrate `case` outside the frame table and the detector;
 no second implementation of an ownership clause.
 
+### A provider builder has a production consumer
+
+An exported argument builder expresses an operation the lifecycle actually selects. An argv fixture
+alone proves only that an unused function can produce a list; exports, signatures, and equations do
+not prove a production call. A provider row carries no builder solely for that fixture.
+
+WSL stop releases the host-global resource wall and shuts down the shared utility VM. Per-distribution
+termination cannot establish that postcondition, so `wslTerminateArgs` has no lifecycle role.
+
+*Absence guard:* `test_provider_surface_has_one_dispatch_and_no_definition_only_builders` counts
+expression uses and refuses the unused termination builder.
+
 ### A path belongs to the frame that reads it, because derivation says nothing
 
 Asking "is this a host path or a guest path?" by looking at where the string was built gives the wrong
@@ -637,3 +874,197 @@ An opaque role-parameter input does not bound an `IO ()` result. `ProgramService
 backend in the same existential package. Signed admission validates that row and Ready supplies acquired
 handles. An unrestricted handler constructor or IO-returning selector would bypass this boundary.
 `IOServiceHandler.hs`, the registry ownership guard, and `DocValidatorSpec` reject those shapes.
+
+### Init publishes complete config bytes
+
+An existence check before a write cannot decide an existing-output policy: another writer can take the
+name between the check and publication. Refuse and keep therefore publish a flushed temporary through a
+create-if-absent hard link; overwrite publishes through a same-directory atomic rename. A reader sees a
+complete file, and a refusing or keeping writer never replaces a peer's bytes. Writing the destination in
+place would expose truncation or partial output.
+
+Identity provisioning follows publication and has its own failure outcome. A published config remains
+available after provisioning fails, and an init rerun with the keep policy completes provisioning.
+
+*Absence guard:* the scoped publisher's complete definition contains no `BS.writeFile`; schema publication
+tests pin concurrent refusal, exact winner bytes, all three policies, and temporary cleanup.
+
+## WSL readiness comes from platform status
+
+A platform readiness probe observes the installed platform. WSL's `--status` reports the local
+platform's condition; a no-installed-distributions diagnostic still identifies an installed platform.
+Virtualization-disabled diagnostics take precedence over an exit-success code or a distribution
+message, so the status classifier reads normalized stdout and stderr together.
+
+The online distribution catalogue observes a separate network service. Its availability can change
+while the local platform stays ready, and a reachable catalogue does not establish the platform's
+virtualization capabilities. The readiness path therefore uses one local status response. Native
+prerequisite observations and remediation remain a separate decision over that status.
+
+*Absence guard:* `EnsureSpec` pins the complete `wsl2Ready` definition's one status observation and
+rejects the removed `wsl2OnlineListReady` helper and online catalogue argv. Its classifier cases pin
+diagnostic precedence and the installed-platform meaning of a no-distributions report.
+
+## WSL prerequisites use native machine observations
+
+Prerequisite decisions consume machine observations through native bindings. A text-producing
+interpreter adds executable discovery, process startup, output decoding, and a textual protocol to a
+boolean observation. The native boundary reports the value it can observe, or an explicit unsupported
+result when the platform or architecture cannot supply it.
+
+Hypervisor presence takes precedence over the firmware feature report. Windows's firmware feature
+reports virtualization enabled and available to the operating system; a zero result can also mean the
+HAL cannot detect availability. It is not a direct, infallible reading of a BIOS switch. A running
+hypervisor therefore makes that flag irrelevant to installation, while an unavailable report without a
+hypervisor produces a refusal asking the operator to check BIOS/UEFI and host configuration. See the
+[Windows processor-feature contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent).
+
+Successful reconciliation includes the requested default version. The shared install driver may see
+readiness change between its caller's observation and its own probe and legitimately skip installing.
+Its completion therefore refreshes tool resolution and uses the same default-version action as the
+direct-ready path. This also supplies the installed WSL executable when the caller's original host
+configuration predates installation.
+
+*Absence guard:* `EnsureSpec` rejects the removed PowerShell probe helpers, the PowerShell tool token,
+and `-Command` in `Ensure.Wsl2`. Its complete decision table and production-used ready argv hold the
+replacement behavior; a structural guard pins refresh and the common setter after install completion.
+`PortabilitySpec` requires the native C source to be registered for every build;
+platform guards inside that source provide the supported observation or its explicit refusal.
+
+## Incus convergence observes gaps before executing argv
+
+A host provider daemon is shared with other project operations. Its installer observes actionable
+capability and root-daemon gaps before selecting package, initialization, and restart work. Client
+installation establishes the executable; daemon initialization belongs to the observed convergence
+plan. A usable provider therefore has no package or restart action, and two gaps share one restart.
+The admitted absolute Incus path stays bound to the probe and initialization, while installed tools
+are re-resolved before later work.
+
+Capability is architectural: QEMU, firmware, and virtiofsd must match the Linux host. Grouped argv
+preserves the conjunction between capabilities and the alternatives within firmware or daemon paths.
+A configured virtiofsd path is observed as executable too, because a retained resolver entry can outlive
+the file. Typed PATH discovery has one owner in the host-tool catalog.
+
+Host setup also depends on each command's result. An absent Docker forwarding chain skips its rules;
+a failed rule check alone permits insertion. A module-load exit cannot prove the KVM device exists,
+so the ordered attempts each recheck the device. Argument vectors and Haskell control flow retain these
+observations without interpreter programs that swallow failures or merge steps.
+
+*Absence and flow guards:* `EnsureSpec` rejects the three removed interpreter programs and pins
+architecture-specific argv, observation-driven convergence, refresh, chain-missing skip, and per-attempt
+KVM rechecks in the real definitions. `HostToolSpec` pins typed virtiofsd discovery and resolution.
+Descriptive convergence facts select setup work; capability admission performs its own configured
+observation.
+
+
+## Incus capability admission performs its own observation
+
+A descriptive status reports facts; it does not establish authority to mint a provider capability.
+Even a Ready status returned by the pure classifier describes only its supplied observations. The
+capability gate therefore accepts host configuration and runs the configured provider probe itself,
+then consumes the descriptive result before minting the existing opaque capability. There is no
+public status-to-capability path. Hiding the Ready constructor makes the public status vocabulary
+clearer, while the gate's internal observation supplies the actual admission boundary.
+
+The six non-ready statuses remain public so callers can report actionable failures. The descriptive
+eliminator preserves their exact refusal text and reads a classifier-derived Ready as success without
+creating authority. Daemon permission failure precedes VM and egress failures, and VM failure precedes
+egress. The opt-in live harness consumes this same descriptive result for its read-only preflight.
+
+The observation uses the caller-configured tool paths. Admission does not authenticate executable
+contents or promise that a daemon remains ready indefinitely. It admits the scoped continuation from
+the configured probe's current result, with no callback admitted on refusal.
+
+*Constructor and flow guards:* independent public-only compile-fail fixtures reject the opaque
+capability constructor and Ready constructor for their own diagnostics. `EnsureSpec` pins all six
+literal refusals, a classifier-derived Ready control, failure precedence, and the actual empty-tool
+configuration gate's refusal. Its callback test executes any admitted action before checking that no
+callback ran. A balanced-definition guard links the real configured probe, descriptive eliminator,
+and sole mint, and requires the reconciler to pass configuration to that gate directly.
+
+
+## NVIDIA repository publication follows validated fetches
+
+Fetching repository inputs and publishing them under system directories have different failure
+boundaries. Both downloads must succeed and their bytes must be read and accepted before a privileged
+publication command runs. Owned scratch storage keeps incomplete or refused inputs away from both
+destinations and is cleaned after success, ordinary IO refusal, or asynchronous interruption.
+
+A repository list is data, including its literal `$(ARCH)` marker. Haskell rewrites every supported
+active HTTPS entry with the fixed signed-by keyring and preserves comments, blank lines, and final
+newline behavior. An unsupported active entry refuses rather than remaining unsigned. Strict UTF-8
+handling and rejection of absent or empty downloads keep decoding and missing-file failures before
+publication too. This boundary does not promise atomic publication of both destination files or
+rollback after a privileged command has started, and it does not establish the remote key's trust chain.
+
+The runtime workflow consumes real bootstrap-tool and toolkit-tail command lists around an explicit
+scratch stage. A static command vocabulary cannot represent a Haskell rewrite by pretending an
+executable performs it. The resolved runner therefore receives only actual Curl and Sudo argument
+vectors; the reconciler observes complete satisfaction before doing setup and refreshes installed tools
+before using them. Its final nvkind smoke establishes default runtime and volume-mount GPU visibility;
+CDI is configured separately and is not proved by that smoke.
+
+*Absence and flow guards:* `EnsureSpec` rejects the removed repository interpreter program and pins
+the real bootstrap, fetch, publication, and runtime-tail argv. The production-used scratch workflow's
+recording runner supplies bytes only to its requested download paths and checks fetch/content refusal
+before any publication, exact successful ordering, and cleanup. Pure list cases pin supported and
+refused input bytes. A balanced-definition guard connects the no-op, tool refresh, scratch stage, tail,
+and verification. These static controls make no live repository, GPU, or CDI acceptance claim.
+
+
+## Docker future-login checks observe group and socket permissions
+
+A newly granted group belongs to the user's account database before it belongs to the current
+process. `id -nG <user>` observes that future-login membership directly. Haskell compares whole group
+names against the actual Docker socket's owning group and requires its group-write bit; a substring,
+a different owning group, or missing write permission cannot establish that access route.
+
+The result-producing runner retains exit status and stdout. The shared checked-step callback returns
+only completion and cannot supply this observation. Command and socket-metadata failures therefore
+refuse explicitly before the existing current-session ACL path. Native POSIX metadata supplies the
+group and mode, while native Windows reports an unsupported observation. Ordinary IO failures refuse;
+this read-only verification does not mint authority or change host users or socket state.
+
+The reconciler retains its existing group grant before verification. Current-session direct Docker
+and ACL work follows successful verification. The check describes group-based socket permissions; it neither executes a
+future login nor independently proves daemon connectivity. The Linux package plan refreshes apt
+before installation. Every command is an argument vector, with no `sg` interpreter program.
+
+*Absence and flow guards:* `EnsureSpec` pins whole-token and actual-group decisions, the group-write
+bit, command and metadata refusals, and the exact `id -nG` observation order through the production-used
+verifier. A balanced caller guard links refusal before the real ACL continuation and preserves the
+existing direct-info and ACL path. Metadata-source guards pin native group/mode observation and the
+explicit Windows refusal. The named absence guard rejects `sg` and interpreter argv, and the Linux
+plan case pins apt update before installation. Portable fixture observations make no live-login or
+host-permission mutation claim.
+
+
+## Guest bootstrap steps come from admitted targets
+
+Path admission must survive storage and observation. An opaque GuestPath retains the original spelling
+of a POSIX-absolute guest path; target and step payloads carry that proof until argument rendering.
+Common path admission precedes role labeling. The target receives six admitted purpose roles and
+checks the toolchain pin before the toolchain home, preserving argument bytes and the frame that
+interprets each coordinate.
+
+A hidden target constructor alone does not close construction when exported record selectors still
+permit updates. Private labels and ordinary readers prevent a caller from replacing an admitted field
+outside the factory. Hidden step constructors likewise ensure the public vocabulary's steps come
+from an admitted target's plan. The provided driver fixes their order; callers retain descriptive
+kind, label, probe, and action readers without unchecked payload construction.
+
+A common GuestPath establishes path validity, not coordinate identity. Six distinct purpose roles
+separate the source, project, toolchain, bootstrapper, built-binary and installed-binary coordinates.
+Each role is stored in the target and matching step payloads and adopted at the actual demo caller,
+with its underlying path eliminated only for predicates or rendering. No raw factory path slot remains.
+Toolchain-pin and `.ghcup` target checks retain their order, and presentation remains compatible. A role
+labels a planned coordinate; runtime probes observe the properties each step declares.
+
+*Constructor and reader guards:* public-only RepointGuestBootstrapTarget and ForgeGuestBootstrapStep
+fixtures use admitted, correctly typed payloads and reject the actual selector or constructor access.
+Their payload types match the current signatures so an unrelated type error cannot mask leakage.
+The exact export inventory is registered in the real supplemental discovery list and keeps path,
+target, and step constructors opaque. GuestBootstrapSpec checks ordinary reader definitions, path
+admission, presentation, and the existing complete argument vectors and driver journals. Role controls
+pin each coordinate's intended rendering positions; the final binary-role fixture rejects direct
+transposition. Static validation makes no claim of bootstrapping a live guest.

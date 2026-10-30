@@ -12,7 +12,6 @@ module HostBootstrap.Wsl2 (
     wslReportsVirtualizationDisabled,
     wslInstallArgs,
     wslExecArgs,
-    wslTerminateArgs,
     wslUnregisterArgs,
     wslShutdownArgs,
 )
@@ -59,10 +58,6 @@ wslRunningDistros = map fst . filter ((== "running") . snd) . wslDistroStates
 wslInstallArgs :: String -> String -> [String]
 wslInstallArgs distro vhdSize =
     ["--install", "-d", "Ubuntu-24.04", "--name", distro, "--no-launch", "--vhd-size", vhdSize]
-
-wslTerminateArgs :: String -> [String]
-wslTerminateArgs distro =
-    ["--terminate", distro]
 
 {- | This frame's row in the one guarded destructive delete (§ LL). WSL2 spells
 the removal @--unregister@; the guard that decides whether it may happen is

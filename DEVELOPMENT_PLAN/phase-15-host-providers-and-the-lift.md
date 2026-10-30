@@ -259,12 +259,17 @@ Make the WSL2 lifecycle realization consume the lower WSL2 target, renderer, and
 - The module owns distro and lifecycle builders only.
 - Prerequisite compatibility exports delegate to `Ensure.Wsl2`.
 - Wall, shutdown, distro, and lifecycle shapes preserve the exact selected target.
+- Every exported lifecycle builder has a production consumer. The provider stops by releasing the global
+  wall and then shutting down the shared WSL2 utility VM.
 - A source guard keeps generic Lift independent of the realization.
 
 #### Validation
 
-`Wsl2Spec` covers lifecycle shapes; native Windows confirmation belongs to the Windows and WSL2
-acceptance phase.
+`Wsl2Spec` covers lifecycle shapes, and `ProviderSpec`'s "stop and guarded delete are explicit" case
+holds the wall-release-before-shutdown order. The Python packaging guard
+`test_provider_surface_has_one_dispatch_and_no_definition_only_builders` requires a production consumer
+for each named lifecycle builder and enforces the supported provider surface. Native Windows confirmation
+belongs to the Windows and WSL2 acceptance phase.
 
 #### Remaining Work
 

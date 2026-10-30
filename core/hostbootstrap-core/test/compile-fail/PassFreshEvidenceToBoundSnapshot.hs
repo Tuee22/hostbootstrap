@@ -2,7 +2,6 @@ module PassFreshEvidenceToBoundSnapshot where
 
 import HostBootstrap.Authority (InstalledProjectIdentity)
 import HostBootstrap.Lifecycle.Mode (
-    InvocationCloseKey,
     UnboundRunLease,
     VerifiedPlanSnapshot,
  )
@@ -22,8 +21,9 @@ passUnboundLease store project unbound =
     withBoundPlanSnapshot
         store
         project
-        unbound
+        (\_ -> pure ())
         (\_ _ _ _ _ _ _ -> pure ())
+        unbound
 
 passCallerSnapshot ::
     ProtectedStore ->
@@ -34,5 +34,6 @@ passCallerSnapshot store project snapshot =
     withBoundPlanSnapshot
         store
         project
-        snapshot
+        (\_ -> pure ())
         (\_ _ _ _ _ _ _ -> pure ())
+        snapshot

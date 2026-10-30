@@ -18,11 +18,15 @@ import qualified ClusterShippedSpec
 import qualified ClusterWorkloadSpec
 import qualified ColimaSpec
 import qualified CompileFailSpec
+import ConditionalCase (resetConditionalCompletions)
 import qualified ContextSpec
 import qualified CordonSpec
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
 import Data.List (isPrefixOf)
 import Data.Text (Text)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import qualified DataRootSpec
 import qualified DetachedSpec
 import qualified DhallGenSpec
@@ -38,6 +42,7 @@ import qualified HandoffSpec
 import qualified HarnessSpec
 import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
+import HostBootstrap.Effect.Run (runWorkingDirectoryEntry, workingDirectoryEntryArguments)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Identity.Install (provisionInstalledIdentity)
 import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
@@ -81,7 +86,9 @@ import qualified SpecIndexSpec
 import qualified StepSpec
 import qualified SubstrateSpec
 import System.Environment (getArgs, getExecutablePath, lookupEnv)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath (takeBaseName)
+import System.IO (hPutStrLn, hSetBinaryMode, stderr, stdin, stdout)
 import qualified TeardownSpec
 #if !defined(mingw32_HOST_OS)
 import System.Posix.Files (setFileCreationMask)
@@ -101,6 +108,15 @@ interpretFrameTransaction raw = do
     case clusterExposure of
         Just outcome -> pure outcome
         Nothing -> interpretShippedOwnership raw
+
+runLiftProbe :: [String] -> IO ()
+runLiftProbe mode = do
+    hSetBinaryMode stdin True
+    hSetBinaryMode stdout True
+    case mode of
+        ["stdout", payload] -> ByteString.hPut stdout (TextEncoding.encodeUtf8 (Text.pack payload))
+        ["stdin"] -> ByteString.hGetContents stdin >>= ByteString.hPut stdout
+        _ -> ioError (userError ("unknown lift probe: " <> show mode))
 
 {- | Normalize the process's file-creation mask, where the host has one.
 
@@ -153,6 +169,11 @@ main = do
     executableName <- takeBaseName <$> getExecutablePath
     recursiveFixture <- lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
     case args of
+        ("--hostbootstrap-lift-probe" : mode) -> runLiftProbe mode
+        -- The capacity fixture is an actual described sysctl process. Select its
+        -- exact protocol before inherited provider/cluster fixture variables.
+        ["-n", "hw.ncpu"] -> putStrLn "2"
+        ["-n", "hw.memsize"] -> putStrLn "1073741824"
         _
             | executableName `elem` ["incus", "docker"]
             , Just _ <- recursiveFixture ->
@@ -170,6 +191,8 @@ main = do
                 FakeProvider.runFakeProviderClient fakeProviderGuest providerRoot args
         ["--hostbootstrap-schema-fixture", fixture] ->
             CLISpec.runSchemaFixture fixture
+        ["--hostbootstrap-cli-identity-mismatch-probe"] ->
+            CLISpec.runIdentityMismatchProbe
         ["--hostbootstrap-recursive-lifecycle-child"] ->
             RecursiveLifecycleSpec.runLifecycleChild
         ["--hostbootstrap-recursive-lifecycle-root", verb] ->
@@ -180,6 +203,12 @@ main = do
         -- so cross-process exclusion is proved with the production primitive.
         ["--hostbootstrap-protected-entry-probe", storeRoot] ->
             AuthoritySpec.runEntryProbe storeRoot
+        ["--hostbootstrap-command-reservation-probe", storeRoot, epochWord, planDigest, frameKey] ->
+            AuthoritySpec.runCommandReservationProbe storeRoot epochWord planDigest frameKey
+        ["--hostbootstrap-liveness-probe", storeRoot, name] ->
+            AuthoritySpec.runLivenessProbe storeRoot name
+        ["--hostbootstrap-harness-identity-probe", stateRoot, readyPath] ->
+            HarnessSpec.runHarnessIdentityProbe stateRoot readyPath
         -- A separate process attempting the *other* lifecycle profile against a
         -- live one, so the cross-profile exclusion is proved across processes
         -- rather than only within one.
@@ -220,8 +249,15 @@ main = do
             DetachedSpec.runDetachedChildProbe mode
         ["--hostbootstrap-colima-shipped-owner-probe", directory, pidPath, python] ->
             ColimaSpec.runShippedOwnerProbe directory pidPath python
+        ("--hostbootstrap-effect-probe" : mode) -> EffectSpec.runEffectProbe mode
+        _ | take 1 args == workingDirectoryEntryArguments -> runWorkingDirectoryEntry (drop 1 args)
         _ | args == shippedCommandEntryArguments -> runShippedCommandEntry
+        (probe : _)
+            | "--hostbootstrap-" `isPrefixOf` probe -> do
+                hPutStrLn stderr ("unrecognized probe: " <> show args)
+                exitWith (ExitFailure 97)
         _ -> do
+            resetConditionalCompletions
             executable <- getExecutablePath
             provisionInstalledIdentity executable >>= either fail pure
             docTests <- DocValidatorSpec.tests

@@ -40,15 +40,27 @@ module HostBootstrap.Substrate (
     nvidiaMarkerPaths,
     nvidiaDeviceMarker,
     hasNvidiaGpu,
+    NvidiaProbePlan (..),
+    nvidiaProbePlan,
+    nvidiaProbeAnswer,
+    nvidiaMarkerPathsFor,
 )
 where
 
 import Data.Char (toLower)
 import Data.List (isInfixOf)
-import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
-import System.Directory (doesPathExist, findExecutable)
-import System.Environment (lookupEnv)
+import HostBootstrap.Effect.Run
+    ( BoundedRun (..)
+    , CapturedRun (capturedExit, capturedStdout)
+    , RunBounds (..)
+    , RunNamespace (..)
+    , runBoundedGrouped
+    )
+import HostBootstrap.HostTool (HostTool (NvidiaSmi), absExePath, discover)
+import System.Directory (doesPathExist, getCurrentDirectory)
+import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
+import System.IO (hPutStrLn, stderr)
 import qualified System.Info as Info
 
 -- | The supported outer-host realization tags.
@@ -204,7 +216,9 @@ parseStatedHost statedName statedArch =
     Just $ do
         name <- required substrateEnvVar statedName >>= parseSubstrateName
         arch <- required archEnvVar statedArch >>= parseDockerArch
-        pure (Substrate name arch)
+        case name of
+            AppleSilicon -> classify "darwin" (renderArch arch) False
+            _ -> pure (Substrate name arch)
   where
     required field = maybe (Left ("incomplete invocation context: " ++ field ++ " is unset")) Right
 
@@ -226,6 +240,7 @@ front of it. This is the fallback, not the ordinary path.
 -}
 detectHere :: IO (Either String Substrate)
 detectHere = do
+    hPutStrLn stderr "hostbootstrap: no bootstrapper host statement; classifying this host directly"
     gpu <- hasNvidiaGpu
     pure (classify Info.os Info.arch gpu)
 
@@ -242,20 +257,57 @@ It is one string here rather than a literal at each of those sites, so
 nvidiaDeviceMarker :: String
 nvidiaDeviceMarker = "GPU"
 
--- | Whether the host has an NVIDIA GPU: the kernel markers, then @nvidia-smi -L@.
+-- | The next evidence read, decided without effects or a substitute executor.
+data NvidiaProbePlan = NvidiaPresent | NvidiaAbsent | NvidiaListing
+    deriving (Eq, Show)
+
+-- | Kernel markers belong only to the Linux frame.
+nvidiaMarkerPathsFor :: HostFrame -> [FilePath]
+nvidiaMarkerPathsFor LinuxFrame = nvidiaMarkerPaths
+nvidiaMarkerPathsFor AppleFrame = []
+nvidiaMarkerPathsFor WindowsFrame = []
+
+-- | macOS performs no probe; Windows never treats a Linux marker as evidence.
+nvidiaProbePlan :: HostFrame -> Bool -> NvidiaProbePlan
+nvidiaProbePlan LinuxFrame markerPresent = if markerPresent then NvidiaPresent else NvidiaListing
+nvidiaProbePlan AppleFrame _ = NvidiaAbsent
+nvidiaProbePlan WindowsFrame _ = NvidiaListing
+
+-- | Only a successful bounded listing is device evidence. Missing tools,
+-- timeouts, output limits and launch failures all answer "no GPU".
+nvidiaProbeAnswer :: NvidiaProbePlan -> Maybe BoundedRun -> Bool
+nvidiaProbeAnswer NvidiaPresent _ = True
+nvidiaProbeAnswer NvidiaAbsent _ = False
+nvidiaProbeAnswer NvidiaListing outcome = case outcome of
+    Just (BoundedCompleted run) ->
+        capturedExit run == ExitSuccess && nvidiaDeviceMarker `isInfixOf` capturedStdout run
+    _ -> False
+
+-- | Read this frame's markers, then a resolved, five-second bounded listing.
 hasNvidiaGpu :: IO Bool
-hasNvidiaGpu = do
-    markers <- mapM doesPathExist nvidiaMarkerPaths
-    if or markers
-        then pure True
-        else do
-            mSmi <- findExecutable "nvidia-smi"
-            case mSmi of
-                Nothing -> pure False
-                Just smi -> do
-                    outcome <- runCaptured smi ["-L"] ""
-                    pure $ case outcome of
-                        Right run
-                            | capturedExit run == ExitSuccess ->
-                                nvidiaDeviceMarker `isInfixOf` capturedStdout run
-                        _ -> False
+hasNvidiaGpu = case classify Info.os Info.arch False of
+    Left _ -> pure False
+    Right substrate -> do
+        let frame = substrateFrame substrate
+        markers <- mapM doesPathExist (nvidiaMarkerPathsFor frame)
+        let plan = nvidiaProbePlan frame (or markers)
+        case plan of
+            NvidiaListing -> do
+                executable <- discover NvidiaSmi
+                case executable of
+                    Nothing -> pure (nvidiaProbeAnswer plan Nothing)
+                    Just smi -> do
+                        directory <- getCurrentDirectory
+                        environment <- getEnvironment
+                        outcome <-
+                            runBoundedGrouped
+                                RunBounds
+                                    { boundWallMicros = 5000000
+                                    , boundOutputBytes = 65536
+                                    , boundTerminationGraceMicros = 500000
+                                    }
+                                (RunNamespace directory environment)
+                                (absExePath smi)
+                                ["-L"]
+                        pure (nvidiaProbeAnswer plan (Just outcome))
+            _ -> pure (nvidiaProbeAnswer plan Nothing)

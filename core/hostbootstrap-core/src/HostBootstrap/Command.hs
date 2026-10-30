@@ -37,7 +37,6 @@ import qualified Data.ByteString as ByteString
 import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List (find, intercalate, isInfixOf, stripPrefix)
-import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
@@ -90,7 +89,9 @@ import HostBootstrap.Config.Class (
     projectCodecSchemaText,
     projectCodecSpecDigest,
  )
+import HostBootstrap.Config.Fields (KnownScopeKind)
 import HostBootstrap.Config.Schema (
+    ConfigPublishOutcome (ConfigKeptExisting, ConfigPublished, ConfigRefusedExisting),
     TestConfigReplacement (RefuseExistingTestConfig, ReplaceExistingTestConfig),
     TestConfigWriteOutcome (TestConfigExists, TestConfigReplaced, TestConfigWritten),
     ValidatedConfig,
@@ -98,6 +99,7 @@ import HostBootstrap.Config.Schema (
     installTestConfig,
     parseConfigRole,
     projectConfigFileName,
+    publishScopedProjectConfigFile,
     renderConfigRole,
     renderScopedProjectConfigBytes,
     siblingProjectConfigPath,
@@ -108,7 +110,6 @@ import HostBootstrap.Config.Schema (
     withAssembledHarnessConfig,
     withSiblingValidatedProjectConfigContext,
     withSiblingValidatedProjectConfigRoot,
-    writeScopedProjectConfigFile,
  )
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
@@ -598,6 +599,7 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                                                                                                                         binding
                                                                                                                                                         plan
                                                                                                                                                         lifecycleContext
+                                                                                                                                                        ownedProject
                                                                                                                                                 either (raiseForwardFailure lease) pure ran
                                                                                                                                             reverseAction = do
                                                                                                                                                 destroyed <-
@@ -776,6 +778,7 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                                                                                                                                                                                                     freshBinding
                                                                                                                                                                                                                                     freshPlan
                                                                                                                                                                                                                                     freshLifecycleContext
+                                                                                                                                                                                                                                    ownedProject
                                                                                                                                                                                                                             case ran of
                                                                                                                                                                                                                                 Right () -> pure ()
                                                                                                                                                                                                                                 Left failure
@@ -898,7 +901,7 @@ supplied by the project spec (or by the explicit bare-core entrypoint).
 -}
 checkCodeCommand ::
     forall cfg configScope specDigest.
-    (ProjectCfg cfg) =>
+    (KnownScopeKind configScope, ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     String ->
     IO () ->
@@ -1067,9 +1070,11 @@ parser yields a defaultless 'InitArgs' which the single assembler interprets.
 Python does not trigger this
 surface; it builds the host-native binary and execs it (§ M).
 When @project init@ writes the root host-orchestrator config at the executable's
-actual sibling path, the same successful transaction installs or validates the
-root handoff and build identities. Alternate output paths, child roles, and
-@service init@ cannot mint those root secrets.
+actual sibling path, root handoff and build identity provisioning runs after
+config publication and is not rolled back with it. A provisioning failure
+leaves the published config; rerunning with @--if-missing@ completes provisioning.
+Alternate output paths, child roles, and @service init@ cannot mint those root
+secrets.
 -}
 initParserInfo ::
     forall cfg configScope specDigest.
@@ -1098,17 +1103,16 @@ initParserInfo codec progName commandLabel defaultRole installRootIdentity initB
   where
     initAction moutput roleName mroot mDockerfile mcpu mMemory mStorage mha existingPolicy alsoRolesRaw = do
         roleKind <- either die pure (parseConfigRole roleName)
-        -- A config may declare more than one role (§ X): the primary --role plus
-        -- any --also-role grants (e.g. a project authority that is also a service
-        -- authority). Each grant unions the role's command classes + capabilities.
+        -- Leaf service placements may declare additional service roles (§ X).
+        -- The project assembler interprets and validates these --also-role
+        -- additions alongside the primary --role.
         extraRoles <- mapM (either die pure . parseConfigRole) alsoRolesRaw
-        currentRoot <- getCurrentDirectory
         let args =
                 InitArgs
                     { role = roleKind
                     , alsoRoles = extraRoles
                     , output = moutput
-                    , sourceRoot = Just (fromMaybe currentRoot mroot)
+                    , sourceRoot = mroot
                     , mCpu = mcpu
                     , memory = T.pack <$> mMemory
                     , storage = T.pack <$> mStorage
@@ -1118,13 +1122,13 @@ initParserInfo codec progName commandLabel defaultRole installRootIdentity initB
                     }
         cfg <- initBuilder args
         outPath <- maybe defaultProjectConfigPath pure moutput
-        exists <- doesFileExist outPath
-        case (exists, existingPolicy) of
-            (True, KeepExistingOutput) ->
+        published <- publishScopedProjectConfigFile existingPolicy codec outPath cfg
+        case published of
+            ConfigPublished -> pure ()
+            ConfigKeptExisting ->
                 putStrLn (commandLabel ++ ": " ++ outPath ++ " already present")
-            (True, RefuseExistingOutput) ->
+            ConfigRefusedExisting ->
                 die (commandLabel ++ ": " ++ outPath ++ " already exists (pass --force to overwrite)")
-            _ -> writeScopedProjectConfigFile codec outPath cfg
         when (installRootIdentity && roleKind == defaultRole) $ do
             executable <- getExecutablePath
             installedConfig <- normalise <$> makeAbsolute outPath
@@ -1700,6 +1704,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 binding
                 plan
                 lifecycleContext
+                project
         case ran of
             Right () -> pure ()
             Left err -> die err
@@ -2127,7 +2132,7 @@ runFailedDeclared cfg local =
         Nothing -> pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
 
 runExactProjectUp ::
-    forall scope specDigest planDigest planId configId cfg frame brokerGeneration.
+    forall scope specDigest planDigest planId configId cfg frame brokerGeneration projectId.
     (ProjectCfg cfg) =>
     HostConfig ->
     SelfRef ->
@@ -2142,8 +2147,9 @@ runExactProjectUp ::
     PlanDigestBinding scope specDigest planDigest planId ->
     ProjectPlan scope specDigest planId configId cfg ->
     LifecycleContext.ValidatedLifecycleContext scope specDigest planId configId frame ->
+    Authority.InstalledProjectIdentity projectId ->
     IO (Either String ())
-runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec rootAuthority lease verified bound binding plan lifecycleContext =
+runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec rootAuthority lease verified bound binding plan lifecycleContext project =
     withRootProjectUpLifecycleEntry
         exactSpec
         rootAuthority
@@ -2154,6 +2160,7 @@ runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec 
         lease
         plan
         lifecycleContext
+        project
         (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)
 
 {- | Drive one already-rotated Harness destroy generation through the same
@@ -2164,7 +2171,7 @@ only root-local cleanup; every child frame is admitted and settled by the
 sealed reverse-child protocol before the root can produce 'DestroySettled'.
 -}
 runExactHarnessDestroyProjection ::
-    forall scope specDigest planDigest planId configId cfg frame brokerGeneration rootId.
+    forall scope specDigest planDigest planId configId cfg frame brokerGeneration rootId projectId.
     (ProjectCfg cfg) =>
     HostConfig ->
     ClusterProfile ->
@@ -2181,8 +2188,9 @@ runExactHarnessDestroyProjection ::
     CanonicalProjectRoot scope rootId ->
     Context.BinaryContext ->
     LifecycleContext.ValidatedLifecycleContext scope specDigest planId configId frame ->
+    Authority.InstalledProjectIdentity projectId ->
     IO (Either String (Teardown.DestroySettled scope planId))
-runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec rootAuthority lease verified bound binding plan root ctx lifecycleContext = do
+runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec rootAuthority lease verified bound binding plan root ctx lifecycleContext project = do
     settledRef <- newIORef Nothing
     ran <-
         withBoundProjectDestroyLifecycleEntry
@@ -2194,6 +2202,7 @@ runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec r
             lease
             plan
             lifecycleContext
+            project
             ( \entry current ->
                 runRootProjectReverseLifecycleEntry
                     cfg
@@ -2469,6 +2478,7 @@ withExactHarnessDestroyGeneration cfg self project handoffScope store exactSpec 
                                                                         root
                                                                         ctx
                                                                         destroyLifecycleContext
+                                                                        project
                                                         case settled of
                                                             Left failure -> pure (Left failure)
                                                             Right proof -> Right <$> use destroyCloseRoot destroyMode destroyLease destroyPlan proof

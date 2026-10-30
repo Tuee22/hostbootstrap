@@ -55,7 +55,6 @@ import Data.Kind (Type)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import qualified Data.Text.IO as TIO
 import Data.Word (Word64, Word8)
 import qualified Dhall
 import HostBootstrap.Config.Class.Internal (
@@ -207,9 +206,10 @@ failConfigAssembly = AssemblyFail
 readConfigInput :: ConfigInput -> ConfigAssembly scope Text
 readConfigInput input = AssemblyRead input AssemblyPure
 
-{- | Interpret restricted assembly. Undeclared paths fail before a read; read
-errors are returned as data. There is intentionally no interpreter hook for
-arbitrary project IO.
+{- | Interpret restricted assembly. Undeclared paths fail before a read; inputs
+are decoded as UTF-8 independently of the process locale, and read/decode errors
+are returned as data. There is intentionally no interpreter hook for arbitrary
+project IO.
 -}
 runConfigAssembly ::
     [ConfigInput] ->
@@ -228,7 +228,7 @@ runConfigAssembly allowed = go
                     )
                 )
         | otherwise = do
-            result <- tryIOError (TIO.readFile (configInputPath input))
+            result <- tryIOError (BS.readFile (configInputPath input))
             case result of
                 Left err ->
                     pure
@@ -239,7 +239,16 @@ runConfigAssembly allowed = go
                                 ++ show err
                             )
                         )
-                Right value -> go (next value)
+                Right raw -> case TE.decodeUtf8' raw of
+                    Left _ ->
+                        pure
+                            ( Left
+                                ( "config assembly could not decode "
+                                    ++ configInputPath input
+                                    ++ " as UTF-8"
+                                )
+                            )
+                    Right value -> go (next value)
 
 {- | Install a codec under a fresh specification identity. The rank-2 digest
 index cannot be selected or reused by the caller.
@@ -413,7 +422,8 @@ data InitArgs = InitArgs
     , output :: Maybe FilePath
     -- ^ where to write the generated config (default: the executable sibling)
     , sourceRoot :: Maybe FilePath
-    -- ^ the source root recorded in the generated context (default: cwd)
+    -- ^ project default when omitted; a relative root resolves against the
+    -- config's anchor directory
     , mCpu :: Maybe Natural
     -- ^ CPU budget (project default when omitted)
     , memory :: Maybe Text

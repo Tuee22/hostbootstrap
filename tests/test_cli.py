@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+import tomllib
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -134,12 +137,13 @@ def test_update_wraps_self_update_errors(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_update_check_reports_up_to_date(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _check_status(*, ref: str) -> self_update.CheckStatus:
-        assert ref == "main"
+    def _check_status(*, ref: str | None) -> self_update.CheckStatus:
+        assert ref is None
         return self_update.CheckStatus(
             installed_commit="a" * 40,
             remote_commit="a" * 40,
-            requested_revision="main",
+            requested_revision="v1.2",
+            compared_ref="v1.2",
         )
 
     monkeypatch.setattr(cli.self_update, "check_status", _check_status)
@@ -148,28 +152,48 @@ def test_update_check_reports_up_to_date(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert result.exit_code == 0
     assert "up to date" in result.output
+    assert "v1.2" in result.output
 
 
 def test_update_check_reports_available_update(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _check_status(*, ref: str) -> self_update.CheckStatus:
+    def _check_status(*, ref: str | None) -> self_update.CheckStatus:
+        assert ref == "feature"
         return self_update.CheckStatus(
             installed_commit="a" * 40,
             remote_commit="b" * 40,
             requested_revision="main",
+            compared_ref="feature",
         )
 
     monkeypatch.setattr(cli.self_update, "check_status", _check_status)
 
-    result = CliRunner().invoke(cli.main, ["update", "--check"])
+    result = CliRunner().invoke(cli.main, ["update", "--check", "--ref", "feature"])
 
     assert result.exit_code == 1
     assert "update available" in result.output
     assert "aaaaaaaaaaaa" in result.output
     assert "bbbbbbbbbbbb" in result.output
+    assert "feature" in result.output
 
 
-def test_default_project_root_is_current_directory() -> None:
-    assert Path(".") == cli._DEFAULT_PROJECT_ROOT
+def test_default_project_root_is_current_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    captured: list[Path] = []
+
+    def _load(root: Path, **_kwargs: object) -> bootstrap.ProjectBuildSpec:
+        captured.append(root)
+        return _project()
+
+    async def _build(*_args: object, **_kwargs: object) -> Path:
+        return tmp_path / ".build" / "proj"
+
+    monkeypatch.setattr(cli, "_load_project", _load)
+    monkeypatch.setattr(cli.bootstrap, "build_binary", _build)
+    result = CliRunner().invoke(cli.main, ["build"])
+    assert result.exit_code == 0, result.exception
+    assert captured == [tmp_path.resolve()]
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +431,6 @@ def test_format_helpers_cover_fallbacks() -> None:
     assert cli._format_file_not_found(FileNotFoundError()) is None
     assert cli._format_file_not_found(FileNotFoundError(2, "missing", "unknown-tool")) is None
     assert cli._format_http_error(httpx.ConnectError("offline")) == "network error: offline"
-    assert cli._format_runtime_error(KeyError("x")) == "unsupported value: 'x'"
     assert cli._format_runtime_error(RuntimeError()) == "RuntimeError"
 
 
@@ -442,13 +465,23 @@ def _patch_build_spec(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.base_image, "build_spec_for", _stub_build_spec)
 
 
-def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    events: list[str] = []
     authority = cli.MaintainerCommandAuthority(Path.cwd().resolve(), cli._MAINTAINER_TOKEN)
-    monkeypatch.setattr(cli, "_require_maintainer_authority", lambda: authority)
-    monkeypatch.setattr(cli, "_run_quality_gates_or_abort", lambda _context, _authority: None)
 
-    async def _native(_requested: str, _host: str) -> None:
-        return None
+    def _authority() -> cli.MaintainerCommandAuthority:
+        events.append("authority")
+        return authority
+
+    def _quality(_context: Path, _authority: cli.MaintainerCommandAuthority) -> None:
+        events.append("quality-gates")
+
+    monkeypatch.setattr(cli, "_require_maintainer_authority", _authority)
+    monkeypatch.setattr(cli, "_run_quality_gates_or_abort", _quality)
+    monkeypatch.setattr(cli, "_arch_default", lambda: Arch.AMD64)
+
+    async def _native(_requested: Arch, _host: Arch) -> None:
+        events.append("arch-check")
 
     async def _pull(_tag: str, **_kwargs: object) -> object:
         return process.CommandResult(args=("docker", "pull"), returncode=0, stdout="", stderr="")
@@ -471,6 +504,7 @@ def _stub_self_check_passing(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     # Keep base-build tests hermetic: don't probe real host resources.
     monkeypatch.setattr(cli, "_resolve_build_budget", lambda _targets, *, sequential: None)
+    return events
 
 
 @pytest.mark.parametrize(
@@ -540,7 +574,6 @@ def test_friendly_group_converts_http_error(monkeypatch: pytest.MonkeyPatch) -> 
     ("exc", "needle"),
     [
         (RuntimeError("runtime failed"), "runtime failed"),
-        (KeyError("bad-value"), "unsupported value: 'bad-value'"),
     ],
 )
 def test_friendly_group_converts_known_errors(
@@ -769,9 +802,27 @@ def test_quality_gates_run_all_python_core_and_demo_commands(
     monkeypatch.setattr(cli.process, "probe", _probe)
     cli._run_quality_gates_or_abort(tmp_path, authority)
 
-    assert captured == [
-        (list(gate.command), gate.cwd) for gate in cli._quality_gates(tmp_path.resolve())
+    context = tmp_path.resolve()
+    expected = [
+        ("Python code check", (sys.executable, "-m", "hostbootstrap.check_code"), context),
+        ("Python tests", (sys.executable, "-m", "hostbootstrap.test_all"), context),
+        (
+            "core Haskell build",
+            ("cabal", "build", "all", "--ghc-options=-Werror"),
+            context / "core",
+        ),
+        ("core Haskell tests", ("cabal", "test", "all", "--ghc-options=-Werror"), context / "core"),
+        (
+            "demo Haskell build",
+            ("cabal", "build", "all", "--ghc-options=-Werror"),
+            context / "demo",
+        ),
+        ("demo Haskell tests", ("cabal", "test", "all", "--ghc-options=-Werror"), context / "demo"),
     ]
+    assert [
+        (gate.label, gate.command, gate.cwd) for gate in cli._quality_gates(context)
+    ] == expected
+    assert captured == [(list(command), cwd) for _label, command, cwd in expected]
 
 
 def test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read(
@@ -877,6 +928,13 @@ def test_native_architecture_requires_request_host_and_engine_match(
     asyncio.run(cli._validate_native_architecture(Arch.ARM64, Arch.ARM64))
     with pytest.raises(cli.click.ClickException, match="must be native"):
         asyncio.run(cli._validate_native_architecture(Arch.AMD64, Arch.ARM64))
+
+    async def _amd64() -> Arch:
+        return Arch.AMD64
+
+    monkeypatch.setattr(cli.docker_ops, "engine_arch", _amd64)
+    with pytest.raises(cli.click.ClickException, match="Docker engine=amd64"):
+        asyncio.run(cli._validate_native_architecture(Arch.ARM64, Arch.ARM64))
 
 
 def test_build_then_publish_smokes_before_and_after_registry_mutation(
@@ -1063,3 +1121,399 @@ def test_test_all_command_forwards_args_and_exit_code(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(cli.test_all, "run", lambda _args: 5)
     assert CliRunner().invoke(cli.main, ["test-all"]).exit_code == 5
+
+
+def test_run_threads_explicit_cabal_selection_and_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    project = _project()
+    captured: dict[str, object] = {}
+
+    def _load(root: Path, *, selected_cabal_file: Path | None) -> bootstrap.ProjectBuildSpec:
+        captured["root"] = root
+        captured["selection"] = selected_cabal_file
+        return project
+
+    async def _bootstrap(
+        spec: bootstrap.ProjectBuildSpec,
+        *,
+        project_root: Path,
+        args: tuple[str, ...],
+        offline: bool,
+    ) -> None:
+        captured.update(spec=spec, build_root=project_root, args=args, offline=offline)
+
+    monkeypatch.setattr(cli, "_load_project", _load)
+    monkeypatch.setattr(cli.bootstrap, "bootstrap", _bootstrap)
+    result = CliRunner().invoke(
+        cli.main,
+        [
+            "run",
+            "--project-root",
+            str(tmp_path),
+            "--offline",
+            "--cabal-file",
+            "x.cabal",
+            "project",
+            "up",
+        ],
+    )
+    assert result.exit_code == 0, result.exception
+    assert captured == {
+        "root": tmp_path.resolve(),
+        "selection": Path("x.cabal"),
+        "spec": project,
+        "build_root": tmp_path.resolve(),
+        "args": ("project", "up"),
+        "offline": True,
+    }
+
+
+@pytest.mark.parametrize("command", ["build", "build-and-push"])
+def test_base_authority_architecture_and_quality_precede_docker(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    events = _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+
+    async def _build(*_args: object, **_kwargs: object) -> process.CommandResult:
+        events.append("build")
+        return process.CommandResult(("docker", "build"), 0, "", "")
+
+    async def _push(*_args: object, **_kwargs: object) -> process.CommandResult:
+        events.append("push")
+        return process.CommandResult(("docker", "push"), 0, "", "")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _build)
+    monkeypatch.setattr(cli.docker_ops, "push", _push)
+    result = CliRunner().invoke(cli.main, ["base", command, "--flavor", "cpu"])
+    assert result.exit_code == 0, result.exception
+    expected = ["authority", "arch-check", "quality-gates", "build"]
+    if command == "build-and-push":
+        expected += ["build", "push", "build"]
+    assert events == expected
+
+
+@pytest.mark.parametrize("command", ["build", "build-and-push"])
+@pytest.mark.parametrize("stage", ["authority", "arch-check", "quality-gates"])
+def test_base_preflight_failure_makes_no_docker_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    stage: str,
+) -> None:
+    events = _stub_self_check_passing(monkeypatch)
+
+    def _refuse(*_args: object, **_kwargs: object) -> object:
+        events.append(stage)
+        raise cli.click.ClickException(f"{stage} refused")
+
+    async def _refuse_arch(*_args: object, **_kwargs: object) -> None:
+        _refuse()
+
+    def _unexpected(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("Docker must not run after a preflight refusal")
+
+    if stage == "authority":
+        monkeypatch.setattr(cli, "_require_maintainer_authority", _refuse)
+    elif stage == "arch-check":
+        monkeypatch.setattr(cli, "_validate_native_architecture", _refuse_arch)
+    else:
+        monkeypatch.setattr(cli, "_run_quality_gates_or_abort", _refuse)
+    monkeypatch.setattr(cli.docker_ops, "build", _unexpected)
+    monkeypatch.setattr(cli.docker_ops, "push", _unexpected)
+    result = CliRunner().invoke(cli.main, ["base", command, "--flavor", "cpu"])
+    assert result.exit_code != 0
+    assert f"{stage} refused" in result.output
+    assert (
+        events
+        == ["authority", "arch-check", "quality-gates"][
+            : ["authority", "arch-check", "quality-gates"].index(stage) + 1
+        ]
+    )
+
+
+@pytest.mark.parametrize("command", ["build", "build-and-push"])
+def test_base_default_context_follows_invocation_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    command: str,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+    captured: list[Path] = []
+
+    def _spec(
+        *_args: object, context: Path, **_kwargs: object
+    ) -> tuple[docker_ops.BuildSpec, object]:
+        captured.append(context)
+        return _stub_build_spec()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _spec)
+    monkeypatch.setattr(cli.docker_ops, "build", _ok_build)
+    monkeypatch.setattr(cli.docker_ops, "push", _ok_build)
+    result = CliRunner().invoke(cli.main, ["base", command, "--flavor", "cpu"])
+    assert result.exit_code == 0, result.exception
+    assert captured == [tmp_path.resolve()]
+
+
+def test_formatter_argv_is_chunked_under_the_windows_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "core" / "hostbootstrap-core" / "src" / "Long Source Directory"
+    source.mkdir(parents=True)
+    paths = []
+    for index in range(8):
+        path = source / f"Source{index}.hs"
+        path.write_text("module Source where\n", encoding="utf-8")
+        paths.append(path.relative_to(tmp_path).as_posix())
+    budget = 180
+    monkeypatch.setattr(cli, "_FORMATTER_ARGV_BUDGET", budget)
+    gates = [gate for gate in cli._style_gates(tmp_path) if gate.command[0] == "fourmolu"]
+    assert len(gates) > 1
+    assert [path for gate in gates for path in gate.command[3:]] == sorted(paths)
+    assert all(
+        process.rendered_windows_commandline_length(gate.command) <= budget for gate in gates
+    )
+    assert [gate.label for gate in gates] == [
+        f"Haskell formatter over core/hostbootstrap-core/src (part {index}/{len(gates)})"
+        for index in range(1, len(gates) + 1)
+    ]
+    monkeypatch.setattr(cli, "_FORMATTER_ARGV_BUDGET", 25)
+    with pytest.raises(cli.click.ClickException, match="source exceeds the argument budget"):
+        cli._style_gates(tmp_path)
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_concurrent_flavors_interleave_and_sequential_flavors_finish_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+    sequential: bool,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+    events: list[str] = []
+    monkeypatch.setattr(
+        cli.base_image,
+        "compatibility_smoke_spec",
+        lambda *_a, **_k: replace(_stub_build_spec()[0], tags=("smoke",)),
+    )
+
+    async def _build(spec: docker_ops.BuildSpec, *, prefix: str = "") -> process.CommandResult:
+        if spec.tags == ("t",):
+            label = prefix.strip("[] ")
+            events.append(f"{label}-start")
+            await asyncio.sleep(0)
+            events.append(f"{label}-end")
+        return process.CommandResult(("docker", "build"), 0, "", "")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _build)
+    monkeypatch.setattr(cli.docker_ops, "push", _ok_build)
+    result = CliRunner().invoke(
+        cli.main, ["base", "build-and-push", *(["--sequential"] if sequential else [])]
+    )
+    assert result.exit_code == 0, result.exception
+    assert events == (
+        ["cpu-start", "cpu-end", "cuda-start", "cuda-end"]
+        if sequential
+        else ["cpu-start", "cuda-start", "cpu-end", "cuda-end"]
+    )
+
+
+@pytest.mark.parametrize("sequential", [False, True])
+def test_failed_flavor_retains_other_publication_unless_sequential(
+    monkeypatch: pytest.MonkeyPatch,
+    sequential: bool,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+    started: list[str] = []
+    pushed: list[str] = []
+
+    async def _build(_spec: docker_ops.BuildSpec, *, prefix: str = "") -> process.CommandResult:
+        label = prefix.strip("[] ")
+        started.append(label)
+        await asyncio.sleep(0)
+        if label == "cpu":
+            raise _make_command_error("plain cpu failure")
+        return process.CommandResult(("docker", "build"), 0, "", "")
+
+    async def _push(tag: str, **_kwargs: object) -> process.CommandResult:
+        pushed.append(tag)
+        return process.CommandResult(("docker", "push"), 0, "", "")
+
+    monkeypatch.setattr(cli.docker_ops, "build", _build)
+    monkeypatch.setattr(cli.docker_ops, "push", _push)
+    result = CliRunner().invoke(
+        cli.main, ["base", "build-and-push", *(["--sequential"] if sequential else [])]
+    )
+    assert result.exit_code != 0
+    if sequential:
+        assert started == ["cpu"]
+        assert pushed == []
+        assert "published and validated" not in result.output
+    else:
+        assert "cuda" in started
+        assert pushed == ["docker.io/tuee22/hostbootstrap:basecontainer-cuda-amd64"]
+        assert "[cuda] published and validated" in result.output
+        assert "[cpu]" in result.output
+
+
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_concurrent_failures_report_every_flavor_or_preserve_programming_error(
+    monkeypatch: pytest.MonkeyPatch,
+    unexpected: bool,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+    programming_error = KeyError("x")
+    errors = {
+        "cpu": _make_command_error("cpu failure"),
+        "cuda": programming_error if unexpected else _make_command_error("cuda failure"),
+    }
+
+    async def _build(*_args: object, prefix: str = "", **_kwargs: object) -> process.CommandResult:
+        await asyncio.sleep(0)
+        raise errors[prefix.strip("[] ")]
+
+    monkeypatch.setattr(cli.docker_ops, "build", _build)
+    result = CliRunner().invoke(cli.main, ["base", "build-and-push"], standalone_mode=False)
+    assert result.exit_code != 0
+    if unexpected:
+        assert result.exception is programming_error
+    else:
+        assert isinstance(result.exception, cli.click.ClickException)
+        assert "[cpu] `docker push" in str(result.exception)
+        assert "[cuda] `docker push" in str(result.exception)
+
+
+@pytest.mark.parametrize("error", [KeyError("bad-value"), KeyError()])
+def test_friendly_group_preserves_key_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error: KeyError,
+) -> None:
+    _stub_self_check_passing(monkeypatch)
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    monkeypatch.setattr(cli.base_image, "build_spec_for", _raise)
+    result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu"])
+    assert result.exception is error
+
+
+def test_missing_docker_launch_has_its_install_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_self_check_passing(monkeypatch)
+    _patch_build_spec(monkeypatch)
+
+    async def _missing(*_args: object, **_kwargs: object) -> process.CommandResult:
+        raise process.CommandError(process.CommandUnavailable(("docker", "build"), "missing"))
+
+    monkeypatch.setattr(cli.docker_ops, "build", _missing)
+    result = CliRunner().invoke(cli.main, ["base", "build", "--flavor", "cpu"])
+    assert result.exit_code != 0
+    assert cli._MISSING_BINARY_HINTS["docker"] in result.output
+    assert "Traceback" not in result.output
+    assert "could not be run" in cli._format_command_error(
+        process.CommandError(process.CommandUnavailable((), "missing"))
+    )
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        None,
+        "name",
+        "git",
+        "lock",
+        "prefix",
+        "base-prefix",
+        "executable",
+        "ruff",
+        "black",
+        "mypy",
+        "pytest",
+        "toml",
+    ],
+)
+def test_maintainer_authority_requires_each_repository_condition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    condition: str | None,
+) -> None:
+    package = tmp_path / "hostbootstrap"
+    package.mkdir()
+    executable = tmp_path / ".venv" / "bin" / "python"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    metadata = f'[tool.poetry]\nname = "{"other" if condition == "name" else "hostbootstrap"}"\n'
+    (tmp_path / "pyproject.toml").write_text(metadata, encoding="utf-8")
+    if condition != "git":
+        (tmp_path / ".git").mkdir()
+    if condition != "lock":
+        (tmp_path / "poetry.lock").touch()
+    prefix = tmp_path / ("other-env" if condition == "prefix" else ".venv")
+    monkeypatch.setattr(cli, "__file__", str(package / "cli.py"))
+    monkeypatch.setattr(cli.sys, "prefix", str(prefix))
+    monkeypatch.setattr(
+        cli.sys, "base_prefix", str(prefix if condition == "base-prefix" else tmp_path / "system")
+    )
+    monkeypatch.setattr(
+        cli.sys,
+        "executable",
+        str(tmp_path / "external-python" if condition == "executable" else executable),
+    )
+    monkeypatch.setattr(
+        cli.importlib.util, "find_spec", lambda name: None if name == condition else object()
+    )
+    if condition == "toml":
+
+        def _bad_toml(_text: str) -> object:
+            raise tomllib.TOMLDecodeError("invalid metadata", "", 0)
+
+        monkeypatch.setattr(cli.tomllib, "loads", _bad_toml)
+    authority = cli._maintainer_command_authority()
+    if condition is None:
+        assert isinstance(authority, cli.MaintainerCommandAuthority)
+        assert authority.repository_root == tmp_path.resolve()
+    else:
+        assert authority is None
+
+
+def test_help_renders_under_cp1252(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_maintainer_cli_enabled", lambda: True)
+    runner = CliRunner(charset="cp1252")
+    for args in (
+        ["--help"],
+        ["base", "--help"],
+        ["base", "build", "--help"],
+        ["base", "build-and-push", "--help"],
+    ):
+        result = runner.invoke(cli.main, args)
+        assert result.exit_code == 0, result.exception
+        assert result.exception is None
+        if args == ["--help"]:
+            assert "check-code" in result.output
+            assert "test-all" in result.output
+
+
+def test_help_text_is_cp1252_encodable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_maintainer_cli_enabled", lambda: True)
+
+    def _visit(command: cli.click.Command) -> None:
+        for text in [
+            command.help,
+            command.short_help,
+            *(getattr(param, "help", None) for param in command.params),
+        ]:
+            if text:
+                assert text.isascii(), text
+                text.encode("cp1252")
+        if isinstance(command, cli.click.Group):
+            with cli.click.Context(command) as context:
+                for name in command.list_commands(context):
+                    child = command.get_command(context, name)
+                    assert child is not None
+                    _visit(child)
+
+    _visit(cli.main)

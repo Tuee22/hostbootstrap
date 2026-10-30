@@ -162,10 +162,21 @@ import HostBootstrap.Lift.Context (
     ConfigDelivery (..),
     ContainerLift (..),
     IncusVM (..),
-    LiftContext (..),
+    LiftContext,
     LiftLayer (..),
     LimaVM (..),
     Wsl2VM (..),
+    liftLayers,
+ )
+import HostBootstrap.Plan.Resource (
+    ClusterResource,
+    DockerResource,
+    DurableAliasResource,
+    DurableShareResource,
+    MinioResource,
+    PlannedResource (..),
+    ProviderResource,
+    RegistryResource,
  )
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
@@ -298,25 +309,6 @@ data PlannedStep scope planId configId config
     = PlannedStep Text Step [(OperationKey, Text)]
 
 type role PlannedStep nominal nominal nominal nominal
-
-{- | One resource identity projected from an exact admitted plan.
-
-The constructor is private to this kernel.  The stable operation key and frame
-are always read from the validated graph, while the digest is retained only so
-later reconciliation gates can reject a value from another interpretation.
--}
-data PlannedResource scope planId resourceId resource frame
-    = PlannedResource Text Text Text
-
-type role PlannedResource nominal nominal nominal nominal nominal
-
-data ProviderResource
-data DurableShareResource
-data DurableAliasResource
-data DockerResource
-data MinioResource
-data RegistryResource
-data ClusterResource
 
 -- | The closed relation between a resource family and its plan operation.
 data PlannedResourceKind resource where
@@ -1000,10 +992,9 @@ consumeCanonicalMount input = do
 
 consumeCanonicalConfigDelivery :: ByteString -> Either Text ByteString
 consumeCanonicalConfigDelivery input = do
-    remainder0 <- consumeCanonicalRecordHeader "config-delivery" 3 input
+    remainder0 <- consumeCanonicalRecordHeader "config-delivery" 2 input
     remainder1 <- consumeCanonicalTaggedText "write-path" remainder0
-    remainder2 <- consumeCanonicalTaggedText "exec-path" remainder1
-    consumeCanonicalTaggedText "payload-digest" remainder2
+    consumeCanonicalTaggedText "payload-digest" remainder1
 
 consumeCanonicalRecordHeader :: Text -> Word64 -> ByteString -> Either Text ByteString
 consumeCanonicalRecordHeader tag expectedFields input = do
@@ -2242,7 +2233,7 @@ stablePlanSnapshotDigestKernel (StablePlanSnapshot snapshot) =
 old bytes must never be reinterpreted under a new schema.
 -}
 canonicalPlanSnapshotFormatVersion :: Word64
-canonicalPlanSnapshotFormatVersion = 7
+canonicalPlanSnapshotFormatVersion = 8
 
 {- | Reserved non-absolute root for the current compatibility plan algebra.
 
@@ -2596,7 +2587,7 @@ encodeReversePolicy policy =
         ProjectManagedReverse -> taggedText "project-managed" ""
 
 encodeLiftContext :: LiftContext -> Builder.Builder
-encodeLiftContext (LiftContext layers) = taggedList "lift-layers" encodeLiftLayer layers
+encodeLiftContext context = taggedList "lift-layers" encodeLiftLayer (liftLayers context)
 
 encodeLiftLayer :: LiftLayer -> Builder.Builder
 encodeLiftLayer layer =
@@ -2638,7 +2629,6 @@ encodeConfigDelivery delivery =
     taggedRecord
         "config-delivery"
         [ taggedText "write-path" (Text.pack (cdWritePath delivery))
-        , taggedText "exec-path" (Text.pack (cdExecPath delivery))
         , taggedText
             "payload-digest"
             (sha256Hex (TextEncoding.encodeUtf8 (cdPayload delivery)))

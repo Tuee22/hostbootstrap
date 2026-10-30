@@ -76,7 +76,6 @@ module HostBootstrap.Reconcile (
     ownershipReceiptOperationKey,
     validateOwnershipReceipt,
     rebindOwnershipReceipt,
-    withReboundManagedResourceEvidence,
     withPlannedReboundManagedResourceEvidence,
     VerifiedResourceRecordBundle,
     resourceRecordKey,
@@ -117,6 +116,7 @@ module HostBootstrap.Reconcile (
     PreparedOperation,
     PreparedPreconditions,
     withPreparedOperation,
+    withPreparedZeroDependencyOperation,
     PreparedProviderStart,
     withPreparedProviderStart,
     withPreparedProviderStartParts,
@@ -145,6 +145,7 @@ module HostBootstrap.Reconcile (
     planProviderForceDestroy,
     PreparedPhaseTransition,
     withPreparedPhaseTransition,
+    withPreparedZeroDependencyPhaseTransition,
     preparedPhaseTransitionHandle,
     completePreparedPhaseTransition,
     VerifiedAtPhase,
@@ -1140,7 +1141,7 @@ validateOwnershipReceipt ::
     ResourceHandle scope planId id resource Managed phase ->
     OwnershipReceipt scope planId id resource ->
     Either ReconcileError ()
-validateOwnershipReceipt handle (OwnershipReceipt receiptKey receiptGeneration operationKey)
+validateOwnershipReceipt handle (OwnershipReceipt receiptKey receiptGeneration _)
     | receiptKey /= resourceHandleKey handle =
         mismatch "resource key" (resourceHandleKey handle) receiptKey
     | receiptGeneration /= resourceHandleGeneration handle =
@@ -1148,11 +1149,6 @@ validateOwnershipReceipt handle (OwnershipReceipt receiptKey receiptGeneration o
             "generation"
             (showText (resourceHandleGeneration handle))
             (showText receiptGeneration)
-    | nullText operationKey =
-        Left
-            ( Failure
-                (FailureDetail "validate ownership receipt" "operation key is empty" DoNotRetry)
-            )
     | otherwise = Right ()
   where
     mismatch field expected observed =
@@ -1177,23 +1173,6 @@ rebindOwnershipReceipt ::
 rebindOwnershipReceipt handle (OwnershipReceipt key generation operation) = do
     validateOwnershipReceipt handle (OwnershipReceipt key generation operation)
     pure (OwnershipReceipt key generation operation)
-
-withReboundManagedResourceEvidence ::
-    ResourceHandle scope planId id oldResource Managed oldPhase ->
-    OwnershipReceipt scope planId id oldResource ->
-    ( ResourceHandle scope planId id resource Managed phase ->
-      OwnershipReceipt scope planId id resource ->
-      result
-    ) ->
-    Either ReconcileError result
-withReboundManagedResourceEvidence oldHandle oldReceipt consume = do
-    let handle =
-            ResourceHandle
-                (resourceHandleKey oldHandle)
-                (resourceHandleGeneration oldHandle)
-                (resourceHandleObservationVersion oldHandle)
-    receipt <- rebindOwnershipReceipt handle oldReceipt
-    pure (consume handle receipt)
 
 withPlannedReboundManagedResourceEvidence ::
     PlannedResource scope planId id resource frame ->
@@ -1712,9 +1691,12 @@ data DependencySnapshotEntry scope planId where
 type role DependencySnapshotEntry nominal nominal
 
 {- | The managed resources this plan has acquired so far, each paired with its
-plan-owned probe.  Only 'completeReconcile' / 'completePreparedUnchanged' can
-produce the @Managed@ handle an entry requires, so an unowned or foreign
-resource cannot enter the snapshot.
+plan-owned probe. Managed handles come from acquisition completion through
+'completeReconcile' or 'completePreparedUnchanged', 'completeAdoption', phase
+completion through 'completePreparedPhaseTransition' and 'withPhaseAdvance',
+'withPlannedReboundManagedResourceEvidence', and carrier openers such as
+@Substrate.Provider.Reconcile.withFreshRunningProviderHandle@. An entry requires
+a managed handle; storing its probe does not run it.
 -}
 newtype DependencySnapshot scope planId
     = DependencySnapshot [DependencySnapshotEntry scope planId]
@@ -1910,8 +1892,7 @@ withPreparedProviderStart ::
     Either ReconcileError result
 withPreparedProviderStart plan planned handle callDigest gate consume = do
     descriptor <- plannedProjectProviderStartOperation plan planned handle callDigest
-    preconditions <- zeroDependencyPreconditions descriptor
-    withPreparedOperation descriptor preconditions gate $ \operation sealed ->
+    withPreparedZeroDependencyOperation descriptor gate $ \operation sealed ->
         consume (PreparedProviderStart handle gate operation sealed)
 
 plannedProjectProviderStartOperation ::
@@ -1982,15 +1963,17 @@ completePreparedProviderStart
       where
         generation = resourceHandleGeneration handle
 
-{- | Mint the prepared operation/preconditions pair for one plan operation.
+{- | Match one operation's gate with a caller-retained precondition set.
 
-The attempt and journal version are read off the 'PreparedGate' rather than
-taken from the caller, so an adapter cannot be reached with a fabricated journal
-version: the gate exists only because
-'HostBootstrap.Lifecycle.Prepared.recordDurableUnknown' published this
-operation's unknown phase against the protected store first.  The gate is also
-checked to name /this/ operation, so a gate recorded for a different operation
-cannot prepare this one.
+The local production gate path, @Lifecycle.Session.withPreparedGate@, checks
+broker generation, the open project and current permit, the live Open session,
+registration, the current fence and the recorded phase. It publishes the unknown
+phase transactionally and re-reads the committed record before minting the gate.
+Only the committed journal version comes from the store; the producer checks or
+selects the other coordinates.
+
+This matching function checks the supplied set and gate but does not re-run
+dependency probes.
 -}
 withPreparedOperation ::
     OperationDescriptor scope planId id resource fromPhase toPhase ->
@@ -2002,7 +1985,38 @@ withPreparedOperation ::
       result
     ) ->
     Either ReconcileError result
-withPreparedOperation
+withPreparedOperation = withMatchedPreparedOperation
+
+{- | Prepare an operation whose descriptor declares no plan dependencies.
+
+The empty-edge check runs before gate matching. No caller-retained observations
+are accepted and no dependency probe runs on this pure path.
+-}
+withPreparedZeroDependencyOperation ::
+    OperationDescriptor scope planId id resource fromPhase toPhase ->
+    PreparedGate ->
+    ( forall operationKey callDigest attempt journalVersion.
+      PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
+      PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
+      result
+    ) ->
+    Either ReconcileError result
+withPreparedZeroDependencyOperation descriptor gate consume = do
+    preconditions <- zeroDependencyPreconditions descriptor
+    withMatchedPreparedOperation descriptor preconditions gate consume
+
+-- | Shared checked-set policy for the generic and explicit zero-edge entries.
+withMatchedPreparedOperation ::
+    OperationDescriptor scope planId id resource fromPhase toPhase ->
+    OperationPreconditionSet scope planId id resource ->
+    PreparedGate ->
+    ( forall operationKey callDigest attempt journalVersion.
+      PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
+      PreparedPreconditions scope planId id resource operationKey callDigest attempt journalVersion ->
+      result
+    ) ->
+    Either ReconcileError result
+withMatchedPreparedOperation
     (OperationDescriptor planDigestOfOperation operationKey callDigest expectedDependencies)
     (OperationPreconditionSet sealedPlan sealedOperation sealedDigest observations)
     gate
@@ -2113,6 +2127,11 @@ data ReconcileResult scope planId id resource phase where
 
 type role ReconcileResult nominal nominal nominal nominal nominal
 
+{- | Settle a prepared acquisition using the generation the backend created.
+A repaired resource must retain the observed generation; a newly created
+resource may report a different positive generation, which both its managed
+handle and ownership receipt retain.
+-}
 completeReconcile ::
     ResourceHandle scope planId id resource Unclassified Observed ->
     PreparedOperation scope planId id resource operationKey callDigest attempt journalVersion ->
@@ -2152,10 +2171,23 @@ completeReconcileAt
                 )
         | otherwise =
             case observation of
-                BackendCreated generation ->
-                    managed Created generation
-                BackendRepaired generation ->
-                    managed Repaired generation
+                BackendCreated generation
+                    | generation == 0 ->
+                        Left
+                            (Failure (FailureDetail "reconcile resource" "created generation must be positive" DoNotRetry))
+                    | otherwise -> managed Created generation
+                BackendRepaired generation
+                    | generation /= resourceHandleGeneration handle ->
+                        Left
+                            ( Conflict
+                                ( ConflictDetail
+                                    (resourceHandleKey handle)
+                                    (showText (resourceHandleGeneration handle))
+                                    (showText generation)
+                                    "reprobe the resource and resolve replacement ownership"
+                                )
+                            )
+                    | otherwise -> managed Repaired generation
                 BackendForeign generation foreignState
                     | generation == 0 ->
                         Left
@@ -2184,24 +2216,13 @@ completeReconcileAt
                         "prepare against the exact observed resource"
                     )
                 )
-        managed change generation
-            | generation /= resourceHandleGeneration handle =
-                Left
-                    ( Conflict
-                        ( ConflictDetail
-                            (resourceHandleKey handle)
-                            (showText (resourceHandleGeneration handle))
-                            (showText generation)
-                            "reprobe the resource and resolve replacement ownership"
-                        )
-                    )
-            | otherwise =
-                Right
-                    ( ManagedResult
-                        (ResourceHandle (resourceHandleKey handle) generation (resourceHandleObservationVersion handle))
-                        (OwnershipReceipt (resourceHandleKey handle) generation operationKey)
-                        (Changed change)
-                    )
+        managed change generation =
+            Right
+                ( ManagedResult
+                    (ResourceHandle (resourceHandleKey handle) generation (resourceHandleObservationVersion handle))
+                    (OwnershipReceipt (resourceHandleKey handle) generation operationKey)
+                    (Changed change)
+                )
 
 withReconcileResult ::
     ReconcileResult scope planId id resource phase ->
@@ -2411,7 +2432,7 @@ withPriorCommitProof ::
     (PriorCommitProof scope planId id resource -> result) ->
     Either ReconcileError result
 withPriorCommitProof (VerifiedJournalRecord record) consume
-    | persistedPhase record == Committed =
+    | persistedPhase record `elem` [Committed, AdoptionCommitted] =
         Right
             ( consume
                 ( PriorCommitProof
@@ -2586,8 +2607,9 @@ data PreparedPhaseTransition scope planId id resource fromPhase toPhase operatio
 
 type role PreparedPhaseTransition nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
-{- | Seal a legal managed phase descriptor, its exact receipt/transition, and
-the prepared operation pair into one opaque package.
+{- | Match a legal managed phase descriptor, its exact receipt/transition and
+a caller-retained precondition set into one opaque prepared package. This pure
+matcher does not re-run dependency probes.
 -}
 withPreparedPhaseTransition ::
     ResourceHandle scope planId id resource Managed fromPhase ->
@@ -2611,10 +2633,65 @@ withPreparedPhaseTransition ::
       result
     ) ->
     Either ReconcileError result
-withPreparedPhaseTransition handle receipt transition descriptor preconditions gate consume = do
+withPreparedPhaseTransition = withMatchedPreparedPhaseTransition
+
+{- | Prepare a managed phase operation with no plan dependencies.
+
+The empty-edge check runs first, followed by the receipt, transition and gate
+checks. No caller-retained precondition set or dependency observation is accepted.
+-}
+withPreparedZeroDependencyPhaseTransition ::
+    ResourceHandle scope planId id resource Managed fromPhase ->
+    OwnershipReceipt scope planId id resource ->
+    PhaseTransition scope planId id resource fromPhase toPhase ->
+    OperationDescriptor scope planId id resource fromPhase toPhase ->
+    PreparedGate ->
+    ( forall operationKey callDigest attempt journalVersion.
+      PreparedPhaseTransition
+        scope
+        planId
+        id
+        resource
+        fromPhase
+        toPhase
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+      result
+    ) ->
+    Either ReconcileError result
+withPreparedZeroDependencyPhaseTransition handle receipt transition descriptor gate consume = do
+    preconditions <- zeroDependencyPreconditions descriptor
+    withMatchedPreparedPhaseTransition handle receipt transition descriptor preconditions gate consume
+
+-- | Shared receipt, transition and pair matching for managed phase preparation.
+withMatchedPreparedPhaseTransition ::
+    ResourceHandle scope planId id resource Managed fromPhase ->
+    OwnershipReceipt scope planId id resource ->
+    PhaseTransition scope planId id resource fromPhase toPhase ->
+    OperationDescriptor scope planId id resource fromPhase toPhase ->
+    OperationPreconditionSet scope planId id resource ->
+    PreparedGate ->
+    ( forall operationKey callDigest attempt journalVersion.
+      PreparedPhaseTransition
+        scope
+        planId
+        id
+        resource
+        fromPhase
+        toPhase
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+      result
+    ) ->
+    Either ReconcileError result
+withMatchedPreparedPhaseTransition handle receipt transition descriptor preconditions gate consume = do
     validateOwnershipReceipt handle receipt
     validatePhaseTransitionBinding handle transition
-    withPreparedOperation descriptor preconditions gate $ \prepared sealed ->
+    withMatchedPreparedOperation descriptor preconditions gate $ \prepared sealed ->
         consume
             ( PreparedPhaseTransition
                 handle

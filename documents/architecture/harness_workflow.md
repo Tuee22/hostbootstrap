@@ -50,11 +50,28 @@ rank-2 continuation and returns the matching `HarnessMode runId` lease, Harness 
 `UnboundRunLease (Harness projectId runId) brokerGeneration`. Only the diagnostic `runIdText` projection
 is public. `harnessActiveMode` narrows the exact mode lease, and `withHarnessLifecycleProfile` requires
 that active mode together with the matching root scope, `HarnessAuthority`, run witness, and unbound
-lease. It compare-and-swaps that run's durable profile slot to consumed before entering the continuation;
-within one broker generation, sequential replay or a concurrent same-slot contender receives no second
-profile. The same-run restart (see [Teardown](#teardown)) rearms the slot, and does so only under a
+lease. The shared consumer first checks retained origin, then performs mandatory recovery and ordinary
+reverse-root admission under the exclusive store entry. Before reading the profile slot, it requires
+the actual lease to decode as unbound at the retained record version. Only a matching available slot
+is compare-and-swapped to consumed; a second opener on the same still-unbound evidence returns
+`AuthorityInvocationConsumed`. Specific ordinary refusals retain their diagnostic reason. The pure
+continuation is applied after the entry, and the opener does not execute an IO action it returns.
+The [lifecycle state model](lifecycle_state_model.md#lifecycle-profile-authority) gives the full check order.
+The same-run restart (see [Teardown](#teardown)) rearms the slot, and does so only under a
 strictly fresh broker generation after a settled intermediate destroy. Production uses its
 structurally separate mode, scope, and profile opener, while both modes contend on one project record.
+
+`HarnessAuthority projectId runId` and `HarnessConfigAuthority projectId runId` both keep nominal project
+and run indices. The public authority retains descriptive run text; the narrower configuration authority
+is an opaque token without a stored copy. The two run-coercion fixtures hold that boundary without
+exposing either constructor.
+
+The stable run text is 1–48 ASCII letters, digits or hyphen. Invocation close keys allow 1–64 ASCII
+letters, digits, hyphen or dot. Neither the diagnostic projection nor the private parser/reifier exposes
+a public way to reconstruct `RunId`. Durable mode fields use exact UTF-8: decoding is strict, and no
+record or field is trimmed. Epoch/version fields accept only canonical ASCII unsigned decimal within
+`Word64`, with at most 20 digits and no sign, surrounding whitespace, alternate base, leading zero
+other than `0`, or overflow. A field's separate semantic checks still apply.
 
 After a plan snapshot is persisted and read back, its Harness scope and both digest indices must match
 the lease at the type boundary. Fresh-only `bindRunLease` rejects an already-bound record with
@@ -66,7 +83,7 @@ the sweep and scope-specific classifier. Neither route can claim a fresh binding
 dispatch consumes this admission foundation directly; it does not cross a root-level lifecycle subprocess
 boundary.
 
-Five gaps separate the tree from this page's target contract:
+Four gaps separate the tree from this page's target contract:
 
 - **No root gate.** The command description calls `test` a root-only surface, and the target contract
   refuses a non-root context before any lifecycle read or mutation, but the parser applies no
@@ -75,15 +92,6 @@ Five gaps separate the tree from this page's target contract:
   invocation location rather than on an unforgeable context capability. No test pins an off-root
   refusal. The [`test` and `context` commands
   phase](../../DEVELOPMENT_PLAN/phase-20-test-and-context-commands.md) owns this gap.
-- **Coercible Harness authority.** `HarnessAuthority projectId runId` and
-  `HarnessConfigAuthority projectId runId` in
-  [Config.Authority.Internal](../../core/hostbootstrap-core/src/HostBootstrap/Config/Authority/Internal.hs)
-  are newtypes over `Text` with phantom `projectId` and `runId` indices and no `type role` annotation, so
-  `coerce` can re-index a witness to another project or run without the constructor. Constructor
-  forgery and direct cross-run substitution are refused; role-based coercion is not. The [Dhall
-  configuration and project model
-  phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md), which owns that
-  module, owns this gap.
 - **Harness run closure can leave the mode held.** In `runOwned`
   ([Harness.Ownership](../../core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs)), a data-root
   acquisition (`takeDataRoot`) that refuses or throws skips `releaseRun`, so the run's fresh unbound lease
@@ -387,13 +395,26 @@ project-journal version and return its sole successor state/permit pair; opening
 revision is not migration-frozen. Abandoned activation instead consumes the exact old-permit fence
 set and verifies the manifest pairing the independent complete session set with its operation set. Its
 protected interpreter CAS-rebinds each existing stable session record once—including a zero-operation
-Open session—and classifies unknown, the five pre-call continuable phases, already-observed retryable,
-successful, and terminal operation records.
+Open session—and classifies the closed 45-name operation vocabulary. Its six continuable phases include
+`Reserved`, before the next backend call. Seven recognized unresolved outcomes explicitly classify as
+`UnknownDisposition`; text outside that vocabulary reaches the same disposition through decode failure.
+Neither path authorizes continuation or treats the operation as settled.
+
+The nine-member fenced-retry whitelist is unchanged. Same-identity ordinary and adopted teardown returns
+to `Committed` and `AdoptionCommitted`, not an invented teardown-presence retry. `ObservedManaged`,
+`AdoptionObservedManaged`, `RepairObservedTarget` and `PhaseObservedTo` are `Settled` classifications with
+no further effect authority; classification alone writes no commit and mints no `PriorCommitProof` or
+receipt. `RepairObservedAbsent`, `PhaseObservedAbsent` and `AdoptionTeardownObservedForeign` are terminal.
 
 **Intent registration.** Initial intent registration and exact session membership are
-one atomic session/project-journal version transition that consumes an exact `IntentOrigin` — either the
-sole `NoHistory` origin or a `ReleasedReacquisition` one — so no orphan intent can be omitted from the
-manifest and callers cannot choose the generation. An initial intent may have no fence record and cannot
+one atomic session/project-journal version transition consuming `IntentOrigin`. Public `NoHistory` is
+accepted only at an absent operation key. The private released variant comes from
+`readReleasedIntentOrigin` observing ordinary `Released`; registration rechecks its protected-store
+identity, exact key, physical record version and phase. `AdoptionReleased` yields no origin. This is an
+observation of that record's phase, not complete payload or backend-history authentication, and no effect
+authority follows before registration. Chain still uses `NoHistory`; no new root caller is adopted here.
+The transaction leaves no orphan intent outside the manifest, and callers cannot choose its generation.
+An initial intent may have no fence record and cannot
 prepare; recovery idempotently resumes the stable initial-fence protocol and threads its successor
 session/state/permit before exposing current-fence authority. Only continuable phases receive
 current-fence prepare authority, and only the closed retry
@@ -481,11 +502,13 @@ forest cursor or store crosses the process boundary.
 The recovered frame and matching ordinary-step resource evidence remains a root-held closed
 owned-or-released sum arising only from the bound snapshot and complete rehydrated set. The owned branch can
 produce a signed grant for the matching managed handle/receipt/resource/operation bindings. The released
-branch yields only its verified tombstone, produces no backend-call grant, and requires a protected root-side
-absence recheck plus a distinct new acquisition key before `ReleasedReacquisition`. Its sole root-side consumer
-creates the exact reacquisition origin and atomically revalidates it with the new generation and session
-membership. Provider reachability can therefore precede retained-child teardown without trusting raw
-persisted receipts, recreating the old normal config, or granting `ProjectUp` authority.
+branch yields only its verified tombstone and no backend-call grant. Recovery using a distinct new
+acquisition key requires a separate root-owned absence and admission protocol. Session's observed released
+origin is revalidated only against the same protected store, exact operation key and physical record
+version; it cannot transfer eligibility from an old key to a new one. An absent target uses `NoHistory`'s
+checked-absence path. The observation primitive adds no rollover producer or root-side caller adoption.
+Such recovery cannot substitute raw persisted receipts, recreate the old normal config, or grant
+`ProjectUp` authority through the tombstone alone.
 
 The self-reference lift is used only by plan-declared child descent and streams the
 context-adjusted full config record. The standalone authenticated root-scope and recovery-package primitives,
@@ -532,15 +555,32 @@ close/recovery algebra is described in
 ## Validation
 
 The static authority suite proves distinct stable run identities across successive Harness
-acquisitions, sequential refusal after each Production/Harness profile slot is consumed, and same-slot
-two-thread races in which exactly one continuation runs. Public compile-fail fixtures pin constructor
+acquisitions and refusal after each Production/Harness profile slot is consumed. Same-evidence
+second-opener cohorts yield one success and one `AuthorityInvocationConsumed`; they do not establish
+simultaneous contention on the non-threaded runtime. Cross-process protected-entry controls establish
+exclusion separately. Public compile-fail fixtures pin constructor
 sealing, nominal run/mode indices, cross-run and cross-scope refusal, exact snapshot/digest binding, and
-the complete Production/Harness profile evidence sets; no fixture pins role-based coercion of
-`HarnessAuthority`, whose indices are not nominal (see [Current Status](#current-status)). Harness/CLI tests also pin exact plan retention,
+the complete Production/Harness profile evidence sets. `CoerceHarnessAuthorityRun.hs` and
+`CoerceHarnessConfigAuthorityRun.hs` independently pin nominal run binding on both Harness authorities.
+Harness/CLI tests also pin exact plan retention,
 forward→assertion→reverse ordering, generated-config lifetime, settled-evidence-required close, and the
 private lifecycle component's absence from the public library. A command-level fixture proves the protected
 generation rotation and exact snapshot rebind, and a source guard rejects lifecycle-owned `project up` or
-`project destroy` invocation from the demo assertion suite. The workflow validation surface is:
+`project destroy` invocation from the demo assertion suite.
+
+Durable-field cases check exact ASCII identity and canonical-number refusals while preserving the
+affected record. Existing-bound recovery independently preserves a legal Unicode migration key and
+refuses invalid UTF-8 acknowledgment or migration fields at their exact keys, with neither callback
+entered and no protected-image change after the mutation. Declaration-scoped source checks hold the
+private writer's UTF-8 primitive and the readers' strict decoding and absence of trimming; they do not
+claim a public Unicode-write path. Both profile openers refuse genuine bound, valid closed and
+same-content re-versioned leases before consuming the original available slot, with zero callbacks
+and the complete post-mutation store image preserved. Well-formed Pending and matching Terminal
+reverse-intent frames distinguish specific ordinary refusal from successful profile admission without
+claiming reverse-lifecycle authority or execution. Separate constructor-child and newtype-scope-alias
+fixtures hold the profile's privacy and nominal scope role.
+
+The workflow validation surface is:
 
 - `CLISpec` covers `test init`'s overwrite policy (a second `test init` refuses and leaves the file
   byte-identical; `--replace` is the only overwrite route), the missing-config refusal of `test run`, and

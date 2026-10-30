@@ -33,8 +33,7 @@ lifecycleCases =
         wslInstallArgs "hostbootstrap-demo" "80GB"
             @?= ["--install", "-d", "Ubuntu-24.04", "--name", "hostbootstrap-demo", "--no-launch", "--vhd-size", "80GB"]
         wslExecArgs "hostbootstrap-demo" ["hostbootstrap-demo", "project", "up"]
-            @?= ["-d", "hostbootstrap-demo", "--", "hostbootstrap-demo", "project", "up"]
-        wslTerminateArgs "hostbootstrap-demo" @?= ["--terminate", "hostbootstrap-demo"]
+            @?= ["-d", "hostbootstrap-demo", "--exec", "hostbootstrap-demo", "project", "up"]
         wslUnregisterArgs "hostbootstrap-demo-" "hostbootstrap-demo-wsl"
             @?= Right ["--unregister", "hostbootstrap-demo-wsl"]
         assertBool "refuses to unregister unmanaged distro" (isLeft (wslUnregisterArgs "hostbootstrap-demo-" "personal-ubuntu"))

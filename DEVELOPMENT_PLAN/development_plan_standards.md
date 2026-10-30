@@ -993,20 +993,25 @@ this section fixes only the shape of the tree.
 **A closed set of internal entries is not a command.** A binary that crosses into a frame must be able
 to recognize that *it is* the process on the far side, and no verb can express that: a verb is something
 an operator types, and this is something only core's own launchers produce. `runCLI` therefore classifies a
-closed, ordered set of five core entries out of argv before the parser runs: the installed identity
-(`installedIdentityEntryArguments`), the exposure relay (`runExposureRelayEntry`), the Colima command
+closed, ordered set of six core entries out of argv before the parser runs: the installed identity
+(`installedIdentityEntryArguments`), the exposure relay (`runExposureRelayEntry`), the native working-directory
+entry (`workingDirectoryEntryArguments`), the Colima command
 transaction (`shippedCommandEntryArguments`), the lifecycle child (`lifecycleChildArguments`), and the frame
 child (`classifyFrameChild`). Each matches the whole argument vector or nothing, is absent from `--help`,
-names nothing an operator could usefully type, and opens no route to a `ProjectSpec` extension stream. The
+serves a core launcher rather than the operator command tree, and opens no route to a `ProjectSpec`
+extension stream. The
 identity, lifecycle-child, and frame-child entries carry nothing on the vector — no coordinates, no path, no
 authority, no caller-selected action — and the frame child refuses unless its standard input and output
 decode as the protocol channel; it carries a transaction the caller already holds and returns that
-transaction's outcome. Two entries carry caller-selected work, confined by their launcher: the exposure
-relay's targets (validated for distinct services and listen ports; a malformed vector refuses rather than
-falling through to the parser) are written only by `HostBootstrap.Cluster.Backend` as the relay container's
-command, and the Colima command transaction's command arrives on standard input from the Colima backend's
-bounded runner; both owners are Cabal-hidden or private-sublibrary modules no project imports. The set is
-closed: a sixth entry is a change to this section, not to a module, and an entry a project's own `main`
+transaction's outcome. Three entries carry caller-selected work, confined by their launcher: the native
+working-directory entry takes an absolute directory, absolute executable, and exact argument vector from
+the bounded runner, changes directory, and execs that executable under the runner's explicit environment;
+it mints no lifecycle authority and replaces the macOS shell trampoline. The exposure relay takes targets
+validated for distinct services and listen ports; a malformed vector refuses rather than falling through
+to the parser. `HostBootstrap.Cluster.Backend` writes those targets as the relay container's command.
+The Colima command transaction receives its command on standard input from the Colima backend's bounded
+runner. Both owners are Cabal-hidden or private-sublibrary modules no project imports. The set is
+closed: a seventh entry is a change to this section, not to a module, and an entry a project's own `main`
 intercepts before `runHostBootstrapCLI` is a per-project verb wearing a different hat. The worked demo
 carries one such entry, which the [worked-demo phase](phase-24-worked-demo.md) owes deleting. The
 inventory, with each entry's launcher and payload, is canonical in
@@ -1241,9 +1246,10 @@ context — the self-reference lift. Its dependency layers are constructive and 
 
 - the [Dhall-configuration-and-generic-project-model phase](phase-7-dhall-configuration-and-project-model.md)
   owns public pure `HostBootstrap.Lift.Context`: `IncusVM`, `LimaVM`, and `Wsl2VM` target records;
-  `ConfigDelivery`, `ContainerLift`, `LiftLayer`, and outermost-first `LiftContext`; their constructors;
-  same-root `canonicalHostMount`; and the exact pure `execVMArgs`, `shellVMArgs`, and `wslExecArgs` inner
-  transport renderers;
+  descriptive `ConfigDelivery`, `ContainerLift` and `LiftLayer` constructors; opaque `VMStack` and
+  `LiftContext`; the VM appenders and `vmContext`/`inContainer` closers, checked layer-list reconstruction,
+  ordinary `liftLayers`/`liftVMStack` and terminal readers; same-root `canonicalHostMount`; and the exact
+  pure `execVMArgs`, `shellVMArgs`, and `wslExecArgs` inner transport renderers;
 - the [ensure-reconcilers phase](phase-8-ensure-reconcilers.md) owns generic `HostBootstrap.Lift`, which
   reexports that context vocabulary, resolves only the outer host tool, folds raw/self commands through the
   stack, streams config over `stdin`, and performs the provider-neutral effect dispatch. It imports no
@@ -1261,7 +1267,7 @@ context — the self-reference lift. Its dependency layers are constructive and 
 
 Contexts compose as provider-backed frames, outermost-first; the empty stack is the local host. The VM layer
 is provider-specific: Apple Silicon uses Lima (`limactl shell <instance> -- ...`) for the demo VM, native
-Linux uses Incus (`incus exec <vm> -- ...`), and Windows uses WSL2 (`wsl -d <distro> -- ...`) provisioning a
+Linux uses Incus (`incus exec <vm> -- ...`), and Windows uses WSL2 (`wsl -d <distro> --exec ...`) provisioning a
 fresh Ubuntu-24.04 distro. A **derived project container** is the `docker run --rm` layer whose project
 Dockerfile installs the binary as its `ENTRYPOINT`; the base image itself exposes no freeze-driven
 `ENTRYPOINT` integration mode (§ T).
@@ -1271,6 +1277,11 @@ plan. The root catalog binds its canonical payload, resource slice, digest, fram
 before effects. The authenticated process protocol carries that payload over the private duplex channel;
 service and daemon consumers receive narrowed role wires through their signed activation revision.
 Configuration remains descriptive and carries no protected-store or journal authority.
+
+Only `VMStack` is open to VM appenders. `vmContext` and `inContainer` produce an opaque `LiftContext`,
+so a VM appender cannot consume their closed result. `liftLayers` and `liftVMStack` are ordinary readers,
+not record labels; folding, requested stdin, landed frame and delivery read the same retained VM prefix
+and optional terminal container. Checked reconstruction admits raw layer lists before a context exists.
 
 The argv fold is pure and honors § K: only the outermost host dispatch names a tool the resolver maps to
 an absolute path; nested tools are interpreted in their own frame. `SubstrateProvider` plus the n-level
@@ -1951,18 +1962,28 @@ Each one-use command/handoff invocation opens one durable versioned session only
 `CurrentBrokerSessionAdmission`. Clean activation mints that admission after proving no older broker
 session remains Open; abandoned-run activation instead uses the exact old-permit fence set and a
 verified manifest pairing the independent complete session set with its independently complete
-operation set. Registering an initial intent consumes the exact closed `IntentOrigin`—`NoHistory` (no
-prior generation) or `ReleasedReacquisition`—and atomically adds the operation/generation to
-that exact session while advancing the session/project-journal versions; no orphan intent can be
-omitted and the caller cannot choose a generation. An intent may validly have no initial fence but cannot
+operation set. Registering an initial intent consumes `IntentOrigin`: public `NoHistory` requires an
+absent operation record, while the private released variant retains an observed ordinary `Released`
+phase at one protected-store identity, exact operation key and physical record version. Registration
+revalidates that same observation before atomically adding the operation/generation to the exact session
+and advancing its session/project-journal versions; no orphan intent can be omitted and the caller
+cannot choose a generation. The observation does not authenticate backend history or a complete payload.
+An intent may validly have no initial fence but cannot
 prepare. Recovery idempotently completes the stable initial-fence protocol and threads the sole
 successor session/state/permit before exposing current-fence authority. Its protected
 exact-set interpreter CAS-rebinds each existing stable session record—including a zero-operation Open
-session—and totally classifies unknown, the five pre-call continuable phases, already-observed retryable,
-successful, and terminal operation records. Only the continuable phases receive current-fence prepare
-authority; only reservation/effect/adoption absence, same-identity ordinary/adopted teardown,
-repair-original, and managed-phase-from receive verified current-fence same-key retry authority; a crash
-after recording one of those observations remains recoverable. It verifies/rebinds the complete
+session—and totally classifies a closed vocabulary of 45 phases: the 43 `Reconcile.PersistedJournalPhase`
+names plus `StepObservedTerminal` and `RecoveryAbandoned`. Seven recognized unresolved outcomes explicitly
+yield `UnknownDisposition`; unrecognized text reaches that disposition through a separate decode failure.
+Only the six continuable phases, including `Reserved`, are eligible for current-fence prepare before the
+next backend call. The nine-member fenced-retry whitelist remains reservation/effect/adoption absence,
+repair-original, managed-phase-from, and the existing effect/adoption/repair/phase fenced-retry states.
+Same-identity ordinary/adopted teardown returns to `Committed`/`AdoptionCommitted`, never an invented
+teardown-presence retry. `ObservedManaged`, `AdoptionObservedManaged`, `RepairObservedTarget` and
+`PhaseObservedTo` are `Settled`; `RepairObservedAbsent`, `PhaseObservedAbsent` and
+`AdoptionTeardownObservedForeign` are terminal. Settled or terminal classification grants no further
+effect authority, writes no commit, and mints no `PriorCommitProof` or ownership receipt. A crash after
+recording a retryable observation remains recoverable. The interpreter verifies/rebinds the complete
 resource-record set, settles/closes every member, and threads the sole successor state/permit pair.
 Missing/duplicate members, wrong membership, missing/replaced resource evidence, or unresolved internal
 recovery cannot yield admission or open a new command session.
@@ -2380,10 +2401,11 @@ negative-equivalent, overflowed, or over-limit policies before polling. Determin
 conflicts stop immediately with structured details. A one-shot in-guest step that runs a compound `set -eu` script with
 no witness and no retry is a **defect**: it races the readiness it assumes and hides the reason it failed.
 
-Guest probes stay **trivial** so they survive the host→guest command path unchanged. On Windows the
-`wsl -d <distro> -- bash -lc <script>` invocation crosses PowerShell's native-argument quoting, so a probe
-is a single simple command (`docker info >/dev/null 2>&1`, `test -d <path>`, `readlink <path>`) — never a
-multi-statement script with nested `"$(… "…")"` quoting. Retry and branching live in Haskell (the
+Guest probes stay **trivial**: a single command such as `docker info`, `test -d <path>` or
+`readlink <path>`. The native runner launches the resolved WSL executable directly with its argument
+vector, and the shared renderer places the guest command after `--exec`; PowerShell is not an
+intermediary. An explicitly requested guest interpreter still parses its script, so a probe must not
+become a multi-statement script with nested `"$(… "…")"` quoting. Retry and branching live in Haskell (the
 `pollUntilReady`/`awaitPlanReady` polling loops plus a pure classifier over the probe output), not in an
 inline shell loop.
 
@@ -2445,11 +2467,7 @@ exporting a constructor “for tests” defeats the boundary. The `Capability` t
 is not authority: it is a descriptive, Dhall-decodable claim a context makes about its frame, exported with
 its constructors, and it grants nothing.
 
-**What runs today.** Three surfaces fall short of that rule. `HarnessAuthority` and
-`HarnessConfigAuthority` in `HostBootstrap.Config.Authority.Internal` are newtypes over `Text` whose
-project and run indices carry no `type role` annotation, so `coerce` moves a held value to another project
-or run; the [Dhall configuration and project model phase](phase-7-dhall-configuration-and-project-model.md)
-owns that module. The production `PreparedGate` producers are `withPreparedGate` in
+**What runs today.** Open authority boundaries include the following. The production `PreparedGate` producers are `withPreparedGate` in
 `HostBootstrap.Lifecycle.Session` and `gateFor` in `HostBootstrap.Lifecycle.FrameExecutor`, both through
 the package-private `mintPreparedGate`. The public `HostBootstrap.Lifecycle.Prepared` also exports
 `recordDurableUnknown`, a public `PreparedGate` producer no library module calls, and the public library
@@ -2461,6 +2479,20 @@ phase and the providers phase introduce. `HostBootstrap.Ensure.Colima.Ownership`
 caller interpreter or `HostConfig` and which exports its observation constructors; Sprint 16.29 of the
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) moves it into
 a private sublibrary.
+
+`VerifiedSessionManifest` and `InterpretedRecovery` still owe nominal scope and plan roles and
+protected-entry indexing; `CurrentBrokerSessionAdmission` still owes nominal scope, plan, and broker
+generation roles and independent axis proofs. Sprint 18.24 of the
+[recovery-and-migration phase](phase-18-recovery-and-migration.md) owns those remaining recovery
+boundaries.
+
+`FenceEpoch scope planId` and `OldPermitsFenced scope planId` have nominal scope and plan roles and
+private constructors. This prevents coercing a held token or fence set across either index. The
+generic `currentFence`, `establishInitialFence`, and `fenceOldPermits` producers still accept raw plan
+text and caller-selected result indices; their value roles do not authenticate that text against a
+canonical plan or establish generative indices. The fence set is not yet indexed by its protected
+entry; the [recovery-and-migration phase](phase-18-recovery-and-migration.md) owns that remaining work.
+Higher admission bridges retain their separate runtime identity checks.
 
 Ordinary Haskell values are not linear, so “consumed” is also an interpreter invariant: each transition
 checks the current generation/lease and journals the successor state or one-time nonce consumption.
@@ -2628,15 +2660,22 @@ unknown state only through that family's explicit fenced state (`ReservationRetr
 `EffectRetryFenced`, `AdoptionRetryFenced`, `RepairRetryFenced`, `PhaseRetryFenced`), entered under the
 same operation key after old-permit fencing. No observation has a direct edge back to its unknown state.
 
-A later generation of an operation starts from `registerOperationIntent`, which takes a caller-selected
-`IntentOrigin`, either `NoHistory` or `ReleasedReacquisition`. Inside the protected transaction it reads the
-operation's record: `NoHistory` is refused when any record exists, and `ReleasedReacquisition` is refused
-when a record exists whose phase is not `Released`, so an `AdoptionReleased` record does not qualify. Both
-origins are accepted when no record exists. That is a runtime phase check over a caller-chosen origin, not
-a typed proof of eligibility. Registration writes the intent and its session membership atomically. An
-unknown or foreign generation has no rollover edge. Stable scope/plan digest/frame/resource/generation/
-operation key — not `planId`, resource `id`, or handles — are persisted before a mutating backend call;
-each unknown state is durable before its external operation.
+A later generation of an operation starts from `registerOperationIntent`. `IntentOrigin` exports only
+`NoHistory`, whose registration requires absence. `readReleasedIntentOrigin` derives the exact key from
+the operation session and name and observes its ordinary `Released` phase, retaining the protected-store
+identity, `RecordKey` and physical `RecordVersion` in a private variant. `AdoptionReleased`, another phase
+or absence yields no released origin.
+
+Inside the existing protected permit/session workflow, registration re-reads and checks store, key,
+presence, phase and physical version before its unchanged intent/session-membership transaction.
+Missing, wrong-key/store, changed-phase or changed-version observations return `SessionIntentOriginRefused`
+without that mutation. Same-content compare-and-swap still invalidates the old observation by advancing
+its physical version. The observer checks a phase at that durable location, not complete operation-payload
+validity or backend history, and grants no effect authority before registration. It admits only the same
+operation key; an absent new target uses `NoHistory`, not a released origin from an old key. No root-side
+rollover consumer is added by this primitive. Stable scope/plan digest/frame/resource/generation/operation
+key — not `planId`, resource `id`, or handles — are persisted before a mutating backend call; each unknown
+state is durable before its external operation.
 
 Adoption is a separate journal transaction:
 `AdoptionIntentRecorded → AdoptionOutcomeUnknown`; total reprobe then records
@@ -2648,14 +2687,13 @@ new attempt. Foreign observation and policy refusal (`AdoptionRefused`) are term
 `AdoptionCommitted → AdoptionTeardownOutcomeUnknown`, which branches to `AdoptionReleased`, back to
 `AdoptionCommitted` on the same identity, or to terminal `AdoptionTeardownObservedForeign`, and there is
 no adoption edge from an ordinary `ObservedForeign` acquisition entry.
-Only an ordinary `Released` record admits `ReleasedReacquisition`; over an `AdoptionReleased` record,
-`registerOperationIntent` refuses both origins. Neither unknown phase can roll over.
+Only an observed ordinary `Released` phase supplies the private released origin; `AdoptionReleased`
+supplies none, and a present record also refuses `NoHistory`. Neither unknown phase can roll over.
 Receipt rebinding requires a `VerifiedJournalRecord` and the `PriorCommitProof` that `withPriorCommitProof`
-mints only from a record in `Committed`. A phase transition, teardown entry, same generation under another
-resource/operation, or foreign observation cannot mint a receipt. A record in `AdoptionCommitted` yields no
-`PriorCommitProof` today, so an adopted resource cannot be rebound as `Unchanged`; the rebinding of a
-matching adoption transfer is owed by the
-[canonical-quantities-and-reconcile-results phase](phase-6-canonical-quantities-and-reconcile-results.md).
+mints from `Committed` or `AdoptionCommitted`. `completePreparedUnchanged` rechecks the exact preparation,
+resource key, generation and receipt operation before returning `Unchanged`. An intent or observed-only
+record cannot supply the prior proof, and another resource, generation or operation cannot complete that
+unchanged result through it.
 Operational failures carry their recovery disposition and never erase journal state.
 
 Repairs and non-release phase changes are separately journaled effects. A repair uses
@@ -2882,14 +2920,17 @@ verifies a manifest pairing the independent complete session and operation sets,
 existing stable session record to the fresh broker/local identity, and internally handles every unknown,
 pre-call continuable, whitelisted already-observed retryable, successful, or terminal operation before
 requiring that exact session's Closed proof plus sole successor state/permit pair. A zero-operation Open
-session remains a required member. Initial intent registration checks its `IntentOrigin` and writes
-session membership atomically with the generation. A persisted initial intent with no fence is an explicit
+session remains a required member. Initial intent registration revalidates its absent-record choice or
+observed same-store/key/physical-version Released origin and writes membership atomically with the
+generation. A persisted initial intent with no fence is an explicit
 recovery state; the classifier idempotently completes the stable initial-fence protocol
 (`establishInitialFence`) before continuable work receives its `FenceEpoch`. It also verifies/rebinds the
 complete resource-record set; only the matching bound snapshot and that opaque set can yield a recovered
 frame and a closed owned-or-released evidence sum for the forest's exact authorization point. The owned
 branch alone yields a managed handle/receipt; the released branch alone yields the verified tombstone,
-after which a new generation enters only through `registerOperationIntent` with `ReleasedReacquisition`.
+which is not itself an `IntentOrigin`. Same-key registration needs the ordinary Released observation and
+its revalidation. A distinct new acquisition key requires the separate root-owned absence/admission
+protocol and uses `NoHistory` when absent; the observed origin cannot roll an old key into a new one.
 Only both complete
 session/operation sets yield
 `CurrentBrokerSessionAdmission`; missing/duplicate records, wrong membership, missing/replaced resource
@@ -3187,12 +3228,10 @@ rejected binding, matched inside one diagnostic: an expectation split into separ
 weaker, because an unrelated error elsewhere in the output can satisfy each fragment independently. A
 boundary whose fixture pins nothing is a boundary with prose where its proof should be.
 
-What runs today is weaker than that rule. `rejectsWith` takes a list of expected fragments, and
-`rejectsWithUsing` in `CompileFailSpec` requires each fragment to appear somewhere in the whole compiler
-stderr, matched independently with `isInfixOf`. Several registrations list bare tokens rather than complete
-phrases. Re-joining them into one phrase each, matching per diagnostic block, and giving the combinator a
-non-empty argument are owed by Sprint 5.10 of the
-[installed-identity, operator-verification, and authority-kernels phase](phase-5-installed-identity-and-authority-kernels.md).
+CompileFailSpec registrations take NonEmpty String. The matcher splits stderr into error diagnostic
+blocks before quote/whitespace normalization and assigns each complete expected phrase to a distinct
+block, with backtracking. Fixtures compile with -fno-diagnostics-show-caret, and blank expectations
+are refused.
 
 A claim of unrepresentability carries a proof obligation. A boundary asserting that a shape cannot be
 constructed ships a compile-fail fixture under `core/hostbootstrap-core/test/compile-fail/`, registered
@@ -3311,9 +3350,10 @@ it may not be written in terms of one.
 - **A guard over source bytes reads bytes.** A frozen source digest is computed from the file's own
   bytes, so it is a property of the file rather than of the process locale. Each suite driver also fixes
   the locale encoding, so a spec that reads a source file or captured command output decodes the same
-  text on every host. The core driver (`core/hostbootstrap-core/test/Spec.hs`) sets
-  `setLocaleEncoding utf8` before the runner starts; the demo driver (`demo/test/Spec.hs`) does not, and
-  Sprint 24.57 of the [worked-demo phase](phase-24-worked-demo.md) owes it.
+  text on every host. Both suite drivers (`core/hostbootstrap-core/test/Spec.hs` and
+  `demo/test/Spec.hs`) make `setLocaleEncoding utf8` their first IO action, before source reads,
+  argument dispatch or the runner can first demand a standard handle. The demo suite also asserts
+  its runtime locale encoding, while its unchanged Unicode case names exercise reporter output.
 - **A repo-relative module path is separator-neutral.** An import allow-list, importer set, or
   module-ownership list compares canonical forward-slash paths, so a native path separator cannot make
   an otherwise-satisfied allow-list fail.
@@ -3500,18 +3540,8 @@ platform limitation of the runner.
 **What runs today.** Interpreter text stands outside the guest bootstrap module, and each site is owed by a
 named phase rather than admitted:
 
-- the runner's macOS branch in `HostBootstrap.Effect.Run` execs `/bin/sh -c` to set the working directory,
-  because `process` cannot combine `create_group`, an explicit environment, and `cwd` there; replacing it
-  with the binary's own working-directory entry is owed by Sprint 3.7 of the
-  [host-tools-and-substrate-detection phase](phase-3-host-tools-and-substrate-detection.md), and the
-  `wsl.exe` reframing through PowerShell `-Command` in `HostBootstrap.Effect.Interpreter` by its Sprint 3.8;
-- `Ensure/Incus.hs`, `Ensure/Cuda.hs`, `Ensure/Docker.hs`, `Ensure/Wsl2.hs`, and `Lift.hs`'s
-  `--entrypoint sh` config-write script (`configWriteScript`, Sprint 8.14) are owed by the
-  [ensure-reconcilers phase](phase-8-ensure-reconcilers.md);
 - `Substrate/Provider/Backend.hs` by Sprint 15.35 of the
   [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md);
-- `Cluster/Cordon/Foundation.hs` by the
-  [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md);
 - `Registry.hs` by the [composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md);
 - the demo's `Commands.hs` by the [worked-demo phase](phase-24-worked-demo.md).
 

@@ -290,7 +290,7 @@ def test_parse_image_entrypoint() -> None:
 
 
 async def test_async_wrappers_delegate_to_process(
-    recorded_commands: list[tuple[str, ...]],
+    recorded_commands: list[tuple[tuple[str, ...], Path | None, str]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spec = docker_ops.BuildSpec(
@@ -305,10 +305,10 @@ async def test_async_wrappers_delegate_to_process(
     assert (await docker_ops.pull("t")).ok
     assert await docker_ops.image_exists("t")
 
-    assert recorded_commands[0][:2] == ("docker", "build")
-    assert recorded_commands[1] == ("docker", "push", "t")
-    assert recorded_commands[2] == ("docker", "pull", "t")
-    assert recorded_commands[3] == ("docker", "image", "inspect", "t")
+    assert recorded_commands[0][0][:2] == ("docker", "build")
+    assert recorded_commands[1] == (("docker", "push", "t"), None, "checked")
+    assert recorded_commands[2] == (("docker", "pull", "t"), None, "checked")
+    assert recorded_commands[3] == (("docker", "image", "inspect", "t"), None, "probe")
 
     async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
         argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]

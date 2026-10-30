@@ -2,8 +2,9 @@
 
 Homebrew is the host toolchain root, so it cannot be installed through a
 resolved host tool (there is no package manager to bootstrap it). The Python
-bootstrapper installs it pre-binary (see @development_plan_standards.md § N@);
-this reconciler is a verified no-op when @brew@ is present and fails fast with
+bootstrapper asserts its presence as a host minimum (see
+@development_plan_standards.md § N@); the operator installs it from brew.sh.
+This reconciler is a verified no-op when @brew@ is present and fails fast with
 the install instruction when it is absent. The pure 'installSteps' planner —
 which has no resolved-tool plan and therefore returns 'Left' with the
 instruction — is unit-tested.
@@ -36,7 +37,7 @@ reconciler =
             frameTable
                 [ appleRow
                     ( ProvidedElsewhere
-                        "Homebrew is the host toolchain root; the Python bootstrapper installs it pre-binary. Install from https://brew.sh and retry."
+                        "Homebrew is the host toolchain root; the Python bootstrapper asserts it as a host minimum. Install from https://brew.sh and retry."
                     )
                 ]
         , reconcile = installAndVerify "homebrew" (\cfg -> pure (toolPresent cfg Brew)) installSteps

@@ -143,11 +143,34 @@ renderHoistedValue codec unions value =
 decoder accepts, and a deterministic rendering of a canonical value.
 -}
 data ConfigArtifact = ConfigArtifact
-    { artifactName :: Text
-    , schemaText :: Text
-    , renderText :: Text
+    { internalArtifactName :: Text
+    , internalArtifactSchemaText :: Text
+    , internalArtifactRenderText :: Text
     }
-    deriving (Eq, Show)
+    deriving (Eq)
+
+instance Show ConfigArtifact where
+    showsPrec precedence (ConfigArtifact name schema rendered) =
+        showParen (precedence > 10) $
+            showString "ConfigArtifact {artifactName = "
+                . shows name
+                . showString ", schemaText = "
+                . shows schema
+                . showString ", renderText = "
+                . shows rendered
+                . showChar '}'
+
+-- | The registered artifact name, without a record-update route.
+artifactName :: ConfigArtifact -> Text
+artifactName = internalArtifactName
+
+-- | The schema reflected from the artifact's admitted codec.
+schemaText :: ConfigArtifact -> Text
+schemaText = internalArtifactSchemaText
+
+-- | The canonical value rendered by the artifact's admitted codec.
+renderText :: ConfigArtifact -> Text
+renderText = internalArtifactRenderText
 
 {- | Build a 'ConfigArtifact' from a canonical value: the schema is reflected
 from the validated codec, and the same codec renders the value.
@@ -156,9 +179,9 @@ artifactOf :: Text -> CodecWitness a -> a -> ConfigArtifact
 artifactOf name codec value =
     codec `seq`
         ConfigArtifact
-            { artifactName = name
-            , schemaText = codecSchemaText codec
-            , renderText = renderValue codec value
+            { internalArtifactName = name
+            , internalArtifactSchemaText = codecSchemaText codec
+            , internalArtifactRenderText = renderValue codec value
             }
 
 budgetCodec :: CodecWitness V.Budget

@@ -130,10 +130,12 @@ import HostBootstrap.Protected
     , compareAndSwapProtectedRecord
     , listProtectedRecords
     , mkRecordKey
+    , mkRecordName
     , openProtectedStore
     , protectedStoreRoot
     , readProtectedRecord
     , recordKeyText
+    , recordTupleSeparator
     , recordVersionWord
     , tryProtectedEntry
     , withProtectedEntry
@@ -974,7 +976,33 @@ admitCanonicalRootMutation root =
 
 existingOpenRevisionCases :: [TestTree]
 existingOpenRevisionCases =
-    [ revisionCase
+    [ testCase "a refused fresh Up preserves the existing Open bound run at its recorded epoch" $
+        withExistingBoundSnapshotFixtureAtCounter (Just 40) $ \store project _unbound _bound stable -> do
+            before <- protectedRecordImage store
+            freshEntries <- newIORef (0 :: Int)
+            refused <- withProductionRoot store project ProjectUp $ \_ -> do
+                modifyIORef' freshEntries (+ 1)
+                pure (Right ())
+            refused @?= Left (ModeLeaseNotBindable "production" "bound")
+            readIORef freshEntries >>= (@?= 0)
+            protectedRecordImage store >>= (@?= before)
+            terminalEntries <- newIORef (0 :: Int)
+            openEntries <- newIORef (0 :: Int)
+            admitted <-
+                withBoundPlanSnapshot
+                    store
+                    project
+                    (\_ -> modifyIORef' terminalEntries (+ 1) >> pure Nothing)
+                    ( \root modeLease _lease _verified boundSnapshot _binding _recovery -> do
+                        modifyIORef' openEntries (+ 1)
+                        brokerEpochWord (projectModeLeaseEpoch modeLease) @?= 41
+                        pure (Just (boundPlanSnapshotBytes boundSnapshot, brokerEpochWord (rootAuthorityEpoch root)))
+                    )
+            admitted @?= Right (Just (stablePlanSnapshotBytes stable, 41))
+            readIORef terminalEntries >>= (@?= 0)
+            readIORef openEntries >>= (@?= 1)
+            protectedRecordImage store >>= (@?= before)
+    , revisionCase
         "Open admission retains an incomplete migration revision"
         "incomplete\tmigration-12-18"
         (IncompleteMigration "migration-12-18")
@@ -1005,6 +1033,14 @@ existingBoundRefusalCases =
         "an advanced broker counter is exact-generation drift"
         (\store project _ _ -> replaceRawRecord store (brokerGenerationKey project) "2")
         (\failure -> case failure of ModeAuthorityFailure (AuthorityInvalidIdentity _) -> True; _ -> False)
+    , brokerCounterRefusalCase
+        "broker counter deleted"
+        deleteRecord
+        "the recorded broker generation has no allocation counter"
+    , brokerCounterRefusalCase
+        "broker counter malformed"
+        (\store key -> replaceRawRecord store key "not-a-counter")
+        "the broker generation counter is malformed"
     , refusalCase
         "a missing authority binding is refused read-only"
         (\store _ _ _ -> deleteRecord store authorityBindingKey)
@@ -1199,6 +1235,10 @@ existingBoundRefusalCases =
         "an invalid terminal close key is never normalized or surfaced"
         (\store project _ _ -> writeRawRecord store (productionInvocationKey project) "ack\tbad/key")
         (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+    , malformedBoundTextRecordCase
+        "invalid UTF-8 in a terminal close key refuses its exact invocation record"
+        productionInvocationKey
+        ("ack\t" <> ByteString.singleton 0xff)
     , refusalCase
         "terminal close-key whitespace is never stripped"
         (\store project _ _ -> writeRawRecord store (productionInvocationKey project) "ack\tvalid-key ")
@@ -1211,6 +1251,10 @@ existingBoundRefusalCases =
         "malformed Open revision state is refused before the callback"
         (\store project _ _ -> writeRawRecord store (migrationKey project) "incomplete\t")
         (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+    , malformedBoundTextRecordCase
+        "invalid UTF-8 in an incomplete migration refuses its exact migration record"
+        migrationKey
+        ("incomplete\t" <> ByteString.singleton 0xff)
     ]
         <> canonicalRootParserRefusalCases
 
@@ -1375,6 +1419,10 @@ recoveredProductionRevisionCases =
         "incomplete\tmigration-12-19"
         (IncompleteMigration "migration-12-19")
     , revisionCase
+        "the recovered profile preserves a UTF-8 incomplete migration key"
+        (TextEncoding.encodeUtf8 "incomplete\tmigration-ő")
+        (IncompleteMigration "migration-ő")
+    , revisionCase
         "the recovered profile retains a completed migration classification"
         "completed\tmigration-12-19"
         (CompletedMigration "migration-12-19")
@@ -1384,6 +1432,7 @@ recoveredProductionRevisionCases =
         testCase label $
             withExistingBoundSnapshotFixture $ \store project _unbound _bound _stable -> do
                 writeRawRecord store (migrationKey project) payload
+                before <- protectedRecordImage store
                 outcome <-
                     withBoundPlanSnapshot
                         store
@@ -1403,6 +1452,7 @@ recoveredProductionRevisionCases =
                                 )
                         )
                 outcome @?= Right (Right expected)
+                protectedRecordImage store >>= (@?= before)
 
 data RecoveredProductionProfileDrift
     = RecoveredRootDrift
@@ -1465,6 +1515,70 @@ recoveredProductionProfileDriftCases =
                     case refineRecoveredProductionProfileWithDrift drift outer foreignPackage of
                         Left failure | accepts failure -> pure ()
                         other -> assertFailure ("expected recovered-profile refusal, observed " <> show other)
+
+brokerCounterRefusalCase ::
+    String ->
+    (ProtectedStore -> RecordKey -> IO ()) ->
+    Text.Text ->
+    TestTree
+brokerCounterRefusalCase label mutate reason =
+    testCase label $
+        withExistingBoundSnapshotFixture $ \store project _unbound _bound _stable -> do
+            mutate store (brokerGenerationKey project)
+            before <- protectedRecordImage store
+            terminalCount <- newIORef (0 :: Int)
+            openCount <- newIORef (0 :: Int)
+            outcome <-
+                withBoundPlanSnapshot
+                    store
+                    project
+                    (\_ -> modifyIORef' terminalCount (+ 1))
+                    (\_ _ _ _ _ _ _ -> modifyIORef' openCount (+ 1))
+            outcome
+                @?= Left
+                    (SnapshotVerificationError (ModeAuthorityFailure (AuthorityInvalidIdentity reason)))
+            readIORef terminalCount >>= (@?= 0)
+            readIORef openCount >>= (@?= 0)
+            protectedRecordImage store >>= (@?= before)
+
+protectedRecordImage :: ProtectedStore -> IO [(Text.Text, Word64, ByteString.ByteString)]
+protectedRecordImage store = do
+    listed <- withProtectedEntry store listProtectedRecords
+    keys <- either (fail . show) pure listed
+    mapM
+        ( \key -> do
+            record <- requireRecord store key
+            pure
+                ( recordKeyText key
+                , recordVersionWord (protectedRecordVersion record)
+                , protectedRecordBytes record
+                )
+        )
+        keys
+
+malformedBoundTextRecordCase ::
+    String ->
+    (forall projectId. InstalledProjectIdentity projectId -> RecordKey) ->
+    ByteString.ByteString ->
+    TestTree
+malformedBoundTextRecordCase label recordKey payload =
+    testCase label $
+        withExistingBoundSnapshotFixture $ \store project _unbound _bound _stable -> do
+            let key = recordKey project
+            writeRawRecord store key payload
+            before <- protectedRecordImage store
+            terminalCount <- newIORef (0 :: Int)
+            openCount <- newIORef (0 :: Int)
+            outcome <-
+                withBoundPlanSnapshot
+                    store
+                    project
+                    (\_ -> modifyIORef' terminalCount (+ 1))
+                    (\_ _ _ _ _ _ _ -> modifyIORef' openCount (+ 1))
+            outcome @?= Left (SnapshotVerificationError (ModeMalformedRecord (recordKeyText key)))
+            readIORef terminalCount >>= (@?= 0)
+            readIORef openCount >>= (@?= 0)
+            protectedRecordImage store >>= (@?= before)
 
 refusalCase ::
     String ->
@@ -1838,15 +1952,18 @@ authorityBindingKey :: RecordKey
 authorityBindingKey = exactRecordKey "authority.binding"
 
 productionModeKey :: InstalledProjectIdentity projectId -> RecordKey
-productionModeKey project = exactRecordKey ("mode." <> installedProjectName project)
+productionModeKey project = exactRecordKey ("mode." <> fixtureRecordName (installedProjectName project))
 
 productionInvocationKey :: InstalledProjectIdentity projectId -> RecordKey
 productionInvocationKey project =
-    exactRecordKey ("invocation." <> installedProjectName project <> ".production")
+    exactRecordKey ("invocation." <> fixtureRecordName (installedProjectName project) <> recordTupleSeparator <> "production")
 
 migrationKey :: InstalledProjectIdentity projectId -> RecordKey
 migrationKey project =
-    exactRecordKey ("migration." <> installedProjectName project <> ".production")
+    exactRecordKey ("migration." <> fixtureRecordName (installedProjectName project) <> recordTupleSeparator <> "production")
+
+fixtureRecordName :: Text.Text -> Text.Text
+fixtureRecordName = either (error . show) id . mkRecordName
 
 exactRecordKey :: Text.Text -> RecordKey
 exactRecordKey = either (error . show) id . mkRecordKey
@@ -2091,9 +2208,9 @@ snapshotKey project unbound =
     either (error . show) id
         ( mkRecordKey
             ( "snapshot."
-                <> installedProjectName project
-                <> "."
-                <> unboundRunLeaseRunText unbound
+                <> fixtureRecordName (installedProjectName project)
+                <> recordTupleSeparator
+                <> fixtureRecordName (unboundRunLeaseRunText unbound)
             )
         )
 
@@ -2105,16 +2222,16 @@ leaseKey project unbound =
     either (error . show) id
         ( mkRecordKey
             ( "lease."
-                <> installedProjectName project
-                <> "."
-                <> unboundRunLeaseRunText unbound
+                <> fixtureRecordName (installedProjectName project)
+                <> recordTupleSeparator
+                <> fixtureRecordName (unboundRunLeaseRunText unbound)
             )
         )
 
 brokerGenerationKey :: InstalledProjectIdentity projectId -> RecordKey
 brokerGenerationKey project =
     either (error . show) id
-        (mkRecordKey ("broker." <> installedProjectName project <> ".generation"))
+        (mkRecordKey ("broker." <> fixtureRecordName (installedProjectName project) <> ".generation"))
 
 recordPath :: ProtectedStore -> RecordKey -> FilePath
 recordPath store key =
@@ -2227,7 +2344,7 @@ writeRawPlanSnapshot store project runName specDigest planDigest configDigest ca
   where
     key =
         either (error . show) id
-            (mkRecordKey ("snapshot." <> installedProjectName project <> "." <> runName))
+            (mkRecordKey ("snapshot." <> fixtureRecordName (installedProjectName project) <> recordTupleSeparator <> fixtureRecordName runName))
     payload =
         LazyByteString.toStrict
             ( Builder.toLazyByteString

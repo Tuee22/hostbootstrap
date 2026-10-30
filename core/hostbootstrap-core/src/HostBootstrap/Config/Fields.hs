@@ -1,16 +1,20 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-{- | Opaque common-envelope and structural role-wire types.
+{- | Descriptive framework records and sealed service-admission values.
 
-The full project codec and every role codec retain the same specification
-digest. A role wire contains only the mandatory read-only framework view plus
-that service's parameter record; plan/build/deploy fields cannot enter
-'RoleParams'. Constructors remain internal so package consumers cannot select a
-field row or pair codecs from different finalizations.
+'FrameworkValidation', 'LocalContextView', and 'RuntimeRoleWire' are descriptive
+records. Their @FromDhall@ instances and exported selectors allow decoding and
+record updates; those values grant no authority.
+
+'RoleParams' and 'ValidatedServiceRequest' retain private constructors and form
+the sealed service path. The full project codec and every role codec retain
+the same specification digest.
 -}
 module HostBootstrap.Config.Fields (
     WireKind (..),
     ScopeKind (..),
+    KnownScopeKind (..),
     FrameworkValidation,
     frameworkWireKind,
     frameworkScopeKind,
@@ -34,8 +38,10 @@ module HostBootstrap.Config.Fields (
     roleCodecSchemaText,
     renderRoleWire,
     decodeRoleWire,
+    inspectConfigWireKind,
     FrameworkEnvelopeCodec,
     frameworkEnvelopeCodec,
+    decodeFrameworkEnvelopeWithSettings,
     inspectFullConfig,
     RoleParams,
     roleParamsValue,
@@ -47,12 +53,16 @@ module HostBootstrap.Config.Fields (
 )
 where
 
+import Control.Exception (evaluate)
 import Control.Exception.Safe (tryAny)
 import Data.Text (Text)
 import qualified Dhall
+import qualified Dhall.Core as DhallCore
+import qualified Dhall.Map as DhallMap
 import HostBootstrap.Config.Class (
     ProjectCfg (cfgContext),
     ProjectCodec,
+    decodeProjectCodecWithSettings,
     projectCodecSpecDigest,
  )
 import HostBootstrap.Config.Fields.Internal
@@ -110,6 +120,29 @@ decodeRoleWire codec settings input = do
                                     then Left "role wire specification digest disagrees with its selected codec"
                                     else Right wire
 
+{- | Inspect only a role wire's descriptive framework record before selecting
+a config decoder. Only a positively decoded service-role declaration selects
+that wire kind. Missing or malformed framework records, and synchronous input
+failures, leave the full project decoder responsible for its own diagnostic.
+Import resolution uses the supplied source/root settings; cancellation still
+propagates.
+-}
+inspectConfigWireKind :: Dhall.InputSettings -> Text -> IO WireKind
+inspectConfigWireKind settings input = do
+    inspected <- tryAny $ do
+        expression <- Dhall.inputExprWithSettings settings input
+        evaluate $ case expression of
+            DhallCore.RecordLit fields ->
+                case DhallMap.lookup "roleFrameworkValidation" fields of
+                    Just field ->
+                        case Dhall.rawInput Dhall.auto (DhallCore.recordFieldValue field) :: Maybe FrameworkValidation of
+                            Just validation
+                                | frameworkWireKind validation == ServiceRoleWire -> ServiceRoleWire
+                            _ -> FullProjectWire
+                    Nothing -> FullProjectWire
+            _ -> FullProjectWire
+    pure (either (const FullProjectWire) id inspected)
+
 frameworkEnvelopeCodec ::
     (ProjectCfg cfg) =>
     ScopeKind ->
@@ -121,6 +154,15 @@ frameworkEnvelopeCodec scopeKind codec =
         , internalFullScopeKind = scopeKind
         , internalFullView = localContextView . cfgContext
         }
+
+-- | Decode through the envelope's retained scoped codec with the same settings.
+decodeFrameworkEnvelopeWithSettings ::
+    FrameworkEnvelopeCodec scope specDigest cfg ->
+    Dhall.InputSettings ->
+    Text ->
+    IO (cfg scope)
+decodeFrameworkEnvelopeWithSettings =
+    decodeProjectCodecWithSettings . internalFullProjectCodec
 
 inspectFullConfig ::
     FrameworkEnvelopeCodec scope specDigest cfg ->

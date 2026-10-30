@@ -208,17 +208,21 @@ child in one of two ways, both rendered from the same `LiftContext` layer (canon
 | Route | Serves | Argument shape | Config source |
 |---|---|---|---|
 | `LifecycleProcessRoute` | the recursive lifecycle verbs (`project up`, `project down`, `project destroy`) | `docker run` with standard input attached, working directory `/`, the image's own entrypoint, then `--hostbootstrap-lifecycle-child`; the authenticated Offer carries the verb | the canonical child config inside the authenticated handoff; the route refuses `ConfigDelivery`, extra arguments, and an entrypoint override |
-| ordinary lift fold | non-lifecycle subcommands | `docker run <image> <subcommand>`; with a declared `ConfigDelivery`, `docker run -i --entrypoint sh …` writes standard input over the sibling `<project>.dhall` and then `exec`s the binary | the streamed payload, written in place before dispatch |
+| ordinary lift fold | non-lifecycle subcommands | `docker run <image> <subcommand>`; with a declared `ConfigDelivery`, `docker create <image> <subcommand>`, `docker cp - <id>:<directory>`, then `docker start -a <id>`, with no entry-point override | the explicit supplied stdin becomes a single-entry ustar projection copied into the stopped container before start; the destination directory must exist |
 
 Neither route bind-mounts a runtime config.
 
-tini is PID 1 only for a launch that keeps the image entry point: the lifecycle route does, and so does
-the ordinary lift fold without a `ConfigDelivery`. Every other launch of the worked demo's image replaces
-it and `exec`s its own command without tini: the ordinary lift fold with a `ConfigDelivery`
-(`--entrypoint sh`), the web chart pod (whose container `command` is `/bin/sh -c`, which then `exec`s
-`service run`), the `e2e-tabs` Playwright container and the reachability `curl` checks
+tini is PID 1 for launches that keep the image entry point. The lifecycle route and ordinary lift renderer
+keep it; config delivery adds no override. The web chart pod replaces it with a container `command` of
+`/bin/sh -c`, which then `exec`s `service run`. The `e2e-tabs` Playwright container, the reachability `curl` checks
 (`--entrypoint sh` / `--entrypoint curl`), and the build-image step's exported-image probe
-(`--entrypoint /bin/sh`).
+(`--entrypoint /bin/sh`) also replace it and run without tini.
+
+Delivery's known-ID failure cleanup follows its remove/retain policy; a cleanup attempt is not proof of
+container absence. The static Lift tests inspect commands and archive bytes, rather than live extraction
+or PID 1 behavior. See the
+[ordinary delivery contract](../architecture/composition_methodology.md#the-recursive-project-up-interpreter)
+for failure propagation and cleanup limits.
 
 ## The web build
 

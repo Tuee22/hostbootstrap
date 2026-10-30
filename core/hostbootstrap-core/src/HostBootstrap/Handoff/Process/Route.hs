@@ -7,8 +7,8 @@
 
 A lift route says where a nested frame runs. It does not say that the child's
 standard input and output are a protocol channel, and every argv shape the
-ordinary lift renders is free to assume they are not: a container layer may
-open standard input to stream a configuration payload, a VM layer may inherit
+ordinary lift renders is free to assume they are not: a container delivery may
+consume standard input as a configuration archive, a VM layer may inherit
 whatever descriptors its host process happened to hold, and either may carry
 plan-authored extra arguments that detach the child, allocate a terminal, or
 replace its entrypoint. Any one of those silently turns the channel this phase
@@ -18,9 +18,9 @@ So a process route is a lift route with the ambiguity removed. It is derived
 from a catalog-admitted package rather than assembled, it renders exactly one
 argv shape per provider, and everything a plan could have added to that shape
 is a refusal rather than a passthrough. The configuration payload in
-particular has nowhere to go here: 'ConfigDelivery' would put a @cat@ on the
-child's standard input, which is the descriptor the root's own request and
-response bytes travel on, so a route carrying one cannot be derived at all.
+particular has nowhere to go here: 'ConfigDelivery' consumes the supplied input
+in a create/copy/start workflow, while this route requires one child whose input
+and output carry the root's protocol. A route carrying delivery cannot be derived.
 
 A route points in exactly one direction: down, at the child a frame is about
 to launch. It is not that frame's own place in the conversation. Those are
@@ -83,10 +83,13 @@ import HostBootstrap.Lift.Context (
     ContainerLift (clConfigDelivery, clExtraArgs, clImage, clMounts, clPlacement, clRemoveAfter),
     ContainerPlacement (DirectHostContainer, ProviderGuestContainer),
     IncusVM (vmName),
-    LiftContext (LiftContext),
+    LiftContext,
     LiftLayer (ViaContainer, ViaLimaVM, ViaVM, ViaWsl2VM),
     LimaVM (limaName),
     Wsl2VM (wsl2Distro),
+    liftContextFromLayers,
+    liftLayers,
+    mapTerminalContainer,
  )
 import HostBootstrap.ProjectPlan.Handoff.Internal (
     CatalogForwardHandoff,
@@ -302,12 +305,8 @@ withRecoveryLifecycleProcessRouteForKernel _ _ package route input verb targetBi
         derive verb "teardown" (withoutConfigDelivery route) input targetBinary
 
 withoutConfigDelivery :: LiftContext -> LiftContext
-withoutConfigDelivery (LiftContext layers) =
-    LiftContext (reverse (stripTerminal (reverse layers)))
-  where
-    stripTerminal (ViaContainer container : rest) =
-        ViaContainer container{clConfigDelivery = Nothing} : rest
-    stripTerminal rest = rest
+withoutConfigDelivery =
+    mapTerminalContainer (\container -> container{clConfigDelivery = Nothing})
 
 {- | Seal one route from an already admitted edge and its plan-owned lift.
 
@@ -344,14 +343,13 @@ compete with the root's signed account of the exchange.
 subcommand :: ProjectVerb verb -> [Text]
 subcommand _verb = ["--hostbootstrap-lifecycle-child"]
 
-{- | Render exactly one argv shape for the single plan-owned lift layer.
+{- | Render the closed single-layer or root-relative lifecycle route grammar.
 
-A route is one layer deep by construction — the catalog refuses an admitted
-edge whose route is anything else — so there is no nesting to fold here and no
-inner tool name to place. What each shape has in common is that it is written
-out in full: a Docker container keeps standard input attached and runs at @/@,
-and the three VM providers run noninteractively at @/@, reaching root through
-noninteractive sudo where the guest's default user is not already root.
+Catalog edges have one layer; reverse recovery may retain several VM layers
+and an optional terminal container. A Docker container keeps standard input
+attached and runs at @/@, and the three VM providers run noninteractively at
+@/@, reaching root through noninteractive sudo where the guest's default user
+is not root.
 
 What the shapes have in common on the other side is that nothing a plan
 authored reaches them. Container extra arguments, a configuration delivery, a
@@ -362,27 +360,27 @@ input, replace the entrypoint, move the working directory, or forward a signal
 have no path into the rendered vector.
 -}
 sanitizedLaunch :: LiftContext -> Text -> Text -> [Text] -> Either Text AdmittedLaunch
-sanitizedLaunch (LiftContext [ViaContainer container]) child targetBinary inner = do
-    require "a container layer needs no target binary path" (Text.null targetBinary)
-    admitted <- admittedContainer child container
-    folded (LiftContext [ViaContainer admitted]) "" inner InteractiveChannel
-sanitizedLaunch route@(LiftContext [ViaVM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
-    folded route targetBinary inner NoninteractiveChannel
-sanitizedLaunch route@(LiftContext [ViaLimaVM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
-    folded route targetBinary inner NoninteractiveChannel
-sanitizedLaunch route@(LiftContext [ViaWsl2VM vm]) _child targetBinary inner = do
-    _ <- sanitizedPath "the admitted target binary" targetBinary
-    _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
-    folded route targetBinary inner NoninteractiveChannel
-sanitizedLaunch (LiftContext layers@(_ : _ : _)) child targetBinary inner = do
-    AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary
-    folded (LiftContext admitted) targetBinary inner interactivity
-sanitizedLaunch _ _ _ _ =
-    Left (routeFailure "a process route carries exactly one plan-owned lift layer")
+sanitizedLaunch route child targetBinary inner = case liftLayers route of
+    [ViaContainer container] -> do
+        require "a container layer needs no target binary path" (Text.null targetBinary)
+        admitted <- admittedContainer child container
+        folded [ViaContainer admitted] "" inner InteractiveChannel
+    [ViaVM vm] -> do
+        _ <- sanitizedPath "the admitted target binary" targetBinary
+        _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+        folded [ViaVM vm] targetBinary inner NoninteractiveChannel
+    [ViaLimaVM vm] -> do
+        _ <- sanitizedPath "the admitted target binary" targetBinary
+        _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+        folded [ViaLimaVM vm] targetBinary inner NoninteractiveChannel
+    [ViaWsl2VM vm] -> do
+        _ <- sanitizedPath "the admitted target binary" targetBinary
+        _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+        folded [ViaWsl2VM vm] targetBinary inner NoninteractiveChannel
+    layers@(_ : _ : _) -> do
+        AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary
+        folded admitted targetBinary inner interactivity
+    _ -> Left (routeFailure "a process route carries exactly one plan-owned lift layer")
 
 {- | Validate the root-relative route used when the rooted reverse coordinator
 must reach a descendant below its immediate child. Every constituent edge keeps
@@ -451,8 +449,11 @@ admittedContainer child container = do
                     ++ ["-w", "/"]
             }
 
-folded :: LiftContext -> Text -> [Text] -> ChannelInteractivity -> Either Text AdmittedLaunch
-folded route binary inner interactivity =
+folded :: [LiftLayer] -> Text -> [Text] -> ChannelInteractivity -> Either Text AdmittedLaunch
+folded layers binary inner interactivity = do
+    route <- case liftContextFromLayers layers of
+        Left failure -> Left (routeFailure ("the sanitized lift context is invalid: " <> Text.pack failure))
+        Right context -> Right context
     case foldLeaf route (lifecycleProcessLeaf (Text.unpack binary) (map Text.unpack inner)) of
         DispatchTool tool argv -> Right (AdmittedLaunch tool (map Text.pack argv) interactivity)
         _ -> Left (routeFailure "a process route must cross exactly one frame")

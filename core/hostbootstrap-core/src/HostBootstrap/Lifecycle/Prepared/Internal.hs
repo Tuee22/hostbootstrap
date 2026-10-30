@@ -86,22 +86,52 @@ is exactly the confusion these newtypes exist to refuse.
 newtype GateSupersessionGeneration = GateSupersessionGeneration Word64
     deriving (Eq, Show)
 
-{- | Proof that one operation's unknown phase was durably recorded before its
-backend call, carrying the exact identities and indices that write established.
+{- | Coordinates retained after publishing one operation's durable phase record.
+
+The producer supplies the identities, fence and attempt; the journal version
+is the one returned by the protected write.
 
 This module is internal to the package. The public
 "HostBootstrap.Lifecycle.Prepared" module keeps the constructor and minting
-function hidden.
+function hidden and exposes only ordinary coordinate readers.
 -}
-data PreparedGate = PreparedGate
-    { preparedGatePlan :: Text
-    , preparedGateOperation :: Text
-    , preparedGateSession :: Text
-    , preparedGateFence :: Word64
-    , preparedGateAttempt :: Word64
-    , preparedGateJournalVersion :: Word64
-    }
-    deriving (Eq, Show)
+data PreparedGate = PreparedGate Text Text Text Word64 Word64 Word64
+    deriving (Eq)
+
+instance Show PreparedGate where
+    showsPrec precedence (PreparedGate plan operation session fence attempt journalVersion) =
+        showParen (precedence > 10) $
+            showString "PreparedGate {preparedGatePlan = "
+                . shows plan
+                . showString ", preparedGateOperation = "
+                . shows operation
+                . showString ", preparedGateSession = "
+                . shows session
+                . showString ", preparedGateFence = "
+                . shows fence
+                . showString ", preparedGateAttempt = "
+                . shows attempt
+                . showString ", preparedGateJournalVersion = "
+                . shows journalVersion
+                . showString "}"
+
+preparedGatePlan :: PreparedGate -> Text
+preparedGatePlan (PreparedGate plan _ _ _ _ _) = plan
+
+preparedGateOperation :: PreparedGate -> Text
+preparedGateOperation (PreparedGate _ operation _ _ _ _) = operation
+
+preparedGateSession :: PreparedGate -> Text
+preparedGateSession (PreparedGate _ _ session _ _ _) = session
+
+preparedGateFence :: PreparedGate -> Word64
+preparedGateFence (PreparedGate _ _ _ fence _ _) = fence
+
+preparedGateAttempt :: PreparedGate -> Word64
+preparedGateAttempt (PreparedGate _ _ _ _ attempt _) = attempt
+
+preparedGateJournalVersion :: PreparedGate -> Word64
+preparedGateJournalVersion (PreparedGate _ _ _ _ _ journalVersion) = journalVersion
 
 -- | Package-internal constructor used only after the durable write commits.
 mintPreparedGate ::

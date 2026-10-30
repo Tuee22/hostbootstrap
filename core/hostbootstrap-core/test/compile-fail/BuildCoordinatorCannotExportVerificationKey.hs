@@ -1,9 +1,7 @@
 module BuildCoordinatorCannotExportVerificationKey where
 
-import Data.ByteString (ByteString)
-import HostBootstrap.Build
+-- Provisioned signing state cannot be recovered from a live opaque coordinator.
 
--- The public verifier is derived from the provisioned signing key before the
--- coordinator bracket. No live-broker accessor can self-certify a grant.
-exportFromCoordinator :: BuildCoordinator coordinatorId -> ByteString
-exportFromCoordinator = buildCoordinatorKey
+import HostBootstrap.Build (
+    coordinatorSigningKey,
+ )

@@ -1,403 +1,303 @@
-{- | Absence guards for the harness-portability and evidence shapes.
+{- | The harness holds byte, path, component, and observed-case contracts on every host.
 
-§ N builds every binary host-native, so the host static gate must prove the same
-contracts on every supported outer host realization (§ JJ). Three shapes break
-that quietly rather than loudly: a spec that decodes a source file through the
-host's active code page, a guard that compares a native-separator path against a
-forward-slash literal, and a host tool fixture written as a POSIX-absolute
-literal. Each passes on a POSIX host and, on a Windows one, either fails or —
-worse — asserts something weaker than it reads as asserting.
-
-Two more shapes break what a green run is worth rather than where it runs
-(§ NN). A module the package description excludes on one host takes its cases
-with it, so a family shrinks and the total still reads green; and an executable
-a spec writes onto the suite's own @PATH@ makes production resolve the spec's
-answer rather than the host's, which is the gate agreeing with a shape
-production never takes.
-
-Each case names the rationale entry under @DEVELOPMENT_PLAN/rationale.md@
-§ Gates and validation that explains why the shape is wrong, and asserts only
-that the shape is absent. None of them substitutes for the gate: the gate proves
-the suite runs on a host, and these keep a known-bad shape from returning to it.
+Each refusal names its entry under DEVELOPMENT_PLAN/rationale.md. Structural
+readers and source traversal belong to SourceGuard; this module states the
+contracts those readers must establish.
 -}
 module PortabilitySpec (tests) where
 
-import Control.Monad (forM_)
-import Data.Char (isSpace)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf, sort)
-import HostBootstrap.DocValidator (findRepoRoot)
-import SourceGuard (
-    countHaskellIdentifier,
-    countHaskellTokenSequence,
-    countPosixAbsoluteLiteralApplications,
-    importsModule,
-    moduleImportTokens,
- )
-import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath ((</>))
+import Control.Monad (forM_, unless)
+import Data.Char (isAlpha, toLower)
+import Data.List (isInfixOf, isPrefixOf, nub, tails)
+import PlatformPath (hostFixturePath)
+import qualified SourceGuard as Source
+import System.Environment (getExecutablePath)
+import System.Exit (ExitCode (ExitFailure))
+import System.FilePath (isAbsolute, takeDirectory, (</>))
+import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase)
+import Text.Read (readMaybe)
 
 tests :: TestTree
 tests =
     testGroup
         "PortabilitySpec"
         [ testCase "the suite driver fixes the locale encoding before the runner starts" $ do
-            -- A frozen source digest, a significant-line budget, and a governed
-            -- golden containing a section sign are properties of a file's own
-            -- bytes. Decoded through the active code page they become
-            -- properties of the host instead, which is a suite that agrees with
-            -- itself only where it was written.
             driver <- readTestSource "Spec.hs"
-            importsModule "GHC.IO.Encoding" driver @?= True
-            moduleImportTokens "GHC.IO.Encoding" driver
-                @?= Just ["setLocaleEncoding", ",", "utf8"]
-            -- Applied, not merely imported: the import list separates the two
-            -- names with a comma, so an adjacent pair is the call itself.
-            countHaskellTokenSequence ["setLocaleEncoding", "utf8"] driver @?= 1
-        , testCase "the separator rewrite lives in exactly one harness module" $
-            forEachTestSourceBut "SourceGuard.hs" $ \name source -> do
-                let observed = countHaskellIdentifier backslashLiteral source
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " defines "
-                                ++ show observed
-                                ++ " separator rewrites of its own:"
-                                ++ " use SourceGuard.repoRelativePath"
-                            )
+            assertBool sourceRationale (Source.importsModule "GHC.IO.Encoding" driver)
+            let body = dropMain (Source.haskellTokens driver)
+                locale = tokenPositions ["setLocaleEncoding", "utf8"] body
+                effects = concatMap (\name -> tokenPositions [name] body) ["getArgs", "readFile", "defaultMain"]
+            assertBool sourceRationale (["do", "setLocaleEncoding", "utf8"] `isPrefixOf` body)
+            case locale of
+                [position] -> assertBool sourceRationale (not (null effects) && all (> position) effects)
+                _ -> assertFailure (sourceRationale <> ": expected one locale application, observed " <> show locale)
+        , testCase "a separator rewrite lives only in SourceGuard and PlatformPath" $
+            Source.forEachTestSourceBut "" $ \name source ->
+                unless (name `elem` ["test/SourceGuard.hs", "test/PlatformPath.hs"]) $
+                    assertEqual (fixtureRationale <> ": " <> name) 0 (separatorOccurrences source)
+        , testCase "separator detection covers literals, splitDirectories, and POSIX imports" $
+            forM_
+                [ "x = " <> show (toEnum 92 :: Char)
+                , "x = " <> show [toEnum 92 :: Char]
+                , "x = splitDirectories path"
+                , "import qualified System.FilePath.Posix as Posix"
+                ]
+                (\source -> assertEqual fixtureRationale 1 (separatorOccurrences source))
+        , testCase "a quoted separator helper name is not an identifier" $
+            assertEqual fixtureRationale 0 (separatorOccurrences "name = \"splitDirectories\"")
         , testCase "only the harness helper turns a source path into a comparable name" $
-            forEachTestSourceBut "SourceGuard.hs" $ \name source -> do
-                let observed = countHaskellIdentifier "makeRelative" source
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " names makeRelative "
-                                ++ show observed
-                                ++ " times; a raw relative path carries the host's own"
-                                ++ " separator, so use SourceGuard.repoRelativePath"
-                                ++ " or SourceGuard.repoRelativeModuleName"
-                            )
+            Source.forEachTestSourceBut "SourceGuard.hs" $ \name source ->
+                assertEqual (fixtureRationale <> ": " <> name) 0 (Source.countHaskellIdentifier "makeRelative" source)
         , testCase "no frozen digest is derived from a locale-decoded read" $
-            forEachTestSourceBut "" $ \name source -> do
-                let observed = sum (map (`countHaskellTokenSequence` source) reencodedDigestSequences)
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " takes "
-                                ++ show observed
-                                ++ " digests of a re-encoded value; a frozen source digest is"
-                                ++ " a digest of the file's own bytes, so read the bytes rather"
-                                ++ " than decoding through the gate host's code page and"
-                                ++ " re-encoding"
-                            )
+            Source.forEachTestSourceBut "" $ \name source ->
+                assertEqual (sourceRationale <> ": " <> name) 0 (reencodedDigestCount source)
+        , testCase "digest detection covers application, composition, and dollar application" $
+            forM_
+                [ "digest = childConfigDigest (TextEncoding.encodeUtf8 source)"
+                , "digest = childConfigDigest . TextEncoding.encodeUtf8 . Text.pack"
+                , "digest = sha256Text $ Text.encodeUtf8 source"
+                , "digest = childConfigDigest $ transform (raw) <> Text.encodeUtf8 source"
+                , "digest = childConfigDigest . a . b . c . d . e . f . g . h . i . Text.encodeUtf8"
+                ]
+                (\source -> assertEqual sourceRationale 1 (reencodedDigestCount source))
+        , testCase "digest detection leaves byte digests and unrelated encodings alone" $
+            forM_
+                [ "fields = [TextEncoding.encodeUtf8 (childConfigDigest request), TextEncoding.encodeUtf8 session]"
+                , "value <- pure (sha256Text bytes)\npure (Text.encodeUtf8 unrelated)"
+                , "digest = childConfigDigest $ request\nother = Text.encodeUtf8 unrelated"
+                ]
+                (\source -> assertEqual sourceRationale 0 (reencodedDigestCount source))
         , testCase "no host tool fixture bypasses the fixture-path constructor" $
-            forEachTestSourceBut "" $ \name source -> do
-                let observed =
-                        countPosixAbsoluteLiteralApplications "mkAbsExe" source
-                            + countPosixAbsoluteLiteralApplications "mustAbs" source
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " builds "
-                                ++ show observed
-                                ++ " host tool paths from POSIX-absolute literals,"
-                                ++ " which the total AbsExe constructor refuses on a Windows host:"
-                                ++ " use PlatformPath.hostFixturePath"
-                            )
+            Source.forEachTestSourceBut "" $ \name source -> do
+                let observed = Source.countPosixAbsoluteLiteralApplications "mkAbsExe" source + Source.countPosixAbsoluteLiteralApplications "mustAbs" source
+                assertEqual (fixtureRationale <> ": " <> name) 0 observed
+        , testCase "hostFixturePath is absolute for a drive-letter segment" $
+            forM_ ["D:/x", "/D:/x", "D:x", "/D:x", "D:", "D:" <> [toEnum 92] <> "x"] $ \named ->
+                assertBool (fixtureRationale <> ": " <> show named) (isAbsolute (hostFixturePath named))
+        , testCase "an unrecognized probe flag is refused" $ do
+            executable <- getExecutablePath
+            (status, output, diagnostic) <- readProcessWithExitCode executable ["--hostbootstrap-no-such-probe"] ""
+            assertEqual skippedRationale (ExitFailure 97) status
+            assertEqual skippedRationale "" output
+            assertBool skippedRationale ("unrecognized probe:" `isInfixOf` diagnostic)
         , testCase "no host condition decides which modules the package builds" $ do
-            -- A module a Cabal 'os' or 'arch' condition excludes is not a
-            -- weaker expectation on that host; it is no expectation at all, and
-            -- the cases it carried leave with it. The family shrinks, the total
-            -- stays green, and nothing in the run says so. A platform row is
-            -- therefore built everywhere and stubbed to a total refusal where it
-            -- cannot apply, and only the platform library it binds to is
-            -- conditional.
-            description <- readPackageDescription
-            let offending = hostConditionalFields description
-            if null offending
-                then pure ()
-                else
-                    assertFailure
-                        ( "the package description lets a host condition decide "
-                            ++ show offending
-                            ++ "; only build-depends may be host-conditional, because a"
-                            ++ " platform row is compiled on every gate host and refuses"
-                            ++ " where it cannot apply"
-                        )
-        , testCase "no spec points the suite's own PATH at an executable it wrote" $
-            forEachTestSourceBut "" $ \name source -> do
-                let observed =
-                        sum
-                            [ countHaskellTokenSequence [setter, pathVariable] source
-                            | setter <- ["setEnv", "unsetEnv"]
-                            ]
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " renames the suite process's own PATH "
-                                ++ show observed
-                                ++ " times; production resolves a host tool by absolute path"
-                                ++ " from typed configuration, so a spec that makes PATH"
-                                ++ " resolve to an executable it wrote is testing its own"
-                                ++ " answer rather than the host's"
-                            )
-        , testCase "no lifecycle module installs a thread-local crash point" $ do
-            -- What an interrupted transaction leaves is a value, so a fixture
-            -- writes that value through the store and re-enters the ordinary
-            -- entry point. A coordinator that carried a crash point instead
-            -- would ship a spoofable path to operators, and a gate driving it
-            -- would agree with a shape production never takes.
-            sources <- productionSources
-            forM_ sources $ \(name, source) -> do
-                let observed = sum (map (`countHaskellIdentifier` source) crashPointNames)
-                if observed == 0
-                    then pure ()
-                    else
-                        assertFailure
-                            ( name
-                                ++ " names a transaction crash point "
-                                ++ show observed
-                                ++ " times; the durable state an interruption leaves is a"
-                                ++ " record, so a fixture writes the record rather than"
-                                ++ " asking the coordinator to throw"
-                            )
-        , testCase "the build description carries the warning policy the gate asserts" $ do
-            -- A policy supplied as a flag each caller remembers is a policy that
-            -- is weakest exactly when someone is in a hurry. Declared in the
-            -- shared stanza every component imports, a plain `cabal build`
-            -- refuses what the gate refuses.
-            description <- readPackageDescription
-            forM_ requiredWarningFlags $ \flag ->
-                if flag `isInfixOf` commonWarningsOptions description
-                    then pure ()
-                    else
-                        assertFailure
-                            ( "the 'common warnings' stanza does not carry "
-                                ++ flag
-                                ++ "; the warning policy is a property of the package, not of"
-                                ++ " a flag the caller supplies"
-                            )
-        , testCase "no production module suppresses a warning the policy asserts" $ do
-            -- A per-module suppression is the same weakening as a dropped flag,
-            -- scoped smaller and therefore harder to see.
-            sources <- productionSources
-            forM_ sources $ \(name, source) ->
-                if optionsPragma `isInfixOf` source
-                    then
-                        assertFailure
-                            ( name
-                                ++ " carries a GHC options pragma; the library holds one"
-                                ++ " warning policy and no module opts out of it"
-                            )
-                    else pure ()
+            description <- Source.readPackageDescription
+            assertEqual skippedRationale [] (hostConditionalFields description)
+        , testCase "host condition fields include elif, flags, and mixed field case" $
+            forM_
+                [ ("if flag(x)\n  build-depends: base\nelif os(windows)\n  other-modules: Hidden\n", ["other-modules"])
+                , ("if os(windows)\n  Buildable: False\n", ["buildable"])
+                , ("if flag(live)\n  buildable: False\n", ["buildable"])
+                , ("if arch(aarch64)\n  Exposed-Modules: Hidden\n", ["exposed-modules"])
+                , ("if !os(windows)\n  Build-Depends: unix\n", [])
+                ]
+                (\(source, expected) -> assertEqual skippedRationale expected (hostConditionalFields source))
+        , testCase "no spec binds PATH outside the allow-list" $ do
+            allowedSource <- readTestSource "RecursiveLifecycleSpec.hs"
+            let allowedBody = bindingBody "recursiveFixtureEnvironment" allowedSource
+                allowedCount = pathBindingCount allowedBody
+            assertBool (fakeRationale <> ": the process-transport fixture allow-list entry is stale") (allowedCount > 0)
+            Source.forEachTestSourceBut "" $ \name source -> do
+                let excused = if name == "test/RecursiveLifecycleSpec.hs" then allowedCount else 0
+                assertEqual (fakeRationale <> ": " <> name) excused (pathBindingCount source)
+        , testCase "PATH binding detection distinguishes writes and tuple bindings from lookup" $ do
+            forM_
+                [ "setEnv \"PATH\" dir"
+                , "unsetEnv \"PATH\""
+                , "[(\"PATH\", tools)]"
+                , "[(\"Path\", tools)]"
+                , "(proc exe []){env = Just [(\"PATH\", tools)]}"
+                ]
+                (\source -> assertEqual fakeRationale 1 (pathBindingCount source))
+            assertEqual fakeRationale 0 (pathBindingCount "lookup \"PATH\" inherited")
+        , testCase "no lifecycle module installs a thread-local crash point" $
+            Source.withPackageSourceIn [] $ \packageRoot _ -> do
+                sources <- concat <$> traverse (Source.readHaskellSources . (packageRoot </>)) ["src", "app", "internal"]
+                forM_ sources $ \(name, source) ->
+                    assertEqual (fakeRationale <> ": " <> name) 0 (sum (map (`Source.countHaskellIdentifier` source) crashPointNames))
+        , testCase "the build description carries the warning policy the gate asserts" $
+            forEachPackage $ \_ description ->
+                forM_ requiredWarningFlags $ \flag ->
+                    assertBool (warningRationale <> ": missing " <> flag) (flag `elem` words (Source.commonWarningsOptions description))
+        , testCase "every component imports the warning stanza and none overrides it" $
+            forEachPackage $ \_ description ->
+                forM_ (Source.componentStanzas description) $ \component -> do
+                    let body = Source.componentBody component
+                        label = warningRationale <> ": " <> Source.componentHeader component
+                    assertBool label ("warnings" `elem` Source.fieldValues "import" body)
+                    assertEqual label [] (filter (weakensPolicy (words (Source.commonWarningsOptions description))) (Source.fieldValues "ghc-options" body))
+        , testCase "no module suppresses a warning the policy asserts" $
+            forEachPackage $ \packageRoot description -> do
+                paths <- nub . concat <$> traverse (Source.listComponentSources packageRoot) (Source.componentStanzas description)
+                forM_ paths $ \path -> do
+                    source <- readFile path
+                    assertBool (warningRationale <> ": " <> path) (not (hasOptionsPragma source))
+        , testCase "warning pragma detection handles both accepted pragma names" $ do
+            forM_ ["{-# OPTIONS_GHC -Wno-missing-signatures #-}", "{-# options_ghc -Wwarn #-}", "{-# OPTIONS -Wwarn #-}"] $ \source ->
+                assertBool warningRationale (hasOptionsPragma source)
+            assertBool warningRationale (not (hasOptionsPragma "x = \"{-# OPTIONS_GHC -Wwarn #-}\""))
+        , testCase "warning overrides are matched as whole policy flags" $ do
+            forM_ ["-Wwarn", "-Wno-error", "-Wno-error=partial-fields", "-Wno-partial-fields"] $ \flag ->
+                assertBool warningRationale (weakensPolicy requiredWarningFlags flag)
+            assertBool warningRationale (not (weakensPolicy requiredWarningFlags "-Werror=unused-imports"))
+        , testCase "every component declares exactly the module files under its source directories" $
+            forEachPackage $ \packageRoot description -> do
+                let components = Source.componentStanzas description
+                inventories <- traverse (\component -> (,) component <$> Source.listComponentSources packageRoot component) components
+                forM_ inventories $ \(component, paths) -> do
+                    forM_ (declaredModules component) $ \name ->
+                        assertBool (skippedRationale <> ": missing declared module " <> name <> " in " <> Source.componentHeader component) (any (declaresModuleAt packageRoot component name) paths)
+                    forM_ (Source.fieldValues "main-is" (Source.componentBody component)) $ \mainFile ->
+                        assertBool (skippedRationale <> ": missing main-is " <> mainFile) (any (isMainSource packageRoot component mainFile) paths)
+                    forM_ paths $ \path ->
+                        assertBool (skippedRationale <> ": undeclared source " <> path) (any (ownsSource packageRoot path) inventories)
+        , testCase "the shared stanza reader accepts inline, continued, and common source fields" $ do
+            let description = "common shared\n  hs-source-dirs: internal\nlibrary private\n  import: shared\n  Exposed-Modules: HostBootstrap.A,HostBootstrap.A.Internal\n    Main\n  ghc-options: -Werror\ntest-suite suite\n  hs-source-dirs: test provider-live\n  other-modules: ConditionalCase, Expect\n"
+                components = Source.componentStanzas description
+            assertEqual skippedRationale ["library private", "test-suite suite"] (map Source.componentHeader components)
+            assertEqual skippedRationale [["internal"], ["test", "provider-live"]] (map Source.componentSourceDirs components)
+            case components of
+                [library, suite] -> do
+                    assertEqual skippedRationale ["HostBootstrap.A", "HostBootstrap.A.Internal", "Main"] (Source.fieldModules "exposed-modules" (Source.componentBody library))
+                    assertEqual skippedRationale ["ConditionalCase", "Expect"] (Source.fieldModules "OTHER-MODULES:" (Source.componentBody suite))
+                _ -> assertFailure (skippedRationale <> ": wrong synthetic components " <> show components)
+        , testCase "module enumeration distinguishes a module from its nested module" $ do
+            let packageRoot = hostFixturePath "package"
+                component = Source.ComponentStanza "library" "exposed-modules: HostBootstrap.A.Internal" ["src"]
+                nested = packageRoot </> "src" </> "HostBootstrap" </> "A" </> "Internal.hs"
+            assertBool skippedRationale (declaresModuleAt packageRoot component "HostBootstrap.A.Internal" nested)
+            assertBool skippedRationale (not (declaresModuleAt packageRoot component "HostBootstrap.A" nested))
+        , testCase "each portability guard names an existing rationale heading" $
+            Source.withPackageSourceIn [] $ \packageRoot _ -> do
+                rationale <- readFile (takeDirectory (takeDirectory packageRoot) </> "DEVELOPMENT_PLAN" </> "rationale.md")
+                forM_ rationaleHeadings $ \heading ->
+                    assertBool (heading <> ": missing rationale heading") (("### " <> heading) `elem` lines rationale)
         ]
 
-{- | The crash-injection vocabulary the redo coordinator no longer has.
+sourceRationale, fixtureRationale, skippedRationale, fakeRationale, warningRationale :: String
+sourceRationale = "A source-byte guard reads bytes, because a locale-decoded read freezes the wrong thing"
+fixtureRationale = "A host fixture is absolute on its own host, because a POSIX literal asserts a platform"
+skippedRationale = "A skipped case is worse than a failing one, because the total does not change"
+fakeRationale = "A fake is a symptom of an effect that swallowed a decision"
+warningRationale = "The warning policy belongs to the package, not to the caller"
 
-Spelled as string literals for the same reason the guards above are: the lexer
-yields a quoted literal as one token, so this module is not itself an
-occurrence of the shape it forbids.
--}
-crashPointNames :: [String]
-crashPointNames =
-    [ "checkFailpoint"
-    , "installedFailpoints"
-    , "withTransactionFailpoint"
-    , "TransactionFailpoint"
-    , "TransactionInterrupted"
-    ]
+rationaleHeadings :: [String]
+rationaleHeadings = [sourceRationale, fixtureRationale, skippedRationale, fakeRationale, warningRationale]
 
-{- | Every Haskell source the package ships, by file name.
-
-The suite's own modules are excluded deliberately: a guard about what
-production carries must not be satisfied or broken by what a fixture carries.
--}
-productionSources :: IO [(FilePath, String)]
-productionSources = do
-    cwd <- getCurrentDirectory
-    root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
-    let packageRoot = root </> "core" </> "hostbootstrap-core"
-    concat
-        <$> traverse
-            (\directory -> haskellSourcesUnder (packageRoot </> directory))
-            ["src", "app", "internal"]
-
-haskellSourcesUnder :: FilePath -> IO [(FilePath, String)]
-haskellSourcesUnder directory = do
-    entries <- sort <$> listDirectory directory
-    concat <$> traverse descend entries
-  where
-    descend name = do
-        let path = directory </> name
-        nested <- doesDirectoryExist path
-        if nested
-            then haskellSourcesUnder path
-            else
-                if ".hs" `isSuffixOf` name
-                    then do
-                        source <- readFile path
-                        pure [(name, source)]
-                    else pure []
-
-{- | The warning flags the package description must carry.
-
-Spelled here rather than at the call site so the guard names one list, and so a
-flag added to the policy is added in one place.
--}
 requiredWarningFlags :: [String]
 requiredWarningFlags = ["-Werror", "-Wpartial-fields"]
 
-{- | The per-module suppression pragma as it appears in a source file.
+crashPointNames :: [String]
+crashPointNames = ["checkFailpoint", "installedFailpoints", "withTransactionFailpoint", "TransactionFailpoint", "TransactionInterrupted"]
 
-Assembled from its parts so this module is not itself an occurrence of the shape
-the guard above forbids.
--}
-optionsPragma :: String
-optionsPragma = "{-# " ++ "OPTIONS_GHC"
+readTestSource :: FilePath -> IO String
+readTestSource name = Source.withPackageSourceIn ["test"] $ \_ directory -> readFile (directory </> name)
 
-{- | The @ghc-options@ line of the shared @common warnings@ stanza.
+forEachPackage :: (FilePath -> String -> IO ()) -> IO ()
+forEachPackage use = Source.withPackageSourceIn [] $ \packageRoot _ -> do
+    description <- Source.readPackageDescription
+    use packageRoot description
+    let demoRoot = takeDirectory (takeDirectory packageRoot) </> "demo"
+    demoDescription <- readFile (demoRoot </> "hostbootstrap-demo.cabal")
+    use demoRoot demoDescription
 
-The stanza is the one every component imports, so this is the whole warning
-policy of the package in one string.
--}
-commonWarningsOptions :: String -> String
-commonWarningsOptions description =
-    case dropWhile (/= "common warnings") (map squeeze (lines description)) of
-        [] -> ""
-        (_ : rest) ->
-            unwords
-                [ line
-                | line <- takeWhile (not . null) rest
-                , "ghc-options:" `isPrefixOf` line
-                ]
+dropMain :: [String] -> [String]
+dropMain tokens = case dropWhile (not . (["main", "="] `isPrefixOf`)) (tails tokens) of
+    [] -> []
+    body : _ -> drop 2 body
+
+tokenPositions :: [String] -> [String] -> [Int]
+tokenPositions wanted tokens = [index | (index, suffix) <- zip [0 ..] (tails tokens), wanted `isPrefixOf` suffix]
+
+separatorOccurrences :: String -> Int
+separatorOccurrences source =
+    length [() | token <- Source.haskellTokens source, (readMaybe token :: Maybe Char) == Just (toEnum 92) || (readMaybe token :: Maybe String) == Just [toEnum 92]]
+        + Source.countHaskellIdentifier "splitDirectories" source
+        + if Source.importsModule "System.FilePath.Posix" source then 1 else 0
+
+reencodedDigestCount :: String -> Int
+reencodedDigestCount source =
+    length
+        [ ()
+        | token : rest <- tails (Source.haskellTokens source)
+        , token `elem` ["childConfigDigest", "sha256Text"]
+        , "encodeUtf8" `elem` digestArgument rest
+        ]
   where
-    squeeze = dropWhile isSpace . reverse . dropWhile isSpace . reverse
+    digestArgument ("(" : rest) = expression 1 1 rest
+    digestArgument ("." : rest) = expression 0 0 rest
+    digestArgument ("$" : rest) = expression 0 0 rest
+    digestArgument _ = []
+    expression :: Int -> Int -> [String] -> [String]
+    expression _ _ [] = []
+    expression boundary depth (token : rest)
+        | boundary == 0, depth == 0, token `elem` [")", "]", "}", ",", ";", "=", "<-"] = []
+        | boundary == 1, depth == 1, token == ")" = []
+        | token `elem` ["(", "[", "{"] = token : expression boundary (depth + 1) rest
+        | token `elem` [")", "]", "}"] = token : expression boundary (depth - 1) rest
+        | otherwise = token : expression boundary depth rest
 
-{- | The @PATH@ environment name as the lexer yields it.
+pathBindingCount :: String -> Int
+pathBindingCount source = length [() | suffix <- tails (Source.haskellTokens source), binds suffix]
+  where
+    isPath token = fmap (map toLower) (readMaybe token :: Maybe String) == Just "path"
+    binds (setter : variable : _) | setter `elem` ["setEnv", "unsetEnv"] = isPath variable
+    binds ("(" : variable : "," : _) = isPath variable
+    binds _ = False
 
-Spelled as a string literal, so this module is not itself an occurrence of the
-shape the guard above forbids.
--}
-pathVariable :: String
-pathVariable = "\"PATH\""
+bindingBody :: String -> String -> String
+bindingBody name source = case dropWhile (\line -> not (name `isPrefixOf` line && "=" `elem` Source.haskellTokens line)) (lines source) of
+    [] -> ""
+    first : rest -> unlines (first : takeWhile (\line -> null (Source.trim line) || Source.indentation line > 0) rest)
 
-{- | Every field a Cabal @os@ or @arch@ condition decides.
+hasOptionsPragma :: String -> Bool
+hasOptionsPragma source = any options (tails (Source.haskellTokens source))
+  where
+    options ("-#" : name : _) = map toLower name `elem` ["options_ghc", "options"]
+    options _ = False
 
-A conditional @build-depends@ is admitted and nothing else: binding to @unix@ on
-one host and @Win32@ on another is how one row reaches two kernels, whereas
-deciding @exposed-modules@, @other-modules@, or @buildable@ decides whether a
-subject exists at all.
+weakensPolicy :: [String] -> String -> Bool
+weakensPolicy policy flag =
+    flag `elem` ["-Wwarn", "-Wno-error"]
+        || "-Wno-error=" `isPrefixOf` flag
+        || flag `elem` ["-Wno-" <> drop 2 enabled | enabled <- policy, "-W" `isPrefixOf` enabled]
 
-The parse is indentation-based, which is what the field layout of a package
-description is. A conditional block owns the lines indented past its @if@, and
-an @else@ at the same indentation opens the other half of the same condition.
--}
+declaredModules :: Source.ComponentStanza -> [String]
+declaredModules component = Source.fieldModules "exposed-modules" body <> Source.fieldModules "other-modules" body
+  where
+    body = Source.componentBody component
+
+declaresModuleAt :: FilePath -> Source.ComponentStanza -> String -> FilePath -> Bool
+declaresModuleAt packageRoot component name path = any (\directory -> Source.repoRelativeModuleName (packageRoot </> directory) path == name) (Source.componentSourceDirs component)
+
+ownsSource :: FilePath -> FilePath -> (Source.ComponentStanza, [FilePath]) -> Bool
+ownsSource packageRoot path (component, paths) =
+    path `elem` paths
+        && (any (\name -> declaresModuleAt packageRoot component name path) (declaredModules component)
+            || any (\mainFile -> isMainSource packageRoot component mainFile path) (Source.fieldValues "main-is" (Source.componentBody component)))
+
+isMainSource :: FilePath -> Source.ComponentStanza -> FilePath -> FilePath -> Bool
+isMainSource packageRoot component mainFile path =
+    any (\directory -> Source.repoRelativePath packageRoot path == Source.repoRelativePath packageRoot (packageRoot </> directory </> mainFile)) (Source.componentSourceDirs component)
+
 hostConditionalFields :: String -> [String]
-hostConditionalFields = go . map (\line -> (indentOf line, trim line)) . lines
+hostConditionalFields = go . filter (not . null . snd) . map (\line -> (Source.indentation line, map toLower (Source.trim line))) . lines
   where
     go [] = []
     go ((column, text) : rest)
         | isHostCondition text =
             let (body, remaining) = span ((> column) . fst) rest
-             in offenders body ++ afterCondition column remaining
+             in offenders body <> afterCondition column remaining
         | otherwise = go rest
-
-    -- The 'else' half of a host condition is governed by the same condition.
     afterCondition column ((elseColumn, "else") : rest)
         | elseColumn == column =
             let (body, remaining) = span ((> column) . fst) rest
-             in offenders body ++ afterCondition column remaining
+             in offenders body <> afterCondition column remaining
     afterCondition _ rest = go rest
-
-    offenders body =
-        [ field
-        | field <- map (fieldName . snd) body
-        , field `notElem` ["", "build-depends"]
-        ]
-
-    isHostCondition text =
-        take 3 text == "if " && ("os(" `isInfixOf` text || "arch(" `isInfixOf` text)
-
-    fieldName text =
-        case break (== ':') text of
-            (name, ':' : _)
-                | all (\character -> character `elem` ("abcdefghijklmnopqrstuvwxyz-" :: String)) name
-                , not (null name) ->
-                    name
-            _ -> ""
-
-    indentOf line = length (takeWhile (== ' ') line)
-
-    trim = dropWhile isSpace . reverse . dropWhile isSpace . reverse
-
-readPackageDescription :: IO String
-readPackageDescription = do
-    cwd <- getCurrentDirectory
-    root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
-    readFile
-        ( root
-            </> "core"
-            </> "hostbootstrap-core"
-            </> "hostbootstrap-core.cabal"
-        )
-
-{- | A digest taken of a re-encoded value, as the lexer yields it.
-
-A frozen source digest names what a file is, so it is taken from that file's own
-bytes. Taken instead from a locale-decoded read that is then re-encoded, it
-becomes a property of the gate host's code page and newline translation, and a
-freeze means a different thing on each gate host (§ JJ). Only a decoded read
-needs the re-encoding, so the two digest helpers a spec freezes a governed source
-with are paired here with every alias the suite imports the encoder under.
-
-Spelled as string literals, so this module is not itself an occurrence of the
-shape the guard above forbids: the lexer yields a quoted literal as one token.
--}
-reencodedDigestSequences :: [[String]]
-reencodedDigestSequences =
-    [ [digest, "(", alias, ".", "encodeUtf8"]
-    | digest <- ["childConfigDigest", "sha256Text"]
-    , alias <- ["TextEncoding", "Text", "T"]
-    ]
-
-{- | The backslash character literal as the lexer yields it.
-
-Spelled as a string literal, so this module is not itself an occurrence of the
-shape the guard above forbids.
--}
-backslashLiteral :: String
-backslashLiteral = "'\\\\'"
-
-{- | Run a guard over every test module, excusing at most the one module that
-owns the shape.
--}
-forEachTestSourceBut :: FilePath -> (FilePath -> String -> IO ()) -> IO ()
-forEachTestSourceBut owner check = do
-    root <- testRoot
-    entries <- listDirectory root
-    let sources = sort (filter (\name -> ".hs" `isSuffixOf` name && name /= owner) entries)
-    forM_ sources $ \name -> do
-        source <- readFile (root </> name)
-        check name source
-
-readTestSource :: FilePath -> IO String
-readTestSource name = do
-    root <- testRoot
-    readFile (root </> name)
-
-testRoot :: IO FilePath
-testRoot = do
-    cwd <- getCurrentDirectory
-    root <- findRepoRoot cwd >>= maybe (assertFailure "could not locate the repository root") pure
-    pure (root </> "core" </> "hostbootstrap-core" </> "test")
+    offenders body = [field | (_, text) <- body, let field = fieldName text, field `notElem` ["", "build-depends"]]
+    isHostCondition text = any (`isPrefixOf` text) ["if ", "elif "] && any (`isInfixOf` text) ["os(", "arch(", "flag("]
+    fieldName text = case break (== ':') text of
+        (name, ':' : _) | not (null name), all (\character -> isAlpha character || character == '-') name -> name
+        _ -> ""

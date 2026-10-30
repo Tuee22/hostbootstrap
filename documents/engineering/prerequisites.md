@@ -46,14 +46,27 @@ container runtime) are the binary's `ensure` responsibility, not the wrapper's. 
 host-management logic lives in `hostbootstrap-core` as `ensure` reconcilers and runs through the
 project binary (or `hostbootstrap-core`'s own bare binary).
 
+The doctor dispatches exhaustively over the five `SubstrateName` values. Each branch stops at its first
+failed prerequisite check. An installable prerequisite's refusal includes its remedy; a required probe
+that exceeds its deadline reports a timeout.
+
+On Linux, maintainer base-image builds also measure CPU affinity and memory through
+[resources.py](../../hostbootstrap/resources.py). They require at least 8 CPUs, 14 GiB total memory,
+and 8 GiB available memory. A value exactly at each floor is accepted; a lower value is refused with
+the `CPUs`, `total memory`, or `available memory` shortfall. The base builder derives its per-build limits
+from that capacity as described in [base images](base_image.md).
+
 ## Linux Minimums
 
 The Python bootstrapper asserts, fail-fast:
 
 - **Ubuntu 24.04.** The supported Linux substrate (`linux-cpu` and `linux-gpu`).
 - **Passwordless sudo.** Required for the host package and Docker setup the `ensure` reconcilers
-  perform.
-- **curl.** Required for the pinned, SHA-256-verified GHCup bootstrap download.
+  perform. The probe is `sudo -n true`; a root invocation needs no sudo executable or probe. Install
+  missing sudo with `apt-get install sudo`, and configure a `NOPASSWD` entry in `/etc/sudoers.d/`.
+- **curl.** Required for the pinned, SHA-256-verified GHCup bootstrap download. Install with
+  `apt-get install curl`.
+
 Hardware virtualization is **not** a Python minimum. A usable `/dev/kvm` is a runtime precondition the
 binary self-heals in `ensure-incus` (loading the `kvm` module if the node is absent, granting the invoking
 user `rw` via `setfacl` if it is present-but-unwritable, and failing fast only when firmware virtualization
@@ -80,10 +93,10 @@ native-Linux lifecycle gate. Current status and exact dated test evidence belong
 
 The Python bootstrapper asserts, fail-fast:
 
-- **macOS on Apple Silicon (arm64).**
-- **Xcode Command Line Tools.**
+- **macOS on Apple Silicon (arm64).** The shared architecture parser accepts its ARM64 aliases.
+- **Xcode Command Line Tools.** Install with `xcode-select --install`.
 - **Passwordless sudo.**
-- **Homebrew.**
+- **Homebrew.** Install from [brew.sh](https://brew.sh).
 
 These four, checked in that order, are the bedrock the Apple bootstrap path needs before it can ensure anything else.
 Homebrew is the channel through which the bootstrapper installs the host GHC/Cabal toolchain
@@ -101,13 +114,17 @@ The Python bootstrapper asserts, fail-fast:
 - **winget.** The Homebrew-analog pre-binary package manager, asserted present as a hard precondition
   rather than reconciled (exactly as Homebrew is on Apple). `ensure-cudawin` later uses it to install the
   CUDA Toolkit and MSVC build tools; the host GHC/Cabal toolchain (`ghcup`) is bootstrapped separately by
-  a direct PowerShell download (`Invoke-WebRequest`), not through winget.
+  a direct PowerShell download (`Invoke-WebRequest`), not through winget. Install winget through
+  App Installer from Microsoft Store.
 - **Windows PowerShell** (`powershell` on `PATH`). The shell the pre-binary bootstrapper drives the
-  GHCup download through. PowerShell 7's `pwsh` alone does not satisfy the check.
+  GHCup download through. PowerShell 7's `pwsh` alone does not satisfy the check. Enable Windows
+  PowerShell in Windows Features and add its installation directory to `PATH` if it is missing.
 
 **Long-path support is reported, not asserted.** `doctor` adds an advisory `long paths:` line on
 Windows covering Git's `core.longpaths` and the machine-wide `LongPathsEnabled` policy, and it never
-raises. This is deliberate on two grounds. First, the concern is *cleanup*, not the pre-binary build
+raises. The Git probe uses `git config --type=bool --get core.longpaths`, so Git normalizes every true
+spelling it supports. A missing or timed-out advisory probe leaves support unverified.
+This is deliberate on two grounds. First, the concern is *cleanup*, not the pre-binary build
 floor this page owns: the repo-local Cabal store doubles past the 260-char `MAX_PATH` (see
 [gitignore_guardrails.md](gitignore_guardrails.md)), which GHC handles fine while `git clean -fxd`
 does not — so the host still builds. Second, `hostbootstrap` is a pipx-distributed CLI invoked against
@@ -152,13 +169,14 @@ what that probe observes; the per-reconciler probe strengths are in
 | Incus host-provider | `ensure-incus` | Apple silicon (Colima-backed) and Linux (native daemon) |
 | NVIDIA container toolkit + Docker runtime/CDI/volume injection (NVIDIA kernel driver is a precondition) | `ensure-cuda` | `linux-gpu` |
 | Homebrew presence | `ensure-homebrew` | Apple silicon; verification-only because Homebrew is already a pre-binary minimum |
-| Apple host GHC toolchain (`brew install ghcup`, then `ghcup install ghc`) | `ensure-ghc` | Apple silicon |
+| Apple host GHC toolchain (`brew install ghcup`, then `ghcup install ghc --set recommended` to select the recommended default) | `ensure-ghc` | Apple silicon |
 | Swift + Metal host-build tooling (verification-only; Xcode Command Line Tools supply it) | `ensure-apple-metal` | Apple silicon |
 | WSL2 platform and hypervisor readiness (the later `deploy-vm` step creates the distro) | `ensure-wsl2` | Windows (`windows-cpu` / `windows-gpu`) |
 | Headless host-build CUDA (NVIDIA driver precondition; CUDA Toolkit + MSVC via winget) | `ensure-cudawin` | `windows-gpu` |
 
 See [ensure_reconcilers.md](ensure_reconcilers.md) for each reconciler's host-applicability
-predicate and reconcile action.
+predicate and reconcile action. POSIX discovery of `ghc` and `ghcup` tries `PATH` first, then the
+configured `$GHCUP_INSTALL_BASE_PREFIX/.ghcup/bin` or, without that prefix, `$HOME/.ghcup/bin`.
 
 ## Bootstrapper Freshness Is Not A Minimum
 
@@ -175,12 +193,10 @@ The pre-binary floor has one implementation: the thin bootstrapper's pure-Python
 asserts the minimums above live. The binary carries no second copy of that floor. After the binary exists,
 every prerequisite with an install plan is an `ensure` reconciler, so Docker, KVM, and NVIDIA runtime state
 belong to their reconcilers. A bare binary with no bootstrapper in front of it asserts none of the
-pre-binary minimums.
+pre-binary minimums. `HostToolSpec` guards the Haskell source trees against a second implementation
+of this floor.
 
-`HostBootstrap.HostPrereqs` is dead code: its exported `checkHostMinimums` is a partial, uncalled copy of
-the floor (it omits Linux `curl` and checks nothing on Windows) that
-[the host tools and substrate detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
-deletes, leaving `prereqs.py` the one host-floor implementation; see [Current Status](#current-status). Host-tool resolution is owned by `hostbootstrap-core`: binary-side
+Host-tool resolution is owned by `hostbootstrap-core`: binary-side
 checks resolve their external tools through the closed `HostTool` enumeration to absolute paths
 (`HostBootstrap.HostTool` / `HostBootstrap.HostConfig`), not `$PATH`-resolved bare command names. Substrate detection is owned by
 the bootstrapper, which runs before the binary exists and states what it found through the documented
@@ -216,10 +232,6 @@ Probe strengths and platform install coverage vary as described in
 the prepared direct-Colima adapter in a separate native lane. The Linux `curl` floor is asserted, and the
 GHCup download is SHA-256-verified on Linux and Windows. This page defines what belongs on each side of the boundary; current acceptance
 evidence belongs in the development plan.
-
-`HostBootstrap.HostPrereqs` and its uncalled `checkHostMinimums` remain in the package as a partial
-duplicate of the `prereqs.py` floor. Deleting them, with an absence guard that keeps them out, is owed by
-[the host tools and substrate detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md).
 
 ## See also
 

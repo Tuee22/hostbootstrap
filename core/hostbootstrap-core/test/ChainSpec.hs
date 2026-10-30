@@ -19,6 +19,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Fixture
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     installedProjectName,
@@ -68,9 +69,9 @@ import HostBootstrap.Lift (
     SelfRef,
     inContainer,
     inVM,
-    localContext,
     mkSelfRef,
  )
+import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     forward,
@@ -127,7 +128,8 @@ import System.Directory (doesFileExist, getCurrentDirectory, removeFile)
 import System.Environment (withArgs)
 import System.Exit (ExitCode)
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Temp (withSystemTempDirectory)
+import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hSeek, stderr)
+import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -171,9 +173,9 @@ demoSteps :: [Step]
 demoSteps =
     [ deployVMStep "launch the VM" metal noop
     , copySourceStep "stage source into the VM" metal noop
-    , descendsVia (inVM vm localContext) (buildPbStep "build the binary in the VM" metal noop)
+    , descendsVia (vmContext (inVM vm emptyVMStack)) (buildPbStep "build the binary in the VM" metal noop)
     , contextInitStep "mint the container config" vmFrame noop
-    , descendsVia (inContainer container localContext) (buildImageStep "build the project image" vmFrame noop)
+    , descendsVia (inContainer container emptyVMStack) (buildImageStep "build the project image" vmFrame noop)
     , deployKindStep "bring up kind" ctrFrame noop
     , projectStep (fixtureProjectStepId "deploy-harbor") ProjectManagedReverse "install harbor" ctrFrame noop
     , exposePortStep "expose the NodePort" ctrFrame noop
@@ -249,10 +251,10 @@ nextFrameCases =
 handoffCases :: [TestTree]
 handoffCases =
     [ testCase "into a VM: incus exec -- <in-vm pb> project up" $
-        handoffDispatch self (inVM vm localContext)
+        handoffDispatch self (vmContext (inVM vm emptyVMStack))
             @?= DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "project", "up"]
     , testCase "into a container: docker run --rm img project up (ENTRYPOINT is the pb)" $
-        handoffDispatch self (inContainer container localContext)
+        handoffDispatch self (inContainer container emptyVMStack)
             @?= DispatchTool
                 Docker
                 [ "run"
@@ -350,8 +352,13 @@ admissionCases =
             before <- invocationRecordCount store
             before @?= 0
             outcome <- runFrom store project steps
+            observedLabels <- readIORef observed
+            case outcome of
+                Left failure ->
+                    assertFailure ("the current-frame CLI failed: " ++ failure ++ "; observed callbacks: " ++ show observedLabels)
+                Right () -> pure ()
             outcome @?= Right ()
-            readIORef observed >>= (@?= projectedLabels)
+            observedLabels @?= projectedLabels
             after <- invocationRecordCount store
             after @?= 1
     , testCase "a completed root entry is not reconstructed or rerun" $
@@ -397,7 +404,9 @@ admissionCases =
             requiredEntry =
                 [ "withValidatedRootLifecycleContext lifecycleContext"
                 , "settled <- settleRootedPlanCatalog store catalog"
-                , "authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext"
+                , "authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext project"
+                , "withBoundProjectDestroyLifecycleEntry finalized rootAuthority verified bound binding lease plan lifecycleContext project use ="
+                , "let reauthorize = ProjectAuthority.authorizeRootProject rootAuthority ProjectDestroy verified bound binding lease plan journal teardownCursor lifecycleContext project reserved <- reauthorize"
                 , "use ( RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal executeCursor authority catalog )"
                 , "runRootProjectUpLifecycleEntry cfg self scope loadSigningKey loadActivationSigningKey runFailedLocal entry@(RootUpLifecycleEntry rootAuthority verb plan lifecycleContext journal cursor authority catalog)"
                 , "case [(digest, service, effects) | (frame, digest, service, effects) <- admittedActivationPlacements, frame == manifestFrame manifest] of"
@@ -412,7 +421,10 @@ admissionCases =
                 ]
             requiredFacade =
                 [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, lifecycleEntryVerbName, )"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
+                , "runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec rootAuthority lease verified bound binding plan lifecycleContext project = withRootProjectUpLifecycleEntry"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext project (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
+                , "runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec rootAuthority lease verified bound binding plan root ctx lifecycleContext project = do"
+                , "withBoundProjectDestroyLifecycleEntry exactSpec rootAuthority verified bound binding lease plan lifecycleContext project ( \\entry current -> runRootProjectReverseLifecycleEntry"
                 ]
         mapM_
             (\fragment -> assertBool ("missing fixed Entry route: " ++ T.unpack fragment) (T.isInfixOf fragment normalizedEntry))
@@ -1344,13 +1356,27 @@ runFrom store project steps = do
     let authorityRoot =
             takeDirectory
                 (takeDirectory (takeDirectory (protectedStoreRoot store)))
-    attempted <-
-        Exception.try @ExitCode $
+    (attempted, diagnostic) <-
+        captureCLIExitStderr $
             withArgs ["project", "up"] $
                 CLI.runHostBootstrapCLI
                     (T.unpack (installedProjectName project))
                     (chainProjectSpec authorityRoot steps)
-    pure (either (Left . show) Right attempted)
+    pure (either (\exitCode -> Left (show exitCode ++ if T.null diagnostic then "" else ": " ++ T.unpack diagnostic)) Right attempted)
+
+captureCLIExitStderr :: IO () -> IO (Either ExitCode (), T.Text)
+captureCLIExitStderr action =
+    withSystemTempFile "hostbootstrap-chain-stderr" $ \_ captured -> do
+        hFlush stderr
+        attempted <-
+            Exception.bracket
+                (hDuplicate stderr)
+                (\saved -> hFlush stderr `Exception.finally` (hDuplicateTo saved stderr `Exception.finally` hClose saved))
+                (\_ -> hDuplicateTo captured stderr >> Exception.try @ExitCode action)
+        hSeek captured AbsoluteSeek 0
+        diagnostic <- TIO.hGetContents captured
+        _ <- Exception.evaluate (T.length diagnostic)
+        pure (attempted, diagnostic)
 
 {- | A current-frame node that records that it ran and reports @observation@.
 Each carries its own project identity, so two can share a plan.

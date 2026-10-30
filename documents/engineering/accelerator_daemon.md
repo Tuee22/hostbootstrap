@@ -189,12 +189,29 @@ Only host-resident daemon lanes run accelerator build-stack ensure:
   for `nvcc`'s host compiler, installs/verifies LLVM clang (`LLVM.LLVM`) with `winget`, then compiles a
   smoke artifact through `nvcc -ccbin <resolved-msvc-cl-directory>`.
 
+Both host smoke probes use `withProbeDir` with a unique temporary directory for each invocation. The
+bracket cleans that directory after success, failure, or interruption. Synchronous exceptions from
+scratch setup or the probe produce a failed probe; asynchronous cancellation propagates after cleanup.
+Nested probes with the same template name retain separate directories.
+
 Linux CPU and Linux GPU daemon pods use the published base images. The CPU base carries the LLVM/clang
 stack; the CUDA base carries CUDA development tooling and the same hostbootstrap toolchain. The pod either
 builds successfully or fails loudly. Before the direct Linux GPU handoff, the metal step runs `ensure
-docker` and the tightened `ensure cuda`: the NVIDIA runtime becomes Docker's default with CDI enabled,
-volume-mount injection is enabled, Docker is restarted, and the official nvkind `/dev/null` mount smoke
-must see a GPU. That host-runtime reconciliation is distinct from installing tools inside the pod.
+docker` and `ensure cuda`. The NVIDIA driver is a host precondition. If the official nvkind `/dev/null`
+mount smoke already sees the GPU, CUDA reconciliation skips repository and installation work.
+
+When remediation is needed, the reconciler observes its repository tools, installs missing tools and
+refreshes resolution, then downloads the key and repository list into owned temporary storage.
+Separate fetch argv and strict Haskell validation precede privileged key dearmoring and list installation.
+Failed fetches or refused input leave both repository destinations untouched; this is not an atomic
+two-file publication or a rollback promise after a publication command fails. Scratch cleanup covers
+success, failure, and cancellation. Static cases check this workflow's bytes, decisions, and ordering;
+live repository trust and GPU acceptance remain separate evidence.
+
+The real runtime tail installs the toolkit, configures the NVIDIA runtime as Docker's default with CDI
+enabled, enables volume-mount injection, and restarts Docker before the final smoke. The smoke establishes
+that the NVIDIA runtime is the default and volume-mount injection is effective; it does not verify CDI.
+That host-runtime reconciliation is distinct from installing tools inside the pod.
 
 ## Cluster Exposure
 

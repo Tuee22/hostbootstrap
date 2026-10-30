@@ -1,7 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-
 module ConstructRawHostEndpoint where
 
-import HostBootstrap.Network (hostLocalEndpoint)
+-- A generic endpoint opener cannot bypass runtime-owned local exposure.
 
-raw = hostLocalEndpoint "127.0.0.1:30500"
+import HostBootstrap.Network (
+    mkEndpoint,
+ )

@@ -119,6 +119,22 @@ service process may intentionally outlive its launcher, but it is not thereby an
 protected-store entry or project-wide liveness extent. On POSIX the store sets `FD_CLOEXEC`; the Windows
 handle row is already non-inheritable.
 
+The protected store's entry uses `base`'s portable `hLock`, together with an in-process mutex. Its
+nonblocking entry first tries that mutex, then `hTryLock`; contention from another thread or process
+returns absence. The holding thread's own re-entry is a typed `ProtectedInvalid` refusal.
+
+Each admitted `ProtectedSession` carries a nominal provenance index and a fresh private extent token.
+The token records its owner thread and is revoked before the entry unlocks. Read, list, compare-and-swap,
+conditional delete and writable-store probes require that live owner-thread token before IO. A rank-2
+index alone cannot stop an ordinary IO closure retaining a session; retained actions are therefore
+explicitly refused after exit, inside a later entry, and on a foreign thread. Pure store identity/root
+projections carry description and confer no record access.
+
+Run liveness holds a separate kernel lock for the complete run. Its name is validated by the record-key
+alphabet before directory creation or file opening. Acquisition is masked; the body runs in the caller's
+masking state, and every return or exception closes the handle. A competing process observes the live
+holder before acquiring anything, and an executed child cannot inherit the lock.
+
 ### 2. Durable origin record before the first write
 
 Before the first mutating call, the backend durably records either the exact original bytes **or** an
@@ -126,6 +142,32 @@ explicit absence marker, keyed by a generative nonce. Absence is a recorded fact
 from a missing backup. This clause is what makes restore correct after a crash between the first write
 and the run's completion — without it, a retry can record generated content as the original and
 teardown then restores that content instead of the user's state.
+
+The protected store publishes a closed temporary in the destination directory, synchronizes its data,
+renames it atomically, and synchronizes the parent directory on POSIX. Windows uses `flushFileBuffers`
+on a native writable handle before a write-through `moveFileEx` replacement, preserving absolute local/UNC
+long paths. Darwin requests `F_FULLFSYNC` for the regular temporary and
+again for the published regular file after parent-directory `fsync`, ordering device-cache flushes around
+publication without relying on a directory ioctl. A failed requested barrier is a typed store failure;
+there is no weaker fallback. The old-or-complete-new crash guarantee assumes the filesystem and device
+honor their successful flush requests. The source gate holds barrier order and full temporary cleanup;
+it does not claim to reproduce power loss. Apple's [fsync](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
+and [fcntl](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
+manuals explain the distinction between host synchronization and the full device-cache request.
+
+Protected record keys are at most 200 ASCII bytes: lowercase letters, digits, hyphen, underscore and
+internal dots. Leading/trailing dots and Windows reserved device prefixes are refused. The one identity
+codec escapes uppercase `C` as `_c` and literal underscore as `__`; namespaces and relation paths retain
+their structure. `mkRecordSegment` uses that codec for a scalar and refuses path injection. A tuple of
+complete encoded identities uses the canonical three-dot separator, which no encoded identity contains.
+Recovery decodes components and requires exact re-encoding; it never lowercases or filters identity text.
+
+The immutable store identity envelope is `hbps2 <nonce>\n`, recording this key-encoding epoch. An old,
+unknown, empty or identity-less populated store is refused before its rows are interpreted. The library
+preserves those bytes and performs no generic filename migration or old-key fallback: an old literal
+`_b` cannot be distinguished from the new encoding of uppercase `B` without owner payload knowledge.
+Any recovery of incompatible stores must be explicitly owned; a miss under the new encoding grants no
+fresh ownership over historical rows.
 
 ### 3. Identity binding, never pathname
 

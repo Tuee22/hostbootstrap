@@ -40,7 +40,8 @@ module HostBootstrap.Config.Schema (
 
     -- * Generic config IO
     writeProjectConfigFile,
-    writeScopedProjectConfigFile,
+    ConfigPublishOutcome (..),
+    publishScopedProjectConfigFile,
     renderScopedProjectConfigBytes,
     withSiblingProjectConfigContext,
     withSiblingValidatedProjectConfigContext,
@@ -81,13 +82,16 @@ import Control.Exception (SomeAsyncException, SomeException, finally, fromExcept
 import Control.Monad (when)
 import Data.Bits (xor)
 import qualified Data.ByteString as BS
+import qualified Data.Foldable as Foldable
 import Data.Functor.Identity (Identity (Identity), runIdentity)
+import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import qualified Dhall
+import qualified Dhall.Parser as DhallParser
 import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
@@ -99,12 +103,20 @@ import HostBootstrap.Authority (
 import HostBootstrap.Config.Class (
     ConfigAssembly,
     ConfigInput,
+    ExistingOutputPolicy (..),
     ProjectCfg (..),
     ProjectCodec,
     decodeProjectCodecWithSettings,
     projectCodecSpecDigest,
     renderProjectCodecHoisted,
     runConfigAssembly,
+ )
+import HostBootstrap.Config.Fields (
+    KnownScopeKind (scopeKindOf),
+    WireKind (FullProjectWire, ServiceRoleWire),
+    decodeFrameworkEnvelopeWithSettings,
+    frameworkEnvelopeCodec,
+    inspectConfigWireKind,
  )
 import HostBootstrap.Config.Install.Native (linkNoReplace)
 import HostBootstrap.Config.Schema.Internal (
@@ -148,6 +160,7 @@ import System.Directory (
     doesPathExist,
     pathIsSymbolicLink,
     removeFile,
+    renameFile,
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure), die, exitWith)
@@ -256,51 +269,84 @@ installTestConfig replacement (TestConfigWrite path codec value) = do
 -- | Parse a user-facing role name for generated local configs.
 parseConfigRole :: String -> Either String Context.ContextKind
 parseConfigRole raw =
-    case normalise (T.pack raw) of
-        "host" -> Right Context.HostOrchestrator
-        "host-orchestrator" -> Right Context.HostOrchestrator
-        "vm" -> Right Context.VMOrchestrator
-        "vm-orchestrator" -> Right Context.VMOrchestrator
-        "container" -> Right Context.VMProjectContainer
-        "ad-hoc-container" -> Right Context.VMProjectContainer
-        "vm-project-container" -> Right Context.VMProjectContainer
-        "image-build" -> Right Context.ImageBuildContainer
-        "image-build-container" -> Right Context.ImageBuildContainer
-        "service" -> Right Context.ClusterService
-        "cluster-service" -> Right Context.ClusterService
-        "daemon" -> Right Context.Daemon
-        "one-shot" -> Right Context.OneShotJob
-        "one-shot-job" -> Right Context.OneShotJob
-        "test" -> Right Context.TestHarness
-        "test-harness" -> Right Context.TestHarness
-        other ->
+    case lookup name (zip configRoleNames Context.allContextKinds <> aliases) of
+        Just kind -> Right kind
+        Nothing ->
             Left $
                 "unknown config role "
-                    <> T.unpack other
+                    <> T.unpack name
                     <> " (expected one of: "
                     <> T.unpack (T.intercalate ", " configRoleNames)
                     <> ")"
   where
+    name = normalise (T.pack raw)
+    aliases :: [(Text, Context.ContextKind)]
+    aliases =
+        [ ("host", Context.HostOrchestrator)
+        , ("vm", Context.VMOrchestrator)
+        , ("container", Context.VMProjectContainer)
+        , ("ad-hoc-container", Context.VMProjectContainer)
+        , ("image-build", Context.ImageBuildContainer)
+        , ("service", Context.ClusterService)
+        , ("one-shot", Context.OneShotJob)
+        , ("test", Context.TestHarness)
+        ]
     normalise = T.replace "_" "-" . T.toLower . T.strip
 
 {- | Write a config value (a project config or a test config) as deterministic
-Dhall source via its validated codec. The repeated vocabulary unions are
-hoisted into top-level @let@ bindings (shared with
-'Context.renderContext' via 'Context.vocabUnions') so the generated config
-stays compact and standalone.
+Dhall source via its validated codec. The repeated vocabulary unions in
+'Context.vocabUnions' are hoisted into top-level @let@ bindings so the
+generated config stays compact and standalone.
 -}
 writeProjectConfigFile :: CodecWitness cfg -> FilePath -> cfg -> IO ()
 writeProjectConfigFile codec path cfg =
     codec `seq` BS.writeFile path (renderProjectConfigBytes codec cfg)
 
--- | Write a scope-indexed project config through its installed mapped codec.
-writeScopedProjectConfigFile ::
+-- | The result of publishing a scoped project config under its output policy.
+data ConfigPublishOutcome
+    = ConfigPublished
+    | ConfigKeptExisting
+    | ConfigRefusedExisting
+    deriving (Eq, Show)
+
+{- | Publish a complete scope-indexed config through its installed mapped codec.
+The rendered bytes are written, flushed, and closed in a same-directory
+temporary before publication. Refuse and keep use a kernel create-if-absent
+hard link; overwrite atomically renames the temporary over the destination.
+The output is never written in place, and temporary cleanup runs on return or
+exception. Other initialization work, including root identity provisioning,
+is separate from this publication.
+-}
+publishScopedProjectConfigFile ::
+    ExistingOutputPolicy ->
     ProjectCodec scope specDigest cfg ->
     FilePath ->
     cfg scope ->
-    IO ()
-writeScopedProjectConfigFile codec path cfg =
-    BS.writeFile path (renderScopedProjectConfigBytes codec cfg)
+    IO ConfigPublishOutcome
+publishScopedProjectConfigFile policy codec path cfg =
+    mask $ \restore -> do
+        (temporary, handle) <- openBinaryTempFile (takeDirectory path) ".hostbootstrap-config.tmp"
+        let cleanup =
+                (hClose handle `catchIOError` const (pure ()))
+                    `finally` (removeFile temporary `catchIOError` const (pure ()))
+            publishWithoutReplacement taken =
+                (linkNoReplace temporary path >> pure ConfigPublished) `catchIOError` \failure -> do
+                    present <- doesPathExist path
+                    linked <- pathIsSymbolicLinkIfPresent path
+                    if present || linked
+                        then pure taken
+                        else ioError failure
+        restore
+            ( do
+                BS.hPut handle (renderScopedProjectConfigBytes codec cfg)
+                hFlush handle
+                hClose handle
+                case policy of
+                    RefuseExistingOutput -> publishWithoutReplacement ConfigRefusedExisting
+                    KeepExistingOutput -> publishWithoutReplacement ConfigKeptExisting
+                    OverwriteExistingOutput -> renameFile temporary path >> pure ConfigPublished
+            )
+            `finally` cleanup
 
 renderProjectConfigFile :: CodecWitness cfg -> cfg -> Text
 renderProjectConfigFile codec cfg =
@@ -416,9 +462,10 @@ configWireAdmissionErrorMessage failure = case failure of
 
 {- | Admit the exact config bytes authenticated by a verified handoff.
 
-The digest is checked before parsing.  The bytes are then strictly decoded
-through the scope-correct installed 'ProjectCodec' and must render back
-byte-for-byte.  Only that conjunction mints a fresh local config identity; the
+The digest is checked before parsing. The bytes are strictly decoded as UTF-8,
+and the original parsed expression must contain no imports before the
+scope-correct installed 'ProjectCodec' decodes it. The value must render back
+byte-for-byte. Only that conjunction mints a fresh local config identity; the
 wire's parent-side identity is never reused in this process.
 -}
 withAuthenticatedConfigWire ::
@@ -435,26 +482,30 @@ withAuthenticatedConfigWire projectCodec authenticated use
         pure (Left ConfigWireDigestMismatch)
     | otherwise = case TE.decodeUtf8' payload of
         Left _ -> pure (Left ConfigWireInvalidUtf8)
-        Right source -> do
-            decoded <-
-                trySynchronous
-                    ( decodeProjectCodecWithSettings
-                        projectCodec
-                        Dhall.defaultInputSettings
-                        source
-                    )
-            case decoded of
-                Left _ -> pure (Left ConfigWireCodecRejected)
-                Right value
-                    | renderScopedProjectConfigBytes projectCodec value /= payload ->
-                        pure (Left ConfigWireNonCanonical)
-                    | otherwise ->
-                        Right
-                            <$> mintValidatedConfig
-                                (projectCodecSpecDigest projectCodec)
-                                (authenticatedConfigDigest authenticated)
-                                value
-                                use
+        Right source -> case DhallParser.exprFromText "(authenticated config)" source of
+            Left _ -> pure (Left ConfigWireCodecRejected)
+            Right expression
+                | not (Foldable.null expression) -> pure (Left ConfigWireCodecRejected)
+                | otherwise -> do
+                    decoded <-
+                        trySynchronous
+                            ( decodeProjectCodecWithSettings
+                                projectCodec
+                                Dhall.defaultInputSettings
+                                source
+                            )
+                    case decoded of
+                        Left _ -> pure (Left ConfigWireCodecRejected)
+                        Right value
+                            | renderScopedProjectConfigBytes projectCodec value /= payload ->
+                                pure (Left ConfigWireNonCanonical)
+                            | otherwise ->
+                                Right
+                                    <$> mintValidatedConfig
+                                        (projectCodecSpecDigest projectCodec)
+                                        (authenticatedConfigDigest authenticated)
+                                        value
+                                        use
   where
     payload = authenticatedConfigBytes authenticated
 
@@ -779,7 +830,7 @@ validateProjectConfigForProject expected cfg
 runtime context.
 -}
 withSiblingProjectConfigContext ::
-    (ProjectCfg cfg) =>
+    (KnownScopeKind configScope, ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -797,7 +848,7 @@ verification.
 -}
 withSiblingValidatedProjectConfigContext ::
     forall cfg configScope specDigest result.
-    (ProjectCfg cfg) =>
+    (KnownScopeKind configScope, ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -829,10 +880,14 @@ every later consumer — plan construction, each chain step, each child projecti
 — receives *this* snapshot rather than reopening @<project>.dhall@. A file
 replaced after admission therefore cannot change what the running plan is
 executing; the next invocation validates a new snapshot under a new @configId@.
+
+The codec fixes @configScope@, including the canonical root handed to the
+continuation. Root admission itself mints only @rootId@ and takes no scope
+witness; this sibling-config boundary is what binds that root to its codec.
 -}
 withSiblingValidatedProjectConfigRoot ::
     forall cfg configScope specDigest result.
-    (ProjectCfg cfg) =>
+    (KnownScopeKind configScope, ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -858,7 +913,7 @@ use this seam so the root is not reconstructed from the descriptive context.
 -}
 withSiblingProjectConfigRoot ::
     forall cfg configScope specDigest a.
-    (ProjectCfg cfg) =>
+    (KnownScopeKind configScope, ProjectCfg cfg) =>
     ProjectCodec configScope specDigest cfg ->
     Text ->
     Context.CommandClass ->
@@ -885,9 +940,17 @@ withSiblingProjectConfigRoot codec projectName cls caps action = do
                     setInputSourceName
                         path
                         (setInputRootDirectory (takeDirectory path) Dhall.defaultInputSettings)
+                envelope = frameworkEnvelopeCodec (scopeKindOf (Proxy :: Proxy configScope)) codec
+            wireKind <- inspectConfigWireKind inputSettings raw
+            case wireKind of
+                ServiceRoleWire ->
+                    failProjectConfig
+                        path
+                        (path ++ " holds a service role wire; this command requires a full project config")
+                FullProjectWire -> pure ()
             decoded <-
                 trySynchronous
-                    (decodeProjectCodecWithSettings codec inputSettings raw)
+                    (decodeFrameworkEnvelopeWithSettings envelope inputSettings raw)
             cfg <- case decoded of
                 Left err -> failProjectConfig path ("failed to decode " ++ path ++ ": " ++ firstLine (show err))
                 Right value -> pure value

@@ -27,6 +27,9 @@ module HostBootstrap.Effect (
     RunBounds (..),
     BoundedRun (..),
     runBoundedGrouped,
+    runBoundedGroupedWithInput,
+    workingDirectoryEntryArguments,
+    runWorkingDirectoryEntry,
 )
 where
 
@@ -41,6 +44,9 @@ import HostBootstrap.Effect.Run (
     capturedTriple,
     renderRunFailure,
     runBoundedGrouped,
+    runBoundedGroupedWithInput,
+    workingDirectoryEntryArguments,
+    runWorkingDirectoryEntry,
     runCaptured,
  )
 import HostBootstrap.Effect.Vocabulary

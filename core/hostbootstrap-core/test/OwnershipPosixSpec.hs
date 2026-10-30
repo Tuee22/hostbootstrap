@@ -18,6 +18,7 @@ size everywhere, which is what "CoverageManifest" checks.
 -}
 module OwnershipPosixSpec (tests, runOwnershipPosixLockProbe) where
 
+import ConditionalCase (conditionalCase)
 import Control.Concurrent (threadDelay)
 import qualified Data.ByteString as ByteString
 import Expect (expectOccupied, expectOwned)
@@ -89,10 +90,10 @@ declarationTests =
 
 identityTests :: [TestTree]
 identityTests =
-    [ rowCase "an object that is not there is an authoritative absence" $ \root -> do
+    [ rowCase "identity" "an object that is not there is an authoritative absence" $ \root -> do
         observed <- onRow (\row -> rowObserveIdentity row (root </> "absent"))
         observed @?= Right Nothing
-    , rowCase "a created directory and a created file have their own identities" $ \root -> do
+    , rowCase "identity" "a created directory and a created file have their own identities" $ \root -> do
         let directory = root </> "directory"
             file = root </> "file"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
@@ -102,7 +103,7 @@ identityTests =
         assertBool
             "two objects the kernel distinguishes have distinct identities"
             (directoryIdentity /= fileIdentity)
-    , rowCase "linking preserves the identity the staged object had" $ \root -> do
+    , rowCase "identity" "linking preserves the identity the staged object had" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
         onRow (\row -> rowCreateFile row staged "payload") >>= expectOwned "create the staged file"
@@ -113,7 +114,7 @@ identityTests =
         -- makes clause 3's binding survive publication: the identity the
         -- transaction read is the identity release will re-observe.
         targetIdentity @?= stagedIdentity
-    , rowCase "a symbolic link reads its own identity rather than its target's" $ \root -> do
+    , rowCase "identity" "a symbolic link reads its own identity rather than its target's" $ \root -> do
         let file = root </> "file"
             link = root </> "link"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
@@ -123,7 +124,7 @@ identityTests =
         assertBool
             "a link is a different object, so it does not read as its target"
             (fileIdentity /= linkIdentity)
-    , rowCase "a probe that cannot answer is a fault rather than an absence" $ \root -> do
+    , rowCase "identity" "a probe that cannot answer is a fault rather than an absence" $ \root -> do
         let file = root </> "file"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         observed <- onRow (\row -> rowObserveIdentity row (file </> "beneath"))
@@ -139,23 +140,23 @@ identityTests =
 
 publicationTests :: [TestTree]
 publicationTests =
-    [ rowCase "a directory is created once and the second attempt is occupied" $ \root -> do
+    [ rowCase "creation and publication" "a directory is created once and the second attempt is occupied" $ \root -> do
         let directory = root </> "directory"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOccupied "the second create"
-    , rowCase "a file is written whole and the second attempt is occupied" $ \root -> do
+    , rowCase "creation and publication" "a file is written whole and the second attempt is occupied" $ \root -> do
         let file = root </> "file"
         onRow (\row -> rowCreateFile row file "the exact payload") >>= expectOwned "create the file"
         ByteString.readFile file >>= (@?= "the exact payload")
         onRow (\row -> rowCreateFile row file "a replacement") >>= expectOccupied "the second create"
         ByteString.readFile file >>= (@?= "the exact payload")
-    , rowCase "a file is not created through a symbolic link" $ \root -> do
+    , rowCase "creation and publication" "a file is not created through a symbolic link" $ \root -> do
         let behind = root </> "behind"
             link = root </> "link"
         createFileLink behind link
         onRow (\row -> rowCreateFile row link "payload") >>= expectOccupied "create through a link"
         doesPathExist behind >>= (@?= False)
-    , rowCase "linking refuses rather than replacing, and leaves the target intact" $ \root -> do
+    , rowCase "creation and publication" "linking refuses rather than replacing, and leaves the target intact" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
         onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectOwned "stage"
@@ -163,7 +164,7 @@ publicationTests =
         onRow (\row -> rowLinkNoReplace row staged target) >>= expectOccupied "link"
         ByteString.readFile target >>= (@?= "the operator's payload")
         doesFileExist staged >>= (@?= True)
-    , rowCase "a linked file is the staged bytes, under both names until one is withdrawn" $ \root -> do
+    , rowCase "creation and publication" "a linked file is the staged bytes, under both names until one is withdrawn" $ \root -> do
         let staged = root </> "staged"
             target = root </> "target"
         onRow (\row -> rowCreateFile row staged "the staged payload") >>= expectOwned "stage"
@@ -183,7 +184,7 @@ publicationTests =
 
 exclusionTests :: [TestTree]
 exclusionTests =
-    [ rowCase "an open handle reads the object's whole bytes" $ \root -> do
+    [ rowCase "the exclusive open" "an open handle reads the object's whole bytes" $ \root -> do
         let file = root </> "file"
         onRow (\row -> rowCreateFile row file "the exact payload") >>= expectOwned "create the file"
         contents <-
@@ -196,19 +197,19 @@ exclusionTests =
                         _ <- rowCloseHandle row handle
                         pure contents
         contents @?= Right "the exact payload"
-    , rowCase "a symbolic link is refused rather than followed" $ \root -> do
+    , rowCase "the exclusive open" "a symbolic link is refused rather than followed" $ \root -> do
         let file = root </> "file"
             link = root </> "link"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         createFileLink file link
         opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row link))
         expectOccupied "open a link" opened
-    , rowCase "a directory is refused rather than opened as a file" $ \root -> do
+    , rowCase "the exclusive open" "a directory is refused rather than opened as a file" $ \root -> do
         let directory = root </> "directory"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row directory))
         expectOccupied "open a directory" opened
-    , rowCase "the kernel releases the exclusion when the holding process dies" $ \root -> do
+    , rowCase "the exclusive open" "the kernel releases the exclusion when the holding process dies" $ \root -> do
         let file = root </> "file"
             readyPath = root </> "ready"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
@@ -232,25 +233,25 @@ exclusionTests =
 
 removalTests :: [TestTree]
 removalTests =
-    [ rowCase "a file is removed, and the parent's own change is made durable" $ \root -> do
+    [ rowCase "removal and durability" "a file is removed, and the parent's own change is made durable" $ \root -> do
         let file = root </> "file"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         onRow (\row -> rowRemoveObject row file) >>= expectOwned "remove the file"
         onRow (\row -> rowSyncParent row file) >>= expectOwned "sync the parent"
         doesPathExist file >>= (@?= False)
-    , rowCase "a directory is removed" $ \root -> do
+    , rowCase "removal and durability" "a directory is removed" $ \root -> do
         let directory = root </> "directory"
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         onRow (\row -> rowRemoveObject row directory) >>= expectOwned "remove the directory"
         doesPathExist directory >>= (@?= False)
-    , rowCase "a symbolic link standing at the target is refused rather than removed" $ \root -> do
+    , rowCase "removal and durability" "a symbolic link standing at the target is refused rather than removed" $ \root -> do
         let file = root </> "file"
             link = root </> "link"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         createFileLink file link
         onRow (\row -> rowRemoveObject row link) >>= expectOccupied "remove a link"
         doesFileExist file >>= (@?= True)
-    , rowCase "removing an object that is not there is a fault rather than a silent success" $ \root -> do
+    , rowCase "removal and durability" "removing an object that is not there is a fault rather than a silent success" $ \root -> do
         removed <- onRow (\row -> rowRemoveObject row (root </> "absent"))
         case removed of
             Left _ -> pure ()
@@ -285,13 +286,14 @@ runOwnershipPosixLockProbe target readyPath = do
 Where the row can be held the body runs, so the case is evidence about a real
 syscall. Elsewhere the case stays and asserts the refusal the row declares.
 -}
-rowCase :: TestName -> (FilePath -> IO ()) -> TestTree
-rowCase name body =
-    testCase name $
-        withSystemTempDirectory "hostbootstrap-ownership-posix" $ \root ->
-            if posixOwnershipSupported
-                then body root
-                else expectRowRefusal root
+rowCase :: TestName -> TestName -> (FilePath -> IO ()) -> TestTree
+rowCase family name body =
+    conditionalCase
+        ["OwnershipPosixSpec", family]
+        posixOwnershipSupported
+        name
+        (withSystemTempDirectory "hostbootstrap-ownership-posix" body)
+        (withSystemTempDirectory "hostbootstrap-ownership-posix" expectRowRefusal)
 
 {- | The disposition the POSIX row owes a caller on a host that is not POSIX.
 

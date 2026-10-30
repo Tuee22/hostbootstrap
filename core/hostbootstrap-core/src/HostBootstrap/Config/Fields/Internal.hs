@@ -6,6 +6,7 @@
 module HostBootstrap.Config.Fields.Internal (
     WireKind (..),
     ScopeKind (..),
+    KnownScopeKind (..),
     FrameworkValidation (..),
     LocalContextView (..),
     RuntimeRoleWire (..),
@@ -23,6 +24,7 @@ import GHC.Generics (Generic)
 import HostBootstrap.Config.Class (ProjectCodec)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Dhall.Gen (CodecWitness)
+import HostBootstrap.ProjectScope (Harness, Production)
 
 data WireKind
     = FullProjectWire
@@ -35,6 +37,16 @@ data ScopeKind
     | HarnessScope
     deriving stock (Eq, Show, Generic)
     deriving anyclass (FromDhall, ToDhall)
+
+-- | The descriptive scope tag determined by a lifecycle scope index.
+class KnownScopeKind scope where
+    scopeKindOf :: proxy scope -> ScopeKind
+
+instance KnownScopeKind (Production projectId) where
+    scopeKindOf _ = ProductionScope
+
+instance KnownScopeKind (Harness projectId runId) where
+    scopeKindOf _ = HarnessScope
 
 data LocalContextView = LocalContextView
     { localProject :: Text

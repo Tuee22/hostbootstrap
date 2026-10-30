@@ -12,8 +12,9 @@
 - Native Linux CPU runs the project inside an Incus VM, its provider frame. Real Incus mutation enters only
   through the exact prepared provider backend, whose host commands `HostBootstrap.Substrate.Provider.Command`
   renders.
-- `HostBootstrap.Ensure.Incus` converges the native provider and mints the opaque `IncusProviderCapability`
-  from a total final observation; provider discovery is a separate closed, ordered probe set classified by
+- `HostBootstrap.Ensure.Incus` converges the native provider; its capability gate observes the supplied
+  `HostConfig` before minting the opaque `IncusProviderCapability`. Descriptive status values remain
+  separate from that admission. Provider discovery is a separate closed, ordered probe set classified by
   exit status.
 - The backend holds the four ownership clauses over the provider's reported face: durable origin records
   before creation, the VM's UUID bound under this run's owner claim, and identity checks that bracket the
@@ -27,16 +28,8 @@
 
 The sections below describe the target contract. The code departs from it in these ways.
 
-[The ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) owes one gap:
-
-- **The Linux convergence acts unconditionally, and the capability can be minted from a constructed
-  status.** `reconcileLinuxIncus` installs the VM packages and restarts the daemon on every reconcile, not
-  only when an observation shows them missing. `IncusProviderStatus` exports its ready constructor, so a
-  caller can pass a status it built itself to `withIncusProviderCapability` and receive the capability
-  without the probe having run.
-
 [The host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-owes the rest:
+owes these gaps:
 
 - **Discovery overwrites a ready prefix.** When a probe is not ready, the probes before it that answered
   ready are reported as failures ("an unexpected ready observation lacked its dependent probe") instead of
@@ -106,17 +99,41 @@ a total final observation. Its pure `IncusProviderStatus` distinguishes:
 
 - missing client;
 - absent, permission-denied, or otherwise unreachable daemon;
-- missing KVM/QEMU/OVMF/virtiofsd VM capability (an executable `virtiofsd` is required, because Incus
+- missing QEMU/firmware/virtiofsd VM capability (an executable `virtiofsd` is required, because Incus
   needs it to attach a host directory to a VM);
 - unavailable image-server egress; and
 - fully ready.
 
-`withIncusProviderCapability` mints the opaque `IncusProviderCapability` only from the fully ready status;
-that status is a value a caller can also construct (see [Current Status](#current-status)). On Linux the
-reconcile path installs the client plus ACL support, establishes KVM access, installs QEMU/OVMF/virtiofsd,
-initializes the daemon when the root daemon probe fails, restarts the daemon, establishes immediate socket
-access, preserves the Incus bridge through `DOCKER-USER`, and re-runs the complete probe. The VM-package
-install and the daemon restart run on every reconcile. Apple uses the same final capability observation after converging its Colima-backed Incus provider.
+The six non-ready constructors of `IncusProviderStatus` are public; the ready constructor is hidden.
+`classifyIncusProviderStatus` remains a pure descriptive classifier, and `incusProviderStatusResult`
+reads its result as `Either String ()`: ready is `Right ()`, and each non-ready status supplies its
+refusal. These descriptive results carry no capability authority.
+
+`withIncusProviderCapability` takes `HostConfig`, runs `probeIncusProviderStatus` itself, checks that
+observation through `incusProviderStatusResult`, and only then supplies the opaque capability to its
+rank-2 continuation. It observes the resolved tool paths in the supplied configuration at that call;
+the capability describes that observation rather than permanent readiness. On Linux the
+reconcile path installs the client plus ACL support when absent, refreshes tool resolution, and observes
+VM capability and the root daemon before choosing a convergence plan.
+`LinuxIncusObservation` retains the resolved absolute Incus executable used by the root daemon probe and
+any required initialization.
+
+The VM-capability probe combines executable QEMU, available firmware, and executable `virtiofsd` groups
+in Haskell. Each group uses privileged `test` argv, with alternatives within the firmware and virtiofsd
+groups. Amd64 uses `qemu-system-x86` and OVMF; Arm64 uses `qemu-system-arm` and AAVMF. The virtiofsd
+probe tries Incus's fixed paths and the typed `Virtiofsd` resolver's PATH result, checking that the
+resolved file is executable rather than treating resolution alone as capability.
+
+`linuxIncusConvergence` installs the architecture's VM packages only when capability is missing and
+initializes through the retained Incus executable only when the root daemon probe fails. It restarts the
+daemon once when either action is needed; when both observations succeed, that plan is empty. Tool
+resolution is refreshed after convergence, then KVM access and shared group/socket grants are reconciled
+before forwarding and the final provider observation. KVM module loading tries `kvm_intel`, `kvm_amd`, then `kvm`,
+rechecking the device after every attempt. Bridge forwarding checks for `DOCKER-USER`, then checks each
+`incusbr0` rule before inserting a missing one; a missing chain skips those rules. These host operations
+use separate argv, without shell programs. Apple uses the same final capability observation after
+converging its Colima-backed Incus provider. Live Incus/KVM confirmation belongs to the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 `SubstrateProvider` plus `Lift` is the single provider/dispatch model. Provider lifecycle and readiness
 enter through that boundary; there is no parallel public target or reboot/readiness dispatcher.
@@ -352,6 +369,12 @@ An Incus installation whose state directory is elsewhere has a different
 budget, which admission does not compute.
 
 ## Validation
+
+`EnsureSpec` checks the descriptive refusals and classifier precedence, the configured gate's missing
+client refusal without reaching its continuation, and the production flow from probe to admission. The public-only
+constructor fixture checks the opaque capability boundary. The opt-in live harness uses the descriptive
+eliminator for its read-only Incus preflight; this preflight does not mint a capability or enable the
+live lane on its own.
 
 Static coverage of builders and the prepared backend is not a provider closure gate. Closure requires the
 native Linux/x86_64 KVM/Incus run declared by the

@@ -163,6 +163,13 @@ def test_iter_cuda_tags_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(seen) == 2
 
 
+def test_cuda_tags_without_a_result_list_contribute_no_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(base_image, "_http_get_json", lambda _url: {"results": None})
+    assert base_image._iter_cuda_tags() == []
+
+
 def test_cuda_arch_detection_and_selection(monkeypatch: pytest.MonkeyPatch) -> None:
     images = [{"architecture": "amd64"}, {"architecture": "arm64"}]
     assert base_image._arch_in_images(images, Arch.ARM64)
@@ -221,9 +228,7 @@ def test_build_spec_for_applies_budget(monkeypatch: pytest.MonkeyPatch) -> None:
         context=Path("/repo"),
         budget=budget,
     )
-    assert spec.builder == docker_ops.ClassicBuilder(
-        memory="6144m", memory_swap="6144m", cpus="3"
-    )
+    assert spec.builder == docker_ops.ClassicBuilder(memory="6144m", memory_swap="6144m", cpus="3")
     assert args.cabal_build_jobs == "3"
     assert spec.build_args["CABAL_BUILD_JOBS"] == "3"
 

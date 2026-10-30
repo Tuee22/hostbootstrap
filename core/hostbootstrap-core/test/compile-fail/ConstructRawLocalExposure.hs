@@ -1,7 +1,7 @@
-{-# LANGUAGE DataKinds #-}
-
 module ConstructRawLocalExposure where
 
-import HostBootstrap.Network (loopbackExposure)
+-- A local exposure must retain the runtime-owned endpoint and relay identity.
 
-raw = loopbackExposure 30500
+import HostBootstrap.Network (
+    Exposure (ResolvedLocalExposure),
+ )

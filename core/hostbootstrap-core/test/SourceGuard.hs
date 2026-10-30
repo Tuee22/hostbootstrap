@@ -15,12 +15,18 @@ about what the field says.
 module SourceGuard (
     -- * Lexical
     haskellImports,
+    firstPartyImportItems,
+    haskellDefinitionNames,
+    haskellDefinitionTokens,
+    nullaryDataConstructorNames,
+    recordFieldNames,
     haskellTokens,
     importsModule,
     moduleImportTokens,
     moduleExportTokens,
     countHaskellIdentifier,
     countHaskellTokenSequence,
+    unproducedAuthorityErrorConstructors,
     countPosixAbsoluteLiteralApplications,
     repoRelativePath,
     repoRelativeModuleName,
@@ -29,6 +35,19 @@ module SourceGuard (
     withPackageSourceIn,
     listHaskellSources,
     readHaskellSources,
+    readPackageDescription,
+    librarySourceDirs,
+    libraryModulePath,
+    readLibrarySources,
+    transitiveHostBootstrapImports,
+    ComponentStanza (..),
+    componentStanzas,
+    namedStanza,
+    fieldValues,
+    commonWarningsOptions,
+    listComponentSources,
+    listTestSources,
+    forEachTestSourceBut,
     mainLibraryStanza,
     fieldModules,
     significantHaskellLineCount,
@@ -38,11 +57,12 @@ module SourceGuard (
 )
 where
 
-import Data.Char (isAlphaNum, isSpace, isUpper)
-import Data.List (intercalate, isPrefixOf, sort, stripPrefix)
+import Control.Monad (filterM, forM_)
+import Data.Char (isAlphaNum, isDigit, isLower, isSpace, isUpper, toLower)
+import Data.List (groupBy, intercalate, isPrefixOf, isSuffixOf, nub, sort, sortOn)
 import HostBootstrap.DocValidator (findRepoRoot)
-import System.Directory (doesDirectoryExist, getCurrentDirectory, listDirectory)
-import System.FilePath (dropExtension, makeRelative, normalise, takeExtension, (</>))
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory)
+import System.FilePath (dropExtension, makeRelative, normalise, splitDirectories, takeExtension, (<.>), (</>))
 import Test.Tasty.HUnit (assertFailure)
 
 {- | Run an action with this package's root and one source root beneath it.
@@ -61,6 +81,130 @@ withPackageSourceIn segments use = do
             >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
     let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
     use packageRoot (foldl (</>) packageRoot segments)
+
+{- | Find AuthorityError alternatives without a closed construction witness.
+
+This deliberately recognizes only the current simple sum and named value
+bindings. A witness is an applied, balanced @pure (Left (Constructor ...))@
+following @=@ or @->@, or the complete closed verb-parser equation. Types,
+imports, the declaration and renderer, and patterns alone are not evidence.
+Unrecognized sum shapes refuse; unrecognized expression styles owe a witness.
+-}
+unproducedAuthorityErrorConstructors :: [(String, String)] -> Either String [String]
+unproducedAuthorityErrorConstructors sources = do
+    constructors <- case declarations of
+        [fields] -> traverse constructor (splitAlternatives (takeWhile (/= "deriving") fields))
+        [] -> Left "AuthorityError declaration missing"
+        _ -> Left "AuthorityError declaration ambiguous"
+    if null constructors || length (nub (map fst constructors)) /= length constructors
+        then Left "AuthorityError alternatives are empty or duplicated"
+        else Right [name | (name, arity) <- constructors, not (any (produces name arity) values)]
+  where
+    blocks = concatMap (sourceBlocks . snd) sources
+    declarations = [fields | "data" : "AuthorityError" : "=" : fields <- blocks]
+    values = [tokens | tokens@(name : rest) <- blocks, valueName name, name /= "authorityErrorMessage", take 1 rest /= ["::"]]
+    valueName name = case name of
+        first : _ -> (isLower first || first == '_') && name `notElem`
+            ["module", "import", "data", "newtype", "type", "class", "instance", "deriving", "foreign", "default", "infix", "infixl", "infixr", "pattern"]
+        [] -> False
+    constructor (name : fields)
+        | isModuleSegment name && all isModuleSegment fields = Right (name, length fields)
+    constructor _ = Left "AuthorityError must be a simple prefix-constructor sum"
+    splitAlternatives tokens = case break (== "|") tokens of
+        (alternative, _ : rest) -> alternative : splitAlternatives rest
+        (alternative, []) -> [alternative]
+    produces name arity tokens = expressionWitness name arity tokens
+        || (name == "AuthorityUnknownVerb" && arity == 1 && tokens == verbParser)
+    verbParser = haskellTokens $ unlines
+        [ "parseProjectVerb raw = case raw of"
+        , "  \"up\" -> Right (SomeProjectVerb ProjectUp)"
+        , "  \"down\" -> Right (SomeProjectVerb ProjectDown)"
+        , "  \"destroy\" -> Right (SomeProjectVerb ProjectDestroy)"
+        , "  _ -> Left (AuthorityUnknownVerb raw)"
+        ]
+
+expressionWitness :: String -> Int -> [String] -> Bool
+expressionWitness name arity = scan
+  where
+    scan (anchor : "pure" : "(" : "Left" : "(" : constructor : remaining)
+        | anchor `elem` ["=", "->"], constructor == name
+        , Just (arguments, ")" : _) <- balancedTokens ")" remaining
+        , Just count <- argumentCount arguments, count == arity = True
+    scan (_ : remaining) = scan remaining
+    scan [] = False
+    argumentCount [] = Just 0
+    argumentCount (opening : remaining)
+        | Just closing <- lookup opening [("(", ")"), ("[", "]")] = do
+            (_, rest) <- balancedTokens closing remaining
+            (1 +) <$> argumentCount rest
+        | first : _ <- opening
+        , isAlphaNum first || first `elem` "_\"'" = (1 +) <$> argumentCount remaining
+    argumentCount _ = Nothing
+
+-- The opening delimiter has already been consumed. Literals are lexer tokens,
+-- so punctuation inside a string cannot balance an expression.
+balancedTokens :: String -> [String] -> Maybe ([String], [String])
+balancedTokens closing = go [closing] []
+  where
+    go (expected : stack) reversed (token : remaining)
+        | token == expected = if null stack
+            then Just (reverse reversed, remaining)
+            else go stack (token : reversed) remaining
+        | Just next <- lookup token [("(", ")"), ("[", "]"), ("{", "}")] =
+            go (next : expected : stack) (token : reversed) remaining
+        | token `notElem` [")", "]", "}"] = go (expected : stack) (token : reversed) remaining
+    go _ _ _ = Nothing
+
+-- Closed top-level blocks keep signatures and function patterns distinct from
+-- expression witnesses. Mask comments before splitting so their layout cannot
+-- create a spurious declaration; keep literal tokens intact.
+sourceBlocks :: String -> [[String]]
+sourceBlocks = map haskellTokens . sourceTextBlocks
+
+sourceTextBlocks :: String -> [String]
+sourceTextBlocks = map unlines . blocks . lines . maskHaskellComments
+  where
+    blocks [] = []
+    blocks (line : remaining)
+        | all isSpace line = blocks remaining
+        | indentation line /= 0 = blocks remaining
+        | otherwise = let (body, rest) = continuation (balance 0 line) remaining
+                       in (line : body) : blocks rest
+    continuation _depth [] = ([], [])
+    continuation depth pending@(line : remaining)
+        | all isSpace line || indentation line > 0 || depth > 0 =
+            let (body, rest) = continuation (balance depth line) remaining
+             in (line : body, rest)
+        | otherwise = ([], pending)
+    balance :: Int -> String -> Int
+    balance depth = foldl step depth . haskellTokens
+    step depth token
+        | token `elem` ["(", "[", "{"] = depth + 1
+        | token `elem` [")", "]", "}"] = max 0 (depth - 1)
+        | otherwise = depth
+
+maskHaskellComments :: String -> String
+maskHaskellComments = mask
+  where
+    mask [] = []
+    mask ('-' : '-' : remaining) = "  " <> lineComment remaining
+    mask ('{' : '-' : remaining) = "  " <> blockComment 1 remaining
+    mask source@(character : remaining)
+        | isSpace character = character : mask remaining
+        | [(token, rest)] <- lex source, not (null token), rest /= source = token <> mask rest
+        | otherwise = character : mask remaining
+    blank '\n' = '\n'
+    blank _ = ' '
+    lineComment [] = []
+    lineComment ('\n' : remaining) = '\n' : maskHaskellComments remaining
+    lineComment (_ : remaining) = ' ' : lineComment remaining
+    blockComment :: Int -> String -> String
+    blockComment _ [] = []
+    blockComment depth ('{' : '-' : remaining) = "  " <> blockComment (depth + 1) remaining
+    blockComment depth ('-' : '}' : remaining)
+        | depth == 1 = "  " <> maskHaskellComments remaining
+        | otherwise = "  " <> blockComment (depth - 1) remaining
+    blockComment depth (character : remaining) = blank character : blockComment depth remaining
 
 -- | Every @.hs@ file under *directory*, depth-first in sorted order.
 listHaskellSources :: FilePath -> IO [FilePath]
@@ -81,47 +225,227 @@ readHaskellSources directory = do
     paths <- listHaskellSources directory
     traverse (\path -> (,) path <$> readFile path) paths
 
+readPackageDescription :: IO String
+readPackageDescription =
+    withPackageSourceIn [] $ \packageRoot _ ->
+        readFile (packageRoot </> "hostbootstrap-core.cabal")
+
+-- | One component and the source directories its own and imported fields name.
+data ComponentStanza = ComponentStanza
+    { componentHeader :: String
+    , componentBody :: String
+    , componentSourceDirs :: [FilePath]
+    }
+    deriving (Eq, Show)
+
+-- | Every library, executable, test, benchmark, and foreign-library component.
+componentStanzas :: String -> [ComponentStanza]
+componentStanzas description =
+    [ ComponentStanza header body (if null directories then ["."] else nub directories)
+    | (header, body) <- stanzaBlocks description
+    , stanzaKind header /= "common"
+    , let directories = sourceDirectories [] body
+    ]
+  where
+    sourceDirectories visited body =
+        fieldValues "hs-source-dirs" body
+            <> concat
+                [ sourceDirectories (name : visited) imported
+                | name <- fieldValues "import" body
+                , name `notElem` visited
+                , Just imported <- [namedStanza ("common " <> name) description]
+                ]
+
+-- | Effective source directories of every library, including private units.
+librarySourceDirs :: String -> [FilePath]
+librarySourceDirs description = sort . nub $
+    [ normalise directory
+    | component <- componentStanzas description
+    , stanzaKind (componentHeader component) == "library"
+    , directory <- componentSourceDirs component
+    ]
+
+-- | Resolve one module's unique physical home, independent of its library unit.
+libraryModulePath :: FilePath -> String -> String -> IO FilePath
+libraryModulePath packageRoot description moduleName = do
+    candidates <- filterM doesFileExist . sort . nub $
+        [normalise (packageRoot </> directory </> moduleSourcePath moduleName) | directory <- librarySourceDirs description]
+    case candidates of
+        [path] -> do
+            source <- readFile path
+            case declaredModuleName source of
+                Just declared | declared == moduleName -> pure path
+                _ -> assertFailure ("library source does not declare " <> moduleName <> ": " <> path)
+        [] -> assertFailure ("library module source missing: " <> moduleName)
+        paths -> assertFailure ("library module source ambiguous: " <> moduleName <> " " <> show paths)
+
+-- | Every physical library source once, retaining its declared module identity.
+-- Overlapping stanzas can share roots; two different files cannot own one name.
+readLibrarySources :: FilePath -> String -> IO [(String, FilePath, String)]
+readLibrarySources packageRoot description = do
+    paths <- sort . nub . map normalise . concat <$> traverse
+        (listHaskellSources . (packageRoot </>)) (librarySourceDirs description)
+    sources <- traverse readSource paths
+    let grouped = groupBy (\left right -> sourceName left == sourceName right) (sortOn sourceName sources)
+        ambiguous = [[path | (_, path, _) <- group] | group <- grouped, length group > 1]
+    if null ambiguous
+        then pure (sortOn (splitDirectories . moduleSourcePath . sourceName) sources)
+        else assertFailure ("library module source ambiguous: " <> show ambiguous)
+  where
+    sourceName (name, _, _) = name
+    readSource path = do
+        source <- readFile path
+        case declaredModuleName source of
+            Just name -> pure (name, path, source)
+            Nothing -> assertFailure ("library source has no module declaration: " <> path)
+
+{- | The sorted strict HostBootstrap dependency closure of one library module.
+
+The inventory is the caller's 'readLibrarySources' result. Paths are retained
+verbatim for diagnostics; callers can normalize them with 'repoRelativePath'.
+Every visited module must have exactly one inventory entry. External imports
+are outside this closure, while an unresolved package import always refuses.
+-}
+transitiveHostBootstrapImports :: [(String, FilePath, String)] -> String -> Either String [(String, FilePath)]
+transitiveHostBootstrapImports inventory root = walk [(Nothing, root)] []
+  where
+    walk [] visited = Right (sortOn fst (filter ((/= root) . fst) visited))
+    walk ((origin, name) : pending) visited
+        | name `elem` map fst visited = walk pending visited
+        | otherwise = do
+            (path, source) <- resolve origin name
+            let dependencies = sort . nub . filter packageImport $ haskellImports source
+                next = [(Just (name, path), dependency) | dependency <- dependencies]
+            walk (next <> pending) ((name, path) : visited)
+    packageImport name = name == "HostBootstrap" || "HostBootstrap." `isPrefixOf` name
+    resolve origin name =
+        case [(path, source) | (observed, path, source) <- inventory, observed == name] of
+            [source] -> Right source
+            [] -> Left ("HostBootstrap module missing: " <> name <> provenance origin)
+            sources -> Left
+                ( "HostBootstrap module ambiguous: " <> name <> provenance origin
+                    <> "; candidates: " <> show (sort (map fst sources))
+                )
+    provenance Nothing = " (root)"
+    provenance (Just (importer, path)) = " imported by " <> importer <> " (" <> path <> ")"
+
+moduleSourcePath :: String -> FilePath
+moduleSourcePath moduleName = foldr (</>) "" (segments moduleName) <.> "hs"
+  where
+    segments name = case break (== '.') name of
+        (segment, '.' : remaining) -> segment : segments remaining
+        (segment, []) -> [segment]
+        _ -> []
+
+declaredModuleName :: String -> Maybe String
+declaredModuleName = findModule . haskellTokens
+  where
+    findModule ("module" : remaining) = parseModuleName remaining
+    findModule (_ : remaining) = findModule remaining
+    findModule [] = Nothing
+
+-- | The body of the exact named stanza, or the unnamed @library@ stanza.
+namedStanza :: String -> String -> Maybe String
+namedStanza header =
+    lookup (map toLower (normalizeWhitespace header))
+        . map (\(observed, body) -> (map toLower observed, body))
+        . stanzaBlocks
+
+stanzaBlocks :: String -> [(String, String)]
+stanzaBlocks = go . lines
+  where
+    go [] = []
+    go (line : rest)
+        | indentation line == 0
+        , let header = normalizeWhitespace (cabalLine line)
+        , stanzaKind header `elem` ["library", "executable", "test-suite", "benchmark", "foreign-library", "common"] =
+            let (body, remaining) = span continuation rest
+             in (header, unlines body) : go remaining
+        | otherwise = go rest
+
+    continuation line = null (cabalLine line) || indentation line > 0
+
+stanzaKind :: String -> String
+stanzaKind = map toLower . takeWhile (not . isSpace)
+
+-- | Values from every occurrence of a field, on its own or continuation lines.
+fieldValues :: String -> String -> [String]
+fieldValues field = go . lines
+  where
+    expected = map toLower (takeWhile (/= ':') (trim field))
+    go [] = []
+    go (line : rest)
+        | (name, ':' : inline) <- break (== ':') (cabalLine line)
+        , map toLower (trim name) == expected =
+            let fieldIndent = indentation line
+                (continuation, remaining) =
+                    span
+                        (\next -> null (cabalLine next) || indentation next > fieldIndent)
+                        rest
+             in tokens (inline : map cabalLine continuation) <> go remaining
+        | otherwise = go rest
+
+    tokens = words . map (\character -> if character == ',' then ' ' else character) . unlines
+
+-- Cabal comments occupy whole lines or follow whitespace in these descriptions.
+cabalLine :: String -> String
+cabalLine = unwords . takeWhile (not . isPrefixOf "--") . words
+
+-- | All option tokens the shared @common warnings@ stanza declares.
+commonWarningsOptions :: String -> String
+commonWarningsOptions description =
+    maybe "" (unwords . fieldValues "ghc-options") (namedStanza "common warnings" description)
+
+-- | The source walker shared by component enumeration and test-source guards.
+listComponentSources :: FilePath -> ComponentStanza -> IO [FilePath]
+listComponentSources packageRoot component = do
+    sources <- concat <$> traverse (listHaskellSources . (packageRoot </>)) (componentSourceDirs component)
+    pure . sort . nub $
+        [ path
+        | path <- sources
+        , stanzaKind (componentHeader component) /= "test-suite"
+            || "compile-fail" `notElem` splitDirectories (makeRelative packageRoot path)
+        ]
+
+-- | All test-suite source directories, recursively, without compile-fail inputs.
+listTestSources :: FilePath -> String -> IO [FilePath]
+listTestSources packageRoot description =
+    fmap (sort . nub . concat) . traverse (listComponentSources packageRoot) $
+        filter ((== "test-suite") . stanzaKind . componentHeader) (componentStanzas description)
+
+-- | Run a guard over every test source, optionally excusing its one owning file.
+forEachTestSourceBut :: FilePath -> (FilePath -> String -> IO ()) -> IO ()
+forEachTestSourceBut owner check =
+    withPackageSourceIn [] $ \packageRoot _ -> do
+        description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+        paths <- listTestSources packageRoot description
+        forM_ paths $ \path -> do
+            let relative = repoRelativePath packageRoot path
+            if relative == owner || relative == "test/" <> owner
+                then pure ()
+                else readFile path >>= check relative
+
 {- | The body of the package description's /unnamed/ main library stanza.
 
 A named library (@library effect-internal@) is a different component with its
 own module list, so the header must be the bare word.
 -}
 mainLibraryStanza :: String -> Maybe String
-mainLibraryStanza description =
-    case dropWhile ((/= "library") . trim) (lines description) of
-        [] -> Nothing
-        _library : rest -> Just (unlines (takeWhile isLibraryContinuation rest))
-  where
-    isLibraryContinuation [] = True
-    isLibraryContinuation line@(firstCharacter : _) =
-        null (trim line) || isSpace firstCharacter
+mainLibraryStanza = namedStanza "library"
 
-{- | Every @HostBootstrap.*@ module named by one field of a stanza.
+{- | Every module named by one field of a stanza.
 
-*field* is spelled with its colon (@"exposed-modules:"@). A value may begin on
+*field* may include its colon (@"exposed-modules:"@); names are case-neutral. A value may begin on
 the field's own line and continue on any line indented past it, which is both
 layouts Cabal permits — reading only one of them is how two copies of this
 function came to enumerate two different module sets from one file.
 -}
 fieldModules :: String -> String -> [String]
-fieldModules field = go . lines
+fieldModules field = filter isModuleName . fieldValues field
   where
-    go [] = []
-    go (line : rest)
-        | Just inline <- stripPrefix field (trim line) =
-            let fieldIndent = indentation line
-                (continuation, remaining) =
-                    span
-                        (\next -> null (trim next) || indentation next > fieldIndent)
-                        rest
-             in moduleTokens (inline : continuation) <> go remaining
-        | otherwise = go rest
-
-    moduleTokens =
-        filter ("HostBootstrap." `isPrefixOf`)
-            . map (filter (/= ','))
-            . words
-            . unlines
+    isModuleName name = case break (== '.') name of
+        (segment, _dot : rest) -> isModuleSegment segment && isModuleName rest
+        (segment, []) -> isModuleSegment segment
 
 {- | Lines of Haskell that are neither blank nor comment.
 
@@ -191,6 +515,343 @@ repoRelativeModuleName sourceRoot =
         case break (== '/') path of
             (segment, _slash : rest) -> segment : splitOnSlash rest
             (segment, []) -> [segment]
+
+{- | First-party modules and the names their plain import lists probe.
+
+The closed fixture grammar is @f@, @T@, @T(children)@ and @T(..)@. A whole
+module import has no item names. Decorated first-party imports and unfamiliar
+items refuse explicitly; external imports are outside this inventory.
+-}
+firstPartyImportItems :: String -> Either String [(String, [String])]
+firstPartyImportItems = collect . haskellTokens
+  where
+    collect [] = Right []
+    collect ("foreign" : "import" : remaining) = collect remaining
+    collect ("import" : remaining) = case parseModuleNameWithRest (dropImportDecorators remaining) of
+        Just (name, afterName)
+            | packageModule name -> do
+                if dropImportDecorators remaining == remaining
+                    then pure ()
+                    else Left ("unsupported first-party import decorators: " <> name)
+                (items, rest) <- case afterName of
+                    "(" : afterOpen -> case balancedTokens ")" afterOpen of
+                        Just (tokens, afterClose) -> do
+                            names <- importItems tokens
+                            pure (names, afterClose)
+                        Nothing -> Left ("unbalanced first-party import list: " <> name)
+                    decorator : _ | decorator `elem` ["qualified", "as", "hiding"] ->
+                        Left ("unsupported first-party import decorators: " <> name)
+                    _ -> Right ([], afterName)
+                ((name, items) :) <$> collect rest
+        Just (_, afterName) -> collect afterName
+        Nothing -> Left "unsupported import declaration header"
+    collect (_ : remaining) = collect remaining
+    packageModule name = name == "HostBootstrap" || "HostBootstrap." `isPrefixOf` name
+    importItems tokens = splitTokenGroups "," tokens >>= groups item
+    groups _ [] = Right []
+    groups _ [[]] = Right [] -- An empty list or a final trailing comma.
+    groups parse (first : remaining) = (<>) <$> parse first <*> groups parse remaining
+    item [name] | plainIdentifier name = Right [name]
+    item [parent, "(", "..", ")"] | isModuleSegment parent = Right [parent]
+    item (parent : "(" : remaining)
+        | isModuleSegment parent
+        , Just (children, []) <- balancedTokens ")" remaining = do
+            childGroups <- splitTokenGroups "," children
+            names <- groups (fmap pure . child) childGroups
+            if null names then Left "an explicit child list is empty" else Right (parent : names)
+    item tokens = Left ("unsupported first-party import item: " <> show tokens)
+    child [name] | plainIdentifier name = Right name
+    child tokens = Left ("unsupported first-party import child: " <> show tokens)
+
+-- | Names in genuine top-level definition positions, independent of exports.
+--
+-- Imports, signatures alone, role annotations, instance implementations and
+-- expression/pattern/type occurrences cannot manufacture definitions. The
+-- closed declaration grammar covers this tree and refuses unfamiliar shapes.
+haskellDefinitionNames :: String -> Either String [String]
+haskellDefinitionNames source = sort . nub . concat <$> traverse declaration blocks
+  where
+    blocks = sourceTextBlocks . unlines . cppLines . lines . maskHaskellComments $ source
+    cppLines [] = []
+    cppLines (line : remaining) = case dropWhile isSpace line of
+        '#' : _ -> directive line remaining
+        _ -> line : cppLines remaining
+    directive line remaining = "" : case reverse (dropWhile isSpace (reverse line)) of
+        continued | "\\" `isSuffixOf` continued -> case remaining of
+            next : rest -> directive next rest
+            [] -> []
+        _ -> cppLines remaining
+    declaration block = case haskellTokens block of
+        [] -> Right []
+        "{" : "-#" : _ -> Right []
+        keyword : _ | keyword `elem` ["module", "import", "where", "instance", "deriving", "infix", "infixl", "infixr", "default"] -> Right []
+        "type" : "role" : _ -> Right []
+        "type" : "instance" : _ -> Right []
+        "type" : "family" : remaining -> typeName remaining
+        "type" : remaining -> typeName remaining
+        "data" : remaining -> dataNames block remaining
+        "newtype" : remaining -> dataNames block remaining
+        "class" : remaining -> do
+            name <- typeName remaining
+            members <- nestedBlocks block >>= traverse classMember
+            pure (name <> concat members)
+        "foreign" : "import" : remaining -> do
+            (header, rest) <- breakTokenLevel ["::"] remaining
+            case (reverse header, rest) of
+                (name : _, "::" : _) | valueIdentifier name -> Right [name]
+                _ -> Left "unsupported foreign-import binder"
+        "foreign" : "export" : _ -> Right []
+        tokens -> valueDefinition tokens
+    typeName tokens = do
+        (header, _) <- breakTokenLevel ["=", "where"] tokens
+        (_, context) <- breakTokenLevel ["=>"] header
+        case (header, context) of
+            (name : _, []) | isModuleSegment name -> Right [name]
+            _ -> Left ("unsupported type/class definition: " <> show (take 12 tokens))
+    dataNames block remaining = do
+        name <- typeName remaining
+        (_, body) <- breakTokenLevel ["=", "where", "deriving"] remaining
+        constructors <- case body of
+            "=" : alternatives -> do
+                (fields, _) <- breakTokenLevel ["deriving"] alternatives
+                splitTokenGroups "|" fields >>= fmap concat . traverse prefixConstructor
+            "where" : _ -> nestedBlocks block >>= fmap concat . traverse gadtConstructor
+            [] -> Right []
+            "deriving" : _ -> Right []
+            _ -> Left "unsupported data/newtype declaration"
+        pure (name <> constructors)
+    prefixConstructor tokens = do
+        remaining <- case tokens of
+            "forall" : quantified -> do
+                (_, afterBinder) <- breakTokenLevel ["."] quantified
+                case afterBinder of
+                    "." : afterDot -> Right afterDot
+                    _ -> Left "an existential constructor has no binder terminator"
+            _ -> Right tokens
+        (_, context) <- breakTokenLevel ["=>"] remaining
+        case (remaining, context) of
+            (name : fields, []) | isModuleSegment name -> (name :) <$> recordLabels fields
+            _ -> Left ("unsupported prefix constructor: " <> show (take 12 remaining))
+    gadtConstructor block = do
+        (names, rest) <- breakTokenLevel ["::"] (haskellTokens block)
+        constructors <- commaNames isModuleSegment names
+        case rest of
+            "::" : fields -> (constructors <>) <$> recordLabels fields
+            _ -> Left "unsupported GADT constructor declaration"
+    classMember block = case haskellTokens block of
+        "type" : "family" : remaining -> typeName remaining
+        "type" : remaining -> typeName remaining
+        tokens -> do
+            (names, rest) <- breakTokenLevel ["::", "=", "|"] tokens
+            case rest of
+                "::" : _ -> commaNames valueIdentifier names
+                _ -> valueDefinition tokens
+    valueDefinition tokens@(name : remaining) | valueIdentifier name = do
+        (arguments, rest) <- breakTokenLevel ["::", "=", "where", "|"] remaining
+        case rest of
+            "::" : _ -> Right []
+            "=" : _ -> prefixArguments arguments >> Right [name]
+            "|" : guards -> do
+                prefixArguments arguments
+                (_, equation) <- breakTokenLevel ["=", "where"] guards
+                case equation of
+                    "=" : _ -> Right [name]
+                    _ -> Left "a guarded value has no equation"
+            _ -> Left ("unsupported value definition: " <> show (take 12 tokens))
+    valueDefinition tokens = Left ("unsupported top-level declaration: " <> show (take 12 tokens))
+    prefixArguments [] = Right ()
+    prefixArguments (opening : remaining)
+        | Just closing <- lookup opening [("(", ")"), ("[", "]"), ("{", "}")] =
+            case balancedTokens closing remaining of
+                Just (_, rest) -> prefixArguments rest
+                Nothing -> Left "unbalanced prefix argument pattern"
+        | isModuleSegment opening, "." : rest <- remaining = qualifiedPattern rest
+        | plainIdentifier opening || opening `elem` ["_", "@"] || literal opening = prefixArguments remaining
+        | otherwise = Left ("unsupported infix/non-prefix value lhs: " <> show opening)
+    qualifiedPattern (name : "." : remaining) | isModuleSegment name = qualifiedPattern remaining
+    qualifiedPattern (name : remaining) | isModuleSegment name = prefixArguments remaining
+    qualifiedPattern _ = Left "unsupported qualified argument pattern"
+    literal (first : _) = isDigit first || first `elem` "\"'"
+    literal [] = False
+    nestedBlocks block = case dropWhile (not . elem "where" . haskellTokens) (lines block) of
+        header : body -> case dropWhile (/= "where") (haskellTokens header) of
+            ["where"] -> case [indentation line | line <- body, not (all isSpace line)] of
+                first : remaining -> Right (sourceTextBlocks (unlines (map (drop (foldl min first remaining)) body)))
+                [] -> Right []
+            _ -> Left "unsupported inline class/GADT body"
+        [] -> Left "a class/GADT declaration has no where line"
+
+{- | Tokens of one complete, uniquely defined prefix value binding.
+
+The existing declaration reader distinguishes equations from signatures; the
+block reader retains guards and local bindings while excluding neighbouring
+definitions. Missing, ambiguous, and unsupported bindings refuse.
+-}
+haskellDefinitionTokens :: String -> String -> Either String [String]
+haskellDefinitionTokens wanted source
+    | not (valueIdentifier wanted) = Left ("unsupported value name: " <> wanted)
+    | otherwise = do
+        definitions <- traverse inspect candidates
+        case [tokens | (names, tokens) <- definitions, wanted `elem` names] of
+            [tokens] -> Right tokens
+            [] -> Left ("value definition missing: " <> wanted)
+            _ -> Left ("value definition is ambiguous: " <> wanted)
+  where
+    candidates =
+        [ block
+        | block <- sourceTextBlocks source
+        , name : _ <- [haskellTokens block]
+        , name == wanted
+        ]
+    inspect block = do
+        names <- haskellDefinitionNames block
+        let tokens = haskellTokens block
+        _ <- breakTokenLevel [] tokens
+        pure (names, tokens)
+
+{- | Ordered constructors of one unparameterized ordinary nullary data sum.
+
+The shared declaration blocks exclude comments and neighbouring definitions.
+Payloads, records, GADTs, duplicate constructors and unfamiliar deriving syntax
+refuse rather than yielding a partial vocabulary.
+-}
+nullaryDataConstructorNames :: String -> String -> Either String [String]
+nullaryDataConstructorNames wanted source
+    | not (isModuleSegment wanted) = Left ("unsupported data name: " <> wanted)
+    | otherwise = case declarations of
+        [tokens] -> do
+            _ <- breakTokenLevel [] tokens
+            fields <- case tokens of
+                "data" : name : "=" : remaining | name == wanted -> Right remaining
+                _ -> Left "expected an unparameterized ordinary data declaration"
+            (alternatives, trailing) <- breakTokenLevel ["deriving"] fields
+            derivingClause trailing
+            constructors <- splitTokenGroups "|" alternatives >>= traverse nullary
+            if null constructors || length constructors /= length (nub constructors)
+                then Left "a nullary data sum must have nonempty unique constructors"
+                else Right constructors
+        [] -> Left ("data declaration missing: " <> wanted)
+        _ -> Left ("data declaration is ambiguous: " <> wanted)
+  where
+    declarations =
+        [ tokens
+        | block <- sourceTextBlocks source
+        , let tokens = haskellTokens block
+        , keyword : name : _ <- [tokens]
+        , keyword `elem` ["data", "newtype"]
+        , name == wanted
+        ]
+    nullary [name] | isModuleSegment name = Right name
+    nullary _ = Left "expected a nullary prefix constructor"
+    derivingClause [] = Right ()
+    derivingClause ["deriving", name] | isModuleSegment name = Right ()
+    derivingClause ("deriving" : "(" : remaining) = case balancedTokens ")" remaining of
+        Just (classes, []) -> do
+            names <- commaNames isModuleSegment classes
+            if null names then Left "an empty deriving clause is unsupported" else Right ()
+        _ -> Left "malformed deriving clause"
+    derivingClause _ = Left "unsupported deriving clause"
+
+plainIdentifier :: String -> Bool
+plainIdentifier name = isModuleSegment name || valueIdentifier name
+
+valueIdentifier :: String -> Bool
+valueIdentifier (first : remaining) = (isLower first || first == '_')
+    && all (\character -> isAlphaNum character || character `elem` "_'") remaining
+    && (first : remaining) `notElem`
+        ["_", "case", "class", "data", "default", "deriving", "do", "else", "foreign", "if", "import", "in", "infix", "infixl", "infixr", "let", "module", "newtype", "of", "then", "type", "where", "pattern", "forall"]
+valueIdentifier [] = False
+
+-- Delimiters inside balanced groups do not separate declarations or fields.
+breakTokenLevel :: [String] -> [String] -> Either String ([String], [String])
+breakTokenLevel delimiters = go []
+  where
+    go reversed [] = Right (reverse reversed, [])
+    go reversed remaining@(token : rest)
+        | token `elem` delimiters = Right (reverse reversed, remaining)
+        | Just closing <- lookup token [("(", ")"), ("[", "]"), ("{", "}")] =
+            case balancedTokens closing rest of
+                Just (inside, afterClose) -> go (reverse (token : inside <> [closing]) <> reversed) afterClose
+                Nothing -> Left "unbalanced declaration tokens"
+        | token `elem` [")", "]", "}"] = Left "unexpected closing declaration delimiter"
+        | otherwise = go (token : reversed) rest
+
+splitTokenGroups :: String -> [String] -> Either String [[String]]
+splitTokenGroups separator tokens = do
+    (first, rest) <- breakTokenLevel [separator] tokens
+    case rest of
+        _separator : remaining -> (first :) <$> splitTokenGroups separator remaining
+        [] -> Right [first]
+
+commaNames :: (String -> Bool) -> [String] -> Either String [String]
+commaNames accepts tokens = do
+    groups <- splitTokenGroups "," tokens
+    traverse one groups
+  where
+    one [name] | accepts name = Right name
+    one group = Left ("unsupported declaration binder list: " <> show group)
+
+-- | Ordered labels of one uniquely named, single-constructor record declaration.
+-- Other declaration shapes refuse rather than yielding a partial field inventory.
+recordFieldNames :: String -> String -> Either String [String]
+recordFieldNames wanted source =
+    case declarations of
+        [remaining] -> do
+            (_, body) <- breakTokenLevel ["=", "where"] remaining
+            alternatives <- case body of
+                "=" : tokens -> fst <$> breakTokenLevel ["deriving"] tokens
+                _ -> Left ("record declaration has no ordinary constructor: " <> wanted)
+            constructors <- splitTokenGroups "|" alternatives
+            fields <- case constructors of
+                [constructor : "{" : tokens] | isModuleSegment constructor ->
+                    case balancedTokens "}" tokens of
+                        Just (inside, []) -> recordLabels ("{" : inside <> ["}"])
+                        _ -> Left ("record constructor is unbalanced or has extra fields: " <> wanted)
+                _ -> Left ("record declaration must have one record constructor: " <> wanted)
+            if length fields == length (nub fields)
+                then Right fields
+                else Left ("record declaration repeats a field: " <> wanted)
+        [] -> Left ("record declaration missing: " <> wanted)
+        _ -> Left ("record declaration is ambiguous: " <> wanted)
+  where
+    declarations =
+        [ remaining
+        | keyword : name : remaining <- sourceBlocks source
+        , keyword `elem` ["data", "newtype"]
+        , name == wanted
+        ]
+
+recordLabels :: [String] -> Either String [String]
+recordLabels [] = Right []
+recordLabels (opening : remaining)
+    | Just closing <- lookup opening [("(", ")"), ("[", "]"), ("{", "}")] =
+        case balancedTokens closing remaining of
+            Just (inside, afterClose) -> do
+                labels <- if opening == "{" then fields [] inside else Right []
+                (labels <>) <$> recordLabels afterClose
+            Nothing -> Left "unbalanced constructor field tokens"
+    | opening `elem` [")", "]", "}"] = Left "unexpected closing constructor field delimiter"
+    | otherwise = recordLabels remaining
+  where
+    fields pending tokens = do
+        (names, rest) <- breakTokenLevel ["::", ","] tokens
+        case rest of
+            "," : afterComma -> do
+                group <- commaNames valueIdentifier names
+                fields (pending <> group) afterComma
+            "::" : fieldType -> do
+                group <- commaNames valueIdentifier names
+                (declaredType, tailFields) <- breakTokenLevel [","] fieldType
+                if null declaredType
+                    then Left "a record label has an empty type declaration"
+                    else do
+                        more <- case tailFields of
+                            "," : afterComma -> fields [] afterComma
+                            [] -> Right []
+                            _ -> Left "unsupported record field separator"
+                        pure (pending <> group <> more)
+            [] | null names && null pending -> Right []
+            _ -> Left "a record label has no type declaration"
 
 importsModule :: String -> String -> Bool
 importsModule imported = elem imported . haskellImports

@@ -20,22 +20,30 @@ module HostBootstrap.HostTool (
     mkAbsExe,
     hostToolProcessArguments,
     discover,
+    ghcupBinCandidates,
     cudaCandidatePaths,
+    newestToolkitVersions,
 )
 where
 
 import Control.Exception (IOException, catch)
-import Data.List (isPrefixOf, sort)
+import Data.List (isPrefixOf, sortBy, stripPrefix)
+import Data.Maybe (mapMaybe)
+import Data.Ord (comparing)
 import System.Directory (doesDirectoryExist, doesFileExist, findExecutable, listDirectory)
 import System.FilePath (isAbsolute, takeFileName)
 import qualified System.FilePath.Posix as Posix
+import Text.Read (readMaybe)
 #ifdef mingw32_HOST_OS
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStdout), runCaptured)
 import System.Exit (ExitCode (ExitSuccess))
+import System.Environment (lookupEnv)
 -- Every native-separator join below is a Windows fallback path, so importing
 -- '(</>)' unconditionally is an unused import on every other host and fails the
 -- gate's own @-Werror@ on a tree that compiles this module from scratch.
 import System.FilePath ((</>))
+#else
+import System.Environment (getEnvironment)
 #endif
 
 -- | The closed set of external tools @hostbootstrap-core@ resolves.
@@ -72,6 +80,8 @@ data HostTool
     | Kill
     | Ps
     | Tar
+    | Curl
+    | Virtiofsd
     deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | Every host tool, for building a fully-resolved 'HostBootstrap.HostConfig'.
@@ -114,13 +124,19 @@ toolCommandName Df = "df"
 toolCommandName Kill = "kill"
 toolCommandName Ps = "ps"
 toolCommandName Tar = "tar"
+toolCommandName Curl = "curl"
+toolCommandName Virtiofsd = "virtiofsd"
 
 {- | An absolute path to a resolved executable. The constructor is not exported;
 'mkAbsExe' is the only way to build one, so a value of this type is always an
 absolute path.
 -}
-newtype AbsExe = AbsExe {absExePath :: FilePath}
+newtype AbsExe = AbsExe FilePath
     deriving (Eq, Ord, Show)
+
+-- | The absolute path admitted by 'mkAbsExe'. This accessor permits no update.
+absExePath :: AbsExe -> FilePath
+absExePath (AbsExe path) = path
 
 {- | Build an 'AbsExe', rejecting anything that is not an absolute path (in
 particular a bare command name).
@@ -144,17 +160,51 @@ hostToolProcessArguments _tool _executable arguments = arguments
 {- | Discover a tool's absolute path. 'System.Directory.findExecutable' returns
 an absolute path when the command is found on the search path; the result is
 re-validated through 'mkAbsExe' so a non-absolute hit is rejected.
+POSIX GHC tools also search 'ghcupBinCandidates' when absent from that path.
 -}
 discover :: HostTool -> IO (Maybe AbsExe)
 #ifdef mingw32_HOST_OS
-discover Wsl = firstExisting ["C:\\Windows\\System32\\wsl.exe"]
-discover Bcdedit = firstExisting ["C:\\Windows\\System32\\bcdedit.exe"]
+discover Wsl = discoverWindowsSystemTool Wsl "wsl.exe"
+discover Bcdedit = discoverWindowsSystemTool Bcdedit "bcdedit.exe"
+#else
+discover Wsl = pure Nothing
+
+discover Bcdedit = pure Nothing
 #endif
 discover tool = do
     found <- findHostExecutable (toolCommandName tool)
     case found of
         Just fp -> pure (either (const Nothing) Just (mkAbsExe fp))
         Nothing -> discoverFallback tool
+
+{- | The POSIX ghcup binary directory: a configured install-base prefix wins,
+otherwise the home directory supplies the root. The paths describe a POSIX
+frame even when this pure helper is evaluated on a different host.
+-}
+ghcupBinCandidates :: [(String, String)] -> [FilePath]
+ghcupBinCandidates environment =
+    [ root Posix.</> ".ghcup" Posix.</> "bin"
+    | Just root <- [installBase]
+    ]
+  where
+    installBase = case lookup "GHCUP_INSTALL_BASE_PREFIX" environment of
+        Just root -> Just root
+        Nothing -> lookup "HOME" environment
+
+#ifdef mingw32_HOST_OS
+discoverWindowsSystemTool :: HostTool -> FilePath -> IO (Maybe AbsExe)
+discoverWindowsSystemTool tool name = do
+  root <- lookupEnv "SystemRoot"
+  preferred <- firstExisting [directory </> "System32" </> name | Just directory <- [root]]
+  case preferred of
+    Just executable -> pure (Just executable)
+    Nothing -> do
+      found <- findHostExecutable (toolCommandName tool)
+      pure (found >>= either (const Nothing) Just . mkAbsExe)
+
+windowsProgramRoots :: IO [FilePath]
+windowsProgramRoots = mapMaybe id <$> traverse lookupEnv ["ProgramFiles", "ProgramFiles(x86)"]
+#endif
 
 findHostExecutable :: String -> IO (Maybe FilePath)
 #ifdef mingw32_HOST_OS
@@ -171,20 +221,26 @@ findHostExecutable = findExecutable
 discoverFallback :: HostTool -> IO (Maybe AbsExe)
 #ifdef mingw32_HOST_OS
 discoverFallback Nvcc = discoverWindowsNvcc
-discoverFallback Clang = firstExisting ["C:\\Program Files\\LLVM\\bin\\clang.exe"]
+discoverFallback Clang = windowsLlvmTool "clang.exe"
+
+discoverFallback Clangxx = windowsLlvmTool "clang++.exe"
 discoverFallback MsvcCl = discoverWindowsMsvcCl
-discoverFallback Vswhere = firstExisting ["C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"]
+discoverFallback Vswhere = do
+  roots <- reverse <$> windowsProgramRoots
+  firstExisting [root </> "Microsoft Visual Studio" </> "Installer" </> "vswhere.exe" | root <- roots]
 discoverFallback _ = pure Nothing
+
+windowsLlvmTool :: FilePath -> IO (Maybe AbsExe)
+windowsLlvmTool name = do
+  roots <- windowsProgramRoots
+  firstExisting [root </> "LLVM" </> "bin" </> name | root <- roots]
 
 discoverWindowsNvcc :: IO (Maybe AbsExe)
 discoverWindowsNvcc = do
-  let root = "C:\\Program Files\\NVIDIA GPU Computing Toolkit\\CUDA"
-  exists <- doesDirectoryExist root
-  if not exists
-    then pure Nothing
-    else do
-      versions <- safeListDirectory root
-      firstExisting [root </> version </> "bin" </> "nvcc.exe" | version <- reverse versions]
+  roots <- windowsProgramRoots
+  firstWindowsVersionedTool
+    [root </> "NVIDIA GPU Computing Toolkit" </> "CUDA" | root <- roots]
+    ("bin" </> "nvcc.exe")
 
 discoverWindowsMsvcCl :: IO (Maybe AbsExe)
 discoverWindowsMsvcCl = do
@@ -226,20 +282,25 @@ discoverWindowsMsvcClViaVswhere =
 
 discoverWindowsMsvcClFromKnownRoots :: IO (Maybe AbsExe)
 discoverWindowsMsvcClFromKnownRoots = do
+  folders <- windowsProgramRoots
   let roots =
-        [ "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
-          "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC",
-          "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
-          "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
-          "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
-          "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC"
+        [ folder </> "Microsoft Visual Studio" </> "2022" </> edition </> "VC" </> "Tools" </> "MSVC"
+        | folder <- reverse folders
+        , edition <- ["BuildTools", "Community", "Professional", "Enterprise"]
         ]
   firstWindowsVersionedTool roots ("bin" </> "Hostx64" </> "x64" </> "cl.exe")
 #else
+discoverFallback Ghc = discoverPosixGhcupTool Ghc
+
+discoverFallback Ghcup = discoverPosixGhcupTool Ghcup
+
 discoverFallback Nvcc = discoverPosixCudaTool "nvcc"
 discoverFallback _ = pure Nothing
+
+discoverPosixGhcupTool :: HostTool -> IO (Maybe AbsExe)
+discoverPosixGhcupTool tool = do
+  environment <- getEnvironment
+  firstExisting [directory Posix.</> toolCommandName tool | directory <- ghcupBinCandidates environment]
 
 {- | The CUDA toolkit's canonical POSIX location. A distribution or container
 image installs @nvcc@ under @/usr/local/cuda@ (a symlink to the versioned root)
@@ -272,10 +333,27 @@ cudaCandidatePaths name entries =
     | root <-
         (cudaPrefix Posix.</> "cuda")
             : [ cudaPrefix Posix.</> entry
-              | entry <- reverse (sort entries)
+              | entry <- newestToolkitVersions entries
               , "cuda-" `isPrefixOf` entry
               ]
     ]
+
+-- | Numeric toolkit versions, newest first; non-version directory names are ignored.
+newestToolkitVersions :: [FilePath] -> [FilePath]
+newestToolkitVersions = map snd . sortBy (flip (comparing fst)) . mapMaybe numbered
+  where
+    numbered :: FilePath -> Maybe ([Integer], FilePath)
+    numbered name = do
+        let version = case stripPrefix "cuda-" name of
+                Just suffix -> suffix
+                Nothing -> maybe name id (stripPrefix "v" name)
+        components <- traverse readMaybe (splitDots version)
+        pure (components, name)
+
+    splitDots value = case break (== '.') value of
+        (component, '.' : rest) -> component : splitDots rest
+        (component, []) -> [component]
+        _ -> []
 
 #ifdef mingw32_HOST_OS
 firstWindowsVersionedTool :: [FilePath] -> FilePath -> IO (Maybe AbsExe)
@@ -286,7 +364,7 @@ firstWindowsVersionedTool (root : roots) suffix = do
     then firstWindowsVersionedTool roots suffix
     else do
       versions <- safeListDirectory root
-      found <- firstExisting [root </> version </> suffix | version <- reverse versions]
+      found <- firstExisting [root </> version </> suffix | version <- newestToolkitVersions versions]
       case found of
         Just exe -> pure (Just exe)
         Nothing -> firstWindowsVersionedTool roots suffix

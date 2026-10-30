@@ -29,7 +29,13 @@ project configuration and supplies descriptive helpers such as `fitsBudget`.
 [Cluster.Budget](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs) owns exact plan-indexed
 admission. These are distinct layers: a static helper result is not the capability for applying a wall.
 
-Three gaps separate the tree from the contract this page states:
+`ResourceBudget` has a private positional constructor. Its `budgetCpu`, `budgetMemoryBytes`, and
+`budgetStorageBytes` readers are ordinary functions, so callers cannot replace a dimension by record
+update. CPU is positive and bounded by `maxBound :: Int`; memory and storage are positive byte counts
+bounded by `maxBound :: Int64`. Its `Show` instance preserves the record-shaped diagnostic text, field
+order, and parentheses used by nested values.
+
+Two gaps separate the tree from the contract this page states:
 
 - No production lifecycle path mints a validated budget or runs workload fit, partition, or journal-derived
   wall reservation; see [What runs today](#what-runs-today). Production adoption of that chain is owed by
@@ -38,11 +44,6 @@ Three gaps separate the tree from the contract this page states:
 - The owned-cluster kind backend applies the whole cluster slice to every node container, so an N-node
   cluster's aggregate cap is N times its slice. That defect is owed by
   [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- `storageCordonPolicy` is the target's single storage-wall vocabulary, but the prepared storage-wall call in
-  `Cluster.Budget` carries its own second enumeration (`StorageWallMechanism`, `StorageWallUnsupported`)
-  rather than taking its mechanism and unsupported reason from that policy. Consolidating them is owed by
-  [the canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md);
-  see [Cordoning Per Substrate](#cordoning-per-substrate).
 
 A canonical quantity or budget refuses with a **closed answer**, not a sentence. `QuantityError` has six
 constructors in two groups:
@@ -96,8 +97,10 @@ that requires the full chain (`prepareColimaWallCall`) has no production caller.
 
 `resources` is project-owned configuration. Quantity syntax is decoded through the canonical parser;
 private smart constructors validate the demo's resource floors, replica counts, ports, and timeouts.
-Provider-exact admission rejects zero, unsupported precision, and values the selected backend cannot apply
-exactly. Context carries no independent duplicate budget.
+Canonical admission rejects non-positive and above-bound dimensions. Provider admission also rejects
+unsupported whole-gibibyte precision. Docker admission uses the canonical node renderer to check minimum
+memory, signed CPU/swap bounds, and exact CLI byte parsing while retaining normal byte-granular budgets.
+Context carries no independent duplicate budget.
 
 The demo assembler supplies its concrete lifecycle resources for both Production and Harness. Examples
 and tests may use smaller values; those values are not a core default or evidence that the complete demo
@@ -131,8 +134,34 @@ and storage have no reserve, and the reserve is not configurable. Provider sizin
 quantities. Capacity observation
 alone does not establish ownership or authorize changing a running VM.
 
+Host capacity is read independently of provider mutation. `CapacityReadPlan` uses separate `CpuSource`,
+`MemorySource`, and `StorageSource` types, so a memory reader cannot occupy the CPU slot. Each dimension
+has a total reader for its declared sources.
+
+| Native host | CPU | Memory | Free storage |
+|---|---|---|---|
+| Linux | processor entries in `/proc/cpuinfo` | MemAvailable in `/proc/meminfo`, scaled from kB to bytes | `df -P -k /`, scaled from 1K blocks to bytes |
+| macOS | `sysctl -n hw.ncpu` | `sysctl -n hw.memsize` | `df -P -k /` |
+| Windows | Win32 GetSystemInfo logical processors | GlobalMemoryStatusEx total physical bytes | GetDiskFreeSpaceExW available bytes on the Windows system volume |
+
+The Windows bindings live in a private capacity library built on every host. Off Windows they return
+`WindowsCapacityUnsupported`; native API failures and nonpositive results retain typed reasons. The
+Foundation renders those reasons at its descriptive boundary. No PowerShell tool is required for a
+Windows read. POSIX commands are `HostCommand` values run by `interpretHostCommand`, retaining the selected
+absolute tool and its exact argument vector. Missing tools are explicit refusals.
+
+Procfs reads consume strict text before leaving their IO failure boundary. `parseCpuinfoProcessors`,
+`parseMemAvailableBytes`, and `parsePositiveInteger` own the pure parsing; the last strips surrounding
+whitespace before validating a positive integer. Tests drive the same capacity entry point and command
+interpreter as production, and native capacity must resolve positive CPU, memory, and storage on a supported
+gate host.
+
 The Dhall `fitsWithin` and `split` functions operate on numeric artifact values and are pinned by evaluation
-tests. Runtime project configs carry typed text quantities and no independent resolved pod set, so they do
+tests. The configuration-facing `fitsBudget` agrees with `fitsWithin`: total replicated CPU and memory
+limits must fit the budget, and every pod's CPU and memory request must fit its own limit, including when
+its replica count is zero. A request above its limit returns `Overflow "cpuRequest" request limit` or
+`Overflow "memoryRequest" request limit`. Neither predicate compares storage.
+Runtime project configs carry typed text quantities and no independent resolved pod set, so they do
 not gain a universal fit proof by attaching that Dhall assertion. The authoritative workload/partition join
 occurs in `Cluster.Budget`.
 
@@ -158,6 +187,28 @@ lineage refuses before the backend effect.
 | Direct Linux | Plan-local provider admission and cluster-node CPU/memory controls; no claim of an outer provider wall |
 | Kind/nvkind nodes | Identity-checked Docker updates using immutable container IDs; the owned-cluster backend applies the whole cluster slice to each node rather than a per-node share (see [Current Status](#current-status)) |
 
+The kind-node limit renderer and its named-container wrapper return a refusal when Docker cannot express
+the CPU/memory ceiling exactly. Whole CPU counts must fit the signed 64-bit nanocore field; doubled memory
+must fit the signed 64-bit swap field. Memory must meet the Linux daemon's 6291456-byte minimum. Those are
+Docker representation/admission limits, separate from observing whether a budget fits the host.
+[Moby resource fields](https://github.com/moby/moby/blob/v28.0.0/api/types/container/hostconfig.go#L341-L369),
+[daemon minimum](https://github.com/moby/moby/blob/v28.0.0/daemon/daemon_unix.go#L385-L390).
+
+Docker CLI byte parsing passes decimal byte counts through binary64. The renderer therefore requires an
+exact integer round trip; doubling an exact value preserves that precision within the signed range. It
+accepts representable values above 2^53 rather than imposing a blanket magnitude cap. The largest accepted
+memory under the doubled-swap bound is 4611686018427387392 bytes.
+[Docker CLI byte parser](https://github.com/docker/go-units/blob/v0.5.0/size.go#L101-L111).
+
+`kindNodeCordonLimits` and the named wrappers share this one rendering. `cordonOwnedCluster` checks the
+result before ownership observation or a backend command; invalid limits return `ClusterOwnershipBudget`
+with the canonical reason. A valid rendering still grants no authority to apply a wall.
+
+`admitProviderBudget` uses that same canonical renderer for Docker and returns its refusal as
+`InvalidBudget` before producing an effective budget. Byte-granular memory remains admissible whenever
+the renderer can express it exactly. This numeric admission is separate from Docker's unsupported
+storage-wall policy below.
+
 `storageCordonPolicy` in `Cluster.Cordon.Foundation` is the storage-wall vocabulary: it maps each
 `StorageCordonTarget` to the wall mechanism a provider builder applies or to a typed unsupported reason.
 
@@ -167,11 +218,15 @@ lineage refuses before the backend effect.
 | `LimaVmStorage` | `StorageCordonSupported LimaDiskFlag` |
 | `IncusVmStorage` | `StorageCordonSupported IncusRootDiskLimit` |
 | `Wsl2DistroStorage` | `StorageCordonSupported Wsl2VhdSize` |
+| `DockerNodeStorage` | `StorageCordonUnsupported DockerUpdateStorageUnavailable` |
 | `BareLinuxStorage` | `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable` |
 
-The answer grants no authority to apply a wall. In the target contract the prepared storage-wall call in
-`Cluster.Budget` takes its mechanism and its unsupported reason from this policy; today it carries its own
-enumeration (see [Current Status](#current-status)).
+`Cluster.Budget` maps each provider to its target and takes the mechanism or unsupported reason from
+this policy. Its prepared storage-wall call carries that same `StorageCordonMechanism`; argument rendering
+uses the selected mechanism. Bare Linux refuses during provider-budget admission before a prepared call
+exists, retaining the policy's unsupported reason. The pure policy answer grants no authority to apply a wall.
+[Storage ceilings have one policy](../../DEVELOPMENT_PLAN/rationale.md#storage-ceilings-have-one-policy)
+explains why the decision has one owner.
 
 Bare Linux has no storage wall. Its storage accounting is not a runtime quota or image-GC controller, and
 preflighted free space must not be described as an enforced storage ceiling. Docker's node-update interface does not enforce the declared storage share.
@@ -181,7 +236,10 @@ See [applied cordon](applied_cordon.md) for the same limit at the operation boun
 
 Run `cabal test all` from `core/`. Quantity, budget, provider, cluster, and compile-fail
 cases cover exact parsing, complete partitions, rejected cross-plan evidence, raw-observation refusal,
-prepared settlement, and identity substitution. The demo's cluster-config cases check that rendered driver,
+prepared settlement, and identity substitution. `CordonSpec` pins constructor bounds, reader values, and
+the preserved `Show` rendering. [RecordUpdateBudget.hs](../../core/hostbootstrap-core/test/compile-fail/RecordUpdateBudget.hs)
+probes record-update refusal with the real reader in scope. `BudgetSpec` compares prepared mechanisms and
+unsupported reasons with the canonical policy. The demo's cluster-config cases check that rendered driver,
 node mapping, workload, and exposure data remain bound to the same package.
 
 Static host tests establish those program contracts. The [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md),

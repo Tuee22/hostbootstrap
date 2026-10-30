@@ -5548,7 +5548,7 @@ gate.
 ### Sprint 24.57: Demo command tests bound their subject [Planned]
 
 **Status**: Planned
-**Implementation**: `demo/test/CommandsSpec.hs`, `demo/test/Spec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
+**Implementation**: `demo/test/CommandsSpec.hs`, `demo/src/HostBootstrapDemo/Commands.hs`
 **Production modules**: `HostBootstrapDemo.Commands` (1; cap 3)
 **Sprint budget**: pure extractions only; at most 150 production Haskell lines.
 **Substrates**: linux-cpu
@@ -5573,22 +5573,16 @@ gate.
 - `validated direct context keeps nvkind even if the inner host detects CPU` is renamed to `validated direct
   context selects nvkind; ordinary container selects kind`, since `containerPlan` takes no detection input.
 - Source-text guards remain only for "this legacy identifier is absent" and are scoped to declarations.
-- The demo suite's `main` (`demo/test/Spec.hs`) sets `setLocaleEncoding utf8` before any case runs, as the core
-  suite does, so the source reads in `CommandsSpec` decode the same bytes on a non-UTF-8 code page and the demo
-  leg of the host static gate holds the § JJ portability rule.
-
 #### Validation
 
 Each rewritten case fails under the mutations recorded in findings F1568, F1569, and F1570, for example
 `providerRoute` set to the VM route in the Direct branch, `registerRunningProviderDependencyPackage` deleted from
-`runExactVmProvider`, and `findmnt` moved off the `ProviderIncus` arm. A demo case asserts that
-`textEncodingName <$> getLocaleEncoding` is `UTF-8` inside the suite. Then the demo host-static gate.
+`runExactVmProvider`, and `findmnt` moved off the `ProviderIncus` arm. Then the demo host-static gate.
 
 #### Remaining Work
 
 - Implement the helper and each rewritten case above (findings F1571, F1568, F1569, F1570, F1584, F1572).
-- `demo/test/Spec.hs`: call `setLocaleEncoding utf8` (from `GHC.IO.Encoding`) at the start of `main`, and add
-  the locale-encoding case above.
+
 
 ### Sprint 24.58: Demo command refusal tests assert the named refusal [Planned]
 
@@ -6776,8 +6770,7 @@ The sprint closes when these cases exist and pass in `cabal test hostbootstrap-d
   store endpoint rendered by the core plan, and a tested canary.
 - Sprint 24.55: accelerator runtime suites that fail on the regressions they name.
 - Sprint 24.56: a web server suite that fails, never hangs, on the regressions it names.
-- Sprint 24.57: `CommandsSpec` cases bounded to their subject declarations, and a UTF-8 locale encoding fixed
-  in `demo/test/Spec.hs`.
+- Sprint 24.57: `CommandsSpec` cases bounded to their subject declarations.
 - Sprint 24.58: `CommandsSpec` refusal cases that assert the named refusal, including the demo's harness safety
   refusal through its production probe.
 - Sprint 24.59: runtime-dependency packages minted only from a `PlanBinding` of the plan they bind.

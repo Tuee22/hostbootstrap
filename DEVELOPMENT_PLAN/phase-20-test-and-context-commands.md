@@ -492,7 +492,7 @@ The sprint closes when these cases exist and pass under `cabal test all` from `c
   snapshotted trees are byte-identical.
 - `CLISpec` "context show renders a Harness-written fixture config and asserts no scope": a
   `Fixture.defaultProjectConfig projectName "." HostOrchestrator` written with
-  `Schema.writeScopedProjectConfigFile` through `withHarnessProjectCodec @Fixture.ProjectConfig
+  `Schema.publishScopedProjectConfigFile OverwriteExistingOutput` through `withHarnessProjectCodec @Fixture.ProjectConfig
   (V.harnessConfigAuthority authority)` inside `withFixtureHarnessAuthority`; `context-show-file` is
   `ExitSuccess` with stdout exactly `Context.renderComposition (cfgContext cfg)`, and the trees are
   byte-identical.

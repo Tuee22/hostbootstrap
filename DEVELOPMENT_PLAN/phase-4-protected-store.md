@@ -1,11 +1,13 @@
 # Phase 4 — Protected store
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 3 (host tools and substrate detection)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `hostbootstrap-core-gate-20261026`, x86_64 Ubuntu 24.04.4 CPU-only container on WSL2 Linux 6.18.33.2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the root ; pass ; covers in-gate
 
 > **Purpose**: Provide the one durable, exclusively entered, versioned record store every later ownership,
 > authority, and lifecycle decision is made inside.
@@ -20,9 +22,9 @@ that store and nothing else; it knows nothing about what is recorded in it.
 
 ## Sprints
 
-### Sprint 4.1: Exclusive entry and versioned records [Active]
+### Sprint 4.1: Exclusive entry and versioned records [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
@@ -34,7 +36,8 @@ One exclusive entry, one versioned record type, one compare-and-swap.
 
 #### Deliverables
 
-- `openProtectedStore` yields an opaque `ProtectedStore` rooted under the canonical project root. The
+- `openProtectedStore` yields an opaque `ProtectedStore` at the supplied absolute directory; its caller
+  places that directory under the canonical project root. The
   `ProtectedStore`, `ProtectedStoreIdentity`, `ProtectedSession`, and `RecordKey` constructors are private
   to `HostBootstrap.Protected`, which the public library re-exports, so a consumer cannot forge any of them.
 - `withProtectedEntry` runs a continuation inside the store's exclusive entry, which the **kernel** releases
@@ -42,8 +45,11 @@ One exclusive entry, one versioned record type, one compare-and-swap.
   `withProtectedEntry` or `tryProtectedEntry` from the holding thread is refused with `ProtectedInvalid`
   ("not re-entrant") instead of deadlocking. `tryProtectedEntry` never blocks: it returns `Right Nothing`
   when another process or another thread of this process holds the entry.
-- A `ProtectedSession` exists only inside that continuation and is the sole capability for reading or
-  writing records, so no record operation can straddle two transactions.
+- `ProtectedSession` has a private constructor and nominal session index. Its per-entry token names the
+  holding thread and is revoked before unlocking. Every record operation and the writable-store probe
+  require that live token on its owner thread. Rank-2 provenance alone does not prevent an ordinary IO
+  closure retaining a session; a retained action outside its extent, inside a later entry, or on another
+  thread returns `ProtectedInvalid` before IO, so it cannot straddle transactions.
 - `RecordKey` is validated on construction, so a key cannot shift the meaning of the fields after it.
 - `mkRecordName` is the one **injective** encoding from a namespaced identity — or a `/`-separated path of
   them, which is what a relation between operations is — into that alphabet, and `recordNameIdentity` is its
@@ -61,7 +67,7 @@ One exclusive entry, one versioned record type, one compare-and-swap.
 
 #### Validation
 
-Closure requires these cases to exist and pass in `cabal test all` from `core/`:
+The complete core gate executes these cases:
 
 - `AuthoritySpec` store cases: the record round-trip, each expectation branch of compare-and-swap, and
   the out-of-process contention probe (`--hostbootstrap-protected-entry-probe`) that proves a second entry
@@ -86,48 +92,28 @@ Closure requires these cases to exist and pass in `cabal test all` from `core/`:
   `hbps1 1 2\nbody` each read back as `ProtectedMalformedRecord` with the reason for its branch.
 - `AuthoritySpec` "record names refuse every ambiguous segment" and "record names are injective and
   invertible" (below).
+- `AuthoritySpec`: retained read/write/delete/list/writable-probe IO actions refuse after their entry
+  ends and during a later entry on the same thread. A foreign thread also refuses a currently live
+  session. Each case checks the records and store files remain unchanged.
+- `CompileFailSpec`: `CoerceProtectedSession.hs` rejects relabelling the nominal session index.
 - `CompileFailSpec` rejects `ForgeProtectedSession.hs`, `ForgeRecordKey.hs`, `ForgeProtectedStore.hs`, and
   `ForgeProtectedStoreIdentity.hs`, each with GHC's "Illegal term-level use of the type constructor" diagnostic.
 
+`AuthoritySpec` additionally passed "escaped protected IO actions are refused after entry exit", "a
+later entry cannot revive escaped protected IO actions", and "a live protected session refuses
+record operations from a foreign thread". Retained actions after successful nonblocking entry, IO
+exceptions and asynchronous interruption also refuse before IO. Constructor and nominal-session
+compile-fail fixtures passed with their pinned diagnostics.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
 #### Remaining Work
 
-- `Protected.hs` `recordNameSegment`: refuse a namespaced token that begins or ends with `.` with
-  `ProtectedInvalid`. Today `mkRecordName "a:.b"` and `mkRecordName "a/b"` both encode as `a..b`, and the
-  encoding of `"a:b./c"` decodes as `a:b/:c`. Add the dot-edged token rule to the `mkRecordName` Haddock's
-  injectivity bullets, whose "no segment may contain `..`, so an encoded segment holds no adjacent pair of
-  dots" argument omits the `.` the encoding inserts beside a dot-edged token; the `recordNameIdentity`
-  Haddock's "total inverse of `mkRecordName` on its image" holds once the refusal lands. Add the
-  `AuthoritySpec` table case "record names refuse every ambiguous segment" over `""`, `"a//b"`, `"/a"`, `"a/"`, `"a.b"`, `"a.b:c"`, `":b"`, `"a:"`,
-  `"a:.b"`, `"a:b."`, `"a:b./c"`, `"a:b..c"`, `"a:b:c"`, and `"a b"`, each `Left (ProtectedInvalid _)`.
-  Add "record names are injective and invertible": enumerate every one- and two-segment path whose segments
-  are strings of length 1 to 3 over `a`, `b`, `.`, `:`; for every input `mkRecordName` admits, assert
-  `recordNameIdentity` of the encoding returns the input and that no two distinct admitted inputs share an
-  encoding.
-- `Protected.hs` `tryStoreLock`: take the in-process mutex with `tryTakeMVar` (restored by `bracket` under
-  `mask`) instead of the blocking `withMVar`, and return `Nothing` when another thread holds it, so the
-  `tryProtectedEntry` Haddock's "another process (or another thread of this one) holds it" `Nothing` case
-  and its "without blocking" claim hold. Add the `AuthoritySpec` thread-contention case and the re-entry refusal case described in Validation.
-- `AuthoritySpec`: add the malformed-header table case described in Validation.
-- `AuthoritySpec` "a conditional delete removes only the observed version": replace the bare `isLeft` on the
-  stale delete with a match on `ProtectedVersionMismatch` carrying the stale expected and current observed
-  versions, then delete with `ExpectVersion` of the current version and assert `Right ()` followed by a
-  `readProtectedRecord` of `Right Nothing`, so a `compareAndDeleteProtectedRecord` that never deletes fails
-  the store-level case.
-- `AuthoritySpec` "a key that could escape the store is rejected": add `mkRecordKey` refusals for `"a/b"`,
-  `"x/../../escape"`, `"a\\b"`, and `"C:x"`, each matched as `Left (ProtectedInvalid reason)` with
-  "may contain only" in `reason` rather than `isLeft`, since the existing three keys are also refused by the
-  empty-key and leading-dot guards and do not pin the alphabet guard.
-- `test/compile-fail/`: add `ForgeRecordKey.hs` (applies `RecordKey` to `"../../x"`), `ForgeProtectedStore.hs`
-  (applies `ProtectedStore` to its fields), and `ForgeProtectedStoreIdentity.hs`, and register each in
-  `CompileFailSpec` beside `ForgeProtectedSession.hs` with the "Illegal term-level use of the type
-  constructor" diagnostic.
-- `documents/engineering/testing.md`: state that the protected-store contention and liveness probes use
-  `base`'s `hLock`/`hTryLock` (`flock`/`fcntl` on POSIX, `LockFileEx` on Windows) through the suite's own
-  re-invocation route, which is why they carry no `os(windows)` condition.
+None.
 
-### Sprint 4.2: The run-liveness lock [Active]
+### Sprint 4.2: The run-liveness lock [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -160,7 +146,7 @@ executed child that remains alive after its parent leaves the liveness extent, a
 reacquisition succeeds. On 2026-08-26 on aarch64 macOS it passed in the 113-case `AuthoritySpec` group, and
 the complete core host-static gate passed 2,462/2,462 under `-Werror` in 433.14 seconds.
 
-Closure additionally requires these cases to exist and pass in `cabal test all` from `core/`:
+The complete core gate executes these cases:
 
 - `AuthoritySpec` "a live liveness holder refuses an out-of-process peer": while the parent is inside
   `withRunLiveness store "peer-probe"`, the re-invoked probe exits 3 (`Right Nothing`); after the parent's
@@ -174,25 +160,21 @@ Closure additionally requires these cases to exist and pass in `cabal test all` 
   after each of 200 iterations of `timeout` with a delay of 0 to 199 microseconds around
   `withRunLiveness store "interrupted" (pure ())`.
 
+`AuthoritySpec` also passed "liveness body exceptions propagate unchanged and release the lock"; the
+peer probe, invalid-name no-body cases, close-on-exec child, timeout and 200 interrupted
+acquisitions all ran.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
 #### Remaining Work
 
-- `AuthoritySpec`: add `runLivenessProbe storeRoot name` (exit 0 when `withRunLiveness` returns
-  `Right (Just ())`, 3 on `Right Nothing`, 4 on `Left`), dispatch it from `test/Spec.hs` on
-  `--hostbootstrap-liveness-probe <root> <name>` beside `--hostbootstrap-protected-entry-probe`, and add the
-  out-of-process live-refusal case described in Validation.
-- `Protected.hs` `withRunLiveness`: validate the name through `mkRecordKey` before creating the directory or
-  opening the lock file, returning `Left (ProtectedInvalid _)` without running the body; add the
-  escaping-name case described in Validation.
-- `Protected.hs` `withRunLiveness`: acquire under `mask`, closing the handle on the not-taken branch and on
-  any exception before the body, and run the body under `restore` with `finally hClose`; catch only the
-  acquisition's `IOError`, so the body's own exceptions still propagate unchanged. Add the
-  interrupted-extent case described in Validation.
+None.
 
 ### Sprint 4.3: Store identity binding [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -219,13 +201,251 @@ cross-project refusal; "a malformed authority binding refuses root admission" co
 "pre-effect Production closure refuses another protected store" covers the cross-store refusal, asserting
 the second store's record set is unchanged.
 
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
 #### Remaining Work
 
 None.
 
-### Sprint 4.4: Record names are distinct on every supported filesystem [Planned]
+### Sprint 4.4: Versioned, injective record-name encoding [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Give case-bearing identities one injective encoding and distinguish the new encoding from historical
+rows before any row can be interpreted. The original record-name sprint is split here, before its
+implementation, because its producer inventory exceeds § G's three-module production cap.
+
+#### Deliverables
+
+- `mkRecordName` escapes every ASCII uppercase letter `C` as `_c` and literal `_` as `__`, before joining
+  the existing namespace/path separators. `recordNameIdentity` decodes those escapes as well as the
+  separators and stays the total inverse on the admitted image.
+- `recordTupleSeparator` is `...`, which cannot occur in any `mkRecordName` image: encoded segments
+  contain no adjacent/edge dots and path separators contain exactly two. Producers framing several
+  already encoded identities use this one separator and decode each component independently.
+- `mkRecordSegment` admits one scalar identity through the same segment codec and refuses `/`, so a
+  runtime field cannot introduce another path component. `mkRecordName` retains full identity-path
+  admission. Namespaced tokens still refuse leading/trailing dots and adjacent dots; a plain segment
+  still refuses dots. Callers encode identity components in their declared namespaces before joining fixed structure,
+  rather than passing an already assembled dotted record key to `mkRecordName`.
+- The store identity envelope carries an explicit key-encoding version. Opening refuses an old,
+  unrecognized, empty, or missing envelope over populated records with `ProtectedInvalid`, before
+  interpreting or mutating records. A new store publishes the current version exactly once under its
+  entry; reopening preserves its identity.
+- Historical `_b` can be either an old literal underscore name or the new uppercase `B` encoding, so
+  neither a fallback lookup nor a generic filename migration is admitted. Incompatible rows remain
+  intact for an owner-aware recovery; absence of the new key never licenses fresh acquisition over them.
+- No claim of cross-family acceptance is owed here: § C closes this baseline phase on its declared Linux
+  CPU gate. The same host-portable cases run in the Windows static gate here, and macOS confirmation is
+  owned by the host-portability acceptance phase's declared gate.
+
+#### Validation
+
+Under `cabal test all` from `core/`, `AuthoritySpec` proves `project:Build` and `project:build` differ
+under `Text.toLower`, `a_b` and `aB` differ, both pairs round-trip, and separate records retain their own
+bytes. The Sprint 4.1 exhaustive one/two-segment enumeration extends its alphabet to `ab.:A_` and still
+finds no shared encoding. New/reopened stores retain one current-format identity. Legacy identity,
+unknown/empty identity, and identity-less populated-store fixtures return the exact typed refusal and
+preserve all file bytes; no old-key fallback is probed.
+
+`AuthoritySpec` passed "record names are injective and invertible", "case-variant identities keep
+separate durable records", "incompatible store identities refuse without changing any file", and "a
+current identity envelope preserves its opaque nonce". Exhaustive admitted identities include
+uppercase and literal underscores; incompatible identity images preserve all original bytes.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.4a: Authority, mode and session key producers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SessionSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Keep every authority, project, run and operation identity distinct through its record-key producers and
+through the prefix scanners that recover those records.
+
+#### Deliverables
+
+- Every case-bearing component in these three modules goes through the canonical `mkRecordName` codec;
+  scanners use the same encoded prefix and decode identity components through `recordNameIdentity`.
+  Full-identity tuple fields use `recordTupleSeparator`, so namespace/path delimiters within a field
+  cannot collide with the boundary between fields.
+- Fixed lowercase keys, canonical hashed components, and already serialized `RecordKey` values are not
+  encoded a second time.
+- `parseRunKey` admits only the ASCII identity grammar that its record names can represent; malformed
+  durable identities refuse through the mode error type before constructing a key.
+- Encoded keys keep the 200-byte bound. Invalid or overlong values return the owning domain's typed
+  refusal before durable effects, never truncation, lossy filtering, an unhandled partial constructor,
+  or an old-name fallback.
+
+#### Validation
+
+The authority/mode/session behaviour cases pass with uppercase and underscore project/operation
+identities, exact inverse prefix recovery and distinct records. ASCII run admission and a non-ASCII
+malformed durable run are pinned, and oversized encoded-key refusal preserves records.
+
+`AuthoritySpec` passed "actual case and underscore executable identities retain exact broker and
+mode records", "durable ASCII runs recover their exact decoded case", and "a durable non-ASCII run
+refuses before key construction and body entry". The copied executables include the
+64-uppercase-character boundary and pin the legitimate profile row. `SessionSpec` passed "session
+and operation tuple fields recover exact independent identities" and both invalid/oversized-address
+cases with unchanged durable images.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.4b: Harness, snapshot and role liveness key producers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
+`core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Make Harness/config ownership and every run-liveness lock consume the same identity encoding.
+
+#### Deliverables
+
+- Harness data/config and project-plan snapshot keys encode their case-bearing components before fixed
+  separators; scanners/recovery decode those components through the same canonical inverse.
+- Every `withRunLiveness` caller supplies an encoded legal name. Role service/frame liveness no longer
+  uses `Text.filter` as an identity sanitizer: distinct admitted identities remain distinct.
+- Typed invalid/overlong refusals precede effects, and no historical raw-key fallback is attempted.
+
+#### Validation
+
+`HarnessSpec` passed "real case and underscore project identities keep exact origin records and
+recovery", using actual copied executables, persisted snapshots and hard-kill recovery.
+`ProjectPlanSpec` passed the source-order case "reverse-root Snapshot selection is strict,
+liveness-scoped, and caller-sealed"; this is structural evidence for the reverse selector.
+`RoleLifecycleSpec` passed its case/underscore and tuple-boundary lease cases and "invalid role
+lease names refuse before callbacks or record changes", using genuinely signed service/frame
+identities. Harness project/run inputs are already bounded; the invalid/expanded-overlong runtime
+refusals are the Role cases. Eight `CLISpec` Harness runtime cases now own fresh temporary working
+directories and preserve historical stores under the original cwd.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.4c: Runtime cluster, exposure and provider key producers [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`, `core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Keep cluster/node/exposure and provider instance/share names distinct even when they contain case,
+underscores or permitted internal dots.
+
+#### Deliverables
+
+- Scalar components enter `mkRecordSegment` through the canonical `mkRecordName` codec in their
+  declared namespaces; assembled dotted keys are never treated
+  as plain identity segments. Two component tuples that concatenate to the same raw dotted text remain
+  distinct after encoding.
+- Provider share recovery removes the encoded instance prefix and decodes the device component through
+  `recordNameIdentity`; a raw instance-name length is never used to slice encoded text.
+- Invalid or oversized names return the existing typed ownership/backend refusal before writes, without
+  truncation or legacy-key adoption. Already hashed/fixed keys retain their meaning.
+
+#### Validation
+
+Cluster/node, exposure and provider cases cover uppercase, underscore and internal-dot names, tuple
+boundary collisions, exact share-device recovery and refused oversized inputs with unchanged records.
+The existing runtime ownership behaviour suites pass.
+
+`ClusterOwnershipSpec` passed "case and tuple variants keep independent cluster and node records"
+and "an oversized node address publishes no partial origin records". `ClusterBackendSpec` passed "an
+invalid or expanded exposure address creates no store". `ProviderBackendSpec` passed "provider
+instance and device tuple boundaries cannot share a record", "retained provider deletion recovers
+literal case, dot and underscore device identities", and "retained provider deletion refuses a
+noncanonical device record key", preserving the neighboring instance rows.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.4d: Provider transaction address preflight [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Refuse invalid provider-share addresses before opening the store, rather than opening a valid instance
+transaction and only then discovering its share key cannot be represented. This fourth producer module
+is split from Sprint 4.4c to keep each production group inside § G's three-module ceiling.
+
+#### Deliverables
+
+- The complete instance/share key is validated before `openProtectedStore` and before any driver or
+  ownership effect; successful transactions use exactly that canonical key.
+- Oversized escaped device names and invalid scalar names return the existing typed refusal, create no
+  store metadata, and run no provider mutation. Valid transactions keep the same clause-holding route.
+
+#### Validation
+
+The public backend spec constructor refuses invalid/oversized instance names before IO, and the public
+record-key factories refuse invalid/expanded share addresses. Prepared public share calls derive a fixed
+bounded lowercase hash device, so arbitrary invalid device strings cannot honestly reach the private
+transaction. A lexical source guard therefore pins complete share-address admission before store opening,
+without a test-only execution entry. Real valid-share lifecycle/recovery tests exercise the unchanged
+production transaction route.
+
+`ProviderBackendSpec` passed "provider share address admission precedes every store-opening route",
+"invalid provider instance addresses refuse before creating store metadata", and the real
+valid-share lifecycle/recovery cases. The first is a lexical ordering guard; arbitrary invalid
+device text remains unreachable through the bounded public prepared-share constructor.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.4e: The final filesystem-safe key alphabet [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -233,54 +453,82 @@ None.
 
 #### Objective
 
-A record key is a file name, and the default filesystems of Windows (NTFS) and macOS (APFS) compare names
-case-insensitively, so two keys that differ only in case name one `<key>.rec`. A step identity admits
-`A`-`Z`, so a plan with steps `Build` and `build` puts two operation journals in one file. This sprint makes
-the key alphabet itself distinct under ASCII case folding and byte-bounded, so "two distinct identities
-never share one durable record" holds on every host the static gate runs on.
+After every identity producer uses the canonical codec, make the key constructor enforce names that
+are distinct on all supported filesystems.
 
 #### Deliverables
 
-- `mkRecordKey` admits only ASCII lowercase letters, ASCII digits, `-`, `_`, and `.`, so the 200-character
-  cap is also a 200-byte cap and no key depends on the locale's file-name encoding; an uppercase or
-  non-ASCII character is `ProtectedInvalid`.
-- `mkRecordKey` refuses a key whose text before its first `.` is a Windows reserved device name (`con`,
-  `prn`, `aux`, `nul`, `com1`-`com9`, `lpt1`-`lpt9`).
-- `mkRecordName` encodes case injectively into that alphabet: each ASCII uppercase letter `C` becomes `_c`
-  and each literal `_` becomes `__`, so its image holds no uppercase letter, and `recordNameIdentity`
-  decodes both escapes and stays the total inverse on the image.
-- Every direct `mkRecordKey` caller whose key text derives from a case-bearing identity routes that identity
-  through `mkRecordName` first.
+- `mkRecordKey` admits only ASCII lowercase letters, ASCII digits, `-`, `_` and `.`, with at most 200
+  bytes. Uppercase, non-ASCII letters/digits, leading dots and trailing dots are `ProtectedInvalid`.
+- The prefix before the first dot cannot be a Windows reserved device name: `con`, `prn`, `aux`, `nul`,
+  `com1`-`com9` or `lpt1`-`lpt9`.
+- Trailing dots are refused because Windows otherwise aliases `a` with `a.`; lowercase alone does not
+  satisfy the filesystem-distinct objective.
 
 #### Validation
 
-Closure requires these cases to exist and pass in `cabal test all` from `core/`, on the macOS and Windows
-host static gates as well as Linux:
+`AuthoritySpec` refuses `Alpha`, `é`, `٣`, `nul`, `CON`, `com1.rec`, `a.`, and an overlong ASCII key;
+it admits `alpha-1_b.c` and a legal 200-byte boundary key. The exhaustive codec and separate-record
+cases pass unchanged. The complete core gate verifies every migrated caller under the stricter key
+constructor; cross-family confirmation remains the phase 29 acceptance obligation.
 
-- `AuthoritySpec` "record keys are ASCII and case-free": `mkRecordKey` refuses `"Alpha"`, `"é"`, `"٣"`,
-  `"nul"`, `"CON"`, `"com1.rec"`, and admits `"alpha-1_b.c"`.
-- `AuthoritySpec` "case-variant record names stay distinct": `mkRecordName "project:Build"` and
-  `mkRecordName "project:build"` differ after `Text.toLower`; `mkRecordName "a_b"` and `mkRecordName "aB"`
-  differ; both round-trip through `recordNameIdentity`.
-- `AuthoritySpec` "case-variant identities keep separate durable records": in one store, records keyed by
-  `mkRecordName "project:Build"` and `mkRecordName "project:build"` are each created with `ExpectAbsent`
-  and read back with their own bytes.
-- The Sprint 4.1 enumeration case extended with `A` and `_` in its alphabet still finds no shared encoding.
+`AuthoritySpec` passed "record keys are ASCII, case-free and filesystem-distinct" and the
+scalar/path-injection, exhaustive codec, separate-record and maximum-length boundary cases.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
 
 #### Remaining Work
 
-- `Protected.hs` `mkRecordKey`: restrict the alphabet to `isAsciiLower`, `isDigit`, `-`, `_`, `.` and add
-  the reserved-device-name refusal; add the "record keys are ASCII and case-free" case.
-- `Protected.hs` `mkRecordName` and `recordNameIdentity`: add the `_c` / `__` escapes; add the
-  "case-variant record names stay distinct" and "case-variant identities keep separate durable records"
-  cases, and extend the Sprint 4.1 enumeration alphabet with `A` and `_`.
-- Every caller listed by `grep -rn mkRecordKey core/hostbootstrap-core/src` that forms a key from a
-  case-bearing identity (a project step name, a user-chosen cluster, instance, or profile name) passes it
-  through `mkRecordName`; the existing behaviour suites for those callers pass unchanged.
+None.
 
-### Sprint 4.5: Published records survive host power loss [Planned]
+### Sprint 4.4f: Production transaction target identity framing [Done]
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Make the transaction target validator consume the same encoded project/run tuples as the mode
+producer. This additional consumer is split before its implementation to keep the producer groups
+inside § G's three-module production cap.
+
+#### Deliverables
+
+- Production lease targets use the canonical tuple separator; reverse-intent targets retain their
+  fixed `.production` suffix. Both use the exact encoded project identity. Mode, lease and intent
+  targets must still name one exact project generation.
+- Historical raw separators, noncanonical identity suffixes and mixed project targets refuse; there is
+  no old-key fallback and no weakening of transaction expectation or payload validation.
+- Session target plan membership uses the canonical tuple boundary, so a historical single-dot or
+  prefix-shaped target cannot be adopted by an otherwise matching plan.
+
+#### Validation
+
+`SessionSpec` persists interrupted descriptors through the existing private descriptor seam and
+recovers through the ordinary journal reader. Both Production kinds recover for `Build`, `build`,
+`a_b` and `aB`, checking exact target bytes, mode deletion and the committed coordinator. Mixed lease
+or intent identities, noncanonical mode suffixes and historical lease/session separators refuse with
+the complete record image unchanged. The real Production closure, Down/Destroy, interruption recovery
+and recursive lifecycle cases also run in the complete gate.
+
+All 14 new `SessionSpec` descriptor cases passed, including "a case-mixed lease target refuses
+before materialization", "an underscore-mixed lease target refuses before materialization", "a mixed
+reverse-intent target refuses before materialization", and both historical-separator refusals.
+Production closure, public Down/Destroy, and the Linux recursive/interruption families passed;
+Windows recorded the declared platform refusals for the POSIX-only recursive/interruption families.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.5: Published records survive host power loss [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -296,10 +544,18 @@ primitives `HostBootstrap.Ownership.Posix` and `HostBootstrap.Ownership.Windows`
 
 #### Deliverables
 
-- `publishBytes` syncs the temporary's data to disk before the rename: `fileSynchronise` on the descriptor
-  on POSIX, and a write-through or `FlushFileBuffers` handle on Windows.
-- On POSIX `publishBytes` syncs the parent directory after the rename, as `posixSyncParent` does, so the
-  name change is durable too.
+- `publishBytes` syncs the temporary's data to disk before the rename: `fileSynchronise` on a writable
+  descriptor on POSIX, followed by Darwin's `F_FULLFSYNC` device-cache flush on macOS, and a write-through
+  or `FlushFileBuffers` handle on Windows. A failed requested flush refuses rather than falling back to
+  a weaker guarantee.
+- On POSIX `publishBytes` syncs the parent directory after the rename; Darwin then requests a full
+  device flush through the published regular file's writable descriptor, avoiding an unsupported
+  directory-ioctl assumption. Durability assumes the filesystem/device honor their successful flush requests.
+  Apple's documented distinction between fsync and full device flush is part of this introducing contract,
+  not a later correction. Cross-family runtime confirmation belongs to phase 29's declared gate.
+- Windows publishes through `MoveFileEx` with replacement and the SDK's write-through flag, excluding
+  copy-across-volume behavior. Its private path handling retains absolute local/UNC long-path support.
+  POSIX retains atomic `renameFile` within the same directory.
 - The cleanup that removes the temporary covers the whole write, sync, and rename sequence, so a failed
   write leaves no `<key>.rec.tmp-<hex>` behind.
 - The module header states exactly this guarantee: after a process death, OS crash, or power loss a record
@@ -307,36 +563,42 @@ primitives `HostBootstrap.Ownership.Posix` and `HostBootstrap.Ownership.Windows`
 
 #### Validation
 
-Closure requires these cases to exist and pass in `cabal test all` from `core/`:
+The complete core gate executes these cases:
 
 - `AuthoritySpec` source-guard case "publishBytes syncs before it renames and cleans up every failure":
-  the body of `publishBytes` calls the platform sync primitive before `renameFile`, calls the
+  the body of `publishBytes` calls the platform sync primitive before the atomic platform rename, calls the
   parent-directory sync after it on POSIX, and places the temporary's creation, write, sync, and rename
   under the one handler that removes the temporary.
 - The existing record round-trip and compare-and-swap cases pass unchanged, and after them `records/` holds
-  no entry containing `.rec.tmp-`.
+  no entry containing `.rec.tmp-`. A real 200-byte-key round-trip under a long temporary root preserves
+  Windows extended-path publication support.
 
 Neither power loss nor a mid-write disk failure is reproducible through the store's public API in the
-host static gate, so the source-guard case is what holds the ordering and the cleanup scope.
+host static gate, so the source-guard case holds ordering and cleanup scope, including the Darwin
+full-device-flush call. [Apple's fsync manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
+explains why plain fsync does not itself request that drive-cache guarantee; its
+[fcntl manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
+defines F_FULLFSYNC. Microsoft's
+[MoveFileEx documentation](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+defines the write-through rename request. The gate claims these implemented barriers and exercised record behaviour, not a
+simulated power-loss experiment.
+
+The complete gates passed on 2026-10-26: Linux CPU core 2,701/2,701 in 391.63 seconds; native
+Windows core 2,694/2,694 in 491.67 seconds; the demo workspace 164/164 demo cases in 5.87 seconds
+plus 2,694/2,694 core cases in 504.42 seconds. Both Python legs passed, with 376 tests in 7.32
+seconds and 100% coverage of 1,585 statements and 460 branches. The full suite includes the real
+maximum-length key beyond MAX_PATH, complete CAS/read/reopen behaviour and publication-order source
+guards. No physical power-loss experiment or macOS runtime confirmation is claimed.
+
+Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
 
 #### Remaining Work
 
-- `Protected.hs` `publishBytes`: sync the temporary before `renameFile` (POSIX `fileSynchronise`; Windows
-  write-through or `FlushFileBuffers`), sync the parent directory after it on POSIX, and wrap the whole
-  sequence in the temporary-removing cleanup; correct the module header's crash guarantee to match. Add
-  the `AuthoritySpec` source-guard case and the no-leftover-temporary assertion described in Validation.
+None.
 
 ## Remaining Work
 
-- Sprint 4.1: refuse dot-edged namespaced tokens in `mkRecordName`, make `tryProtectedEntry` non-blocking
-  against an in-process holder, align the `mkRecordName` and `tryProtectedEntry` Haddocks with that code,
-  and add the record-name, re-entry, thread-contention, malformed-header, current-version delete,
-  separator-key alphabet, and compile-fail forgery cases.
-- Sprint 4.2: validate the liveness lock name, acquire it under `mask`, and add the out-of-process
-  live-refusal, escaping-name, and interrupted-extent cases.
-- Sprint 4.4: make record keys ASCII and case-free and escape case injectively in `mkRecordName`.
-- Sprint 4.5: sync published records and their directory to disk, remove the temporary on every failed
-  publish, and state that crash guarantee in the module header.
+None.
 
 ## Documentation Requirements
 

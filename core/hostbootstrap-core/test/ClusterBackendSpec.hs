@@ -51,7 +51,7 @@ import HostBootstrap.Protected (
  )
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory, getTemporaryDirectory)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeFileName, (</>))
@@ -117,6 +117,16 @@ admissionCases =
             case outcome of
                 Right (Left (Unsupported _)) -> pure ()
                 other -> assertFailure ("a missing tool must mint no backend, got " <> show other)
+    , testCase "an invalid or expanded exposure address creates no store" $
+        withBackend $ \cfg root -> do
+            let state = root </> "uncreated-exposure-store"
+            forM_ ["bad/name", replicate 100 'A'] $ \name -> do
+                observed <- observeRecordedClusterExposure cfg state name "web"
+                case observed of
+                    Left (Failure _) -> pure ()
+                    _ -> assertFailure "an invalid exposure address was not refused"
+                doesDirectoryExist state >>= (@?= False)
+            FakeCluster.recordedClusterMutations root >>= (@?= [])
     , testCase "a configuration carrying all three is admitted with no probe" $ do
         self <- getExecutablePath
         outcome <- withClusterFixtureM $ \prepared -> do

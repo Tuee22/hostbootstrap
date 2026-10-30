@@ -61,7 +61,7 @@ import HostBootstrap.Lifecycle.RootedPlan (
     RootedPlanCatalog,
     withRootedPlanCatalogEdgeKernel,
  )
-import HostBootstrap.Lift.Context (LiftContext (..))
+import HostBootstrap.Lift.Context (LiftContext, liftLayers)
 import HostBootstrap.ProjectPlan.Construct.Internal (FinalizedProjectSpec)
 import HostBootstrap.ProjectPlan.Frame (
     CurrentFrame,
@@ -400,8 +400,9 @@ runCatalogForward package@(CatalogForwardHandoff parentCurrent childPlan binding
                                                         use package
 
 oneLayer :: LiftContext -> Bool
-oneLayer (LiftContext [_]) = True
-oneLayer _ = False
+oneLayer context = case liftLayers context of
+    [_] -> True
+    _ -> False
 
 catalogRefusal :: Text -> Either Text value
 catalogRefusal detail = Left ("catalog forward handoff: " <> detail)

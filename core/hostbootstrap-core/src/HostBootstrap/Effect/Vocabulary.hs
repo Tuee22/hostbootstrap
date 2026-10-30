@@ -11,12 +11,11 @@ Everything here is pure. Argument construction is separately testable precisely
 because nothing in this module can execute anything; execution belongs to
 "HostBootstrap.Effect.Interpreter" alone, and the one process runner beneath it.
 
-The frame is part of the value rather than context a caller remembers, because
-it is what decides a path's grammar (§ MM). A path in a command bound for a
-guest frame is POSIX on every outer host, and the same path in a command bound
-for the outer host is drive-qualified on Windows; nothing about how the string
-was derived says which, only which process will read it. 'framePathGrammar' is
-the one place that question is answered.
+The frame is a descriptive label the lift fold sets (§ MM). 'hostCommand' labels
+a local command 'OuterHost'; the fold labels a crossing with the frame it lands
+in. 'framePathGrammar' is a pure inspection of that description. The interpreter
+does not read the label, and no production validator consumes it, so recording
+the frame does not itself enforce a path grammar.
 
 A crossing is /recorded/ here, not rendered here. The argument vector that
 crosses into a frame comes from the lift's single fold (§ LL); this vocabulary
@@ -136,8 +135,10 @@ framePathGrammar :: EffectFrame -> PathGrammar
 framePathGrammar OuterHost = HostPathGrammar
 framePathGrammar CrossedInto{} = PosixGuestGrammar
 
-{- | A described host-level command: the four things § KK requires of one, and
-nothing else.
+{- | A described host-level command: the four things § KK requires of one.
+
+The lift fold supplies the descriptive frame label, and 'hostCommand' supplies
+'OuterHost'. Neither the interpreter nor a production validator reads the label.
 -}
 data HostCommand = HostCommand
     { commandTarget :: EffectTarget

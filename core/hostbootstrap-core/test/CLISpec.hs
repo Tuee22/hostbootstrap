@@ -7,10 +7,10 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module CLISpec (runSchemaFixture, tests) where
+module CLISpec (runIdentityMismatchProbe, runSchemaFixture, tests) where
 
 import ActivationSpec (withBrokerFor)
-import Control.Exception (finally, throwIO, try)
+import Control.Exception (bracket, finally, throwIO, try)
 import Control.Monad (filterM)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
@@ -26,6 +26,7 @@ import qualified Data.Text.IO as TIO
 import Data.Word (Word64)
 import Expect (expectRight)
 import qualified Fixture
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
@@ -89,7 +90,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionLifecycleProfile,
     withProductionRoot,
  )
-import HostBootstrap.Lift.Context (IncusVM (IncusVM), inVM, localContext)
+import HostBootstrap.Lift.Context (IncusVM (IncusVM), emptyVMStack, inVM, vmContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     renderSnapshot,
@@ -122,11 +123,14 @@ import HostBootstrap.Protected (
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
     protectedErrorMessage,
     protectedStoreRoot,
     readProtectedRecord,
     recordKeyText,
+    recordNameIdentity,
+    recordTupleSeparator,
     recordVersionWord,
     tryProtectedEntry,
     withProtectedEntry,
@@ -165,11 +169,12 @@ import HostBootstrap.Service.Program (
  )
 import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import SourceGuard (repoRelativePath)
-import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile)
+import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
 import System.FilePath (takeExtension, (</>))
-import System.IO.Temp (withSystemTempDirectory)
+import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hSeek, stderr)
+import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -319,14 +324,32 @@ tests =
                 other -> assertFailure ("expected DuplicateForwardChildPlan, got " ++ either show (const "Right ProjectSpec") other)
         , testCase "runtime executable identity must match the declared project" $ do
             actualProject <- executableProjectName
+            executable <- getExecutablePath
+            (exitCode, _output, diagnostic) <-
+                readProcessWithExitCode executable ["--hostbootstrap-cli-identity-mismatch-probe"] ""
+            exitCode @?= ExitFailure 1
+            let rendered = T.pack diagnostic
+                declared = actualProject <> "-declared-mismatch"
+            assertBool
+                "the CLI reports the executable identity mismatch"
+                ("does not match the invoked executable" `T.isInfixOf` rendered)
+            assertBool
+                "the refusal names the declared project"
+                (("declared project name " <> declared) `T.isInfixOf` rendered)
+            assertBool
+                "the refusal names the actual invoked executable"
+                (("invoked executable " <> actualProject) `T.isInfixOf` rendered)
+        , testCase "runtime executable identity accepts the actual declared project" $ do
+            actualProject <- executableProjectName
             result <-
                 try
-                    ( CLI.runHostBootstrapCLI
-                        (T.unpack (actualProject <> "-declared-mismatch"))
-                        (specWith passingSuite (pure ()) [])
+                    ( withArgs ["context", "path"] $
+                        CLI.runHostBootstrapCLI
+                            (T.unpack actualProject)
+                            (specWith passingSuite (pure ()) [])
                     ) ::
                     IO (Either ExitCode ())
-            result @?= Left (ExitFailure 1)
+            result @?= Right ()
         , testCase "core command surface has five user-facing verbs and no ensure command" $
             coreCommandNames @?= ["context", "project", "test", "service", "check-code"]
         , testCase "project specs reject duplicate service variants across additive fragments" $ do
@@ -460,7 +483,7 @@ tests =
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
         , testCase "test run fails fast without a test.dhall" $
-            withProjectConfig $ do
+            withIsolatedHarnessState $ withProjectConfig $ do
                 result <-
                     try (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                         IO (Either ExitCode ())
@@ -501,7 +524,7 @@ tests =
                     TIO.readFile testPath >>= (@?= original)
                 )
                 `finally` removeFile testPath
-        , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ do
+        , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -528,7 +551,7 @@ tests =
                     doesPathExist (cfgPath ++ ".hostbootstrap-test-owner") >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "test run interprets one exact Harness plan through forward and reverse" $ do
+        , testCase "test run interprets one exact Harness plan through forward and reverse" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -613,7 +636,7 @@ tests =
                                 (specDigest `T.isPrefixOf` planDigest)
                             let acquisition =
                                     recordsWithPrefix
-                                        ("acquisition." <> projectName <> "." <> runName <> ".")
+                                        ("acquisition." <> fixtureRecordName projectName <> recordTupleSeparator <> fixtureRecordName runName <> recordTupleSeparator)
                                         image
                                 invocation =
                                     recordsWithPrefix "invocation." image
@@ -669,7 +692,7 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "a restart-spanning Harness case rotates and rebinds the same run before its second assertion" $ do
+        , testCase "a restart-spanning Harness case rotates and rebinds the same run before its second assertion" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -721,7 +744,7 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "a true pre-effect Harness refusal skips reverse and admits the successor variant" $ do
+        , testCase "a true pre-effect Harness refusal skips reverse and admits the successor variant" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -772,7 +795,7 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "a late Harness refusal reverses each acquired variant exactly once" $ do
+        , testCase "a late Harness refusal reverses each acquired variant exactly once" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -794,10 +817,10 @@ tests =
                         either (assertFailure . show) pure $
                             mkRecordKey
                                 ( "effect."
-                                    <> projectName
-                                    <> "."
-                                    <> runName
-                                    <> ".late-refusal"
+                                    <> fixtureRecordName projectName
+                                    <> recordTupleSeparator
+                                    <> fixtureRecordName runName
+                                    <> recordTupleSeparator <> "late-refusal"
                                 )
                     store <-
                         openProtectedStore storeRoot
@@ -881,7 +904,7 @@ tests =
                     doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
-        , testCase "test run refuses to overwrite an existing sibling project config" $ do
+        , testCase "test run refuses to overwrite an existing sibling project config" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
@@ -909,6 +932,36 @@ tests =
         , testCase "bare context schema command output matches its exact snapshot" $ do
             output <- schemaFixtureOutput "bare"
             assertGolden "context_schema_core.txt" output
+        , testCase "the bare init builder refuses an incompatible added role through die" $
+            withSystemTempDirectory "hostbootstrap-bare-init-refusal" $ \directory ->
+                withCurrentDirectory directory $
+                    withPreservedInitSiblings $ \projectName before -> do
+                        (result, diagnostic) <-
+                            captureCLIExitStderr $
+                                withArgs ["project", "init", "--also-role", "cluster-service"] $
+                                    CLI.runBareHostBootstrapCLI (T.unpack projectName)
+                        result @?= Left (ExitFailure 1)
+                        diagnostic @?= "binary context: a HostOrchestrator placement may not acquire ClusterService authority\n"
+                        listDirectory directory >>= (@?= [])
+                        after <- traverse (snapshotInitFile . fst) before
+                        assertBool "refused bare init changed an executable sibling or identity file" (after == before)
+        , testCase "the bare init builder publishes a valid config at an explicit temporary output" $
+            withSystemTempDirectory "hostbootstrap-bare-init-output" $ \directory ->
+                withCurrentDirectory directory $
+                    withPreservedInitSiblings $ \projectName before -> do
+                        let output = directory </> "bare.dhall"
+                        result <-
+                            try
+                                ( withArgs ["project", "init", "--output", output] $
+                                    CLI.runBareHostBootstrapCLI (T.unpack projectName)
+                                ) ::
+                                IO (Either ExitCode ())
+                        result @?= Right ()
+                        bytes <- ByteString.readFile output
+                        assertBool "successful bare init wrote an empty config" (not (ByteString.null bytes))
+                        listDirectory directory >>= (@?= ["bare.dhall"])
+                        after <- traverse (snapshotInitFile . fst) before
+                        assertBool "alternate-output bare init changed an executable sibling or identity file" (after == before)
         , testCase "consumer context schema command output includes its ordered artifact delta" $ do
             output <- schemaFixtureOutput "consumer"
             assertGolden "context_schema_consumer.txt" output
@@ -926,7 +979,7 @@ tests =
             assertBool
                 ("no surface text names a suite, saw " ++ T.unpack output)
                 (not ("SUITE" `T.isInfixOf` output) && not ("suite" `T.isInfixOf` output))
-        , testCase "test run refuses an unknown case by naming the compiled set" $ do
+        , testCase "test run refuses an unknown case by naming the compiled set" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             testPath <- Schema.siblingTestConfigPath projectName
             ( do
@@ -1020,7 +1073,7 @@ tests =
                 output @?= "1. [host-orchestrator-0] deploy-vm — launch the VM\n"
                 doesPathExist marker >>= (@?= False)
                 image <- readProtectedStoreImage (isolatedStoreRoot paths)
-                lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                lease <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") image
                 case recordImageFields lease of
                     ["unbound", epoch] ->
                         assertBool "the dry-run lease retains a positive broker epoch" (epoch /= "0")
@@ -1081,9 +1134,9 @@ tests =
                 readIORef atEffect >>= \case
                     Nothing -> assertFailure "the fresh plan effect never observed its durable admission"
                     Just image -> do
-                        snapshot <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") image
+                        snapshot <- expectSingleRecord ("snapshot." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") image
                         assertBool "the exact snapshot is present before the effect" (not (ByteString.null (let (_, _, bytes) = snapshot in bytes)))
-                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        lease <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") image
                         case recordImageFields lease of
                             ["bound", epoch, specDigest, planDigest] -> do
                                 assertBool "the bound lease retains a positive broker epoch" (epoch /= "0")
@@ -1123,7 +1176,7 @@ tests =
                 readIORef atEffect >>= \case
                     Nothing -> assertFailure "the admitted catalog was never observed at the first effect"
                     Just image -> do
-                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        lease <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") image
                         (epoch, specDigest, planDigest) <-
                             case recordImageFields lease of
                                 ["bound", epochField, specField, planField] ->
@@ -1210,7 +1263,7 @@ tests =
                         ]
                     spec = finalized (addSteps refusedChain (builderWith passingSuite (pure ()) []))
                 before <- seedBoundExecute paths spec
-                lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                lease <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") before
                 epoch <-
                     case recordImageFields lease of
                         ["bound", epochField, _specDigest, _planDigest] -> pure epochField
@@ -1236,7 +1289,7 @@ tests =
                 let descendingChain :: FixtureFragment
                     descendingChain _ _ =
                         [ descendsVia
-                            (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") localContext)
+                            (vmContext (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") emptyVMStack))
                             ( projectStep
                                 (fixtureProjectStepId "catalog-descent-parent")
                                 PreserveOnReverse
@@ -1265,7 +1318,7 @@ tests =
                 atEffect <- newIORef Nothing
                 let admittedSteps =
                         [ descendsVia
-                            (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") localContext)
+                            (vmContext (inVM (IncusVM "fixture-vm" "images:ubuntu/24.04") emptyVMStack))
                             ( projectStep
                                 (fixtureProjectStepId "admitted-descent-parent")
                                 PreserveOnReverse
@@ -1305,7 +1358,7 @@ tests =
                 readIORef atEffect >>= \case
                     Nothing -> assertFailure "the admitted catalog was never observed at the first effect"
                     Just image -> do
-                        lease <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") image
+                        lease <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") image
                         epoch <-
                             case recordImageFields lease of
                                 ["bound", epochField, _specDigest, _planDigest] -> pure epochField
@@ -1346,7 +1399,7 @@ tests =
                     spec = finalized (addSteps retryChain (builderWith passingSuite (pure ()) []))
                 snapshotBefore <- seedPersistedUnbound paths spec
                 before <- readProtectedStoreImage (isolatedStoreRoot paths)
-                leaseBefore <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                leaseBefore <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") before
                 case recordImageFields leaseBefore of
                     ["unbound", _epoch] -> pure ()
                     fields -> assertFailure ("expected the seeded lease to remain unbound, observed " ++ show fields)
@@ -1359,9 +1412,9 @@ tests =
                 result @?= Right ()
                 readIORef effects >>= (@?= 1)
                 after <- readProtectedStoreImage (isolatedStoreRoot paths)
-                snapshotAfter <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") after
+                snapshotAfter <- expectSingleRecord ("snapshot." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") after
                 snapshotAfter @?= snapshotBefore
-                leaseAfter <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") after
+                leaseAfter <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") after
                 case recordImageFields leaseAfter of
                     ["bound", _epoch, _specDigest, _planDigest] -> pure ()
                     fields -> assertFailure ("expected the retry to bind the retained lease, observed " ++ show fields)
@@ -1382,8 +1435,8 @@ tests =
                         ]
                     spec = finalized (addSteps recoveryChain (builderWith passingSuite (pure ()) []))
                 before <- seedBoundExecute paths spec
-                snapshotBefore <- expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") before
-                leaseBefore <- expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") before
+                snapshotBefore <- expectSingleRecord ("snapshot." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") before
+                leaseBefore <- expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") before
                 acquisitionBefore <- expectSingleRecord "acquisition." before
                 cursorBefore@(_, cursorVersionBefore, _) <- expectSingleRecord "cursor." before
                 assertBool "the recovery seed stops at Execute" (recordImageContains "execute" cursorBefore)
@@ -1394,8 +1447,8 @@ tests =
                 result @?= Right ()
                 readIORef effects >>= (@?= 1)
                 after <- readProtectedStoreImage (isolatedStoreRoot paths)
-                expectSingleRecord ("snapshot." <> isolatedProjectName paths <> ".production") after >>= (@?= snapshotBefore)
-                expectSingleRecord ("lease." <> isolatedProjectName paths <> ".production") after >>= (@?= leaseBefore)
+                expectSingleRecord ("snapshot." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") after >>= (@?= snapshotBefore)
+                expectSingleRecord ("lease." <> fixtureRecordName (isolatedProjectName paths) <> recordTupleSeparator <> "production") after >>= (@?= leaseBefore)
                 expectSingleRecord "acquisition." after >>= (@?= acquisitionBefore)
                 cursorAfter@(_, cursorVersionAfter, _) <- expectSingleRecord "cursor." after
                 cursorVersionAfter @?= cursorVersionBefore + 1
@@ -1676,7 +1729,8 @@ tests =
                 , "runExactProjectUp"
                 , "withRootProjectUpLifecycleEntry"
                 , "runRootProjectUpLifecycleEntry"
-                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
+                , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext project (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
+                , "withBoundProjectDestroyLifecycleEntry exactSpec rootAuthority verified bound binding lease plan lifecycleContext project ( \\entry current -> runRootProjectReverseLifecycleEntry"
                 , "Teardown.teardownPlan plan currentFrame verb"
                 ]
             mapM_
@@ -1692,7 +1746,8 @@ tests =
                 , "settleRootedPlanCatalog store catalog"
                 , "compareAndSwapProtectedRecord session key ExpectAbsent manifest"
                 , "rootedPlanCatalogManifestMatchesKernel catalog (protectedRecordBytes record)"
-                , "ProjectAuthority.authorizeRootProject"
+                , "ProjectAuthority.authorizeRootProject rootAuthority verb verified bound binding lease plan journal executeCursor lifecycleContext project"
+                , "ProjectAuthority.authorizeRootProject rootAuthority ProjectDestroy verified bound binding lease plan journal teardownCursor lifecycleContext project"
                 , "runChainFromFrameWithDescentFailure cfg self store plan authority cursor"
                 , "withTeardownLifecycleCursor cursor"
                 ]
@@ -1897,6 +1952,14 @@ lifecycleHaskellSources directory = do
     directories <- filterM doesDirectoryExist paths
     nested <- concat <$> mapM lifecycleHaskellSources directories
     pure ([path | path <- paths, takeExtension path == ".hs"] <> nested)
+
+-- Harness derives its authority store from the working directory. A runtime
+-- case therefore owns a fresh working directory, and leaves any operator store
+-- under the suite's original directory untouched.
+withIsolatedHarnessState :: IO result -> IO result
+withIsolatedHarnessState action =
+    withSystemTempDirectory "hostbootstrap-cli-harness" $ \stateRoot ->
+        withCurrentDirectory stateRoot action
 
 {- | One CLI invocation gets its own absolute canonical root and therefore its
 own protected Production store.  The executable-sibling config path is fixed
@@ -2123,6 +2186,9 @@ withExactSeedPlan paths spec use = do
             expectRight rooted
     either (assertFailure . T.unpack . authorityErrorMessage) pure installed
 
+fixtureRecordName :: T.Text -> T.Text
+fixtureRecordName = either (error . show) id . mkRecordName
+
 writeExactStableSnapshot ::
     ProtectedStore ->
     InstalledProjectIdentity projectId ->
@@ -2130,7 +2196,7 @@ writeExactStableSnapshot ::
     IO ProtectedRecordImage
 writeExactStableSnapshot store project plan = do
     let stable = renderSnapshot plan
-        keyText = "snapshot." <> installedProjectName project <> ".production"
+        keyText = "snapshot." <> fixtureRecordName (installedProjectName project) <> recordTupleSeparator <> "production"
         key = either (error . show) id (mkRecordKey keyText)
         canonicalBytes = stablePlanSnapshotBytes stable
         encodeBytes bytes =
@@ -2268,7 +2334,7 @@ observeBoundHarnessPlan storeRoot projectName = do
         case listed of
             Left failure -> pure (Left (T.unpack (protectedErrorMessage failure)))
             Right keys -> do
-                let leasePrefix = "lease." <> projectName <> "."
+                let leasePrefix = "lease." <> fixtureRecordName projectName <> recordTupleSeparator
                     leaseKeys =
                         filter
                             ((leasePrefix `T.isPrefixOf`) . recordKeyText)
@@ -2321,7 +2387,7 @@ observeBoundHarnessPlan storeRoot projectName = do
                 ["bound", _epoch, specDigest, planDigest] ->
                     Right
                         ( Just
-                            ( T.drop (T.length leasePrefix) (recordKeyText key)
+                            ( recordNameIdentity (T.drop (T.length leasePrefix) (recordKeyText key))
                             , specDigest
                             , planDigest
                             )
@@ -2447,6 +2513,46 @@ withServiceProjectConfig action = do
             maybe (unsetEnv witnessName) (setEnv witnessName) previous
     (Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg >> setEnv witnessName frame >> action) `finally` restore
 
+-- Preserve the real executable siblings even if a failing test unexpectedly
+-- reaches publication or identity provisioning. Unchanged files are not rewritten.
+withPreservedInitSiblings :: (T.Text -> [(FilePath, Maybe ByteString.ByteString)] -> IO result) -> IO result
+withPreservedInitSiblings use = do
+    projectName <- executableProjectName
+    sibling <- Schema.siblingProjectConfigPath projectName
+    executable <- getExecutablePath
+    let paths =
+            sibling
+                : map (executable <>) [".handoff.key", ".handoff.pub", ".build.key", ".activation.key", ".activation.pub"]
+        restoreFile original@(path, contents) = do
+            current <- snapshotInitFile path
+            if current == original
+                then pure ()
+                else case contents of
+                    Just bytes -> ByteString.writeFile path bytes
+                    Nothing -> do
+                        present <- doesFileExist path
+                        if present then removeFile path else pure ()
+    bracket (traverse snapshotInitFile paths) (mapM_ restoreFile) (use projectName)
+
+snapshotInitFile :: FilePath -> IO (FilePath, Maybe ByteString.ByteString)
+snapshotInitFile path = do
+    present <- doesFileExist path
+    contents <- if present then Just <$> ByteString.readFile path else pure Nothing
+    pure (path, contents)
+
+captureCLIExitStderr :: IO () -> IO (Either ExitCode (), T.Text)
+captureCLIExitStderr action =
+    withSystemTempFile "hostbootstrap-cli-stderr" $ \_ captured -> do
+        hFlush stderr
+        result <-
+            bracket
+                (hDuplicate stderr)
+                (\saved -> hFlush stderr `finally` (hDuplicateTo saved stderr `finally` hClose saved))
+                (\_ -> hDuplicateTo captured stderr >> try action)
+        hSeek captured AbsoluteSeek 0
+        diagnostic <- TIO.hGetContents captured
+        pure (result, diagnostic)
+
 schemaFixtureOutput :: String -> IO T.Text
 schemaFixtureOutput fixture = do
     executable <- getExecutablePath
@@ -2455,6 +2561,15 @@ schemaFixtureOutput fixture = do
     case exitCode of
         ExitSuccess -> pure (T.pack output)
         _ -> assertFailure ("schema fixture " ++ fixture ++ " failed: " ++ err)
+
+-- | Run valid parser arguments under a deliberately different declared identity.
+runIdentityMismatchProbe :: IO ()
+runIdentityMismatchProbe = do
+    actualProject <- executableProjectName
+    withArgs ["context", "path"] $
+        CLI.runHostBootstrapCLI
+            (T.unpack (actualProject <> "-declared-mismatch"))
+            (specWith passingSuite (pure ()) [])
 
 {- | Run one schema command in an isolated copy of this test executable. The
 parent test captures this process's stdout, avoiding Tasty's own progress

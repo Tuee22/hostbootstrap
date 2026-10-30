@@ -1,4 +1,7 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- | The sealed host-invocation *shape* boundary for a child that outlives its
@@ -34,12 +37,11 @@ and both output streams are appended to one retained sink so a startup failure
 names its own cause instead of collapsing to \"the process is gone\"
 (@§ CC@).
 
-'withDetachedChild' owns the /launch/, never the child's lifetime. Acquiring
-the streams and spawning is total: it either succeeds or returns a typed
-'DetachedLaunchError' having created no child. On exit the child is still
-running and only the launcher's own handles have been released, so an
-ownership-preserving abort path in the body keeps its behaviour — the body's
-exceptions propagate unchanged.
+'withDetachedChild' owns the /launch/: normal return leaves the child running
+and releases only the launcher's handles. Acquiring the streams and spawning
+either succeeds or returns a typed 'DetachedLaunchError' having created no
+child. Exceptional handoff or body exit aborts the exact child through bounded
+termination and polling, while the body's original exception propagates.
 
 What this does not buy: hidden constructors exclude construction by cooperating
 code in this repository. They do not bind a caller who depends on @process@
@@ -65,6 +67,10 @@ module HostBootstrap.Detached (
 
     -- * The launch bracket and its running child
     DetachedChild,
+    DetachedIO,
+    liftDetachedIO,
+    tryDetachedIO,
+    onDetachedException,
     withDetachedChild,
     detachedChildPid,
     detachedChildOutput,
@@ -77,18 +83,20 @@ module HostBootstrap.Detached (
 )
 where
 
-import Control.Exception (IOException, try)
+import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, SomeException, evaluate, finally, mask, onException, try, uninterruptibleMask_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.Encoding.Error as TextEncodingError
+import GHC.Clock (getMonotonicTimeNSec)
 import HostBootstrap.HostTool (AbsExe, absExePath)
 import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode)
 import System.FilePath (isAbsolute, normalise, takeDirectory)
-import System.IO (Handle, IOMode (AppendMode, ReadMode, WriteMode), hClose, openFile)
+import System.IO (Handle, IOMode (AppendMode, ReadMode, WriteMode), hClose, openFile, withFile)
 import System.Info (os)
 import System.Process (
     CreateProcess (close_fds, cwd, detach_console, env, new_session, std_err, std_in, std_out),
@@ -97,11 +105,13 @@ import System.Process (
     StdStream (UseHandle),
     createProcess,
     getPid,
+    getProcessExitCode,
     proc,
     terminateProcess,
-    waitForProcess,
  )
-import System.Timeout (timeout)
+#if !defined(mingw32_HOST_OS)
+import System.Posix.Signals (sigKILL, signalProcess)
+#endif
 
 {- | An absolute working directory for a detached child. The constructor is
 private, so the directory is absolute by construction.
@@ -137,6 +147,29 @@ data DetachedChild child = DetachedChild
     { dcHandle :: ProcessHandle
     , dcSink :: DetachedOutputSink
     }
+
+type role DetachedChild nominal
+
+{- | Actions bound to the child admitted by one 'withDetachedChild' body.
+
+Only the launch bracket interprets this monad. Ordinary IO may be lifted into
+it, but no action that retains the child can be unwrapped or run after the
+body returns.
+-}
+newtype DetachedIO child a = DetachedIO (IO a)
+    deriving (Functor, Applicative, Monad)
+
+type role DetachedIO nominal representational
+
+liftDetachedIO :: IO a -> DetachedIO child a
+liftDetachedIO = DetachedIO
+
+tryDetachedIO :: DetachedIO child a -> DetachedIO child (Either SomeException a)
+tryDetachedIO (DetachedIO action) = DetachedIO (try action)
+
+onDetachedException :: DetachedIO child a -> DetachedIO child b -> DetachedIO child a
+onDetachedException (DetachedIO action) (DetachedIO cleanup) =
+    DetachedIO (action `onException` cleanup)
 
 -- | Why a launch produced no child. Closed, with a total renderer.
 data DetachedLaunchError
@@ -212,22 +245,23 @@ detachedLaunchCommandLine launch =
 
 {- | Launch a detached child and run @body@ while it is running.
 
-The bracket owns the launch, not the child: when @body@ returns the child is
-still running and only the launcher's own handles have been released. Acquiring
-the streams and spawning is total — on failure no child exists — while @body@'s
-exceptions propagate unchanged.
+When @body@ returns normally the child is still running and only the launcher's
+handles have been released. An exceptional handoff or body exit requests
+termination of that exact child, escalating after a bounded grace and polling
+again, without replacing the original exception. Acquisition, spawn, and body
+construction are masked; the body action runs with the caller's masking state.
 -}
 withDetachedChild ::
     DetachedLaunch ->
-    (forall child. DetachedChild child -> IO a) ->
+    (forall child. DetachedChild child -> DetachedIO child a) ->
     IO (Either DetachedLaunchError a)
-withDetachedChild launch body = do
+withDetachedChild launch body = mask $ \restore -> do
     let sinkPath = detachedOutputSinkPath (dlOutputSink launch)
     truncated <-
         try
             ( do
                 createDirectoryIfMissing True (takeDirectory sinkPath)
-                openFile sinkPath WriteMode >>= hClose
+                withFile sinkPath WriteMode (const (pure ()))
             ) ::
             IO (Either IOException ())
     case truncated of
@@ -241,36 +275,45 @@ withDetachedChild launch body = do
             case opened of
                 Left err -> pure (Left (DetachedOutputSinkUnavailable sinkPath (show err)))
                 Right sink -> do
-                    nullIn <- try (openFile nullDevicePath ReadMode) :: IO (Either IOException Handle)
-                    case nullIn of
-                        Left err -> do
-                            closeQuietly sink
-                            pure (Left (DetachedNullDeviceUnavailable nullDevicePath (show err)))
-                        Right stdinHandle -> spawn stdinHandle sink
+                    ( do
+                        nullIn <- try (openFile nullDevicePath ReadMode) :: IO (Either IOException Handle)
+                        case nullIn of
+                            Left err -> do
+                                closeQuietly sink
+                                pure (Left (DetachedNullDeviceUnavailable nullDevicePath (show err)))
+                            Right stdinHandle -> spawn restore stdinHandle sink
+                        ) `onException` closeQuietly sink
   where
-    spawn stdinHandle sink = do
+    spawn restore stdinHandle sink = do
+        let closeHandles = closeQuietly stdinHandle `finally` closeQuietly sink
         spawned <-
-            try (createProcess (detachedProcess launch stdinHandle sink)) ::
-                IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
+            (try (createProcess (detachedProcess launch stdinHandle sink)) ::
+                IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle)))
+                `onException` closeHandles
         -- 'createProcess' closes the handles it was handed through @UseHandle@;
         -- closing them again is a no-op and keeps the failure path symmetric.
-        mapM_ closeQuietly [stdinHandle, sink]
         case spawned of
-            Left err ->
+            Left err -> do
+                closeHandles
                 pure (Left (DetachedSpawnFailed (absExePath (dlExecutable launch)) (show err)))
-            Right (_, _, _, handle) ->
-                Right <$> body (DetachedChild{dcHandle = handle, dcSink = dlOutputSink launch})
+            Right (_, _, _, handle) -> do
+                -- Apply the body while masked: a child whose hand-off fails
+                -- is terminated before the exception can leave the launch.
+                DetachedIO action <-
+                    (closeHandles >> evaluate (body (DetachedChild{dcHandle = handle, dcSink = dlOutputSink launch})))
+                        `onException` cleanupExactChild handle
+                Right <$> (restore action `onException` cleanupExactChild handle)
 
 -- | The child's process id, or 'Nothing' once it has been reaped.
-detachedChildPid :: DetachedChild child -> IO (Maybe Pid)
-detachedChildPid = getPid . dcHandle
+detachedChildPid :: DetachedChild child -> DetachedIO child (Maybe Pid)
+detachedChildPid = DetachedIO . getPid . dcHandle
 
 {- | Everything the child has written to either output stream so far, so a
 launcher can quote the cause of a startup failure. Decoding is lenient: this is
 a diagnostic, and a child that dies mid-write must not also break the report.
 -}
-detachedChildOutput :: DetachedChild child -> IO Text
-detachedChildOutput child = do
+detachedChildOutput :: DetachedChild child -> DetachedIO child Text
+detachedChildOutput child = DetachedIO $ do
     raw <-
         try (ByteString.readFile (detachedOutputSinkPath (dcSink child))) ::
             IO (Either IOException ByteString)
@@ -278,15 +321,57 @@ detachedChildOutput child = do
   where
     decodeLenient = TextEncoding.decodeUtf8With TextEncodingError.lenientDecode
 
--- | Ask the child to terminate. The bracket never does this on its own.
-terminateDetachedChild :: DetachedChild child -> IO ()
-terminateDetachedChild = terminateProcess . dcHandle
+{- | Ask the child to terminate explicitly. Normal return leaves it running;
+exceptional handoff or body exit invokes the bracket's bounded cleanup.
+-}
+terminateDetachedChild :: DetachedChild child -> DetachedIO child ()
+terminateDetachedChild = DetachedIO . terminateProcess . dcHandle
 
 {- | Wait up to @micros@ for the child to exit, returning 'Nothing' if it is
 still running when the wait elapses.
 -}
-awaitDetachedChild :: Int -> DetachedChild child -> IO (Maybe ExitCode)
-awaitDetachedChild micros child = timeout micros (waitForProcess (dcHandle child))
+awaitDetachedChild :: Int -> DetachedChild child -> DetachedIO child (Maybe ExitCode)
+awaitDetachedChild micros = DetachedIO . awaitProcessExit micros . dcHandle
+
+awaitProcessExit :: Int -> ProcessHandle -> IO (Maybe ExitCode)
+awaitProcessExit micros handle = do
+    started <- getMonotonicTimeNSec
+    poll (toInteger started + toInteger (max 0 micros) * 1000)
+  where
+    poll deadline = do
+        exited <- getProcessExitCode handle
+        case exited of
+            Just code -> pure (Just code)
+            Nothing -> do
+                now <- getMonotonicTimeNSec
+                let remaining = deadline - toInteger now
+                if remaining <= 0
+                    then pure Nothing
+                    else do
+                        threadDelay (fromInteger (min 10000 ((remaining + 999) `div` 1000)))
+                        poll deadline
+
+{- | Abort only this exact child when construction or execution of its body
+fails. Cleanup is bounded and cannot replace the body's original exception.
+The second signal is a hard termination on each platform; no process-group or
+descendant lifetime is claimed here.
+-}
+cleanupExactChild :: ProcessHandle -> IO ()
+cleanupExactChild handle = uninterruptibleMask_ $ do
+    _ <- try (terminateProcess handle) :: IO (Either SomeException ())
+    graceful <- try (awaitProcessExit 500000 handle) :: IO (Either SomeException (Maybe ExitCode))
+    case graceful of
+        Right (Just _) -> pure ()
+        _ -> do
+            _ <- try forceTermination :: IO (Either SomeException ())
+            _ <- try (awaitProcessExit 500000 handle) :: IO (Either SomeException (Maybe ExitCode))
+            pure ()
+  where
+#if defined(mingw32_HOST_OS)
+    forceTermination = terminateProcess handle
+#else
+    forceTermination = getPid handle >>= maybe (pure ()) (signalProcess sigKILL)
+#endif
 
 {- | The one assembled process specification for a detached child. It is
 private: the stdio disposition, descriptor inheritance, session, and console

@@ -33,9 +33,10 @@ import platform
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from . import process
-from .substrate import Substrate, SubstrateName
+from .substrate import Arch, Substrate, SubstrateName, parse_arch
 
 _LONG_PATHS_KEY = r"HKLM\SYSTEM\CurrentControlSet\Control\FileSystem"
 
@@ -60,10 +61,17 @@ def _check_passwordless_sudo() -> None:
     if geteuid is not None and geteuid() == 0:
         return
     if not _have("sudo"):
-        raise PrereqError("sudo is required but not installed")
+        raise PrereqError("sudo is required but not installed. Install with: apt-get install sudo")
     outcome = process.probe(["sudo", "-n", "true"], timeout=5)
     if isinstance(outcome, process.CommandUnavailable):
-        raise PrereqError(f"could not exec sudo: {outcome.reason}")
+        raise PrereqError(
+            f"could not exec sudo: {outcome.reason}. Install or repair the sudo package "
+            "with: apt-get install sudo"
+        )
+    if isinstance(outcome, process.CommandTimedOut):
+        raise PrereqError(
+            f"{process.describe(outcome)}. Check that sudo responds to `sudo -n true`, then retry."
+        )
     if not outcome.ok:
         raise PrereqError(
             "passwordless sudo is required. Add a NOPASSWD entry for your "
@@ -87,14 +95,22 @@ def _check_ubuntu_2404() -> None:
 def _check_macos_arm64() -> None:
     if platform.system() != "Darwin":
         raise PrereqError("apple-silicon prereqs invoked on a non-Darwin host")
-    if platform.machine().lower() not in {"arm64", "aarch64"}:
+    if parse_arch(platform.machine()) is not Arch.ARM64:
         raise PrereqError("apple-silicon requires an Apple Silicon Mac (arm64)")
 
 
 def _check_xcode_clt() -> None:
     outcome = process.probe(["xcode-select", "-p"], timeout=5)
     if isinstance(outcome, process.CommandUnavailable):
-        raise PrereqError(f"xcode-select failed: {outcome.reason}")
+        raise PrereqError(
+            f"xcode-select failed: {outcome.reason}. "
+            "Install Xcode Command Line Tools with: xcode-select --install"
+        )
+    if isinstance(outcome, process.CommandTimedOut):
+        raise PrereqError(
+            f"{process.describe(outcome)}. Check the Xcode Command Line Tools installation; "
+            "install with: xcode-select --install"
+        )
     if not outcome.ok or not outcome.stdout.strip():
         raise PrereqError(
             "Xcode Command Line Tools are required. Install with: xcode-select --install"
@@ -108,7 +124,10 @@ def _check_homebrew() -> None:
 
 def _check_curl() -> None:
     if not _have("curl"):
-        raise PrereqError("curl is required to download the pinned GHCup bootstrap binary")
+        raise PrereqError(
+            "curl is required to download the pinned GHCup bootstrap binary. "
+            "Install with: apt-get install curl"
+        )
 
 
 def _check_winget() -> None:
@@ -122,7 +141,8 @@ def _check_powershell() -> None:
     if not _have("powershell"):
         raise PrereqError(
             "Windows PowerShell is required to bootstrap the Haskell toolchain but "
-            "was not found on PATH."
+            "was not found on PATH. Enable Windows PowerShell in Windows Features "
+            "and add its installation directory to PATH."
         )
 
 
@@ -130,8 +150,8 @@ def _git_long_paths_enabled() -> bool | None:
     """Whether Git is configured for paths past ``MAX_PATH``; ``None`` when Git is absent."""
     if not _have("git"):
         return None
-    outcome = process.probe(["git", "config", "--get", "core.longpaths"], timeout=5)
-    if isinstance(outcome, process.CommandUnavailable):
+    outcome = process.probe(["git", "config", "--type=bool", "--get", "core.longpaths"], timeout=5)
+    if isinstance(outcome, (process.CommandUnavailable, process.CommandTimedOut)):
         return None
     return outcome.stdout.strip().lower() == "true"
 
@@ -139,7 +159,7 @@ def _git_long_paths_enabled() -> bool | None:
 def _windows_long_paths_policy_enabled() -> bool:
     """Whether the machine-wide ``LongPathsEnabled`` policy is on; unreadable means off."""
     outcome = process.probe(["reg", "query", _LONG_PATHS_KEY, "/v", "LongPathsEnabled"], timeout=5)
-    if isinstance(outcome, process.CommandUnavailable):
+    if isinstance(outcome, (process.CommandUnavailable, process.CommandTimedOut)):
         return False
     fields = outcome.stdout.split()
     return bool(fields) and fields[-1] == "0x1"
@@ -211,11 +231,19 @@ async def _run_windows(substrate: Substrate) -> DoctorResult:
 
 
 async def run_doctor(substrate: Substrate) -> DoctorResult:
-    if substrate.name is SubstrateName.APPLE_SILICON:
-        return await _run_apple(substrate)
-    if substrate.is_windows:
-        return await _run_windows(substrate)
-    return await _run_linux(substrate)
+    match substrate.name:
+        case SubstrateName.LINUX_CPU:
+            return await _run_linux(substrate)
+        case SubstrateName.LINUX_GPU:
+            return await _run_linux(substrate)
+        case SubstrateName.APPLE_SILICON:
+            return await _run_apple(substrate)
+        case SubstrateName.WINDOWS_CPU:
+            return await _run_windows(substrate)
+        case SubstrateName.WINDOWS_GPU:
+            return await _run_windows(substrate)
+        case _:
+            assert_never(substrate.name)
 
 
 def run_doctor_sync(substrate: Substrate) -> DoctorResult:

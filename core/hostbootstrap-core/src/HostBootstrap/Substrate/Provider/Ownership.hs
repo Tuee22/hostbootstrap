@@ -91,8 +91,8 @@ import HostBootstrap.Lift (
     LiftLeaf (RawCmd),
     foldLeafCommand,
     inVM,
-    localContext,
  )
+import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable, recordedEvidence)
 import HostBootstrap.Ownership.Object (
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
@@ -133,13 +133,16 @@ import HostBootstrap.Ownership.Tape (
     recordTape,
  )
 import HostBootstrap.Protected (
-    ProtectedError,
+    ProtectedError (ProtectedInvalid),
     ProtectedSession,
     RecordKey,
     listProtectedRecords,
     mkRecordKey,
+    mkRecordSegment,
     protectedErrorMessage,
     recordKeyText,
+    recordNameIdentity,
+    recordTupleSeparator,
  )
 import HostBootstrap.Readiness (microsValue, pollSchedule, vmBootPoll)
 import HostBootstrap.Substrate.Provider.Command (
@@ -222,7 +225,8 @@ answers about. A second naming scheme would be a second way to fail to find the
 record a previous entry wrote.
 -}
 ownedInstanceRecordKey :: OwnedProviderInstance -> Either ProtectedError RecordKey
-ownedInstanceRecordKey = mkRecordKey . Text.pack . ownedInstanceName
+ownedInstanceRecordKey owned =
+    mkRecordSegment ("instance:" <> Text.pack (ownedInstanceName owned)) >>= mkRecordKey
 
 -- ---------------------------------------------------------------------------
 -- What a transaction did
@@ -781,11 +785,10 @@ data OwnedProviderShare = OwnedProviderShare
 
 -- | The protected-store key this share's durable record lives under.
 ownedShareRecordKey :: OwnedProviderShare -> Either ProtectedError RecordKey
-ownedShareRecordKey share =
-    mkRecordKey (Text.pack (shareRecordKeyText (ownedShareInstance share) (ownedShareDevice share)))
-
-shareRecordKeyText :: OwnedProviderInstance -> String -> String
-shareRecordKeyText owned device = ownedInstanceName owned <> "." <> device
+ownedShareRecordKey share = do
+    instanceKey <- ownedInstanceRecordKey (ownedShareInstance share)
+    device <- mkRecordSegment ("device:" <> Text.pack (ownedShareDevice share))
+    mkRecordKey (recordKeyText instanceKey <> recordTupleSeparator <> device)
 
 -- | The claim this run stamps on its share record.
 ownedShareClaim :: OwnedProviderShare -> OwnerClaim
@@ -1168,7 +1171,7 @@ releasableShares cfg session key owned = do
                     sort
                         [ candidate
                         | candidate <- present
-                        , (recordKeyText key <> ".") `Text.isPrefixOf` recordKeyText candidate
+                        , (recordKeyText key <> recordTupleSeparator <> "device.") `Text.isPrefixOf` recordKeyText candidate
                         ]
             observed <- traverse (observeShareRecord cfg session owned) mine
             pure (fmap (const mine) (sequence_ observed))
@@ -1184,32 +1187,43 @@ observeShareRecord ::
     OwnedProviderInstance ->
     RecordKey ->
     IO (Either ProviderOwnershipFault ())
-observeShareRecord cfg session owned candidate = do
-    stored <- readRecordUnder (providerTape session) candidate
-    case stored of
-        Left fault -> pure (Left fault)
-        Right Nothing -> pure (Right ())
-        Right (Just record) -> case originRecordBinding record of
-            Nothing -> pure (Right ())
-            Just bound -> do
-                observed <-
-                    observeShareDevice
-                        cfg
-                        ( OwnedProviderShare
-                            owned
-                            (deviceOfRecordKey owned candidate)
-                            ""
-                            ""
-                            ""
-                        )
-                pure $ case observed of
-                    Left fault -> Left fault
-                    Right OriginAbsent -> Left (shareConflict bound OriginAbsent)
-                    Right (OriginPresent _) -> Right ()
+observeShareRecord cfg session owned candidate =
+    case deviceOfRecordKey owned candidate of
+        Left failure -> pure (Left (ProviderOwnershipStore failure))
+        Right device -> do
+            stored <- readRecordUnder (providerTape session) candidate
+            case stored of
+                Left fault -> pure (Left fault)
+                Right Nothing -> pure (Right ())
+                Right (Just record) -> case originRecordBinding record of
+                    Nothing -> pure (Right ())
+                    Just bound -> do
+                        observed <-
+                            observeShareDevice
+                                cfg
+                                ( OwnedProviderShare
+                                    owned
+                                    device
+                                    ""
+                                    ""
+                                    ""
+                                )
+                        pure $ case observed of
+                            Left fault -> Left fault
+                            Right OriginAbsent -> Left (shareConflict bound OriginAbsent)
+                            Right (OriginPresent _) -> Right ()
 
-deviceOfRecordKey :: OwnedProviderInstance -> RecordKey -> String
-deviceOfRecordKey owned candidate =
-    drop (length (ownedInstanceName owned) + 1) (Text.unpack (recordKeyText candidate))
+deviceOfRecordKey :: OwnedProviderInstance -> RecordKey -> Either ProtectedError String
+deviceOfRecordKey owned candidate = do
+    instanceKey <- ownedInstanceRecordKey owned
+    encoded <- maybe invalid Right (Text.stripPrefix (recordKeyText instanceKey <> recordTupleSeparator) (recordKeyText candidate))
+    device <- maybe invalid Right (Text.stripPrefix "device:" (recordNameIdentity encoded))
+    reconstructed <-
+        ownedShareRecordKey (OwnedProviderShare owned (Text.unpack device) "" "" "")
+    if reconstructed == candidate then Right (Text.unpack device) else invalid
+  where
+    invalid :: Either ProtectedError result
+    invalid = Left (ProtectedInvalid "the provider device record key is not canonical for this instance")
 
 -- | Forget every share record whose device the instance's removal took with it.
 forgetReleasableShares ::
@@ -1246,7 +1260,9 @@ execInOwnedInstance cfg session key owned exe arguments = do
     case before of
         Left fault -> pure (Left fault)
         Right (identity, _) -> do
-            captured <- interpret cfg (guestCommand owned exe arguments)
+            captured <- case guestCommand owned exe arguments of
+                Left refusal -> pure (Left refusal)
+                Right command -> interpret cfg command
             after <- ownedStanding cfg session key owned
             pure $ case after of
                 Left fault -> Left fault
@@ -1256,10 +1272,10 @@ execInOwnedInstance cfg session key owned exe arguments = do
                         Left refusal -> Left (ProviderOwnershipReport (ProviderCommandUnrun (Text.pack refusal)))
                         Right run -> Right run
 
-guestCommand :: OwnedProviderInstance -> String -> [String] -> HostCommand
+guestCommand :: OwnedProviderInstance -> String -> [String] -> Either String HostCommand
 guestCommand owned exe arguments =
     foldLeafCommand
-        (inVM (IncusVM (ownedInstanceName owned) (ownedInstanceImage owned)) localContext)
+        (vmContext (inVM (IncusVM (ownedInstanceName owned) (ownedInstanceImage owned)) emptyVMStack))
         (RawCmd exe arguments)
 
 replacedUnderGuestCommand :: ObjectIdentity -> ObjectIdentity -> ProviderOwnershipFault

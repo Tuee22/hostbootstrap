@@ -1,9 +1,11 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module CrossScopeProjectRoot where
 
 import Data.Text (Text)
 import HostBootstrap.Config.Class (ProjectCfg, ProjectCodec)
+import HostBootstrap.Config.Fields (KnownScopeKind)
 import HostBootstrap.Config.Schema (withSiblingValidatedProjectConfigRoot)
 import HostBootstrap.Context (CommandClass (HostOrchestratorCommand))
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
@@ -12,7 +14,7 @@ data ConfigScope
 data ForeignScope
 
 crossScopeRoot ::
-    (ProjectCfg cfg) =>
+    (KnownScopeKind ConfigScope, ProjectCfg cfg) =>
     ProjectCodec ConfigScope specDigest cfg ->
     Text ->
     IO ()

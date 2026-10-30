@@ -1554,7 +1554,9 @@ its own epoch") reach that state through `authorizeHarnessClose`. `cabal test al
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/unrepresentable_state.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`
 
 #### Objective
 
@@ -1564,8 +1566,12 @@ plan that produced them, and prove every admission refusal and every interpreter
 #### Deliverables
 
 - `VerifiedSessionManifest`, `OldPermitsFenced`, and `InterpretedRecovery` are indexed by the `ProtectedSession`
-  `session` parameter and declare `type role ... nominal` for their scope and plan indices, so they cannot leave
-  the entry that produced them or be retagged with `coerce`.
+  `session` parameter and declare nominal roles for their scope and plan indices, so they cannot leave
+  the entry that produced them or be retagged with `coerce`. `OldPermitsFenced` already has nominal scope
+  and plan roles from Sprint 10.4; its protected-entry index remains part of this sprint.
+- `CurrentBrokerSessionAdmission scope planId brokerGeneration` declares all three roles nominal, with
+  independent newtype-alias compile-fail probes for scope, plan, and broker generation. These roles
+  prevent re-indexing a held admission; they do not replace the producer's runtime evidence checks.
 - Recorded-session rebinding refuses when the re-read session record's membership differs from the manifest's
   set instead of overwriting it.
 - `OldPermitsFenced` carries `(SessionId, operationKey)` pairs, and `interpretRecordedSessions` checks each
@@ -1597,14 +1603,17 @@ failing to type-check. `cabal test all` from `core/` passes.
 #### Remaining Work
 
 - Index `VerifiedSessionManifest`, `OldPermitsFenced`, and `InterpretedRecovery` by the `ProtectedSession`
-  parameter and add nominal role annotations for them (`Session.hs`).
+  parameter and add the remaining nominal role annotations (`Session.hs`), preserving the scope and
+  plan roles already present on `OldPermitsFenced`.
+- Add nominal scope, plan, and broker-generation roles to `CurrentBrokerSessionAdmission` and register
+  one genuine newtype-alias coercion probe per axis in `CompileFailSpec`.
 - Make `rebindAndClose` refuse when the re-read membership differs from `manifestSessionOperations member`.
 - Make `outstandingOperationKeys` keep the session id, carry the pairs in `OldPermitsFenced`, and fold over them
   in `interpretRecordedSessions`, refusing a manifest operation that holds authority but is not in the set.
 - Persist the prior Observed epoch in the `FenceIntentRecorded` record and return it as `oldPermitsFencedFrom`
   when `establishInitialFence` resumes an interrupted rotation.
-- Add the `SessionSpec` and `CompileFailSpec` cases named in Validation, and rewrite the setup entries at
-  "a settled operation holds no authority" and the plan-mismatch case to fail on a refused setup.
+- Add the `SessionSpec` and `CompileFailSpec` cases named in Validation, retain the checked setup in
+  "a settled operation holds no authority", and make the plan-mismatch setup fail on refusal.
 
 ### Sprint 18.25: Every sole-producer lifecycle witness has a forge fixture [Planned]
 

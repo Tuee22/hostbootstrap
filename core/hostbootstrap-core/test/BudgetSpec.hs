@@ -3,6 +3,7 @@
 
 module BudgetSpec (tests) where
 
+import Control.Monad (forM_)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as Text
@@ -50,6 +51,8 @@ import HostBootstrap.Step (
  )
 import Numeric.Natural (Natural)
 import PrepareFixture (gateFor, gateForValues)
+import qualified SourceGuard
+import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -80,7 +83,7 @@ tests =
         , testCase "bare Linux reports unsupported instead of pretending to cordon storage" $ do
             result <- admissionSummary exactEnvelope BareLinuxBackend
             result
-                @?= Left (UnsupportedBudgetWall BareLinuxBackend "bare Linux has no quota/image-GC storage wall")
+                @?= Left (UnsupportedBudgetWall BareLinuxBackend "the BareLinuxBackend backend cannot enforce a storage ceiling (BareLinuxQuotaAndImageGcUnavailable)")
         , testCase "every backend states its own answer to an inexact budget" $ do
             -- Admission names each constructor, so what a backend does with a
             -- budget that is not whole gibibytes is a decision rather than an
@@ -98,12 +101,23 @@ tests =
                 @?= map inexactMemory [LimaBackend, IncusBackend, Wsl2Backend, ColimaBackend]
             -- A kind node is cordoned in bytes, so an inexact budget is admitted.
             node <- admissionSummary inexact DockerNodeBackend
-            isLeft node @?= False
+            node
+                @?= Right
+                    [ "update"
+                    , "--cpus"
+                    , "8"
+                    , "--memory"
+                    , "17179869185"
+                    , "--memory-swap"
+                    , "34359738370"
+                    , "demo"
+                    ]
             -- Bare Linux has no wall to size against at all.
             bare <- admissionSummary inexact BareLinuxBackend
             bare
                 @?= Left
-                    (UnsupportedBudgetWall BareLinuxBackend "bare Linux has no quota/image-GC storage wall")
+                    (UnsupportedBudgetWall BareLinuxBackend "the BareLinuxBackend backend cannot enforce a storage ceiling (BareLinuxQuotaAndImageGcUnavailable)")
+        , testGroup "Docker provider admission" dockerAdmissionCases
         , testCase "one gate has one commitment, and a separator cannot forge it" $ do
             -- Two backends projected the same six gate fields and hashed them
             -- differently. They now commit through the one projection, so the
@@ -189,14 +203,25 @@ tests =
         , testCase "a zero journal fence cannot reserve the provider wall" $ do
             result <- reservationGateSummary ZeroReservationFence
             result @?= Left (InvalidWallReservation "the prepare gate fence must be positive")
+        , testCase "prepared storage mechanisms equal the canonical provider policy" $
+            forM_
+                [ (ColimaBackend, ColimaVmStorage)
+                , (LimaBackend, LimaVmStorage)
+                , (IncusBackend, IncusVmStorage)
+                , (Wsl2Backend, Wsl2DistroStorage)
+                ] $ \(backend, target) -> do
+                    result <- storageWallSummary backend (Right . storageWallCallMechanism)
+                    case result of
+                        Right (Right mechanism) -> StorageCordonSupported mechanism @?= storageCordonPolicy target
+                        other -> assertFailure ("expected a prepared storage wall, got " <> show other)
         , testCase "every VM provider applies the declared storage ceiling exactly" $ do
             lima <- storageWallSummary LimaBackend storageWallShape
-            lima @?= Right (Right (LimaDiskArgument, ["--disk", "100"], 100 * gib))
+            lima @?= Right (Right (LimaDiskFlag, ["--disk", "100"], 100 * gib))
             colima <- storageWallSummary ColimaBackend storageWallShape
             colima
                 @?= Right
                     ( Right
-                        ( ColimaDiskArgument
+                        ( ColimaDiskFlag
                         ,
                             [ "start"
                             , "--profile"
@@ -226,30 +251,49 @@ tests =
             incus <- storageWallSummary IncusBackend storageWallShape
             incus
                 @?= Right
-                    (Right (IncusRootSizeArgument, ["-d", "root,size=100GiB"], 100 * gib))
+                    (Right (IncusRootDiskLimit, ["-d", "root,size=100GiB"], 100 * gib))
             wsl <- storageWallSummary Wsl2Backend storageWallShape
             wsl
                 @?= Right
-                    (Right (Wsl2VhdSizeArgument, ["--vhd-size", "100GB"], 100 * gib))
+                    (Right (Wsl2VhdSize, ["--vhd-size", "100GB"], 100 * gib))
         , testCase "a kind node container is Unsupported, never a silent success" $ do
             result <- storageWallSummary DockerNodeBackend storageWallShape
-            case result of
-                Right (Left (Unsupported detail)) ->
-                    assertBool
-                        "the reason names the missing storage flag"
-                        ("DockerNodeHasNoStorageFlag" `Text.isInfixOf` unsupportedReason detail)
-                other -> assertBool ("expected Unsupported, got " ++ show other) False
+            case storageCordonPolicy DockerNodeStorage of
+                StorageCordonUnsupported reason ->
+                    result
+                        @?= Right
+                            ( Left
+                                ( Unsupported
+                                    ( UnsupportedDetail
+                                        "apply storage wall"
+                                        ("the DockerNodeBackend backend cannot enforce a storage ceiling (" <> Text.pack (show reason) <> ")")
+                                    )
+                                )
+                            )
+                other -> assertFailure ("expected an unsupported storage policy, got " <> show other)
         , testCase "bare Linux is refused before a storage wall is even prepared" $ do
-            -- Bare Linux has no provider wall at all, so admission refuses it one
-            -- step earlier than the storage mechanism does. Either way the caller
-            -- gets a typed unsupported result, never a silent success.
+            -- Admission refuses this provider before a prepared wall can exist.
+            -- Its public refusal still carries the canonical storage reason.
             result <- storageWallSummary BareLinuxBackend storageWallShape
-            result
-                @?= Left
-                    ( UnsupportedBudgetWall
-                        BareLinuxBackend
-                        "bare Linux has no quota/image-GC storage wall"
-                    )
+            case storageCordonPolicy BareLinuxStorage of
+                StorageCordonUnsupported reason ->
+                    result
+                        @?= Left
+                            ( UnsupportedBudgetWall
+                                BareLinuxBackend
+                                ("the BareLinuxBackend backend cannot enforce a storage ceiling (" <> show reason <> ")")
+                            )
+                other -> assertFailure ("expected an unsupported storage policy, got " <> show other)
+        , testCase "storage policy has one declaration vocabulary across all libraries" $
+            -- DEVELOPMENT_PLAN/rationale.md: "Storage ceilings have one policy".
+            SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+                description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+                sources <- SourceGuard.readLibrarySources packageRoot description
+                forM_ sources $ \(name, path, source) ->
+                    forM_ ["StorageWallMechanism", "StorageWallUnsupported"] $ \identifier ->
+                        assertBool
+                            (identifier <> " is defined or used by " <> name <> " at " <> SourceGuard.repoRelativePath packageRoot path)
+                            (SourceGuard.countHaskellIdentifier identifier source == 0)
         , testCase "an exactly applied storage ceiling settles as Changed Created" $ do
             result <-
                 storageWallSummary
@@ -295,13 +339,63 @@ tests =
 -- | The prepared storage wall's mechanism, argv, and exact declared ceiling.
 storageWallShape ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
-    Either ReconcileError (StorageWallMechanism, [String], Integer)
+    Either ReconcileError (StorageCordonMechanism, [String], Integer)
 storageWallShape prepared =
     Right
         ( storageWallCallMechanism prepared
         , storageWallCallArgs prepared
         , storageWallCeilingBytes prepared
         )
+
+dockerAdmissionCases :: [TestTree]
+dockerAdmissionCases =
+    [ admissionCase "ordinary byte-granular values remain exact at admission" 8 17179869185 $
+        Right (8, 17179869185, 20 * gib)
+    , admissionCase "the largest whole NanoCPUs value is admitted" 9223372036 6291456 $
+        Right (9223372036, 6291456, 20 * gib)
+    , admissionCase "CPU overflow is refused at admission" 9223372037 6291456 $
+        Left (InvalidBudget "Docker CPU budget 9223372037 cores exceeds the signed 64-bit NanoCPUs limit of 9223372036 whole cores")
+    , admissionCase "the daemon minimum memory is admitted without a workload floor" 4 6291456 $
+        Right (4, 6291456, 20 * gib)
+    , admissionCase "sub-minimum memory is refused at admission" 4 6291455 $
+        Left (InvalidBudget "Docker memory budget 6291455 bytes is below the Linux daemon minimum of 6291456 bytes")
+    , admissionCase "the largest CLI-exact memory below the swap bound is admitted" 4 4611686018427387392 $
+        Right (4, 4611686018427387392, 20 * gib)
+    , admissionCase "the raw half-Int64 memory bound is refused for precision loss at admission" 4 4611686018427387903 $
+        Left (InvalidBudget "Docker memory budget 4611686018427387903 bytes is not exactly representable by the Docker CLI binary64 byte parser")
+    , admissionCase "doubled memory overflow is refused at admission" 4 4611686018427387904 $
+        Left (InvalidBudget "Docker memory budget 4611686018427387904 bytes doubles to 9223372036854775808 bytes, exceeding the signed 64-bit --memory-swap limit of 9223372036854775807 bytes")
+    , admissionCase "two-to-the-53 plus one is refused for precision loss at admission" 4 9007199254740993 $
+        Left (InvalidBudget "Docker memory budget 9007199254740993 bytes is not exactly representable by the Docker CLI binary64 byte parser")
+    , admissionCase "two-to-the-53 plus two retains its exact admitted value" 4 9007199254740994 $
+        Right (4, 9007199254740994, 20 * gib)
+    ]
+  where
+    admissionCase :: String -> Natural -> Integer -> Either BudgetError (Natural, Integer, Integer) -> TestTree
+    admissionCase label cores memoryBytes expected =
+        testCase label $ do
+            result <-
+                providerAdmissionSummary
+                    (ResourceEnvelope cores (Text.pack (show memoryBytes)) "20GiB")
+                    DockerNodeBackend
+            result @?= expected
+
+-- Stop in admission's actual continuation: later workload, partition, reservation,
+-- and wall-rendering stages cannot provide a refusal on this path.
+providerAdmissionSummary ::
+    ResourceEnvelope ->
+    ProviderBackend ->
+    IO (Either BudgetError (Natural, Integer, Integer))
+providerAdmissionSummary envelope backend =
+    withBudgetProjectPlan $ \plan providerResource _clusterResource ->
+        pure $
+            joinBudget $
+                withValidatedBudget plan envelope $ \validated ->
+                    withProviderKeyForBackend backend $ \providerKey ->
+                        withProviderBudgetCapability plan providerResource providerKey $ \capability ->
+                            admitProviderBudget validated capability $ \_wall effective ->
+                                let budget = effectiveBudgetValue effective
+                                 in (budgetCpu budget, budgetMemoryBytes budget, budgetStorageBytes budget)
 
 storageWallSummary ::
     ProviderBackend ->

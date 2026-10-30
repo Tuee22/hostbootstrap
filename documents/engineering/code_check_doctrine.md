@@ -170,6 +170,10 @@ Live publication evidence and implementation status remain in the development pl
 
 ## Validation
 
+- `PortabilitySpec` checks package-declared warning flags and imports for every component and rejects
+  warning overrides and module options pragmas, including suite and provider-live sources. These
+  structural checks run in the host static gate; the formatter and linter retain the execution sites
+  listed above.
 - `tests/test_cli.py` pins the repository source gate:
   `test_quality_gates_run_all_python_core_and_demo_commands` (the non-style gates and their working
   directories), `test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read`,

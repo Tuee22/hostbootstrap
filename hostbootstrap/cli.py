@@ -96,6 +96,11 @@ _DOCKER_STDERR_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
 def _format_command_error(exc: process.CommandError) -> str:
     result = exc.result
     if result is None:
+        if isinstance(exc.outcome, process.CommandUnavailable) and exc.outcome.args:
+            name = Path(exc.outcome.args[0]).name.removesuffix(".exe")
+            hint = _MISSING_BINARY_HINTS.get(name)
+            if hint is not None:
+                return hint
         return process.describe(exc.outcome)
     stderr_lower = result.stderr.lower()
     argv0 = result.args[0] if result.args else "command"
@@ -140,10 +145,20 @@ def _format_http_error(exc: httpx.HTTPError) -> str:
     return f"network error{where}: {exc}"
 
 
-def _format_runtime_error(exc: BaseException) -> str:
-    if isinstance(exc, KeyError):
-        return f"unsupported value: {exc.args[0]!r}"
+def _format_runtime_error(exc: RuntimeError) -> str:
     return str(exc) or exc.__class__.__name__
+
+
+def _friendly_message(exc: BaseException) -> str | None:
+    if isinstance(exc, process.CommandError):
+        return _format_command_error(exc)
+    if isinstance(exc, FileNotFoundError):
+        return _format_file_not_found(exc)
+    if isinstance(exc, httpx.HTTPError):
+        return _format_http_error(exc)
+    if isinstance(exc, RuntimeError):
+        return _format_runtime_error(exc)
+    return None
 
 
 class _FriendlyGroup(click.Group):
@@ -156,17 +171,11 @@ class _FriendlyGroup(click.Group):
             raise
         except click.exceptions.Exit:
             raise
-        except process.CommandError as exc:
-            raise click.ClickException(_format_command_error(exc)) from exc
-        except FileNotFoundError as exc:
-            message = _format_file_not_found(exc)
+        except (FileNotFoundError, httpx.HTTPError, RuntimeError) as exc:
+            message = _friendly_message(exc)
             if message is None:
                 raise
             raise click.ClickException(message) from exc
-        except httpx.HTTPError as exc:
-            raise click.ClickException(_format_http_error(exc)) from exc
-        except (RuntimeError, KeyError) as exc:
-            raise click.ClickException(_format_runtime_error(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -361,13 +370,16 @@ def update_cli(ctx: click.Context, ref: str, spec: str | None, check_only: bool)
         raise click.ClickException("`--check` cannot be combined with `--spec`.")
     try:
         if check_only:
-            status = self_update.check_status(ref=ref)
+            status = self_update.check_status(ref=ref if ref_was_explicit else None)
             installed = status.installed_commit[:12]
             remote = status.remote_commit[:12]
             if status.up_to_date:
-                click.echo(f"hostbootstrap up to date ({installed})")
+                click.echo(f"hostbootstrap up to date on {status.compared_ref} ({installed})")
                 return
-            click.echo(f"hostbootstrap update available: installed {installed}, remote {remote}")
+            click.echo(
+                f"hostbootstrap update available on {status.compared_ref}: "
+                f"installed {installed}, remote {remote}"
+            )
             sys.exit(1)
         install_spec = self_update.run_update(ref=ref, spec=spec)
     except self_update.SelfUpdateError as exc:
@@ -459,7 +471,6 @@ _LINTER_ROOTS: Final[tuple[tuple[str, ...], ...]] = (
 _FORMATTER_UNREADABLE: Final[frozenset[str]] = frozenset(
     {
         "core/hostbootstrap-core/src/HostBootstrap/Context.hs",
-        "core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs",
         "core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs",
         "core/hostbootstrap-core/src/HostBootstrap/Registry.hs",
         "core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/Run.hs",
@@ -467,6 +478,8 @@ _FORMATTER_UNREADABLE: Final[frozenset[str]] = frozenset(
         "core/hostbootstrap-core/test/LiftSpec.hs",
     }
 )
+
+_FORMATTER_ARGV_BUDGET: Final[int] = 16_384
 
 
 def _haskell_sources(context: Path, root: tuple[str, ...]) -> tuple[str, ...]:
@@ -478,16 +491,37 @@ def _haskell_sources(context: Path, root: tuple[str, ...]) -> tuple[str, ...]:
 
 def _style_gates(context: Path) -> tuple[_QualityGate, ...]:
     """The committed formatter and linter, before anything expensive runs."""
-    formatter = tuple(
-        _QualityGate(
-            f"Haskell formatter over {'/'.join(root)}",
-            ("fourmolu", "--mode", "check", *sources),
-            context,
-        )
-        for root in _FORMATTER_ROOTS
-        for sources in (_haskell_sources(context, root),)
-        if sources
-    )
+    formatter: list[_QualityGate] = []
+    command = ("fourmolu", "--mode", "check")
+    for root in _FORMATTER_ROOTS:
+        sources = _haskell_sources(context, root)
+        if not sources:
+            continue
+        chunks: list[list[str]] = [[]]
+        for source in sources:
+            if (
+                process.rendered_windows_commandline_length((*command, source))
+                > _FORMATTER_ARGV_BUDGET
+            ):
+                raise click.ClickException(
+                    f"formatter source exceeds the argument budget: {source}"
+                )
+            candidate = (*command, *chunks[-1], source)
+            if (
+                chunks[-1]
+                and process.rendered_windows_commandline_length(candidate) > _FORMATTER_ARGV_BUDGET
+            ):
+                chunks.append([])
+            chunks[-1].append(source)
+        for index, chunk in enumerate(chunks, start=1):
+            suffix = f" (part {index}/{len(chunks)})" if len(chunks) > 1 else ""
+            formatter.append(
+                _QualityGate(
+                    f"Haskell formatter over {'/'.join(root)}{suffix}",
+                    (*command, *chunk),
+                    context,
+                )
+            )
     linter = tuple(
         _QualityGate(
             f"Haskell linter over {'/'.join(root)}",
@@ -497,7 +531,7 @@ def _style_gates(context: Path) -> tuple[_QualityGate, ...]:
         for root in _LINTER_ROOTS
         if context.joinpath(*root).is_dir()
     )
-    return formatter + linter
+    return (*formatter, *linter)
 
 
 def _quality_gates(context: Path) -> tuple[_QualityGate, ...]:
@@ -634,8 +668,8 @@ async def _run_base_targets(
     each build's streamed output line-prefixed ``[<label>]`` so the interleaved
     streams stay legible. ``--sequential`` (and the single-target case) runs them
     one at a time, preserving the original fail-fast behaviour. In the concurrent
-    case both builds run to completion, then the first failure (if any) is
-    re-raised so the friendly Docker-error translation still applies.
+    case both builds run to completion, then every friendly failure is reported
+    by flavor. An exception without a friendly message is re-raised unchanged.
     """
     width = max((len(flavor.value) for _spec, _tag, flavor in work), default=0)
 
@@ -665,9 +699,15 @@ async def _run_base_targets(
         *(_one(build_spec, tag, flavor) for build_spec, tag, flavor in work),
         return_exceptions=True,
     )
-    for outcome in outcomes:
+    failures: list[str] = []
+    for (_spec, _tag, flavor), outcome in zip(work, outcomes, strict=True):
         if isinstance(outcome, BaseException):
-            raise outcome
+            message = _friendly_message(outcome)
+            if message is None:
+                raise outcome
+            failures.append(f"[{flavor.value}] {message}")
+    if failures:
+        raise click.ClickException("\n".join(failures))
 
 
 _BASE_FLAVOR_OPTION = click.option(
@@ -687,7 +727,7 @@ _BASE_ARCH_OPTION = click.option(
 _BASE_CONTEXT_BUILD_OPTION = click.option(
     "--context",
     type=click.Path(path_type=Path),
-    default=Path.cwd(),
+    default=None,
     show_default=True,
     help="Build context root (the hostbootstrap repo).",
 )
@@ -708,17 +748,19 @@ _BASE_SEQUENTIAL_OPTION = click.option(
 @_BASE_ARCH_OPTION
 @_BASE_CONTEXT_BUILD_OPTION
 @_BASE_SEQUENTIAL_OPTION
-def base_build(flavor: str | None, arch: str | None, context: Path, sequential: bool) -> None:
+def base_build(
+    flavor: str | None, arch: str | None, context: Path | None, sequential: bool
+) -> None:
     """Cold-rebuild base image(s) locally (``--no-cache --pull``); no push.
 
     For base-image inspection only: rebuilds from scratch and leaves the tag in
     the local Docker daemon. Derived projects must not consume it; compatibility
-    validation follows local smoke → ``build-and-push`` → pull → published smoke. With no
+    validation follows local smoke -> ``build-and-push`` -> pull -> published smoke. With no
     ``--flavor`` the cpu and cuda builds run concurrently (output line-prefixed
     ``[cpu]`` / ``[cuda]``); pass ``--sequential`` to build one at a time.
     """
     authority = _require_maintainer_authority()
-    resolved_context = context.resolve()
+    resolved_context = (context if context is not None else Path.cwd()).resolve()
     host_arch = _arch_default()
     target_arch = Arch(arch) if arch is not None else host_arch
     asyncio.run(_validate_native_architecture(target_arch, host_arch))
@@ -742,7 +784,7 @@ def base_build(flavor: str | None, arch: str | None, context: Path, sequential: 
 @_BASE_CONTEXT_BUILD_OPTION
 @_BASE_SEQUENTIAL_OPTION
 def base_build_and_push(
-    flavor: str | None, arch: str | None, context: Path, sequential: bool
+    flavor: str | None, arch: str | None, context: Path | None, sequential: bool
 ) -> None:
     """Cold-rebuild base image(s) (``--no-cache --pull``) and push them.
 
@@ -753,7 +795,7 @@ def base_build_and_push(
     resource use).
     """
     authority = _require_maintainer_authority()
-    resolved_context = context.resolve()
+    resolved_context = (context if context is not None else Path.cwd()).resolve()
     host_arch = _arch_default()
     target_arch = Arch(arch) if arch is not None else host_arch
     asyncio.run(_validate_native_architecture(target_arch, host_arch))
@@ -778,7 +820,7 @@ def base_build_and_push(
 
 @main.command("check-code")
 def check_code_command() -> None:
-    """Run the Python code-check gate (ruff → black → mypy). Dev-only."""
+    """Run the Python code-check gate (ruff -> black -> mypy). Dev-only."""
     _require_maintainer_authority()
     raise SystemExit(check_code.main())
 

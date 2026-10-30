@@ -14,7 +14,7 @@
 - `core/cabal.project` is the self-contained Cabal workspace for the core, the peer of the root-level
   Poetry project. The `demo/` consumer carries one `demo/cabal.project` used host-native and inside its
   derived container; the repository root holds no Cabal project file.
-- The package ships one public `library` (the `HostBootstrap.*` surface), seven Cabal-private
+- The package ships one public `library` (the `HostBootstrap.*` surface), eight Cabal-private
   sublibraries, one `executable hostbootstrap` (the bare binary, built like any project binary — not
   baked into the base image), and two test suites; see [package stanzas](#package-stanzas).
 - Each Cabal workspace carries its own `hie.yaml` so the Haskell Language Server resolves the right
@@ -72,7 +72,8 @@ is the source of truth for every stanza, its modules, and its dependencies. It d
 
 | Stanza | Source directory | Contents |
 |--------|------------------|----------|
-| `library` | `src`, `internal/cluster-backend` | the public `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md); it re-exports seven modules of `ownership-internal` (`HostBootstrap.Protected` and six `HostBootstrap.Ownership.*` modules) through `reexported-modules` |
+| `library` | `src`, `internal/cluster-backend` | the public `HostBootstrap.*` module surface tracked in [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md); it re-exports seven modules of `ownership-internal` (`HostBootstrap.Protected` and six `HostBootstrap.Ownership.*` modules), plus `HostBootstrap.ProjectScope` from `authority-internal`, through `reexported-modules` |
+| `library authority-internal` (private) | `internal/authority` | the sole authority-kernel and project-scope type definitions, plus the narrow package-test fixture seam |
 | `library effect-internal` (private) | `internal/effect` | the effect vocabulary's runner, quoter, and child process group |
 | `library harness-lifecycle-internal` (private) | `internal/harness-lifecycle` | the constructor boundary for Harness lifecycle actions, which the public `HostBootstrap.Harness` facade exposes without a constructor |
 | `library ownership-internal` (private) | `internal/ownership` | the protected store, digests, and the ownership object, clause, row, and tape modules |
@@ -89,12 +90,25 @@ consumer cannot import its modules except through the public library's `reexport
 whose internals must stay out of downstream reach belongs in a private sublibrary rather than in the
 public library's exposed modules.
 
+The authority kernel and shared project-scope indices have one source home and one compiled type
+identity in `authority-internal`. The main library depends on that unit and re-exports only
+`HostBootstrap.ProjectScope`; its authority facade exposes its existing safe vocabulary. The test
+suite depends on the same private unit for the narrow `HostBootstrap.Authority.Testing` fixture
+opener. There is no second main-library copy of either type definition.
+
 Every component imports one `common warnings` stanza, which carries the project's whole warning policy:
 `-Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
 -Wpartial-fields -Werror`. The policy is a property of the package rather than of a flag a caller
 remembers, so a plain `cabal build` refuses exactly what the gate refuses. `hostbootstrap-demo.cabal`
 carries the identical stanza. `-Wpartial-fields` is there because a record selector on a
 multi-constructor type throws at the call site instead of failing to compile.
+
+`PortabilitySpec` checks the flags as whole tokens, every component's warning-stanza import, and the
+absence of component overrides and module options pragmas. Its source inventory includes both suites'
+declared roots and excludes compile-fail fixtures. The shared `SourceGuard` stanza reader also checks
+declared module names against source files in both directions, including named libraries and executable
+entry files; a nested module cannot stand in for a missing parent module. See
+[harness portability](testing.md#harness-portability) for the shared readers and observed case counts.
 
 ## Dependency Surface
 

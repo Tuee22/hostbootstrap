@@ -53,19 +53,24 @@ module HostBootstrap.Ensure (
     requireSudoStep,
     reportedGpu,
     withInvokingGroupMember,
+    withInvokingGroupMemberWith,
     grantSocketAccess,
     InstallStep (..),
+    StepOutcome (..),
+    classifyStepOutcome,
+    normalizeWslText,
     installAndVerify,
     installAndVerifyWith,
 )
 where
 
-import Control.Exception (SomeException, try)
+import Control.Exception.Safe (tryAny)
 import Control.Monad (foldM)
 import Data.Char (toLower)
 import Data.List (find, intercalate, isInfixOf)
 import Data.Maybe (isJust, mapMaybe)
 #ifndef mingw32_HOST_OS
+import System.IO.Error (catchIOError)
 import System.Posix.User (getEffectiveUserID, getUserEntryForID, userName)
 #endif
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
@@ -85,11 +90,10 @@ import HostBootstrap.Substrate (
     substrateFrame,
     substrateName,
  )
-import System.Directory (createDirectoryIfMissing, getTemporaryDirectory, removePathForcibly)
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..), die, exitWith)
-import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
+import System.IO.Temp (withSystemTempDirectory)
 
 -- | A host-dependency reconciler.
 data Reconciler = Reconciler
@@ -259,6 +263,61 @@ data InstallStep = InstallStep
     }
     deriving (Eq, Show)
 
+-- | The total interpretation of one install step's runner result.
+data StepOutcome
+    = StepContinue
+    | StepAlreadyInstalled
+    | StepRebootRequired
+    | StepFailed String
+    deriving (Eq, Show)
+
+{- | Classify an install result before the driver refreshes tools or exits.
+Only WSL can request its reboot path, and winget's already-installed answers
+apply only to an install invocation. Failure text excludes the reconciler's
+name so the driver can add its usual diagnostic prefix.
+-}
+classifyStepOutcome ::
+    HostTool ->
+    [String] ->
+    Either String (ExitCode, String, String) ->
+    StepOutcome
+classifyStepOutcome tool args result = case result of
+    Right (ExitSuccess, out, errOut)
+        | wslNeedsReboot (out ++ errOut) -> StepRebootRequired
+        | otherwise -> StepContinue
+    Right (ExitFailure n, out, errOut)
+        | wslNeedsReboot (out ++ errOut) -> StepRebootRequired
+        | tool == Wsl && n == -1 && "--install" `elem` args -> StepRebootRequired
+        | wingetAlreadyInstalled (out ++ errOut) -> StepAlreadyInstalled
+        | otherwise ->
+            StepFailed
+                ( "install step `"
+                    ++ toolCommandName tool
+                    ++ " "
+                    ++ unwords args
+                    ++ "` failed (exit "
+                    ++ show n
+                    ++ ") "
+                    ++ errOut
+                )
+    Left err -> StepFailed err
+  where
+    wingetAlreadyInstalled output =
+        tool == Winget
+            && take 1 args == ["install"]
+            && ( "Found an existing package already installed" `isInfixOf` output
+                    || "No available upgrade found" `isInfixOf` output
+               )
+
+    wslNeedsReboot output =
+        tool == Wsl
+            && let normalized = normalizeWslText output
+                in "reboot" `isInfixOf` normalized || "restart" `isInfixOf` normalized
+
+-- | Lowercase WSL diagnostic text and strip its UTF-16 NUL padding.
+normalizeWslText :: String -> String
+normalizeWslText = map toLower . filter (/= '\0')
+
 {- | Probe-first install-and-verify (see @development_plan_standards.md § L@). If
 the dependency is already satisfied the reconciler is a verified no-op;
 otherwise it runs the substrate-branched install plan and re-verifies, failing
@@ -317,48 +376,12 @@ installAndVerifyWith runInstallStep refreshConfig name probe plan cfg0 = do
   where
     runStep cfg (InstallStep tool args) = do
         result <- runInstallStep cfg tool args
-        case result of
-            Right (ExitSuccess, out, errOut)
-                | wslNeedsReboot tool (out ++ errOut) ->
-                    die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
-                | otherwise -> refreshConfig cfg
-            Right (ExitFailure n, out, errOut)
-                | wslNeedsReboot tool (out ++ errOut) ->
-                    die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
-                | wslInstallNeedsReboot tool args n ->
-                    die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
-                | wingetAlreadyInstalled tool args (out ++ errOut) -> refreshConfig cfg
-                | otherwise ->
-                    die
-                        ( "ensure "
-                            ++ name
-                            ++ ": install step `"
-                            ++ toolCommandName tool
-                            ++ " "
-                            ++ unwords args
-                            ++ "` failed (exit "
-                            ++ show n
-                            ++ ") "
-                            ++ errOut
-                        )
-            Left err -> die ("ensure " ++ name ++ ": " ++ err)
-
-    wingetAlreadyInstalled tool args output =
-        tool == Winget
-            && take 1 args == ["install"]
-            && ( "Found an existing package already installed" `isInfixOf` output
-                    || "No available upgrade found" `isInfixOf` output
-               )
-
-    wslNeedsReboot tool output =
-        tool == Wsl
-            && let lower = map toLower output
-                in "reboot" `isInfixOf` lower || "restart" `isInfixOf` lower
-
-    wslInstallNeedsReboot tool args exitCode =
-        tool == Wsl
-            && exitCode == -1
-            && "--install" `elem` args
+        case classifyStepOutcome tool args result of
+            StepContinue -> refreshConfig cfg
+            StepAlreadyInstalled -> refreshConfig cfg
+            StepRebootRequired ->
+                die ("ensure " ++ name ++ ": host reboot required after WSL2 install; reboot and retry")
+            StepFailed err -> die ("ensure " ++ name ++ ": " ++ err)
 
 -- | Whether a host tool is resolved in the configuration.
 toolPresent :: HostConfig -> HostTool -> Bool
@@ -389,20 +412,28 @@ Every reconciler answers the same three questions about a @sudo@ step — it
 succeeded, it ran and returned non-zero, or the tool could not be run at all —
 and each was answering them again beside every call. *label* names the
 reconciler and *what* names the step, so a refusal reads as
-@ensure docker: add matt to docker (exit 1) ...@ without either being spelled
+@ensure docker: could not add matt to docker (exit 1) ...@ without either being spelled
 at the call site twice.
 -}
 requireSudoStep :: HostConfig -> String -> String -> [String] -> IO ()
-requireSudoStep cfg label what argv = do
-    result <- runTool cfg Sudo argv
+requireSudoStep cfg = requireSudoStepWith (runTool cfg Sudo)
+
+requireSudoStepWith ::
+    ([String] -> IO (Either String (ExitCode, String, String))) ->
+    String ->
+    String ->
+    [String] ->
+    IO ()
+requireSudoStepWith runSudo label what argv = do
+    result <- runSudo argv
     case result of
         Right (ExitSuccess, _, _) -> pure ()
         Right (ExitFailure code, _, errOut) ->
             die (label ++ ": could not " ++ what ++ " (exit " ++ show code ++ ") " ++ errOut)
         Left err -> die (label ++ ": " ++ err)
 
-{- | Put the invoking non-root user in a daemon's group, then hand that user to
-the step that grants it immediate access.
+{- | Put the invoking non-root user in a daemon's group, then hand the checked
+privileged step and that user to the continuation that grants immediate access.
 
 Two reconcilers hold this workflow — read the environment, find the invoking
 non-root user, skip with a message when there is none, add that user to a group,
@@ -412,10 +443,32 @@ then grant the socket — and they differ in a group, a socket, and a label
 A host with no invoking non-root user is not a failure: nothing needs the
 group, so the reconciler says so and returns.
 -}
-withInvokingGroupMember :: HostConfig -> String -> String -> (String -> IO ()) -> IO ()
-withInvokingGroupMember cfg label groupName grant = do
+withInvokingGroupMember ::
+    HostConfig ->
+    String ->
+    String ->
+    ((String -> [String] -> IO ()) -> String -> IO ()) ->
+    IO ()
+withInvokingGroupMember cfg label groupName continue = do
     env <- getEnvironment
-    selected <- invokingNonRootUser env
+    withInvokingGroupMemberWith env effectiveNonRootUser (runTool cfg Sudo) label groupName continue
+
+{- | Injectable form of 'withInvokingGroupMember'. Environment identity takes
+precedence over the supplied effective-user lookup. The continuation receives
+the same label-bound, checked privileged step used for the group grant, so its
+socket grant shares the runner and the three-way refusal formatter.
+-}
+withInvokingGroupMemberWith ::
+    [(String, String)] ->
+    IO (Maybe String) ->
+    ([String] -> IO (Either String (ExitCode, String, String))) ->
+    String ->
+    String ->
+    ((String -> [String] -> IO ()) -> String -> IO ()) ->
+    IO ()
+withInvokingGroupMemberWith env euidLookup sudoRunner label groupName continue = do
+    selected <- invokingNonRootUserWith env euidLookup
+    let checkedStep = requireSudoStepWith sudoRunner label
     case selected of
         Nothing ->
             putStrLn
@@ -426,12 +479,10 @@ withInvokingGroupMember cfg label groupName grant = do
                 )
         Just user -> do
             putStrLn (label ++ ": ensuring " ++ user ++ " belongs to " ++ groupName)
-            requireSudoStep
-                cfg
-                label
+            checkedStep
                 ("add " ++ user ++ " to " ++ groupName)
                 ["usermod", "-aG", groupName, user]
-            grant user
+            continue checkedStep user
 
 {- | Grant one user @rw@ on one daemon socket for the current session.
 
@@ -439,36 +490,26 @@ Group membership takes effect at the next login, so a run that just added the
 user still cannot open the socket. The ACL is what makes the reconciler's work
 visible to the invocation that performed it.
 -}
-grantSocketAccess :: HostConfig -> String -> FilePath -> String -> IO ()
-grantSocketAccess cfg label socketPath user =
-    requireSudoStep
-        cfg
-        label
+grantSocketAccess :: (String -> [String] -> IO ()) -> FilePath -> String -> IO ()
+grantSocketAccess checkedStep socketPath user =
+    checkedStep
         ("grant " ++ user ++ " immediate access to " ++ socketPath)
         ["setfacl", "-m", "u:" ++ user ++ ":rw", socketPath]
 
 {- | Run a probe in a fresh scratch directory that does not outlive it.
 
 An accelerator probe compiles and runs a tiny program to find out whether a
-toolchain is really present, so it needs somewhere to put one. The directory is
-removed before and after: before, because a previous crashed probe must not make
-this one look ready, and after, because a probe is an observation and should
-leave nothing. Any exception is a failed probe rather than a propagated error —
-the caller asked a yes-or-no question about the host.
+toolchain is really present. The name is a template for a unique directory per
+run, so concurrent or nested probes cannot reuse each other's scratch files.
+The bracket runs cleanup on normal return and on exceptions, including an
+interrupt. Synchronous failures from setup, the probe, or cleanup report a
+failed probe; asynchronous exceptions propagate.
 
-It lives here rather than in one accelerator because both the Apple and Windows
-CUDA rows need it, and a byte-identical copy in each is the parallel logic § LL
-puts on the row instead.
+This shared bracket serves both the Apple and Windows CUDA smoke probes.
 -}
 withProbeDir :: FilePath -> (FilePath -> IO Bool) -> IO Bool
-withProbeDir name action = do
-    root <- getTemporaryDirectory
-    let dir = root </> name
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    createDirectoryIfMissing True dir
-    result <- try (action dir) :: IO (Either SomeException Bool)
-    _ <- try (removePathForcibly dir) :: IO (Either SomeException ())
-    pure (either (const False) id result)
+withProbeDir name action =
+    either (const False) id <$> tryAny (withSystemTempDirectory name action)
 
 {- | The login user whose future sessions a group grant should reach.
 
@@ -496,9 +537,12 @@ performing the other (§ LL — a provider supplies a row, never a second
 implementation).
 -}
 invokingNonRootUser :: [(String, String)] -> IO (Maybe String)
-invokingNonRootUser env = case environmentNonRootUser env of
+invokingNonRootUser env = invokingNonRootUserWith env effectiveNonRootUser
+
+invokingNonRootUserWith :: [(String, String)] -> IO (Maybe String) -> IO (Maybe String)
+invokingNonRootUserWith env euidLookup = case environmentNonRootUser env of
     Just user -> pure (Just user)
-    Nothing -> effectiveNonRootUser
+    Nothing -> euidLookup
 
 effectiveNonRootUser :: IO (Maybe String)
 #ifdef mingw32_HOST_OS
@@ -508,7 +552,7 @@ effectiveNonRootUser = do
     userId <- getEffectiveUserID
     if userId == 0
         then pure Nothing
-        else Just . userName <$> getUserEntryForID userId
+        else (Just . userName <$> getUserEntryForID userId) `catchIOError` const (pure Nothing)
 #endif
 
 {- | Like 'runTool', but feed @stdin@ to the process. Used to forward a secret

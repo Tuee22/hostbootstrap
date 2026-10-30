@@ -102,16 +102,23 @@ def test_parse_direct_url_git_source() -> None:
 
 
 @pytest.mark.parametrize(
-    "text",
+    "text, match",
     [
-        "[]",
-        json.dumps({"url": self_update.DEFAULT_REPO_URL, "vcs_info": []}),
-        json.dumps({"url": self_update.DEFAULT_REPO_URL, "vcs_info": {"vcs": "git"}}),
-        _direct_url(requested_revision=123),
+        ("{not json", "is malformed"),
+        ("[]", "is malformed"),
+        (
+            json.dumps({"url": self_update.DEFAULT_REPO_URL, "vcs_info": []}),
+            "malformed VCS metadata",
+        ),
+        (
+            json.dumps({"url": self_update.DEFAULT_REPO_URL, "vcs_info": {"vcs": "git"}}),
+            "missing git source metadata",
+        ),
+        (_direct_url(requested_revision=123), "malformed requested revision"),
     ],
 )
-def test_parse_direct_url_rejects_malformed(text: str) -> None:
-    with pytest.raises(self_update.SelfUpdateError):
+def test_parse_direct_url_rejects_malformed(text: str, match: str) -> None:
+    with pytest.raises(self_update.SelfUpdateError, match=match):
         self_update.parse_direct_url(text)
 
 
@@ -151,7 +158,7 @@ def test_parse_ls_remote_prefers_peeled_annotated_tag_commit() -> None:
     # it rather than the tag-object SHA.
     assert (
         self_update.parse_ls_remote(
-            "a" * 40 + " refs/tags/v1\n" + "b" * 40 + " refs/tags/v1^{}\n"
+            "a" * 40 + " refs/tags/v1\n" + "b" * 40 + " refs/tags/v1^{}\n", ref="v1"
         )
         == "b" * 40
     )
@@ -172,7 +179,16 @@ def test_remote_commit_invokes_git(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(self_update.process, "probe", _probe)
 
     assert self_update.remote_commit(ref="main") == "e" * 40
-    assert captured == [["git", "ls-remote", self_update.DEFAULT_REPO_URL, "main", "main^{}"]]
+    assert captured == [
+        [
+            "git",
+            "ls-remote",
+            self_update.DEFAULT_REPO_URL,
+            "refs/heads/main",
+            "refs/tags/main",
+            "refs/tags/main^{}",
+        ]
+    ]
 
 
 def test_remote_commit_wraps_missing_git(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,9 +221,19 @@ def test_check_status_compares_installed_to_remote(monkeypatch: pytest.MonkeyPat
             requested_revision="main",
         ),
     )
-    monkeypatch.setattr(self_update, "remote_commit", lambda *, ref: "f" * 40)
+    refs: list[str] = []
 
-    assert self_update.check_status().up_to_date is True
+    def _remote(*, ref: str) -> str:
+        refs.append(ref)
+        return "a" * 40
+
+    monkeypatch.setattr(self_update, "remote_commit", _remote)
+
+    status = self_update.check_status()
+    assert status.up_to_date is False
+    assert status.remote_commit == "a" * 40
+    assert status.compared_ref == "main"
+    assert refs == ["main"]
 
 
 def test_check_status_reports_unknown_for_local_install(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,3 +256,72 @@ def test_check_status_reports_unknown_for_other_repo(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(self_update.SelfUpdateError, match="canonical"):
         self_update.check_status()
+
+
+@pytest.mark.parametrize(
+    "installed_ref, explicit_ref, expected",
+    [("v1.2", None, "v1.2"), (None, None, "main"), ("v1.2", "feature", "feature")],
+)
+def test_check_status_selects_the_installed_or_explicit_ref(
+    monkeypatch: pytest.MonkeyPatch,
+    installed_ref: str | None,
+    explicit_ref: str | None,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(
+        self_update,
+        "installed_vcs_source",
+        lambda: self_update.InstalledVCS(self_update.DEFAULT_REPO_URL, "a" * 40, installed_ref),
+    )
+    refs: list[str] = []
+
+    def _remote(*, ref: str) -> str:
+        refs.append(ref)
+        return "a" * 40
+
+    monkeypatch.setattr(self_update, "remote_commit", _remote)
+    status = self_update.check_status(ref=explicit_ref)
+    assert status.up_to_date is True
+    assert status.compared_ref == expected
+    assert refs == [expected]
+
+
+def test_parse_ls_remote_selects_exact_branch_before_tag() -> None:
+    output = "\n".join(
+        (
+            "backup refs/heads/backup/main",
+            "branch refs/heads/main",
+            "tag refs/tags/main",
+            "peeled refs/tags/main^{}",
+            "malformed",
+        )
+    )
+    assert self_update.parse_ls_remote(output) == "branch"
+    assert self_update.parse_ls_remote("lightweight refs/tags/v1", ref="v1") == "lightweight"
+    with pytest.raises(self_update.SelfUpdateError, match="remote ref"):
+        self_update.parse_ls_remote("backup refs/heads/backup/main")
+    with pytest.raises(self_update.SelfUpdateError, match="ambiguously"):
+        self_update.parse_ls_remote("a refs/heads/main\nb refs/heads/main")
+
+
+@pytest.mark.parametrize("operation", [self_update.remote_commit, self_update.run_update])
+def test_self_update_renders_timeout(monkeypatch: pytest.MonkeyPatch, operation: object) -> None:
+    monkeypatch.setattr(
+        process, "probe", lambda cmd, **_kw: process.CommandTimedOut(tuple(cmd), 0.1)
+    )
+    with pytest.raises(self_update.SelfUpdateError, match="timed out after 0.1s"):
+        operation()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    "stdout, stderr, suffix", [("remote output", "", ": remote output"), ("", "", ".")]
+)
+def test_remote_failure_selects_stdout_or_empty_detail(
+    monkeypatch: pytest.MonkeyPatch, stdout: str, stderr: str, suffix: str
+) -> None:
+    monkeypatch.setattr(
+        process, "probe", lambda cmd: _ran(cmd, returncode=2, stdout=stdout, stderr=stderr)
+    )
+    with pytest.raises(self_update.SelfUpdateError) as caught:
+        self_update.remote_commit()
+    assert str(caught.value).endswith(suffix)

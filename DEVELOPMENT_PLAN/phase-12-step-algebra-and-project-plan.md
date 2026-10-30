@@ -1343,7 +1343,7 @@ boundaries; the library and test target built with `-Werror`, `DocValidatorSpec`
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -2170,7 +2170,7 @@ including the 2/2 governed-documentation checks.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
@@ -2612,7 +2612,8 @@ Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` from `co
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
+`core/hostbootstrap-core/internal/plan-resource/HostBootstrap/Plan/Resource.hs`,
+`core/hostbootstrap-core/internal/readiness/HostBootstrap/Readiness/Kernel.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
@@ -2626,10 +2627,11 @@ those modules.
 
 #### Deliverables
 
-- `Lifecycle/Plan.hs` declares `ObjectStoreResource` and `ObjectStoreResourceKind`, whose family key is
+- The private `Plan.Resource` kernel declares `ObjectStoreResource`; `Lifecycle/Plan.hs` owns
+  `ObjectStoreResourceKind`, whose family key is
   `"project:deploy-object-store"` and whose kind name is `"object store"`; no `Minio` identifier remains in
   the package sources.
-- `Readiness.hs` keys the store's rollout probe as `ObjectStoreRolloutProbe ::
+- The private `Readiness.Kernel` keys the store's rollout probe as `ObjectStoreRolloutProbe ::
   BackendProbeKey ObjectStoreResource ObjectStoreRolloutReady`.
 
 #### Validation
@@ -2642,7 +2644,7 @@ source guard asserts that `SourceGuard.haskellTokens` of every production source
 #### Remaining Work
 
 - Rename `MinioResource`, `MinioResourceKind`, `MinioRolloutProbe`, and `MinioRolloutReady` as the
-  Deliverables state, with every re-export in `HostBootstrap.ProjectPlan`, `HostBootstrap.Reconcile`, and
+  Deliverables state at their private representation homes, with every re-export in `HostBootstrap.ProjectPlan`, `HostBootstrap.Reconcile`, and
   `HostBootstrap.Readiness`; change the family key and kind name in `plannedKindKey` and `plannedKindName`.
 - Update the `ProjectPlanSpec` family-key expectation and fixture step id, and add the `Minio` absence guard.
 
@@ -2741,7 +2743,7 @@ static gate (§ JJ) passes.
 ### Sprint 12.37: Coordinate types at the command-reservation boundary [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: none

@@ -1,11 +1,15 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module DocValidatorSpec (tests) where
 
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (forM_)
-import Data.List (isInfixOf)
+import qualified Data.ByteString as ByteString
+import Data.List (isInfixOf, sort)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
+import HostBootstrap.Digest (DigestError (..), frameWire, measurePathSetDigest, sha256Hex)
 import HostBootstrap.DocValidator (
     checkAcceptanceTerminal,
     checkArchitectureDrift,
@@ -25,7 +29,14 @@ import HostBootstrap.DocValidator (
     validateRepo,
  )
 import qualified SourceGuard
-import System.Directory (createDirectoryIfMissing, getCurrentDirectory)
+import System.Directory (
+    Permissions (readable, searchable),
+    createDirectoryIfMissing,
+    getCurrentDirectory,
+    getPermissions,
+    listDirectory,
+    setPermissions,
+ )
 import System.FilePath ((</>))
 import System.IO (IOMode (WriteMode), hSetEncoding, utf8, withFile)
 import System.IO.Temp (withSystemTempDirectory)
@@ -46,6 +57,13 @@ tests = do
             [ testCase "governed documentation conforms to the standard" (realRepoCase cwd mroot)
             , testCase "validator flags missing metadata, links, and sections" negativeCase
             , testCase "architecture drift guards reject obsolete authority and numeric citations" architectureCase
+            , testGroup
+                "architecture boundary source homes"
+                [ testCase "current home reports every forbidden authority shape" (architectureBoundaryHomesCase ["src"])
+                , testCase "private home reports every forbidden authority shape at its actual path" (architectureBoundaryHomesCase ["internal/authority"])
+                , testCase "simultaneous homes check every matching module" (architectureBoundaryHomesCase ["src", "internal/authority"])
+                , testCase "only exact production module suffixes are checked" architectureBoundaryScopeCase
+                ]
             , testCase "implementation citations and Done evidence are checked against the tree" citationCase
             , testCase "wrapped header fields are read whole, in the spelling the plan uses" fieldReadingCase
             , testCase "backticked identifiers resolve against the tree, with a reviewed allowlist" identifierCase
@@ -54,6 +72,8 @@ tests = do
             , testCase "a link fragment names a heading the target document has" anchorCase
             , testCase "a phase header carries no field the standard does not declare" headerFieldCase
             , testCase "an evidence row records every leg its gate names" gateLegCase
+            , testCase "covers digests refuse unavailable paths and detect source drift" digestCase
+            , testCase "SHA-256 and wire framing match known-answer vectors" digestVectorCase
             ]
 
 realRepoCase :: FilePath -> Maybe FilePath -> IO ()
@@ -82,6 +102,38 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
     writeUtf8
         (root </> "documents" </> "architecture" </> "broken.md")
         (unlines ["Not a heading", "[dangling](does_not_exist.md)"])
+    -- YAML front matter is refused even when the metadata block follows it.
+    writeUtf8
+        (root </> "documents" </> "architecture" </> "yaml_header.md")
+        ( unlines
+            [ "---"
+            , "title: YAML header"
+            , "---"
+            , "# YAML header"
+            , "**Status**: Authoritative source"
+            , "**Supersedes**: N/A"
+            , "**Referenced by**: x"
+            , "> **Purpose**: y"
+            , "## TL;DR"
+            , "- z"
+            ]
+        )
+    -- Example links inside a fenced block do not need to resolve.
+    writeUtf8
+        (root </> "documents" </> "architecture" </> "fenced_example.md")
+        ( unlines
+            [ "# Fenced example"
+            , "**Status**: Authoritative source"
+            , "**Supersedes**: N/A"
+            , "**Referenced by**: x"
+            , "> **Purpose**: y"
+            , "## TL;DR"
+            , "- z"
+            , "```markdown"
+            , "[example](fenced_target_missing.md)"
+            , "```"
+            ]
+        )
     -- README missing the DEVELOPMENT_PLAN reference and not a proper root block.
     writeUtf8 (root </> "README.md") (unlines ["# hostbootstrap", "see documents/ only"])
     writeUtf8 (root </> "AGENTS.md") (unlines ["# Agents", "**Status**: Governed entry document", "**Supersedes**: N/A", "**Canonical homes**: x", "> **Purpose**: y"])
@@ -297,6 +349,7 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
             , "| a third | `src/Z.hs` | a phase cited here does not count "
                 ++ "([not this one](phase-10-doctrine.md)) "
                 ++ "| [one](phase-10-doctrine.md) and [two](phase-12-later.md) |"
+            , "| a fourth | `src/W.hs` | [not this one](phase-10-doctrine.md) | |"
             ]
         )
     violations <- validateRepo root
@@ -308,6 +361,7 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
     forM_
         [ "missing **Status**: line"
         , "first non-empty line is not a '# Title' heading"
+        , "YAML front-matter"
         , "unresolved relative link: does_not_exist.md"
         , "does not reference DEVELOPMENT_PLAN/"
         , "phase document missing '## Documentation Requirements' section"
@@ -345,6 +399,9 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
           "contract section N names no owning phase"
         ]
         expect
+    assertBool
+        ("fenced example links must be exempt:" ++ unlines msgs)
+        (not (any ("fenced_target_missing.md" `isInfixOf`) msgs))
     -- Scope is the whole precision of that check. Sprint 11.2's Validation cites
     -- the same later phase and must stay legal, so exactly two citations are
     -- reported: a third would mean the check reads sections it has no business in.
@@ -363,6 +420,7 @@ negativeCase = withSystemTempDirectory "hb-docval" $ \root -> do
     assertBool
         ("the Why column must not count toward the deleting-phase arity:" ++ unlines msgs)
         (not (any ("names 3 deleting phases" `isInfixOf`) msgs))
+    length (filter ("legacy ledger row names no deleting phase" `isInfixOf`) msgs) @?= 2
 
 {- | The identifier-resolution check fires on a name no source declares, stays
 silent on one that resolves, and stays silent on a reviewed allowlist entry.
@@ -560,6 +618,43 @@ architectureCase = withSystemTempDirectory "hb-architecture-drift" $ \root -> do
     remaining <- checkArchitectureDrift root
     length remaining @?= 6
 
+architectureBoundaryHomesCase :: [FilePath] -> IO ()
+architectureBoundaryHomesCase homes =
+    withSystemTempDirectory "hb-architecture-homes" $ \root -> do
+        let relative home = "core/hostbootstrap-core/" <> home <> "/HostBootstrap/Authority/Kernel.hs"
+            forbidden = ["ProductionCloseRoot", "destroyCloseRoot", "preEffectCloseRoot", "childCommandReservationKernel"]
+        forM_ homes $ \home -> do
+            let file = root </> relative home
+            createDirectoryIfMissing True (root </> "core/hostbootstrap-core" </> home </> "HostBootstrap/Authority")
+            writeUtf8 file (unlines ("module HostBootstrap.Authority.Kernel where" : forbidden))
+        violations <- checkArchitectureDrift root
+        let paths = map (SourceGuard.repoRelativePath root . (root </>) . vFile) violations
+        sort paths @?= sort (concatMap (replicate (length forbidden) . relative) homes)
+        forM_ homes $ \home ->
+            forM_ forbidden $ \identifier ->
+                assertBool
+                    ("missing " <> identifier <> " at " <> relative home)
+                    ( any
+                        ( \violation ->
+                            SourceGuard.repoRelativePath root (root </> vFile violation) == relative home
+                                && ("forbidden architecture shape " <> identifier <> ";") `isInfixOf` renderViolation violation
+                        )
+                        violations
+                    )
+
+architectureBoundaryScopeCase :: IO ()
+architectureBoundaryScopeCase =
+    withSystemTempDirectory "hb-architecture-suffix" $ \root -> do
+        forM_
+            [ "core/hostbootstrap-core/src/OtherHostBootstrap/Authority"
+            , "core/hostbootstrap-core/test/HostBootstrap/Authority"
+            ]
+            ( \directory -> do
+                createDirectoryIfMissing True (root </> directory)
+                writeUtf8 (root </> directory </> "Kernel.hs") "data ProductionCloseRoot = ProductionCloseRoot"
+            )
+        checkArchitectureDrift root >>= (@?= [])
+
 {- | The two checks that answer "is this phase still describing the tree?".
 
 Both failures this exercises stood in the real plan: a module relocated between
@@ -635,6 +730,102 @@ citationCase = withSystemTempDirectory "hb-citation-drift" $ \root -> do
     -- The same document as an Active phase is owed rather than overdue.
     owed <- document "owed" "Active" present "The dated run."
     checkGateEvidence root owed >>= (@?= [])
+
+-- | Evidence measures source bytes and refuses a cited tree with no source.
+digestCase :: IO ()
+digestCase = withSystemTempDirectory "hb-covers-digest" $ \root -> do
+    let plan = root </> "DEVELOPMENT_PLAN"
+        writePhase name path digest = do
+            let file = plan </> ("phase-3-" ++ name ++ ".md")
+            writeUtf8
+                file
+                ( unlines
+                    [ "# Phase 3 — covered source"
+                    , ""
+                    , "**Status**: Done"
+                    , "**Gate**: `cabal test all`"
+                    , "**Gate kind**: deferred"
+                    , "**Gate evidence**: 2026-01-01 ; a gate host ; `cabal test all` ; pass ; covers " ++ Text.unpack digest
+                    , "**Evidence covers**: `" ++ path ++ "`"
+                    ]
+                )
+            pure file
+        unavailable name path reason = do
+            measured <- measurePathSetDigest root [path]
+            measured @?= Left (DigestPathUnavailable (Text.pack (path ++ ": " ++ reason)))
+            phase <- writePhase name path (Text.replicate 64 "0")
+            messages <- map renderViolation <$> checkGateEvidence root phase
+            length messages @?= 1
+            assertBool
+                ("unavailable evidence must name its covers path: " ++ unlines messages)
+                (any ("'**Evidence covers**' cannot be measured" `isInfixOf`) messages && any (path `isInfixOf`) messages)
+        measuredDigest paths = do
+            measured <- measurePathSetDigest root paths
+            case measured of
+                Right digest -> pure digest
+                Left err -> assertFailure ("expected readable source, got " ++ show err) >> pure ""
+    createDirectoryIfMissing True plan
+    unavailable "missing" "missing" "no such file or directory"
+    createDirectoryIfMissing True (root </> "empty")
+    unavailable "empty" "empty" "directory contributes no files"
+    createDirectoryIfMissing True (root </> "generated" </> "__pycache__")
+    writeUtf8 (root </> "generated" </> "__pycache__" </> "x.pyc") "cached"
+    unavailable "generated" "generated" "directory contributes no files"
+
+    createDirectoryIfMissing True (root </> "source" </> "nested")
+    writeUtf8 (root </> "source" </> "nested" </> "source.txt") "abc"
+    original <- measuredDigest ["source"]
+    -- Generated content and empty descendants do not alter a real source tree.
+    createDirectoryIfMissing True (root </> "source" </> "__pycache__")
+    writeUtf8 (root </> "source" </> "__pycache__" </> "x.pyc") "cached"
+    createDirectoryIfMissing True (root </> "source" </> "empty")
+    measurePathSetDigest root ["source"] >>= (@?= Right original)
+    nested <- measuredDigest ["source/nested"]
+    measurePathSetDigest root ["source\\nested"] >>= (@?= Right nested)
+    sourceFile <- measuredDigest ["source/nested/source.txt"]
+    measurePathSetDigest root ["source\\nested\\source.txt"] >>= (@?= Right sourceFile)
+
+    exact <- writePhase "exact" "source" original
+    checkGateEvidence root exact >>= (@?= [])
+    writeUtf8 (root </> "source" </> "nested" </> "source.txt") "abd"
+    changed <- measuredDigest ["source"]
+    assertBool "changing one source byte must change its digest" (changed /= original)
+    drift <- map renderViolation <$> checkGateEvidence root exact
+    length drift @?= 1
+    assertBool
+        ("stale evidence must name both digests: " ++ unlines drift)
+        (any (("gate evidence covers " ++ Text.unpack original) `isInfixOf`) drift && any (("now measures " ++ Text.unpack changed) `isInfixOf`) drift)
+
+    -- Permission semantics are a kernel fact. A kernel that denies listing must
+    -- produce a typed refusal; one that still permits it must measure the tree.
+    let private = root </> "restricted" </> "private"
+        privatePath = "restricted" </> "private"
+    createDirectoryIfMissing True private
+    writeUtf8 (private </> "source.txt") "source"
+    readableDigest <- measuredDigest ["restricted"]
+    bracket (getPermissions private) (setPermissions private) $ \permissions -> do
+        permissionChange <- try (setPermissions private permissions{readable = False, searchable = False}) :: IO (Either IOException ())
+        listing <- try (listDirectory private) :: IO (Either IOException [FilePath])
+        measured <- measurePathSetDigest root ["restricted"]
+        case listing of
+            Left err -> do
+                measured @?= Left (DigestPathUnavailable (Text.pack (privatePath ++ ": " ++ takeWhile (/= '\n') (show err))))
+                phase <- writePhase "unlistable" "restricted" readableDigest
+                messages <- map renderViolation <$> checkGateEvidence root phase
+                length messages @?= 1
+                assertBool
+                    ("listing refusal must remain typed in gate evidence: " ++ unlines messages)
+                    (any ("'**Evidence covers**' cannot be measured" `isInfixOf`) messages)
+            Right _ ->
+                assertBool
+                    ("a directory the kernel still permits must remain measurable; permission change: " ++ show permissionChange ++ "; result: " ++ show measured)
+                    (measured == Right readableDigest)
+
+digestVectorCase :: IO ()
+digestVectorCase = do
+    sha256Hex "" @?= "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    sha256Hex "abc" @?= "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    frameWire "ab" @?= ByteString.pack [0, 0, 0, 0, 0, 0, 0, 2, 97, 98]
 
 -- | The smallest § G-shaped phase document the two checks read.
 phaseDocument :: String -> FilePath -> String -> String

@@ -14,6 +14,7 @@ import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Lift (
+    ConfigDelivery (..),
     ContainerLift (..),
     ContainerPlacement (ProviderGuestContainer),
     InVMSelfPath (InVMSelfPath),
@@ -35,6 +36,7 @@ import HostBootstrap.Lift (
     localContext,
     mkSelfRef,
  )
+import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.Registry (
     dockerAuthStdinWrapper,
     dockerHubAuthFromConfig,
@@ -118,12 +120,12 @@ tests =
             "blob delivery leaves have one exact crossing shape"
             [ testCase "upload session" $
                 foldLeaf localContext (blobUploadSessionLeaf "http://registry/v2/repo/blobs/uploads/")
-                    @?= DispatchLocal
+                    @?= DispatchLocalRaw
                         "curl"
                         ["-sS", "-m", "15", "-o", "/dev/null", "-D", "-", "-X", "POST", "http://registry/v2/repo/blobs/uploads/"]
             , testCase "upload patch" $
                 foldLeaf localContext (blobUploadPatchLeaf "payload" "http://registry/session")
-                    @?= DispatchLocal
+                    @?= DispatchLocalRaw
                         "curl"
                         [ "-sS"
                         , "-m"
@@ -142,12 +144,12 @@ tests =
                         ]
             , testCase "upload finish" $
                 foldLeaf localContext (blobUploadFinishLeaf "http://registry/session?digest=sha256:abc")
-                    @?= DispatchLocal
+                    @?= DispatchLocalRaw
                         "curl"
                         ["-fsS", "-m", "15", "-o", "/dev/null", "-X", "PUT", "http://registry/session?digest=sha256:abc"]
             , testCase "blob head" $
                 foldLeaf localContext (blobHeadLeaf "http://registry/v2/repo/blobs/sha256:abc")
-                    @?= DispatchLocal
+                    @?= DispatchLocalRaw
                         "curl"
                         [ "-sS"
                         , "-m"
@@ -187,7 +189,7 @@ tests =
             "registry-aware lift planning"
             [ testCase "Incus carries the exact Docker argv through one VM shell" $
                 registryAuthLiftPlan
-                    (inContainer authContainer (inVM (IncusVM "incus-vm" "images:ubuntu/24.04") localContext))
+                    (inContainer authContainer (inVM (IncusVM "incus-vm" "images:ubuntu/24.04") emptyVMStack))
                     authSubcommand
                     @?= Just
                         ( Incus
@@ -195,7 +197,7 @@ tests =
                         )
             , testCase "Lima carries the exact Docker argv through its root shell" $
                 registryAuthLiftPlan
-                    (inContainer authContainer (inLimaVM (LimaVM "lima-vm") localContext))
+                    (inContainer authContainer (inLimaVM (LimaVM "lima-vm") emptyVMStack))
                     authSubcommand
                     @?= Just
                         ( Lima
@@ -203,22 +205,43 @@ tests =
                         )
             , testCase "WSL2 carries the exact Docker argv through its distro" $
                 registryAuthLiftPlan
-                    (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") localContext))
+                    (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") emptyVMStack))
                     authSubcommand
                     @?= Just
                         ( Wsl
-                        , ["-d", "wsl-distro", "--", "bash", "-lc", authScript]
+                        , ["-d", "wsl-distro", "--exec", "bash", "-lc", authScript]
                         )
+            , testCase "an empty subcommand has no authenticated plan for a supported context" $
+                registryAuthLiftPlan
+                    (inContainer authContainer (inVM (IncusVM "incus-vm" "image") emptyVMStack))
+                    []
+                    @?= Nothing
+            , testCase "a staged config delivery has no single authenticated command plan" $
+                registryAuthLiftPlan
+                    ( inContainer
+                        (authContainer {clConfigDelivery = Just (ConfigDelivery "/app/project.dhall" "projection")})
+                        (inVM (IncusVM "incus-vm" "image") emptyVMStack)
+                    )
+                    authSubcommand
+                    @?= Nothing
+            , testCase "two valid VM crossings and a terminal container remain unsupported" $
+                registryAuthLiftPlan
+                    ( inContainer
+                        authContainer
+                        (inLimaVM (LimaVM "inner-vm") (inVM (IncusVM "outer-vm" "image") emptyVMStack))
+                    )
+                    authSubcommand
+                    @?= Nothing
             , testCase "the descriptive plan contains no credential payload" $ do
                 let plans =
                         [ registryAuthLiftPlan
-                            (inContainer authContainer (inVM (IncusVM "incus-vm" "image") localContext))
+                            (inContainer authContainer (inVM (IncusVM "incus-vm" "image") emptyVMStack))
                             authSubcommand
                         , registryAuthLiftPlan
-                            (inContainer authContainer (inLimaVM (LimaVM "lima-vm") localContext))
+                            (inContainer authContainer (inLimaVM (LimaVM "lima-vm") emptyVMStack))
                             authSubcommand
                         , registryAuthLiftPlan
-                            (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") localContext))
+                            (inContainer authContainer (inWsl2VM (Wsl2VM "wsl-distro") emptyVMStack))
                             authSubcommand
                         ]
                     rendered = show plans
@@ -228,10 +251,11 @@ tests =
                 mapM_
                     (\context -> registryAuthLiftPlan context authSubcommand @?= Nothing)
                     [ localContext
-                    , inContainer authContainer localContext
-                    , inContainer authContainer (inContainer authContainer localContext)
-                    , inVM (IncusVM "vm" "image") (inContainer authContainer localContext)
-                    , inVM (IncusVM "inner" "image") (inVM (IncusVM "outer" "image") localContext)
+                    , inContainer authContainer emptyVMStack
+                    -- Duplicate/nonterminal containers cannot inhabit a closed
+                    -- context. LiftContextSpec retains their exact parser
+                    -- refusals; VMLayerAfterContainer holds the type boundary.
+                    , vmContext (inVM (IncusVM "inner" "image") (inVM (IncusVM "outer" "image") emptyVMStack))
                     ]
             , testCase "Nothing and unsupported authenticated contexts use the ordinary lift" $ do
                 let cfg =
@@ -240,8 +264,8 @@ tests =
                             , hcToolPaths = Map.empty
                             }
                     self = mkSelfRef (LocalSelfPath "/hostbootstrap-registry-spec-missing") (InVMSelfPath "hostbootstrap")
-                    vmOnly = inVM (IncusVM "incus-vm" "image") localContext
-                    containerOnly = inContainer authContainer localContext
+                    vmOnly = vmContext (inVM (IncusVM "incus-vm" "image") emptyVMStack)
+                    containerOnly = inContainer authContainer emptyVMStack
                 ordinaryVm <- liftSubcommand cfg self vmOnly authSubcommand
                 anonymousVm <- liftSubcommandWithAuth cfg Nothing self vmOnly authSubcommand
                 anonymousVm @?= ordinaryVm

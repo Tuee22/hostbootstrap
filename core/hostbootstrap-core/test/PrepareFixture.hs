@@ -1,16 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | Mint a real 'PreparedGate' for the adapter specs.
+{- | Publish real durable gates in throwaway protected stores for adapter specs.
 
-'HostBootstrap.Reconcile.withPreparedOperation' no longer accepts a caller's
-attempt and journal version; it accepts the gate, whose sole producer performs
-the durable unknown-phase write against a protected store.  There is therefore
-no test-only constructor to reach for (§ EE forbids exporting one), so the specs
-mint the gate the same way production does: a real store in a temporary
-directory, inside a real exclusive entry.
+These fixtures use the retained lower-level 'recordDurableUnknown' writer, not
+the production session admission path. The caller chooses the plan, operation,
+session, fence and attempt; only the physical journal version comes from the
+protected write. Each write still runs inside a real exclusive entry.
 -}
 module PrepareFixture (
     withGateFor,
+    withGateForValuesStore,
     withSuccessorGate,
     gateFor,
     gateForValues,
@@ -18,16 +17,22 @@ module PrepareFixture (
 
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Digest (sha256Hex)
 import HostBootstrap.Lifecycle.Prepared (PreparedGate, recordDurableUnknown)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedError,
     ProtectedRecord (protectedRecordVersion),
+    ProtectedStore,
     RecordKey,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
+    recordTupleSeparator,
     withProtectedEntry,
  )
 import System.FilePath ((</>))
@@ -37,44 +42,32 @@ import Test.Tasty.HUnit (assertFailure)
 {- | Record @operation@'s unknown phase in a throwaway protected store and run
 the action with the resulting gate.
 
-The attempt and journal version are whatever that store's own compare-and-swap
-established — which is the point: a spec cannot choose them.
+The caller chooses the plan and operation. 'gateFor' fixes the session to
+@session-1@, fence to 1 and attempt to 1; only the fresh record's first-write
+journal version, 1, comes from the protected store.
 -}
 withGateFor :: Text -> Text -> (PreparedGate -> IO a) -> IO a
 withGateFor planDigest operation use = gateFor planDigest operation >>= use
 
-{- | Publish an initial gate, then keep its protected store alive while the
-caller decides when to publish a real compare-and-swap successor.
+{- | Keep one store alive for an initial gate and a same-session successor.
 
-The successor action re-enters the same protected store, reads the retained
-record version, and writes against that exact version.  This lets replay tests
-prove a journal-version change without giving them a way to choose or forge a
-journal version.
+Both writes retain the plan, operation, session and fence. The caller chooses
+the attempts; the successor re-reads the current physical record version and
+uses it as the compare-and-swap expectation. No journal version is supplied by
+the caller.
 -}
 withSuccessorGate ::
     Text ->
     Text ->
     Text ->
-    Text ->
     Word64 ->
     Word64 ->
     Word64 ->
-    (PreparedGate -> IO PreparedGate -> IO a) ->
+    (ProtectedStore -> PreparedGate -> IO PreparedGate -> IO a) ->
     IO a
-withSuccessorGate planDigest operation initialSession successorSession fence initialAttempt successorAttempt use =
-    withSystemTempDirectory "hb-prepare-successor-gate" $ \dir -> do
-        opened <- openProtectedStore (dir </> "authority")
-        store <- case opened of
-            Left failure -> assertFailure (Text.unpack (protectedErrorMessage failure))
-            Right ready -> pure ready
-        key <- expectKey (mkRecordKey ("operation." <> sanitize operation))
-        initial <-
-            publishGate
-                store
-                key
-                ExpectAbsent
-                initialSession
-                initialAttempt
+withSuccessorGate planDigest operation sessionId fence initialAttempt successorAttempt use =
+    withGateForValuesStore planDigest operation sessionId fence initialAttempt $ \store initial -> do
+        key <- expectKey (fixtureRecordKey planDigest operation sessionId)
         let successor = do
                 recorded <-
                     withProtectedEntry store $ \session -> do
@@ -90,45 +83,47 @@ withSuccessorGate planDigest operation initialSession successorSession fence ini
                                     "EffectOutcomeUnknown"
                                     planDigest
                                     operation
-                                    successorSession
+                                    sessionId
                                     fence
                                     successorAttempt
                 case recorded of
                     Left failure -> assertFailure (Text.unpack (protectedErrorMessage failure))
                     Right gate -> pure gate
-        use initial successor
-  where
-    publishGate store key expectation sessionId attempt = do
-        recorded <- withProtectedEntry store $ \session ->
-            recordDurableUnknown
-                session
-                key
-                expectation
-                "EffectOutcomeUnknown"
-                planDigest
-                operation
-                sessionId
-                fence
-                attempt
-        case recorded of
-            Left failure -> assertFailure (Text.unpack (protectedErrorMessage failure))
-            Right gate -> pure gate
+        use store initial successor
 
 -- | The gate alone, for a spec that needs it outside a bracket.
 gateFor :: Text -> Text -> IO PreparedGate
 gateFor planDigest operation = gateForValues planDigest operation "session-1" 1 1
 
-{- | Mint a real gate with deliberately chosen record fields for refusal tests.
-The journal version still comes only from the protected store write.
+{- | Mint a gate with caller-selected coordinates for refusal tests.
+
+The fresh store's first write supplies physical journal version 1; the session,
+fence and attempt are the caller's values.
 -}
 gateForValues :: Text -> Text -> Text -> Word64 -> Word64 -> IO PreparedGate
 gateForValues planDigest operation sessionId fence attempt =
+    withGateForValuesStore planDigest operation sessionId fence attempt (\_ gate -> pure gate)
+
+{- | Keep the real store and its first-write gate alive during the callback.
+
+This uses the unchecked lower-level writer with the caller's coordinates; it
+does not perform the production session admission checks.
+-}
+withGateForValuesStore ::
+    Text ->
+    Text ->
+    Text ->
+    Word64 ->
+    Word64 ->
+    (ProtectedStore -> PreparedGate -> IO a) ->
+    IO a
+withGateForValuesStore planDigest operation sessionId fence attempt use =
     withSystemTempDirectory "hb-prepare-gate" $ \dir -> do
         opened <- openProtectedStore (dir </> "authority")
         store <- case opened of
             Left failure -> assertFailure (Text.unpack (protectedErrorMessage failure))
             Right ready -> pure ready
-        key <- expectKey (mkRecordKey ("operation." <> sanitize operation))
+        key <- expectKey (fixtureRecordKey planDigest operation sessionId)
         recorded <- withProtectedEntry store $ \session ->
             recordDurableUnknown
                 session
@@ -142,18 +137,15 @@ gateForValues planDigest operation sessionId fence attempt =
                 attempt
         case recorded of
             Left failure -> assertFailure (Text.unpack (protectedErrorMessage failure))
-            Right gate -> pure gate
+            Right gate -> use store gate
 
--- | Record keys are restricted to an alphabet; operation keys carry separators.
-sanitize :: Text -> Text
-sanitize = Text.map replace
-  where
-    replace c
-        | c `elem` ("-_." :: String) = c
-        | c >= 'a' && c <= 'z' = c
-        | c >= 'A' && c <= 'Z' = c
-        | c >= '0' && c <= '9' = c
-        | otherwise = '-'
+fixtureRecordKey :: Text -> Text -> Text -> Either ProtectedError RecordKey
+fixtureRecordKey planDigest operation sessionId = do
+    _ <- mkRecordName planDigest
+    sessionName <- mkRecordName sessionId
+    operationName <- mkRecordName operation
+    let digest = sha256Hex (TextEncoding.encodeUtf8 planDigest)
+    mkRecordKey ("op." <> digest <> "." <> sessionName <> recordTupleSeparator <> operationName)
 
 expectKey :: Either e RecordKey -> IO RecordKey
 expectKey (Right key) = pure key

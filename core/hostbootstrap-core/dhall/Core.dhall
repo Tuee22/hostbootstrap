@@ -1,17 +1,19 @@
 -- The reusable hostbootstrap-core Dhall vocabulary (L0).
 --
--- Every project composes its rich project/deploy and per-case test configs from
--- this vocabulary: `let C = ./Core.dhall in ...` — embedded and extended, never
--- redefined (see development_plan_standards.md § T). This whole file is
--- hand-written: nothing generates it. The record/union TYPES are held equal to
--- the schema the project binary reflects from its Haskell decoders by an
--- anti-drift test, which reads the direction the other way round from
--- generation -- Haskell is the comparand, not the source. The budget FUNCTIONS
--- (`Budget/fitsWithin`, `Budget/split`) have no Haskell counterpart at all and
--- are drift-controlled by evaluation tests.
+-- Higher vocabulary layers and standalone numeric artifacts import this file
+-- with `let C = ./Core.dhall in ...`, extending rather than redefining its types
+-- (see development_plan_standards.md § T). Runtime <project>.dhall and the single
+-- <project>.test.dhall are rendered from Haskell codecs and do not import it.
+-- example.dhall is the byte-exact renderProjectConfig golden; its ContextKind,
+-- ProviderKind, and CommandClass unions are context unions, not exports here.
+--
+-- This file is hand-written: nothing generates it. DhallGenSpec holds every
+-- exported type judgmentally equal to its Haskell codec's reflected schema.
+-- The budget functions (`Budget/fitsWithin`, `Budget/split`) are hand-written
+-- and drift-controlled by evaluation tests.
 --
 -- This file is self-contained (no Prelude import) so it evaluates with no network
--- access, both in-process via the Haskell `dhall` library and via `dhall-to-json`.
+-- access. Runtime decoding runs in-process through the Haskell `dhall` library.
 
 let Resources = { cpu : Natural, memory : Text, storage : Text }
 
@@ -102,9 +104,8 @@ let totalMemory =
       \(pods : List PodResources) ->
         sumNat (mapList PodResources Natural (\(p : PodResources) -> p.replicas * p.memoryLimit) pods)
 
--- Is every pod's request within its own limit? Kubernetes refuses that pair at
--- apply time; refusing it here makes the config that would be rejected fail to
--- type-check instead.
+-- Is every pod's CPU and memory request within its own limit? This returns a
+-- Bool; a standalone artifact can assert that the result is True.
 let requestsWithinLimits =
       \(pods : List PodResources) ->
         List/fold
@@ -119,9 +120,12 @@ let requestsWithinLimits =
           )
           True
 
--- Does the concurrent pod set fit within the budget, and does each pod's request
--- fit within its own limit? (the assertion every generated config carries, so an
--- over-budget or self-contradictory config fails to type-check).
+-- Do concurrent CPU/memory limits fit the budget, and requests fit their own
+-- limits? Storage is not compared. Only standalone numeric artifacts, such as
+-- deployConfigText output, carry `assert : C.fitsWithin ... === True`.
+-- Runtime project/test configs carry text quantities and no resolved pod set.
+-- Cluster.Budget's verifyPlannedWorkloadFit and withBudgetPartition own the
+-- authoritative plan-indexed workload fit and partition.
 let fitsWithin =
       \(b : Budget) ->
       \(pods : List PodResources) ->

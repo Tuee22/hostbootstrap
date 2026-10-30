@@ -31,8 +31,8 @@ provides:
 - an opaque `Probe` and `Ready scope planId id resource dependency`, with no exposed
   `HostBootstrap.Readiness.Internal` module or test constructor;
 - a closed `BackendProbeKey resource dependency` relation. Constructing a backend probe requires the
-  exact `PlannedResource` from the finalized lifecycle plan and positive generation, phase, and
-  observation versions;
+  exact `PlannedResource` from the finalized lifecycle plan; each `BackendReady` payload supplies
+  generation, phase, and observation versions, which are checked before sealing readiness;
 - resource families for provider, durable share, Docker, S3 store, registry, and cluster readiness;
 - tests that obtain a real planned resource, drive the polling transition, reject invalid versions, and
   exercise compile-time opacity rather than injecting a forged witness; and
@@ -42,8 +42,13 @@ provides:
 The lifecycle foundation also provides opaque planned resources and edges, exact operation/dependency
 validation, matching prepared-operation/precondition pairs, phase-indexed handles, explicit adoption,
 and a legal persisted-journal transition graph. This makes cross-plan and cross-resource use
-unrepresentable at that boundary; a forged probe verdict is excluded only by convention (see the gaps
-below).
+unrepresentable at that boundary. Backend observation injection is Cabal-private; the public
+dependency-probe wrapper remains a separate gap below.
+
+The planned resource has one shared representation in the Cabal-private `plan-resource-internal` library;
+`Lifecycle.Plan` retains validated-graph projection and the public facades retain the same opaque type.
+The private readiness kernel shares that identity without depending on the main library or duplicating it. See
+[plan and operation algebra](lifecycle_state_model.md#plan-and-operation-algebra) for the ownership boundary.
 
 The [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) owns the
 plan-owned dependency-snapshot traversal. An operation descriptor's edge set
@@ -60,11 +65,13 @@ The probe registered for a member is the `DependencyProbe` that the code calling
 `runningProviderDependencyReprobe` for a running provider, `providerShareDependencyReprobe` and the
 guest-alias share probe for a durable share, and `reprobeClusterReadiness` for a cluster. The
 `Ready`-based path — `withBackendProbe`, `awaitPlanReady`, and `planDependencyProbe` — has no production
-caller: `ReadinessSpec` exercises the first two, and nothing calls `planDependencyProbe`. The `Ready`
-that `awaitPlanReady` mints carries the generation, phase version, and observation version fixed when
-`withBackendProbe` built the `Probe`, so the check
-`planDependencyProbe` makes against the managed handle compares construction-time values, not a fresh
-observation.
+caller. `ReadinessSpec` exercises the complete indexed path, including dependency-snapshot traversal.
+`awaitPlanReady` retains the versions from the backend's successful `BackendReady` payload and refuses a
+zero generation, phase version, or observation version as `PollInvalidReady` with its specific
+`ProbeVersionError`. `planDependencyProbe` compares that fresh report with the managed handle's generation
+and observation version before sealing preconditions. `Ready` declares its identity indices nominal; the
+public `Probe` synonym inherits its six nominal identity roles from the private kernel. `coerce` cannot
+substitute another plan.
 
 The exact boundary owned by the
 [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
@@ -95,28 +102,18 @@ the self-reference subprocess boundary; the facts [Legible failure](#legible-fai
 in that reason, not as fields a caller can match on. The detached daemon launcher also retains both output
 streams so a startup failure can quote its actual cause.
 
-Four gaps separate the tree from the readiness contract below, and the
-[canonical quantities and reconcile results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md),
-which owns `Readiness` and `Reconcile`, owes them:
+`withBackendProbe` and `observeBackendProbe` live in
+[`Readiness.Kernel`](../../core/hostbootstrap-core/internal/readiness/HostBootstrap/Readiness/Kernel.hs),
+inside the Cabal-private `readiness-internal` library. The main library and its test component can reach
+that factory; downstream consumers cannot import the kernel or name the injector through the public
+facade. Holding a `PlannedResource` and a constant `ProbeReady` therefore provides no public route to a
+`Probe` or `Ready`.
 
-- `withBackendProbe` and `dependencyProbe` are exported from exposed modules and accept any
-  caller-supplied observation function. A consumer holding a `PlannedResource` can mint a `Ready` from a
-  constant `ProbeReady`, and a consumer holding a managed handle can register a probe that always succeeds.
-  That only backend observations authorize a prepare is a convention, not a visibility boundary. The
-  [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owes minting
-  every `DependencyProbe` from backend evidence and indexing it by the readiness kind its edge requires,
-  because the raw wrapper's call sites live in the provider and cluster modules.
-- `Ready` and `Probe` carry no role annotations, so their index parameters take the phantom role and
-  `coerce` re-indexes a `Ready` or `Probe` across scope, plan, resource, or dependency without the
-  constructor. The lifecycle types in `Reconcile` and `Lifecycle.Plan` (`PlannedResource`,
-  `ResourceHandle`, `OperationDescriptor`, `DependencyProbe`, `OperationPreconditionSet`, and the prepared
-  pair) declare every index nominal.
-- The `Ready`-based path re-observes no generation or observation version, so its staleness check cannot
-  detect a change (see above).
-- The `RawReadiness` compile-fail fixture writes both a raw `PollPolicy` and a raw `Ready`, but
-  `CompileFailSpec` asserts only the `PollPolicy` rejection, so exporting the `Ready` constructor would
-  still pass it.
-
+The public `dependencyProbe` wrapper is a separate gap owned by the
+[cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md): its callers live
+in provider and cluster modules, and that phase owes backend-only construction and the exact readiness
+kind required by each edge. Constructor opacity, nominal roles, and the three independently pinned
+`RawReadiness` diagnostics already protect the boundaries they test.
 Dated validation belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Readiness contract
@@ -134,19 +131,24 @@ signatures that can drift from the compiled API.
 | `PollPolicy`, `PollPolicyError` | The opaque bounded retry policy. `mkPollPolicy :: Natural -> Micros -> Either PollPolicyError PollPolicy` refuses zero attempts (`ZeroAttempts`), more than 1,000,000 attempts (`AttemptsTooLarge`), a total duration that overflows (`TotalDurationOverflow`), and a total duration above 24 hours (`TotalDurationTooLarge`) before polling begins; `withAttempts` re-derives one from an existing policy |
 | `pollAttempts`, `pollDelay`, `pollSchedule` | Read a policy back: its attempt count, its delay, and the list of delays between attempts (the provider share wait drives `pollSchedule` directly) |
 | `Micros`, `seconds`, `microsValue` | The one delay quantity, so a bare number is never a duration; `seconds` refuses a negative (`NegativeDelay`) or overflowing (`DelayOverflow`) value |
-| `rolloutPoll`, `pushPoll`, `reachPoll`, `vmBootPoll`, `networkPoll`, `dockerPoll`, `nodePoll` | The named policies a caller selects instead of inventing constants |
+| `rolloutPoll`, `pushPoll`, `reachPoll`, `vmBootPoll`, `networkPoll`, `dockerPoll`, `nodePoll` | The reviewed constant policies a caller selects instead of inventing constants; their construction has no partial error branch |
 | `ProbeResult a` | The total observation: `ProbeReady a`, `NotReady` (a reason), `Unavailable` (a reason), `ProbeConflicted ProbeConflict`, `Failed ProbeFailure`. Only `ProbeReady` is readiness |
 | `ProbeConflict`, `ProbeFailure` | Structured conflict (expected, observed, remedy) and terminal failure (operation, cause) |
-| `PollError`, `renderPollError` | `PollTimeout`, `PollUnavailable`, `PollConflict`, `PollFailed` — the exhausted-policy outcomes, each retaining its label and cause |
-| `Decision a`, `pollStep`, `drivePure` | `Yield` / `Retry` / `GiveUp`, and the pure driver that makes the loop testable without effects |
+| `PollError`, `renderPollError` | `PollTimeout`, `PollUnavailable`, `PollConflict`, `PollFailed`, and `PollInvalidReady` retain the poll label and cause; the last carries a typed invalid backend-version report |
+| `Decision a`, `pollStep` | `Yield` / `Retry` / `GiveUp`; scripted tests drive the same `pollUntilReadyWith` loop as production |
 | `pollUntilReady`, `pollUntilReadyWith` | The effectful loop over a `HostConfig -> IO (ProbeResult a)` probe |
 | `ObservedReady`, `awaitObservedReady`, `awaitObservedReadyWith` | The non-authorizing compatibility observation, which mints no readiness evidence |
 | `BackendProbeKey` | The closed resource/dependency relation: eight keys, each fixing which dependency evidence a probe of one resource family can mint. The key carries no plan index; the plan indices come from the `PlannedResource` given to `withBackendProbe` |
-| `Probe`, `withBackendProbe`, `ProbeConstructionError` | The plan-indexed probe. `withBackendProbe` takes a key, the exact `PlannedResource`, a generation, phase version, and observation version, and an observation function; it refuses a zero version (`ZeroProbeGeneration`, `ZeroProbePhaseVersion`, `ZeroProbeObservationVersion`) and hands the `Probe` to a rank-2 continuation under a fresh probe index |
+| `Probe`, `BackendReady`, `ProbeVersionError` | The public host-config-specialized probe type, raw backend report, and version refusals. `BackendReady` reports three observed versions and the backend payload. Awaiting refuses `ZeroProbeGeneration`, `ZeroProbePhaseVersion`, or `ZeroProbeObservationVersion` before constructing `Ready` |
+| `withBackendProbe`, `observeBackendProbe` | Cabal-private kernel operations. The factory takes a key, the exact `PlannedResource`, and an observation function, then hands the `Probe` to a rank-2 continuation under a fresh probe index. The observer runs an existing probe with its supplied configuration |
 | `Ready`, `readyGeneration`, `readyPhaseVersion`, `readyObservationVersion` | The plan-, resource-, and dependency-indexed readiness value and its three retained versions |
 | `awaitPlanReady`, `awaitPlanReadyWith`, `planDependencyProbe` | Poll a `Probe` to a `Ready`, and wrap that poll as a `DependencyProbe` checked against a managed handle. No production code calls them (see [Current Status](#current-status)) |
 
-`Ready`, `Probe`, and `withBackendProbe` are defined in `Readiness`. The plan- and operation-indexed
+`Ready`, version validation, and the one polling loop remain in `Readiness`. Its seven-parameter `Probe`
+is a synonym for the private kernel's eight-parameter type, specialized to the existing `HostConfig`.
+The kernel's six identity indices are nominal; its configuration and payload parameters are
+representational. It stores the observation function without defining another configuration
+representation or polling loop. The plan- and operation-indexed
 types readiness feeds — `ResourceHandle`, `DependencyProbe`, `DependencySnapshot`,
 `OperationDescriptor`, `OperationPreconditionSet`, `PreparedOperation`, and `PreparedPreconditions` — are
 defined in [`Reconcile`](../../core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs); `PreparedGate`
@@ -155,9 +157,9 @@ and `OperationAdvance` from
 [`Lifecycle.Session`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs). Their opacity
 contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque-capabilities).
 
-- The `Ready`, `Probe`, `PollPolicy`, `Micros`, and `ObservedReady` constructors are hidden by the export
-  list of `HostBootstrap.Readiness`, which is an exposed module; no package-private module holds them.
-  Adding a constructor export would publish them, and no Cabal visibility boundary would catch it.
+- The `Ready`, `PollPolicy`, `Micros`, and `ObservedReady` constructors are hidden by the export list of
+  `HostBootstrap.Readiness`. The public `Probe` synonym names the private kernel's abstract type; its
+  constructor is hidden even from the kernel's consumers. Only the private factory introduces probes.
 - Expected absence, a slow mount, and a stopped service are values. They do not escape through partial
   filesystem calls or a compound shell script.
 - `NotReady` is bounded and retryable; `Unavailable`, `ProbeConflicted`, and `Failed` stop polling at
@@ -171,9 +173,9 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
 - `BackendProbeKey resource dependency` fixes which dependency evidence a probe of a resource family can
   mint, and `withBackendProbe` requires the exact `PlannedResource`, which fixes the plan indices; a
   caller cannot pick an unrelated dependency phantom for a key. The observation function is supplied by
-  whoever builds the probe. The target contract is that only backend modules supply it; in the tree that
-  holds only by convention, because `withBackendProbe` and `dependencyProbe` are public (see
-  [Current Status](#current-status)). Only a managed dependency enters the authorizing path —
+  the backend or test component through the private factory. The separate public `dependencyProbe`
+  wrapper still accepts a caller-supplied observation (see [Current Status](#current-status)). Only a
+  managed dependency enters the authorizing path —
   `withDependencySnapshotEntry` requires a `Managed` handle — and a convenience probe of an unmanaged or
   foreign dependency yields only the non-authorizing `ObservedReady`.
 - Every managed-resource effect declares its readiness requirements through an opaque
@@ -202,8 +204,8 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
 - A capability is tied to lifecycle scope, generative plan identity, and the identity/frame it proves,
   not merely to a phantom class of resources. Production and harness values—and two separate Production
   plans—cannot type-check together. The lifecycle capabilities hold this against `coerce` through nominal
-  role annotations; `Ready` and `Probe` hold it only against direct construction until they carry the same
-  annotations (see [Current Status](#current-status)).
+  role annotations, and `Ready` and `Probe` retain the same protection on every identity index
+  (see [Current Status](#current-status)).
 - A sealed dependency observation records the managed handle's generation and the phase version its
   probe returned; it is a precondition-set input only. Freshness comes from running the probe inside the
   traversal at prepare time, not from comparing retained values. The cluster reprobe, for example, returns
@@ -212,10 +214,12 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
 
 ## Probe discipline
 
-Guest probes should remain simple because the Windows path crosses PowerShell, `wsl`, and `bash -lc`.
+Guest probes remain simple observations. The Windows WSL route carries native argument vectors
+through `--exec`; only an explicitly requested guest interpreter, such as `bash -lc`, parses command text.
 One probe performs one observation, such as `test -e`, `docker info`, or `kubectl get`. Branching and
-retry live in Haskell. A probe returns every outcome as a `ProbeResult` and must not throw: the poll loop
-catches nothing, so an exception from a probe propagates out of `pollUntilReady` unclassified.
+retry live in Haskell. A backend classifies expected observation failures as `ProbeResult` values. The poll loop catches
+nothing: cancellation and programmer exceptions from either the observation or recovery propagate to
+the caller. IO failures are classified at the backend boundary, as provider execution does.
 
 Ownership is not a probe and does not travel this way. A clause is held by the row the frame declares, and
 a transaction addressed to a frame is carried to a process of this same binary there — so exclusive entry
@@ -266,9 +270,11 @@ type. A bare `ExitFailure 1` is an information-loss defect.
 
 Readiness is complete only when:
 
-1. an external module cannot construct `Ready` or `PollPolicy` directly, and a compile-fail assertion pins
-   each rejection (the `RawReadiness` fixture writes both, and `CompileFailSpec` asserts only the
-   `PollPolicy` rejection — see [Current Status](#current-status)); exact cluster preparation refuses a
+1. an external module cannot construct `Ready`, `PollPolicy`, `Micros`, or `Probe` directly;
+   `CompileFailSpec` independently requires all three `RawReadiness` diagnostics and the explicit
+   raw-probe construction rejection. A consumer cannot name `withBackendProbe` from the public
+   facade or import its private kernel. Fresh probe identities cannot escape, a Docker key cannot
+   select a cluster resource, and nominal roles reject plan re-indexing. Exact cluster preparation refuses a
    caller-built `DependencyProbe` (`CallerForgedClusterProbe`), and the guest alias refuses
    `ObservedReady` (`ObservedReadyGuestAlias`);
 2. zero/negative attempts, delay/total-duration overflow, and over-limit policies fail construction;

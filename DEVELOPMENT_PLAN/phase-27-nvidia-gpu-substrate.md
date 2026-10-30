@@ -1,6 +1,6 @@
 # Phase 27 — NVIDIA GPU substrate
 
-**Status**: Done
+**Status**: Active
 **Depends on**: Phase 24 (the worked demo)
 **Substrates**: nvidia
 **Gate**: repository Python-bootstrapper `poetry run hostbootstrap run --project-root demo test run all`
@@ -876,9 +876,41 @@ After recording closure, the native focused `DocValidatorSpec` check passes 11/1
 
 None.
 
+### Sprint 27.11: NVIDIA acceptance of the current source tree [Active]
+
+**Status**: Active
+**Implementation**: none — this sprint records a run
+**Substrates**: nvidia
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Establish native Linux/NVIDIA acceptance against the source tree whose paths this phase's
+`**Evidence covers**` names. The documentation-validator and digest changes in the governance phase
+expire the recorded acceptance under § C; the dated evidence retains the source digest it exercised.
+
+#### Deliverables
+
+- The complete declared live matrix reports `10/10 passed` with observed accelerator placement.
+- The terminal ownership audit confirms the run releases its project, config, data, and process ownership.
+- Dated gate evidence records the native Linux/NVIDIA host, commands, result, and measured covers digest.
+
+#### Validation
+
+Run the repository Python bootstrapper's `poetry run hostbootstrap run --project-root demo test init`,
+then the phase's declared `poetry run hostbootstrap run --project-root demo test run all` on a native
+Linux host with an NVIDIA GPU, followed by the terminal ownership audit. Record the actual results and
+the digest measured over this phase's `**Evidence covers**` paths. This sprint has no current-tree run.
+
+#### Remaining Work
+
+- Run the complete declared native Linux/NVIDIA gate and terminal ownership audit.
+- Record its dated evidence and measured covers digest before marking the sprint and phase `Done`.
+
 ## Remaining Work
 
-None.
+- Sprint 27.11: re-run the declared native Linux/NVIDIA acceptance and terminal ownership audit against
+  the covered source tree, then record dated gate evidence with its measured digest.
 
 ## Documentation Requirements
 

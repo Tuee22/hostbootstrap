@@ -1,5 +1,3 @@
-{-# LANGUAGE CPP #-}
-
 {- | The one interpreter for the closed effect vocabulary.
 
 § KK admits one vocabulary and one interpreter, and puts the interpreter in the
@@ -46,22 +44,16 @@ import HostBootstrap.Effect.Vocabulary (
     HostEffect (..),
  )
 import HostBootstrap.HostConfig (HostConfig, resolveMaybe)
-import HostBootstrap.HostTool (HostTool, absExePath, toolCommandName)
+import HostBootstrap.HostTool (HostTool, absExePath, hostToolProcessArguments, toolCommandName)
 import System.Exit (ExitCode (..))
-#ifdef mingw32_HOST_OS
-import HostBootstrap.Effect.Quote (powerShellQuoteArg)
-import HostBootstrap.HostTool (HostTool (PowerShell, Wsl))
-#endif
 
 {- | Turn a described command into the executable and argument vector the host
 will launch, or a typed refusal naming the tool that is not resolved.
 
-Pure, and total for a resolved configuration. It is the one place an outer host
-may reframe an invocation: on Windows a WSL command is launched through
-PowerShell, because @wsl.exe@ started directly from a non-console parent does not
-reliably deliver its own exit status. The reframed command line is built with the
-one PowerShell quoter, so an argument that contains a quote or a space reaches
-the far side as the same argument.
+Pure, and total for a resolved configuration. A tool is launched directly with
+'hostToolProcessArguments', preserving empty and quoted arguments in the vector.
+The resolved WSL executable receives the same native launch shape as the handoff
+transports; no interpreter text stands between it and the requested arguments.
 -}
 resolveLaunch :: HostConfig -> HostCommand -> Either String (FilePath, [String])
 resolveLaunch cfg command = case commandTarget command of
@@ -71,21 +63,14 @@ resolveLaunch cfg command = case commandTarget command of
     arguments = commandArguments command
 
     resolveTool :: HostTool -> Either String (FilePath, [String])
-#ifdef mingw32_HOST_OS
-    resolveTool Wsl = do
-        shell <- resolved PowerShell
-        wsl <- resolved Wsl
-        let line = unwords ("&" : map powerShellQuoteArg (wsl : arguments)) ++ "; exit $LASTEXITCODE"
-        pure (shell, ["-NoProfile", "-Command", line])
-#endif
     resolveTool tool = do
         exe <- resolved tool
-        pure (exe, arguments)
+        pure (absExePath exe, hostToolProcessArguments tool exe arguments)
 
     resolved tool =
         maybe
             (Left (toolCommandName tool ++ " not found on this host"))
-            (Right . absExePath)
+            Right
             (resolveMaybe cfg tool)
 
 {- | Run one described command through the one process runner.
@@ -159,20 +144,24 @@ interpretHostEffects ::
     HostConfig ->
     [HostEffect] ->
     IO (Either EffectFailure ())
-interpretHostEffects environment policy cfg = go
+interpretHostEffects environment policy cfg = go False
   where
-    go [] = pure (Right ())
-    go (effect : remaining) = do
+    go _ [] = pure (Right ())
+    go announced (effect : remaining) = do
+        announced' <- case effect of
+            RunHostCommand _ -> do
+                unless announced announce
+                pure True
+            _ -> pure announced
         outcome <- one effect
         case outcome of
             Left failure -> pure (Left failure)
-            Right () -> go remaining
+            Right () -> go announced' remaining
 
     one (ApplyGlobalWslWall body) = Right <$> effectAcquireGlobalWall environment body
     one (ReleaseGlobalWslWall body) = Right <$> effectReleaseGlobalWall environment body
     one (RunDirectHost action) = Right <$> effectEcho environment (directHostReport action)
     one (RunHostCommand command) = do
-        announce
         result <- interpretHostCommand cfg command
         case result of
             Right run
@@ -203,8 +192,13 @@ interpretHostEffects environment policy cfg = go
     exitStatus ExitSuccess = 0
     exitStatus (ExitFailure n) = n
 
-    skipReason (EffectCommandFailed _ _ _ _ err) = takeWhile (/= '\n') err
+    skipReason (EffectCommandFailed _ _ code out err) =
+        case filter (not . null) [firstLine err, firstLine out] of
+            reason : _ -> reason
+            [] -> "exit " ++ show code
     skipReason (EffectCommandUnavailable _ refusal) = refusal
+
+    firstLine = takeWhile (`notElem` "\r\n")
 
 -- | How a command's target is named in a diagnostic. Never an invocation target.
 describeTarget :: HostCommand -> String

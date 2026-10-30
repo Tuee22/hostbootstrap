@@ -1,13 +1,7 @@
-{- | The public cluster backend exposes only the opaque production capability,
-never the raw executor/result constructors used by package-internal tests.
--}
 module OpenClusterBackendExecutor where
 
+-- The public backend cannot manufacture its opaque capability from raw driver inputs.
+
 import HostBootstrap.Cluster.Backend (
-    ClusterCommandResult (..),
-    ClusterExec (..),
+    mkStrongClusterBackend,
  )
-
-badExecutor = ClusterExec
-
-badResult = ClusterCommandResult

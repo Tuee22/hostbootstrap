@@ -15,7 +15,6 @@ points at the helper; with it, it points at the assertion that failed.
 module Expect (
     expectRight,
     expectRightLabelled,
-    expectLeft,
     expectOwned,
     expectOccupied,
 )
@@ -25,8 +24,6 @@ import GHC.Stack (HasCallStack)
 import Test.Tasty.HUnit (assertFailure)
 
 -- | The value, or a failure naming what came back instead.
-
--- | The value, or a failure naming what came back instead.
 expectRight :: (HasCallStack, Show failure) => Either failure value -> IO value
 expectRight = either (assertFailure . show) pure
 
@@ -34,11 +31,6 @@ expectRight = either (assertFailure . show) pure
 expectRightLabelled :: (HasCallStack, Show failure) => String -> Either failure value -> IO value
 expectRightLabelled label =
     either (\failure -> assertFailure (label <> ": " <> show failure)) pure
-
--- | The failure, or a failure naming the value that was not supposed to arrive.
-expectLeft :: (HasCallStack, Show value) => String -> Either failure value -> IO failure
-expectLeft label =
-    either pure (\value -> assertFailure (label <> ": expected a refusal, got " <> show value))
 
 {- | The two halves of an ownership-row clause, shared by both platform rows.
 

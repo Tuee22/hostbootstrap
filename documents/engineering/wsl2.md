@@ -18,7 +18,9 @@ wsl --install -d Ubuntu-24.04 --name <project>-vm --no-launch --vhd-size <GB>
 ```
 
 The active lower-boundary separation assigns pure `Wsl2VM` target data and the inner
-`wsl -d <distro> -- ...` renderer to `HostBootstrap.Lift.Context`. `HostBootstrap.Wsl2` reexports them and
+`wsl -d <distro> --exec <command> <args...>` renderer to `HostBootstrap.Lift.Context`. The helper appends
+the supplied command vector after `--exec`, without an implicit parse by the distro's default shell.
+`HostBootstrap.Wsl2` reexports them and
 owns distro/lifecycle builders. For compatibility it reexports prerequisite helpers whose implementations
 — diagnostics, output normalization, virtualization classification, and `bcdedit` rendering — are owned by
 `HostBootstrap.Ensure.Wsl2`. The
@@ -36,7 +38,7 @@ settlement and is indexed to the exact opaque managed provider, backend, and gen
 does not consume it. This is the same interface
 used by Incus and Lima rather than a WSL-specific dispatch fold.
 
-It then enters the distro with `wsl -d <distro> -- ...`, stages source, builds/installs the Linux project
+It then enters the distro with `wsl -d <distro> --exec <command> <args...>`, stages source, builds/installs the Linux project
 binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
 container frame. `project down` restores the journalled global-wall origin and then runs global
 `wsl --shutdown`. `project destroy` runs a different list: guarded `wsl --unregister`, then the wall
@@ -82,12 +84,6 @@ not explain the lower-level cause of intermittent WSL2 image-store corruption.
 
 ### Open gaps
 
-- **WSL2 readiness.** `wsl2Ready` falls back to `wsl --list --online`, which shows that the online
-  distribution catalogue is reachable rather than that the WSL2 platform can run a VM, so `ensure wsl2` can
-  report a no-op on a host whose platform is unusable; its no-hypervisor branch runs only `bcdedit` and
-  exits reboot-required, leaving the WSL install steps to a later run. Owed by
-  [the ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md); see
-  [ensure reconcilers](ensure_reconcilers.md#current-status).
 - **Destroy leaves the utility VM running.** `project destroy` emits no `wsl --shutdown`, so a still-running
   utility VM keeps the managed ceiling until it idles out or an operator shuts it down (see
   [Wall release](#wall-release)). Appending the shutdown to the WSL2 row's destroy effects is owed by
@@ -123,8 +119,39 @@ not explain the lower-level cause of intermittent WSL2 image-store corruption.
 `ensure wsl2` installs WSL with `winget`, runs `wsl --install --no-distribution` and
 `wsl --set-default-version 2`, and reconciles Windows hypervisor launch. A required Windows reboot is
 reported to the operator; the binary does not reboot the host. Its readiness probe and its per-branch
-behaviour are canonical in [ensure reconcilers](ensure_reconcilers.md); the probe's catalogue fallback is
-an open gap (see [Open gaps](#open-gaps)). The
+behaviour are canonical in [ensure reconcilers](ensure_reconcilers.md).
+
+The pure `wslNextAction` selects one `WslAction` from platform status, hypervisor presence, and firmware
+virtualization availability:
+
+- A ready platform sets its default version to 2, without querying either machine fact.
+- A not-ready platform with a running hypervisor selects installation, without querying firmware.
+- Without a hypervisor, available virtualization selects installation for an absent platform, or
+  `bcdedit /set hypervisorlaunchtype auto` followed by a reboot request for
+  `WslVirtualizationUnavailable`.
+- With no hypervisor and no OS-visible virtualization, the action refuses with the BIOS/UEFI instruction.
+
+After the installation driver succeeds, the reconciler refreshes tool resolution and runs the same
+default-version-2 action as the direct ready path. This also covers the driver's no-op when its later
+readiness probe finds an already-ready platform, so that fast path cannot leave the default at version 1.
+
+Hypervisor presence is observed through CPUID leaf 1, ECX bit 31 on supported Windows architectures.
+Only when it is absent does the reconciler query native
+[Windows processor-feature API](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent).
+That flag means virtualization is enabled and available through the operating system; a false result
+does not establish that UEFI disabled it. A running hypervisor therefore takes precedence. Unsupported
+native observations return an explicit refusal rather than a false machine fact. These observations use
+no PowerShell program, and the small CPUID C source is registered on every build with native code behind
+platform guards.
+
+`wsl2Ready` makes one `wsl --status` call and delegates to the pure `classifyWslStatus`. After shared
+lowercasing and UTF-16 NUL-padding removal, virtualization-disabled text yields
+`WslVirtualizationUnavailable` even with exit 0 or a no-distribution marker. Otherwise exit 0 or a
+"has no installed distributions" report yields `WslPlatformReady`; other non-zero results and runner
+refusals yield `WslPlatformAbsent`. Readiness accepts only `WslPlatformReady` and never queries the online
+distribution catalogue. This describes the platform independently of an installed distro; it does not
+mint resource readiness authority. Live convergence on a bare Windows host remains owned by the
+[Windows/WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md). The
 [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s
 readiness authority is opaque and resource-indexed. See [readiness](../architecture/readiness.md).
 
@@ -307,9 +334,8 @@ The two effects run in order and the release can stop the list:
   the shutdown.
 - A failing `wsl --shutdown` is reported as skipped, because teardown commands run best-effort.
 
-The provider stops with global `wsl --shutdown` rather than a per-distro `wsl --terminate`
-(`wslTerminateArgs` builds that argument vector but no lifecycle path uses it). Terminating the one distro
-leaves the shared utility VM — and the CPU and memory ceiling it booted with — running until
+The provider stops with global `wsl --shutdown` rather than a per-distro `wsl --terminate`. Terminating
+the one distro leaves the shared utility VM — and the CPU and memory ceiling it booted with — running until
 `vmIdleTimeout` expires; only stopping the utility VM returns that memory and makes the next cold boot
 read the restored file.
 

@@ -70,7 +70,10 @@ import HostBootstrap.Lift
     shellQuoteArgs,
   )
 import HostBootstrap.Lift.Context
-  ( LiftContext (..),
+  ( LiftContext,
+    liftContextFromLayers,
+    liftLayers,
+    terminalContainer,
   )
 import System.Directory
   ( doesFileExist,
@@ -194,18 +197,20 @@ dockerAuthStdinWrapper inner =
 -- @stdin@ by 'liftSubcommandWithAuth'. Unsupported context shapes have no plan.
 registryAuthLiftPlan :: LiftContext -> [String] -> Maybe (HostTool, [String])
 registryAuthLiftPlan context subcommand =
-  case (liftLayers context, subcommand) of
-    ([provider, container], innerExe : innerArgs) -> do
+  case (liftLayers context, terminalContainer context, subcommand) of
+    ([provider, container], Just _, innerExe : innerArgs) -> do
+      containerContext <- either (const Nothing) Just (liftContextFromLayers [container])
+      providerContext <- either (const Nothing) Just (liftContextFromLayers [provider])
       -- The fold owns both crossings. Registry inserts only the credential
       -- policy between them: read stdin in the provider before Docker starts.
       DispatchTool Docker containerArgs <-
-        pure (foldLeaf (LiftContext [container]) (RawCmd innerExe innerArgs))
+        pure (foldLeaf containerContext (RawCmd innerExe innerArgs))
       let script =
             "export "
               ++ registryAuthEnvVar
               ++ "=\"$(cat)\"; exec "
               ++ shellQuoteArgs (toolCommandName Docker : containerArgs)
-      case foldLeaf (LiftContext [provider]) (RawCmd "bash" ["-lc", script]) of
+      case foldLeaf providerContext (RawCmd "bash" ["-lc", script]) of
         DispatchTool tool args | tool /= Docker -> Just (tool, args)
         _ -> Nothing
     _ -> Nothing

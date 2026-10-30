@@ -63,6 +63,8 @@ module HostBootstrap.Effect.Run
     , BoundedRun (..)
     , runBoundedGrouped
     , runBoundedGroupedWithInput
+    , workingDirectoryEntryArguments
+    , runWorkingDirectoryEntry
     )
 where
 
@@ -77,10 +79,19 @@ import Control.Exception
     , try
     )
 import qualified Data.ByteString as ByteString
-import qualified Data.ByteString.Char8 as ByteStringChar
-import System.Exit (ExitCode)
-import System.IO (Handle, hClose, hFlush)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import Data.Text.Encoding.Error (lenientDecode)
+import GHC.Clock (getMonotonicTimeNSec)
+import System.Exit (ExitCode (..), exitWith)
+import System.IO (Handle, hClose, hFlush, hPutStrLn, hSetBinaryMode, stderr)
+import System.IO.Error (isResourceVanishedError, tryIOError)
+#if defined(darwin_HOST_OS)
+import System.Environment (getExecutablePath)
+#endif
 #if !defined(mingw32_HOST_OS)
+import System.Directory (setCurrentDirectory)
+import System.Posix.Process (executeFile)
 import System.Posix.Signals (Signal, nullSignal, sigKILL, sigTERM, signalProcessGroup)
 #endif
 import System.Process
@@ -91,10 +102,13 @@ import System.Process
     , getPid
     , getProcessExitCode
     , proc
-    , readProcessWithExitCode
     , terminateProcess
     , withCreateProcess
+    , waitForProcess
     )
+#if defined(mingw32_HOST_OS)
+import System.Process (use_process_jobs)
+#endif
 import System.Timeout (timeout)
 
 -- ---------------------------------------------------------------------------
@@ -145,12 +159,25 @@ quotes it first with "HostBootstrap.Effect.Quote".
 -}
 runCaptured :: FilePath -> [String] -> String -> IO (Either RunFailure CapturedRun)
 runCaptured executable arguments input = do
-    result <- trySynchronous (readProcessWithExitCode executable arguments input)
-    pure $ case result of
-        Right (code, out, err) ->
-            Right CapturedRun{capturedExit = code, capturedStdout = out, capturedStderr = err}
-        Left cause ->
-            Left RunFailure{failedExecutable = executable, failedCause = show cause}
+    result <- trySynchronous $
+        withCreateProcess
+            (proc executable arguments){std_in = CreatePipe, std_out = CreatePipe, std_err = CreatePipe}
+            $ \inputPipe outputPipe errorPipe process -> case (inputPipe, outputPipe, errorPipe) of
+                (Just inputHandle, Just outputHandle, Just errorHandle) -> do
+                    mapM_ (`hSetBinaryMode` True) [inputHandle, outputHandle, errorHandle]
+                    events <- newChan
+                    _ <- forkIO (readPipe maxBound outputHandle >>= writeChan events . PipeEvent StandardOutput)
+                    _ <- forkIO (readPipe maxBound errorHandle >>= writeChan events . PipeEvent StandardError)
+                    writeRequest inputHandle (TextEncoding.encodeUtf8 (Text.pack input))
+                    closeQuietly inputHandle
+                    drained <- awaitPipes events
+                    case drained of
+                        PipesComplete out err -> do
+                            code <- waitForProcess process
+                            pure CapturedRun{capturedExit = code, capturedStdout = out, capturedStderr = err}
+                        PipesLimitExceeded -> ioError (userError "captured output exceeds the host's addressable size")
+                _ -> ioError (userError "the captured runner did not create all requested pipes")
+    pure (either (\cause -> Left RunFailure{failedExecutable = executable, failedCause = show cause}) Right result)
 
 -- ---------------------------------------------------------------------------
 -- The bounded, group-leading capture
@@ -213,19 +240,44 @@ runBoundedGroupedWithInput bounds namespace executable arguments request = do
     pure (either (BoundedFailed . show) id attempted)
 
 groupedProcess :: RunBounds -> RunNamespace -> FilePath -> [String] -> ByteString.ByteString -> IO BoundedRun
-groupedProcess bounds namespace executable arguments request =
+groupedProcess bounds namespace executable arguments request = do
+    started <- getMonotonicTimeNSec
+#if defined(darwin_HOST_OS)
+    self <- getExecutablePath
+    let processCommand = proc self (workingDirectoryEntryArguments ++ runWorkingDirectory namespace : executable : arguments)
+        processWorkingDirectory = Nothing
+#else
+    let processCommand = proc executable arguments
+        processWorkingDirectory = Just (runWorkingDirectory namespace)
+#endif
+        processSpec =
+            processCommand
+                { create_group = True
+                , close_fds = True
+                , cwd = processWorkingDirectory
+                , env = Just (runEnvironment namespace)
+                , std_in = CreatePipe
+                , std_out = CreatePipe
+                , std_err = CreatePipe
+#if defined(mingw32_HOST_OS)
+                , use_process_jobs = True
+#endif
+                }
+        remainingWall = do
+            now <- getMonotonicTimeNSec
+            pure (max 0 (boundWallMicros bounds - fromIntegral ((now - started) `div` 1000)))
     withCreateProcess processSpec $ \input output errors process -> do
         processGroup <- getPid process
         let tearDown = terminateProcessGroup (boundTerminationGraceMicros bounds) processGroup process
             runProcess =
                 case (input, output, errors) of
                     (Just inputHandle, Just outputHandle, Just errorHandle) -> do
-                        ByteString.hPut inputHandle request
-                        hFlush inputHandle
+                        mapM_ (`hSetBinaryMode` True) [inputHandle, outputHandle, errorHandle]
                         events <- newChan
                         _ <- forkIO (readPipe ceiling' outputHandle >>= writeChan events . PipeEvent StandardOutput)
                         _ <- forkIO (readPipe ceiling' errorHandle >>= writeChan events . PipeEvent StandardError)
-                        drained <- timeout (boundWallMicros bounds) (awaitPipes events)
+                        budget <- remainingWall
+                        drained <- timeout budget (writeRequest inputHandle request >> awaitPipes events)
                         let closeAll = mapM_ closeQuietly [inputHandle, outputHandle, errorHandle]
                         case drained of
                             Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
@@ -236,51 +288,54 @@ groupedProcess bounds namespace executable arguments request =
                                 -- bounds the wait, because a child that closes
                                 -- its streams and then refuses to leave is
                                 -- exactly what the bound is for.
-                                exited <- awaitProcessExit (boundWallMicros bounds) process
+                                remaining <- remainingWall
+                                exited <- awaitProcessExit remaining process
                                 case exited of
                                     Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
-                                    Just code ->
-                                        closeAll >> pure (BoundedCompleted (CapturedRun code out err))
+                                    Just code -> do
+                                        closeAll
+                                        pure (completed code out err)
                     _ -> pure (BoundedFailed "the bounded runner did not create all requested pipes")
         runProcess `onException` tearDown
   where
     ceiling' = boundOutputBytes bounds
 
+    completed code out err =
 #if defined(darwin_HOST_OS)
-    -- process-1.6.26 cannot combine @create_group@, an explicit environment,
-    -- and @cwd@ on macOS. The working directory is therefore established by an
-    -- absolute shell that immediately execs the requested leader: the exec
-    -- preserves the newly created process-group identity, and the shell reads
-    -- no text of its own beyond this fixed positional form. This is the one
-    -- platform-limitation seam § KK leaves the runner, and it is here rather
-    -- than in a caller so both drivers get the same answer.
-    processCommand =
-        proc
-            "/bin/sh"
-            ( [ "-c"
-              , "cd \"$1\" && shift && exec \"$@\""
-              , "hostbootstrap-bounded-runner"
-              , runWorkingDirectory namespace
-              , executable
-              ]
-                ++ arguments
-            )
-    processWorkingDirectory = Nothing
-#else
-    processCommand = proc executable arguments
-    processWorkingDirectory = Just (runWorkingDirectory namespace)
+        if code == ExitFailure 126 && cwdEntryRefusal `Text.isPrefixOf` Text.pack err
+            then BoundedFailed err
+            else
 #endif
+                BoundedCompleted (CapturedRun code out err)
 
-    processSpec =
-        processCommand
-            { create_group = True
-            , close_fds = True
-            , cwd = processWorkingDirectory
-            , env = Just (runEnvironment namespace)
-            , std_in = CreatePipe
-            , std_out = CreatePipe
-            , std_err = CreatePipe
-            }
+-- | The binary's native cwd-and-exec entry, before ordinary command parsing.
+workingDirectoryEntryArguments :: [String]
+workingDirectoryEntryArguments = ["--hostbootstrap-working-directory-entry"]
+
+cwdEntryRefusal :: Text.Text
+cwdEntryRefusal = Text.pack "hostbootstrap working-directory entry: "
+
+-- | Consume @cwd : executable : arguments@ without re-splitting any argument.
+runWorkingDirectoryEntry :: [String] -> IO ()
+runWorkingDirectoryEntry arguments = do
+    attempted <- trySynchronous $ case arguments of
+#if !defined(mingw32_HOST_OS)
+        directory : executable : argv -> setCurrentDirectory directory >> executeFile executable False argv Nothing
+#else
+        _ : _ : _ -> ioError (userError "native cwd-and-exec is unavailable on Windows")
+#endif
+        _ -> ioError (userError "expected a working directory and executable")
+    either
+        (\failure -> hPutStrLn stderr (Text.unpack cwdEntryRefusal ++ show failure) >> exitWith (ExitFailure 126))
+        pure
+        attempted
+
+writeRequest :: Handle -> ByteString.ByteString -> IO ()
+writeRequest handle request = do
+    written <- tryIOError (ByteString.hPut handle request >> hFlush handle)
+    case written of
+        Left failure | not (isResourceVanishedError failure) -> ioError failure
+        _ -> pure ()
 
 -- ---------------------------------------------------------------------------
 -- Reading both pipes without deadlocking on either
@@ -307,7 +362,7 @@ readPipe ceilingBytes handle = trySynchronous (drain 0 [])
     drain total chunks = do
         chunk <- ByteString.hGetSome handle pipeChunkBytes
         if ByteString.null chunk
-            then pure (PipeComplete (ByteStringChar.unpack (ByteString.concat (reverse chunks))))
+            then pure (PipeComplete (Text.unpack (TextEncoding.decodeUtf8With lenientDecode (ByteString.concat (reverse chunks)))))
             else
                 let nextTotal = total + ByteString.length chunk
                  in if nextTotal > ceilingBytes
@@ -428,8 +483,8 @@ descendants a teardown is trying to reach rather than about the leader alone.
 -}
 groupPresent :: Maybe Pid -> IO Bool
 #if defined(mingw32_HOST_OS)
--- There is no process group to probe: the job the launcher holds is the leader,
--- and 'terminateProcess' is what ends it.
+-- The Windows process handle owns a job object; terminateProcess ends its
+-- descendants, and getProcessExitCode observes the leader's completed teardown.
 groupPresent _ = pure False
 #else
 groupPresent Nothing = pure False

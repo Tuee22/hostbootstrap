@@ -6,13 +6,17 @@
 
 module ContextSpec (tests) where
 
-import Control.Exception (finally, try)
+import Control.Exception (bracket, finally, try)
+import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import qualified Dhall
 import qualified Fixture
+import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     ProjectVerb (ProjectUp),
@@ -34,6 +38,13 @@ import HostBootstrap.Config.Class (
     pureConfigAssembly,
  )
 import qualified HostBootstrap.Config.Schema as Schema
+import HostBootstrap.Config.Fields (
+    ScopeKind (ProductionScope),
+    decodeRoleWire,
+    inspectLocalContext,
+    renderRoleWire,
+    renderValidatedServiceRequest,
+ )
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Context
 import HostBootstrap.DocValidator (findRepoRoot)
@@ -81,6 +92,24 @@ import HostBootstrap.Protected (
     recordKeyText,
     withProtectedEntry,
  )
+import HostBootstrap.RoleLifecycle (
+    DeclaredEffects (NoEffects),
+    RoleAcquireOutcome (Acquired),
+    RolePrereqOutcome (PrereqSatisfied),
+    RoleProbeOutcome (ProbeReadyNow),
+    RoleReleaseOutcome (Released),
+    mkRoleResourceRequest,
+    rolePlanDraft,
+ )
+import HostBootstrap.Service (
+    ServiceResourceBackend (..),
+    serviceId,
+    serviceProgramDefinition,
+    singletonServiceRegistry,
+    withFinalizedServiceRegistry,
+    withSelectedServiceProgram,
+ )
+import HostBootstrap.Service.Program (ServiceBackend (..))
 import HostBootstrap.Step (
     Step,
     StepFrame (StepFrame),
@@ -93,12 +122,13 @@ import HostBootstrap.Step (
     ensureStep,
     mkStepPlan,
  )
-import System.Directory (canonicalizePath, doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure))
 import System.FilePath (takeDirectory, (</>))
-import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty (TestTree, testGroup)
+import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hSeek, stderr)
+import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
+import Test.Tasty (TestTree, localOption, mkTimeout, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 {- | Run @project init@ at the executable's own sibling path under one @--role@
@@ -141,14 +171,22 @@ withRestoredFiles paths action = do
   where
     save path = do
         present <- doesFileExist path
-        if present then Just . (,) path <$> ByteString.readFile path else pure Nothing
-    restore Nothing = pure ()
-    restore (Just (path, bytes)) = ByteString.writeFile path bytes
+        bytes <- if present then Just <$> ByteString.readFile path else pure Nothing
+        pure (path, bytes)
+    restore (path, Nothing) = removeIfPresent path
+    restore (path, Just bytes) = ByteString.writeFile path bytes
 
 removeIfPresent :: FilePath -> IO ()
 removeIfPresent path = do
     present <- doesFileExist path
     if present then removeFile path else pure ()
+
+restoredSiblingFixturePaths :: FilePath -> [FilePath]
+restoredSiblingFixturePaths directory =
+    (directory </> "fixture-test.dhall")
+        : map
+            ((directory </> "fixture-test") <>)
+            [".handoff.key", ".handoff.pub", ".build.key", ".activation.key", ".activation.pub"]
 
 sampleContext :: BinaryContext
 sampleContext =
@@ -198,6 +236,13 @@ fixtureSpec ::
     String ->
     ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 fixtureSpec progName =
+    fixtureSpecWithCheckCode progName (pure ())
+
+fixtureSpecWithCheckCode ::
+    String ->
+    IO () ->
+    ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
+fixtureSpecWithCheckCode progName checkAction =
     either (error . show) id $
         finalizeProjectSpec $
             addSteps
@@ -205,7 +250,7 @@ fixtureSpec progName =
                 ( addForwardChildPlan Fixture.refusingForwardChildPlan $
                     projectSpec
                         passingSuite
-                        (pure ())
+                        checkAction
                         []
                         Fixture.testConfigCodec
                         (const (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")))
@@ -230,11 +275,6 @@ runHostBootstrapCLI spec = do
     projectName <- executableProjectName
     CLI.runHostBootstrapCLI (T.unpack projectName) spec
 
-runBareHostBootstrapCLI :: IO ()
-runBareHostBootstrapCLI = do
-    projectName <- executableProjectName
-    CLI.runBareHostBootstrapCLI (T.unpack projectName)
-
 executableProjectName :: IO T.Text
 executableProjectName = normalizeExecutableIdentity <$> getExecutablePath
 
@@ -246,10 +286,7 @@ tests :: TestTree
 tests =
     testGroup
         "ContextSpec"
-        [ testCase "rendered context decodes back to the same value" $ do
-            decoded <- decodeContextText (renderContext sampleContext)
-            decoded @?= sampleContext
-        , testCase "renderComposition renders the lift chain with the current frame highlighted" $
+        [ testCase "renderComposition renders the lift chain with the current frame highlighted" $
             renderComposition sampleContext
                 @?= unlines
                     [ "composition (3 frames; current = vm-project-container-2):"
@@ -260,19 +297,6 @@ tests =
         , testCase "projectConfigPathForExecutable uses the executable directory" $ do
             let exe = "/tmp/bin/demo"
             Schema.projectConfigPathForExecutable "demo" exe @?= takeDirectory exe </> "demo.dhall"
-        , testCase "readContextFile reports a missing file" $
-            withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
-                let path = dir </> "context.dhall"
-                loaded <- readContextFile path
-                loaded @?= Left (ContextMissing path)
-        , testCase "readContextFile reports a decode failure" $
-            withContextFile "not a dhall record" $ \path -> do
-                loaded <- readContextFile path
-                case loaded of
-                    Left (ContextDecodeFailed failedPath msg) -> do
-                        failedPath @?= path
-                        assertBool "decode error names the bad input" (not (null msg))
-                    other -> assertFailure ("expected ContextDecodeFailed, got " ++ show other)
         , testCase "validateContext accepts a matching command context" $
             validateContext testRequirement sampleContext @?= Right sampleContext
         , testCase "validateContext rejects a project mismatch" $
@@ -298,10 +322,7 @@ tests =
             capabilities host @?= [HostTools, IncusProvider]
             childContextKinds host @?= [VMOrchestrator, ClusterService, Daemon, OneShotJob, TestHarness]
         , testCase "a cyclic parent chain is refused instead of diverging" $ do
-            -- The ancestor walk follows topologyParentId with no memory of
-            -- where it has been, so before the total validator a config whose
-            -- frames name each other as parents looped forever. This case is
-            -- the regression guard: it must terminate with a refusal.
+            -- Root cardinality precedes ancestry, so this cycle is rootless.
             let cyclic =
                     sampleContext
                         { topologyFrames =
@@ -312,11 +333,8 @@ tests =
                         , contextKind = HostOrchestrator
                         , parentChain = []
                         }
-            case validateTopology cyclic of
-                Left (ContextTopologyRootCount 0) -> pure ()
-                Left (ContextTopologyCycle _) -> pure ()
-                other -> assertFailure ("expected a cycle refusal, got " ++ show other)
-        , testCase "a cycle below a real root is refused, not walked forever" $ do
+            validateTopology cyclic @?= Left (ContextTopologyRootCount 0)
+        , localOption (mkTimeout 5000000) $ testCase "a cycle below a real root is refused, not walked forever" $ do
             let cyclic =
                     sampleContext
                         { topologyFrames =
@@ -328,10 +346,19 @@ tests =
                         , contextKind = HostOrchestrator
                         , parentChain = []
                         }
-            case validateTopology cyclic of
-                Left (ContextTopologyCycle _) -> pure ()
-                Left (ContextTopologyUnreachable _) -> pure ()
-                other -> assertFailure ("expected a cycle refusal, got " ++ show other)
+            validateTopology cyclic @?= Left (ContextTopologyCycle "x")
+        , testCase "a missing topology parent is refused before walking ancestry" $ do
+            let dangling =
+                    sampleContext
+                        { topologyFrames =
+                            [ TopologyFrame "root" "" HostProvider HostOrchestrator "root"
+                            , TopologyFrame "child" "ghost" IncusVMProvider VMOrchestrator "child"
+                            ]
+                        , currentFrame = "root"
+                        , contextKind = HostOrchestrator
+                        , parentChain = []
+                        }
+            validateTopology dangling @?= Left (ContextTopologyParentMissing "child" "ghost")
         , testCase "duplicate frame identifiers are refused" $ do
             let duplicated =
                     sampleContext
@@ -357,7 +384,7 @@ tests =
                                 ++ [TopologyFrame "other-root" "" HostProvider HostOrchestrator "other"]
                         }
             validateTopology twoRoots @?= Left (ContextTopologyRootCount 2)
-        , testCase "an unreachable frame is refused" $ do
+        , localOption (mkTimeout 5000000) $ testCase "a detached two-frame cycle is refused" $ do
             let orphaned =
                     sampleContext
                         { topologyFrames =
@@ -366,10 +393,7 @@ tests =
                                    , TopologyFrame "island-b" "island-a" HostProvider ClusterService "b"
                                    ]
                         }
-            case validateTopology orphaned of
-                Left (ContextTopologyCycle _) -> pure ()
-                Left (ContextTopologyUnreachable _) -> pure ()
-                other -> assertFailure ("expected an unreachable/cycle refusal, got " ++ show other)
+            validateTopology orphaned @?= Left (ContextTopologyCycle "island-a")
         , testCase "an illegal child kind is refused" $ do
             let illegal =
                     sampleContext
@@ -420,13 +444,8 @@ tests =
                 other ->
                     assertFailure
                         ("expected a refused role addition, got " ++ show (fmap contextKind other))
-            -- and the daemon still cannot run project lifecycle verbs
-            case addRole HostOrchestrator daemon of
-                Right granted ->
-                    assertBool
-                        "a refused addition must not grant ProjectCommand"
-                        (not (commandAllowed granted ProjectCommand))
-                Left _ -> pure ()
+            addRole OneShotJob daemon @?= Left (ContextRoleAdditionRefused Daemon OneShotJob)
+            addRole VMProjectContainer daemon @?= Left (ContextRoleAdditionRefused Daemon VMProjectContainer)
         , testCase "an image-build container cannot union cluster-lifecycle authority" $ do
             let build =
                     contextForKind "demo" "demo" "/workspace/demo" ImageBuildContainer
@@ -451,20 +470,10 @@ tests =
                     contextForKind "demo" "demo" "/workspace/demo" ClusterService
             addRole ClusterService service @?= Right service
         , testCase "roleAdditionAllowed is closed over every kind pair" $ do
-            let kinds =
-                    [ HostOrchestrator
-                    , VMOrchestrator
-                    , VMProjectContainer
-                    , ImageBuildContainer
-                    , ClusterService
-                    , Daemon
-                    , OneShotJob
-                    , TestHarness
-                    ]
-                permitted =
+            let permitted =
                     [ (primary, role)
-                    | primary <- kinds
-                    , role <- kinds
+                    | primary <- allContextKinds
+                    , role <- allContextKinds
                     , roleAdditionAllowed primary role
                     ]
             -- Exactly the leaf-to-leaf service pairs, and nothing else.
@@ -545,21 +554,49 @@ tests =
                 ( RuntimeWitness WitnessFileExists "/var/run/secrets/kubernetes.io/serviceaccount/token" ""
                     `elem` runtimeWitnesses clusterDaemon
                 )
-        , testCase "wrong-frame daemon witness fails before daemon dispatch" $ do
+        , testCase "only a cluster daemon may acquire cluster-service authority" $ do
             let host =
                     hostOrchestratorContext
                         "demo"
                         "demo"
                         "/workspace/demo"
-                badWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "daemon-1"
-                daemon = (deriveHostDaemonContext host "/workspace/daemon"){runtimeWitnesses = [badWitness]}
-                req = contextRequirement "demo" ServiceCommand []
-            result <- validateRuntimeContext req daemon
-            case result of
-                Left (ContextRuntimeWitnessFailed witness detail) -> do
-                    witness @?= badWitness
-                    assertBool "env witness reports a frame mismatch" ("environment HOSTBOOTSTRAP_CURRENT_FRAME" `isInfixOfS` detail)
-                other -> assertFailure ("expected runtime witness failure, got " ++ show other)
+                vm = deriveVMContextWithProvider LimaVMProvider host "/vm/demo"
+                container = deriveContainerContext vm "/workspace/demo"
+                hostDaemon = deriveHostDaemonContext host "/workspace/daemon"
+                clusterDaemon = deriveClusterDaemonContext container "/srv/daemon"
+            validateTopology hostDaemon @?= Right ()
+            validateTopology clusterDaemon @?= Right ()
+            providerOf hostDaemon @?= Just HostProvider
+            providerOf clusterDaemon @?= Just KubernetesProvider
+            addRole ClusterService hostDaemon
+                @?= Left (ContextRoleAdditionRefused Daemon ClusterService)
+            case addRole ClusterService clusterDaemon of
+                Left failure -> assertFailure ("expected cluster-service authority, got " ++ show failure)
+                Right granted -> do
+                    contextKind granted @?= Daemon
+                    contextPlacement granted @?= Right ClusterDaemonPlacement
+                    commandAllowed granted ServiceCommand @?= True
+                    assertBool "cluster-service authority includes the Kubernetes API" $
+                        KubernetesAPI `elem` capabilities granted
+        , testCase "wrong-frame daemon witness fails before daemon dispatch" $
+            withEnvironmentValue "HOSTBOOTSTRAP_CURRENT_FRAME" (Just "host-orchestrator-0") $ do
+                let host =
+                        hostOrchestratorContext
+                            "demo"
+                            "demo"
+                            "/workspace/demo"
+                    daemon = deriveHostDaemonContext host "/workspace/daemon"
+                    expectedWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame daemon)
+                    req = contextRequirement "demo" ServiceCommand []
+                contextRequiredWitnesses daemon @?= Right (runtimeWitnesses daemon)
+                result <- validateRuntimeContext req daemon
+                case result of
+                    Left (ContextRuntimeWitnessFailed witness detail) -> do
+                        witness @?= expectedWitness
+                        assertBool
+                            "env witness reports the actual wrong frame"
+                            ("environment HOSTBOOTSTRAP_CURRENT_FRAME was \"host-orchestrator-0\"" `isInfixOfS` detail)
+                    other -> assertFailure ("expected runtime witness failure, got " ++ show other)
         , testCase "standaloneContainerContext is the Dockerfile bootstrap context" $ do
             let ctr = standaloneContainerContext "demo" "demo" "/workspace/demo"
             contextKind ctr @?= ImageBuildContainer
@@ -656,6 +693,21 @@ tests =
             let irrelevant = RuntimeWitness WitnessExecutable "sudo" ""
             validateContext req ctr{runtimeWitnesses = irrelevant : runtimeWitnesses ctr}
                 @?= Left (ContextWitnessSetMismatch [] [irrelevant])
+        , testCase "a stale frame witness diagnostic names the expected and declared values" $ do
+            let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+                daemon = deriveHostDaemonContext host "/workspace/daemon"
+                expectedWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame daemon)
+                declaredWitness = RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" "retired-daemon-frame"
+                stale = daemon{runtimeWitnesses = [declaredWitness]}
+                expectedFailure = ContextWitnessSetMismatch [expectedWitness] [declaredWitness]
+            validateContext (contextRequirement "demo" ServiceCommand []) stale @?= Left expectedFailure
+            let diagnostic = contextErrorMessage expectedFailure
+            assertBool "diagnostic identifies the frame witness kind and name" $
+                "WitnessEnvEquals \"HOSTBOOTSTRAP_CURRENT_FRAME\"" `isInfixOfS` diagnostic
+            assertBool "diagnostic includes the expected frame" $
+                T.unpack (currentFrame daemon) `isInfixOfS` diagnostic
+            assertBool "diagnostic includes the declared stale frame" $
+                "retired-daemon-frame" `isInfixOfS` diagnostic
         , testCase "a forged leaf config cannot self-declare orchestration authority" $ do
             -- `allowedCommandClasses` is a DECLARED list: `addRole` refuses the
             -- pair, but the bytes on disk are the operator's. The placement the
@@ -730,6 +782,8 @@ tests =
             let placements =
                     [ HostOrchestratorPlacement
                     , VMOrchestratorPlacement IncusVMProvider
+                    , VMOrchestratorPlacement LimaVMProvider
+                    , VMOrchestratorPlacement Wsl2VMProvider
                     , VMBackedProjectContainerPlacement
                     , DirectLinuxGpuContainerPlacement
                     , ImageBuildContainerPlacement
@@ -739,40 +793,45 @@ tests =
                     , OneShotJobPlacement
                     , TestHarnessPlacement
                     ]
-                lifecycleRefused =
-                    [ (placement, cls)
-                    | placement <- placements
-                    , cls <- [ClusterLifecycleCommand, HostOrchestratorCommand]
-                    , not (placementAllowsCommand placement True cls)
-                    ]
-            -- Only the four leaves plus the image-build container are refused
-            -- `up`; every non-host placement is refused the unwind.
-            map fst (filter ((== ClusterLifecycleCommand) . snd) lifecycleRefused)
-                @?= [ ImageBuildContainerPlacement
-                    , ClusterServicePlacement
-                    , ClusterDaemonPlacement
-                    , HostDaemonPlacement
-                    , OneShotJobPlacement
-                    ]
-            map fst (filter ((== HostOrchestratorCommand) . snd) lifecycleRefused)
-                @?= filter (/= HostOrchestratorPlacement) placements
-            -- and no other class is placement-indexed
-            [ (placement, cls)
-              | placement <- placements
-              , cls <-
+                classes =
                     [ EnsureCommand
                     , ConfigInspectionCommand
                     , ConfigGenerationCommand
                     , ContextCreationCommand
+                    , ClusterLifecycleCommand
                     , TestWorkflowCommand
                     , CheckCodeCommand
+                    , HostOrchestratorCommand
                     , DaemonCommand
                     , ServiceCommand
                     , ProjectCommand
                     ]
-              , not (placementAllowsCommand placement False cls)
-              ]
-                @?= []
+                refused atRoot =
+                    [ (placement, cls)
+                    | placement <- placements
+                    , cls <- classes
+                    , not (placementAllowsCommand placement atRoot cls)
+                    ]
+                host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
+            forM_ [IncusVMProvider, LimaVMProvider, Wsl2VMProvider] $ \provider ->
+                contextPlacement (deriveVMContextWithProvider provider host "/vm/demo")
+                    @?= Right (VMOrchestratorPlacement provider)
+            forM_ [False, True] $ \atRoot -> do
+                let actualRefusals = refused atRoot
+                -- The five leaves cannot interpret `up` at either root-ness.
+                map fst (filter ((== ClusterLifecycleCommand) . snd) actualRefusals)
+                    @?= [ ImageBuildContainerPlacement
+                        , ClusterServicePlacement
+                        , ClusterDaemonPlacement
+                        , HostDaemonPlacement
+                        , OneShotJobPlacement
+                        ]
+                map fst (filter ((== HostOrchestratorCommand) . snd) actualRefusals)
+                    @?= (if atRoot then filter (/= HostOrchestratorPlacement) placements else placements)
+                filter (\(_, cls) -> cls `notElem` [ClusterLifecycleCommand, HostOrchestratorCommand]) actualRefusals
+                    @?= []
+            placementAllowsCommand HostOrchestratorPlacement False HostOrchestratorCommand @?= False
+            placementAllowsCommand HostOrchestratorPlacement True HostOrchestratorCommand @?= True
         , testCase "a kind its provider cannot own is refused before authorization" $ do
             let host = hostOrchestratorContext "demo" "demo" "/workspace/demo"
                 svc = deriveServiceContext host "/srv/demo"
@@ -809,52 +868,83 @@ tests =
                                 )
                         )
                 -- With the exact required set declared, the environment decides.
-                result <- validateRuntimeContext req daemon
-                case result of
-                    Left (ContextRuntimeWitnessFailed witness detail) -> do
-                        witness @?= RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame daemon)
-                        assertBool
-                            "reports the unset frame variable"
-                            ("HOSTBOOTSTRAP_CURRENT_FRAME" `isInfixOfS` detail)
-                    other -> assertFailure ("expected a runtime witness failure, got " ++ show other)
-        , testCase "writeContextFile writes Dhall that decodes back" $
-            withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
-                let path = dir </> "context.dhall"
-                writeContextFile path sampleContext
-                decoded <- decodeContextFile path
-                decoded @?= sampleContext
-        , testCase "withValidatedContext does not run side effects when the gate fails" $ do
-            ran <- newIORef False
-            result <-
-                withValidatedContext
-                    sampleContext
-                    testRequirement{requiredCommandClass = HostOrchestratorCommand}
-                    (writeIORef ran True)
-            result @?= Left (ContextCommandNotAllowed HostOrchestratorCommand VMProjectContainer)
-            readIORef ran >>= (@?= False)
-        , testCase "requireContextFile exits 1 on a missing context" $
-            withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
-                let path = dir </> "context.dhall"
-                result <- try (requireContextFile path testRequirement) :: IO (Either ExitCode BinaryContext)
-                result @?= Left (ExitFailure 1)
+                withEnvironmentValue "HOSTBOOTSTRAP_CURRENT_FRAME" Nothing $ do
+                    result <- validateRuntimeContext req daemon
+                    case result of
+                        Left (ContextRuntimeWitnessFailed witness detail) -> do
+                            witness @?= RuntimeWitness WitnessEnvEquals "HOSTBOOTSTRAP_CURRENT_FRAME" (currentFrame daemon)
+                            assertBool
+                                "reports the unset frame variable"
+                                ("HOSTBOOTSTRAP_CURRENT_FRAME is unset" `isInfixOfS` detail)
+                        other -> assertFailure ("expected a runtime witness failure, got " ++ show other)
         , testCase "normal CLI commands fail fast when the sibling context is absent" $ do
-            result <-
-                try (withArgs ["check-code"] runBareHostBootstrapCLI) ::
-                    IO (Either ExitCode ())
-            result @?= Left (ExitFailure 1)
+            projectName <- executableProjectName
+            path <- Schema.siblingProjectConfigPath projectName
+            withRestoredFiles [path] $ do
+                removeIfPresent path
+                assertSiblingGateRefuses
+                    projectName
+                    CheckCodeCommand
+                    ("project config: missing " <> path <> "; run `" <> T.unpack projectName <> " project init`")
+        , testCase "the sibling gate refuses invalid UTF-8 before running its callback" $ do
+            projectName <- executableProjectName
+            path <- Schema.siblingProjectConfigPath projectName
+            let invalidBytes = ByteString.pack [0xff]
+            case TE.decodeUtf8' invalidBytes of
+                Right _ -> assertFailure "the invalid UTF-8 fixture decoded successfully"
+                Left decodeFailure ->
+                    withRestoredFiles [path] $ do
+                        ByteString.writeFile path invalidBytes
+                        assertSiblingGateRefuses
+                            projectName
+                            CheckCodeCommand
+                            ("project config: failed to decode UTF-8 in " <> path <> ": " <> takeWhile (/= '\n') (show decodeFailure))
+        , testCase "the sibling gate refuses an unauthorized context before running its callback" $ do
+            projectName <- executableProjectName
+            path <- Schema.siblingProjectConfigPath projectName
+            let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+            withRestoredFiles [path] $ do
+                Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg
+                assertSiblingGateRefuses
+                    projectName
+                    ServiceCommand
+                    "binary context: command ServiceCommand is not allowed in HostOrchestrator"
         , testCase "normal CLI commands run when the sibling project config authorizes them" $ do
             projectName <- executableProjectName
             path <- Schema.siblingProjectConfigPath projectName
             let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
                 spec = fixtureSpec (T.unpack projectName)
-            ( do
-                    Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg
-                    result <-
-                        try (withArgs ["check-code"] (runHostBootstrapCLI spec)) ::
-                            IO (Either ExitCode ())
-                    result @?= Right ()
-                )
-                `finally` removeFile path
+            withRestoredFiles [path] $ do
+                Schema.writeProjectConfigFile Fixture.projectConfigCodec path cfg
+                result <-
+                    try (withArgs ["check-code"] (runHostBootstrapCLI spec)) ::
+                        IO (Either ExitCode ())
+                result @?= Right ()
+        , testCase "service-role siblings refuse project gates and check-code before callbacks" $ do
+            projectName <- executableProjectName
+            path <- Schema.siblingProjectConfigPath projectName
+            roleWire <- renderSiblingServiceWire projectName
+            let bytes = TE.encodeUtf8 roleWire
+            withRestoredFiles [path] $ do
+                ByteString.writeFile path bytes
+                withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+                    called <- newIORef False
+                    (result, diagnostic) <-
+                        captureSiblingGateStderr $
+                            Schema.withSiblingProjectConfigContext codec projectName CheckCodeCommand [] $ \_ _ ->
+                                writeIORef called True
+                    result @?= Left (ExitFailure 1)
+                    readIORef called >>= (@?= False)
+                    assertServiceWireRefusal path diagnostic
+                checked <- newIORef False
+                let spec = fixtureSpecWithCheckCode (T.unpack projectName) (writeIORef checked True)
+                (result, diagnostic) <-
+                    captureSiblingGateStderr $
+                        withArgs ["check-code"] (runHostBootstrapCLI spec)
+                result @?= Left (ExitFailure 1)
+                readIORef checked >>= (@?= False)
+                assertServiceWireRefusal path diagnostic
+                ByteString.readFile path >>= (@?= bytes)
         , testCase "project init writes a project-local config before sibling context gating" $
             withSystemTempDirectory "hostbootstrap-config-init" $ \dir -> do
                 projectName <- executableProjectName
@@ -909,12 +999,11 @@ tests =
                 cfgDockerfile @?= "docker/Dockerfile"
                 cfgResources @?= Fixture.Resources 4 "8GiB" "20GiB"
                 cfgDeploy @?= Fixture.DeployConfig 1
-        , testCase "project init records the absolute current directory when source-root is omitted" $
+        , testCase "project init leaves an omitted source-root to the project assembler" $
             withSystemTempDirectory "hostbootstrap-config-init-root" $ \dir ->
                 withSystemTempDirectory "hostbootstrap-config-init-source" $ \source -> do
                     projectName <- executableProjectName
-                    let path = dir </> T.unpack projectName <> ".dhall"
-                    expected <- canonicalizePath source
+                    let path = dir </> "demo.dhall"
                     withCurrentDirectory source $
                         withArgs
                             [ "project"
@@ -924,7 +1013,32 @@ tests =
                             ]
                             (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
                     Fixture.ProjectConfig _ _ cfgContext _ <- Fixture.decodeProjectConfigFile path
-                    sourceRoot cfgContext @?= T.pack expected
+                    sourceRoot cfgContext @?= "."
+        , testCase "withRestoredFiles removes all six siblings that were originally absent" $
+            withSystemTempDirectory "hostbootstrap-restored-absent" $ \directory -> do
+                let paths = restoredSiblingFixturePaths directory
+                traverse doesFileExist paths >>= (@?= replicate 6 False)
+                ran <- newIORef False
+                withRestoredFiles paths $ do
+                    writeIORef ran True
+                    traverse_ (\path -> ByteString.writeFile path (ByteString.pack [0, 255, 13, 10])) paths
+                    traverse doesFileExist paths >>= (@?= replicate 6 True)
+                readIORef ran >>= (@?= True)
+                traverse doesFileExist paths >>= (@?= replicate 6 False)
+        , testCase "withRestoredFiles restores each existing sibling's exact binary bytes" $
+            withSystemTempDirectory "hostbootstrap-restored-existing" $ \directory -> do
+                let paths = restoredSiblingFixturePaths directory
+                    originals =
+                        [ (path, ByteString.pack [0, 255, index, 13, 10, 128])
+                        | (path, index) <- zip paths [1 .. 6]
+                        ]
+                traverse_ (uncurry ByteString.writeFile) originals
+                ran <- newIORef False
+                withRestoredFiles paths $ do
+                    writeIORef ran True
+                    traverse_ (\path -> ByteString.writeFile path "replacement bytes") paths
+                readIORef ran >>= (@?= True)
+                traverse ByteString.readFile paths >>= (@?= map snd originals)
         , testCase "project init provisions the root identity under every spelling of the default role" $
             -- The provisioning decision is about the role, and --role accepts
             -- aliases and normalises case and separators. A config written
@@ -1323,7 +1437,7 @@ lifecycleContextAdmissionTests =
         , testCase "refuses a same-path protected store with another durable identity" $
             withLifecycleContextPlan id twoFramePlan $ \root store plan context -> do
                 let storeRoot = protectedStoreRoot store
-                TIO.writeFile (storeRoot </> "store.identity") "replacement-store-origin\n"
+                ByteString.writeFile (storeRoot </> "store.identity") "hbps2 replacement-store-origin\n"
                 replacement <-
                     openProtectedStore storeRoot >>= either (fail . show) pure
                 protectedStoreRoot replacement @?= storeRoot
@@ -1781,15 +1895,82 @@ observeProtectedStore store = do
                     pure (sequence records)
     either (fail . show) pure observed
 
-withContextFile :: String -> (FilePath -> IO a) -> IO a
-withContextFile body action =
-    withSystemTempDirectory "hostbootstrap-context" $ \dir -> do
-        let path = dir </> "context.dhall"
-        TIO.writeFile path (fromString body)
-        action path
+assertSiblingGateRefuses :: T.Text -> CommandClass -> String -> IO ()
+assertSiblingGateRefuses projectName command expectedDiagnostic =
+    withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+        ran <- newIORef False
+        (result, diagnostic) <-
+            captureSiblingGateStderr $
+                Schema.withSiblingProjectConfigContext codec projectName command [] $ \_ _ ->
+                    writeIORef ran True
+        result @?= Left (ExitFailure 1)
+        readIORef ran >>= (@?= False)
+        T.unpack diagnostic @?= expectedDiagnostic <> "\n"
 
-fromString :: String -> T.Text
-fromString = T.pack
+renderSiblingServiceWire :: T.Text -> IO T.Text
+renderSiblingServiceWire projectName = do
+    identity <- either assertFailure pure (serviceId "context-fixture")
+    request <- either (assertFailure . show) pure (mkRoleResourceRequest "fixture" False)
+    draft <- either (assertFailure . show) pure (rolePlanDraft [request])
+    let resources =
+            ServiceResourceBackend
+                { serviceRolePlanDraft = draft
+                , servicePrerequisite = pure PrereqSatisfied
+                , serviceAcquireResource = \_ -> pure Acquired
+                , serviceProbeResource = \_ -> pure ProbeReadyNow
+                , serviceReleaseResource = \_ -> pure Released
+                }
+        backend :: ServiceBackend ()
+        backend =
+            ServiceBackend
+                { backendServe = \_ -> pure (Left "context fixture declares no effects")
+                , backendCall = \_ _ -> pure (Left "context fixture declares no effects")
+                , backendWork = \_ _ -> pure (Left "context fixture declares no effects")
+                }
+        registry =
+            singletonServiceRegistry $
+                serviceProgramDefinition
+                    identity
+                    (\_ -> Right (Just ("fixture service fields" :: T.Text)))
+                    NoEffects
+                    resources
+                    backend
+                    (\_ -> pure ())
+        cfg = Fixture.defaultProjectConfig projectName "." ClusterService
+    withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \baseCodec ->
+        withFinalizedServiceRegistry ProductionScope baseCodec registry $ \_ finalized ->
+            case withSelectedServiceProgram
+                "projection-only"
+                (inspectLocalContext (Fixture.context cfg))
+                cfg
+                finalized
+                (\_ codec selected _ _ _ _ -> do
+                    decoded <- decodeRoleWire codec Dhall.defaultInputSettings (renderValidatedServiceRequest codec selected)
+                    wire <- either assertFailure pure decoded
+                    pure (renderRoleWire codec wire)
+                ) of
+                Left failure -> assertFailure failure
+                Right rendered -> rendered
+
+assertServiceWireRefusal :: FilePath -> T.Text -> IO ()
+assertServiceWireRefusal path diagnostic = do
+    diagnostic
+        @?= T.pack ("project config: " <> path <> " holds a service role wire; this command requires a full project config\n")
+    assertBool "the role-wire refusal precedes the full-config decoder" $
+        not ("failed to decode" `T.isInfixOf` diagnostic)
+
+captureSiblingGateStderr :: IO () -> IO (Either ExitCode (), T.Text)
+captureSiblingGateStderr action =
+    withSystemTempFile "hostbootstrap-context-stderr" $ \_ captured -> do
+        hFlush stderr
+        result <-
+            bracket
+                (hDuplicate stderr)
+                (\saved -> hFlush stderr `finally` (hDuplicateTo saved stderr `finally` hClose saved))
+                (\_ -> hDuplicateTo captured stderr >> try action)
+        hSeek captured AbsoluteSeek 0
+        diagnostic <- TIO.hGetContents captured
+        pure (result, diagnostic)
 
 providerOf :: BinaryContext -> Maybe ProviderKind
 providerOf ctx =

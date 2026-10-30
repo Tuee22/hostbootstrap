@@ -16,6 +16,7 @@ the same size everywhere, which is what "CoverageManifest" checks.
 -}
 module WslGlobalWallWindowsSpec (tests) where
 
+import ConditionalCase (conditionalCase)
 import Control.Exception (bracket)
 import qualified Data.ByteString as ByteString
 import Expect (expectRightLabelled)
@@ -67,11 +68,12 @@ the case stays and asserts the refusal the row declares.
 -}
 rowCase :: TestName -> (FilePath -> IO ()) -> TestTree
 rowCase name body =
-    testCase name $
-        withTemporaryProfile $ \profile ->
-            if windowsGlobalWallSupported
-                then body profile
-                else expectRowRefusal
+    conditionalCase
+        ["WslGlobalWallWindowsSpec"]
+        windowsGlobalWallSupported
+        name
+        (withTemporaryProfile body)
+        (withTemporaryProfile (const expectRowRefusal))
 
 {- | The disposition the Win32 row owes a caller on a host that is not Windows.
 

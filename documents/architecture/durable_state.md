@@ -256,12 +256,25 @@ Apple, NVIDIA, and Windows acceptance phases record the same invariant through t
 ## Root authority and alias target
 
 Root-config admission resolves relative `sourceRoot` against the stable project-home anchor owned by the
-selected root config—not caller `cwd` or the executable's sibling `.build` directory—then verifies and
-canonicalizes it once. Its rank-2 `CanonicalProjectRoot scope rootId` retains the exact config/lifecycle
-`scope` already in force and mints only the fresh `rootId`; it is the only source of direct-host durable
-paths. `CanonicalHostPath` construction is private, and the host-bind adapter requires the root
-and path to carry the same `scope`/`rootId`; raw `FilePath`, redirected roots, and cross-root projections
-are rejected.
+selected root config, then verifies and canonicalizes it once. For a config in `.build`, the anchor is
+the parent of that directory; otherwise it is the config's containing directory. A relative root must
+resolve to the canonical anchor or a directory beneath it. The comparison includes a trailing separator,
+so a sibling such as `project-evil` cannot satisfy confinement under `project`. Admission checks the
+canonical root, so a link that redirects a relative root outside the anchor is refused. An absolute configured root is exempt
+from relative confinement.
+
+[`withCanonicalProjectRoot`](../../core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs) mints only
+the fresh rank-2 `rootId` in `CanonicalProjectRoot scope rootId` and takes no scope witness. The caller's
+consumer fixes `scope` by unification.
+[`withSiblingValidatedProjectConfigRoot`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs)
+is the admission that binds that scope to its config codec. The root is the source of direct-host durable
+paths, and its identity cannot escape the continuation that admitted it. Missing roots, wrong-kind
+paths, escapes, and resolution failures, including an embedded NUL, return a typed refusal before the
+continuation runs.
+
+Both root and path make `scope` and `rootId` nominal, so coercion cannot relabel their admission.
+`CanonicalHostPath` construction is private, and the host-bind adapter requires the root and path to
+carry the same `scope`/`rootId`; raw `FilePath`, redirected roots, and cross-root projections are rejected.
 
 `ProjectPlan` admission retains the canonical root under the exact lifecycle scope, and its pure reverse
 projection preserves the same plan and frame identities. The target contract derives every durable-path
@@ -422,9 +435,11 @@ not here.
    same-privilege process between observation and mutation is reported as `Conflict` with
    expected/observed identity, is not clobbered, and mints no receipt; release is refused on identity
    mismatch. See [ownership_invariant](ownership_invariant.md) § Validation for the full clause suite.
-3. Root-resolution tests are independent of process `cwd`; missing, wrong-kind,
-   escaping, and redirected roots fail before the callback, and compile-fail tests prevent raw or
-   cross-root paths from entering direct-host bind operations.
+3. `ProjectRootSpec` resolves roots independently of process `cwd`, holds both anchor layouts and the
+   absolute-root exemption, and checks sibling-prefix escapes, redirected roots, and embedded-NUL
+   resolution failures. Every refusal leaves its callback uncalled. Compile-fail tests prevent root
+   construction and escape and prevent a root admitted under one config scope from entering another;
+   direct-host bind operations consume only matching typed projections.
 4. Native direct-host Linux reaches Docker with the canonical absolute nonsymlink host `.data` path, and
    provider guest projections derive from the same admitted canonical root and exact share.
 5. The independent exact-cluster suite creates only the plan-derived removable state leaf beneath the

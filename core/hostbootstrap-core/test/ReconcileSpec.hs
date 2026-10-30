@@ -5,13 +5,16 @@
 module ReconcileSpec (tests) where
 
 import Control.Monad (forM)
+import Data.Bits (shiftR)
 import qualified Data.ByteString as ByteString
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (find)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
+import Data.Word (Word64)
 import qualified Fixture
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Schema (verifiedConfigDigest, withValidatedConfig)
@@ -31,6 +34,7 @@ import HostBootstrap.Lift (
     inVM,
     localContext,
  )
+import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.ProjectPlan (
     PlanError,
     ProjectPlan,
@@ -56,7 +60,8 @@ import HostBootstrap.Substrate (
     Substrate (..),
     SubstrateName (LinuxCpu),
  )
-import PrepareFixture (gateFor)
+import PrepareFixture (gateFor, gateForValues)
+import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -117,7 +122,15 @@ tests =
                 assertBool
                     "the raw child config entered the canonical snapshot"
                     (not (TextEncoding.encodeUtf8 secret `ByteString.isInfixOf` firstBytes))
-                assertBool "a child config substitution retained the same snapshot" (first /= second)
+                assertBool "a child config substitution retained the same snapshot bytes" (fst first /= fst second)
+                assertBool "a child config substitution retained the same snapshot digest" (snd first /= snd second)
+            , testCase "delivery destination changes canonical bytes and digest" $ do
+                first <- canonicalSummary "config-a" (containerCanonicalPlanAt "/app/config.dhall" "fixture-secret-payload")
+                second <- canonicalSummary "config-a" (containerCanonicalPlanAt "/other/config.dhall" "fixture-secret-payload")
+                assertBool "a delivery destination substitution retained the same snapshot bytes" (fst first /= fst second)
+                assertBool "a delivery destination substitution retained the same snapshot digest" (snd first /= snd second)
+            , testCase "delivery binding is exactly the two-field filesystem projection" $
+                assertCanonicalDeliveryRecord
             ]
         , testGroup
             "exact project-plan execution descriptors"
@@ -144,6 +157,13 @@ tests =
             observed
                 @?= Left
                     (Failure (FailureDetail "observe resource" "generation must be positive" DoNotRetry))
+        , testCase "positive generations still require a positive observation version" $ do
+            observed <-
+                withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+                    pure (withObservedPlannedResource plan planned 1 0 (const ()))
+            observed
+                @?= Left
+                    (Failure (FailureDetail "observe resource" "observation version must be positive" DoNotRetry))
         , testCase "chart preparation seals exactly its ready cluster dependency" $
             chartPreparationSummary True False >>= (@?= Right ("core:deploy-chart", ["core:deploy-kind"]))
         , testCase "chart preparation refuses a failed readiness reprobe" $ do
@@ -162,12 +182,24 @@ tests =
             foreignSummary >>= (@?= Right "foreign:manual-vm")
         , testCase "explicit matching foreign-origin authority is the only adoption path" $
             adoptionSummary >>= (@?= Right (Changed Adopted))
+        , testGroup "backend observations and dispositions" backendObservationCases
+        , testGroup "adoption origin identity" adoptionOriginCases
         , testCase "journal verification rejects another plan digest" $
             journalMismatch >>= (@?= True)
         , testCase "only a committed verified record can prove Unchanged" $
             unchangedSummary >>= (@?= Right Unchanged)
+        , testGroup "prior commit phases" priorCommitCases
+        , testGroup "receipt validation and planned rebinding" receiptCases
+        , testGroup "empty durable ownership operations" emptyOperationCases
+        , testCase "receipt rebinding has only the plan-bound opener" assertPlannedReceiptRebindingBoundary
         , testCase "managed phase transition retains receipt generation" $
-            phaseSummary >>= (@?= Right 7)
+            phaseSummary 9 >>= (@?= Right 9)
+        , testCase "managed phase transition refuses the pre-creation generation" $
+            phaseSummary 3
+                >>= ( @?=
+                        Left
+                            (Conflict (ConflictDetail "core:deploy-kind" "9" "3" "reprobe the phase transition"))
+                    )
         , testCase "provider force destroy is journal-prepared from the exact running handle" $
             providerForceDestroyChecks
                 >>= ( @?=
@@ -204,11 +236,7 @@ tests =
             copySourceDependencies >>= (@?= Right ["core:deploy-vm"])
         , testCase "the traversal seals the resource-bearing edge set it derived" $
             sealedCopySourceKeys >>= (@?= Right ["core:deploy-vm"])
-        , testCase "the zero-dependency branch refuses an operation that declares edges" $ do
-            outcome <- zeroBranchOnDependentOperation
-            case outcome of
-                Left (Conflict _) -> pure ()
-                other -> fail ("expected a refusal of the zero-dependency branch, got " ++ show other)
+        , testGroup "explicit zero-dependency preparation" zeroDependencyPreparationCases
         , testCase "journal graphs admit only observed success into commit" $ do
             legalJournalTransition ObservedManaged Committed @?= True
             legalJournalTransition ReservationAbsent Committed @?= False
@@ -588,7 +616,7 @@ providerCanonicalPlan :: String -> StepPlan
 providerCanonicalPlan image =
     planFrom
         [ descendsVia
-            (inVM (IncusVM "fixture-vm" image) localContext)
+            (vmContext (inVM (IncusVM "fixture-vm" image) emptyVMStack))
             (deployVMStep "vm" (StepFrame "host" "Host") (const (pure StepChanged)))
         , contextInitStep "context" (StepFrame "vm" "VM") (const (pure StepChanged))
         ]
@@ -623,10 +651,13 @@ revisedReverseAdapterPlan =
         )
 
 containerCanonicalPlan :: Text.Text -> StepPlan
-containerCanonicalPlan payload =
+containerCanonicalPlan = containerCanonicalPlanAt "/app/config.dhall"
+
+containerCanonicalPlanAt :: FilePath -> Text.Text -> StepPlan
+containerCanonicalPlanAt destination payload =
     planFrom
         [ descendsVia
-            (inContainer container localContext)
+            (inContainer container emptyVMStack)
             (buildImageStep "image" (StepFrame "host" "Host") (const (pure StepChanged)))
         , contextInitStep "context" (StepFrame "container" "Container") (const (pure StepChanged))
         ]
@@ -638,8 +669,40 @@ containerCanonicalPlan payload =
             , clMounts = [Vocab.Mount "/host" "/guest" True]
             , clExtraArgs = ["--network=host"]
             , clRemoveAfter = True
-            , clConfigDelivery = Just (ConfigDelivery "/app/config.dhall" "/app/pb" payload)
+            , clConfigDelivery = Just (ConfigDelivery destination payload)
             }
+
+assertCanonicalDeliveryRecord :: IO ()
+assertCanonicalDeliveryRecord = do
+    (bytes, _) <- canonicalSummary "config-a" (containerCanonicalPlan "fixture-secret-payload")
+    let wrapper = oracleText "config-delivery" <> ByteString.singleton 1
+        expected =
+            oracleText "config-delivery"
+                <> oracleWord64 2
+                <> oracleText "write-path"
+                <> oracleText "/app/config.dhall"
+                <> oracleText "payload-digest"
+                <> oracleText "267ecbfaf8cf2b0267b324275cb23a183284677e7bf1acc94da6e194054efda4"
+        nextStep = oracleText "step"
+    case ByteString.breakSubstring wrapper bytes of
+        (_, found)
+            | ByteString.null found -> assertFailure "the actual snapshot has no config delivery record"
+            | otherwise -> do
+                let recordAndRest = ByteString.drop (ByteString.length wrapper) found
+                -- The first step ends with this delivery; the second step must
+                -- immediately follow its two fields, with no extra coordinate.
+                ByteString.take (ByteString.length expected + ByteString.length nextStep) recordAndRest
+                    @?= expected <> nextStep
+                assertBool "the fixture unexpectedly has another delivery" (not (wrapper `ByteString.isInfixOf` recordAndRest))
+
+-- Independent test framing: no canonical writer or parser builds the oracle.
+oracleText :: Text.Text -> ByteString.ByteString
+oracleText value =
+    let bytes = TextEncoding.encodeUtf8 value
+     in oracleWord64 (fromIntegral (ByteString.length bytes)) <> bytes
+
+oracleWord64 :: Word64 -> ByteString.ByteString
+oracleWord64 value = ByteString.pack [fromIntegral (value `shiftR` offset) | offset <- [56, 48 .. 0]]
 
 singleStepCore :: Step -> StepPlan
 singleStepCore step = planFrom [step]
@@ -668,7 +731,13 @@ dependentTestPlan =
 createdSummaryWithGate ::
     (Text.Text -> IO PreparedGate) ->
     IO (Either ReconcileError (ChangeView, Word))
-createdSummaryWithGate openGate =
+createdSummaryWithGate openGate = reconcileObservationSummary openGate (BackendCreated 7)
+
+reconcileObservationSummary ::
+    (Text.Text -> IO PreparedGate) ->
+    BackendReconcileObservation ->
+    IO (Either ReconcileError (ChangeView, Word))
+reconcileObservationSummary openGate observation =
     withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
         gate <- openGate (lifecyclePlanDigest plan)
         pure $
@@ -678,7 +747,7 @@ createdSummaryWithGate openGate =
                     preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
                         withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
-                            result <- completeReconcile handle prepared preconditions (BackendCreated 7)
+                            result <- completeReconcile handle prepared preconditions observation
                             pure $
                                 withReconcileResult
                                     result
@@ -712,7 +781,10 @@ foreignSummary =
                                     (\_ observation -> "foreign:" ++ Text.unpack (foreignIdentity observation))
 
 adoptionSummary :: IO (Either ReconcileError ChangeView)
-adoptionSummary =
+adoptionSummary = adoptionObservationSummary (BackendRepaired 7)
+
+adoptionObservationSummary :: BackendReconcileObservation -> IO (Either ReconcileError ChangeView)
+adoptionObservationSummary backendObservation =
     withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
         gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
         pure $
@@ -735,7 +807,7 @@ adoptionSummary =
                                     withVerifiedForeignOrigin unmanaged observation $ \origin ->
                                         joinReconcile $
                                             withAdoptionAuthority plan planned unmanaged origin "vm:adopt" $ \authority -> do
-                                                adopted <- completeAdoption unmanaged origin authority (BackendRepaired 7)
+                                                adopted <- completeAdoption unmanaged origin authority backendObservation
                                                 pure $
                                                     withReconcileResult
                                                         adopted
@@ -755,9 +827,13 @@ journalMismatch =
                 Right mismatched -> mismatched
 
 unchangedSummary :: IO (Either ReconcileError ChangeView)
-unchangedSummary =
+unchangedSummary = unchangedSummaryFor Committed "core:deploy-kind:call:one"
+
+unchangedSummaryFor :: PersistedJournalPhase -> Text.Text -> IO (Either ReconcileError ChangeView)
+unchangedSummaryFor phase operation =
     withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
         gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+        let semanticOperation = if phase == AdoptionCommitted then "adopt" else "acquire"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
@@ -769,9 +845,10 @@ unchangedSummary =
                                 verifyPersistedJournalRecord
                                     plan
                                     handle
-                                    "acquire"
-                                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
-                                        { persistedOperationKey = "core:deploy-kind:call:one"
+                                    semanticOperation
+                                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) phase)
+                                        { persistedOperationKey = operation
+                                        , persistedOperation = semanticOperation
                                         }
                                     )
                             joinReconcile $
@@ -783,28 +860,355 @@ unchangedSummary =
                                             (\_ _ change -> change)
                                             (\_ _ -> error "committed unchanged resource must be managed")
 
-phaseSummary :: IO (Either ReconcileError Word)
-phaseSummary =
+phaseSummary :: Word64 -> IO (Either ReconcileError Word)
+phaseSummary observedGeneration =
     withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
         gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
         pure $
             joinReconcile $
-                withObservedPlannedResource plan planned 7 3 $ \handle -> do
+                withObservedPlannedResource plan planned 3 4 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:one"
                     preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
                         withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
-                            result <- completeReconcile handle prepared preconditions (BackendCreated 7)
+                            result <- completeReconcile handle prepared preconditions (BackendCreated 9)
                             withReconcileResult
                                 result
                                 ( \managed receipt _ -> do
                                     transition <- planMarkReady managed
-                                    advance <- verifyPhaseTransition managed receipt transition 7
+                                    advance <- verifyPhaseTransition managed receipt transition observedGeneration
                                     pure $
                                         withPhaseAdvance advance $ \readyHandle _ _ ->
                                             fromIntegral (resourceHandleGeneration readyHandle)
                                 )
                                 (\_ _ -> error "created resource must be managed")
+
+backendObservationCases :: [TestTree]
+backendObservationCases =
+    [ reconcileCase "an absent resource requires a fresh probe" BackendAbsent $
+        Left (Failure (FailureDetail "reconcile resource" "resource remained absent" ReprobeBeforeRetry))
+    , reconcileCase "unsupported reconciliation retains its reason" (BackendUnsupported "no provider support") $
+        Left (Unsupported (UnsupportedDetail "reconcile resource" "no provider support"))
+    , reconcileCase "reconcile failure retains fenced-retry disposition" (BackendFailed "effect ambiguous" RetrySameOperationKeyAfterFencing) $
+        Left (Failure (FailureDetail "reconcile resource" "effect ambiguous" RetrySameOperationKeyAfterFencing))
+    , reconcileCase "reconcile failure retains operator-resolution disposition" (BackendFailed "ownership ambiguous" OperatorResolutionRequired) $
+        Left (Failure (FailureDetail "reconcile resource" "ownership ambiguous" OperatorResolutionRequired))
+    , reconcileCase "repair retains the exact observed generation" (BackendRepaired 7) $
+        Right (Changed Repaired, 7)
+    , reconcileCase "repair refuses a replacement generation" (BackendRepaired 9) $
+        Left (Conflict (ConflictDetail "core:deploy-kind" "7" "9" "reprobe the resource and resolve replacement ownership"))
+    , reconcileCase "creation refuses generation zero" (BackendCreated 0) $
+        Left (Failure (FailureDetail "reconcile resource" "created generation must be positive" DoNotRetry))
+    , reconcileCase "foreign observation refuses generation zero" (BackendForeign 0 foreignObservation) $
+        Left (Failure (FailureDetail "reconcile resource" "foreign generation must be positive" DoNotRetry))
+    , adoptionCase "an absent adoption target requires operator resolution" BackendAbsent $
+        Left (Failure (FailureDetail "adopt resource" "resource became absent" OperatorResolutionRequired))
+    , adoptionCase "unsupported adoption retains its reason" (BackendUnsupported "no adoption support") $
+        Left (Unsupported (UnsupportedDetail "adopt resource" "no adoption support"))
+    , adoptionCase "adoption failure retains fenced-retry disposition" (BackendFailed "transfer ambiguous" RetrySameOperationKeyAfterFencing) $
+        Left (Failure (FailureDetail "adopt resource" "transfer ambiguous" RetrySameOperationKeyAfterFencing))
+    , adoptionCase "adoption failure retains operator-resolution disposition" (BackendFailed "transfer refused" OperatorResolutionRequired) $
+        Left (Failure (FailureDetail "adopt resource" "transfer refused" OperatorResolutionRequired))
+    , adoptionCase "adoption accepts a matching created generation" (BackendCreated 7) $
+        Right (Changed Adopted)
+    , adoptionCase "adoption refuses a replacement created generation" (BackendCreated 9) $
+        Left (Conflict (ConflictDetail "core:deploy-kind" "7" "9" "reprobe the replacement before adoption"))
+    , adoptionCase "adoption refuses a replacement repaired generation" (BackendRepaired 9) $
+        Left (Conflict (ConflictDetail "core:deploy-kind" "7" "9" "reprobe the replacement before adoption"))
+    , adoptionCase "a still-foreign adoption target remains unmanaged" (BackendForeign 7 foreignObservation) $
+        Left
+            ( Conflict
+                ( ConflictDetail
+                    "core:deploy-kind"
+                    "adoption transferred to managed ownership"
+                    "still foreign: not owned"
+                    "leave the resource unmanaged and resolve ownership"
+                )
+            )
+    ]
+  where
+    reconcileCase label observation expected =
+        testCase label $
+            reconcileObservationSummary (\digest -> gateFor digest "core:deploy-kind") observation
+                >>= (@?= expected)
+    adoptionCase label observation expected =
+        testCase label (adoptionObservationSummary observation >>= (@?= expected))
+    foreignObservation = ForeignObservation "manual-vm" "not owned"
+
+adoptionOriginCases :: [TestTree]
+adoptionOriginCases =
+    [ testCase "a foreign origin from another generation is refused" $
+        adoptionAuthoritySummary 8 3 "vm:adopt"
+            >>= ( @?=
+                    Left
+                        ( Conflict
+                            ( ConflictDetail
+                                "core:deploy-kind"
+                                "foreign origin generation=7"
+                                "foreign origin generation=8"
+                                "reprobe and authorize adoption for the exact foreign origin"
+                            )
+                        )
+                )
+    , testCase "a foreign origin from another observation is refused" $
+        adoptionAuthoritySummary 7 4 "vm:adopt"
+            >>= ( @?=
+                    Left
+                        ( Conflict
+                            ( ConflictDetail
+                                "core:deploy-kind"
+                                "foreign origin observation=3"
+                                "foreign origin observation=4"
+                                "reprobe and authorize adoption for the exact foreign origin"
+                            )
+                        )
+                )
+    , testCase "adoption cannot mint an empty-operation receipt" $
+        adoptionAuthoritySummary 7 3 ""
+            >>= (@?= Left (Failure (FailureDetail "authorize adoption" "operation key must not be empty" DoNotRetry)))
+    ]
+
+adoptionAuthoritySummary :: Word64 -> Word64 -> Text.Text -> IO (Either ReconcileError ())
+adoptionAuthoritySummary originGeneration originVersion operation =
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+        pure $
+            withForeignResource gate plan planned 7 3 $ \target _ ->
+                withForeignResource gate plan planned originGeneration originVersion $ \source observation ->
+                    withVerifiedForeignOrigin source observation $ \origin ->
+                        withAdoptionAuthority plan planned target origin operation (const ())
+
+withForeignResource ::
+    PreparedGate ->
+    LifecyclePlan scope planId ->
+    PlannedResource scope planId resourceId resource frame ->
+    Word64 ->
+    Word64 ->
+    (ResourceHandle scope planId resourceId resource Unmanaged Observed -> ForeignObservation -> Either ReconcileError result) ->
+    Either ReconcileError result
+withForeignResource gate plan planned generation observationVersion consume =
+    joinReconcile $
+        withObservedPlannedResource plan planned generation observationVersion $ \observed -> do
+            descriptor <- plannedOperation plan planned observed "call:observe-foreign"
+            preconditionSet <- zeroDependencyPreconditions descriptor
+            joinReconcile $
+                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                    reconciled <-
+                        completeReconcile observed prepared preconditions (BackendForeign generation (ForeignObservation "manual-vm" "not owned"))
+                    withReconcileResult
+                        reconciled
+                        (\_ _ _ -> Left (Failure (FailureDetail "test foreign resource" "expected foreign observation" DoNotRetry)))
+                        consume
+
+priorCommitCases :: [TestTree]
+priorCommitCases =
+    [ testCase "intent alone cannot prove prior commit" $
+        unchangedSummaryFor IntentRecorded operation >>= (@?= notCommitted)
+    , testCase "observed ownership alone cannot prove prior commit" $
+        unchangedSummaryFor ObservedManaged operation >>= (@?= notCommitted)
+    , testCase "a matching adoption commit proves Unchanged" $
+        unchangedSummaryFor AdoptionCommitted operation >>= (@?= Right Unchanged)
+    , testCase "an adoption commit for another exact operation cannot prove Unchanged" $
+        unchangedSummaryFor AdoptionCommitted "core:deploy-kind:another-call"
+            >>= ( @?=
+                    Left
+                        ( Conflict
+                            ( ConflictDetail
+                                "core:deploy-kind"
+                                "receipt operation key=core:deploy-kind:call:one"
+                                "receipt operation key=core:deploy-kind:another-call"
+                                "load the committed record for the exact prepared operation"
+                            )
+                        )
+                )
+    ]
+  where
+    operation = "core:deploy-kind:call:one"
+    notCommitted =
+        Left (Failure (FailureDetail "rebind ownership" "journal record is not committed" OperatorResolutionRequired))
+
+receiptCases :: [TestTree]
+receiptCases =
+    [ testCase "matching durable receipts validate and rebind through the plan" $
+        receiptGenerationSummary 7 >>= (@?= Right (Right (), Right ()))
+    , testCase "a genuine receipt from another generation refuses both validation and planned rebinding" $
+        receiptGenerationSummary 8
+            >>= (@?= Right (Left generationMismatch, Left generationMismatch))
+    , testCase "cross-identity receipt bridges refuse the other planned resource key" $
+        receiptKeySummary
+            >>= ( @?=
+                    Right
+                        ( Left (keyMismatch "core:deploy-vm" "core:copy-source")
+                        , Left (keyMismatch "core:copy-source" "core:deploy-vm")
+                        )
+                )
+    ]
+  where
+    generationMismatch =
+        Conflict
+            ( ConflictDetail
+                "core:deploy-kind"
+                "generation=7"
+                "generation=8"
+                "load the ownership receipt for the exact managed generation"
+            )
+    keyMismatch expected observed =
+        Conflict
+            ( ConflictDetail
+                expected
+                ("resource key=" <> expected)
+                ("resource key=" <> observed)
+                "load the ownership receipt for the exact managed generation"
+            )
+
+receiptGenerationSummary ::
+    Word64 ->
+    IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
+receiptGenerationSummary receiptGeneration =
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+        pure $
+            withCreatedResource gate plan planned 7 3 $ \managed _ ->
+                withDurableReceipt plan planned receiptGeneration $ \receipt ->
+                    Right
+                        ( validateOwnershipReceipt managed receipt
+                        , withPlannedReboundManagedResourceEvidence planned managed receipt (\_ _ -> ())
+                        )
+
+receiptKeySummary ::
+    IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
+receiptKeySummary =
+    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan provider -> do
+        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
+        case find
+            ((== "core:copy-source") . operationKeyText . plannedStepOperationKey)
+            (NonEmpty.toList (forward projectPlan)) of
+            Nothing -> fail "the receipt fixture plan lacks its durable share"
+            Just shareNode ->
+                case withPlannedResourceOfKind
+                    projectPlan
+                    DurableShareResourceKind
+                    (plannedStepOperationKey shareNode)
+                    ( \share ->
+                        pure $
+                            withCreatedResource gate plan provider 7 3 $ \managed providerReceipt ->
+                                withDurableReceipt plan share 7 $ \shareReceipt ->
+                                    Right
+                                        ( () <$ rebindOwnershipReceipt managed shareReceipt
+                                        , withPlannedReboundManagedResourceEvidence share managed providerReceipt (\_ _ -> ())
+                                        )
+                    ) of
+                    Left failure -> fail (show failure)
+                    Right action -> action
+
+withCreatedResource ::
+    PreparedGate ->
+    LifecyclePlan scope planId ->
+    PlannedResource scope planId resourceId resource frame ->
+    Word64 ->
+    Word64 ->
+    ( ResourceHandle scope planId resourceId resource Managed Provisioned ->
+      OwnershipReceipt scope planId resourceId resource ->
+      Either ReconcileError result
+    ) ->
+    Either ReconcileError result
+withCreatedResource gate plan planned generation observationVersion consume =
+    joinReconcile $
+        withObservedPlannedResource plan planned generation observationVersion $ \observed -> do
+            descriptor <- plannedOperation plan planned observed "call:one"
+            preconditionSet <- zeroDependencyPreconditions descriptor
+            joinReconcile $
+                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                    reconciled <- completeReconcile observed prepared preconditions (BackendCreated generation)
+                    withReconcileResult
+                        reconciled
+                        (\managed receipt _ -> consume managed receipt)
+                        (\_ _ -> Left (Failure (FailureDetail "test receipt" "expected managed ownership" DoNotRetry)))
+
+-- The receipt comes from the same public durable evidence path as recovery.
+withDurableReceipt ::
+    LifecyclePlan scope planId ->
+    PlannedResource scope planId resourceId resource frame ->
+    Word64 ->
+    (OwnershipReceipt scope planId resourceId resource -> Either ReconcileError result) ->
+    Either ReconcileError result
+withDurableReceipt plan planned generation consume = do
+    raw <- renderResourceRecordBundle plan planned generation "ownership:acquire" 1 "provisioned" "adapter-v1" True
+    verified <- verifyResourceRecordBundle plan planned generation "ownership:acquire" 1 "provisioned" "adapter-v1" raw
+    withVerifiedResourceRecordBundle
+        verified
+        consume
+        (\_ _ _ _ _ _ _ -> Left (Failure (FailureDetail "test receipt" "expected an owned durable record" DoNotRetry)))
+
+emptyOperationCases :: [TestTree]
+emptyOperationCases =
+    [ testCase "durable rendering refuses an empty ownership operation" $
+        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+            renderResourceRecordBundle plan planned 7 "" 3 "provisioned" "adapter-v1" True
+                @?= Left emptyDurableOperation
+    , testCase "durable parsing refuses an empty ownership operation" $
+        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+            canonical <-
+                either (assertFailure . show) pure $
+                    renderResourceRecordBundle plan planned 7 "ownership:acquire" 3 "provisioned" "adapter-v1" True
+            let verify = verifyResourceRecordBundle plan planned 7 "ownership:acquire" 3 "provisioned" "adapter-v1"
+            (() <$ verify canonical) @?= Right ()
+            withoutOperation <- emptyRecordOwnershipOperation canonical
+            (() <$ verify withoutOperation) @?= Left emptyDurableOperation
+    , testCase "journal ingress refuses an empty stable ownership operation" $ do
+        outcome <-
+            withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+                pure $
+                    joinReconcile $
+                        withObservedPlannedResource plan planned 7 3 $ \handle ->
+                            ()
+                                <$ verifyPersistedJournalRecord
+                                    plan
+                                    handle
+                                    "acquire"
+                                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+                                        { persistedOperationKey = ""
+                                        }
+                                    )
+        outcome @?= Left (Failure (FailureDetail "verify journal" "stable frame/operation keys are required" DoNotRetry))
+    ]
+  where
+    emptyDurableOperation =
+        Failure (FailureDetail "verify resource record bundle" "resource record ownership operation key is empty" DoNotRetry)
+
+-- Keep every other canonical field intact, including all of its length framing.
+emptyRecordOwnershipOperation :: ByteString.ByteString -> IO ByteString.ByteString
+emptyRecordOwnershipOperation = replaceOperation (6 :: Int)
+  where
+    replaceOperation index raw
+        | ByteString.length raw < 8 = assertFailure "the canonical receipt fixture has a truncated field header"
+        | size > fromIntegral (ByteString.length body) = assertFailure "the canonical receipt fixture has a truncated field"
+        | index == 0 = pure (ByteString.replicate 8 0 <> trailing)
+        | otherwise = (\rest -> prefix <> field <> rest) <$> replaceOperation (index - 1) trailing
+      where
+        (prefix, body) = ByteString.splitAt 8 raw
+        size = ByteString.foldl' (\value byte -> value * 256 + fromIntegral byte) 0 prefix :: Word64
+        (field, trailing) = ByteString.splitAt (fromIntegral size) body
+
+assertPlannedReceiptRebindingBoundary :: IO ()
+assertPlannedReceiptRebindingBoundary =
+    -- DEVELOPMENT_PLAN/rationale.md: "Receipt rebinding follows the planned resource".
+    SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+        description <- SourceGuard.readPackageDescription
+        path <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Reconcile"
+        source <- readFile path
+        definitions <- either assertFailure pure (SourceGuard.haskellDefinitionNames source)
+        exports <-
+            maybe
+                (assertFailure "could not parse the Reconcile export list")
+                pure
+                (SourceGuard.moduleExportTokens "HostBootstrap.Reconcile" source)
+        assertBool "the unplanned rebinding opener is still defined" $
+            "withReboundManagedResourceEvidence" `notElem` definitions
+        assertBool "the unplanned rebinding opener is still exported" $
+            "withReboundManagedResourceEvidence" `notElem` exports
+        assertBool "the plan-bound rebinding opener is not exported" $
+            "withPlannedReboundManagedResourceEvidence" `elem` exports
 
 providerForceDestroyChecks ::
     IO (Either ReconcileError (Word, Text.Text, Bool, Bool, Bool))
@@ -1037,15 +1441,206 @@ withManagedProvider gate plan planned consume =
                         (\managed _ _ -> Right (consume managed))
                         (\_ _ -> Left (Failure (FailureDetail "test provider" "unexpected foreign provider" DoNotRetry)))
 
--- | The zero-dependency branch is not a route around the snapshot.
-zeroBranchOnDependentOperation :: IO (Either ReconcileError ())
-zeroBranchOnDependentOperation =
-    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \_ plan planned ->
+zeroDependencyPreparationCases :: [TestTree]
+zeroDependencyPreparationCases =
+    [ testCase "the zero operation entry completes an unchanged resource" $
+        zeroOperationUnchangedSummary >>= (@?= Right Unchanged)
+    , testCase "the zero-dependency branch refuses an operation that declares edges" $
+        zeroBranchOnDependentOperation
+    , testCase "the zero operation entry refuses another plan's gate" $
+        zeroOperationRefusal
+            (\_ -> gateFor "some-other-plan-digest" "core:deploy-kind")
+            ( \digest ->
+                Conflict
+                    ( ConflictDetail
+                        "core:deploy-kind"
+                        ("a prepare gate from plan " <> digest)
+                        "a prepare gate from plan some-other-plan-digest"
+                        "prepare each operation through its own plan's journal"
+                    )
+            )
+    , testCase "the zero operation entry refuses another operation's gate" $
+        zeroOperationRefusal
+            (\digest -> gateFor digest "core:deploy-vm")
+            ( const
+                ( Conflict
+                    ( ConflictDetail
+                        "core:deploy-kind"
+                        "a prepare gate recorded for core:deploy-kind"
+                        "a prepare gate recorded for core:deploy-vm"
+                        "record this operation's unknown phase before preparing it"
+                    )
+                )
+            )
+    , testCase "the zero operation entry requires a positive attempt" $
+        zeroOperationRefusal
+            (\digest -> gateForValues digest "core:deploy-kind" "session-1" 5 0)
+            (const (Failure (FailureDetail "prepare operation" "attempt must be positive" DoNotRetry)))
+    , testCase "the zero phase entry completes force destroy from the managed running handle" $
+        zeroPhaseDestroySummary >>= (@?= Right (7, "core:deploy-vm:call:one"))
+    , testCase "dependent phases retain generic preparation and refuse the zero phase entry" $
+        zeroPhaseDependencyRefusal
+    ]
+
+zeroOperationUnchangedSummary :: IO (Either ReconcileError ChangeView)
+zeroOperationUnchangedSummary =
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
-                    descriptor <- plannedOperation plan planned handle "share:mount"
-                    () <$ zeroDependencyPreconditions descriptor
+                    descriptor <- plannedOperation plan planned handle "call:one"
+                    joinReconcile $
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
+                            verified <-
+                                verifyPersistedJournalRecord
+                                    plan
+                                    handle
+                                    "acquire"
+                                    (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+                            joinReconcile $
+                                withPriorCommitProof verified $ \proof -> do
+                                    result <- completePreparedUnchanged handle prepared preconditions proof
+                                    withReconcileResult
+                                        result
+                                        (\_ _ change -> Right change)
+                                        (\_ _ -> Left (Failure (FailureDetail "test unchanged resource" "expected managed ownership" DoNotRetry)))
+
+zeroOperationRefusal ::
+    (Text.Text -> IO PreparedGate) ->
+    (Text.Text -> ReconcileError) ->
+    IO ()
+zeroOperationRefusal openGate expectedFailure =
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+        gate <- openGate (lifecyclePlanDigest plan)
+        delivered <- newIORef (0 :: Int)
+        let outcome =
+                joinReconcile $
+                    withObservedPlannedResource plan planned 7 3 $ \handle -> do
+                        descriptor <- plannedOperation plan planned handle "call:one"
+                        withPreparedZeroDependencyOperation descriptor gate $ \_ _ ->
+                            modifyIORef' delivered (+ 1)
+        assertPreparationNotDelivered delivered (expectedFailure (lifecyclePlanDigest plan)) outcome
+
+assertPreparationNotDelivered :: IORef Int -> ReconcileError -> Either ReconcileError (IO ()) -> IO ()
+assertPreparationNotDelivered delivered expectedFailure outcome = do
+    -- Execute any mistakenly delivered callback action before inspecting the refusal.
+    executed <- traverse id outcome
+    executed @?= Left expectedFailure
+    readIORef delivered >>= (@?= 0)
+
+zeroDependencyConflict :: ReconcileError
+zeroDependencyConflict =
+    Conflict
+        ( ConflictDetail
+            "core:copy-source"
+            "an operation with no plan dependencies"
+            "the plan declares core:deploy-vm"
+            "seal this operation through the plan dependency-snapshot traversal"
+        )
+
+-- | The public zero entry must reject a genuine edge-bearing descriptor itself.
+zeroBranchOnDependentOperation :: IO ()
+zeroBranchOnDependentOperation =
+    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \_ plan planned -> do
+        gate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
+        delivered <- newIORef (0 :: Int)
+        let outcome =
+                joinReconcile $
+                    withObservedPlannedResource plan planned 7 3 $ \handle -> do
+                        descriptor <- plannedOperation plan planned handle "share:mount"
+                        withPreparedZeroDependencyOperation descriptor gate $ \_ _ ->
+                            modifyIORef' delivered (+ 1)
+        assertPreparationNotDelivered delivered zeroDependencyConflict outcome
+
+zeroPhaseDestroySummary :: IO (Either ReconcileError (Word64, Text.Text))
+zeroPhaseDestroySummary =
+    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan planned -> do
+        createGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
+        destroyGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
+        pure $
+            withCreatedResource createGate plan planned 7 3 $ \provisioned receipt -> do
+                boot <- planProviderBoot provisioned
+                runningAdvance <- verifyPhaseTransition provisioned receipt boot 7
+                withPhaseAdvance runningAdvance $ \running runningReceipt _ -> do
+                    destroy <- planProviderForceDestroy running
+                    descriptor <-
+                        plannedProjectPhaseOperation projectPlan planned running runningReceipt destroy "provider:destroy-force"
+                    joinReconcile $
+                        withPreparedZeroDependencyPhaseTransition running runningReceipt destroy descriptor destroyGate $ \prepared -> do
+                            advance <- completePreparedPhaseTransition prepared 7
+                            pure $
+                                withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
+                                    (resourceHandleGeneration destroyed, ownershipReceiptOperationKey destroyedReceipt)
+
+zeroPhaseDependencyRefusal :: IO ()
+zeroPhaseDependencyRefusal =
+    withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan provider -> do
+        providerGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
+        shareGate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
+        phaseGate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
+        delivered <- newIORef (0 :: Int)
+        case find
+            ((== "core:copy-source") . Text.pack . operationKeyText . plannedStepOperationKey)
+            (NonEmpty.toList (forward projectPlan)) of
+            Nothing -> assertFailure "copy-source node missing from dependent phase fixture"
+            Just shareNode -> do
+                outcome <-
+                    case withPlannedResourceOfKind
+                        projectPlan
+                        DurableShareResourceKind
+                        (plannedStepOperationKey shareNode)
+                        ( \share ->
+                            joinIO $
+                                withManagedProvider providerGate plan provider $ \managedProvider ->
+                                    joinIO $
+                                        withObservedPlannedResource plan share 11 13 $ \observed ->
+                                            case plannedOperation plan share observed "share:mount" of
+                                                Left failure -> pure (Left failure)
+                                                Right descriptor -> do
+                                                    let snapshot =
+                                                            withDependencySnapshotEntry
+                                                                managedProvider
+                                                                (dependencyProbe (pure (Right 17)))
+                                                                emptyDependencySnapshot
+                                                    acquisitionSet <- withOperationPreconditions descriptor snapshot
+                                                    case acquisitionSet of
+                                                        Left failure -> pure (Left failure)
+                                                        Right preconditions ->
+                                                            joinIO $
+                                                                joinReconcile $
+                                                                    withPreparedOperation descriptor preconditions shareGate $ \prepared sealed -> do
+                                                                        acquired <- completeReconcile observed prepared sealed (BackendCreated 11)
+                                                                        withReconcileResult
+                                                                            acquired
+                                                                            ( \managed receipt _ -> do
+                                                                                ready <- planMarkReady managed
+                                                                                phaseDescriptor <-
+                                                                                    plannedProjectPhaseOperation projectPlan share managed receipt ready "share:ready"
+                                                                                pure $ do
+                                                                                    phaseSet <- withOperationPreconditions phaseDescriptor snapshot
+                                                                                    case phaseSet of
+                                                                                        Left failure -> pure (Left failure)
+                                                                                        Right checkedSet -> do
+                                                                                            let generic =
+                                                                                                    joinReconcile $
+                                                                                                        withPreparedPhaseTransition managed receipt ready phaseDescriptor checkedSet phaseGate $ \preparedPhase -> do
+                                                                                                            advance <- completePreparedPhaseTransition preparedPhase 11
+                                                                                                            pure $
+                                                                                                                withPhaseAdvance advance $ \readyShare readyReceipt _ ->
+                                                                                                                    (resourceHandleGeneration readyShare, ownershipReceiptOperationKey readyReceipt)
+                                                                                            generic @?= Right (11, "core:copy-source:share:mount")
+                                                                                            let zero =
+                                                                                                    withPreparedZeroDependencyPhaseTransition managed receipt ready phaseDescriptor phaseGate $ \_ ->
+                                                                                                        modifyIORef' delivered (+ 1)
+                                                                                            assertPreparationNotDelivered delivered zeroDependencyConflict zero
+                                                                                            pure (Right ())
+                                                                            )
+                                                                            (\_ _ -> Left (Failure (FailureDetail "test share" "expected managed ownership" DoNotRetry)))
+                        ) of
+                        Left failure -> pure (Left (planProjectionFailure failure))
+                        Right action -> action
+                outcome @?= Right ()
 
 missingDependencyPreparation :: IO (Either ReconcileError ())
 missingDependencyPreparation =

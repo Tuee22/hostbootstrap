@@ -1,12 +1,14 @@
 # Phase 9 — Lifecycle modes and run leases
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 5 (installed identity, operator verification, and authority kernels), Phase 7
 (Dhall configuration and the generic project model)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-28 ; native Windows 11 x86_64 DESKTOP-R6BTBVS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-28 ; Ubuntu 24.04.4 x86_64 native-filesystem CPU container hostbootstrap-core-gate-20261026, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Establish exact Production and Harness mode, run, lease, snapshot, and lifecycle-profile
 > authority before project-plan construction begins.
@@ -27,290 +29,371 @@ match. Retaining ordinary Haskell values therefore cannot open a second profile 
 
 ## Sprints
 
-### Sprint 9.1: Indexed `ProjectModeLease` [Active]
-
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`
-
-#### Objective
-
-Represent the held project mode in the lease type so only the transition for that exact mode can consume
-it.
-
-#### Deliverables
-
-- Opaque `ProductionMode` and `HarnessMode runId` types are the only public mode tags.
-- `ProjectModeLease projectId mode brokerGeneration` binds installed project, exact mode, and broker
-  generation in one opaque capability.
-- The protected record uses an internal stable wire sum that decodes only into the matching typed mode
-  transition.
-- Production acquisition retains an already-held Production mode for the same project, while a Harness
-  acquisition contends on the same protected record.
-- The public surface consists of opaque mode witnesses and scope-specific transitions; wire constructors
-  and mutation kernels (`acquireModeWire`, `acquireProductionMode`, `acquireHarnessMode`) remain
-  package-private.
-- A mode record at `mode.<project>` that `decodeMode` cannot decode (neither `production<TAB><epoch>` nor
-  `harness<TAB><epoch><TAB><run>` with a run segment `parseRunKey` accepts) is refused by `acquireModeWire`
-  with `ModeMalformedRecord "mode.<project>"`; it is never treated as an absent mode, and the refusal
-  leaves its bytes in place.
-
-#### Validation
-
-`AuthoritySpec` proves exact-mode acquisition, Production retention, cross-mode refusal, and a
-multi-process contention case with one winner. The sprint closes when these cases also exist and pass
-under `cabal test all` from `core/`, with the phase gate built with `-Werror`:
-
-- `CompileFailSpec` rejects `test/compile-fail/OpenGenericProjectModeMutation.hs` with
-  `Module 'HostBootstrap.Lifecycle.Mode' does not export 'acquireModeWire'`, so the generic-mutation
-  boundary names the kernel the library actually has. `CompileFailSpec` also proves that a Production
-  lease cannot inhabit a Harness mode and that callers cannot construct a mode tag.
-- An `AuthoritySpec` case writes `not-a-mode` at `mode.<project>`, then runs `withProductionRoot` and
-  `withHarnessRoot`; each returns `Left (ModeMalformedRecord "mode.<project>")`, neither callback runs, and
-  the record bytes and version read back unchanged. A second variant writes
-  `harness<TAB>1<TAB><49 alphanumerics>` and expects the same refusal.
-- The `AuthoritySpec` case "production takes the mode and retains it across a second entry" reads
-  `mode.<project>` after the first `withProductionRoot` returns and asserts the record is present and its
-  bytes are `production<TAB><epoch>` with the epoch of that root's `projectModeLeaseEpoch`; after the
-  second entry returns it reads the record again and asserts it is still present and names Production.
-  Releasing the mode on exit (which deletes the record) fails the case.
-
-#### Remaining Work
-
-- Rewrite `test/compile-fail/OpenGenericProjectModeMutation.hs` to import `acquireModeWire` (the generic
-  kernel that exists in `HostBootstrap.Lifecycle.Mode`) instead of the nonexistent `acquireMode`, and change
-  its `CompileFailSpec` expectation to `Module 'HostBootstrap.Lifecycle.Mode' does not export
-  'acquireModeWire'`. The fixture fails today only because the name does not exist, so it would stay
-  green if the real kernel were exported.
-- Add the two `AuthoritySpec` malformed-mode cases named in Validation (`not-a-mode` bytes and an
-  over-long harness run segment), each asserting the exact `ModeMalformedRecord "mode.<project>"` value,
-  no callback entry, and unchanged record bytes and version.
-- In `test/AuthoritySpec.hs`, make "production takes the mode and retains it across a second entry" read
-  the mode record between and after the two entries, as named in Validation. Today it asserts only
-  `projectModeLeaseName`, which is the constant `"production"` for every Production lease, so a root that
-  released the mode on exit and took it again would pass.
-
-### Sprint 9.2: Generative `RunId runId` [Active]
-
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
-`documents/architecture/harness_workflow.md`
-
-#### Objective
-
-Give each Harness acquisition a fresh type identity that cannot be selected or reconstructed by a caller.
-
-#### Deliverables
-
-- `RunId runId` is opaque and exposes only a non-authorizing text projection for diagnostics and stable
-  record keys.
-- The Harness acquisition transition mints `RunId runId` only inside a rank-2 continuation.
-- `HarnessMode runId`, `Harness projectId runId`, the indexed mode lease, and the Harness unbound lease all
-  carry the same generative `runId`.
-- Production uses a structurally distinct lease-identity branch that contains no Harness `RunId runId`.
-- The text projection is diagnostic/key material only and is never accepted as a `RunId runId`
-  constructor input. The text-to-key parser `parseRunKey` and the key-to-witness reifier
-  `withReifiedRunId` are package-private.
-- A run key is 1 to 48 ASCII alphanumerics or `-`. The protected record field codec (`encodeFields`,
-  `decodeFields`, `exactFields`) writes UTF-8 and decodes strictly, so every key it carries reads back
-  byte-for-byte, and undecodable bytes are a malformed record rather than a different key.
-- Every epoch and version number in a mode, lease, invocation-disposition, or profile-slot record parses
-  only as canonical unsigned decimal within `Word64` (digits only, no sign, whitespace, parentheses, hex
-  prefix, or leading zero other than `0` itself), so the parser accepts exactly the text `showWord`
-  writes; anything else is a malformed record, never a wrapped or different epoch.
-
-#### Validation
-
-`AuthoritySpec` proves distinct Harness acquisitions receive distinct stable identities and that the
-Production identity branch is classified independently. `CompileFailSpec` proves that values from two
-Harness continuations cannot cross-pair and that callers cannot mint `RunId runId` (`ForgeRunId.hs`). The
-sprint closes when these cases also exist and pass under `cabal test all` from `core/`, with the phase
-gate built with `-Werror`:
-
-- `CompileFailSpec` rejects `test/compile-fail/OpenRunIdFromText.hs` with
-  `Module 'HostBootstrap.Lifecycle.Mode' does not export 'parseRunKey'`, and a second fixture
-  `test/compile-fail/OpenReifiedRunId.hs` with `... does not export 'withReifiedRunId'`.
-- An `AuthoritySpec` case calls `inspectPlanSnapshot` with the run text `ő-run` and gets
-  `Left (ModeInvalidIdentity ...)`; a case calls `mkInvocationCloseKey "ő-close"` and gets
-  `Left (ModeInvalidIdentity ...)`.
-- A `LifecycleSpec` `refusalCase`, beside "an invalid terminal close key is never normalized or
-  surfaced", writes the Production invocation record as `ack<TAB>` followed by the invalid UTF-8 byte
-  `0xFF`, and the existing-bound admission refuses it with `ModeMalformedRecord` naming that record key.
-- An `AuthoritySpec` case writes each of `production<TAB>-1`, `production<TAB>18446744073709551617`,
-  `production<TAB>(1)`, `production<TAB>0x1`, and `production<TAB>01` at `mode.<project>` and runs
-  `withProductionRoot`; each returns `Left (ModeMalformedRecord "mode.<project>")`, the callback never
-  runs, and the record bytes and version read back unchanged. A second case writes `unbound<TAB>-1` at the
-  Production lease key and gets `Left (ModeMalformedRecord <lease key>)` from `withProductionRoot` with the
-  lease bytes unchanged.
-
-#### Remaining Work
-
-- Rewrite `test/compile-fail/OpenRunIdFromText.hs` to import `parseRunKey` (the real text-to-key parser)
-  instead of the nonexistent `mkRunId`, with the `CompileFailSpec` expectation
-  `Module 'HostBootstrap.Lifecycle.Mode' does not export 'parseRunKey'`; add
-  `test/compile-fail/OpenReifiedRunId.hs` importing `withReifiedRunId` with the matching expectation. Both
-  fixtures fail today only for a name that does not exist.
-- In `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`, add `isAscii` to the `legal`
-  predicates of `parseRunKey` and `mkInvocationCloseKey`, matching the project-name rule in
-  `Authority/Kernel.hs`. `isAlphaNum` alone admits keys such as `ő-close`, which `encodeFields`
-  (`ByteStringChar8.pack . Text.unpack`) truncates to a different key (`Q-close`) on write.
-- Make `encodeFields` encode UTF-8 (`Text.Encoding.encodeUtf8`) and make `decodeFields` and `exactFields`
-  decode with `decodeUtf8'`, returning no fields on a decode failure so each caller reports its existing
-  malformed-record refusal. Add the `AuthoritySpec` and `LifecycleSpec` cases named in Validation.
-- Rewrite `readWord` in `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs` to accept only
-  canonical decimal: every character a digit, no leading zero unless the text is exactly `0`, the
-  `Integer` value at most `maxBound :: Word64`, and `showWord value == raw`. Today it uses
-  `reads :: ReadS Word64`, which accepts `-1` as `18446744073709551615`, wraps `18446744073709551617` to
-  `1`, and accepts whitespace, parentheses, and `0x` forms, so `decodeLease`, `decodeMode`,
-  `decodeDisposition`, and the profile-slot decoder turn bytes this module never writes into a valid
-  epoch. Add the two `AuthoritySpec` non-canonical-epoch cases named in Validation.
-
-### Sprint 9.3: Scope-indexed lease binding and `VerifiedPlanSnapshot` [Active]
-
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`
-
-#### Objective
-
-Bind a lease only to a protected snapshot verified for the same Production or Harness scope.
-
-#### Deliverables
-
-- `UnboundRunLease scope brokerGeneration` is the sole pre-binding lease capability.
-- `VerifiedPlanSnapshot scope specDigest planDigest` binds the protected snapshot observation to its exact
-  lifecycle scope and digests.
-- `BoundRunLease scope specDigest planDigest brokerGeneration` retains the same scope, both digests, and
-  broker generation.
-- The protected binding transition has this exact surface:
-
-  ```haskell
-  bindRunLease
-    :: UnboundRunLease scope brokerGeneration
-    -> VerifiedPlanSnapshot scope specDigest planDigest
-    -> (BoundRunLease scope specDigest planDigest brokerGeneration -> IO a)
-    -> IO (Either LeaseConflict a)
-  ```
-
-- A successful compare-and-swap enters only the bound-lease continuation; a conflicting protected lease
-  state returns `LeaseConflict` without authority.
-- Fresh root acquisition (`recordUnboundLease`) creates an unbound lease from an absent record, or
-  compare-and-swaps an exact decoded `LeaseUnbound` record for the supported pre-effect retry. A decoded
-  `LeaseClosed` record is re-armed only by a Production `up` root: it clears the invocation disposition and
-  a terminal reverse-root intent, reopens the closed Production journal, and writes `LeaseUnbound`.
-  Production `down` and `destroy` and every Harness root refuse it with `ModeLeaseNotBindable <run>
-  "closed"`. A decoded `LeaseBound` record returns `ModeLeaseNotBindable <run> "bound"`, every other state
-  is refused with its own state name, and malformed bytes return `ModeMalformedRecord`; none of these
-  refusal branches enters the root continuation or changes the lease or snapshot record.
-  `withProductionRoot` classifies the existing Production lease record before it advances the broker epoch
-  counter or writes the mode record, so a Production root refused by any of those lease branches leaves
-  every protected record (broker counter, `mode.<project>`, lease, snapshot) byte- and version-identical,
-  and an existing bound Production run stays admissible at its recorded epoch afterwards.
-- The only snapshot producer is `persistCanonicalPlanSnapshot`, which derives the revision's spec, config,
-  and plan digests from an opaque `CanonicalPlanSnapshot`. No exported function persists caller-chosen
-  digest text, so the digests `bindRunLease` copies from a `VerifiedPlanSnapshot` are always plan-derived.
-- A persisted snapshot record has one encoding: the magic-prefixed canonical record, whose config digest
-  and canonical bytes are one optional unit (`Maybe` of a single canonical-material value, tag 0 or tag 1).
-  A record carrying only one of the two cannot be built, and tab-separated bytes are a malformed record.
-  `inspectPlanSnapshot` reads that record into a non-authorizing `PlanSnapshotView` whose accessors
-  project every field, the config digest and canonical bytes included.
-
-#### Validation
-
-`AuthoritySpec` proves successful same-scope binding, exact digest retention, conflict behavior, and the
-supported unbound pre-effect retry. It also proves that a second Production root refuses a bound lease
-without entering its continuation while preserving the exact lease and snapshot versions and bytes, and
-that malformed lease bytes receive the typed refusal without mutation. `CompileFailSpec` proves that a
-Production lease cannot bind a Harness snapshot, two Harness run scopes cannot cross-pair, and a snapshot
-for one digest pair cannot yield another pair's bound lease. The sprint closes when these cases also exist
-and pass under `cabal test all` from `core/`, with the phase gate built with `-Werror`:
-
-- `CompileFailSpec` rejects a fixture `test/compile-fail/OpenFreeDigestSnapshotProducer.hs` that imports
-  `persistPlanSnapshot` from `HostBootstrap.Lifecycle.Mode`, with
-  `Module 'HostBootstrap.Lifecycle.Mode' does not export 'persistPlanSnapshot'`.
-- Every `AuthoritySpec` and `HarnessSpec` case that persists a snapshot does so through
-  `persistCanonicalPlanSnapshot`, and the binding cases above still pass.
-- An `AuthoritySpec` case writes the tab-separated bytes `1<TAB>spec-1<TAB>plan-1` at a run's snapshot key
-  and asserts that `inspectPlanSnapshot` and `verifyPlanSnapshot` return
-  `Left (ModeMalformedRecord <snapshot key>)`; a second variant uses the revision text
-  `18446744073709551617` and expects the same refusal rather than revision 1.
-- An `AuthoritySpec` case persists a snapshot through `persistCanonicalPlanSnapshot`, reads it back with
-  `inspectPlanSnapshot`, and asserts that `planSnapshotViewConfigDigest` returns `Just` the snapshot's
-  config digest and `planSnapshotViewCanonicalBytes` returns `Just` its canonical bytes.
-- The existing `LifecycleSpec` case "a legacy digest-only snapshot cannot mint bound plan evidence" still
-  passes.
-- The `AuthoritySpec` cases "a second Production root preserves an existing bound lease and snapshot" and
-  "a Production root preserves and refuses a malformed lease record" capture `protectedStoreImage store`
-  immediately before the refused `withProductionRoot` and assert the image after the refusal is equal,
-  in addition to their existing refusal, no-entry, and lease/snapshot checks.
-- A `LifecycleSpec` case built on `withExistingBoundSnapshotFixture` runs `withProductionRoot store
-  project ProjectUp`, expects `Left (ModeLeaseNotBindable "production" "bound")` with no callback entry,
-  then calls `withBoundPlanSnapshot` (`HostBootstrap.ProjectPlan.Snapshot`) and gets `Right` through the
-  continuation the fixture's disposition selects, never `Left` wrapping `ModeEpochMismatch`.
-- The `AuthoritySpec` case "a fresh binding proves no recovery is owed" calls `withProjectUpMigrationProfile
-  (productionRootAuthority root) (productionRootModeLease root) bound snapshot` inside the `bindRunLease`
-  continuation and asserts `Right`; that producer refuses every binding origin other than `FreshBinding`
-  with `ModeSnapshotMismatch "fresh lease binding" "recovered or migrated lease binding"`, so a fresh bind
-  tagged as an existing or migrated binding fails the case.
-- The `AuthoritySpec` case "rebinding an already-bound lease is not a fresh transition" asserts that the
-  second `bindRunLease` returns a `Left conflict` with `leaseConflictMessage conflict == modeErrorMessage
-  (ModeLeaseNotBindable "production" "bound")`, not merely some `Left`.
-
-#### Remaining Work
-
-- Delete `persistPlanSnapshot` from `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs` and its
-  export list. It writes caller-chosen spec and plan digests as a config-less record, has no caller in
-  `src/` or `app/`, and lets any holder of an `UnboundRunLease` reach a `BoundRunLease` through
-  `verifyPlanSnapshot` and `bindRunLease` for digests that name no admitted plan. Move its callers
-  (`test/AuthoritySpec.hs` and `test/HarnessSpec.hs`) to `persistCanonicalPlanSnapshot`, and add the
-  `OpenFreeDigestSnapshotProducer.hs` compile-fail fixture. Reword the `bindRunLease` Haddock to name
-  `persistCanonicalPlanSnapshot` as the producer that makes the bound digests plan-derived.
-- Move the two lease Haddock blocks onto the types they describe: "A recorded run lease that has no plan
-  snapshot yet..." sits above the private `LeaseLocation` and belongs above `UnboundRunLease`; "A lease
-  bound to one verified plan snapshot..." sits above the private `BindingOrigin` and belongs above
-  `BoundRunLease`. Give `LeaseLocation` and `BindingOrigin` their own one-line comments.
-- Replace the two independent `Maybe` fields (config digest, canonical bytes) of `PlanSnapshotRecord` and
-  `VerifiedPlanSnapshot` with one `Maybe` of a canonical-material record holding both, and delete the
-  `_ -> Builder.word8 2` branch of `encodePlanSnapshotRecord`, which writes a tag no decoder accepts.
-- Delete `decodeLegacySnapshotRecord` and the `<|>` fallback in `decodePlanSnapshotRecord`. No writer
-  produces the tab-separated format, and the fallback accepts revisions through `reads` (sign, whitespace,
-  hex, silent `Word64` wrap) and Latin-1 digests without `maxSnapshotTextBytes`. Add the two
-  `AuthoritySpec` tab-separated refusal cases named in Validation.
-- Add the `AuthoritySpec` read-back case named in Validation for `planSnapshotViewConfigDigest` and
-  `planSnapshotViewCanonicalBytes`; no test reads either accessor, so a view that dropped the canonical
-  material stays green. `CLISpec` reads only the revision and the spec and plan digests.
-- In `withProductionRoot` (`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`), read and
-  classify `lease.<project>.production` with the same decode and refusal rules `recordUnboundLease` applies
-  (bound, closed for `down`/`destroy`, any other non-unbound state, malformed bytes) before
-  `withFreshEpoch` and `acquireProductionMode` run. Today `withFreshEpoch` advances the broker counter and
-  `acquireModeWire` rewrites `mode.<project>` to the new epoch (or creates it from absent) before
-  `recordUnboundLease` refuses, and nothing undoes those writes, so after one refused `up` the bound lease
-  records epoch N while the mode record names N+1 and `prepareExistingBoundSnapshotAt` refuses the bound
-  run with `ModeEpochMismatch`; a refusal over a malformed lease leaves a newly created Production mode
-  record behind. Add the `protectedStoreImage` assertions to the two refused-root `AuthoritySpec` cases and
-  the `LifecycleSpec` bound-run-still-admissible case named in Validation.
-- Strengthen two `AuthoritySpec` binding cases as named in Validation: "a fresh binding proves no recovery
-  is owed" asserts the binding origin through `withProjectUpMigrationProfile` (today it only reads back
-  the `"plan-1"` digest the fixture stored, so retagging the fresh bind as `ExistingBinding` stays green),
-  and "rebinding an already-bound lease is not a fresh transition" pins the
-  `ModeLeaseNotBindable "production" "bound"` message (today any `Left`, including a store failure or a
-  stale-version refusal, passes).
-
-### Sprint 9.4: `ActiveProjectMode` narrowing [Done]
+### Sprint 9.1: Indexed `ProjectModeLease` [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/OpenGenericProjectModeMutation.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeProjectModeLease.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+The existing indexed project-mode lease admits only its exact mode transition, retains Production
+mode durably between entries and refuses malformed mode records without entering either public root.
+
+#### Deliverables
+
+- Retain the implemented opaque empty ProductionMode/HarnessMode tags, nominal three-index
+  ProjectModeLease, private wire/mutation kernels and exact public export pin. No new production
+  type, API or module is required; empty phantom tags gain no fictitious constructor-forgery test.
+- Revalidate OpenGenericProjectModeMutation against the real private acquireModeWire. That fixture
+  and its exact nonexport expectation already exist; reconcile the stale rewrite task without churn.
+- Repair ForgeProjectModeLease as a constructor-child import for the actual hidden constructor,
+  with the actual compiler diagnostic. An underapplied value binding would remain ill-typed after
+  exposure and is not an independent privacy proof. Retain mode-index/run-index coercion fixtures.
+- Add two malformed-mode payload cases: not-a-mode and harness<TAB>1<TAB> followed by 49 ASCII
+  letters. Derive the real mode key from the encoded installed-project name. Obtain the genuine
+  empty harness sweep proof before seeding corruption. Each public Production/Harness opener
+  returns the exact ModeMalformedRecord key, enters no callback and preserves the mode record's
+  bytes and version after each attempt. Whole-store epoch ordering remains owned by Sprint 9.4.
+- Strengthen Production retention by returning the observed root lease epoch, then reading a present
+  production<TAB>epoch record between and after two root entries. Each record must match its
+  entry's observed epoch; successful reentry legitimately advances the version and epoch.
+- Retain public cross-mode and subprocess contention controls. Cite the actual HarnessSpec
+  four-process one-winner control rather than attributing it to AuthoritySpec or claiming a
+  simultaneous-start barrier. Align lifecycle-state semantics and the already implemented nominal
+  Harness authority roles in both declared architecture pages.
+
+#### Validation
+
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container passed focused AuthoritySpec 245, HarnessSpec 47, each of the four private-kernel/
+constructor/mode-index/run-index fixtures 1, inventory 54 and DocValidatorSpec 17. The complete
+core gate then passed on both: Windows 3,317 cases in 507.41 seconds; Linux 3,319 in 388.01 seconds,
+GHC 9.12.4/Cabal 3.16.1.0 with package -Werror. The Windows child command is plain cabal test all;
+Linux uses the same unfiltered all selection with hidden successes. Provider-live components report
+their declared not-requested Unsupported result, not live acceptance.
+
+Both malformed payload leaves exercise both public roots, with genuine sweep evidence obtained
+before corrupting the encoded mode key. Each exact ModeMalformedRecord refusal retains the target
+record's original bytes/version and enters zero callbacks. Retention reads a present Production
+record with the actual observed lease epoch between and after root brackets; successful reentry
+may legitimately advance epoch/version. Whole-store admission ordering is not claimed here.
+
+The public-only native GHC rejects the real ProjectModeLease constructor-child import with
+GHC-10237, pinning the normalized complete child-not-exported phrase. Source inspection confirms
+the actual private constructor has four fields; no underapplied value binding can mask a leak.
+The already correct acquireModeWire fixture and nominal mode/run coercion fixtures remain. The
+existing four-process HarnessSpec control admits one acquisition and reports three stated refusals;
+no simultaneous-start barrier is claimed. Empty mode tags gain no invented constructor fixture.
+
+There are no production/API/export changes. Two AuthoritySpec cases and the existing retention
+case are strengthened, one genuine fixture/registration is repaired, and the two architecture pages
+align durable behavior and previously implemented nominal roles. Complete Phase 9 closure and its
+four-command host-static gate remain owed after its other active sprints.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.2: Generative `RunId runId` [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/OpenRunIdFromText.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeRunId.hs`,
+`core/hostbootstrap-core/test/compile-fail/CoerceRunId.hs`,
+`core/hostbootstrap-core/test/compile-fail/OpenRunKeyParser.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/harness_workflow.md`,
+`DEVELOPMENT_PLAN/rationale.md`, `DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md`
+
+#### Objective
+
+The existing generative run identity and every durable mode-field admission preserve exact text and
+accept only their canonical ASCII identity/unsigned-decimal grammar, with strict UTF-8 transport.
+
+#### Deliverables
+
+- Retain the implemented nominal RunId, rank-2 mint, separate Production identity branch and
+  scope propagation. parseRunKey already enforces 1–48 ASCII alphanumerics or hyphen; preserve
+  that producer instead of rewriting completed work. Add the still-missing ASCII guard to
+  mkInvocationCloseKey without changing its other length or punctuation rules.
+- Preserve the genuine OpenRunIdFromText fixture for private withReifiedRunId. Add one distinct
+  private-parser import fixture for actual parseRunKey, register its real public-GHC diagnostic,
+  and add its Implementation path only once created. Repair ForgeRunId as a real RunId(RunId)
+  child import with its actual privacy diagnostic; retain CoerceRunId. No duplicate reifier proof
+  or fake underapplied constructor binding is added.
+- encodeFields uses UTF-8; exactFields and decodeFields decode strictly and return no fields on
+  invalid bytes. Preserve exact field text: remove whole-record Text.strip normalization so
+  trailing whitespace cannot bypass later grammar. Keep existing private signatures and malformed
+  record errors; add no public codec/authority test seam or caller of a legacy test-only producer.
+- readWord admits only canonical ASCII unsigned decimal within Word64: nonempty digits, no sign,
+  whitespace, parentheses, hex or leading zero except 0. Reject more than 20 digits before bounded
+  Integer parsing, enforce maxBound and the showWord round trip, with no wrap or partial extraction.
+- Add public ingress controls for the specified non-ASCII run and close keys. Add exact malformed
+  mode-number rows for signs, overflow, parentheses, hex, leading zero and surrounding whitespace,
+  and the malformed Production lease number. Each target record keeps its bytes/version and each
+  refused root callback remains unentered; whole-store epoch ordering stays in 9.4.
+  The existing recovery test pins the earlier exact malformed-lease refusal for a leading-zero
+  epoch, with neither recovery callback entered, no acquisition record and no protected mutation;
+  it requires no invalid
+  recovered authority to reach the downstream acquisition journal.
+- Exercise invalid-UTF-8 ack through genuine existing-bound admission, pinning the exact project
+  invocation key and both callback counts. Independently distinguish UTF-8 from Char8 with a legal
+  Unicode incomplete-migration key read back unchanged through the public recovery path, and an
+  invalid UTF-8 migration field refused at its exact key. ASCII rejection alone is not proof of
+  decoding. Use existing fixtures/raw protected-record mutation, not a new evidence producer.
+- Add a declaration-bounded absence guard for Char8 truncation and text trimming in the private
+  durable-field codecs, with its named rationale. Writer UTF-8 is source/primitive evidence where
+  no legal public Unicode-write route exists; do not claim an unexercised runtime writer path or
+  introduce a legacy free-digest/migration authority caller just to test it.
+- Align the declared lifecycle/Harness docs, including the resolved nominal-role gap, and the
+  canonical-field rationale. Preserve later snapshot/admission/profile work. Reconcile any changed
+  legacy-row explanation without deleting a still-standing decoder owned by a later sprint.
+
+#### Validation
+
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container passed focused AuthoritySpec 260, LifecycleSpec 161/163 respectively, each of the four
+RunId/private-parser/reifier/coercion selections 1, inventory 54 and DocValidatorSpec 17. After
+aligning the recovery fixture, SessionSpec 127 and DocValidatorSpec 17 passed on both hosts.
+The complete unfiltered core gates then passed: Windows 3,336 cases in 510.37 seconds and Linux
+3,338 in 389.08 seconds, GHC 9.12.4/Cabal 3.16.1.0 with package -Werror. The native child command
+is plain cabal test all; Linux hides successful case output while selecting the same complete all
+scope. Provider-live reports its declared not-requested Unsupported result, not live acceptance.
+
+AuthoritySpec names the group "noncanonical mode numbers refuse both public roots", the positive
+"canonical mode epochs include zero and the maximum Word64", both "snapshot inspection refuses a
+non-ASCII run at ingress" and "invocation close keys refuse a non-ASCII character at ingress", and
+"an unbound Production lease refuses a negative epoch without changing its record". The number
+rows exercise both public roots with exact malformed mode keys,
+zero callback entries and preserved target bytes/version. The zero and max-Word64 rows enter a
+genuine Production root. Its non-ASCII identity controls and malformed Production lease row also
+pin their exact refusals. LifecycleSpec's invalid UTF-8 ack and migration rows use genuine bound
+admission and preserve the full protected image. The independent Unicode incomplete-migration
+case "the recovered profile preserves a UTF-8 incomplete migration key" returns the exact text,
+distinguishing strict UTF-8 from Char8 independently of ASCII close-key rejection. The negative
+LifecycleSpec cases are "invalid UTF-8 in a terminal close key refuses its exact invocation record"
+and "invalid UTF-8 in an incomplete migration refuses its exact migration record". The declaration-bounded durable-field guard pins the actual UTF-8
+writer/reader primitives and absence of truncation or trimming; runtime Unicode writer admission
+is not claimed where no legal public writer route exists.
+
+The public-only native GHC rejects the actual RunId constructor-child import with GHC-10237 and
+the private parseRunKey import with GHC-61689; registrations pin their actual normalized phrases.
+The genuine private withReifiedRunId fixture and nominal coercion fixture remain unchanged.
+Mode.hs changes 25 lines in one production module and adds no public type or export.
+
+The first complete runs each reported one fixture failure: Windows 1 of 3,336 in 516.29 seconds,
+Linux 1 of 3,338 in 388.46 seconds. SessionSpec's leading-zero epoch could not mint recovered
+current-version authority through the strict decoder. Its case now reads "recovery refuses a
+noncanonical lease epoch before acquisition" and directly pins the exact malformed-lease key,
+neither recovery callback entered, unchanged protected image and no acquisition record. The
+existing retained-evidence, CAS and live-snapshot controls and all generic recovery helpers remain.
+The case count is unchanged. Both complete passing reruns above include that aligned assertion.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.3: Scope-indexed lease binding and canonical snapshots [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/HarnessSpec.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeRunLease.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeBoundRunLease.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeVerifiedPlanSnapshot.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`DEVELOPMENT_PLAN/rationale.md`, `DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md`
+
+#### Objective
+
+One canonical snapshot writer and one framed record representation supply exact same-scope lease
+binding. Canonical config digest and bytes form a single optional unit throughout protected readback.
+
+#### Deliverables
+
+- Retain opaque nominal UnboundRunLease, VerifiedPlanSnapshot and BoundRunLease with the same
+  scope, digest and broker-generation indices and existing bindRunLease continuation surface.
+  Same-scope CAS success and exact conflict behavior remain; no public authority API is added.
+- persistCanonicalPlanSnapshot is the only library snapshot writer; revision is explicit and all
+  spec/config/plan digests and bytes derive from its opaque CanonicalPlanSnapshot. Its exact export
+  pin and an all-library definition/export absence guard hold that writer boundary, linked to the
+  rationale "Snapshot writers consume canonical plans". A deleted-symbol import is not a fixture.
+- One private canonical-material type holds config digest and canonical bytes. PlanSnapshotRecord
+  and VerifiedPlanSnapshot hold Maybe of that unit; one-sided states cannot be constructed. Preserve
+  public accessors, valid record bytes/version, PlanSnapshotView projections and inhabited Show output.
+- decodePlanSnapshotRecord admits only the bounded magic-prefixed framed format. The optional unit
+  has exhaustive tags 0 and 1; an absent unit remains readable for compatibility, with no claim that
+  a generic protected-envelope read independently authenticates a plan. Indexed admission performs
+  the exact plan-byte/digest join. All existing total/frame/text/material bounds stay enforced.
+- AuthoritySpec's nine and HarnessSpec's three writer calls use genuine canonical snapshots. Derive
+  linked expected digests and journal/session/resource keys from fixed canonical fixtures, retaining
+  HarnessSpec's forbidden-name guard. Preserve exact idempotency and independent revision/config/
+  topology substitution controls; no compatibility evidence producer is added.
+- Public inspectPlanSnapshot and verifyPlanSnapshot refuse both ordinary and overflowing revision
+  tab-format records at the exact snapshot key, without entering verification or changing protected
+  bytes/versions. Ordinary revision 1 distinguishes format removal; overflow already refuses through
+  strict numeric admission. Canonical readback pins every view accessor, especially Just config and
+  Just canonical bytes. A positive framed tag-0 read through both generic readers pins absent material,
+  exact fields, one verification callback and read-only bytes/version. Existing LifecycleSpec digest-only
+  bound-admission refusal still passes.
+- Fresh binding proves its origin by successfully opening withProjectUpMigrationProfile inside the
+  bind continuation; rebinding pins the exact bound-state conflict message. Lease Haddocks sit on
+  their actual types; an unbound lease may already have a persisted snapshot before binding.
+- Three independent actual constructor-child fixtures protect UnboundRunLease, BoundRunLease and
+  VerifiedPlanSnapshot, with real GHC diagnostics. Retain genuine Production/Harness, cross-run and
+  digest-pair binding fixtures, and align the canonical writer/readback docs and ledger.
+
+#### Validation
+
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container passed AuthoritySpec 264, HarnessSpec 47, LifecycleSpec 161/163 respectively, each
+of the three constructor-child and three scope/digest fixture selections 1, inventory 54 and
+DocValidatorSpec 17. Complete unfiltered core gates then passed: Windows 3,342 cases in 516.53
+seconds; Linux 3,344 in 389.97 seconds, GHC 9.12.4/Cabal 3.16.1.0 with package -Werror.
+The native child is plain cabal test all; Linux hides successful case output with the same all
+selection. Provider-live reports the declared not-requested Unsupported result, not live acceptance.
+
+AuthoritySpec's four new cases are "inspection and verification refuse an ordinary tab-separated
+snapshot", "inspection and verification refuse an overflowing tab-separated snapshot revision",
+"a framed snapshot without canonical material remains generically readable", and "the library has
+one canonical snapshot writer and no alternate snapshot decoder". Refused reads pin the actual
+snapshot key, zero verification callbacks and complete protected-image equality after each attempt.
+The positive raw tag-0 frame pins every generic view/verified projection, absent material, exactly
+one verification callback, and unchanged target bytes/version and complete image. It claims generic
+protected-record readback, not indexed plan authentication. Ordinary revision 1 independently proves
+format refusal; overflow already refused through strict numeric admission.
+
+The existing "a canonical snapshot persists exact bytes and refuses config/topology substitution"
+case pins all five view accessors, including Just config and exact canonical bytes. Independent
+revision-only substitution and byte-identical idempotency remain in "a plan snapshot is
+byte-identically idempotent and immutable". "a fresh binding proves no recovery is owed" consumes
+the actual migration-profile Right, while "rebinding an already-bound lease is not a fresh transition"
+pins the exact bound-state conflict. LifecycleSpec's "a legacy digest-only snapshot cannot mint
+bound plan evidence" still passes. Twelve actual writer calls and their fixed canonical digest and
+journal/session/resource-key expectations are adopted; HarnessSpec's forbidden-name guard remains.
+
+Actual public-only GHC-10237 diagnostics are registered independently for ForgeRunLease,
+ForgeBoundRunLease and ForgeVerifiedPlanSnapshot child imports. ProductionLeaseAsHarnessSnapshot,
+CrossRunLeaseBinding and CrossDigestLeaseBinding retain full real binding calls; the last proves
+a mismatched digest pair, not independent coverage of each digest axis. The complete-library
+absence guard and exact sealed export pin hold the sole public writer boundary without a fixture
+importing a deleted definition.
+
+Mode.hs changes 162 lines in one production module and introduces one private paired-material type.
+Valid version-1 framed bytes, limits, projections and inhabited Show output remain. Independent
+source comparison confirms Production-root acquisition and the profile/lease transition tail are
+unchanged; their remaining contracts stay in Sprints 9.4 and 9.6. Phase closure still owes its own
+full gate and all four host-static commands after the remaining sprints close.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.4: Production lease admission before fresh allocation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/LifecycleSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+A settled Production root refuses an ineligible existing lease before allocating an epoch or writing
+mode or authority records, preserving a bound run's existing admission at its recorded epoch.
+
+#### Deliverables
+
+- After existing mandatory closure recovery and operator verification, withProductionRoot performs
+  read-only mode and lease admission under the same exclusive protected entry before withFreshEpoch,
+  withVerifiedRoot or acquireProductionMode. Preflight yields only an admission verdict and retains
+  no session or authority; the existing root continuation still runs outside the protected entry.
+- Shared mode eligibility retains Production and refuses a live Harness before lease classification.
+  Shared lease decoding/classification admits absent and exact LeaseUnbound records, or LeaseClosed
+  for Production Up only. Bound, Frozen, Migrated and disallowed Closed states preserve their exact
+  ModeLeaseNotBindable run/state text; malformed bytes name the exact lease key.
+- recordUnboundLease consumes that same classification and retains exact CAS expectations. Actual
+  Closed-Up rearming keeps invocation clearing, terminal reverse-root clearing, journal reopening,
+  lease writing and profile initialization in the admitted transition; preflight performs no writes.
+- On settled stores, every lease-classification refusal enters no root callback and preserves the
+  complete protected image, including counter, mode, authority binding, lease, snapshot and profile.
+  Mandatory recovery remains prior work; no rollback or read-only guarantee is claimed for recovery
+  or for a failure during an admitted Closed-Up rearm.
+- Operator-before-mode-before-lease refusal priority stays explicit. A genuine live Harness after a
+  closed Production run still yields the mode conflict for Production Down/Destroy. The earlier
+  preflight necessarily places mode/lease refusals ahead of allocation or authority-binding faults
+  in multiply corrupt stores; no universal error-order preservation is claimed.
+- AuthoritySpec pins whole-store bound/malformed refusals and distinct Closed Down/Destroy, Frozen
+  and Migrated states, plus genuine Closed-Up success and retained-Harness mode priority. LifecycleSpec
+  proves that refused fresh Up leaves the genuine existing Open bound run admissible with its exact
+  bytes and epoch, Open callback once and terminal callback never. Align current-state docs.
+
+#### Validation
+
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container passed AuthoritySpec 270, LifecycleSpec 162/164 respectively, HarnessSpec 47, inventory
+54 and DocValidatorSpec 17. Complete unfiltered core gates then passed: Windows 3,349 cases in
+519.24 seconds; Linux 3,351 in 395.94 seconds, GHC 9.12.4/Cabal 3.16.1.0 with package -Werror.
+The native child is plain cabal test all; Linux hides successful case output with the same all
+selection. Provider-live reports its declared not-requested Unsupported result, not live acceptance.
+
+AuthoritySpec's "a second Production root preserves an existing bound lease and snapshot" and
+"a Production root preserves and refuses a malformed lease record" retain their exact target
+errors, no-entry and bytes/version checks, and capture the complete protected image immediately
+before/after each refused fresh root. Four new raw-state cases name "a closed Production lease
+refuses Down without changing any record", the matching Destroy case, "a frozen Production lease
+refuses fresh Up without changing any record", and the matching migrated case. They pin exact
+closed/frozen/migrated-bound errors, zero entries and whole-image equality. These are protected
+record classifier controls, not claimed migration execution.
+
+"a genuinely closed Production run can rearm through Up" uses actual public pre-effect closure
+and release, then admits one fresh Up with a higher epoch, exact Production/unbound rows and the
+available profile slot bound to the new lease version. "a live Harness takes priority over the older
+closed Production lease" uses genuine public roots and closure, then pins the actual Harness run's
+mode conflict for both Down and Destroy, zero fresh-root entries and unchanged complete images.
+
+LifecycleSpec's "a refused fresh Up preserves the existing Open bound run at its recorded epoch"
+starts from the genuine bound fixture with independently seeded counter 40. Refused fresh Up
+returns the exact bound-state error with no entry or image change; subsequent withBoundPlanSnapshot
+returns exact stable bytes and epoch 41 through Open once, terminal never, with the image preserved.
+
+Mode.hs changes 179 lines in one module with no new type or export. Source comparison verifies the
+snapshot boundary, profile consumer and admitted Closed-Up clearing/reopening/CAS sequence remain.
+The shared read-only checks run after mandatory recovery and operator verification, before fresh
+allocation. Image equality applies to settled classifier refusals; no recovery or failed-rearm rollback
+is claimed. Existing root continuations run outside the entry. Phase closure still owes its own full
+gate and all four host-static commands after the remaining sprints.
+
+#### Remaining Work
+
+None.
+
+### Sprint 9.5: `ActiveProjectMode` narrowing [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeActiveProjectMode.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -341,104 +424,141 @@ Narrow an indexed project-wide mode lease into the exact lifecycle scope authori
 
 #### Validation
 
-`CompileFailSpec` proves that Production and Harness active modes cannot substitute for one another, that
-two Harness run indices cannot cross-pair, and that the constructor is inaccessible. `AuthoritySpec`
-checks that each narrowing preserves the broker epoch observed through the originating lease. The phase
-gate runs with `-Werror`.
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container each passed ForgeActiveProjectMode, ProductionActiveModeAsHarness and
+CrossRunActiveProjectMode (one case each), inventory 54 and DocValidatorSpec 17. The public-only
+native GHC rejects the actual ActiveProjectMode constructor-child import with GHC-10237; its full
+normalized child-not-exported phrase is registered. The private constructor has four fields, and the
+import becomes well-typed if that constructor is exposed, independently of value-application arity.
+
+The scope/run coercion fixtures remain unchanged. CrossRunActiveProjectMode distinguishes a
+representational scope-role weakening because the empty Harness scope's parameters are phantom;
+the stored nominal BrokerEpoch structurally enforces the broker role. Exact export and role pins
+remain. Epoch projection cases are retained in AuthoritySpec, whose preceding full core gate passed
+3,349 Windows and 3,351 Linux cases. This sprint changes only the fixture and its diagnostic, with
+no production, API or case-count change. The final complete phase gate still includes these cases
+after the remaining profile work, with package -Werror and all four host-static legs.
 
 #### Remaining Work
 
 None.
 
-### Sprint 9.5: Protected one-use Production `LifecycleProfile` slot [Active]
+### Sprint 9.6: Protected one-use lifecycle profiles [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeLifecycleProfile.hs`,
+`core/hostbootstrap-core/test/compile-fail/CoerceLifecycleProfileScope.hs`
 **Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/lifecycle_state_model.md`
+**Docs to update**: `documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/harness_workflow.md`,
+`documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
-Open a Production lifecycle profile exactly once from matching root scope, active mode, and unbound lease
-authority.
+Both lifecycle-profile openers consume one protected slot only while their exact retained lease is
+still unbound at its recorded version, and preserve the reason ordinary admission refuses them.
 
 #### Deliverables
 
-- `LifecycleProfile scope` is opaque and grants only the scope named by its phantom index.
-- Its hidden representation retains the exact installed-project name, protected-store identity, and broker
-  epoch observed through the opening lease; downstream evidence leaves need not infer that origin from the
-  scope phantom or from coincidentally equal epoch numbers.
-- The Production opener has the exact type:
-
-  ```haskell
-  withProductionLifecycleProfile
-    :: RootScopeAuthority (Production projectId)
-    -> ActiveProjectMode (Production projectId) brokerGeneration
-    -> UnboundRunLease (Production projectId) brokerGeneration
-    -> (LifecycleProfile (Production projectId) -> a)
-    -> IO (Either AuthorityError a)
-  ```
-
-- The opener compare-and-swaps the unbound lease's protected Production profile slot from available to
-  consumed before entering the continuation.
-- Root scope, active mode, and unbound lease agree on Production scope and broker generation by type.
-- A retained input tuple cannot consume the slot again; the protected transition returns an authority
-  error and yields no profile.
-- The shared slot consumer (`consumeLifecycleProfileSlot`, used by both the Production and the Harness
-  opener) reads the lease record in the same protected entry and mints a profile only while it decodes to
-  `LeaseUnbound` at the `UnboundRunLease`'s record version; a bound, closed, or re-versioned lease is
-  refused and the slot stays available.
-- When ordinary admission refuses inside that entry (for example `ModeReverseRootInProgress` from a durable
-  reverse-root intent), the returned `AuthorityError` carries the `modeErrorMessage` of the refusal rather
-  than a generic malformed-binding text.
+- Retain opaque LifecycleProfile with its nominal scope, exact mode/project/store/epoch origin and
+  existing Production/Harness opener signatures. A genuine constructor-child fixture and a direct
+  newtype-scope-alias coercion fixture independently hold privacy and the nominal role, with observed
+  diagnostics. No new public type, evidence producer, API or module is added.
+- Existing root, mode and unbound inputs match by scope/generation and retained origin before entry.
+  Inside the exclusive entry, mandatory recovery and ordinary reverse-root refusal keep their order.
+  A nonstore ordinary refusal retains modeErrorMessage in AuthorityMalformedBinding; store failures
+  retain AuthorityStoreFailure. Operator diagnostics therefore identify a durable reverse-root intent.
+- Before reading/consuming the profile slot, the shared consumer reads the actual lease key and
+  requires decoded LeaseUnbound with record version equal to the retained UnboundRunLease version.
+  Missing, malformed, Bound, Closed and re-versioned leases yield no profile. The fresh-root classifier
+  is not reused: its absent/Closed-Up eligibility is a different contract.
+- Existing available-to-consumed slot CAS retains exact epoch/lease-version checks, one continuation
+  and AuthorityInvocationConsumed for a second opener on the same still-unbound evidence. The new
+  lease guard runs inside the existing slot-consumption workflow, preserving admission-before-mutation
+  and ProjectPlanSpec's scoped ordering guard. Callbacks remain outside durable slot mutation.
+- Six AuthoritySpec controls cover Production/Harness times genuine Bound binding, valid Closed
+  input and same-content Unbound CAS. The latter independently proves version refusal. Capture the
+  actual original available-slot bytes and its own record version, preserve both after refusal, pin
+  the authority diagnostic and zero callbacks, and compare the complete post-mutation store image.
+  Execute any returned IO action before counts; the public profile continuation itself is pure.
+- A valid raw Pending Destroy intent at reverse-root.<encoded project>.production refuses ordinary
+  profile admission with the specific reverse-root text and leaves the slot available. A matching
+  valid Terminal frame through the same public opener permits one profile, independently proving
+  decoder recognition because malformed bytes also refuse. Frames use actual project/store/epoch,
+  live record images and canonical data; ordinary fixture acquisition/cursor bytes are not claimed
+  reverse-lifecycle authority or execution. No public decoder or test-only authority seam is added.
+- The two forkIO cohorts are named "a second Production profile opener with the same evidence is
+  refused" and the matching Harness name. They retain exactly one Right and one
+  AuthorityInvocationConsumed, and omit counters that only repeat Right counts. No simultaneous
+  race/barrier claim is made on the non-threaded core runtime. Existing origin/projection and genuine
+  cross-process protected-entry exclusion controls remain.
+- Align the declared current-state architecture pages with the live lease check, specific refusal and evidence
+  limits. Retain genuine Harness-as-Production, Production-as-Harness, cross-run and cross-broker
+  signature fixtures, exact exports and scope roles; later consumers receive the same opaque profile.
 
 #### Validation
 
-`AuthoritySpec` proves one successful open and refusal of a second open with the same retained evidence
-(`AuthorityInvocationConsumed`, one continuation entry). The slot compare-and-swap runs inside the
-exclusive protected entry, whose cross-process exclusion "an out-of-process holder is excluded while the
-entry is held" proves; the core suite runs on the non-threaded runtime, so its two-`forkIO` opener cases
-are a second-opener refusal, not race evidence. `CompileFailSpec` proves that Harness evidence and a
-different broker generation cannot inhabit the Production opener. The sprint closes when these cases also
-exist and pass under `cabal test all` from `core/`, with the phase gate built with `-Werror`:
+On 2026-10-28, native Windows 11 x86_64 and the native-filesystem Ubuntu 24.04.4 x86_64 CPU
+container passed AuthoritySpec 277, HarnessSpec 47, LifecycleSpec 162/164 respectively, each of
+the two new privacy/role and five existing opener-input fixture selections 1, inventory 54 and
+DocValidatorSpec 17. The initial ProjectPlanSpec module-name selector ran one incidental case;
+the corrected actual "indexed project-plan foundation" group then passed all 89 cases on both
+hosts, followed by refreshed DocValidatorSpec 17. Its scoped ordinary-admission/slot-order guard
+remains. Every declared focused group therefore ran before the complete gates.
 
-- Inside a `withProductionRoot` callback, the test rewrites the lease record to different bytes (a
-  `LeaseBound` record, so its version advances), then calls `withProductionLifecycleProfile` with the
-  root's original `UnboundRunLease`; it gets a `Left` authority refusal, the continuation never runs, and
-  the profile slot still reads `ProfileAvailable` at the original epoch and lease version. The same case
-  runs for `withHarnessLifecycleProfile` inside `withHarnessRoot`.
-- Inside a `withProductionRoot` callback, the test writes a Pending Destroy reverse-root intent at
-  `reverse-root.<project>` and calls `withProductionLifecycleProfile`; the `Left` value's message
-  contains the `ModeReverseRootInProgress` text "a durable reverse-root intent owns ordinary lifecycle
-  admission", and the slot stays available.
-- The two `AuthoritySpec` cases named "two Production profile openers race to one continuation entry" and
-  "two Harness profile openers race to one continuation entry" are renamed "a second Production profile
-  opener with the same evidence is refused" and "a second Harness profile opener with the same evidence is
-  refused", and drop the `entries` counter, whose count only repeats the number of `Right` results; each
-  still asserts exactly one `Right` and one `AuthorityInvocationConsumed`.
+All four canonical host-static legs then passed on both hosts, GHC 9.12.4/Cabal 3.16.1.0 with
+package -Werror. The final core child commands are exactly cabal test all, with no case filters:
+Windows 3,358 cases in 526.64 seconds; Linux 3,360 in 392.85 seconds. From demo/, the same plain
+all command passed 165 consumer cases in 5.74/1.86 seconds respectively and its complete core
+dependency suite, 3,358 in 502.54 seconds / 3,360 in 380.45 seconds. Each retained failure-context
+capture is empty. The two Cabal workspaces run serially within each gate host.
+
+The exact root commands poetry run python -m hostbootstrap.check_code and poetry run python -m
+hostbootstrap.test_all passed on both. Ruff, Black and Mypy report success; 376 tests pass with
+100% coverage on Windows Python 3.14.7 (7.52 seconds) and Linux Python 3.12.3 (8.25 seconds).
+The Linux run selects the existing /repo/.venv with VIRTUAL_ENV; its initial system-Python route
+lacked development dependencies and was rerun in that environment without source changes.
+Both Python routes import the actual working-tree package. A read-only comparison verifies all
+1,023 nonignored source-tree files still match the Linux snapshot after the gates. These static
+results claim no live provider/hardware acceptance; the provider-live component reports its
+explicit not-requested Unsupported result.
+
+AuthoritySpec's "lifecycle profiles require their exact live unbound lease" group has six public
+Production/Harness cases. Genuine canonical binding, valid Closed input and same-content Unbound
+CAS each retain the original present available-slot bytes/version, return the exact authority
+refusal, enter no executed callback and preserve the complete post-mutation store image. The
+same-content row independently distinguishes the retained-version check from state checks.
+
+"a recognized Pending Destroy intent refuses a profile while its matching Terminal permits one"
+uses the exact suffixed key and independently framed 23/28-field records with real project/store,
+epoch, canonical data and live record images. Pending retains the specific reverse-root cause and
+available slot with no callback; the same Terminal common fields permit one executed callback
+with the actual Production name/epoch and mutate only the slot to consumed. The ordinary fixture
+acquisition/cursor records claim no reverse-lifecycle authority or execution. A malformed sentinel
+cannot satisfy the independent Terminal positive. The two same-evidence cohorts retain one Right
+and one AuthorityInvocationConsumed with their honest second-opener names; redundant Right-count
+counters are removed. Existing first-open origin/projection controls remain.
+
+Actual public GHC rejects ForgeLifecycleProfile's constructor-child import with GHC-10237 and
+CoerceLifecycleProfileScope's local newtype-alias coercion with GHC-18872; full normalized phrases
+are registered. The latter distinguishes nominal from representational scope. The five existing
+cross-scope/run/broker opener fixtures call the real API completely. Exact public exports and
+indices remain.
+
+Mode.hs changes 34 lines in one production module with no new type or API. The new guard precedes
+the exact unchanged available-slot reader/CAS body, and ordinary refusals retain their cause.
+Independent source comparisons preserve canonical snapshots and Production preflight. Three
+architecture pages align the implemented order, callback and intent-state limits. The complete
+phase gate and all four host-static legs above close the only remaining sprint obligation.
 
 #### Remaining Work
 
-- In `consumeLifecycleProfileSlot` (`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`), read
-  the lease record at `leaseLocationLeaseKey` before the slot compare-and-swap and require that it decodes
-  to `LeaseUnbound` with record version `unboundRunLeaseRecordVersion unbound`; refuse otherwise with an
-  `AuthorityMalformedBinding` naming the lease state. Today the opener compares only the slot's
-  epoch and lease version with the retained `UnboundRunLease`, and binding never touches the slot, so a
-  caller that binds the lease and keeps the old `UnboundRunLease` still opens a profile, contrary to the
-  `LifecycleProfile` Haddock ("only from the exact active mode plus a still-unbound lease"). Add the
-  rewritten-lease cases for both openers named in Validation.
-- In the same function, replace the `Left _ -> AuthorityMalformedBinding "ordinary lifecycle admission is
-  unavailable"` mapping with one that appends `modeErrorMessage failure`, so an operator refused because a
-  reverse-root operation is in progress is told so. Add the reverse-root-intent case named in Validation.
-- In `test/AuthoritySpec.hs`, rename the Production and Harness "race to one continuation entry" opener
-  cases and drop their `entries` counters, as named in Validation. The core test suite is built without
-  `-threaded`, so the two `forkIO` workers share one OS thread and in practice open one after the other,
-  and the counter is bumped only after `open` has returned `Right`; neither case observes concurrent
-  contention, so the names claim evidence the cases do not produce.
+None.
 
-### Sprint 9.6: Protected one-use Harness `LifecycleProfile` slot [Done]
+### Sprint 9.7: Protected one-use Harness `LifecycleProfile` slot [Done]
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
@@ -479,7 +599,7 @@ Open a Harness lifecycle profile exactly once from evidence for one generative H
 
 `AuthoritySpec` proves one successful open and refusal of a second open with the same retained evidence
 (`AuthorityInvocationConsumed`, one continuation entry). Cross-process exclusion of the slot
-compare-and-swap rests on the exclusive protected entry, as Sprint 9.5's Validation states.
+compare-and-swap rests on the exclusive protected entry, as Sprint 9.6's Validation states.
 `CompileFailSpec` proves that Production evidence, another Harness run, or another broker generation
 cannot inhabit the opener. The phase gate runs with `-Werror`.
 
@@ -496,22 +616,11 @@ same-epoch refusal before snapshot persistence, and all 123 public compile-fail 
 
 #### Remaining Work
 
-None. The lease recheck in the slot consumer both openers share, its Harness-opener case, and the
-rename of the Harness second-opener case are owned by Sprint 9.5.
+None.
 
 ## Remaining Work
 
-- Sprint 9.1: the mode-mutation compile-fail fixture names `acquireModeWire`; malformed mode-record
-  refusal cases; the Production retention case reads the mode record between entries.
-- Sprint 9.2: the `RunId` compile-fail fixtures name `parseRunKey` and `withReifiedRunId`; ASCII-only run
-  and close keys; UTF-8 record field codec; canonical-decimal epoch parsing in `readWord`.
-- Sprint 9.3: delete the public `persistPlanSnapshot`; move the lease Haddocks; one canonical-material
-  snapshot field; delete the tab-separated legacy snapshot decoder; a read-back case covers the config
-  digest and canonical bytes accessors of `PlanSnapshotView`; a refused Production root classifies
-  the lease before advancing the epoch or writing the mode record, proved by whole-store image and
-  bound-run-still-admissible cases; the fresh-binding and rebinding cases pin binding origin and refusal.
-- Sprint 9.5: the profile slot consumer rechecks the unbound lease and keeps the admission refusal's
-  message; the Production and Harness opener "race" cases are renamed as second-opener refusals.
+None.
 
 ## Documentation Requirements
 
@@ -520,6 +629,8 @@ rename of the Harness second-opener case are owned by Sprint 9.5.
 - `documents/architecture/lifecycle_state_model.md` — indexed modes, generative run identity,
   scope-indexed lease binding, active-mode narrowing, and protected profile slots.
 - `documents/architecture/harness_workflow.md` — Harness run identity and one-use profile admission.
+- `documents/architecture/unrepresentable_state.md` — sealed profile proofs and precise active or
+  malformed reverse-intent admission limits.
 
 **Engineering docs to create/update:**
 
@@ -528,5 +639,5 @@ rename of the Harness second-opener case are owned by Sprint 9.5.
 
 **Cross-references to add:**
 
-- Keep `development_plan_standards.md` § EE and the Phase 9 README status row aligned with these six
+- Keep `development_plan_standards.md` § EE and the Phase 9 README status row aligned with these
   foundations.

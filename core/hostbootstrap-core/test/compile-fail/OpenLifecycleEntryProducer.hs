@@ -1,18 +1,12 @@
 module OpenLifecycleEntryProducer where
 
+-- The command facade does not expose package-owned root entry producers or interpreters.
+
 import HostBootstrap.Command (
-    AuthorizedChildCursor,
-    ChildRecoveryLifecycleEntry,
-    renderForwardTerminalOrigin,
-    runChildProjectUpLifecycleEntry,
     runRootProjectUpLifecycleEntry,
+    runRootProjectReverseLifecycleEntry,
     settleRootedPlanCatalog,
-    withChildProjectUpLifecycleEntry,
-    withChildRecoveryTerminalOrigin,
-    withReceivedRecoveryChildLifecycleEntry,
+    withBoundProjectDestroyLifecycleEntry,
     withRootProjectReverseLifecycleEntry,
     withRootProjectUpLifecycleEntry,
  )
-
-hidden :: ()
-hidden = ()

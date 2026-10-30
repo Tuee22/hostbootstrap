@@ -1200,7 +1200,7 @@ withPreparedPublicTestCallM consume = do
     withTestProjectResources $ \plan expectedProject providerResource clusterResource -> do
         let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
             operation = plannedResourceKey providerResource
-        withSuccessorGate planDigest operation "session-1" "stale-acquire-session" 1 1 2 $ \gate nextGate ->
+        withSuccessorGate planDigest operation "session-1" 1 1 2 $ \_store gate nextGate ->
             withPreparedTestCallForGate plan providerResource clusterResource gate $
                 consume plan providerResource clusterResource gate nextGate expectedProject
 

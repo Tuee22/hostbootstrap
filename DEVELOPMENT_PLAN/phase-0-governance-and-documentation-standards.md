@@ -1,11 +1,11 @@
 # Phase 0 — Governance and documentation standards
 
-**Status**: Active
+**Status**: Done
 **Depends on**: nothing
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Establish the metadata standard, the plan tree, and the machine-checked documentation
 > validator that every later phase is judged against.
@@ -82,9 +82,9 @@ The tree is contiguous from `phase-0` with no gaps, and every relative link reso
 
 None.
 
-### Sprint 0.3: The documentation validator [Active]
+### Sprint 0.3: The documentation validator [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
 `core/hostbootstrap-core/test/DocValidatorSpec.hs`
 **Substrates**: none
@@ -111,31 +111,23 @@ Make the standard mechanical rather than aspirational.
 
 #### Validation
 
-`DocValidatorSpec` runs `validateRepo` against the live repository and fails on any violation, then runs
-the negative fixture. Both execute inside the canonical `cabal test all --ghc-options=-Werror` from
-`core/`. The sprint closes when `negativeCase` in `core/hostbootstrap-core/test/DocValidatorSpec.hs`
-also asserts that the YAML front-matter refusal fires and that a link inside a fenced code block produces
-no violation, as listed under Remaining Work, and that gate passes.
+`DocValidatorSpec`'s `validator flags missing metadata, links, and sections` case
+(`negativeCase`) asserts the YAML front-matter refusal even when the full metadata block follows it,
+and asserts that no violation mentions `fenced_target_missing.md` from the fenced example. The
+`governed documentation conforms to the standard` case validates the live repository.
 
-Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), the focused `DocValidatorSpec` passed 2/2,
-and the exact phase gate, `cabal test all --ghc-options=-Werror` from `core/`, passed 1426/1426 cases in
-67.48 seconds. The negative fixture exercised missing, malformed, duplicate, unmatched, and mismatched
-phase-status rows.
+On 2026-10-26, native x86_64 Windows 11 (`DESKTOP-R6BTBVS`), GHC 9.12.4 and Cabal 3.16.1.0,
+plain `cabal test all` from `core/` passed all 2,550 core cases, including all 13 `DocValidatorSpec`
+cases. The provider-live component reported its declared unrequested-lane `Unsupported`; no live
+provider acceptance is claimed.
 
 #### Remaining Work
 
-- `negativeCase` in `core/hostbootstrap-core/test/DocValidatorSpec.hs` writes a governed document
-  `documents/architecture/yaml_header.md` whose first non-empty line is `---` followed by a `title:` line
-  and a closing `---`, then the full metadata block, and adds `"YAML front-matter"` to the expected
-  violation list, so the `hasYamlFrontMatter` branch of `checkGovernedMeta` is proved to fire.
-- The same fixture writes a well-formed governed document whose body holds a fenced code block
-  containing a Markdown link to the absent file `fenced_target_missing.md`, and asserts that no rendered
-  violation mentions `fenced_target_missing.md`, so `stripFencedCode` is proved to exempt fenced examples from the link check
-  rather than the exemption being inferred from the live tree passing.
+None.
 
-### Sprint 0.4: The doctrine checks a green build can hide [Active]
+### Sprint 0.4: The doctrine checks a green build can hide [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
 `core/hostbootstrap-core/test/DocValidatorSpec.hs`,
 `DEVELOPMENT_PLAN/development_plan_standards.md`
@@ -176,38 +168,21 @@ correct and orders wrong fails the build rather than passing it.
 
 #### Validation
 
-`DocValidatorSpec` against the live repository and against the negative fixture, inside
-`cabal test all --ghc-options=-Werror` from `core/`. `negativeCase` proves each guard fires: Sprint 11.1's
-and the phase's `Remaining Work` citing phase 12, a missing `## Remaining Work` and the drifted
-`## Phase Remaining Work` heading on an Active phase, a Done sprint declaring work and one with no
-section, an unowned, an unresolvable, and a two-owner ledger row, and contract section N naming no owning
-phase. It proves the scopings by absence: exactly two `cites phase 12` violations (the forward link in
-Sprint 11.2's `#### Validation` is legal), no violation for contract sections A and K, and no
-`names 3 deleting phases` for the row citing a phase in its `Why` column. The sprint closes when the
-blank-`Deleted by` case under Remaining Work exists and passes in that gate.
+`DocValidatorSpec`'s `validator flags missing metadata, links, and sections` case
+(`negativeCase`) proves the doctrine guards and their scoped absences. Its fourth ledger row links
+phase 10 only in `Why` and leaves `Deleted by` blank. Exactly two rows report
+`legacy ledger row names no deleting phase`, proving the blank cell cannot borrow that link.
 
-Dated evidence: on 2026-08-18, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
-passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
-1,951/1,951 in 241.11 seconds, plus `poetry run python -m hostbootstrap.check_code` and
-`poetry run python -m hostbootstrap.test_all` at 231 passed.
+On 2026-10-26, plain `cabal test all` from `core/` passed all 2,550 core cases on native x86_64
+Windows 11 (`DESKTOP-R6BTBVS`), GHC 9.12.4 and Cabal 3.16.1.0.
 
 #### Remaining Work
 
-- `deletingCell` in `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs` takes the last
-  non-empty cell, so a tracked row whose `Deleted by` cell is blank reads its `Why` cell as the deleting
-  cell. Rewrite it to split the row on `|`, drop the empty segment after the closing pipe, and return the
-  final cell unfiltered (blank included), so `rowViolations` sees an empty `Deleted by` cell as naming no
-  phase.
-- Add to the ledger fixture in `negativeCase` (`core/hostbootstrap-core/test/DocValidatorSpec.hs`) a
-  fourth tracked row whose `Shape` cell reads `a fourth`, whose `Location` cell reads `src/W.hs`, whose
-  `Why` cell holds a Markdown link to the fixture phase document `phase-10-doctrine.md`, and whose
-  `Deleted by` cell is blank. Assert that exactly two `legacy ledger row names no deleting phase`
-  violations are reported (the `nobody in particular` row and this one), so a phase linked in the `Why`
-  column cannot satisfy a blank `Deleted by` cell.
+None.
 
-### Sprint 0.5: A covers digest refuses a path that contributes nothing [Planned]
+### Sprint 0.5: A covers digest refuses a path that contributes nothing [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Digest.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
 `core/hostbootstrap-core/test/DocValidatorSpec.hs`
@@ -240,44 +215,29 @@ branch of `collect` hold that contract and proves every refusal and the drift co
 
 #### Validation
 
-`DocValidatorSpec` gains a case, run inside `cabal test all --ghc-options=-Werror` from `core/`, that
-builds a miniature repository and calls `measurePathSetDigest` (the test suite already depends on
-`hostbootstrap-core:ownership-internal`) and `checkGateEvidence` on a `Done` phase document with
-`**Gate kind**: deferred`. It asserts: a missing covers path yields `Left (DigestPathUnavailable _)` naming
-the path, and `checkGateEvidence` reports `'**Evidence covers**' cannot be measured`; an empty directory
-and a directory holding only `__pycache__/x.pyc` each yield that refusal; adding a file under
-`__pycache__` beside real source leaves the digest unchanged; changing one byte of a covered source file
-makes `checkGateEvidence` report `now measures` against the recorded digest, while the recorded digest
-equal to the measured one produces no violation; and a covers set measured from a nested directory yields
-the same digest whichever separator the cited path is written with. On a host where
-`System.Directory.setPermissions` can revoke listing (POSIX), a covered subdirectory with read and search
-permission removed yields the listing refusal rather than an exception. A second `DocValidatorSpec` case
-asserts `sha256Hex ""` is `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`,
-`sha256Hex "abc"` is `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`, and
-`frameWire "ab"` is the seven zero bytes, `0x02`, then `ab`.
+`DocValidatorSpec`'s `covers digests refuse unavailable paths and detect source drift` case
+(`digestCase`) checks missing, empty and generated-only cited paths as typed refusals and as
+`checkGateEvidence` violations. Generated cache files and empty descendants leave a real source tree's
+digest unchanged. Directory and file citations agree across forward-slash and backslash separators.
+Matching evidence passes; changing one source byte reports the recorded and newly measured digests.
+The permission probe compares the real kernel's listing result with the digest result and restores
+permissions with `bracket`.
+
+`SHA-256 and wire framing match known-answer vectors` (`digestVectorCase`) pins the empty and `abc`
+SHA-256 digests and the eight-byte big-endian length prefix of `frameWire "ab"`.
+
+On 2026-10-26, plain `cabal test all` from `core/` passed all 2,550 core cases on native x86_64
+Windows 11 (`DESKTOP-R6BTBVS`), GHC 9.12.4 and Cabal 3.16.1.0. Both new cases passed. This Windows
+run does not establish the POSIX permission-denied branch; the fixture keeps the case present and
+asserts the actual kernel result on every gate host.
 
 #### Remaining Work
 
-- In `collect` (`core/hostbootstrap-core/internal/ownership/HostBootstrap/Digest.hs`), wrap
-  `listDirectory` in `try` and map failure to `DigestPathUnavailable`, and return
-  `Left (DigestPathUnavailable (path <> ": directory contributes no files"))` when the filtered, recursed
-  listing of a cited top-level path concatenates to no entries.
-- Add the miniature-repository digest case described under Validation to
-  `core/hostbootstrap-core/test/DocValidatorSpec.hs`, importing `HostBootstrap.Digest`.
-- Add the `sha256Hex` and `frameWire` known-answer case described under Validation to
-  `core/hostbootstrap-core/test/DocValidatorSpec.hs`.
-- Extend the `checkGateEvidence` row of `documents/documentation_standards.md`'s check table to state that
-  a covers path that is missing, unlistable, or contributes no files is refused.
-- Rewrite the module header of `core/hostbootstrap-core/internal/ownership/HostBootstrap/Digest.hs`. It
-  calls the module "the one SHA-256 spelling", narrates the spellings that preceded it, and says
-  `measurePathSetDigest` keeps every property "the build-authority measurement already had", while
-  `Build.measureSourceDigest` is a separate measurement that does not call it and other modules define
-  their own `sha256Hex`. The header states the three exports listed under Deliverables and their one
-  in-tree measuring caller, `DocValidator`.
+None.
 
-### Sprint 0.6: Every tracked text file has a declared line ending [Planned]
+### Sprint 0.6: Every tracked text file has a declared line ending [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `.gitattributes`
 **Substrates**: none
 **Docs to update**: `CLAUDE.md`, `AGENTS.md`
@@ -296,25 +256,33 @@ the default rule names one too.
 
 #### Validation
 
-`git ls-files --eol` reports `eol=lf` or `eol=crlf` in the attribute column for every tracked text file,
-and its index column reports `i/lf` for every tracked text file other than a Windows script, so the change
-carries no line-ending churn. The host static gate (§ JJ) passes afterwards.
+On 2026-10-26, `git ls-files --eol` audited all 977 tracked files: every text file has an explicit
+`eol=lf` or `eol=crlf` attribute, and every tracked non-script text file has `i/lf`. `.editorconfig`
+reports `attr/text=auto eol=lf`. The change carries no line-ending churn. `AGENTS.md` and `CLAUDE.md`
+already state the authoritative LF policy and need no text change.
+
+The complete host static gate (§ JJ) passed on `DESKTOP-R6BTBVS`, native x86_64 Windows 11
+10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0, Poetry 2.4.1, Python 3.14.7:
+
+- `cabal test all` from `core/`: 2,550 core cases passed (387.19 seconds).
+- `cabal test all` from `demo/`: 164 consumer cases passed (5.76 seconds) and the included 2,550 core
+  cases passed (361.31 seconds). Both Cabal legs compile the provider-live component, which reports its
+  declared unrequested-lane `Unsupported`; these runs establish no live provider acceptance.
+- `poetry run python -m hostbootstrap.check_code`: Ruff, Black and strict mypy passed.
+- `poetry run python -m hostbootstrap.test_all`: 251 cases passed (5.30 seconds).
+
+The initial demo attempt stopped while printing a test title containing `§` through the command
+console's CP437 encoding. The successful full demo command initializes that console with `chcp 65001`
+and restores its original code page afterward; no case or assertion is removed. The demo driver's own
+locale obligation is unchanged.
 
 #### Remaining Work
 
-- Change line 5 of `.gitattributes` from `* text=auto` to `* text=auto eol=lf`, then confirm with
-  `git ls-files --eol` that `.editorconfig` reports `attr/text=auto eol=lf` and that no tracked text file
-  reports an attribute column without an `eol=` value.
+None.
 
 ## Remaining Work
 
-- Sprint 0.3: negative fixtures for the YAML front-matter refusal and the fenced-code link exemption.
-- Sprint 0.4: `deletingCell` reads a blank `Deleted by` cell as blank, with a fixture row proving a `Why`
-  link cannot satisfy it.
-- Sprint 0.5: `measurePathSetDigest` refuses an empty or unlistable covered directory, with digest
-  refusal, generated-name, separator, and drift fixtures, known-answer vectors pin `sha256Hex` and
-  `frameWire`, and its module header states its three exports and their measuring caller.
-- Sprint 0.6: `.gitattributes` default rule names `eol=lf`.
+None.
 
 ## Documentation Requirements
 

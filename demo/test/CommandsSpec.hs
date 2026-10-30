@@ -37,7 +37,7 @@ import qualified HostBootstrap.Context as Context
 import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.HostTool (absExePath)
-import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftContext (..), LiftLayer (ViaContainer), localContext)
+import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftLayer (ViaContainer), liftLayers, localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
@@ -1019,15 +1019,17 @@ tests =
                         , frameDescent "vm-orchestrator-1" (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg))
                         )
             case result of
-                (Just (LiftContext [ViaContainer directLift]), Just (LiftContext [ViaContainer ordinaryLift])) -> do
-                    let directArgs = clExtraArgs directLift
-                        ordinaryArgs = clExtraArgs ordinaryLift
-                        durableMount = Mount (T.pack (canonicalDemo </> ".data")) "/workspace/demo/.data" False
-                        guestDurableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
-                    directArgs @?= []
-                    ordinaryArgs @?= []
-                    assertBool "direct handoff carries the canonical host durable root" (durableMount `elem` clMounts directLift)
-                    assertBool "VM-backed handoff carries the provider-shared durable root" (guestDurableMount `elem` clMounts ordinaryLift)
+                (Just directContext, Just ordinaryContext)
+                    | [ViaContainer directLift] <- liftLayers directContext
+                    , [ViaContainer ordinaryLift] <- liftLayers ordinaryContext -> do
+                        let directArgs = clExtraArgs directLift
+                            ordinaryArgs = clExtraArgs ordinaryLift
+                            durableMount = Mount (T.pack (canonicalDemo </> ".data")) "/workspace/demo/.data" False
+                            guestDurableMount = Mount "/var/tmp/hostbootstrap-demo-data" "/workspace/demo/.data" False
+                        directArgs @?= []
+                        ordinaryArgs @?= []
+                        assertBool "direct handoff carries the canonical host durable root" (durableMount `elem` clMounts directLift)
+                        assertBool "VM-backed handoff carries the provider-shared durable root" (guestDurableMount `elem` clMounts ordinaryLift)
                 other -> assertBool ("unexpected frame contexts: " ++ show other) False
         , testCase "Linux GPU assertions stay local instead of entering Incus" $
             demoTestFrameContext (Substrate LinuxGpu Amd64) @?= localContext

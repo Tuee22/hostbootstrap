@@ -17,7 +17,9 @@ module HostBootstrap.Cluster.Cordon (
     budgetMemoryBytes,
     budgetStorageBytes,
     HostCapacity (..),
-    CapacityReadSource (..),
+    CpuSource (..),
+    MemorySource (..),
+    StorageSource (..),
     CapacityReadPlan (..),
     StorageCordonTarget (..),
     StorageCordonMechanism (..),
@@ -45,6 +47,9 @@ module HostBootstrap.Cluster.Cordon (
     kindNodeCordonLimits,
     incusSizingArgs,
     resolveHostCapacity,
+    parseCpuinfoProcessors,
+    parseMemAvailableBytes,
+    parsePositiveInteger,
     parseDfAvailableKBytes,
     gibibytes,
 )
@@ -55,14 +60,16 @@ import Data.Text (Text)
 import HostBootstrap.Cluster.Cordon.Foundation (
     BudgetDimension (..),
     CapacityReadPlan (..),
-    CapacityReadSource (..),
+    CpuSource (..),
     HostCapacity (..),
+    MemorySource (..),
     QuantityError (..),
     ResourceBudget,
     StorageCordonMechanism (..),
     StorageCordonResult (..),
     StorageCordonTarget (..),
     StorageCordonUnsupportedReason (..),
+    StorageSource (..),
     budgetCpu,
     budgetMemoryBytes,
     budgetStorageBytes,
@@ -72,7 +79,10 @@ import HostBootstrap.Cluster.Cordon.Foundation (
     managedWslIdleTimeoutHours,
     managedWslIdleTimeoutMillis,
     mkResourceBudget,
+    parseCpuinfoProcessors,
     parseDfAvailableKBytes,
+    parseMemAvailableBytes,
+    parsePositiveInteger,
     parseQuantity,
     renderQuantityError,
     resolveHostCapacity,
@@ -130,10 +140,15 @@ fitsBudget :: Vocab.Budget -> [Vocab.PodResources] -> Either Overflow ()
 fitsBudget budget pods
     | wantedCpu > budget.cpu = Left (Overflow "cpu" wantedCpu budget.cpu)
     | wantedMemory > budget.memory = Left (Overflow "memory" wantedMemory budget.memory)
-    | otherwise = Right ()
+    | otherwise = mapM_ checkPod pods
   where
     wantedCpu = foldl' (\total pod -> total + pod.replicas * pod.cpuLimit) 0 pods
     wantedMemory = foldl' (\total pod -> total + pod.replicas * pod.memoryLimit) 0 pods
+    checkPod :: Vocab.PodResources -> Either Overflow ()
+    checkPod pod
+        | pod.cpuRequest > pod.cpuLimit = Left (Overflow "cpuRequest" pod.cpuRequest pod.cpuLimit)
+        | pod.memoryRequest > pod.memoryLimit = Left (Overflow "memoryRequest" pod.memoryRequest pod.memoryLimit)
+        | otherwise = Right ()
 
 -- | Parse a descriptive envelope and render a Colima wall.
 colimaSizingArgs :: String -> ResourceEnvelope -> Either String [String]
@@ -167,7 +182,7 @@ What an ownership driver applies is a wall on the container identity its durable
 record bound, so it has no name to render and takes the flags on their own. This
 is the same rendering the argv-shaped one above composes, not a second copy.
 -}
-kindNodeCordonLimits :: ResourceBudget -> [String]
+kindNodeCordonLimits :: ResourceBudget -> Either String [String]
 kindNodeCordonLimits = Foundation.kindNodeCordonLimitsForBudget
 
 -- | Parse a descriptive envelope and render an Incus wall.

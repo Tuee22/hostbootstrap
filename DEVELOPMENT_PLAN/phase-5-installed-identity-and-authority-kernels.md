@@ -1,12 +1,14 @@
 # Phase 5 — Installed identity, operator verification, and authority kernels
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 4 (protected store)
 **Substrates**: none (static)
 **Gate**: `cabal test all` from `core/`, including the compile-fail fixtures,
 host-native on the gate host that runs it
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-27 ; native Windows 11 10.0.26300.9457 x86_64, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from core and all four canonical host-static legs (§ JJ) ; pass ; covers in-gate
+**Gate evidence**: 2026-10-27 ; x86_64 Ubuntu 24.04.4 Linux CPU container, GHC 9.12.4, Cabal 3.16.1.0 ; complete `cabal test all` core gate ; pass ; covers in-gate
 
 > **Purpose**: Turn independently verified executable, operating-system, store, and generation facts into
 > opaque authority inputs, while leaving lifecycle-specific command admission to the phases that possess
@@ -52,11 +54,11 @@ Make lifecycle verbs and phases closed type-indexed vocabularies.
 
 None.
 
-### Sprint 5.2: Generative installed project identity [Active]
+### Sprint 5.2: Generative installed project identity [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`,
@@ -76,8 +78,6 @@ Bind project identity before any plan, run, or authority identity exists.
 - Stable record keys derive their project component only from `InstalledProjectIdentity`.
 - The kernel opener `withInstalledProjectKernel` refuses an empty name, a name longer than 64 characters, and
   any character outside ASCII alphanumerics, `-`, and `_`, each with its own `AuthorityInvalidIdentity` reason.
-- The only caller of `withInstalledProjectKernel` is the facade opener in `HostBootstrap/Authority.hs`; no
-  package module re-mints an identity from a recorded project name.
 
 #### Validation
 
@@ -90,29 +90,209 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
   returns `Left (AuthorityInvalidIdentity "the installed project name must be at most 64 characters")`; and a
   64-character name passes the length bound, so its refusal is the executable-mismatch reason
   ("does not match the invoked executable"), not the length reason.
-- A source guard pins the caller set of `withInstalledProjectKernel` across `core/hostbootstrap-core/src` to
-  `HostBootstrap/Authority.hs` alone (compared with `SourceGuard.repoRelativePath`).
 - Pinned compile-fail fixtures cover constructor forgery, rank-2 escape, and nominal-index coercion; Phase 7
   covers propagation across distinct runtime invocations.
 
+2026-10-26: the native Windows AuthoritySpec selection passed 153/153 cases in 17.37 seconds,
+including all three exact boundary refusals. The complete phase gate remains owed after its other
+sprints; the unchanged constructor/coercion fixtures passed in the preceding complete core gate.
+
 #### Remaining Work
 
-- Add the three `withInstalledProjectIdentity` boundary cases above (empty, 65 characters, 64 characters) to
-  `AuthoritySpec`, each asserting the exact `AuthorityInvalidIdentity` reason or the executable-mismatch reason.
-- `reserveCurrentLifecycleCommandKernel` (`Lifecycle/Session.hs`) re-mints an `InstalledProjectIdentity` by
-  calling `withInstalledProjectKernel` on the recorded `acquisitionBindingProject binding` before invoking
-  `reserveCommandInvocationKernel`. Replace it: the identity the kernel compares against is the
-  executable-verified `InstalledProjectIdentity` the root admission opened, threaded from the
-  `Command/LifecycleEntry.hs` callers through `authorizeRootProject` into `reserveCurrentLifecycleCommandKernel`.
-  Add the caller-set source guard above, and a `SessionSpec` drift case that pairs a journal and cursor coerced
-  (SessionSpec's `unsafeCoerce` drift pattern) from a fixture of another installed project and asserts
-  `AuthorityStoreNotOurs` with no `invocation.` record written.
+None.
 
-### Sprint 5.3: Verified OS principal [Active]
+### Sprint 5.2a: Source guards follow declared module homes [Done]
 
-**Status**: Active
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`core/hostbootstrap-core/test/DocValidatorSpec.hs`, `core/hostbootstrap-core/test/SourceGuard.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Keep the existing authority boundaries checked when their implementation moves between library units.
+This preparation is split before the extraction: maintaining the production documentation validator
+beside the three-module type-home extraction would exceed § G's source-module ceiling.
+
+#### Deliverables
+
+- Architecture forbidden-boundary checks find every matching module under production source homes,
+  including private units. A missing old main-library path cannot silently stop checking a relocated
+  kernel. Explicit obsolete-module paths keep their own deletion meaning.
+- Test source readers resolve actual module homes through Cabal library roots, deduplicate shared
+  source directories and preserve normalized module identities in importer/producer inventories.
+- Synthetic current, private and simultaneous homes prove the architecture refusal and its actual
+  path; missing or ambiguous unique-home lookups refuse instead of guessing.
+
+#### Validation
+
+`DocValidatorSpec` checks relocated and duplicate-home forbidden shapes; `AuthoritySpec` and
+`ProjectPlanSpec` retain their existing importer, producer and export assertions before the move.
+The same readers must remain valid after Sprint 5.2b's extraction.
+
+2026-10-27 UTC: focused native Windows checks passed DocValidatorSpec 17/17 in 6.71 seconds,
+AuthoritySpec 157/157 in 21.40 seconds, and the actual project-plan group 92/92 in 37.00 seconds.
+The identical Linux CPU snapshot passed 17/17 in 5.41 seconds, 157/157 in 12.64 seconds, and
+92/92 in 33.36 seconds. Both builds retained warning-as-error policy. The complete phase gate
+remains owed after its other sprints.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.2b: One private authority type home and test seam [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/ProjectScope.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/unrepresentable_state.md`,
+`documents/engineering/cabal_layout.md`
+
+#### Objective
+
+Give the suite access to real private authority values without duplicating their type definitions or
+opening a downstream construction route. This foundation is split before implementation: the foreign
+installed-project case in Sprint 5.2d needs the private fixture route originally scheduled in Sprint 5.3.
+
+#### Deliverables
+
+- One private authority sublibrary owns the existing kernel and shared project-scope types plus a narrow
+  test seam. Main-library consumers and the suite use those same definitions; the public project-scope
+  module is re-exported without exposing authority producers.
+- The seam supplies the private installed-identity fixture needed to represent a genuinely different
+  project name. Two public executable-verified openers cannot provide that evidence.
+- A downstream compile-fail fixture and a private-stanza guard pin the seam's isolation. Source readers
+  follow the actual source homes; no compatibility copy of the kernel is retained.
+
+#### Validation
+
+The component build, downstream import refusal and existing authority/compile-fail suites pass. The
+private seam adds no CLI entry or exported main-library producer.
+
+2026-10-27 UTC: complete Linux CPU core gate passed 2,714/2,714 in 396.99 seconds; native Windows
+core passed 2,707/2,707 in 510.20 seconds. The demo workspace passed 164/164 demo cases in 5.84
+seconds and 2,707/2,707 core cases in 516.75 seconds. Python checks passed with 376 tests in 9.07
+seconds and 100% line/branch coverage. These complete runs include the exact private-unit/source-home
+guard, both downstream authority import refusals, all registered compile-fail fixtures, and the
+source-discovery checks after relocation. Kernel and scope source bytes were preserved during the move.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.2c: Verified identity reaches the root command gate [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`,
+`core/hostbootstrap-core/test/ChainSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Transport the independently verified identity through the root command path and consume it at the
+root gate before reservation. The Command call sites make the original end-to-end adoption four
+modules, so this three-module step precedes the two-module protected-entry adoption in Sprint 5.2d.
+
+#### Deliverables
+
+- Original Production and Harness installed identities pass from Command through the private Entry
+  brackets into `authorizeRootProject`; no identity is reconstructed from recorded or rendered text.
+- The root gate compares the verified name with the retained root name, returning exact
+  `AuthorityStoreNotOurs` on disagreement, and uses that verified name for its existing project checks.
+- Existing generic scope, plan, frame, broker, verb and phase relationships remain linked. The new
+  identity argument is independently quantified and immediately consumed, with no unused carrier.
+
+#### Validation
+
+Root-gate cases exercise matching identity and exact foreign-identity refusal before invocation
+consumption. CLI, Chain and project-plan source/call-shape checks cover all entry routes; existing
+Production and Harness behaviour and compile-fail fixtures pass.
+
+`AuthoritySpec` passed "the root gate reserves with the matching independently verified executable
+identity" and "the root gate refuses a foreign root against the independently verified executable
+identity without writes" using real canonical-root, store, profile, plan, snapshot, journal, Execute
+cursor and lifecycle-context values. The two public frame openers select the same real frame; only
+the cursor's fresh phantom is aligned in the fixture. Matching admission writes exactly one
+invocation; foreign-root refusal preserves the full record image.
+
+2026-10-27 UTC: both native Windows and Linux CPU selections passed authority 160, CLI 64, Chain 48,
+project-plan 92, compile-fail 539 and documentation 17 cases. Windows group durations were 24.09,
+27.31, 23.75, 36.51, 126.56 and 11.06 seconds; Linux durations were 13.31, 18.19, 19.93, 34.95,
+88.74 and 5.39 seconds. The initial Prepare/Execute fixture mismatch was corrected by the real
+`withExecuteLifecycleCursor` transition before these runs. Production changes are 57 changed lines
+across three modules; the protected reservation bridge remains the next sprint's adoption.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.2d: Verified identity reaches the protected reservation kernel [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SessionSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Compare reservation evidence with the identity independently verified by root admission, rather than
+reconstructing the comparator from that evidence's own recorded project name.
+
+#### Deliverables
+
+- Forward the executable-verified `InstalledProjectIdentity` already held by `authorizeRootProject`
+  into `reserveCurrentLifecycleCommandKernel`; remove its recorded-name re-mint.
+- The only production caller of `withInstalledProjectKernel` is the facade opener. A source guard
+  derives all package source roots and compares normalized paths, accounting separately for the
+  kernel's own definition and the private seam's re-export.
+- A foreign-project journal/cursor pair reaches the real reservation kernel, returns
+  `AuthorityStoreNotOurs`, and writes no invocation record.
+
+#### Validation
+
+`AuthoritySpec` pins the caller set. `SessionSpec` uses the existing drift pattern and the private
+fixture seam to pair a journal/cursor from a genuinely different raw installed name, then asserts the
+exact refusal and unchanged invocation inventory. Existing lifecycle callers compile and pass.
+
+`SessionSpec` passed "the reservation bridge refuses a foreign journal against the independently
+verified executable identity". Its default fixture keeps the public executable opener; the supplied
+opener creates a genuine different project with internally matching root, reservation, journal and
+current Execute cursor. The actual executable identity refuses at the direct Session bridge with
+exact `AuthorityStoreNotOurs`, preserving all records and invocation rows. Retrying identical evidence
+with its matching identity succeeds and adds exactly one invocation. The independent project index
+requires no phantom coercion in this case. `AuthoritySpec` pins all-library caller sites and the
+single protected-entry/live-source/current-cursor ordering.
+
+2026-10-27 UTC: complete Linux CPU core gate passed 2,718/2,718 in 409.00 seconds; native Windows
+core passed 2,711/2,711 in 520.03 seconds. The demo workspace passed 164/164 in 5.77 seconds and
+2,711/2,711 core cases in 513.92 seconds. Both Python legs passed, with 376 tests in 6.89 seconds
+and 100% line/branch coverage. The production adoption changes only ProjectPlan and Session; all
+existing live/journal/source/current-cursor checks remain inside the same protected entry.
+
+#### Remaining Work
+
+None.
+
+### Sprint 5.3: Verified OS principal [Done]
+
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -139,21 +319,31 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
   and asserts `Left (AuthorityOperatorRefused "the operator authorization was issued for a different protected store")`
   with store B's protected image unchanged.
 
+`AuthoritySpec` passed "fresh root admission refuses an OS principal issued by another store" and
+"existing root admission refuses an OS principal issued by another store". Each uses a genuine
+principal from A and a valid public Production root/epoch in B. A matching B principal first reaches
+the callback exactly once without changing B's image; A's principal then returns the exact refusal,
+never enters the callback, and preserves every B key, version and byte. Snapshots are taken outside
+the protected entries. The seam adds only the Production scope witness and both existing root kernels;
+production kernel behavior is unchanged.
+
+2026-10-27 UTC: native Windows selections passed authority 163/163 in 22.61 seconds, the downstream
+ImportAuthorityTesting fixture 1/1 in 0.51 seconds, and documentation 17/17 in 6.78 seconds. Linux CPU
+passed the same selections in 14.23, 0.15 and 5.31 seconds. Exact private seam import/export guards
+pass with the extended surface; the complete phase gate remains owed after its remaining sprints.
+
 #### Remaining Work
 
-- The cross-store principal guard (`principalMatchesStore` in `Authority/Kernel.hs`) is reached by no test:
-  `withProductionRoot` and `withHarnessRoot` verify the principal in the same session they admit, so the
-  composite brackets cannot express a foreign principal. Give the suite a kernel-level route — a
-  `visibility: private` sublibrary seam in the pattern of `lifecycle-transaction-internal` (Sprint 5.11) that
-  exposes the root kernels to `hostbootstrap-core-test` only, with a compile-fail fixture pinning that a
-  downstream consumer cannot import it — and add the two-store case above for both root kernels.
+None.
 
-### Sprint 5.4: Broker epochs [Active]
+### Sprint 5.4: Broker epochs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/LifecycleSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/OpenRecordedBrokerEpoch.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -194,22 +384,32 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
   imports `withReifiedAllocatedBrokerEpochKernel` from `HostBootstrap.Authority` and from
   `HostBootstrap.Lifecycle.Mode` and pins "does not export 'withReifiedAllocatedBrokerEpochKernel'" for each.
 
+The two `LifecycleSpec` rows reach existing-bound recovery through `withBoundPlanSnapshot`, not fresh
+root allocation. They assert the complete exact `SnapshotVerificationError`, zero terminal/open
+callbacks, and identical complete key/version/payload images after intentional counter deletion or
+replacement. `AuthoritySpec` pins the Kernel export/signature/definition and Mode import/two genuine
+applications across all library roots, with no seam re-export. The repaired fixture's two separate
+module-specific diagnostics were also observed directly with pinned GHC 9.12.4.
+
+2026-10-27 UTC: native Windows selections passed lifecycle 158/158 in 17.85 seconds, authority
+164/164 in 24.77 seconds, repaired fixture 1/1 in 0.55 seconds, and documentation 17/17 in 6.88
+seconds. Linux CPU passed lifecycle 160/160 in 25.36 seconds, authority 164/164 in 13.90 seconds,
+fixture 1/1 in 0.23 seconds and documentation 17/17 in 5.54 seconds. Counts describe those named
+pattern selections, including related lifecycle groups and their platform branches. Production
+behavior is unchanged; the complete phase gate remains owed after the remaining sprints.
+
 #### Remaining Work
 
-- Add the two `existingBoundRefusalCases` rows (counter deleted, counter malformed) to `LifecycleSpec`, asserting
-  the exact reasons above and an unchanged protected image apart from the corrupted counter.
-- Add the caller-set source guard for `withReifiedAllocatedBrokerEpochKernel`.
-- `OpenRecordedBrokerEpoch.hs` probes `withRecordedBrokerEpoch`, a name the tree does not define, so it holds
-  only because that name is absent. Repoint it at `withReifiedAllocatedBrokerEpochKernel` from both exposed
-  modules and re-pin the registration in `CompileFailSpec`.
+None.
 
-### Sprint 5.5: Scoped root invocation authority [Active]
+### Sprint 5.5: Scoped root invocation authority [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectScope.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/ProjectScope.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -238,27 +438,38 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
 - `AuthoritySpec` reaches the kernel through the composite Production/Harness brackets and covers project/store
   binding ("a store already bound to another project refuses this one" asserts `AuthorityStoreNotOurs`) and the
   retained project name. The verb and scope are type indices (`ProjectVerb VerbUp` has one inhabitant), so the
-  compile-fail fixtures below are their proof; the runtime case "the root gate mints authority for the exact
-  verb and scope" asserts only the project name, and its line forcing `rootScopeAuthority root` with `seq` checks
-  nothing (the scope's field mapping is Sprint 5.6's case).
+  compile-fail fixtures below are their proof. The runtime case "the root gate retains the installed project
+  name" asserts that value; scope projection field mapping is Sprint 5.6's separate case.
 - A kernel-level case allocates a `BrokerEpoch` in store A and presents it, with a principal verified in store B,
   to `withVerifiedRootInvocationKernel` and to `withExistingVerifiedRootInvocationKernel` in a session of store B,
   asserting `Left (AuthorityEpochOriginMismatch <project> <store B identity>)` with store B's protected image
   unchanged; a second case does the same with an epoch allocated for another installed project in store B.
 - Pinned compile-fail fixtures cover constructor, scope-substitution, nominal-role, and public-opener absence.
 
+`AuthoritySpec` passed fresh/existing variants of "root admission refuses an epoch allocated in
+another store" and "root admission refuses an epoch allocated for another project in the same store".
+All four compare equal generation words and matching-B callback controls, then assert exact
+`AuthorityEpochOriginMismatch`, zero callbacks and an unchanged complete B record image. Foreign
+stores use public roots; the other-project epoch is genuinely allocated in B, and the assertion action
+runs after that protected entry unlocks. The project-name case is renamed and its ineffective `seq`
+removed. Testing's added fresh producer is forwarding-only; the Kernel and Mode remain the only
+production allocation sites.
+
+2026-10-27 UTC: native Windows selections passed authority 168/168 in 26.04 seconds, project-plan
+92/92 in 37.11 seconds, private-import fixture 1/1 in 0.53 seconds and documentation 17/17 in 6.44
+seconds. Linux CPU passed the same selections in 15.64, 33.81, 0.15 and 5.55 seconds. The production
+kernel is unchanged; the complete phase gate remains owed after its remaining sprints.
+
 #### Remaining Work
 
-- The epoch-origin guard (`epochMatches` in `Authority/Kernel.hs`) is reached by no test. Add the two
-  kernel-level cases above through the private test seam Sprint 5.3 adds.
-- Rename the `AuthoritySpec` case "the root gate mints authority for the exact verb and scope" to "the root gate
-  retains the installed project name" and drop its `seq` line.
+None.
 
-### Sprint 5.6: Root-scope narrowing [Active]
+### Sprint 5.6: Root-scope narrowing [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -283,16 +494,24 @@ adds, opens a root in a fixture store and asserts `rootScopeProjectName (rootSco
 installed project name, `rootScopeStoreIdentity` equals that store's identity, and `rootScopeEpochWord` equals
 `brokerEpochWord (rootAuthorityEpoch root)`.
 
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): the native Windows authority
+selection passed 169 cases (26.30s), project-plan 92 (37.36s), private-import fixture 1 (0.45s),
+and documentation 17 (6.52s). The identical working-tree snapshot on Linux CPU passed the same
+169/92/1/17 cases (15.18/33.05/0.16/5.42s). The genuine second allocation proves all three
+projection fields, including epoch word 2. Kernel behavior is unchanged. The phase closure
+re-runs the complete declared gate.
+
 #### Remaining Work
 
-- No test checks the projection's field mapping (the existing case only forces `rootScopeAuthority root` to
-  WHNF). Add the three-field `AuthoritySpec` case above.
+None.
 
-### Sprint 5.7: Command authority vocabulary [Active]
+### Sprint 5.7: Command authority vocabulary [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SourceGuard.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeCommandAuthority.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -312,6 +531,8 @@ Define the opaque result shared by proof-complete lifecycle command gates.
 - `commandAuthorityEpoch` returns the indexed epoch value rather than erasing it to an unrelated word.
 - `commandAuthorityMatchesStore` answers `True` only for the protected store the authority's retained broker
   epoch originated in; every effectful boundary that receives a store separately calls it.
+- The private test seam forwards the two reservation kernels so this sprint can create a genuine
+  command authority without depending on a future sprint; Sprint 5.8 extends this fixture foundation.
 - `AuthorityError` carries only refusals some kernel or gate produces.
 - The safe authority facade exports no generic lifecycle command-authority producer; the reservation producer
   remains package-private and proof-complete gates own its use.
@@ -322,27 +543,38 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
 
 - Pinned construction/coercion fixtures cover scope, plan, frame, and epoch indices, and the exported-surface
   guard (`authorityFacadeExports` in `AuthoritySpec`) pins the safe facade's absence of a generic producer.
-- An `AuthoritySpec` case authorizes a root `CommandAuthority` in store A through the Sprint 5.8 reservation
+- An `AuthoritySpec` case authorizes a root `CommandAuthority` in store A through this sprint's minimal reservation
   fixture and asserts `commandAuthorityMatchesStore authority storeA == True` and
   `commandAuthorityMatchesStore authority storeB == False` for a second opened fixture store B.
 - A source guard asserts every `AuthorityError` constructor named in `Authority/Kernel.hs` is constructed at
-  least once in `core/hostbootstrap-core/src` outside `authorityErrorMessage`.
+  least once across every library source root outside `authorityErrorMessage`, excluding declarations,
+  imports, strings, comments, and pattern-only occurrences. Closed construction witnesses fail on
+  unsupported forms; positive and negative source fixtures prove the distinction.
+
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): native Windows passed the
+197-case authority selection (25.26s), project-plan 92 (37.69s), compile-fail 539 (128.66s),
+and documentation 17 (6.47s). The identical working-tree snapshot on Linux CPU passed the
+same 197/92/539/17 selections (16.53/33.89/88.57/5.55s). The authority selection includes the
+genuine two-store reservation case and 27 construction-witness cases covering full arity,
+balanced expressions, the closed verb parser, declaration/rendering/pattern-only occurrences,
+imports/comments/strings, and missing or ambiguous declarations. The phase closure re-runs
+the complete declared gate.
 
 #### Remaining Work
 
-- Add the two-store `commandAuthorityMatchesStore` case above; no test exercises its `False` result.
-- `AuthorityUnknownFrame` is exported through `AuthorityError (..)` and rendered by `authorityErrorMessage`, but
-  no module constructs it. Delete the constructor and its rendering arm, and add the produced-constructor
-  source guard above.
+None.
 
-### Sprint 5.8: One-use command reservation kernel [Active]
+### Sprint 5.8: One-use command reservation kernel [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SourceGuard.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
+`core/hostbootstrap-core/test/SourceGuard.hs`,
 `core/hostbootstrap-core/test/Spec.hs`
 **Substrates**: none
-**Docs to update**: `documents/architecture/binary_context_config.md`
+**Docs to update**: `documents/architecture/binary_context_config.md`,
+`documents/engineering/testing.md`
 
 #### Objective
 
@@ -374,10 +606,10 @@ Give later complete authorization gates one atomic reservation primitive.
 #### Validation
 
 Closure criteria, run by the host static gate (`cabal test all` from `core/`). The behavioural cases drive the
-kernel directly through the private root-kernel seam Sprint 5.3 adds, which this sprint extends to export
-`commandReservationKernel`, `reserveCommandInvocationKernel`, `reservationIdentity`, `invocationKey`,
-`withInstalledProjectKernel`, `withFreshBrokerEpochKernel`, and `withReifiedAllocatedBrokerEpochKernel`. No
-case depends on a later phase's plan, journal, cursor, or lifecycle lease. The shared setup opens a fixture
+kernel directly through the private reservation fixture established by Sprint 5.7. This sprint extends
+the forwarding seam with `reservationIdentity`, `invocationKey`, and
+`withReifiedAllocatedBrokerEpochKernel`; its installed-identity, fresh-epoch and reservation producers
+remain the same kernel definitions. No case depends on a later phase's plan, journal, cursor, or lifecycle lease. The shared setup opens a fixture
 protected store, admits the test executable's identity (`Fixture.withFixtureInstalledProject`), verifies an OS
 principal in that store, allocates one broker epoch `e` with `withFreshBrokerEpochKernel`, opens the root with
 `withVerifiedRootInvocationKernel ProductionRootScope ... e ProjectUp`, and builds the base reservation
@@ -391,14 +623,16 @@ the test suite already depends on through `ownership-internal`.
   identity, verifies a principal, reifies `e` from its word with `withReifiedAllocatedBrokerEpochKernel`, reopens
   the root with `withExistingVerifiedRootInvocationKernel ProductionRootScope ... ProjectUp`, rebuilds `R`
   byte-identically, and calls `reserveCommandInvocationKernel`.
-- One-winner race, threads: two `forkIO` threads each run the routine; exactly one returns `CommandAuthority`,
+- One-winner race, threads: two `forkFinally` workers each run the routine; exactly one returns `CommandAuthority`,
   the other returns `AuthorityInvocationConsumed`, and `listProtectedRecords` shows exactly one `invocation.`
   record.
 - One-winner race, processes: the parent starts the test executable with
   `--hostbootstrap-command-reservation-probe <store root> <epoch word> plan-d frame-f` (dispatched in `Spec.hs`
   in the form of AuthoritySpec's protected-entry probe) and runs the routine itself while the probe runs it;
-  the probe exits 0 on `CommandAuthority` and 3 on `AuthorityInvocationConsumed`. Exactly one of parent and
-  probe wins, the other observes `AuthorityInvocationConsumed`, and the store holds exactly one `invocation.`
+  the probe prints and flushes a readiness line immediately before entering the shared routine. The
+  parent holds the store entry until both contenders signal readiness, then releases it so both contend.
+  The probe exits 0 on `CommandAuthority`, 3 on `AuthorityInvocationConsumed`, and 4 on invalid input or
+  unexpected refusal. Exactly one of parent and probe wins, the other observes `AuthorityInvocationConsumed`, and the store holds exactly one `invocation.`
   record.
 - Key distinctness, behavioural: after reserving `R`, each of these reservations changes exactly one member,
   returns `CommandAuthority` with a `commandAuthorityInvocation` different from `R`'s, and writes a second
@@ -423,11 +657,10 @@ the test suite already depends on through `ownership-internal`.
   installed identity returns `AuthorityWrongStore <store A identity> <store B identity>` and writes no
   `invocation.` record in B.
 - Import guards restrict the kernel to its allow-listed package implementation: the ten package importers plus
-  the Sprint 5.3 seam module, found across every `hs-source-dirs` entry of the main library stanza (today `src`
-  and `internal/cluster-backend`, read from `hostbootstrap-core.cabal` with `SourceGuard.mainLibraryStanza` and
-  walked with `SourceGuard.listHaskellSources`), named with `SourceGuard.repoRelativePath` (the
-  separator-neutral helper the [Haskell-core-scaffolding phase](phase-2-haskell-core-scaffolding.md) owns) so
-  the allow-list names the same modules on every supported outer host realization (§ JJ). The
+  the private seam introduced in Sprint 5.2b and extended in Sprint 5.3. `SourceGuard.readLibrarySources`
+  enumerates every library's declared roots, deduplicates physical paths and retains module identities;
+  `SourceGuard.repoRelativePath` supplies separator-neutral paths for reports, so the allow-list names the
+  same modules on every supported outer host realization (§ JJ). The
   configuration/reconciliation guard parses the kernel's imports with `SourceGuard.haskellImports` and asserts no
   imported module — qualified or not, and none in the transitive closure of its `HostBootstrap` imports —
   starts with `HostBootstrap.Config` or `HostBootstrap.Reconcile`. The closure walker resolves each
@@ -438,36 +671,23 @@ the test suite already depends on through `ownership-internal`.
 On 2026-08-17 the gate passed host-native on Windows 11 Home 10.0.26200 x86_64 (GHC 9.12.4, Cabal 3.16.1.0)
 at 1,877/1,877, the first run to exercise the separator-neutral allow-list from a native-separator gate host.
 
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): native Windows passed the
+224-case authority selection (24.74s), project-plan 92 (37.17s), compile-fail 539 (131.05s),
+and documentation 17 (6.51s). The identical Linux CPU working-tree snapshot passed the same
+224/92/539/17 selections (16.60/33.46/90.64/5.40s). The authority selection includes 17 direct
+reservation/race cases and ten import-closure fixtures. Contenders announce readiness before
+entry, acquisition/ownership handoffs are masked under cleanup, and each worker body runs with
+its original masking state. The canonical wire/key golden uses a genuine first epoch. Both
+private-seam guards allow only matching import/export tokens with no forwarding function body.
+The phase closure re-runs the complete declared gate.
+
 #### Remaining Work
 
-- Export `reservationIdentity` and `invocationKey` from `Authority/Kernel.hs`, and extend the private
-  root-kernel seam Sprint 5.3 adds to re-export `commandReservationKernel`, `reserveCommandInvocationKernel`,
-  `reservationIdentity`, `invocationKey`, `withInstalledProjectKernel`, `withFreshBrokerEpochKernel`, and
-  `withReifiedAllocatedBrokerEpochKernel` to `hostbootstrap-core-test` only; add the seam module to the
-  kernel-importer allow-list.
-- `AuthoritySpec` never calls the reservation kernel: its reservation cases are source-text guards (including
-  a count of seven `field (` tokens). Add the thread race, key-distinctness (behavioural and project-encoding),
-  project-mismatch, conflict, replay, and wrong-store cases listed in Validation, driven through the seam.
-- Add the `--hostbootstrap-command-reservation-probe` dispatch to `Spec.hs` and its probe body in
-  `AuthoritySpec`, exiting 0 on `CommandAuthority` and 3 on `AuthorityInvocationConsumed`, and the two-process
-  race case that runs it.
-- Replace the wildcard `reverseRootReplayEligible _ _ = False` in `Authority/Kernel.hs` with the explicit
-  verb/phase pairs, and update the AuthoritySpec source guard that pins the wildcard line.
-- The "the kernel has no configuration dependency" and "the kernel has no lifecycle-plan dependency"
-  assertions in `AuthoritySpec` match the raw substrings `import HostBootstrap.Config` and
-  `import HostBootstrap.Reconcile`, which qualified imports (`import qualified HostBootstrap.Config.Vocab`)
-  pass. Rewrite them on `SourceGuard.haskellImports` with the transitive closure described in Validation, adding
-  to `SourceGuard` a reader that returns the `hs-source-dirs` of every `library` stanza so the walker resolves
-  `HostBootstrap.Protected` in `internal/ownership` and fails on an unresolved `HostBootstrap` import.
-- "the authority kernel has a closed package-internal importer set" and its `childCommandReservationKernel`
-  scan walk only `core/hostbootstrap-core/src`, although the main library also compiles
-  `internal/cluster-backend`. Derive the scan roots from the main library stanza's `hs-source-dirs` and walk
-  each through `SourceGuard.listHaskellSources`, deleting `AuthoritySpec`'s private, unsorted
-  `haskellSources` walker.
+None.
 
-### Sprint 5.9: The identity decision reads the role it parsed [Active]
+### Sprint 5.9: The identity decision reads the role it parsed [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: none
@@ -501,21 +721,25 @@ each provisioning the five root identity files. Closure adds a `ContextSpec` cas
 absent afterwards; and one over a path present beforehand, rewritten inside the action, asserting its
 original bytes afterwards.
 
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): native Windows passed all 90
+ContextSpec cases (1.92s) and 17 documentation cases (6.91s). The identical Linux CPU snapshot
+passed the same 90 and 17 cases (2.17/5.17s). Both new six-sibling cases prove the action ran;
+one verifies creation then deletion of all originally absent files, and the other restores distinct
+binary bytes exactly. The role/alias provisioning cases remain green. Driver-owned executable
+identities are preserved. The complete declared phase gate remains due at phase closure.
+
 #### Remaining Work
 
-- `withRestoredFiles` in `ContextSpec` restores absent siblings with `restore Nothing = pure ()`, leaving the
-  provisioned `.handoff.key`, `.build.key`, `.activation.key`, public halves, and sibling `.dhall` next to the
-  test executable. Make `restore` for an absent path remove the file if it exists, and add the two
-  `withRestoredFiles` cases above.
+None.
 
-### Sprint 5.10: Every registered fixture pins the diagnostic it expects [Active]
+### Sprint 5.10: Every registered fixture pins the diagnostic it expects [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`,
-`core/hostbootstrap-core/test/compile-fail/ForgeSessionPermit.hs`,
-`core/hostbootstrap-core/test/compile-fail/ObservedReadyGuestAlias.hs`
+`core/hostbootstrap-core/test/compile-fail/`
 **Substrates**: none
-**Docs to update**: `documents/architecture/unrepresentable_state.md`
+**Docs to update**: `documents/architecture/unrepresentable_state.md`,
+`documents/engineering/testing.md`
 
 #### Objective
 
@@ -524,6 +748,10 @@ fails to compile is satisfied by a typo. Every registered fixture therefore stat
 expects, and the registration takes no other shape — including the two the architecture page cites as
 the proof for its readiness and capability boundaries.
 
+The step-algebra phase owns removal of the unused reverse acquisition reopen kernel and its fixture.
+This sprint pins that fixture's existing rejection with the same diagnostic-block rule as every other
+registration; it changes no acquisition API.
+
 #### Deliverables
 
 - Every registered fixture carries one contiguous expected phrase, read from the diagnostic it actually produces.
@@ -531,7 +759,9 @@ the proof for its readiness and capability boundaries.
 - Expectations split across separately-matched fragments are re-joined into one phrase, because fragments can be satisfied independently by an unrelated error on the same line. The matcher enforces it: `rejectsWithUsing` splits stderr into per-diagnostic blocks, each expected phrase must match inside one block, and two expected phrases satisfied only by the same block fail the case. Fixtures compile with `-fno-diagnostics-show-caret`, so a block holds diagnostic text only and an echoed source line cannot satisfy a phrase.
 - A phrase names the rejected slot or the boundary, not only one side of a mismatch or an echoed source line.
 - The registration combinator takes `NonEmpty String`, so an unpinned fixture is not expressible rather than merely absent.
-- Fixtures whose diagnostic is an arity or kind error rather than the boundary they are registered under are repaired to ask their own question, not re-pinned to what they happened to say: their signatures fully apply every type they name.
+- Fixtures whose diagnostic is an arity or kind error rather than the boundary they are registered under are repaired to ask their own question, not re-pinned to what they happened to say: their signatures fully apply every type they name. `RawRegistryPlan.hs` supplies all six indices and an `Exposure`; `ForgeReadyBlobRoute.hs` supplies all six indices.
+- Independent sealed values have independent required rejections: the session constructor forgeries use one file per value; ten recovery signing kernels use one capability-coercion file each; 34 role-lifecycle indices have distinct marker pairs, and both production-closure indices are checked. `RawReadiness.hs` requires separate `PollPolicy`, `Micros`, and `Ready` errors.
+- Fixtures use live library consumers with correct argument positions: the Harness secret enters `productionSecretRefWire`, fresh snapshot evidence follows both valid callbacks as an extra argument, and provider capability escape starts from `ManagedProviderHandle`. Raw-admission cases also have constructor-import siblings.
 
 #### Validation
 
@@ -544,71 +774,18 @@ fixture's actual stderr; the per-block matcher is in place, fixtures compile wit
 `-fno-diagnostics-show-caret`, and every registration passes under both; and `rejectsWith` has type
 `FilePath -> NonEmpty String -> TestTree`.
 
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): native Windows passed all 569
+compile-fail/matcher cases (134.48s) and 17 documentation cases (6.66s). The identical Linux CPU
+snapshot passed the same 569 and 17 cases (92.52/5.69s). These are 554 real, uniquely registered
+fixtures plus 15 matcher cases. A separate public-only pinned-GHC audit matched all 554 fixtures'
+required distinct diagnostic blocks, with no missing or unregistered files. The native matcher-only
+selection passed 15 cases (0.30s). The PreparedGate constructor fixture makes only the boundary it
+proves; the confirmed public record-update gap is tracked by its owning prepared-operations phase.
+The full declared phase gate remains due at phase closure.
+
 #### Remaining Work
 
-- `RawRegistryPlan.hs` and `ForgeReadyBlobRoute.hs` are pinned to the kind errors their own under-applied
-  signatures raise ("Expecting four more arguments to ..."), which fire whether or not the constructor is
-  exported. Fully apply `RegistryPlan` and `ReadyBlobRoute` (six parameters each, `RegistryPlan.hs`), give the
-  bodies the current record arity, and pin the hidden-constructor diagnostic each then produces
-  ("Illegal term-level use of the type constructor '...'" or "Data constructor not in scope: ...").
-- Re-join split registrations into one contiguous phrase each, and make `rejectsWithUsing` match per diagnostic
-  block as stated in Deliverables. Named cases: `CallerTextAsProjectVerb.hs` ("Couldn't match type: [Char]
-  with: ...ProjectVerb Verb"); `CallerSelectedDescentSubtree.hs` (two phrases, one per binding: "Couldn't match
-  expected type: TeardownPlan Scope Plan Child VerbDestroy -> result with actual type: CurrentFrame Scope Plan
-  Child" and "Couldn't match type: [Char] with: TeardownPlan Scope Plan Child VerbDestroy", each completed from
-  stderr); `CoerceProductionClosureAuthorization.hs`
-  ("Couldn't match type 'FirstGeneration' with 'SecondGeneration' arising from a use of 'coerce'", plus a
-  second binding that coerces the project index with its own phrase); and
-  `PassRawAdmissionToReverseRootTargetCursor.hs` (one "Couldn't match expected type
-  '...AcquisitionJournalAdmission' with actual type '()'" phrase) and `PassRawAdmissionToResumedReverseRoot.hs`,
-  `PassRawAdmissionToFreshReverseRoot.hs`, and `PassRawAdmissionToReauthorizedBoundSnapshot.hs` (each one
-  "Couldn't match expected type '...ExistingBoundSnapshotAdmission' with actual type '()'" phrase), plus a sibling
-  fixture per admission witness that names its constructor from the public module so a constructible witness
-  turns the suite red. `PassRawAdmissionToReverseAcquisitionJournal.hs` is not repaired here: Sprint 12.21
-  deletes it, its registration, and `reopenExistingReverseAcquisitionJournalKernel` together.
-- `CoerceHandoffRecoverySigningCapability.hs` pins one shared representation phrase and nine bare kernel names,
-  and omits `signRecoveryWireKernel`. Split it into one fixture per kernel (all ten, including
-  `signRecoveryWireKernel`), each pinned to "Couldn't match representation of type '()' with that of
-  'HostBootstrap.Handoff.Internal.RecoverySigningKernel'".
-- `CoerceRoleLifecycleAuthorityRoles.hs` pins 34 echoed source lines ("cursorScope = coerce", ...), which any
-  error in the equation prints. Give each index its own marker pair (for example `CursorScopeA`/`CursorScopeB`)
-  and pin one "Couldn't match type '<A>' with '<B>' arising from a use of 'coerce'" phrase per index.
-- Under-pinned single phrases: `CallerFrameNameTeardown.hs` pins "Couldn't match type: [Char] with:
-  CurrentFrame Scope Plan Frame"; `EmptyProspectiveMigrationDrafts.hs` gains a signature with concrete marker
-  types and pins "Couldn't match expected type: NonEmpty (PlanDraft ... with actual type: [a0]".
-- `PassFreshEvidenceToBoundSnapshot.hs` passes the evidence in `withBoundPlanSnapshot`'s terminal-callback slot,
-  so it proves only that a lease is not a callback. Supply a real terminal callback, pass the evidence as an
-  extra argument, and pin the too-many-arguments diagnostic naming `withBoundPlanSnapshot`.
-- Change `rejectsWith`/`rejectsWithUsing` to take `NonEmpty String`.
-- Add `-fno-diagnostics-show-caret` to the `PublicCompiler` arguments in `resolvePublicCompiler`, then convert
-  every phrase that is echoed source text rather than diagnostic text (the `<name> = coerce` phrases among
-  them) to a diagnostic phrase.
-- `MutateBeforeOwnershipRecord.hs` pins only the actual side ("with actual type: Entered session object"). Pin
-  "Couldn't match expected type:
-  hostbootstrap-core-0.1.0.0:ownership-internal:HostBootstrap.Ownership.Internal.Recorded session object with
-  actual type: Entered session object", the shape `ReleaseWithoutOwnershipBinding.hs` uses.
-- `EscapeProviderCapabilityIdentity.hs` passes a bare `ResourceHandle ... Managed Running` where
-  `discoverProvider` takes `ManagedProviderHandle scope planId backendId providerId Running`, so it carries a
-  second, unrelated type error. Change the parameter to `ManagedProviderHandle` (exported by
-  `HostBootstrap.Substrate.Provider`) and confirm the capability-escape phrase is then the only diagnostic.
-- `HarnessConfigAsProduction.hs` wraps the secret in a fixture-local `Config` newtype and pins the same
-  one-sided phrase as `ProductionPlaintext.hs`. Route the Harness secret into a library config consumer that
-  requires Production scope, and pin both sides of the mismatch (the Harness actual type and
-  `SecretRef (Production Project)`); delete the fixture if no library consumer exists.
-- `ImportLifecycleDependencyInternal.hs` omits the module name. Pin "Could not load module
-  'HostBootstrap.Lifecycle.Dependency.Internal'. It is a member of the hidden package
-  'hostbootstrap-core-0.1.0.0:lifecycle-dependency-internal'" (the sublibrary's `visibility: private` is checked
-  by Sprint 5.13's stanza guard, because every non-main unit is hidden under `-hide-all-packages`).
-- `ForgeSessionPermit.hs` forges `ProjectPermit`, `OperationSession`, `SessionId`, `FenceEpoch`, `PreparedGate`,
-  and `OperationAdvance` in one file but pins only "Illegal term-level use of the type constructor
-  'ProjectPermit'", so the `ProjectPermit` line keeps the case green if any of the other constructors is
-  exported. Keep `ForgeSessionPermit.hs` to the `ProjectPermit` binding and split the rest, each importing
-  `HostBootstrap.Lifecycle.Session` and taking any other sealed value it needs as a parameter so the forged
-  constructor is the file's only error: `ForgeOperationSession.hs` (`SessionId -> OperationSession scope planId`),
-  `ForgeSessionId.hs`, `ForgeFenceEpoch.hs`, and `ForgeOperationAdvance.hs`
-  (`ProjectPermit scope planId -> OperationAdvance scope planId ()`). Register each with "Illegal term-level use
-  of the type constructor '<Type>'" for its own type. Drop the `PreparedGate` binding, which
-  `ForgePreparedGate.hs` holds.
+None.
 
 ### Sprint 5.11: The session testing seam leaves the public surface [Done]
 
@@ -686,12 +863,14 @@ x86_64 Ubuntu 24.04.4 LTS with GHC 9.12.4 and Cabal 3.16.1.0, `cabal test all` f
 
 None.
 
-### Sprint 5.13: Sealed export surfaces and fixture probes are pinned against the tree [Planned]
+### Sprint 5.13: Sealed export surfaces and fixture probes are pinned against the tree [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/SourceGuard.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/test/AuthoritySpec.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Substrates**: none
 **Docs to update**: `documents/architecture/unrepresentable_state.md`, `documents/engineering/testing.md`
 
@@ -708,7 +887,8 @@ list pinned, every fixture file is registered once, and every registered fixture
 - An export-surface guard pins the exact export list (`SourceGuard.moduleExportTokens`) of every exposed module
   in the main library stanza that imports a module listed in `other-modules` or a private sublibrary. The guard
   enumerates that set from `hostbootstrap-core.cabal` (`SourceGuard.mainLibraryStanza`,
-  `SourceGuard.fieldModules`) and fails when such a module has no pinned list or when a pinned list changes.
+  `SourceGuard.fieldModules`), unions an explicit supplemental set for locally sealed constructors
+  (`HostBootstrap.RegistryPlan`), and fails on missing, duplicate, stale, or changed pinned lists.
   The set includes at least `HostBootstrap.Lifecycle.Context`, `HostBootstrap.Harness.Ownership`,
   `HostBootstrap.ProjectPlan.Construct`, `HostBootstrap.RegistryPlan`, `HostBootstrap.Lifecycle.Mode`, and
   `HostBootstrap.Lifecycle.Session`; the existing `authorityFacadeExports` and HandoffSpec guards count toward it.
@@ -730,11 +910,12 @@ list pinned, every fixture file is registered once, and every registered fixture
 - `OpenAuthenticatedChildCursorEvidence.hs` imports `mintChildPlanAuthorityKernel` and
   `childPlanAuthorityBindingKernel` from `HostBootstrap.ProjectPlan.Construct`, pins the does-not-export phrase
   for each, and its comment names `ChildPlanAuthority`.
-- Speculative-name fixtures probe live names: `CallerFixedAuthenticatedRootScopeParser.hs` and
-  `ImportInstalledProjectCompatibility.hs` are deleted (`EscapeAuthenticatedRootScopeRun.hs` holds the live
-  root-scope boundary, and `HostBootstrap.Config.InstalledProject` never existed);
+- Root-scope and installed-identity probes use the live `EscapeAuthenticatedRootScopeRun.hs`,
+  `ForgeInstalledProjectIdentity.hs`, and `ImportAuthorityKernel.hs` boundaries.
   `OpenRecoveryChildPackageDecoder.hs` imports `recoveryChildPackageFromWireKernel` from `HostBootstrap.Handoff`
-  and pins its does-not-export phrase; `ImportDirectTeardownAdvance.hs` keeps only `authorizationPointKey`.
+  and pins its does-not-export phrase; `ImportDirectTeardownAdvance.hs` probes `authorizationPointKey`.
+  Constructor fixtures name actual constructors, including independent RootUp/Down/Destroy entry imports;
+  empty phantom tags and a type name with no same-name constructor supply no capability proof.
 
 #### Validation
 
@@ -745,16 +926,31 @@ export guard and the fixture red (checked once by hand when the sprint closes, t
 of the 524 registered fixtures named identifiers absent from the tree (33 of them only absent identifiers);
 closure requires that count to be zero.
 
+Dated validation (2026-10-26, GHC 9.12.4/Cabal 3.16.1.0): native Windows passed authority
+243 (26.97s), project-plan 92 (37.58s), compile-fail/inventory 602 (131.47s), and documentation
+17 (6.54s). The identical Linux CPU snapshot passed the same 243/92/602/17 selections
+(17.85/33.74/90.55/5.57s). The 602 cases contain 536 uniquely registered fixture files,
+15 diagnostic-matcher cases and 51 parser/inventory cases. The actual source import audit has
+zero missing first-party modules/names. Export/visibility coverage includes 64 exact module
+inventories and 19 real-tree/synthetic cases. A constructor-namespace audit also removes empty
+phantom-tag probes and replaces type names with their actual root-entry/settlement constructors.
+
+The declared manual negative proof ran natively on Windows: temporarily exporting
+mintValidatedLifecycleContext made the real export guard and OpenValidatedLifecycleContextAuthority
+fixture each fail, with both Cabal selections exiting 1. The finally restoration reproduced the
+original source SHA-256 exactly. Rebuilding the restored interface passed the sealed selection
+60 cases (33.91s), the targeted fixture 1 (0.47s), and documentation 17 (6.57s). No temporary
+public export remains. The complete phase gate remains due at phase closure.
+
 #### Remaining Work
 
-- Add the export-surface guard, the registration-completeness check, and the private-stanza guard described above.
-- Repoint or delete the 39 fixtures the check flags, starting with the six named in Deliverables
-  (`OpenRecordedBrokerEpoch.hs` is Sprint 5.4's).
+None.
 
-### Sprint 5.14: The authority kernel hashes through Digest [Planned]
+### Sprint 5.14: The authority kernel hashes through Digest [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
 
@@ -768,39 +964,34 @@ so an invocation key recomputed elsewhere cannot drift from the one the kernel r
 
 - `Authority.Kernel` imports `sha256Hex` from `HostBootstrap.Digest` and defines no SHA-256 helper of its own.
 - Every invocation name and `invocationKey` the kernel derives keeps the bytes `AuthoritySpec` pins.
+- The authority unit depends on the existing ownership unit for Digest and carries no unused direct
+  crypton or memory dependency.
 
 #### Validation
 
-`AuthoritySpec` passes unchanged inside `cabal test all --ghc-options=-Werror` from `core/`, and the host
-static gate (§ JJ) passes.
+`AuthoritySpec` passes unchanged inside the complete declared `cabal test all` gate from `core/`,
+with `-Werror` inherited from the package's common warnings stanza. All four canonical host static
+gate legs (§ JJ) pass; no extra command-line warning flag is needed.
+
+Dated closure validation (2026-10-27, GHC 9.12.4/Cabal 3.16.1.0): the complete native
+Windows core gate passed 2,860 cases (518.14s), and the Linux CPU core gate passed 2,867
+(405.42s). The native Windows demo gate passed its 164 cases (5.91s) and its core dependency's
+2,860 cases (519.94s). Every declared Cabal suite passed. These commands used only the
+hide-successes output option; the package warning policy supplies -Werror. The existing canonical
+reservation byte/key golden and complete authority/import/export/compile-fail guards passed unchanged.
+
+Both canonical Python legs passed: ruff, Black and mypy were clean, and the full supported runner
+passed 376 cases (9.11s) with 100% coverage over 1,585 statements and 460 branches. All four
+host-static legs therefore passed natively on Windows; the Linux run independently passed the
+phase's complete declared gate. No base-image input changed.
 
 #### Remaining Work
 
-- Delete `sha256Hex` from `core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs` and import it from
-  `HostBootstrap.Digest`.
+None.
 
 ## Remaining Work
 
-- Sprint 5.2: add the identity length-bound cases, and thread the executable-verified identity into
-  `reserveCurrentLifecycleCommandKernel` instead of re-minting it from the recorded project name.
-- Sprint 5.3: add the private root-kernel test seam and the two-store foreign-principal case.
-- Sprint 5.4: add the counter-deleted and counter-malformed recovery rows, the reifier caller-set guard, and
-  repoint `OpenRecordedBrokerEpoch.hs`.
-- Sprint 5.5: add the cross-store and cross-project epoch-origin cases, and rename the root verb/scope case.
-- Sprint 5.6: add the root-scope projection field-mapping case.
-- Sprint 5.7: add the two-store `commandAuthorityMatchesStore` case, and delete the never-produced
-  `AuthorityUnknownFrame` with a produced-constructor guard.
-- Sprint 5.8: extend the private kernel seam with the reservation kernels, add the kernel-level reservation
-  cases and the two-process reservation probe, replace the replay-eligibility wildcard, and rewrite the import
-  guards over every main-library source directory with a transitive closure resolved across every library
-  stanza, read through `SourceGuard`.
-- Sprint 5.9: make `withRestoredFiles` delete originally absent siblings and add its two cases.
-- Sprint 5.10: repair the kind-error, split, under-pinned, and two-error fixtures (including one fixture per
-  type forged in `ForgeSessionPermit.hs`), compile fixtures without caret excerpts, match per diagnostic block,
-  and take `NonEmpty String`.
-- Sprint 5.13: add the export-surface, registration-completeness, and private-stanza guards, and repoint or
-  delete the 39 fixtures that probe absent names.
-- Sprint 5.14: `Authority.Kernel` takes `sha256Hex` from `HostBootstrap.Digest`.
+None.
 
 ## Documentation Requirements
 

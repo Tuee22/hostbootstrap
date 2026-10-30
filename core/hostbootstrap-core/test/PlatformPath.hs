@@ -29,8 +29,10 @@ module PlatformPath (
 )
 where
 
+import Data.List (isSuffixOf)
 import System.FilePath (isPathSeparator, joinPath, splitDirectories, splitDrive, (</>))
 import qualified System.FilePath.Posix as Posix
+import qualified System.FilePath.Windows as Windows
 
 {- | The absolute root of the host running the suite: @\/@ on POSIX and the
 system drive on Windows.
@@ -46,6 +48,8 @@ hostFixtureRoot = "/"
 
 @hostFixturePath "\/test\/bin\/incus"@ is @\/test\/bin\/incus@ on POSIX and
 @C:\\test\\bin\\incus@ on Windows.
+Drive or root decorations on a supplied segment are discarded; the host root
+is supplied only by 'hostFixtureRoot'.
 -}
 hostFixturePath :: FilePath -> FilePath
 hostFixturePath named = hostFixtureRoot </> joinPath (posixSegments named)
@@ -60,4 +64,13 @@ posixSegments :: FilePath -> [String]
 posixSegments path =
     case break (== '/') (dropWhile (== '/') path) of
         ("", _) -> []
-        (segment, rest) -> segment : posixSegments rest
+        (segment, rest)
+            | ":" `isSuffixOf` segment -> posixSegments rest
+            | null portable -> posixSegments rest
+            | otherwise -> portable : posixSegments rest
+          where
+            portable = withoutDrive segment
+  where
+    withoutDrive segment =
+        let stripped = Windows.dropDrive segment
+         in if stripped == segment then segment else withoutDrive stripped

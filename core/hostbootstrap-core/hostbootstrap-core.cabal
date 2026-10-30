@@ -37,10 +37,25 @@ library effect-internal
   build-depends:
       base >=4.18 && <5
     , bytestring
+    , directory
     , process
+    , text
   if !os(windows)
     build-depends:
         unix
+
+library capacity-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/capacity
+  exposed-modules:
+      HostBootstrap.Cluster.Cordon.WindowsCapacity
+  build-depends:
+      base >=4.18 && <5
+    , filepath
+  if os(windows)
+    build-depends:
+        Win32
 
 library harness-lifecycle-internal
   import: warnings
@@ -50,6 +65,26 @@ library harness-lifecycle-internal
       HostBootstrap.Harness.Lifecycle.Internal
   build-depends:
       base >=4.18 && <5
+
+library plan-resource-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/plan-resource
+  exposed-modules:
+      HostBootstrap.Plan.Resource
+  build-depends:
+      base >=4.18 && <5
+    , text
+
+library readiness-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/readiness
+  exposed-modules:
+      HostBootstrap.Readiness.Kernel
+  build-depends:
+      base >=4.18 && <5
+    , hostbootstrap-core:plan-resource-internal
 
 library ownership-internal
   import: warnings
@@ -85,6 +120,20 @@ library ownership-internal
     build-depends:
         Win32
 
+library authority-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/authority
+  exposed-modules:
+      HostBootstrap.Authority.Kernel
+      HostBootstrap.ProjectScope
+      HostBootstrap.Authority.Testing
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , hostbootstrap-core:ownership-internal
+    , text
+
 library colima-backend-internal
   import: warnings
   visibility: private
@@ -114,16 +163,20 @@ library colima-backend-internal
 
 -- The durable state an interrupted lifecycle transaction leaves, and the
 -- vocabulary a recovery fixture writes it in. Private for the same reason the
--- direct-provider testing seam is: the types mint no authority, but the bytes
+-- colima-backend-internal's private HostBootstrap.Ensure.Colima.Backend.Resolver.Testing is:
+-- the types mint no authority, but the bytes
 -- they render are the coordinator's own, and a downstream consumer that could
 -- write them could put the store into a state no run produced.
+-- Only Session.Testing is exposed; Transaction stays hidden in this unit.
+-- The main library retains its own hidden Transaction copy.
 library lifecycle-transaction-internal
   import: warnings
   visibility: private
   hs-source-dirs: src
   exposed-modules:
-      HostBootstrap.Lifecycle.Transaction
       HostBootstrap.Lifecycle.Session.Testing
+  other-modules:
+      HostBootstrap.Lifecycle.Transaction
   build-depends:
       base >=4.18 && <5
     , bytestring
@@ -156,6 +209,7 @@ library lifecycle-dependency-internal
 library
   import: warnings
   hs-source-dirs: src, internal/cluster-backend
+  c-sources: cbits/wsl_hypervisor.c
   exposed-modules:
       HostBootstrap.CLI
       HostBootstrap.Command
@@ -181,10 +235,8 @@ library
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Session
-      HostBootstrap.ProjectScope
       HostBootstrap.Readiness
       HostBootstrap.Reconcile
-      HostBootstrap.HostPrereqs
       HostBootstrap.Substrate
       HostBootstrap.Substrate.Provider
       HostBootstrap.Substrate.Provider.Alias
@@ -257,7 +309,6 @@ library
       HostBootstrap.DocValidator
   other-modules:
       HostBootstrap.CLI.Bare
-      HostBootstrap.Authority.Kernel
       HostBootstrap.Authority.FailedUp.Internal
       HostBootstrap.Cluster.Backend.Internal
       HostBootstrap.Cluster.Exposure.Internal
@@ -319,11 +370,15 @@ library
     , directory
     , dhall
     , filepath
+    , hostbootstrap-core:authority-internal
+    , hostbootstrap-core:capacity-internal
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:network-port-internal
     , hostbootstrap-core:ownership-internal
+    , hostbootstrap-core:plan-resource-internal
+    , hostbootstrap-core:readiness-internal
     , memory
     , network
     , optparse-applicative
@@ -333,6 +388,7 @@ library
     , text
   reexported-modules:
       HostBootstrap.Protected
+    , HostBootstrap.ProjectScope
     , HostBootstrap.Ownership.Object
     , HostBootstrap.Ownership.Clause
     , HostBootstrap.Ownership.Primitive
@@ -366,11 +422,13 @@ test-suite hostbootstrap-core-test
   other-modules:
       Expect
       CoverageManifest
+      ConditionalCase
       Fixture
       FakeProvider
       PlatformPath
       PrepareFixture
       SourceGuard
+      SealedExportInventory
       AuthoritySpec
       PortabilitySpec
       HandoffSpec
@@ -454,6 +512,8 @@ test-suite hostbootstrap-core-test
     , directory
     , filepath
     , hostbootstrap-core
+    , hostbootstrap-core:authority-internal
+    , hostbootstrap-core:capacity-internal
     , hostbootstrap-core:harness-lifecycle-internal
     , hostbootstrap-core:lifecycle-dependency-internal
     , hostbootstrap-core:lifecycle-transaction-internal
@@ -461,6 +521,7 @@ test-suite hostbootstrap-core-test
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:network-port-internal
     , hostbootstrap-core:ownership-internal
+    , hostbootstrap-core:readiness-internal
     , optparse-applicative
     , process
     , tasty

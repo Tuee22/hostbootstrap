@@ -1,9 +1,7 @@
 module ReadActivationBrokerVerificationKey where
 
-import Data.ByteString (ByteString)
-import HostBootstrap.Activation
+-- A broker cannot expose its private key field as an installed verifier.
 
--- A verifier must be installed before broker construction; no broker-derived
--- verification-key export exists.
-brokerVerificationKey :: ActivationBroker scope brokerGeneration verb -> ByteString
-brokerVerificationKey = activationBrokerKey
+import HostBootstrap.Activation (
+    brokerPublic,
+ )

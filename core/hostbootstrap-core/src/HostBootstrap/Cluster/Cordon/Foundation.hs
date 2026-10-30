@@ -19,7 +19,9 @@ module HostBootstrap.Cluster.Cordon.Foundation (
     budgetMemoryBytes,
     budgetStorageBytes,
     HostCapacity (..),
-    CapacityReadSource (..),
+    CpuSource (..),
+    MemorySource (..),
+    StorageSource (..),
     CapacityReadPlan (..),
     StorageCordonTarget (..),
     StorageCordonMechanism (..),
@@ -40,6 +42,9 @@ module HostBootstrap.Cluster.Cordon.Foundation (
     kindNodeCordonLimitsForBudget,
     incusSizingArgsForBudget,
     resolveHostCapacity,
+    parseCpuinfoProcessors,
+    parseMemAvailableBytes,
+    parsePositiveInteger,
     parseDfAvailableKBytes,
     gibibytes,
 )
@@ -47,13 +52,23 @@ where
 
 import Control.Exception (SomeException, displayException)
 import Control.Exception.Safe (try)
+import Data.Bifunctor (first)
 import Data.Char (digitToInt, isDigit)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import qualified Data.Text as T
-import HostBootstrap.Effect.Run (CapturedRun (CapturedRun), renderRunFailure, runCaptured)
+import qualified Data.Text.IO as TextIO
+import HostBootstrap.Cluster.Cordon.WindowsCapacity (
+    readWindowsLogicalProcessors,
+    readWindowsSystemDriveFreeSpace,
+    readWindowsTotalMemory,
+    renderWindowsCapacityError,
+ )
+import HostBootstrap.Effect.Interpreter (interpretHostCommand)
+import HostBootstrap.Effect.Run (CapturedRun (CapturedRun))
+import HostBootstrap.Effect.Vocabulary (hostCommand)
 import HostBootstrap.HostConfig (HostConfig (..), resolveMaybe)
-import HostBootstrap.HostTool (HostTool (Df, PowerShell, Sysctl), absExePath)
+import HostBootstrap.HostTool (HostTool (Df, Sysctl))
 import HostBootstrap.Substrate (
     HostFrame (AppleFrame, LinuxFrame, WindowsFrame),
     Substrate,
@@ -66,14 +81,34 @@ import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 
 {- | A resolved resource budget in canonical units: whole CPU cores, and memory
-/ storage in bytes.
+/ storage in bytes. The constructor is private and the readers are ordinary
+functions, so an admitted value exposes no record-update route.
 -}
-data ResourceBudget = ResourceBudget
-    { budgetCpu :: Natural
-    , budgetMemoryBytes :: Integer
-    , budgetStorageBytes :: Integer
-    }
-    deriving (Eq, Show)
+data ResourceBudget = ResourceBudget Natural Integer Integer
+    deriving (Eq)
+
+instance Show ResourceBudget where
+    showsPrec precedence (ResourceBudget cores memoryBytes storageBytes) =
+        showParen (precedence > 10) $
+            showString "ResourceBudget {budgetCpu = "
+                . shows cores
+                . showString ", budgetMemoryBytes = "
+                . shows memoryBytes
+                . showString ", budgetStorageBytes = "
+                . shows storageBytes
+                . showChar '}'
+
+-- | The validated whole CPU-core count, without a record-update route.
+budgetCpu :: ResourceBudget -> Natural
+budgetCpu (ResourceBudget cores _ _) = cores
+
+-- | The validated memory ceiling in bytes.
+budgetMemoryBytes :: ResourceBudget -> Integer
+budgetMemoryBytes (ResourceBudget _ memoryBytes _) = memoryBytes
+
+-- | The validated storage ceiling in bytes.
+budgetStorageBytes :: ResourceBudget -> Integer
+budgetStorageBytes (ResourceBudget _ _ storageBytes) = storageBytes
 
 {- | Which dimension of a canonical budget an answer is about.
 
@@ -124,8 +159,8 @@ renderDimension BudgetCpu = "cpu"
 renderDimension BudgetMemory = "memory"
 renderDimension BudgetStorage = "storage"
 
-{- | Construct a positive, bounded canonical budget. Raw record construction is
-private so zero/negative/overflowed values cannot reach provider builders.
+{- | Construct a positive, bounded canonical budget. Its private constructor
+keeps zero/negative/overflowed values out of provider builders.
 -}
 mkResourceBudget :: Natural -> Integer -> Integer -> Either QuantityError ResourceBudget
 mkResourceBudget cores memoryBytes storageBytes
@@ -141,7 +176,7 @@ mkResourceBudget cores memoryBytes storageBytes
 
 {- | Resolved host capacity, in the same canonical units. The reads differ by
 substrate: Linux reports @/proc/meminfo@ @MemAvailable@ (genuinely spare RAM),
-while Apple (@hw.memsize@) and Windows (@TotalPhysicalMemory@) report /total/
+while Apple (@hw.memsize@) and Windows (@GlobalMemoryStatusEx@) report /total/
 physical RAM — so the fields are named for the honest common denominator (the
 host's capacity in each dimension), and the @budget + reserve@ headroom gate in
 'verifyBudget' keeps a tight host from silently over-committing regardless of
@@ -154,14 +189,23 @@ data HostCapacity = HostCapacity
     }
     deriving (Eq, Show)
 
--- | The concrete source used to read a capacity dimension.
-data CapacityReadSource
+-- | The concrete source used to read logical CPU capacity.
+data CpuSource
     = ProcCpuinfo
-    | ProcMemAvailable
-    | SysctlKey String
+    | CpuSysctlKey String
     | WindowsLogicalProcessors
+    deriving (Eq, Show)
+
+-- | The concrete source used to read memory capacity.
+data MemorySource
+    = ProcMemAvailable
+    | MemorySysctlKey String
     | WindowsTotalMemory
-    | WindowsSystemDriveFreeSpace
+    deriving (Eq, Show)
+
+-- | The concrete source used to read available storage capacity.
+data StorageSource
+    = WindowsSystemDriveFreeSpace
     | -- | free bytes on the filesystem holding @path@, via @df -k@ (Apple/Linux)
       PosixFreeStorage FilePath
     deriving (Eq, Show)
@@ -170,9 +214,9 @@ data CapacityReadSource
 stays unit-tested without executing host tools.
 -}
 data CapacityReadPlan = CapacityReadPlan
-    { cpuCapacitySource :: CapacityReadSource
-    , memoryCapacitySource :: CapacityReadSource
-    , storageCapacitySource :: CapacityReadSource
+    { cpuCapacitySource :: CpuSource
+    , memoryCapacitySource :: MemorySource
+    , storageCapacitySource :: StorageSource
     }
     deriving (Eq, Show)
 
@@ -182,6 +226,7 @@ data StorageCordonTarget
     | LimaVmStorage
     | IncusVmStorage
     | Wsl2DistroStorage
+    | DockerNodeStorage
     | BareLinuxStorage
     deriving (Eq, Show)
 
@@ -196,12 +241,14 @@ data StorageCordonMechanism
 -- | A typed reason why a target cannot currently enforce the storage budget.
 data StorageCordonUnsupportedReason
     = BareLinuxQuotaAndImageGcUnavailable
+    | DockerUpdateStorageUnavailable
     deriving (Eq, Show)
 
 {- | The honest storage-cordon policy result. A supported result identifies the
 provider mechanism that an interpreter must apply. Bare Linux has neither a
-quota'd host path nor an image-GC wall, so it returns an explicit typed
-unsupported result instead of treating the capacity preflight as enforcement.
+quota'd host path nor an image-GC wall, and Docker cannot update a node's storage
+ceiling. Both return explicit typed unsupported results instead of treating the
+capacity preflight as enforcement.
 -}
 data StorageCordonResult
     = StorageCordonSupported StorageCordonMechanism
@@ -215,6 +262,7 @@ storageCordonPolicy target = case target of
     LimaVmStorage -> StorageCordonSupported LimaDiskFlag
     IncusVmStorage -> StorageCordonSupported IncusRootDiskLimit
     Wsl2DistroStorage -> StorageCordonSupported Wsl2VhdSize
+    DockerNodeStorage -> StorageCordonUnsupported DockerUpdateStorageUnavailable
     BareLinuxStorage -> StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable
 
 {- | Parse a Kubernetes-style quantity to bytes. Accepts binary suffixes
@@ -277,10 +325,9 @@ multiplier unit = case unit of
 
 {- | The host-OS reserve subtracted from memory capacity before the budget must
 fit: the headroom the host OS, the Docker daemon, and the orchestrator need
-above the project budget (see @development_plan_standards.md § O@). Without it a
-budget that merely fits under total RAM leaves no room for the host (a 16 GiB
-host + 10 GiB VM passes with ~6 GiB left, then thrashes), which is exactly the
-gap the preflight closes. ~4 GiB.
+above the project budget (see @development_plan_standards.md § O@). A 13 GiB
+budget fits under a 16 GiB host's total RAM, but its 4 GiB reserve makes the
+preflight refuse: 13 + 4 exceeds 16. The reserve is 4 GiB.
 -}
 hostMemoryReserveBytes :: Integer
 hostMemoryReserveBytes = 4 * 1024 ^ (3 :: Integer)
@@ -410,13 +457,14 @@ resolved control-plane container. @--memory@ is the steady-state RAM cap
 swap headroom equal to its RAM: a transient multi-GB spike (a @kind load@ /
 image push materialising a large layer) can burst into swap instead of being
 OOM-killed at the floor, while steady-state memory still self-limits to the
-slice. Storage carries **no** @docker update@ flag, so it is omitted here and
-cordoned per-substrate elsewhere (Colima @--disk@, incus @root,size@, a quota'd
-hostPath on bare Linux).
+slice. Storage carries **no** @docker update@ flag, so this node target is
+explicitly unsupported. Provider storage walls are the Colima and Lima disks,
+the Incus root disk, and the WSL2 VHDX; bare Linux is also unsupported.
 -}
 kindNodeCordonArgsForBudget :: String -> ResourceBudget -> Either String [String]
-kindNodeCordonArgsForBudget containerName b =
-    pure (["update"] <> kindNodeCordonLimitsForBudget b <> [containerName])
+kindNodeCordonArgsForBudget containerName b = do
+    limits <- kindNodeCordonLimitsForBudget b
+    pure (["update"] <> limits <> [containerName])
 
 {- | The same wall as the limit flags alone, with no container named.
 
@@ -426,16 +474,57 @@ would be a copy that agrees with this one until one of them is changed. The
 argv-shaped renderer above is therefore this list with the verb in front and the
 container behind it, so there is exactly one statement of what a cluster budget
 caps.
+
+Docker stores CPU in signed 64-bit NanoCPUs and memory/swap in signed 64-bit
+bytes. The Linux daemon requires at least 6 MiB of memory, and the CLI parses
+byte counts through binary64, so memory must survive that conversion exactly.
+All range checks use unbounded integers before rendering; doubling an exact
+memory value preserves its binary64 precision.
 -}
-kindNodeCordonLimitsForBudget :: ResourceBudget -> [String]
-kindNodeCordonLimitsForBudget b =
-    [ "--cpus"
-    , show (budgetCpu b)
-    , "--memory"
-    , show (budgetMemoryBytes b)
-    , "--memory-swap"
-    , show (2 * budgetMemoryBytes b)
-    ]
+kindNodeCordonLimitsForBudget :: ResourceBudget -> Either String [String]
+kindNodeCordonLimitsForBudget b
+    | toInteger (budgetCpu b) > maxCpuCores =
+        Left
+            ( "Docker CPU budget "
+                ++ show (budgetCpu b)
+                ++ " cores exceeds the signed 64-bit NanoCPUs limit of "
+                ++ show maxCpuCores
+                ++ " whole cores"
+            )
+    | memoryBytes < minimumMemoryBytes =
+        Left
+            ( memoryLabel
+                ++ " is below the Linux daemon minimum of "
+                ++ show minimumMemoryBytes
+                ++ " bytes"
+            )
+    | swapBytes > maxSignedBytes =
+        Left
+            ( memoryLabel
+                ++ " doubles to "
+                ++ show swapBytes
+                ++ " bytes, exceeding the signed 64-bit --memory-swap limit of "
+                ++ show maxSignedBytes
+                ++ " bytes"
+            )
+    | (truncate (fromInteger memoryBytes :: Double) :: Integer) /= memoryBytes =
+        Left (memoryLabel ++ " is not exactly representable by the Docker CLI binary64 byte parser")
+    | otherwise =
+        Right
+            [ "--cpus"
+            , show (budgetCpu b)
+            , "--memory"
+            , show memoryBytes
+            , "--memory-swap"
+            , show swapBytes
+            ]
+  where
+    maxSignedBytes = toInteger (maxBound :: Int64)
+    maxCpuCores = maxSignedBytes `div` 1000000000
+    minimumMemoryBytes = 6291456
+    memoryBytes = budgetMemoryBytes b
+    swapBytes = 2 * memoryBytes
+    memoryLabel = "Docker memory budget " ++ show memoryBytes ++ " bytes"
 
 {- | The incus VM sizing args from the one canonical parser: @limits.cpu@,
 @limits.memory@, and @root,size@. Unlike @docker update@, incus cordons
@@ -473,9 +562,9 @@ Both keys carry the /finite/ 'managedWslIdleTimeoutMillis' rather than the
 never-idle @-1@ they previously used. @-1@ kept the distro from idle-stopping
 mid-run, but it also meant the shared utility VM held the whole memory balloon
 until the next reboot: a wall that is never released is not a wall the host
-shares. A duration measured in hours preserves the mid-run guarantee — the demo
-gate runs 25–50 minutes — while guaranteeing the host eventually recovers the
-memory even if teardown never runs.
+shares. The finite six-hour policy gives roughly twice the recorded Windows
+demo gate's 2 h 57 min duration, leaving headroom for gaps between its sessions
+while allowing an abandoned runtime to become idle later.
 -}
 wsl2SizingArgsForBudget :: ResourceBudget -> Either String [String]
 wsl2SizingArgsForBudget b = do
@@ -496,10 +585,9 @@ project distro alive after their last session, expressed in whole hours. This is
 the single place the duration is chosen; 'managedWslIdleTimeoutMillis' derives
 the emitted value so neither call site carries a magic number.
 
-Six hours is an order of magnitude beyond the longest lifecycle this project
-runs (the demo gate is 25–50 minutes), so no run can be idle-stopped in the gaps
-between its @wsl -d@ steps, while an abandoned run still returns the balloon to
-the host the same day.
+Six hours gives roughly a twofold margin over the recorded Windows demo gate's
+2 h 57 min duration, leaving headroom for gaps between its @wsl -d@ sessions.
+The finite policy also allows an abandoned runtime to become idle later.
 -}
 managedWslIdleTimeoutHours :: Int
 managedWslIdleTimeoutHours = 6
@@ -517,7 +605,7 @@ capacityReadPlan sub = case substrateFrame sub of
     LinuxFrame -> linuxReadPlan
     WindowsFrame -> windowsReadPlan
   where
-    appleReadPlan = CapacityReadPlan (SysctlKey "hw.ncpu") (SysctlKey "hw.memsize") posixFreeStorage
+    appleReadPlan = CapacityReadPlan (CpuSysctlKey "hw.ncpu") (MemorySysctlKey "hw.memsize") posixFreeStorage
     linuxReadPlan = CapacityReadPlan ProcCpuinfo ProcMemAvailable posixFreeStorage
     windowsReadPlan = CapacityReadPlan WindowsLogicalProcessors WindowsTotalMemory WindowsSystemDriveFreeSpace
     -- The root filesystem's free space stands in for the project root's — the
@@ -545,59 +633,46 @@ resolveHostCapacity cfg = do
         pure (HostCapacity c m s)
 
 -- | Count CPU cores from the substrate-selected source.
-readCores :: HostConfig -> CapacityReadSource -> IO (Either String Natural)
+readCores :: HostConfig -> CpuSource -> IO (Either String Natural)
 readCores _ ProcCpuinfo = do
     exists <- doesFileExist "/proc/cpuinfo"
     if not exists
         then pure (Left "host capacity: /proc/cpuinfo is not available")
         else do
-            result <- try (readFile "/proc/cpuinfo") :: IO (Either SomeException String)
+            result <- try (TextIO.readFile "/proc/cpuinfo") :: IO (Either SomeException T.Text)
             pure $ case result of
-                Right contents ->
-                    let n = length (filter ("processor" `isPrefixOf`) (lines contents))
-                     in if n > 0
-                            then Right (fromIntegral n)
-                            else Left "host capacity: no processors found in /proc/cpuinfo"
+                Right contents -> parseCpuinfoProcessors (T.unpack contents)
                 Left e -> Left ("host capacity: failed to read /proc/cpuinfo: " ++ displayException e)
-readCores cfg (SysctlKey key) = fmap (fmap fromInteger) (readSysctlPositiveInteger cfg key)
-readCores cfg WindowsLogicalProcessors =
-    fmap (fmap fromInteger) $
-        readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors"
-readCores _ source =
-    pure (Left ("host capacity: unsupported CPU source " ++ show source))
+readCores cfg (CpuSysctlKey key) = fmap (fmap fromInteger) (readSysctlPositiveInteger cfg key)
+readCores _ WindowsLogicalProcessors =
+    fmap (fmap fromInteger . first renderWindowsCapacityError) readWindowsLogicalProcessors
 
 -- | Read available memory from the substrate-selected source, in bytes.
-readAvailableMemory :: HostConfig -> CapacityReadSource -> IO (Either String Integer)
+readAvailableMemory :: HostConfig -> MemorySource -> IO (Either String Integer)
 readAvailableMemory _ ProcMemAvailable = do
     exists <- doesFileExist "/proc/meminfo"
     if not exists
         then pure (Left "host capacity: /proc/meminfo is not available")
         else do
-            result <- try (readFile "/proc/meminfo") :: IO (Either SomeException String)
+            result <- try (TextIO.readFile "/proc/meminfo") :: IO (Either SomeException T.Text)
             pure $ case result of
-                Right contents -> case findMemAvailable (lines contents) of
-                    Just kb -> Right (kb * 1024)
-                    Nothing -> Left "host capacity: MemAvailable not found in /proc/meminfo"
+                Right contents -> parseMemAvailableBytes (T.unpack contents)
                 Left e -> Left ("host capacity: failed to read /proc/meminfo: " ++ displayException e)
-readAvailableMemory cfg (SysctlKey key) = readSysctlPositiveInteger cfg key
+readAvailableMemory cfg (MemorySysctlKey key) = readSysctlPositiveInteger cfg key
 -- Windows reads /total/ physical memory (already in bytes), not free: it mirrors
 -- Apple's stable @hw.memsize@ so the preflight is a property of the machine, not a
 -- volatile point-in-time free-RAM reading. A budget-fitting host then fails fast
 -- before the expensive build rather than passing on transient post-reboot free RAM
 -- (see @documents/engineering/applied_cordon.md@).
-readAvailableMemory cfg WindowsTotalMemory =
-    readPowerShellPositiveInteger cfg "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"
-readAvailableMemory _ source =
-    pure (Left ("host capacity: unsupported memory source " ++ show source))
+readAvailableMemory _ WindowsTotalMemory =
+    fmap (first renderWindowsCapacityError) readWindowsTotalMemory
 
 -- | Read available storage from the substrate-selected source, in bytes.
-readAvailableStorage :: HostConfig -> CapacityReadSource -> IO (Either String Integer)
-readAvailableStorage cfg WindowsSystemDriveFreeSpace =
-    readPowerShellPositiveInteger cfg "(Get-PSDrive -Name $env:SystemDrive.TrimEnd(':')).Free"
+readAvailableStorage :: HostConfig -> StorageSource -> IO (Either String Integer)
+readAvailableStorage _ WindowsSystemDriveFreeSpace =
+    fmap (first renderWindowsCapacityError) readWindowsSystemDriveFreeSpace
 readAvailableStorage cfg (PosixFreeStorage path) =
     readDfFreeBytes cfg path
-readAvailableStorage _ source =
-    pure (Left ("host capacity: unsupported storage source " ++ show source))
 
 {- | Read the free bytes of the filesystem holding @path@ via @df -P -k@ (portable
 across macOS BSD @df@ and Linux GNU @df@). @-P@ forces the POSIX one-line-per-
@@ -609,8 +684,8 @@ readDfFreeBytes :: HostConfig -> FilePath -> IO (Either String Integer)
 readDfFreeBytes cfg path = case resolveMaybe cfg Df of
     Nothing ->
         pure $ Left ("host capacity: df is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
-    Just exe -> do
-        outcome <- runCaptured (absExePath exe) ["-P", "-k", path] ""
+    Just _ -> do
+        outcome <- interpretHostCommand cfg (hostCommand Df ["-P", "-k", path])
         pure $ case outcome of
             Right (CapturedRun ExitSuccess out _) ->
                 maybe
@@ -620,7 +695,7 @@ readDfFreeBytes cfg path = case resolveMaybe cfg Df of
             Right (CapturedRun (ExitFailure n) _ err) ->
                 Left ("host capacity: df -k " ++ path ++ " failed (exit " ++ show n ++ "): " ++ T.unpack (T.strip (T.pack err)))
             Left failure ->
-                Left ("host capacity: failed to run df -k " ++ path ++ ": " ++ renderRunFailure failure)
+                Left ("host capacity: failed to run df -k " ++ path ++ ": " ++ failure)
 
 {- | Parse the available-1K-blocks field (4th column) of the data line (2nd line)
 of @df -k@ output. Pure.
@@ -633,27 +708,6 @@ parseDfAvailableKBytes out = case drop 1 (lines out) of
             _ -> Nothing
         _ -> Nothing
     _ -> Nothing
-
-readPowerShellPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
-readPowerShellPositiveInteger cfg expr = case resolveMaybe cfg PowerShell of
-    Nothing ->
-        pure $ Left ("host capacity: powershell.exe is not resolved for " ++ renderSubstrateName (substrateName (hcSubstrate cfg)))
-    Just exe -> do
-        outcome <- runCaptured (absExePath exe) ["-NoProfile", "-Command", expr] ""
-        pure $ case outcome of
-            Right (CapturedRun ExitSuccess out _) ->
-                parsePositiveInteger ("powershell " ++ expr) (T.unpack (T.strip (T.pack out)))
-            Right (CapturedRun (ExitFailure n) _ err) ->
-                Left
-                    ( "host capacity: powershell "
-                        ++ expr
-                        ++ " failed (exit "
-                        ++ show n
-                        ++ "): "
-                        ++ T.unpack (T.strip (T.pack err))
-                    )
-            Left failure ->
-                Left ("host capacity: failed to run powershell " ++ expr ++ ": " ++ renderRunFailure failure)
 
 readSysctlPositiveInteger :: HostConfig -> String -> IO (Either String Integer)
 readSysctlPositiveInteger cfg key = do
@@ -670,8 +724,8 @@ readSysctl cfg key = case resolveMaybe cfg Sysctl of
                 ( "host capacity: sysctl is not resolved for "
                     ++ renderSubstrateName (substrateName (hcSubstrate cfg))
                 )
-    Just exe -> do
-        outcome <- runCaptured (absExePath exe) ["-n", key] ""
+    Just _ -> do
+        outcome <- interpretHostCommand cfg (hostCommand Sysctl ["-n", key])
         pure $ case outcome of
             Right (CapturedRun ExitSuccess out _) -> Right (T.unpack (T.strip (T.pack out)))
             Right (CapturedRun (ExitFailure n) _ err) ->
@@ -684,10 +738,25 @@ readSysctl cfg key = case resolveMaybe cfg Sysctl of
                         ++ T.unpack (T.strip (T.pack err))
                     )
             Left failure ->
-                Left ("host capacity: failed to run sysctl " ++ key ++ ": " ++ renderRunFailure failure)
+                Left ("host capacity: failed to run sysctl " ++ key ++ ": " ++ failure)
 
+-- | Count the logical processor entries in Linux cpuinfo text.
+parseCpuinfoProcessors :: String -> Either String Natural
+parseCpuinfoProcessors contents =
+    let count = length (filter ("processor" `isPrefixOf`) (lines contents))
+     in if count > 0
+            then Right (fromIntegral count)
+            else Left "host capacity: no processors found in /proc/cpuinfo"
+
+-- | Read Linux meminfo's available-memory count and convert kB to bytes.
+parseMemAvailableBytes :: String -> Either String Integer
+parseMemAvailableBytes contents = case findMemAvailable (lines contents) of
+    Just kb -> Right (kb * 1024)
+    Nothing -> Left "host capacity: MemAvailable not found in /proc/meminfo"
+
+-- | Parse a positive whole-number capacity after stripping surrounding space.
 parsePositiveInteger :: String -> String -> Either String Integer
-parsePositiveInteger label raw = case reads raw of
+parsePositiveInteger label raw = case reads (T.unpack (T.strip (T.pack raw))) of
     [(n, "")]
         | n > 0 -> Right n
         | otherwise -> Left ("host capacity: " ++ label ++ " returned non-positive value " ++ show n)

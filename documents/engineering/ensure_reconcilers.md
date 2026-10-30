@@ -24,10 +24,10 @@
   library primitives that projects compose into their chains.
 - **Incus readiness is a total capability observation.** Its final classification distinguishes missing
   client, a daemon listing that fails as absent, permission-denied, or unreachable, missing VM capability,
-  missing image-server egress, and ready. Only the ready status mints the opaque `IncusProviderCapability`,
-  but that status is an exported constructor a caller can build without the probe (see
-  [Current Status](#current-status)). Other reconcilers still vary in probe strength, and prepared managed
-  operations provide the separate exact lifecycle authority boundary.
+  missing image-server egress, and ready. `withIncusProviderCapability` takes `HostConfig` and runs the
+  configured probe before minting the opaque `IncusProviderCapability`. The pure status classifier and
+  its descriptive eliminator carry no minting authority. Other reconcilers still vary in probe strength,
+  and prepared managed operations provide the separate exact lifecycle authority boundary.
 - The Python wrapper's host minimums are the **pre-binary** hard fail-fast surface (the irreducible
   host floor it cannot install; see [prerequisites](prerequisites.md)). Everything else
   (where a substrate-specific install plan exists) is installed by a reconciler when its action runs, so
@@ -40,7 +40,7 @@
   a GPU reconciler on a host classified as a GPU host whose `nvidia-smi` is absent or lists no device
   (a host with no NVIDIA evidence at all is classified `linux-cpu` or `windows-cpu` and gets the class (1)
   wrong-host diagnostic instead), `ensure homebrew` dies when `brew` is
-  absent on Apple, `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
+  absent on Apple, `ensure wsl2` refuses unavailable virtualization or a reboot-required state, and
   `installAndVerify` dies when the dependency is still not satisfied after the install plan.
 
 ## Reconciler Contract
@@ -85,9 +85,9 @@ whatever frame an invoking action reaches) is the default topology sense.
 
 The probe-first idempotence contract is: running a reconciler when the host is already in the desired state
 must be a successful, verified no-op. The shared driver is probe-first, and the strongest reconcilers
-add a final capability observation after remediation. The Linux `ensure-incus` row does not yet meet the
-no-op half of this contract: it re-runs package installs and restarts the daemon on every run (see
-[Current Status](#current-status)). A
+add a final capability observation after remediation. Linux Incus observes VM capability and the root
+daemon before planning package installation, initialization, or restart; its convergence plan is empty
+when both observations succeed. Shared permission and forwarding checks remain separate from that plan. A
 **missing dependency with a supported install plan on that substrate** is not a hard stop merely because
 it is absent — the reconcile action installs it when its probe reports absence (see
 *Install-and-Verify* below). A reconciler nonetheless
@@ -99,7 +99,7 @@ on a host classified as a GPU host, `ensure cuda` and `ensure cudawin` die when 
 and `ensure cuda` also dies when `nvidia-smi -L` lists no device (`ensure cudawin` instead runs its plan
 and fails the re-probe), because the NVIDIA driver is a substrate precondition, not auto-installed;
 `ensure homebrew` dies when `brew` is absent on Apple (its install plan is always
-`Left`), `ensure wsl2` dies on disabled firmware virtualization or a reboot-required state, and
+`Left`), `ensure wsl2` refuses unavailable virtualization or a reboot-required state, and
 `installAndVerify` dies when its re-verify probe shows the dependency is still not satisfied after the
 install plan. The wrong-host case is a misuse signal; the second case is a genuine absent-precondition
 signal. Which of the two a broken GPU driver produces depends on classification: both the bootstrapper
@@ -118,10 +118,12 @@ Reconcilers live under `HostBootstrap.Ensure.*`. The outer executable of every s
 reconciler runs is a `HostTool` resolved to an absolute path. That guarantee covers the outer executable
 only. Most Linux install steps resolve only `sudo` that way and pass bare program names (`apt-get`,
 `systemctl`, `nvidia-ctk`, `incus`, `usermod`, `setfacl`) for the privileged process to resolve through its
-own search path. A few steps hand a shell string to an interpreter: the CUDA repository setup
-(`sudo /bin/sh -c`), the Incus VM-capability probe and `kvm` module load (`sudo sh -c`), the Incus
-`DOCKER-USER` forwarding rule (`sudo bash -c`), the Docker group check (`sudo -u <user> sg docker -c`), and
-the WSL2 firmware and hypervisor probes (`powershell -NoProfile -Command`). The Apple Metal and Windows CUDA
+own search path. Docker's group check reads command output and native socket metadata rather than
+executing a shell. CUDA repository setup uses separate fetch and publication argv with Haskell
+validation between them. Linux Incus combines
+individual capability, module-loading, and forwarding argv in Haskell; its privileged daemon probe and
+initialization retain the resolved absolute Incus executable.
+WSL2 machine observations use native bindings. The Apple Metal and Windows CUDA
 probes also run the smoke executable they just compiled. The current reconcile action is
 context-agnostic (`HostConfig -> IO ()`): it runs locally in whatever frame its invoking action reaches.
 Managed resource transitions have a separate indexed `ReconcileResult`/failure algebra in
@@ -171,20 +173,45 @@ A reconcile action takes a no-op path when its probe reports presence and, when 
 2. otherwise resolve the **substrate-branched install plan** — either an explicit refusal for a
    non-installable prerequisite (which fails fast with that refusal) or a list of `InstallStep` values,
    each a resolved `HostTool` plus arguments;
-3. **run each step in order**; a non-zero exit fails fast naming the step, with two exceptions: a
-   `winget install` whose output reports the package already installed (or no available upgrade) is
-   accepted as success, and any `wsl` step whose output mentions a reboot or restart — or a
-   `wsl --install` that exits `-1` — aborts with a reboot-required diagnostic;
-4. **re-run the same probe** and fail fast with a one-line diagnostic if it is still unsatisfied.
+3. **run each step in order** and interpret its result through the pure `classifyStepOutcome`;
+4. **refresh the resolved host tools** after each continuing step, including an already-installed
+   result, before running the next step;
+5. **re-run the same probe** and fail fast with a one-line diagnostic if it is still unsatisfied.
+
+The classifier has four descriptive results:
+
+| `StepOutcome` | Driver interpretation |
+|---------------|-----------------------|
+| `StepContinue` | Refresh the host configuration and continue. |
+| `StepAlreadyInstalled` | Refresh and continue, then run the final probe; the installer message alone does not verify the dependency. |
+| `StepRebootRequired` | Stop with the WSL2 reboot-required diagnostic. |
+| `StepFailed reason` | Stop with the reconciler's diagnostic prefix and the failure reason. |
+
+A non-zero `winget install` reporting `Found an existing package already installed` or `No available
+upgrade found` produces `StepAlreadyInstalled`. Other non-zero exits fail unless the WSL-specific
+reboot rules apply. A `Wsl` result that mentions a reboot or restart, whether successful or failed,
+produces `StepRebootRequired`; so does exit `-1` from a `Wsl` step containing `--install`. Reboot text
+from another tool does not select that path. A runner refusal produces `StepFailed` with its reason.
+
+`HostBootstrap.Ensure` owns `normalizeWslText`, which removes NUL padding from decoded UTF-16 output
+and lowercases the text before those WSL checks. `Ensure.Wsl2` reexports the same helper for its
+readiness classifiers. `StepOutcome` describes one local install-step result; it carries no retained,
+typed lifecycle `Reconcile` evidence.
 
 This is install-and-reprobe mechanically. It is install-and-**verify** semantically only to the extent
 that the probe proves the desired state. Docker's daemon probe is a capability check. Incus goes further:
-after client convergence it performs one total provider observation and only the ready status mints an
-opaque capability. That capability observation remains distinct from the scoped managed
-settlement produced by the prepared operation algebra.
+after client convergence its capability gate performs the current configured provider observation and
+admits only its ready result. The gate consumes `incusProviderStatusResult`, the same descriptive
+eliminator available to status readers, before its sole opaque capability mint. The six non-ready status
+constructors are public; the ready constructor is hidden. A caller can still obtain a descriptive ready
+result from the pure classifier, while capability admission runs its own probe. It observes the tool paths
+resolved in the supplied `HostConfig` at that call. That capability observation remains distinct from the
+scoped managed settlement produced by the prepared operation algebra.
 
-Tools are re-resolved after each step, so a freshly installed tool (for example `ghcup` just laid
-down by `brew`) is discoverable by the next step. Homebrew formula steps are written as plain
+Tools are re-resolved after each continuing step, so a freshly installed tool (for example `ghcup` just laid
+down by `brew`) is discoverable by the next step. For `Ghc` and `Ghcup` on POSIX hosts, discovery tries
+`PATH` first, then `$GHCUP_INSTALL_BASE_PREFIX/.ghcup/bin` when the prefix is configured, or
+`$HOME/.ghcup/bin` otherwise. Homebrew formula steps are written as plain
 `brew install <formula>` commands; Homebrew's installed-formula no-op behavior is the idempotent
 path. The install plan is a **pure** function of the substrate — Homebrew formulae on
 `apple-silicon`; `apt-get`/`ghcup`/the NVIDIA container toolkit on Linux — so it is unit-tested
@@ -193,15 +220,45 @@ is exercised during real bootstrap runs.
 
 | Reconciler | Current probe | Install plan (per substrate) |
 |------------|------------------|------------------------------|
-| `docker` | `docker info` reachable and `docker buildx version` succeeds; on Linux the follow-up also establishes invoking-user socket access | Linux only: `apt-get install -y docker.io docker-buildx acl` + enable the daemon + add the invoking user to `docker`, verify with `sg docker -c "docker info"`, and apply a per-user ACL to `/var/run/docker.sock` when needed. On Apple an absent daemon is refused, naming the prepared per-project Colima adapter as its owner (an adapter no demo or production lifecycle step drives); on Windows it is delegated to the WSL2/provider path. |
+| `docker` | `docker info` reachable and `docker buildx version` succeeds; on Linux the follow-up also verifies observed group-based socket permissions and establishes invoking-user socket access | Linux only: `apt-get update`, then `apt-get install -y docker.io docker-buildx acl`, enable the daemon, and add the invoking user to `docker`. Read `id -nG <user>` through `Sudo` and the fixed socket's owning group and group-write bit; require exact membership in that group before the current-session access path. Retain a successful direct Docker probe, or install ACL support and apply a per-user ACL to `/var/run/docker.sock` when needed. On Apple an absent daemon is refused, naming the prepared per-project Colima adapter as its owner (an adapter no demo or production lifecycle step drives); on Windows it is delegated to the WSL2/provider path. |
 | `apple-metal` | `system_profiler` reports a Metal device, `xcrun --sdk macosx --show-sdk-path` returns an SDK path, and a Swift + Metal smoke program compiles and runs | Apple: none — Swift, `xcrun`, the macOS SDK, and Metal come with the Xcode Command Line Tools; an unsatisfied probe fails fast with the `xcode-select --install` instruction. |
 | `lima` | `limactl` resolved | Apple: `brew install lima`. |
-| `cuda` | `nvidia-smi -L` reports a GPU and Docker's official nvkind volume-mount smoke (`/dev/null:/var/run/nvidia-container-devices/all`) sees that GPU | linux-gpu: install `nvidia-container-toolkit`; configure the NVIDIA runtime as Docker's default with CDI; enable `accept-nvidia-visible-devices-as-volume-mounts`; restart Docker. The kernel driver is a substrate precondition, not auto-installed. |
-| `homebrew` | `brew` resolved | Apple: none — Homebrew is an independently installed host minimum asserted (not installed) by the Python bootstrapper; an absent `brew` fails fast with the row's instruction, which reads "Homebrew is the host toolchain root; the Python bootstrapper installs it pre-binary. Install from https://brew.sh and retry." Its middle clause is wrong (see [Current Status](#current-status)); the operator installs Homebrew from brew.sh. |
-| `ghc` | host `ghc` resolved | Apple: `brew install ghcup` + `ghcup install ghc`. |
+| `cuda` | `nvidia-smi -L` reports a GPU and Docker's official nvkind volume-mount smoke (`/dev/null:/var/run/nvidia-container-devices/all`) sees that GPU | linux-gpu: when the smoke is not satisfied, establish repository tools, fetch and validate the NVIDIA repository inputs, then publish the keyring and signed-by list. The runtime tail refreshes apt, installs `nvidia-container-toolkit`, configures the NVIDIA runtime as Docker's default with CDI, enables `accept-nvidia-visible-devices-as-volume-mounts`, and restarts Docker before the final smoke. The kernel driver is a substrate precondition, not auto-installed. An initially satisfied probe skips all installation and repository work. |
+| `homebrew` | `brew` resolved | Apple: none — the Python bootstrapper asserts Homebrew as a host minimum; an absent `brew` fails fast with the instruction to install it from https://brew.sh and retry. |
+| `ghc` | host `ghc` resolved through `PATH` or the POSIX ghcup fallback | Apple: `brew install ghcup` + `ghcup install ghc --set recommended`, selecting ghcup's recommended GHC as default. The guest compiler pin remains in `PinnedToolchain`; the pre-binary host pin belongs to the bootstrapper. |
 | `cudawin` | `nvcc -V` resolves, `vswhere` finds VCTools, `clang` resolves, the NVIDIA driver reports a GPU, and an `nvcc -ccbin <MSVC>` smoke artifact compiles | windows-gpu: unattended `winget install` of the CUDA Toolkit (`Nvidia.CUDA`), MSVC C++ Build Tools/VCTools (`Microsoft.VisualStudio.2022.BuildTools`), and LLVM (`LLVM.LLVM`); the NVIDIA Windows driver is a substrate precondition, not auto-installed. |
-| `wsl2` | Ready when `wsl --status` succeeds without reporting disabled virtualization, or fails reporting no installed distributions; otherwise ready when `wsl --list --online` succeeds without reporting disabled virtualization and names Ubuntu-24.04 (a catalogue listing, not a platform observation; see [Current Status](#current-status)) | windows, when not ready: firmware virtualization disabled fails fast; firmware enabled and hypervisor present runs `winget install` of `Microsoft.WSL`, `wsl --install --no-distribution`, and `wsl --set-default-version 2`, then re-probes; hypervisor absent runs only `bcdedit /set hypervisorlaunchtype auto` and exits with a reboot-required diagnostic, leaving the WSL install steps to the next run after the reboot. A step output that asks for a reboot also exits with that diagnostic. A project-owned `deploy-vm` step registers that project's own named Ubuntu-24.04 distro. |
-| `incus` | Three probes after a client check: an `incus list` whose failure text is read as absent, permission-denied, or unreachable daemon; VM capability (QEMU, OVMF, and `virtiofsd` on Linux, the `incus` Colima profile on Apple); and `images:ubuntu/24.04` egress. The first failing probe in that order names the status; all passing is ready, and only the ready status mints `IncusProviderCapability` | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`, then final provider/profile/egress probe. Linux: install `incus` + `acl` and run `incus admin init --minimal` when the client is absent; then, on every run, ensure `/dev/kvm` access, install `qemu-system-x86`, `ovmf`, `virtiofsd`, and `acl`, initialize the daemon when a root `incus list` fails, restart `incus` unconditionally, grant `incus-admin` and immediate socket access, preserve `incusbr0` forwarding through `DOCKER-USER`, then run the same final capability/egress classification. |
+| `wsl2` | One `wsl --status` observation: virtualization-disabled text takes precedence over every exit code and other marker; otherwise exit 0 or a no-installed-distributions report means ready, and other failures or an unrunnable tool mean absent. `wsl --list --online` is not queried. | Ready sets the default version to 2. Otherwise a present hypervisor selects installation without consulting the firmware flag. With no hypervisor and available virtualization, an absent platform is installed; an unavailable platform enables hypervisor launch and asks for a reboot. Unavailable virtualization is refused. Installation runs `winget install` of `Microsoft.WSL`, `wsl --install --no-distribution`, and `wsl --set-default-version 2`, then re-probes. A WSL step output asking for a reboot also stops with that diagnostic. The project-owned `deploy-vm` step registers its named Ubuntu-24.04 distro. |
+| `incus` | The capability gate takes `HostConfig` and runs three probes after a client check: an `incus list` whose failure text is read as absent, permission-denied, or unreachable daemon; VM capability (QEMU, architecture-specific firmware, and executable `virtiofsd` on Linux, the `incus` Colima profile on Apple); and `images:ubuntu/24.04` egress. The first failing probe in that order names the status; only the gate's observed ready result mints `IncusProviderCapability`. The pure classifier and status eliminator remain descriptive. | Apple: `brew install incus`, `brew install colima`, `colima start incus --runtime incus`, then final provider/profile/egress probe. Linux: install `incus` + `acl` when the client is absent and refresh tool resolution. Observe VM capability and the root daemon: install architecture-specific QEMU/firmware plus `virtiofsd` and `acl` only on a capability gap; initialize through the retained absolute Incus executable only on a daemon gap; restart once when either ran. Then refresh tool resolution, ensure `/dev/kvm` access, grant `incus-admin` and immediate socket access, preserve `incusbr0` forwarding through an existing `DOCKER-USER` chain, and run the final capability/egress classification. |
+
+After WSL's installation driver succeeds, including its already-ready fast path, the reconciler refreshes
+tool resolution and runs the same default-version-2 action as the direct ready path. A readiness result
+that changes between probes therefore cannot skip default-version convergence.
+
+CUDA repository preparation is an explicit runtime stage before the static `installSteps` tail.
+`repositoryToolSteps` supplies only the real package commands needed for missing repository tools.
+The reconciler observes typed `Curl` resolution and a successful `gpg --version`, installing tools and
+refreshing `HostConfig` when needed. `setupRepositoryWith` then owns a unique scratch directory for
+both `curl -fsSL -o` downloads. It strictly reads both files and validates the repository list before
+running either privileged destination command. `signedByListText` adds the fixed keyring to supported
+active NVIDIA HTTPS entries, preserves comments, blank lines and final-newline behavior, and refuses
+empty or unsupported repository bodies.
+
+Only after those checks does the reconciler run `Sudo` for key dearmoring and list installation, then
+consume the actual runtime tail and re-run the nvkind smoke. Failed fetches or refused input leave
+both destination files untouched. Publication is ordered; it does not promise atomic replacement of
+both files or rollback after a publication command fails. Ordinary IO errors refuse, while asynchronous
+cancellation propagates after scratch cleanup.
+
+For Linux Incus, `LinuxIncusObservation` retains the root probe's absolute Incus executable alongside VM
+and daemon observations. `linuxIncusConvergence` chooses among an empty plan, VM packages plus restart,
+daemon initialization plus restart, and both changes plus one restart. Amd64 uses `qemu-system-x86` and
+`ovmf`; Arm64 uses `qemu-system-arm` and `qemu-efi-aarch64`. The capability probe combines QEMU,
+firmware alternatives, and virtiofsd alternatives in Haskell. Its typed `Virtiofsd` PATH fallback still
+requires a successful executable check. KVM module loading rechecks `/dev/kvm` after each ordered
+`kvm_intel`, `kvm_amd`, and `kvm` attempt. Forwarding skips a missing `DOCKER-USER` chain and checks
+each rule before inserting it. These decisions do not establish that privileged execution has passed
+on a live host; that confirmation belongs to the
+[worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
 
 ## Current Provider Probes And Target Usability
 
@@ -213,8 +270,19 @@ still returns a result-free reconciler action:
 - **One group-and-socket workflow.** Putting the invoking non-root user in a daemon's group and granting
   that user immediate access to the daemon's socket is one workflow in `HostBootstrap.Ensure`, taking the
   group, the socket, and the reconciler's label. `docker` and `incus` are applications of it; a host with
-  no invoking non-root user is a reported skip rather than a failure. The three-way answer to a
-  privileged step — succeeded, ran and returned non-zero, could not be run — is written once beside it.
+  no invoking non-root user is a reported skip rather than a failure. `withInvokingGroupMember` hands
+  its grant callback one checked privileged-step function and the selected user; `grantSocketAccess`
+  renders its `setfacl` request through that function. The three-way answer — succeeded, ran and returned
+  non-zero, could not be run — is formatted once from the reconciler's label and step description.
+  A non-zero exit names the step and code; a runner refusal retains the runner's text after the label.
+  `requireSudoStep` uses the same checked formatter.
+
+  `withInvokingGroupMemberWith` takes the environment, an effective-user lookup, and a `Sudo` runner.
+  It uses the same workflow and grant renderer, so a recording runner observes the real `usermod -aG`
+  and `setfacl -m` argument vectors without running privileged commands. Selection prefers non-empty,
+  non-root `SUDO_USER`, then `LOGNAME`, then `USER`, before consulting the effective user. POSIX uid 0,
+  an effective uid with no passwd entry, and Windows without an environment-selected user yield the skip
+  path. A synchronous passwd lookup `IOError` also yields no user; asynchronous cancellation propagates.
 - **One accelerator listing predicate.** `reportedGpu` answers whether a captured device listing reported
   a device, over the `nvidiaDeviceMarker` token `HostBootstrap.Substrate` names, so the host-driver check,
   the `nvkind` runtime smoke, and the Windows reconciler cannot disagree about what a listing means.
@@ -225,7 +293,18 @@ still returns a result-free reconciler action:
   path also grants socket access through group membership and an immediate ACL. On Apple a missing
   daemon is refused at this config-free seam, naming the plan-bound Colima adapter as the owner of Apple
   host Docker; no demo or production lifecycle step drives that adapter (see
-  [Current Status](#current-status)).
+  [Current Status](#current-status)). Docker's `verifyDockerGroupWith` checks the future login's
+  group-based permissions with a result-producing `Sudo` runner for `id -nG <user>` and a supplied
+  socket observation. Production supplies the native Haskell reader of `/var/run/docker.sock`'s owning
+  group name and group-write bit. Membership must match a complete group-name token and the actual
+  socket group must be writable. Command or metadata refusal stops before the current-session access
+  continuation. This observes permissions; it does not execute a future login or prove that login can
+  reach the daemon. The native socket observation explicitly refuses as unsupported on Windows; the
+  Linux-only group workflow does not change Windows Docker delegation.
+
+  Docker retains its current-session direct Docker probe and, when needed, ACL-tool installation and
+  socket grant after successful permission verification. Incus supplies its own group and socket to
+  the shared grant.
 - **The prepared Colima adapter** is deliberately not a `Reconciler` row, because it needs validated
   project, plan, budget, partition, reservation, and profile evidence that a config-free reconciler cannot
   hold. Its module surface (plan and evidence joins, the in-process native Apple toolchain resolver, the bounded runner, the
@@ -274,27 +353,88 @@ every binary is built host-native. The steps that **establish** the binary in a 
 their own closed, ordered, typed vocabulary, owned by `HostBootstrap.Ensure.GuestBootstrap` and by nothing
 else.
 
-It is a reconciler in shape — probe, plan, act, re-probe — over a frame instead of a host, and it has five
-steps because each is separately probeable: the distribution floor, the pinned toolchain, the Python
-bootstrapper, the host-native build in the frame, and installing the result where the next lift invokes it.
-`guestBootstrapPlan` emits each of the five step constructors exactly once, in a fixed order, so a caller that goes through
-`guestBootstrapPlan` or `runGuestBootstrap` chooses the target and never the sequence.
+The five steps establish the distribution floor, pinned toolchain, Python bootstrapper, host-native
+project build, and installed project binary, in that order. `guestBootstrapPlan` enumerates the closed
+`GuestStepKind` axis and maps it through exhaustive `stepFor`; `stepKind` identifies each resulting step.
+A caller using the plan selects the target and never the sequence.
 
-Nothing in it is a shell string. Each step renders to argument vectors: the probe answers with its exit
-status alone, so nothing parses output, and the actions are a list precisely because the two shapes that
+Ordinary steps probe first, act on absence, and re-probe. The bootstrapper step always runs
+`pipx install --force <source>` and then verifies its executable, without an initial skip probe. This
+refreshes the staged source even on an otherwise satisfied frame and reports `GuestStepInstalled`.
+The driver stops at the first runner failure, failed action, or unsettled verification, naming the step.
+
+Each probe is an argument vector. The floor uses `dpkg-query`'s `${db:Status-Abbrev}\n` format and
+`floorPackagesSatisfied`: success requires a non-empty floor, exit 0, exactly one non-empty status line
+per requested package, and every line beginning `ii`. Removed-with-config (`rc`), unpacked (`iU`), empty, truncated,
+or failed results are absent. Other probes use their exit status; the toolchain probe requires ghcup,
+the exact versioned GHC executable, and Cabal together.
+
+Nothing in the vocabulary is a shell string. Actions are a list precisely because the two shapes that
 otherwise reach for an interpreter do not need one — a piped installer is a fetch step followed by a run
 step, and a working directory is an argument to `env` rather than a `cd`.
 
 Every path in a step is a **guest** path: it is interpreted by a process of the frame being bootstrapped,
-which is Linux on every outer host. `mkGuestBootstrapTarget` is the only constructor of the abstract
-`GuestBootstrapTarget` and admits POSIX-absolute paths alone, so through a target the drive-qualified path a
-Windows outer host holds cannot reach a Linux guest process — where it would be a relative path, silently
-created wherever the guest happened to start.
+which is Linux on every outer host. `mkGuestPath` admits an opaque `GuestPath` only for a POSIX-absolute
+path, refusing a drive-qualified outer-host path that a Linux guest would read as relative.
+`guestPathValue` returns the original spelling. Each admitted path is labeled with its coordinate role
+before `mkGuestBootstrapTarget` receives it. The target and matching step payloads retain all six roles
+until rendering. The target checks the empty toolchain pin first, then the toolchain home's final
+`.ghcup` component without a trailing separator. The installer receives that home's parent as
+`GHCUP_INSTALL_BASE_PREFIX`.
 
-Both guarantees — the fixed order and the POSIX-absolute paths — hold for the target API only. The module
-also exports the `GuestBootstrapStep` constructors with `stepProbe` and `stepActions`, and those
-constructors take unchecked `FilePath` arguments, so a caller that builds steps directly and renders or
-sequences them itself bypasses both checks. The demo goes through `runGuestBootstrap`.
+The first coordinate has its own opaque `GuestSourceRoot`. Its total builder `mkGuestSourceRoot` wraps
+an admitted `GuestPath`, and `guestSourceRootPath` reads that proof. The factory argument, target reader
+and bootstrapper-source step payload retain the role until its path is rendered into the source label
+and `pipx install --force` argv. The demo admits `vmRepoRoot` and labels it with that role at its existing
+target call.
+
+The build's working directory has its own opaque `GuestProjectDir`. The total `mkGuestProjectDir` builder
+wraps an admitted `GuestPath`, and `guestProjectDirPath` reads it. The second factory argument, target
+reader and build payload retain that role until the build label and `env -C` argv render its path.
+The demo admits and labels `vmDemoRoot` at the same target call. The built-binary output remains an
+independent coordinate with its existing spelling.
+
+The toolchain home has its own opaque `GuestToolchainHome`. Its total `mkGuestToolchainHome` builder
+labels an admitted `GuestPath`, and `guestToolchainHomePath` returns that proof with its original spelling.
+The third factory argument, target reader and toolchain/build payloads retain the role. The target still
+checks the `.ghcup` component after the empty pin; the role builder supplies
+the coordinate label, while that target predicate checks the home shape. The demo admits `/root/.ghcup`
+and labels it at the actual target call. Existing POSIX derivations render the executable probes,
+installer filename and parent install-base prefix, and the build PATH. Step labels remain unchanged.
+
+The bootstrapper executable has its own opaque `GuestBootstrapperExe`. The total
+`mkGuestBootstrapperExe` builder wraps any admitted `GuestPath`, and `guestBootstrapperExePath` reads that
+proof. The fourth factory argument, target reader and bootstrapper/build payloads retain the role.
+The demo admits `/root/.local/bin/hostbootstrap` and labels it at the actual target call. Rendering uses
+the original path for the executable `test -x` probe and build invocation, and its POSIX parent in the
+build PATH. The role identifies the coordinate; executable readiness remains a runtime observation.
+The existing `pipx install --force` source action and all step labels remain unchanged.
+
+The build output has its own opaque `GuestBuiltBinary`. Its total `mkGuestBuiltBinary` builder wraps
+any admitted `GuestPath`, and `guestBuiltBinaryPath` returns that proof. The fifth factory argument,
+target reader, build-output payload and install-source payload retain the role. The demo admits its
+existing `vmDemoRoot ++ "/.build/hostbootstrap-demo"` spelling and labels it at the target call.
+Rendering uses that path in the build's `test -x` probe, comparison source and install source; build argv
+and all labels remain unchanged. The role records the path's purpose, while existence and readiness
+remain runtime observations.
+
+The installed destination has its own opaque `GuestInstalledBinary`. Its total `mkGuestInstalledBinary`
+builder labels an admitted `GuestPath`, and `guestInstalledBinaryPath` reads that proof. The sixth factory
+argument, target reader and install-destination payload retain the role. The demo admits and labels
+`/usr/local/bin/hostbootstrap-demo` at its existing target call. Rendering uses that spelling in the
+installation label, comparison destination and install destination. This is a path-purpose role;
+installation and readiness remain runtime observations.
+
+All seven target record labels are private. Ordinary readers return the source-root, project-directory,
+toolchain-home, bootstrapper-executable, built-binary and installed-binary roles plus the pinned toolchain,
+so inspection does not expose record update.
+`GuestBootstrapStep` is abstract too: its public steps come from `guestBootstrapPlan` over an admitted
+target, with `stepKind`, `stepLabel`, `stepProbe`, and `stepActions` for observation. The provided
+`runGuestBootstrap` driver uses the plan's fixed order.
+Original path spelling, literal argv, journals, and target/step `Show` presentation remain compatible.
+
+All six factory coordinates and matching step payloads now require their distinct purpose roles. The
+demo admits and labels each path at its actual call; the role views preserve the original path values.
 
 The Python bootstrapper asserts Homebrew; on Apple it is the channel through which the bootstrapper
 installs `ghcup` for the host-native Haskell build toolchain before a project binary exists. It does not
@@ -309,10 +449,11 @@ The accelerator-daemon demo extends the ensure surface for host-resident acceler
 These reconcilers run only on host-daemon lanes; Linux daemon pods trust the base image and never run
 ensure from inside the container. Hardware evidence and closure status belong in the development plan.
 
-The direct Linux GPU metal step runs `ensure cuda` before entering the project container. It converges
-the default-runtime/CDI/volume-mount settings consumed by nvkind and verifies them with the official
-volume-mount smoke. Whether a particular native or virtualized host has passed the hardware gate is
-plan-owned evidence, not part of this stable contract.
+The direct Linux GPU metal step runs `ensure cuda` before entering the project container. When
+remediation is needed, it configures the default-runtime/CDI/volume-mount settings consumed by nvkind.
+The official volume-mount smoke checks the default runtime and effective volume-mount injection;
+CDI is configured by the install tail but is not verified by that smoke. Whether a particular native or
+virtualized host has passed the hardware gate is plan-owned evidence, not part of this stable contract.
 
 The closed host-tool surface these reconcilers consume includes `Swiftc`, `Xcrun`, and
 `SystemProfiler` for Apple Silicon, `Clangxx` for the Linux CPU worker, and `NvidiaSmi`, `Nvcc`, `Clang`,
@@ -362,13 +503,33 @@ context-free reconciler in a scripted seam. That remains a library call, not a s
 ## Validation
 
 - `EnsureSpec` covers each reconciler's pure applicability decision, wrong-host diagnostic, and
-  substrate-branched install plan; the Incus provider-status classifier; the shared invoking-user
-  selection; and, through the injectable `installAndVerifyWith` seam, the already-present no-op,
-  install-then-re-probe, install refusal, install failure, and failed re-probe paths without a real
-  package manager.
+  substrate-branched install plan, including the recommended-default GHC argv, ghcup fallback
+  candidates, and Docker/Homebrew delegation text; the Incus provider-status classifier, descriptive
+  refusals, and configured capability admission; shared invoking-user
+  selection and effective-user fallback; the group/socket workflow's exact privileged argv, skip,
+  non-zero, and runner-refusal paths; the four-way install-step classifier, including NUL-padded WSL reboot text and reboot
+  text from another tool; and, through the injectable `installAndVerifyWith` seam, the already-present
+  no-op, install-then-re-probe, second-run no-op, install refusal, install failure, failed re-probe,
+  and winget already-installed refresh-and-re-probe paths without a real package manager.
 - `SubstrateSpec` covers the host-frame collapse the frame tables read.
-- `GuestBootstrapSpec` covers the guest bootstrap plan, its probes and actions, and the target's
-  POSIX-absolute path refusal.
+- Docker permission cases exercise the production verification workflow with recorded `id -nG` argv
+  and supplied socket observations: whole-token membership, the actual owning group, the group-write
+  bit, command/metadata refusals, and refusal before the ACL continuation. They also pin apt update
+  before Linux package installation. These static controls do not mutate host users, groups, or sockets,
+  execute a future login, or establish live daemon connectivity.
+- CUDA repository cases cover the real tool-bootstrap commands and runtime tail, supported list bytes
+  and refusals, exact scratch download/publication argv, cleanup, and refusal before publication when
+  either download or validation fails. A recording runner exercises the production scratch workflow;
+  these cases do not establish a live repository, signing trust, GPU availability, or CDI operation.
+- `GuestBootstrapSpec` covers the step-kind order, exact probe/action argv, package-state classification,
+  unconditional source refresh, per-step driver journals and refusals, common POSIX path admission and
+  the target's pin/`.ghcup` checks. Path admission precedes the six role labels; ordinary-reader and presentation
+  controls retain original spelling and pin-before-home diagnostics without importing step constructors.
+  Alternate-path cases check each role's exact rendering positions. Public-only record-update and
+  step-construction fixtures, plus the exact export inventory, guard the sealed boundary. The
+  [binary-role transposition fixture](../../core/hostbootstrap-core/test/compile-fail/TransposeGuestBinaryRoles.hs)
+  builds admitted values for every role and rejects both swapped built/installed argument positions
+  for their role mismatches. These static controls do not establish installation or readiness in a live guest.
 - `ColimaSpec` covers the prepared Colima adapter.
 - These run in `cabal test all` from `core/`, the host static gate's core leg (see
   [§ JJ](../../DEVELOPMENT_PLAN/development_plan_standards.md)). The IO reconcile actions themselves are
@@ -382,24 +543,6 @@ the nine reconcilers, and the guest bootstrap vocabulary.
 The Apple Silicon, Linux, and Windows reconciler inventory above is implemented and unit-covered. The
 Windows VM-provider reconciler `ensure-wsl2` is implemented; current hardware/lifecycle closure belongs
 in the development plan. The closed registry contains no `ensure-tart` member.
-
-The following gaps between the code and the contract above are owed by the
-[ensure reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md):
-
-- **WSL2 readiness.** `wsl2Ready` falls back to `wsl --list --online`, which observes that the online
-  distribution catalogue is reachable rather than that the WSL2 platform can run a VM, so it can report a
-  no-op on a host whose WSL2 platform is not usable. Its no-hypervisor branch runs only `bcdedit` and
-  exits reboot-required, leaving the WSL install steps to a later run.
-- **Linux Incus idempotence.** The Linux row re-runs its QEMU/OVMF/`virtiofsd` package install and
-  restarts the `incus` daemon on every run, including on a host that is already ready, so it is not the
-  verified no-op the contract requires.
-- **Incus capability gate.** `withIncusProviderCapability` takes an `IncusProviderStatus` rather than
-  running `probeIncusProviderStatus` itself, and `IncusProviderReady` is exported, so a caller can mint
-  `IncusProviderCapability` from a status it constructed without observing the provider.
-- **Homebrew diagnostic.** The `ensure-homebrew` refusal says the Python bootstrapper installs Homebrew;
-  the bootstrapper only asserts it.
-- **Guest bootstrap boundary.** The exported `GuestBootstrapStep` constructors accept unchecked paths, so
-  the fixed order and the POSIX-absolute path rule hold only for callers that use the target API.
 
 Direct Colima is a plan-owned adapter rather than a context-free reconciler. Its public prepared-wall
 path uses one native protected-entry acquisition, cleanup, and routed-Docker driver over the shared

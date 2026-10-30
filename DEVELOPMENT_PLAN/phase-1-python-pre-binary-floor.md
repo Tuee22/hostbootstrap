@@ -1,14 +1,14 @@
 # Phase 1 — Python pre-binary floor
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 0 (governance and documentation standards)
 **Substrates**: linux-cpu
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-13 ; x86_64 Ubuntu 24.04.4 LTS, Python 3.12.3, Poetry 2.4.1 ;
+**Gate evidence**: 2026-10-26 ; `hostbootstrap-cpu-gate-20261026`, x86_64 Ubuntu 24.04 CPU-only container on WSL2 Linux 6.18.33.2, Python 3.12.3, Poetry 2.5.1 ;
 `poetry run python -m hostbootstrap.check_code && poetry run python -m hostbootstrap.test_all` ; pass ;
-covers 44abe223709138e3946745a8ec1e33432b79d90048dfbba2ac5047d451fe907c
+covers 816a21c91f8455bdc87f2d4d820bedd23589c364e87a4fd8e99eaf6cb971571f
 **Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project
@@ -26,9 +26,9 @@ the base-image build/publish surface and the pipx self-update surface.
 
 ## Sprints
 
-### Sprint 1.1: Host floor assertion and prerequisites [Active]
+### Sprint 1.1: Host floor assertion and prerequisites [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/prereqs.py`, `hostbootstrap/substrate.py`,
 `hostbootstrap/resources.py`
 **Substrates**: linux-cpu
@@ -58,52 +58,30 @@ Refuse early and legibly when the host cannot host the build.
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` holds these cases in `tests/test_prereqs.py`,
-`tests/test_substrate.py` and `tests/test_resources.py`, all passing:
+`poetry run python -m hostbootstrap.test_all` executes these cases:
 
-- `test_passwordless_sudo_checks` asserts the probe argv is exactly `["sudo", "-n", "true"]`, and its
-  root case (`geteuid() == 0`) stubs `_have` and `process.probe` to raise, so the early return is proven.
-- `test_ubuntu_check` refuses `ID=ubuntu VERSION_ID=22.04` and `ID=debian VERSION_ID=24.04`, each with
-  `PrereqError` matching `Ubuntu 24.04`, besides the existing accept and `debian/12` cases.
-- A refusal-text case per installable prerequisite asserts the remedy text.
-- A long-paths case stubs `git config --type=bool` output `true` for a configured `1`, and asserts the
-  argv carries `--type=bool`.
-- A dispatch case asserts each `SubstrateName` reaches its own doctor branch.
-- `test_has_nvidia_gpu_from_marker` also patches `substrate.shutil.which` to return `None`, so a `True`
-  can come only from the marker; a Windows case with a present marker path asserts the marker is not read.
-- `test_unknown_arch_raises`, `test_detect_darwin_intel_rejected` and `test_detect_unknown_system` each
-  pass `match=` with their own fragment (`unsupported host architecture`, `only supports Apple Silicon`,
-  `unsupported host platform`).
-- `test_assert_build_minimums_passes_above_floor` gains an at-floor row (`cpu_count=8`,
-  `mem_total_bytes=14 * _GIB`, `mem_available_bytes=8 * _GIB`) that is accepted, and
-  `test_assert_build_minimums_rejects_below_floor` gains rows `14 * _GIB - 1` total and `8 * _GIB - 1`
-  available (the other values at floor) refused with `total memory` and `available memory`.
+- In `tests/test_prereqs.py`, `test_passwordless_sudo_checks` pins the exact probe and root early return;
+  `test_ubuntu_check` accepts Ubuntu 24.04 and refuses the other distro/version rows.
+  `test_xcode_clt_check`, `test_homebrew_check`, `test_curl_check`, `test_winget_check`, and
+  `test_powershell_check` assert prerequisite remedies.
+- `test_git_long_paths_enabled_reads_config` pins Git's bool-normalizing argv;
+  `test_run_doctor_dispatches_by_substrate` covers every constructor, and
+  `test_doctor_stops_at_first_missing_prerequisite` proves fail-fast ordering.
+- In `tests/test_substrate.py`, `test_has_nvidia_gpu_from_marker` excludes an executable probe, while
+  `test_windows_gpu_detection_does_not_read_linux_markers` proves the Windows marker exemption.
+  `test_unknown_arch_raises`, `test_detect_darwin_intel_rejected`, and `test_detect_unknown_system`
+  pin the three refusal messages.
+- In `tests/test_resources.py`, `test_assert_build_minimums_passes_above_floor` includes the exact
+  CPU and memory floors; `test_assert_build_minimums_rejects_below_floor` includes the one-byte-below
+  total and available memory rows.
 
 #### Remaining Work
 
-- `prereqs._check_passwordless_sudo` tests: pin the `sudo -n true` argv in the success stub of
-  `test_passwordless_sudo_checks`, and make the root case's `_have`/`process.probe` stubs raise
-  `AssertionError`.
-- `test_ubuntu_check`: add the `ubuntu/22.04` and `debian/24.04` refusal cases.
-- `prereqs.py`: give the `sudo is required but not installed`, `could not exec sudo`, `curl is required`
-  and `Windows PowerShell is required` refusals a remedy sentence (the install command or package), and
-  add one `pytest.raises(PrereqError, match=...)` case per message asserting the remedy text.
-- `prereqs._git_long_paths_enabled`: probe `git config --type=bool --get core.longpaths`; test that the
-  argv carries `--type=bool` and that the normalized `true` reads as enabled.
-- `prereqs.run_doctor`: replace the fall-through with a `match substrate.name` over `LINUX_CPU`,
-  `LINUX_GPU`, `APPLE_SILICON`, `WINDOWS_CPU`, `WINDOWS_GPU` and an `assert_never` default (mypy strict
-  holds exhaustiveness); add a parametrized test asserting each name reaches its branch.
-- `substrate._has_nvidia_gpu`: check `_NVIDIA_MARKERS` only when `platform.system() == "Linux"`; patch
-  `shutil.which` to `None` in `test_has_nvidia_gpu_from_marker`, and add a Windows case where an existing
-  marker path does not make the answer `True`.
-- `tests/test_substrate.py`: add the `match=` fragment to `test_unknown_arch_raises`,
-  `test_detect_darwin_intel_rejected` and `test_detect_unknown_system`.
-- `tests/test_resources.py`: add the at-floor accept row and the one-byte-below total and available
-  memory refusal rows, so the 14 GiB and 8 GiB floors are pinned exactly.
+None.
 
-### Sprint 1.2: Native toolchain preparation and binary build [Active]
+### Sprint 1.2: Native toolchain preparation and binary build [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/bootstrap.py`, `hostbootstrap/process.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`
@@ -135,49 +113,35 @@ Build the project binary host-native and invoke it.
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` holds these cases in `tests/test_bootstrap.py`, all passing:
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_bootstrap.py`:
 
-- `test_discover_project_rejects_every_identity_mismatch` carries a stem-only case (`demo.cabal` declaring
-  `name: other` / `executable other`); a discovery case accepts `Executable demo`.
-- The `recorded_commands` fixtures in `tests/conftest.py` record `(argv, cwd, "checked" | "probe")`; the
-  driver tests assert `cwd=project_root` for `cabal update`, build and `list-bin`, that probes and installs
-  receive `_toolchain_env()` (its `PATH` starts with the GHCup bin directory), and a fresh-host case where
-  `run_checked` raises `CommandError` on the GHC install propagates it.
-- `bootstrap()` and `build_binary()` driver cases with `offline=True` assert no `cabal update` runs and
-  `--offline` is in the build argv; a `_build_native` case with `CabalIndexState.STALE` and
-  `offline=False` asserts `commands[0] == bootstrap.cabal_update_command()`.
-- `cabal_index_path` cases cover `CABAL_DIR`, Windows `%APPDATA%`, an existing `~/.cabal`, and the XDG
-  default.
-- The GHCup download cases assert the exact curl argv (pinned URL, `--proto =https`, `--tlsv1.2`, `-f`)
-  and that the Windows command carries the pinned URL and a path containing `'` as separate arguments.
-- The command-builder cases parametrize `os.name` over `nt` and `posix` and assert literal expected argv;
-  `test_bootstrap_linux_gpu_builds_host_native` asserts the full command list, library probe included.
-- A `_copy_if_changed` case asserts the destination is replaced through a new file (its inode or file id
-  changes), and the POSIX exec line carries no `# pragma: no cover`.
+- `test_discover_project_rejects_every_identity_mismatch` includes the stem-only mismatch, and
+  `test_discover_project_accepts_cabal_section_keyword_case` accepts `Executable demo`.
+- `test_cabal_index_path_honors_cabal_dir` and `test_cabal_index_location_follows_cabal_resolution`
+  cover explicit `CABAL_DIR`, Windows `%APPDATA%`, legacy `.cabal`, and the XDG cache defaults.
+- `test_verified_ghcup_download_installs_only_matching_digest` pins HTTPS curl arguments and the hash;
+  `test_verified_ghcup_download_supports_windows_powershell` pins separate URL and quoted-path arguments.
+- `test_copy_publishes_a_new_file_and_preserves_an_open_old_handle` exercises atomic replacement;
+  `test_windows_busy_binary_is_renamed_before_replacement` covers the Windows fallback;
+  `test_copy_missing_source_preserves_the_installed_binary` and
+  `test_copy_permission_refusal_without_a_replaceable_windows_binary_cleans_up` prove failure cleanup.
+- `test_driver_threads_offline_and_preserves_build_cwd` covers both drivers, online stale-index update,
+  offline propagation, and exact build/list-bin working directories. The recorder fixtures in
+  `tests/conftest.py` assert the toolchain environment.
+  `test_fresh_host_ghc_install_failure_stops_before_build` proves install failure propagation.
+- `test_native_build_command`, `test_native_build_command_offline`, `test_cabal_update_command`, and
+  `test_native_listbin_command` pin both OS argv rows; `test_bootstrap_linux_gpu_builds_host_native`
+  pins the full command sequence including its library probe.
+- `test_posix_exec_project_binary_rehomes_to_project_root_then_execs` covers process replacement;
+  `test_windows_exec_project_binary_exits_with_child_status` covers child status.
 
 #### Remaining Work
 
-- `bootstrap.cabal_index_path`: resolve `CABAL_DIR`, else `%APPDATA%\cabal` on `os.name == "nt"`, else
-  `~/.cabal` if it is a directory, else `$XDG_CACHE_HOME/cabal` or `~/.cache/cabal`; add one test per row.
-- `bootstrap._install_verified_ghcup`: pass the URL and output path to PowerShell as `param($u, $o)`
-  arguments (`-Command "& { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o }" <url> <path>`); test
-  with a temporary directory whose name contains `'` and assert the argv elements.
-- `bootstrap._copy_if_changed`: copy to a sibling temporary file, flush and `fsync`, then `os.replace` it
-  onto the destination (on Windows, when `os.replace` is refused for a running executable, rename the
-  old file aside first); test that a destination opened before the copy keeps its old bytes and the new
-  path holds the new bytes.
-- `bootstrap._discover_executable`: compare `parts[0].lower() == "executable"`; add the `Executable demo`
-  accept case and the stem-only mismatch case.
-- `tests/conftest.py`: record cwd and checked/probe kind in both recorder fixtures; add the cwd, env and
-  failing-install assertions listed under Validation.
-- `tests/test_bootstrap.py`: add the offline driver cases, the online `STALE` case, the exact curl argv
-  assertion, the `os.name`-parametrized builder cases, and the full LINUX_GPU command list.
-- `bootstrap._exec_project_binary`: drop the `# pragma: no cover` on `os.execve`, which
-  `test_posix_exec_project_binary_rehomes_to_project_root_then_execs` already executes.
+None.
 
-### Sprint 1.3: The operator CLI surface [Active]
+### Sprint 1.3: The operator CLI surface [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/cli.py`, `hostbootstrap/base_image.py`,
 `hostbootstrap/docker_ops.py`, `hostbootstrap/self_update.py`
 **Substrates**: linux-cpu
@@ -213,81 +177,46 @@ Expose exactly the surfaces that must exist outside a project binary.
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` holds these cases in `tests/test_cli.py`, all passing:
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_cli.py`:
 
-- `_stub_self_check_passing` stubs `_arch_default` and records `authority`, `arch-check` and
-  `quality-gates` into one ordered event list shared with the `docker_ops.build`/`push` fakes; `base build`
-  and `base build-and-push` each assert `["authority", "arch-check", "quality-gates", "build", ...]`.
-- A CliRunner case per base command whose gate stub raises `ClickException`, and one whose arch stub
-  raises, asserts `docker_ops.build` and `docker_ops.push` were never called.
-- `test_native_architecture_requires_request_host_and_engine_match` adds an AMD64 engine with
-  request = host = ARM64 and asserts `ClickException` matching `Docker engine=amd64`.
-- `test_quality_gates_run_all_python_core_and_demo_commands` asserts a literal expected list of
-  `(label, command, cwd)` for the non-style gates, including `--ghc-options=-Werror` and cwd
-  `context/core` and `context/demo`, rather than calling `cli._quality_gates`.
-- A `_style_gates` case monkeypatches `cli._FORMATTER_ARGV_BUDGET` down to a few hundred characters over a
-  synthetic root holding a handful of sources, and asserts every formatter gate's
-  `len(subprocess.list2cmdline(gate.command))` stays within it, the chunks together name every source
-  exactly once, and the labels read `Haskell formatter over <root> (part i/n)`; the existing
-  `test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read` keeps its unsuffixed
-  `Haskell formatter over <root>` lookups because its roots fit in one chunk.
-- The concurrency cases use a build fake that awaits `asyncio.sleep(0)` and records start and end events:
-  the concurrent case asserts interleaving (`cuda-start` before `cpu-end`), the `--sequential` case asserts
-  strict nesting; a cpu-fails case asserts nonzero exit, the cuda `published and validated` line, and
-  `pushed == [cuda tag]`, and its `--sequential` variant asserts nothing ran after the cpu failure; a
-  both-fail case (each flavor raising `CommandError`) asserts one `ClickException` whose message holds a
-  `[cpu]` and a `[cuda]` line, each with its formatted error; a case where cpu raises `CommandError` and
-  cuda raises `KeyError("x")` asserts `result.exception` is that `KeyError` instance.
-- A `--context` case and a `build` case run under `monkeypatch.chdir(tmp_path)` with no option and assert
-  the captured root is `tmp_path.resolve()`; a `run --offline --cabal-file x.cabal` case, shaped like
-  `test_build_threads_explicit_cabal_selection_and_offline`, asserts the `_load_project` stub receives
-  `selected_cabal_file == Path("x.cabal")` and the `bootstrap.bootstrap` fake receives `offline is True`.
-- A command raising `KeyError()` surfaces the `KeyError` itself (`result.exception`), not `IndexError`.
-- A parametrized `_maintainer_command_authority` case starts from the passing environment and fails
-  exactly one condition per row: the Poetry `name`, a missing `.git`, a missing `poetry.lock`, a prefix
-  other than the checkout's `.venv`, `sys.prefix == sys.base_prefix`, an executable outside the prefix,
-  `find_spec` returning `None` for one of `ruff`/`black`/`mypy`/`pytest`, and `tomllib.loads` raising
-  `TOMLDecodeError`; each row asserts `None`. The passing environment is a synthetic checkout under
-  `tmp_path` (`pyproject.toml` with `name = "hostbootstrap"`, a `.git` directory, `poetry.lock`, and a
-  `.venv` holding the executable), reached by monkeypatching `cli.__file__` to
-  `<tmp>/hostbootstrap/cli.py`, `sys.prefix` and `sys.executable` into `<tmp>/.venv`, `sys.base_prefix` to
-  another directory, and `importlib.util.find_spec` to succeed; a baseline row with no condition removed
-  asserts a `MaintainerCommandAuthority` whose `repository_root` is the synthetic root.
+- `test_maintainer_authority_requires_each_repository_condition` covers the synthetic passing checkout
+  and each individual refusal. `test_base_authority_architecture_and_quality_precede_docker` pins both
+  commands' ordered preflight; `test_base_preflight_failure_makes_no_docker_mutation` covers each refusal.
+- `test_native_architecture_requires_request_host_and_engine_match` includes the engine mismatch.
+  `test_quality_gates_run_all_python_core_and_demo_commands` pins literal labels, argv, and cwd;
+  `test_style_gates_run_before_the_cabal_legs` pins style ordering.
+- `test_formatter_argv_is_chunked_under_the_windows_budget` covers quoted lengths, source membership,
+  chunk labels, and an oversized path. Single chunks retain their labels in
+  `test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read`.
+- `test_concurrent_flavors_interleave_and_sequential_flavors_finish_in_order` proves both schedules.
+  `test_failed_flavor_retains_other_publication_unless_sequential` proves partial publication reporting
+  and fail-fast behavior. `test_concurrent_failures_report_every_flavor_or_preserve_programming_error`
+  proves aggregate messages and original exception preservation.
+- `test_friendly_group_preserves_key_errors` includes an argument-free error;
+  `test_friendly_group_reraises_unknown_file_not_found` preserves an unrecognized launch exception.
+- `test_base_default_context_follows_invocation_directory` covers both base commands after `chdir`;
+  `test_default_project_root_is_current_directory` covers `build` after `chdir`.
+  `test_run_threads_explicit_cabal_selection_and_offline` pins selection and offline forwarding.
+- `test_build_then_publish_smokes_before_and_after_registry_mutation` pins local smoke, push, pull,
+  digest lookup, and smoke against the published digest in order.
+
+The preceding Linux CPU gate covered digest
+`ac8dff76e3a45fd5d8c4b7f169f7be50afe889c1100c2cc319ead6b0f4abc979` on 2026-10-26;
+that evidence was superseded by the formatter inventory change below.
+
+The Phase 3.8 direct-WSL change removes the interpreter's last CPP route; its obsolete
+`_FORMATTER_UNREADABLE` entry is removed here with the formatter source inventory. On 2026-10-26,
+the complete Python gate passed again on native Windows (376 tests, 6.77 seconds) and the same
+Linux CPU container (376 tests, 7.18 seconds), each with 1,585/1,585 statements and 460/460 branches
+covered. The canonical covered-source digest below was remeasured after that source change.
 
 #### Remaining Work
 
-- `tests/test_cli.py`: add the parametrized one-condition-fails `_maintainer_command_authority` case over
-  the synthetic `tmp_path` checkout, with `cli.__file__`, `sys.prefix`, `sys.base_prefix`,
-  `sys.executable` and `importlib.util.find_spec` monkeypatched as `#### Validation` states.
+None.
 
-- `tests/test_cli.py`: rewrite `_stub_self_check_passing` into the ordered-event recorder (stubbing
-  `_arch_default`) and add the gate-raises and arch-raises cases asserting no Docker call, for both base
-  commands.
-- `tests/test_cli.py`: add the engine-mismatch case, the literal quality-gate list, the interleaving,
-  nesting, partial-failure and both-fail cases, the `run --offline --cabal-file` case, and replace
-  `test_default_project_root_is_current_directory` with the `chdir` invocation case.
-- `cli._style_gates`: add `_FORMATTER_ARGV_BUDGET: Final[int] = 16_384`, counted in characters of
-  `subprocess.list2cmdline(argv)`, and split each formatter root's sources into chunks whose argv stays
-  within it, one `_QualityGate` per chunk labelled `Haskell formatter over <root> (part i/n)` when n > 1
-  and `Haskell formatter over <root>` otherwise; add the chunking test that monkeypatches the budget down.
-- `cli._FriendlyGroup.invoke`: factor the per-type translation into `_friendly_message(exc) -> str | None`
-  (a `CommandError`, a `FileNotFoundError` with a known hint, an `httpx.HTTPError`, a `RuntimeError`; `None`
-  for anything else, including a `KeyError` and an unknown `FileNotFoundError`), which `invoke` uses so an
-  exception without a friendly message re-raises unchanged.
-- `cli._run_base_targets`: in the concurrent branch, if every failed flavor's exception has a
-  `_friendly_message`, raise one `ClickException` listing `[label] <message>` per failed flavor; otherwise
-  re-raise the first exception that has none, unchanged; add the both-fail case and the cpu-`CommandError`
-  plus cuda-`KeyError` case.
-- `cli._FriendlyGroup.invoke`: drop `KeyError` from the caught types and the `KeyError` branch of
-  `_format_runtime_error`, narrowing its parameter to `RuntimeError`; replace the `KeyError("bad-value")`
-  row of `test_friendly_group_converts_known_errors` with the propagation case, and delete the
-  `cli._format_runtime_error(KeyError("x"))` assertion in `tests/test_cli.py`.
-- `cli._BASE_CONTEXT_BUILD_OPTION`: default `None`, resolved to `Path.cwd()` inside `base_build` and
-  `base_build_and_push`; add the `chdir` case.
+### Sprint 1.4: The Python quality gate [Done]
 
-### Sprint 1.4: The Python quality gate [Active]
-
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/check_code.py`, `hostbootstrap/test_all.py`, `pyproject.toml`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -301,9 +230,9 @@ Make the Python half's gate one command with no bypass.
 - `check_code` runs `ruff check`, then `black --check`, then `mypy`, over `hostbootstrap`, each as
   `sys.executable -m <tool>` with cwd the repository root, so the locked venv's tools check the checkout
   from any working directory.
-- `test_all` sets the `HOSTBOOTSTRAP_TEST_ALL` sentinel and invokes pytest in-process; forwarded option
-  filters (`-k`, `-m`, `-q`) narrow the run, and a forwarded path or node id replaces the default `tests`
-  target.
+- `test_all` sets the `HOSTBOOTSTRAP_TEST_ALL` sentinel and invokes pytest in-process; forwarded
+  options (`-k`, `-m`, `-q`) retain their pytest meaning, and a forwarded path or node id replaces
+  the default `tests` target.
 - `tests/conftest.py` requires the sentinel, so there is one supported suite entry point.
 - An unfiltered `test_all` run measures line and branch coverage of `hostbootstrap` and fails below
   `fail_under = 100`, so the host static gate holds the coverage floor rather than a separate manual
@@ -313,36 +242,47 @@ Make the Python half's gate one command with no bypass.
 
 #### Validation
 
-Both commands pass from the repository root. Dated evidence: `235 passed` in 1.43 seconds, and
-`ruff`/`black`/`mypy` clean, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1
-(2026-09-09). Closure adds these cases in `tests/test_dev_runners.py`, all passing under
-`poetry run python -m hostbootstrap.test_all`:
+`tests/test_dev_runners.py` contains these cases under the supported Python runner:
 
-- `test_check_code_main_success_and_fail_fast` asserts the full step argv: `ruff check hostbootstrap`,
-  `black --check hostbootstrap`, `mypy hostbootstrap`, each launched through `sys.executable -m` with cwd
-  the repository root.
-- A `test_all` case forwarding `tests/test_cli.py` asserts the pytest args are `["tests/test_cli.py"]`;
-  the existing `-k models` case still asserts `["tests", "-k", "models"]`.
-- A `test_all` case with a stubbed coverage report below 100 returns nonzero after a passing pytest run,
-  and a filtered run skips the coverage check.
+- `test_check_code_main_success_and_fail_fast` pins the locked interpreter's exact module argv;
+  `test_check_code_run_returns_the_tool_exit_code` pins repository-root cwd.
+- `test_test_all_main_sets_sentinel_and_forwards_args` pins the sentinel and `-k` forwarding;
+  `test_test_all_forwards_paths_and_options` covers paths, node ids, and option values.
+- `test_test_all_enforces_coverage_after_a_passing_full_run` covers passing and failing coverage and
+  pytest failure propagation. `test_test_all_filtered_run_does_not_measure_partial_coverage` covers
+  argument-bearing invocations.
+- `test_coverage_reload_orders_real_dependencies_before_their_consumers` checks dependency ordering
+  using actual imported modules. `test_module_entrypoints_exit` covers the module entry points without
+  starting a nested measured suite.
+
+On 2026-10-26, `poetry run python -m hostbootstrap.check_code` and the unfiltered
+`poetry run python -m hostbootstrap.test_all` pass on native Windows (Python 3.14.7, Poetry 2.4.1)
+and the CPU-only Ubuntu 24.04 container `hostbootstrap-cpu-gate-20261026` (Python 3.12.3,
+Poetry 2.5.1, Linux 6.18.33.2 WSL2 kernel). Each test run passes 376 cases with 100% coverage:
+1,585/1,585 statements and 460/460 branches. These are the Python legs of the host static gate.
+
+The complete native Windows host static gate also passes: `cabal test all --test-options=--hide-successes`
+from `core/` passes all 2,550 cases in 367.80 seconds; plain `cabal test all` from `demo/` passes its
+consumer suite and its included 2,550 core cases (404.96 seconds), alongside the two Python legs above.
+The Cabal commands initialize a UTF-8 console with `chcp 65001` and restore its original code page.
+The provider-live component reports its declared unrequested-lane `Unsupported`, without claiming a
+live provider run. An earlier standalone core attempt reported four failed cases; the subsequent full
+standalone run and the demo's included core run pass. No failure cause is inferred from the rerun.
+
+The CPU container has no NVIDIA file markers or GPU device and its real detector reports `linux-cpu` /
+`amd64`. It runs the working-tree files in a native Linux checkout with its own in-project Poetry venv.
+`HostBootstrap.Digest.measurePathSetDigest` measures `hostbootstrap`, `tests` and `pyproject.toml` as
+`ac8dff76e3a45fd5d8c4b7f169f7be50afe889c1100c2cc319ead6b0f4abc979`; the tested Linux checkout's
+byte-framed path/content measurement agrees. No baseline confirmation is claimed from the Windows
+Python run alone.
 
 #### Remaining Work
 
-- `hostbootstrap/test_all.py`: on an unfiltered run, start `coverage.Coverage()` (configured from
-  `pyproject.toml`) before pytest runs, reload `hostbootstrap` modules imported before measurement so
-  their module-level lines count, and after a passing run return nonzero when `report()` is below
-  `fail_under`; set `branch = true` under `[tool.coverage.run]`; add the two coverage cases.
-- `hostbootstrap/test_all.py`: prepend `tests` only when no positional (non-option) argument is forwarded;
-  add the path-forwarding case.
-- `hostbootstrap/check_code.py`: launch each tool as `(sys.executable, "-m", tool, ...)` with
-  `cwd=Path(__file__).resolve().parent.parent`; pin the full argv and cwd in
-  `test_check_code_main_success_and_fail_fast`.
-- `pyproject.toml`: delete the unused `docker` and `slow` markers and set `description` to "Thin host
-  bootstrapper for hostbootstrap project binaries (plus maintainer base-image commands)".
+None.
 
-### Sprint 1.5: One architecture value in the bootstrapper [Active]
+### Sprint 1.5: One architecture value in the bootstrapper [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/substrate.py`, `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`,
 `hostbootstrap/prereqs.py`
 **Substrates**: linux-cpu
@@ -366,28 +306,21 @@ than re-deriving validity from text.
 
 #### Validation
 
-The host static gate. `poetry run python -m hostbootstrap.check_code` type-checks the narrowed
-signatures under strict `mypy`, and `poetry run python -m coverage run -m hostbootstrap.test_all`
-holds the 100% line gate — which means the tests exercise both architectures rather than the one
-the host happens to be. Dated evidence: `ruff`/`black`/`mypy` clean and `242 passed` at 100% line
-coverage, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1 (2026-09-12). The two
-boundaries that read an outside architecture spelling — the host machine string and the Docker engine
-answer — are asserted to return the same `Arch` for every alias, which is the absence guard against a
-second table returning. Closure adds, in `tests/test_prereqs.py` under
-`poetry run python -m hostbootstrap.test_all`, a parametrized `test_macos_checks` that accepts every
-`_ARCH_ALIASES` spelling mapping to `Arch.ARM64` (`arm64`, `aarch64`, `ARM64`) and refuses `x86_64` with
-`PrereqError` matching `Apple Silicon`, and `poetry run python -m hostbootstrap.check_code` clean.
+`tests/test_substrate.py`'s `test_one_alias_table_serves_the_host_and_the_docker_engine` applies every
+architecture alias to both boundaries. `tests/test_prereqs.py`'s parametrized `test_macos_checks`
+accepts ARM64 aliases, including uppercase and padded spellings, and refuses `x86_64` with the
+Apple Silicon message. `tests/test_bootstrap.py`'s
+`test_verified_ghcup_download_rejects_unpinned_platform_arch` proves the pinned-download boundary.
+`poetry run python -m hostbootstrap.check_code` checks the narrowed signatures under strict mypy.
+The dated Python gate and line-and-branch coverage evidence are recorded in Sprint 1.4.
 
 #### Remaining Work
 
-- `prereqs._check_macos_arm64`: delete the literal `{"arm64", "aarch64"}` set and accept the host exactly
-  when `parse_arch(platform.machine()) is Arch.ARM64`; parametrize `test_macos_checks` over the
-  `Arch.ARM64` aliases and the `x86_64` refusal. The subprocess vocabulary and the detection boundary are
-  Sprint 1.6 and Sprint 1.7.
+None.
 
-### Sprint 1.6: One way to run a command in the bootstrapper [Active]
+### Sprint 1.6: One way to run a command in the bootstrapper [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/process.py`, `hostbootstrap/prereqs.py`, `hostbootstrap/self_update.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`
@@ -411,45 +344,28 @@ whether it failed, and saying which kind of failure it was.
 
 #### Validation
 
-The host static gate, with coverage still at 100%. The prerequisite and self-update suites assert on
-the failure text each module produces; those assertions are the regression test that the error
-vocabulary did not change when the mechanics did. Dated evidence: `ruff`/`black`/`mypy` clean and
-`249 passed` at 100% line coverage, on x86_64 Ubuntu 24.04.4 LTS with Python 3.12.3 and Poetry 2.4.1
-(2026-09-12). Closure adds these cases in `tests/test_process.py` and `tests/test_cli.py`, all passing
-under `poetry run python -m hostbootstrap.test_all`:
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_process.py`:
 
-- `probe` of `sys.executable -c "import time; time.sleep(5)"` with `timeout=0.1` returns the timed-out
-  outcome with a reason naming the timeout, and the prerequisite messages that render it say the command
-  timed out rather than that it is missing.
-- `probe` of a child writing the bytes `b"\x81\x8d\x8f\x90\x9d"` to stdout and stderr returns a
-  `CommandResult` carrying U+FFFD, not an exception.
-- `run` of a child writing one line longer than 64 KiB completes with the full output captured; a `run`
-  whose mirror raises on write leaves no live child (`returncode` is set) and re-raises.
-- `run` of a nonexistent executable raises `CommandError` whose outcome is `CommandUnavailable`, and a
-  CLI case with `docker` missing prints the `_MISSING_BINARY_HINTS["docker"]` text with no traceback.
-- `test_run_captures_stdout_stderr_env_and_quiet` uses `capfd` to assert nothing reaches the parent
-  streams with `quiet=True`, a non-quiet companion asserts the output is mirrored, and a sentinel set in
-  `os.environ` through `monkeypatch` is printed by the child to pin environment merging.
+- `test_probe_reports_a_timeout_distinct_from_an_unavailable_command` exercises both stdio rows with
+  a real timed-out child, including the checked-runner outcome.
+- `test_probe_replaces_undecodable_output_and_merges_environment` pins replacement decoding and
+  parent environment inheritance. `test_run_captures_stdout_stderr_env_and_quiet` proves quiet capture;
+  `test_run_mirrors_output_with_a_prefix` proves non-quiet output.
+- `test_run_captures_lines_larger_than_the_stream_limit` captures a 200,000-byte line;
+  `test_drain_preserves_split_utf8_and_replaces_for_the_mirror_encoding` covers split UTF-8 and a
+  restricted mirror encoding.
+- `test_run_reports_an_executable_it_cannot_launch` pins the asynchronous launch refusal.
+  `test_run_reaps_the_child_when_the_mirror_fails` observes the real child's exit;
+  `test_run_awaits_an_already_exited_child_on_drain_failure` covers the completed-child branch.
+
+`tests/test_cli.py`'s `test_missing_docker_launch_has_its_install_hint` pins the operator hint.
+`tests/test_prereqs.py`'s `test_required_probe_timeout_reports_timeout` and
+`tests/test_self_update.py`'s `test_self_update_renders_timeout` pin timeout-specific refusal text.
+The dated Python gate and 100% line-and-branch coverage evidence are recorded in Sprint 1.4.
 
 #### Remaining Work
 
-- `process.probe`: pass `encoding="utf-8", errors="replace"` to the capturing `subprocess.run`; add the
-  undecodable-bytes case.
-- `process.probe`: catch `subprocess.TimeoutExpired` before `SubprocessError` and return a distinct
-  timed-out outcome (a `CommandTimedOut(args, timeout)` member of `CommandOutcome`, rendered by
-  `describe`); update `prereqs` and `substrate` callers that read `CommandUnavailable` so a timeout is
-  reported as a timeout; add the timeout case.
-- `process.run`: wrap `asyncio.create_subprocess_exec` so an `OSError` at launch raises
-  `CommandError(CommandUnavailable(argv, str(exc)))`; make `cli._format_command_error` map a
-  `CommandUnavailable` whose `argv[0]` basename is in `_MISSING_BINARY_HINTS` to that hint; add the
-  missing-executable and CLI hint cases.
-- `process.run`: wrap the drain `gather` in `try/except BaseException` that calls `process.kill()` when
-  `returncode is None`, awaits `process.wait()`, and re-raises; in `_drain`, read `stream.read(65536)`
-  chunks, split the decoded buffer into lines before applying the prefix (carrying a partial last line
-  into the next chunk), and write to the mirror with `errors="replace"`; add the long-line and
-  failing-mirror cases.
-- `tests/test_process.py`: add the `capfd` quiet and non-quiet assertions and the environment-merge
-  sentinel.
+None.
 
 ### Sprint 1.7: The bootstrapper's detection is the one the binary uses [Done]
 
@@ -482,9 +398,9 @@ own detection when it is invoked directly.
 
 None.
 
-### Sprint 1.8: The self-update freshness check compares the commit pip would install [Planned]
+### Sprint 1.8: The self-update freshness check compares the commit pip would install [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/self_update.py`, `hostbootstrap/cli.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/self_update.md`
@@ -510,36 +426,29 @@ message, never a traceback.
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` holds these cases in `tests/test_self_update.py` and
-`tests/test_cli.py`, all passing:
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_self_update.py`:
 
-- `test_parse_direct_url_rejects_malformed` parametrizes `(text, match)` pairs: `"{not json"` and `"[]"`
-  with `is malformed`, the list `vcs_info` with `malformed VCS metadata`, the `vcs_info` lacking
-  `commit_id` with `missing git source metadata`, and `requested_revision=123` with
-  `malformed requested revision`; each asserts `pytest.raises(SelfUpdateError, match=...)`.
-- `parse_ls_remote` cases: output holding `refs/heads/backup/main`, `refs/heads/main` and an annotated
-  `refs/tags/main` with its `^{}` line returns the `refs/heads/main` sha; a tag-only output returns the
-  peeled sha; an output with no exact name match raises `SelfUpdateError`.
-- `test_check_status_compares_installed_to_remote` uses different installed and remote commits, asserts
-  `up_to_date is False` and `remote_commit` equals the stubbed value, and records the ref passed to the
-  stub.
-- A `check_status` case with installed `requested_revision="v1.2"` and no explicit ref asserts the stub
-  received `v1.2`; a CLI `update --check` case asserts the compared ref is printed.
+- `test_parse_direct_url_rejects_malformed` pairs malformed JSON and metadata shapes with their
+  specific refusal text.
+- `test_remote_commit_invokes_git` pins all three qualified refs;
+  `test_parse_ls_remote_selects_exact_branch_before_tag` covers exact branch precedence, lightweight-tag
+  fallback, unmatched output, and ambiguity refusal.
+  `test_parse_ls_remote_prefers_peeled_annotated_tag_commit` covers peeled-tag selection.
+- `test_check_status_compares_installed_to_remote` uses different commits and records the ref;
+  `test_check_status_selects_the_installed_or_explicit_ref` covers the installed revision, `main`
+  fallback, and explicit override.
+
+In `tests/test_cli.py`, `test_update_check_reports_up_to_date` and
+`test_update_check_reports_available_update` assert the compared ref is printed for both results.
+The dated Python gate evidence is recorded in Sprint 1.4.
 
 #### Remaining Work
 
-- `self_update.parse_direct_url`: wrap `json.loads` and raise `SelfUpdateError` from
-  `json.JSONDecodeError`; rewrite `test_parse_direct_url_rejects_malformed` as `(text, match)` pairs
-  with the `{not json` row.
-- `self_update.remote_commit`/`parse_ls_remote`: query the fully qualified refs, select by exact name
-  branch-first, refuse ambiguous or unmatched output; add the three `parse_ls_remote` cases.
-- `self_update.check_status` and `cli.update_cli`: thread an explicit-or-installed ref (installed
-  `requested_revision`, else `main`) and print it; rewrite `test_check_status_compares_installed_to_remote`
-  with differing commits and add the requested-revision and printed-ref cases.
+None.
 
-### Sprint 1.9: The Python suite's Haskell-source guards hold what they claim [Planned]
+### Sprint 1.9: The Python suite's Haskell-source guards hold what they claim [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `tests/test_packaging.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -562,21 +471,25 @@ promise: a bare-literal process target in any launch form, and a provider builde
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` passes on the current tree, and these self-test cases in
-`tests/test_packaging.py` pass: the literal-target scanner flags a synthetic source with
-`readProcessWithExitCode` and `"docker"` on separate lines and a `spawnProcess "wsl"` line, and ignores
-the same text inside a comment; the builder counter reports zero uses for a synthetic module holding only
-an export, a signature and an equation of a builder.
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_packaging.py`:
+
+- `test_haskell_host_processes_do_not_launch_bare_literal_commands` and
+  `test_provider_surface_has_one_dispatch_and_no_definition_only_builders` apply both guards to the tree.
+- `test_literal_process_scanner_reads_multiline_calls_and_ignores_comments` covers every launch
+  spelling, multiline literals, and nested comments;
+  `test_literal_process_scanner_keeps_comment_markers_inside_strings` protects real string content.
+- `test_provider_builder_counter_requires_an_expression_use` proves exports, imports, signatures,
+  defining equations, and string mentions contribute no production use, while an expression does.
+
+The dated Python gate evidence is recorded in Sprint 1.4.
 
 #### Remaining Work
 
-- `tests/test_packaging.py`: factor the scanner and the use counter into helpers over source text, apply
-  the comment stripping, multi-line patterns and extended function list, and the export/signature/equation
-  exclusion; add the synthetic self-test cases.
+None.
 
-### Sprint 1.10: The CLI help renders on a cp1252 console [Planned]
+### Sprint 1.10: The CLI help renders on a cp1252 console [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `hostbootstrap/cli.py`, `tests/test_cli.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/languages/python.md`
@@ -599,47 +512,23 @@ does not depend on the console's encoding to show its own usage.
 
 #### Validation
 
-`poetry run python -m hostbootstrap.test_all` holds these cases in `tests/test_cli.py`, all passing, and
-`poetry run python -m hostbootstrap.check_code` is clean:
+`poetry run python -m hostbootstrap.test_all` executes these cases in `tests/test_cli.py`:
 
-- `test_help_renders_under_cp1252` monkeypatches `cli._maintainer_cli_enabled` to return `True`, invokes
-  `cli.main` through `CliRunner(charset="cp1252")` with `["--help"]`, `["base", "--help"]`,
-  `["base", "build", "--help"]` and `["base", "build-and-push", "--help"]`, and asserts each exits 0 with
-  `result.exception is None`; the top-level output contains the `check-code` and `test-all` rows.
-- `test_help_text_is_cp1252_encodable` recursively visits `cli.main` and every subcommand (maintainer
-  commands enabled) and asserts `text.encode("cp1252")` succeeds for every command `help`/`short_help`
-  and every parameter `help`.
+- `test_help_renders_under_cp1252` enables maintainer commands and renders top-level, base-group,
+  base-build, and base-build-and-push help through `CliRunner(charset="cp1252")`. Every invocation exits
+  successfully without an exception; top-level help lists `check-code` and `test-all`.
+- `test_help_text_is_cp1252_encodable` visits every command, subcommand, and parameter with maintainer
+  commands enabled, requiring ASCII text and successful cp1252 encoding for all help strings.
+
+The dated clean Python code check and test results are recorded in Sprint 1.4.
 
 #### Remaining Work
 
-- `hostbootstrap/cli.py`: replace `→` with `->` in the `check-code` docstring (`ruff -> black -> mypy`)
-  and in the `base build` docstring (`local smoke -> build-and-push -> pull -> published smoke`), and any
-  other non-ASCII character in a command, group or option help string.
-- `tests/test_cli.py`: add `test_help_renders_under_cp1252` and `test_help_text_is_cp1252_encodable` as
-  described under Validation.
+None.
 
 ## Remaining Work
 
-- Sprint 1.1: floor refusals carry their remedy and pinned message, the long-paths advisory reads a Git
-  bool, `run_doctor` dispatches exhaustively, NVIDIA file markers are read on Linux only, and the memory
-  floors are pinned at their boundary.
-- Sprint 1.2: the Cabal index location follows Cabal's resolution, the GHCup URL and path reach PowerShell
-  as arguments, the stable binary is replaced atomically, and the discovery and driver test gaps close.
-- Sprint 1.3: the base commands prove authority, arch check and gates precede any Docker call, formatter
-  argv is chunked, every failed concurrent flavor is reported, `KeyError` propagates, and `--context`
-  defaults at invocation.
-- Sprint 1.4: an unfiltered `test_all` enforces line and branch coverage at 100, `check_code` runs the
-  venv's tools from the repository root, `test_all` forwards paths, and the unused pytest markers go.
-- Sprint 1.5: the Apple Silicon prerequisite check reads the host machine string through `parse_arch`
-  instead of its own literal alias set.
-- Sprint 1.6: `probe` decodes with replacement and reports a timeout as its own outcome, `run` reports a
-  launch failure as `CommandUnavailable`, and a failing drain tears the child down.
-- Sprint 1.8: the self-update check resolves refs as pip does, compares against the installed ref, and
-  pins each malformed `direct_url.json` message.
-- Sprint 1.9: the Haskell-source guards in `tests/test_packaging.py` catch multi-line and comment-aware
-  literal process targets and definition-only builders.
-- Sprint 1.10: every Click help string in `hostbootstrap/cli.py` is ASCII, and a cp1252 `CliRunner` case
-  plus a command-tree encodability case pin it.
+None.
 
 ## Documentation Requirements
 

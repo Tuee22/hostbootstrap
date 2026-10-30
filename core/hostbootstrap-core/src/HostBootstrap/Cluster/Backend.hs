@@ -253,6 +253,8 @@ import HostBootstrap.Protected (
     compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
     mkRecordKey,
+    mkRecordSegment,
+    recordTupleSeparator,
     openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
@@ -535,9 +537,7 @@ clusterCallTarget name stateDirectory nodes configPath configDigest owner
             | controlPlane /= name <> "-control-plane" ->
                 invalid "the first declared node must be the cluster's own control plane"
             | otherwise ->
-                Right
-                    ( ClusterCallTarget
-                        stateDirectory
+                let owned =
                         Owned.OwnedCluster
                             { Owned.ownedClusterName = name
                             , Owned.ownedClusterControlPlane = controlPlane
@@ -546,7 +546,14 @@ clusterCallTarget name stateDirectory nodes configPath configDigest owner
                             , Owned.ownedClusterKubeconfig = stateDirectory </> "cluster.kubeconfig"
                             , Owned.ownedClusterOwner = owner
                             }
-                    )
+                    addresses = do
+                        _ <- Owned.ownedClusterRecordKey owned
+                        _ <- traverse (Owned.ownedNodeRecordKey owned) workers
+                        clusterExposureRecordKey name
+                 in case addresses of
+                        Left failure -> invalid (protectedErrorMessage failure)
+                        Right _ -> Right (ClusterCallTarget stateDirectory owned)
+
   where
     invalid reason =
         Left (Failure (FailureDetail "validate cluster spec" reason DoNotRetry))
@@ -591,19 +598,19 @@ withClusterTransaction ::
       IO (Either Owned.ClusterOwnershipFault result)
     ) ->
     IO (Either ClusterCallFault result)
-withClusterTransaction backend (ClusterCallTarget stateDirectory owned) run = do
-    let cfg = strongClusterHostConfig backend
-    opened <- openProtectedStore stateDirectory
-    case opened of
+withClusterTransaction backend (ClusterCallTarget stateDirectory owned) run =
+    case Owned.ownedClusterRecordKey owned of
         Left failure -> pure (Left (storeFault failure))
-        Right store -> case Owned.ownedClusterRecordKey owned of
-            Left failure -> pure (Left (storeFault failure))
-            Right key -> do
-                outcome <- withProtectedEntry store (\session -> Right <$> run cfg session key owned)
-                pure $ case outcome of
-                    Left failure -> Left (storeFault failure)
-                    Right (Left fault) -> Left (ClusterCallOwnership fault)
-                    Right (Right value) -> Right value
+        Right key -> do
+            opened <- openProtectedStore stateDirectory
+            case opened of
+                Left failure -> pure (Left (storeFault failure))
+                Right store -> do
+                    outcome <- withProtectedEntry store (\session -> Right <$> run (strongClusterHostConfig backend) session key owned)
+                    pure $ case outcome of
+                        Left failure -> Left (storeFault failure)
+                        Right (Left fault) -> Left (ClusterCallOwnership fault)
+                        Right (Right value) -> Right value
   where
     storeFault = ClusterCallStore . protectedErrorMessage
 
@@ -725,21 +732,22 @@ releaseRetainedCluster cfg plan =
                         , Owned.ownedClusterKubeconfig = clusterKubeconfigPath plan
                         , Owned.ownedClusterOwner = "retained-record"
                         }
-            opened <- openProtectedStore stateDirectory
-            case opened of
-                Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry)))
-                Right store -> case Owned.ownedClusterRecordKey owned of
-                    Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) DoNotRetry)))
-                    Right key -> do
-                        outcome <-
-                            withProtectedEntry store $ \session ->
-                                Right <$> Owned.releaseRetainedOwnedCluster cfg session key owned
-                        pure $ case outcome of
-                            Left failure -> Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry))
-                            Right (Left fault) -> Left (Failure (FailureDetail "release retained cluster" (Owned.clusterOwnershipFaultMessage fault) ReprobeBeforeRetry))
-                            Right (Right Owned.ClusterReleased) -> Right ()
-                            Right (Right Owned.ClusterAlreadyReleased) -> Right ()
-                            Right (Right Owned.ClusterStillPresent) -> Left (Failure (FailureDetail "release retained cluster" "the runtime still reports an owned node" ReprobeBeforeRetry))
+            case Owned.ownedClusterRecordKey owned of
+                Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) DoNotRetry)))
+                Right key -> do
+                    opened <- openProtectedStore stateDirectory
+                    case opened of
+                        Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry)))
+                        Right store -> do
+                            outcome <-
+                                withProtectedEntry store $ \session ->
+                                    Right <$> Owned.releaseRetainedOwnedCluster cfg session key owned
+                            pure $ case outcome of
+                                Left failure -> Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry))
+                                Right (Left fault) -> Left (Failure (FailureDetail "release retained cluster" (Owned.clusterOwnershipFaultMessage fault) ReprobeBeforeRetry))
+                                Right (Right Owned.ClusterReleased) -> Right ()
+                                Right (Right Owned.ClusterAlreadyReleased) -> Right ()
+                                Right (Right Owned.ClusterStillPresent) -> Left (Failure (FailureDetail "release retained cluster" "the runtime still reports an owned node" ReprobeBeforeRetry))
 
 releaseClusterAfterExposure ::
     HostConfig ->
@@ -748,7 +756,7 @@ releaseClusterAfterExposure ::
     Owned.OwnedCluster ->
     IO (Either Owned.ClusterOwnershipFault (Either Text Owned.ClusterReleaseOutcome))
 releaseClusterAfterExposure cfg session key owned =
-    case mkRecordKey (Text.pack (Owned.ownedClusterName owned) <> ".exposure") of
+    case clusterExposureRecordKey (Owned.ownedClusterName owned) of
         Left failure -> pure (Left (Owned.ClusterOwnershipStore failure))
         Right exposureKey -> do
             exposure <- readProtectedRecord session exposureKey
@@ -1383,16 +1391,17 @@ observeRecordedClusterExposure cfg stateDirectory name service
     | not (safeClusterName name) = pure (invalid "the cluster name is outside the portable alphabet")
     | not (validExposureService service) = pure (invalid "the service identity is invalid or unbounded")
     | otherwise = do
-        opened <- openProtectedStore stateDirectory
-        case opened of
+        case clusterExposureRecordKey name of
             Left failure -> pure (storeExposureFailure operation failure)
-            Right store -> case mkRecordKey (Text.pack name <> ".exposure") of
-                Left failure -> pure (storeExposureFailure operation failure)
-                Right key -> do
-                    observed <- withProtectedEntry store (\session -> Right <$> readRecorded session key)
-                    pure $ case observed of
-                        Left failure -> storeExposureFailure operation failure
-                        Right result -> result
+            Right key -> do
+                opened <- openProtectedStore stateDirectory
+                case opened of
+                    Left failure -> pure (storeExposureFailure operation failure)
+                    Right store -> do
+                        observed <- withProtectedEntry store (\session -> Right <$> readRecorded session key)
+                        pure $ case observed of
+                            Left failure -> storeExposureFailure operation failure
+                            Right result -> result
   where
     operation = "observe recorded cluster exposure"
     invalid reason = exposureFailure operation reason DoNotRetry
@@ -1427,17 +1436,18 @@ loopback mapping set provide the four ownership clauses; no caller supplies a
 container name or port.
 -}
 releaseRecordedClusterExposure :: HostConfig -> ClusterPlan -> IO (Either ReconcileError ())
-releaseRecordedClusterExposure cfg plan = do
-    opened <- openProtectedStore stateDirectory
-    case opened of
-        Left failure -> pure (storeExposureFailure "open recorded exposure store" failure)
-        Right store -> case mkRecordKey (Text.pack (clusterName plan) <> ".exposure") of
-            Left failure -> pure (storeExposureFailure "open recorded exposure record" failure)
-            Right key -> do
-                released <- withProtectedEntry store (\session -> Right <$> releaseRecorded session key)
-                pure $ case released of
-                    Left failure -> storeExposureFailure "lock recorded exposure" failure
-                    Right result -> result
+releaseRecordedClusterExposure cfg plan =
+    case clusterExposureRecordKey (clusterName plan) of
+        Left failure -> pure (storeExposureFailure "open recorded exposure record" failure)
+        Right key -> do
+            opened <- openProtectedStore stateDirectory
+            case opened of
+                Left failure -> pure (storeExposureFailure "open recorded exposure store" failure)
+                Right store -> do
+                    released <- withProtectedEntry store (\session -> Right <$> releaseRecorded session key)
+                    pure $ case released of
+                        Left failure -> storeExposureFailure "lock recorded exposure" failure
+                        Right result -> result
   where
     driverName = case clusterDriver plan of
         KindDriver -> "kind"
@@ -1819,7 +1829,12 @@ exposureTarget prepared =
         (preparedExposureOwner prepared)
 
 exposureRecordKey :: PreparedClusterExposure scope planId clusterId clusterFrame -> Either ProtectedError RecordKey
-exposureRecordKey prepared = mkRecordKey (Text.pack (preparedExposureClusterName prepared) <> ".exposure")
+exposureRecordKey = clusterExposureRecordKey . preparedExposureClusterName
+
+clusterExposureRecordKey :: String -> Either ProtectedError RecordKey
+clusterExposureRecordKey name = do
+    cluster <- mkRecordSegment ("cluster:" <> Text.pack name)
+    mkRecordKey (cluster <> recordTupleSeparator <> "exposure")
 
 renderExposureRecord :: ExposureRecord -> ByteString.ByteString
 renderExposureRecord = TextEncoding.encodeUtf8 . Text.pack . show

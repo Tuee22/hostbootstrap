@@ -175,11 +175,12 @@ Every Haskell project binary exposes the fixed tree:
 | `check-code` | Run the inherited project quality gate |
 
 That tree is the whole command surface a project or an operator reaches; projects add no verb. Before the
-parser runs, every binary also tests its argument vector against five internal entries that are not
-commands: identity installation, the exposure relay, the Colima command transaction, the lifecycle child,
+parser runs, every binary also tests its argument vector against six internal entries that are not
+commands: identity installation, the exposure relay, the native working-directory entry, the Colima command
+transaction, the lifecycle child,
 and the frame child. The identity, lifecycle-child, and frame-child entries carry no coordinates, path,
-authority, or caller-selected action; the exposure relay and the Colima transaction carry caller-selected
-work (relay targets, a command to run). The demo adds one entry of its own in its `main`.
+authority, or caller-selected action; the exposure relay, native working-directory entry, and Colima transaction carry caller-selected
+work (relay targets, a directory/executable/argument vector, a command to run). The demo adds one entry of its own in its `main`.
 [Entries before the parser](documents/architecture/hostbootstrap_core_library.md#entries-before-the-parser)
 lists each entry, what it carries, and who launches it; the
 [library surface](documents/architecture/hostbootstrap_core_library.md) owns exact parser and dispatch

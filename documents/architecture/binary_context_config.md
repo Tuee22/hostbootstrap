@@ -10,6 +10,7 @@
 ## TL;DR
 
 The sibling `<project>.dhall` contains parameters, descriptive context, and locally checkable witnesses.
+There is no separate context file; `Context` exposes no standalone context-file reader or writer.
 The plan lives in code. An installed root, authenticated child handoff, verified build invocation, or signed
 service activation supplies authority independently of the decoded description.
 
@@ -26,11 +27,23 @@ The [development-plan index](../../DEVELOPMENT_PLAN/README.md) owns dated eviden
 A descriptive frame tag cannot widen a command's authority. Root entry joins executable-bound installed
 identity, protected-store origin, root liveness, exact scope/plan/frame, closed verb, and one-use admission.
 The command-reservation kernel in
-[Authority.Kernel](../../core/hostbootstrap-core/src/HostBootstrap/Authority/Kernel.hs) records each
+[Authority.Kernel](../../core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs) records each
 invocation identity once: the first writer wins and a conflicting record refuses. A consumed record refuses a
 second delivery with one exception, `reverseRootReplayEligible`: a root `project down` or `project destroy`
 reservation in the Teardown phase whose stored record is byte-identical re-delivers authority under that
 record's version instead of refusing. Every other verb and phase stays strictly one-use.
+A command authority retains the store origin of its indexed broker epoch. A boundary receiving a
+store separately checks `commandAuthorityMatchesStore` before effects; an authority from another
+store fails that check even when the installed project is the same. The public authority error sum
+contains only refusals constructed by a kernel or gate. The all-library source guard distinguishes
+construction from declarations, message-rendering arms and other pattern occurrences.
+
+The replay decision enumerates every member of the closed verb and phase vocabularies. Only Down
+and Destroy paired with Teardown admit byte-identical replay; adding a verb or phase therefore
+requires an explicit decision. The canonical length-prefixed identity includes project, store, plan,
+frame, epoch, verb and phase. Project/store mismatches refuse before reservation writes, and foreign
+bytes at its digest key refuse without consuming or overwriting them.
+
 Child entry independently verifies the installed key, authenticated root scope, exact payload and edge, and
 catalog-selected grant. Service entry verifies the independently installed activation and measured instance.
 
@@ -57,6 +70,14 @@ specification digest.
 cluster service, daemon, one-shot job, and test harness positions. Topology gives frames semantic identities,
 parent relationships, providers, roles, and required witness declarations. The validating constructors reject
 duplicate, disconnected, cyclic, illegal-placement, and incomplete graphs.
+Exactly one root, resolving every parent, and rejecting cycles already establish reachability in a finite
+graph. A disconnected graph therefore receives its specific root-count, missing-parent, or cycle refusal.
+
+Placement follows the declared frame kind, provider, and parent kind. The ancestor relation covers every
+context kind, and command placement checks distinguish root and non-root frames. `addRole` consults that
+placement before adding `ClusterService`: a host-resident daemon cannot gain the role's Kubernetes
+capabilities through this union. Only a cluster-daemon or cluster-service placement admits that additional
+role.
 
 `CurrentFrame`, `ProjectFrame`, and `ValidatedContext` are pure evidence derived together from the admitted
 plan and description. They do not open a protected store, journal, cursor, or invocation. The root lifecycle
@@ -69,10 +90,23 @@ beside the installed executable. [Authority](../../core/hostbootstrap-core/src/H
 verifies that executable identity and the exact protected-store origin and introduces the live root scope.
 Private kernels own constructors; public consumers receive only the evidence and eliminators they require.
 
-`authorizeRootProject` consumes matching root frame, lifecycle context, cursor, and verb evidence. The sealed
+`verifyOsPrincipal` creates and removes a probe in the exact protected records directory. Its opaque
+`VerifiedOsPrincipal` retains that store's identity. Both fresh and existing root kernels refuse evidence
+issued for another store with `AuthorityOperatorRefused`, before delivering a root callback or changing
+that store's records. The principal supplies no lifecycle verb, scope, plan or broker epoch by itself.
+
+`authorizeRootProject` receives the original executable-verified `InstalledProjectIdentity` through
+`Command.LifecycleEntry`. It compares that identity's name with the root's retained project and returns
+`AuthorityStoreNotOurs` before reservation on disagreement. The verified name also supplies its plan and
+snapshot project checks, alongside matching root frame, lifecycle context, cursor, and verb evidence. The sealed
 `Command.LifecycleEntry` owns the root store and exact plan through forward and reverse execution. Operator
 `project up|down|destroy` starts at the installed root; authenticated children enter through the private
 process route, not by asking a descriptive nested config to mint root authority.
+
+That same verified identity reaches `reserveCurrentLifecycleCommandKernel` inside its existing
+protected entry. The bridge revalidates live journal, source and current-cursor evidence, then supplies
+the identity directly to the reservation kernel. It does not reconstruct the comparator from the
+journal's recorded project name.
 
 ## Topology Shape
 
@@ -91,6 +125,9 @@ Topology determines which local witnesses are required. Validation checks the ex
 observes it in the frame that interprets it. A guest path is checked with guest POSIX grammar even if it was
 derived on Windows; a host path uses the host grammar. `Effect.Vocabulary.framePathGrammar` and the shared
 Lift fold carry that distinction into command interpretation.
+Witness-set refusals identify each missing and unexpected witness by kind and name, and include the value
+for an environment-equality witness. A stale current-frame declaration therefore reports both the expected
+and declared values.
 
 A host-side conventional path, arbitrary provider name, or copied context record cannot substitute for the
 exact provider/share or cluster dependency selected by the plan. Unsupported observation is a refusal before
@@ -154,6 +191,11 @@ refuses an existing output. Explicit role/output/write-policy flags remain suppo
 asking for both does not parse rather than being resolved by a precedence rule. Role additions still pass the
 closed compatibility validator. A written description is not installed authority.
 
+Canonical role names come from `configRoleNames`, derived from `allContextKinds`, and are shared by
+parsing, help, and unknown-role diagnostics. The explicit short aliases are `host`, `vm`, `container`,
+`ad-hoc-container`, `image-build`, `service`, `one-shot`, and `test`. Parsing trims surrounding whitespace,
+ignores case, and treats underscores as hyphens.
+
 Two routes provision the installed identity, and both call `provisionInstalledIdentity` in
 [Identity.Install](../../core/hostbootstrap-core/src/HostBootstrap/Identity/Install.hs) for the running
 executable:
@@ -174,6 +216,10 @@ Provisioning installs or validates five sibling artifacts: the handoff signing s
 (`<executable>.activation.key`, `<executable>.activation.pub`). It is idempotent: existing valid
 identities are retained across rebuilds and a missing public half is repaired from its retained seed,
 but a public key without its secret, or a mismatched pair, is refused rather than replaced.
+
+The initialization fixtures bracket the sibling config and identity paths. They restore the exact
+bytes of files present beforehand and remove files created at originally absent paths, including
+when a case exits exceptionally. Identities installed by the suite driver remain part of its setup.
 
 `service init` is the third writer of a project-local `<project>.dhall`. It takes the same flags and
 `ExistingOutputPolicy` as `project init`, defaults to the cluster-service role, and never provisions
@@ -238,6 +284,11 @@ and signed service runtime are implemented. Pure context and wire values remain 
 they are consumed beside independently verified authority, not promoted into it. Exact signatures live in
 `Authority`, `ProjectPlan`, `Handoff`, `Command.LifecycleEntry`, `Service`, `Activation`, and `RoleLifecycle`.
 
+The public `Config.Schema.withSiblingProjectConfigContext` gate reads the executable's sibling project
+config through the scoped codec, admits its canonical source root, and checks its runtime context before
+running the callback. Missing config, undecodable bytes, and a context that refuses the command each
+produce a diagnostic and exit status 1 without reaching that callback.
+
 `context inspect` and `context show` decode the selected file with the binary's one Production
 `ProjectCodec`, the only project codec a command obtains without a run's `HarnessConfigAuthority`. The
 rendered composition is a `BinaryContext`, which carries no scope, so the output asserts none: a
@@ -255,6 +306,8 @@ exact scope/package/edge/session correspondence, bounded protocol, descriptor ow
 receipt order. Activation and role cases verify immutable installation, measured execution, one-use admission,
 Ready-only handles, effect ceilings, and drain behavior. Compile-fail cases pin nominal indices and private
 constructors; documentation and source guards prevent obsolete authority routes from returning.
+`ContextSpec` exercises the public sibling gate's missing, invalid-UTF-8, and context-refused paths,
+checking exact stderr, exit status, and an untouched callback while restoring any prior sibling bytes.
 
 A compiled local child proves native protocol and root-store behavior. It is not evidence that a VM, container,
 or accelerator ran; the live acceptance phases own those gates. Unsupported platform rows assert their actual

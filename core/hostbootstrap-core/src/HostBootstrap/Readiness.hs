@@ -1,15 +1,15 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | Total polling plus sealed, resource-indexed readiness evidence.
 
 The ordinary polling functions return payloads or 'ObservedReady'.  The latter is
 deliberately non-authorizing compatibility evidence for lifecycle code that has
-not yet entered a generative plan.  Authoritative 'Ready' values are available
+not yet entered a generative plan.  Indexed 'Ready' observations are available
 only through the closed 'BackendProbeKey' relation and retain scope, plan,
-resource identity, resource type, dependency type, generation, phase, and
-observation version indices.
+resource identity, resource type, and dependency type indices, together with
+the generation, phase version, and observation version reported by the backend.
+Holding an observation does not authorize an effect.
 -}
 module HostBootstrap.Readiness (
     -- * Validated delay and policy
@@ -43,7 +43,6 @@ module HostBootstrap.Readiness (
     pollStep,
     pollUntilReady,
     pollUntilReadyWith,
-    drivePure,
 
     -- * Non-authorizing compatibility observation
     ObservedReady,
@@ -53,9 +52,9 @@ module HostBootstrap.Readiness (
     -- * Plan/resource-indexed readiness
     BackendProbeKey (..),
     DurableShareReady,
-    ProbeConstructionError (..),
+    BackendReady (..),
+    ProbeVersionError (..),
     Probe,
-    withBackendProbe,
     Ready,
     readyGeneration,
     readyPhaseVersion,
@@ -71,20 +70,22 @@ import Data.Int (Int64)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Readiness.Kernel (
+    BackendProbeKey (..),
+    BackendReady (..),
+    DurableShareReady,
+    ProbeConflict (..),
+    ProbeFailure (..),
+    ProbeResult (..),
+ )
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
 import HostBootstrap.Reconcile (
-    ClusterResource,
     ConflictDetail (ConflictDetail),
     DependencyProbe,
-    DockerResource,
-    DurableShareResource,
     FailureDetail (FailureDetail),
     Managed,
-    MinioResource,
-    PlannedResource,
-    ProviderResource,
     ReconcileError (Conflict, Failure),
-    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
-    RegistryResource,
+    RecoveryDisposition (ReprobeBeforeRetry),
     ResourceHandle,
     dependencyProbe,
     resourceHandleGeneration,
@@ -154,48 +155,21 @@ pollSchedule :: PollPolicy -> [Micros]
 pollSchedule policy =
     replicate (fromIntegral (policyAttempts policy - 1)) (policyDelay policy)
 
-namedPolicy :: Natural -> Integer -> PollPolicy
-namedPolicy attempts delaySeconds =
-    case seconds delaySeconds >>= mkPollPolicy attempts of
-        Right policy -> policy
-        Left err -> error ("invalid built-in poll policy: " ++ show err)
-
 rolloutPoll, pushPoll, reachPoll, vmBootPoll, networkPoll, dockerPoll, nodePoll :: PollPolicy
-rolloutPoll = namedPolicy 6 5
-pushPoll = namedPolicy 4 5
-reachPoll = namedPolicy 24 5
-vmBootPoll = namedPolicy 60 2
-networkPoll = namedPolicy 20 3
-dockerPoll = namedPolicy 30 2
-nodePoll = namedPolicy 10 3
-
-data ProbeConflict = ProbeConflict
-    { conflictExpected :: String
-    , conflictObserved :: String
-    , conflictRemedy :: String
-    }
-    deriving (Eq, Show)
-
-data ProbeFailure = ProbeFailure
-    { failedOperation :: String
-    , failureCause :: String
-    }
-    deriving (Eq, Show)
-
--- | Exhaustive probe observation. Only 'ProbeReady' is readiness.
-data ProbeResult a
-    = ProbeReady a
-    | NotReady String
-    | Unavailable String
-    | ProbeConflicted ProbeConflict
-    | Failed ProbeFailure
-    deriving (Eq, Show)
+rolloutPoll = PollPolicy 6 (Micros 5000000)
+pushPoll = PollPolicy 4 (Micros 5000000)
+reachPoll = PollPolicy 24 (Micros 5000000)
+vmBootPoll = PollPolicy 60 (Micros 2000000)
+networkPoll = PollPolicy 20 (Micros 3000000)
+dockerPoll = PollPolicy 30 (Micros 2000000)
+nodePoll = PollPolicy 10 (Micros 3000000)
 
 data PollError
     = PollTimeout String String
     | PollUnavailable String String
     | PollConflict String ProbeConflict
     | PollFailed String ProbeFailure
+    | PollInvalidReady String ProbeVersionError
     deriving (Eq, Show)
 
 renderPollError :: PollError -> String
@@ -213,6 +187,11 @@ renderPollError err = case err of
             ++ conflictRemedy conflict
     PollFailed label failure ->
         label ++ ": " ++ failedOperation failure ++ ": " ++ failureCause failure
+    PollInvalidReady label failure ->
+        label ++ ": invalid backend readiness: " ++ case failure of
+            ZeroProbeGeneration -> "generation must be positive"
+            ZeroProbePhaseVersion -> "phase version must be positive"
+            ZeroProbeObservationVersion -> "observation version must be positive"
 
 data Decision a
     = Yield a
@@ -233,6 +212,10 @@ pollStep policy label attempt (NotReady observation)
         GiveUp (PollTimeout label observation)
     | otherwise = Retry (policyDelay policy)
 
+{- | Run the bounded polling loop. Backend actions classify expected observation
+failures as 'ProbeResult' values; exceptions from those actions or recovery,
+including cancellation and programming failures, propagate to the caller.
+-}
 pollUntilReadyWith ::
     PollPolicy ->
     String ->
@@ -258,17 +241,6 @@ pollUntilReady ::
 pollUntilReady policy label =
     pollUntilReadyWith policy label (const (pure ()))
 
-drivePure :: PollPolicy -> String -> [ProbeResult a] -> (Either PollError a, [Micros])
-drivePure policy label = go 0 []
-  where
-    go _ delays [] =
-        (Left (PollTimeout label "probe sequence ended"), reverse delays)
-    go attempt delays (result : rest) =
-        case pollStep policy label attempt result of
-            Yield value -> (Right value, reverse delays)
-            GiveUp err -> (Left err, reverse delays)
-            Retry delay -> go (attempt + 1) (delay : delays) rest
-
 -- | A successful observation that is not lifecycle authority.
 data ObservedReady dependency = ObservedReady
 
@@ -292,60 +264,21 @@ awaitObservedReadyWith policy label recover runProbe cfg =
     fmap (const ObservedReady)
         <$> pollUntilReadyWith policy label recover runProbe cfg
 
--- Closed resource/dependency pairs. A caller can inject observations for tests,
--- but cannot choose an unrelated dependency phantom for a key.
-data BackendProbeKey resource dependency where
-    ProviderRespondingProbe :: BackendProbeKey ProviderResource ProviderResponding
-    ProviderNetworkProbe :: BackendProbeKey ProviderResource ProviderNetworkReady
-    DurableShareProbe :: BackendProbeKey DurableShareResource DurableShareReady
-    DockerDaemonProbe :: BackendProbeKey DockerResource DockerDaemonReady
-    MinioRolloutProbe :: BackendProbeKey MinioResource MinioRolloutReady
-    RegistryServingProbe :: BackendProbeKey RegistryResource RegistryReady
-    ClusterApiProbe :: BackendProbeKey ClusterResource ClusterApiReady
-    GpuPluginProbe :: BackendProbeKey ClusterResource GpuPluginReady
+{- | A backend-owned probe specialized to the host configuration. Its six
+identity indices retain the private kernel's nominal roles.
+-}
+type Probe scope planId id resource dependency probeId a =
+    ProbeKernel.Probe scope planId id resource dependency probeId HostConfig a
 
-data ProviderResponding
-data ProviderNetworkReady
-data DurableShareReady
-data DockerDaemonReady
-data MinioRolloutReady
-data RegistryReady
-data ClusterApiReady
-data GpuPluginReady
-
-data Probe scope planId id resource dependency probeId a
-    = Probe
-        (HostConfig -> IO (ProbeResult a))
-        Word64
-        Word64
-        Word64
-
-data ProbeConstructionError
+data ProbeVersionError
     = ZeroProbeGeneration
     | ZeroProbePhaseVersion
     | ZeroProbeObservationVersion
     deriving (Eq, Show)
 
-{- | Inject a backend observation under a closed resource/dependency key. The
-fresh @probeId@ cannot escape except through the continuation.
--}
-withBackendProbe ::
-    BackendProbeKey resource dependency ->
-    PlannedResource scope planId id resource frame ->
-    Word64 ->
-    Word64 ->
-    Word64 ->
-    (HostConfig -> IO (ProbeResult a)) ->
-    (forall probeId. Probe scope planId id resource dependency probeId a -> r) ->
-    Either ProbeConstructionError r
-withBackendProbe _ _planned generation phaseVersion observationVersion runProbe consume
-    | generation == 0 = Left ZeroProbeGeneration
-    | phaseVersion == 0 = Left ZeroProbePhaseVersion
-    | observationVersion == 0 = Left ZeroProbeObservationVersion
-    | otherwise =
-        Right (consume (Probe runProbe generation phaseVersion observationVersion))
-
 data Ready scope planId id resource dependency = Ready Word64 Word64 Word64
+
+type role Ready nominal nominal nominal nominal nominal
 
 readyGeneration :: Ready scope planId id resource dependency -> Word64
 readyGeneration (Ready generation _ _) = generation
@@ -360,10 +293,10 @@ readyObservationVersion (Ready _ _ observationVersion) = observationVersion
 
 The probe is /not/ run here: it is stored beside the managed handle in the
 plan's dependency snapshot and run by 'HostBootstrap.Reconcile.withOperationPreconditions'
-at prepare time.  Each run polls the real backend and then rechecks the freshly
-minted 'Ready' against the managed handle it is registered for — the shared
-indices reject another plan or resource at compile time, and equality of
-generation and observation version rejects stale evidence.
+at prepare time. Each run polls the supplied backend observation function and
+then rechecks its freshly reported versions against the managed handle it is
+registered for — the shared indices reject another plan or resource at compile
+time, and equality of generation and observation version rejects stale evidence.
 -}
 planDependencyProbe ::
     PollPolicy ->
@@ -415,11 +348,6 @@ readyPhaseVersionFor handle ready
                     "reprobe the dependency and readiness from one snapshot"
                 )
             )
-    | readyPhaseVersion ready == 0 =
-        Left
-            ( Failure
-                (FailureDetail "bind readiness" "phase version must be positive" DoNotRetry)
-            )
     | otherwise = Right (readyPhaseVersion ready)
 
 awaitPlanReady ::
@@ -431,6 +359,9 @@ awaitPlanReady ::
 awaitPlanReady policy label =
     awaitPlanReadyWith policy label (const (pure ()))
 
+{- | Poll for backend-reported readiness and refuse any zero version before
+constructing the indexed observation.
+-}
 awaitPlanReadyWith ::
     PollPolicy ->
     String ->
@@ -438,6 +369,12 @@ awaitPlanReadyWith ::
     Probe scope planId id resource dependency probeId a ->
     HostConfig ->
     IO (Either PollError (Ready scope planId id resource dependency))
-awaitPlanReadyWith policy label recover (Probe runProbe generation phaseVersion observationVersion) cfg =
-    fmap (const (Ready generation phaseVersion observationVersion))
-        <$> pollUntilReadyWith policy label recover runProbe cfg
+awaitPlanReadyWith policy label recover probe cfg = do
+    outcome <- pollUntilReadyWith policy label recover (ProbeKernel.observeBackendProbe probe) cfg
+    pure $ case outcome of
+        Left err -> Left err
+        Right (BackendReady generation phaseVersion observationVersion _)
+            | generation == 0 -> Left (PollInvalidReady label ZeroProbeGeneration)
+            | phaseVersion == 0 -> Left (PollInvalidReady label ZeroProbePhaseVersion)
+            | observationVersion == 0 -> Left (PollInvalidReady label ZeroProbeObservationVersion)
+            | otherwise -> Right (Ready generation phaseVersion observationVersion)

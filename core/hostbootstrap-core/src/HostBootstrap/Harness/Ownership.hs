@@ -181,8 +181,10 @@ import HostBootstrap.Protected (
     ProtectedStore,
     RecordKey,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
     protectedErrorMessage,
+    recordTupleSeparator,
     withProtectedEntry,
     withRunLiveness,
  )
@@ -377,20 +379,21 @@ ownProjectRun ::
     IO (Either String ()) ->
     (OwnedHarnessRoot projectId -> IO result) ->
     IO (Either String (result, Maybe HarnessRunCleanupFailure))
-ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent safety body = do
-    opened <- openProtectedStore storeRoot
-    case opened of
+ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent safety body =
+    case mkRecordName (installedProjectName project) of
         Left failure -> pure (Left (storeRefused failure))
-        Right store -> do
-            -- Held across the sweep AND the whole run: the sweep may only
-            -- reclaim leases whose owners are dead, and this lock is the
-            -- only thing that can tell it so.
-            held <-
-                withRunLiveness store (installedProjectName project) (owning store)
-            pure $ case held of
-                Left failure -> Left (storeRefused failure)
-                Right Nothing -> Left (refused liveRunHoldsProject)
-                Right (Just inner) -> inner
+        Right livenessName -> do
+            opened <- openProtectedStore storeRoot
+            case opened of
+                Left failure -> pure (Left (storeRefused failure))
+                Right store -> do
+                    -- Recovery and the run share the same encoded project
+                    -- liveness identity as the reverse-snapshot entry.
+                    held <- withRunLiveness store livenessName (owning store)
+                    pure $ case held of
+                        Left failure -> Left (storeRefused failure)
+                        Right Nothing -> Left (refused liveRunHoldsProject)
+                        Right (Just inner) -> inner
   where
     configPath :: FilePath
     configPath =
@@ -965,7 +968,7 @@ inEntry store action = do
 dataRootOriginKey ::
     InstalledProjectIdentity projectId -> Text -> Either DataRootError RecordKey
 dataRootOriginKey project run =
-    case mkRecordKey ("dataroot." <> installedProjectName project <> "." <> run) of
+    case harnessOriginKey "dataroot." project run of
         Left failure -> Left (DataRootStoreFailure failure)
         Right key -> Right key
 
@@ -988,9 +991,15 @@ inConfigEntry store action = do
 generatedConfigKey ::
     InstalledProjectIdentity projectId -> Text -> Either GeneratedConfigError RecordKey
 generatedConfigKey project run =
-    case mkRecordKey ("config." <> installedProjectName project <> "." <> run) of
+    case harnessOriginKey "config." project run of
         Left failure -> Left (GeneratedConfigStoreFailure failure)
         Right key -> Right key
+
+harnessOriginKey :: Text -> InstalledProjectIdentity projectId -> Text -> Either ProtectedError RecordKey
+harnessOriginKey prefix project run = do
+    encodedProject <- mkRecordName (installedProjectName project)
+    encodedRun <- mkRecordName run
+    mkRecordKey (prefix <> encodedProject <> recordTupleSeparator <> encodedRun)
 
 {- | The refusal a competing run gets while another process still holds the
 project. It is a *stated* exclusion, not a sweep that quietly takes ownership.

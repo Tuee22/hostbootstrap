@@ -57,7 +57,6 @@ import HostBootstrap.Config.Authority.Internal (
     HarnessAuthority,
     HarnessConfigAuthority,
     harnessConfigAuthority,
-    harnessConfigRunName,
     harnessRunName,
  )
 import HostBootstrap.ProjectScope (Harness, Production)
@@ -109,10 +108,6 @@ data Mount = Mount
     }
     deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
--- | The historical substrate vocabulary exported by @Core.dhall@.
-
--- | Production or named test cluster profile.
-
 -- | A proportional budget weight (transparent @Natural@ in Dhall).
 newtype Weight = Weight Natural
     deriving stock (Eq, Show, Generic)
@@ -141,7 +136,7 @@ data SecretRef scope where
     ScopedVault :: VaultRef -> SecretRef scope
     ScopedTransitKey :: Text -> SecretRef scope
     ScopedPrompt :: Text -> SecretRef scope
-    ScopedTestPlaintext :: Text -> TestSecret -> SecretRef (Harness projectId runId)
+    ScopedTestPlaintext :: TestSecret -> SecretRef (Harness projectId runId)
 
 instance Eq (SecretRef scope) where
     left == right = secretRefView left == secretRefView right
@@ -162,7 +157,7 @@ testPlaintextSecret ::
     HarnessConfigAuthority projectId runId ->
     TestSecret ->
     SecretRef (Harness projectId runId)
-testPlaintextSecret authority = ScopedTestPlaintext (harnessConfigRunName authority)
+testPlaintextSecret authority value = authority `seq` ScopedTestPlaintext value
 
 -- | Scope-erased, display-only view. It carries no constructor authority.
 data SecretRefView
@@ -176,7 +171,7 @@ secretRefView :: SecretRef scope -> SecretRefView
 secretRefView (ScopedVault value) = SecretVault value
 secretRefView (ScopedTransitKey value) = SecretTransitKey value
 secretRefView (ScopedPrompt value) = SecretPrompt value
-secretRefView (ScopedTestPlaintext _ value) = SecretTestPlaintext value
+secretRefView (ScopedTestPlaintext value) = SecretTestPlaintext value
 
 -- | Untrusted production wire. Its reflected union has no plaintext alternative.
 data ProductionSecretRefWire
@@ -248,4 +243,4 @@ harnessSecretRefWire ::
 harnessSecretRefWire (ScopedVault value) = HarnessVault value
 harnessSecretRefWire (ScopedTransitKey value) = HarnessTransitKey value
 harnessSecretRefWire (ScopedPrompt value) = HarnessPrompt value
-harnessSecretRefWire (ScopedTestPlaintext _ (TestSecret value)) = HarnessTestPlaintext value
+harnessSecretRefWire (ScopedTestPlaintext (TestSecret value)) = HarnessTestPlaintext value

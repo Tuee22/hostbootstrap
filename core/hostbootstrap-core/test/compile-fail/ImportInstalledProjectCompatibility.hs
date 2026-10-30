@@ -1,3 +1,0 @@
-module ImportInstalledProjectCompatibility where
-
-import HostBootstrap.Config.InstalledProject

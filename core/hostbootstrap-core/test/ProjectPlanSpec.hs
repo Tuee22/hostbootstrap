@@ -72,7 +72,7 @@ import HostBootstrap.Handoff (
  )
 import HostBootstrap.Lifecycle.Mode (
     LifecycleProfile,
-    ModeError (ModeAuthorityFailure, ModeEvidenceMismatch, ModeSnapshotMismatch),
+    ModeError (ModeAuthorityFailure, ModeEvidenceMismatch, ModeMalformedRecord, ModeSnapshotMismatch),
     RecoveredProductionLifecycleProfile,
     UnboundRunLease,
     VerifiedPlanSnapshot,
@@ -92,7 +92,14 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
     withRecoveredProductionLifecycleProfile,
  )
-import HostBootstrap.Lift (localContext)
+import HostBootstrap.Lift (
+    ConfigDelivery (..),
+    ContainerLift (..),
+    ContainerPlacement (ProviderGuestContainer),
+    emptyVMStack,
+    inContainer,
+    localContext,
+ )
 import HostBootstrap.ProjectPlan (
     PlanDraft,
     PlanError (..),
@@ -173,15 +180,20 @@ import HostBootstrap.ProjectRoot (
     withCanonicalProjectRoot,
  )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent),
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedError,
     ProtectedRecord,
     ProtectedStore,
     RecordKey,
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
+    mkRecordName,
     openProtectedStore,
+    protectedRecordVersion,
     readProtectedRecord,
+    recordKeyText,
+    recordTupleSeparator,
     withProtectedEntry,
  )
 import HostBootstrap.RoleLifecycle (
@@ -213,6 +225,7 @@ import HostBootstrap.Step (
     StepObservation (StepChanged, StepUnchanged),
     StepPlan,
     StepPlanError (..),
+    buildImageStep,
     contextInitStep,
     copySourceStep,
     declaresChartWorkloadResource,
@@ -234,13 +247,12 @@ import HostBootstrap.Step (
  )
 import SourceGuard (
     fieldModules,
-    listHaskellSources,
     mainLibraryStanza,
     normalizeWhitespace,
     significantHaskellLineCount,
  )
 import qualified SourceGuard
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (
@@ -848,7 +860,7 @@ tests =
         , testCase "stable snapshot accessors expose exact admitted identities and derived digest" $
             withFoundation $ \_codec profile root config -> do
                 snapshot <- snapshotFor profile root config topologyFixturePlan
-                stablePlanSnapshotFormatVersion snapshot @?= 7
+                stablePlanSnapshotFormatVersion snapshot @?= 8
                 stablePlanSnapshotRoot snapshot
                     @?= canonicalProjectRootPath root
                 stablePlanSnapshotSpecDigest snapshot
@@ -890,7 +902,7 @@ tests =
                 let bytes = stablePlanSnapshotBytes snapshot
                 ByteString.take 18 bytes @?= ByteStringChar8.pack "HOSTBOOTSTRAP-PLAN"
                 ByteString.take 8 (ByteString.drop 18 bytes)
-                    @?= encodedWord64 7
+                    @?= encodedWord64 8
                 assertBool
                     "the step collection lacked its explicit count"
                     (framedCount "steps" 1 `ByteString.isInfixOf` bytes)
@@ -1118,17 +1130,183 @@ tests =
                         either
                             (fail . show)
                             pure
-                            (mkRecordKey ("snapshot." <> installedProjectName project <> "." <> runName))
+                            (fixtureSnapshotKey project runName)
                     observed <-
                         withProtectedEntry storeB $ \session ->
                             readProtectedRecord session key
                     either (fail . show) pure observed >>= (@?= Nothing)
                     readIORef continued >>= (@?= 0)
+        , testGroup "persisted two-coordinate container delivery" deliverySnapshotCases
         , testGroup
             "exact recovered Production project plan"
             recoveredProductionProjectPlanCases
         , sourceBoundaryTests
         ]
+
+deliverySnapshotCases :: [TestTree]
+deliverySnapshotCases =
+    [ testCase "a two-field delivery survives public persistence and exact recovery" $
+        withSnapshotPlan deliverySnapshotPlan $ \store project root unbound _spec _canonicalRoot _config _drafts plan -> do
+            let stable = renderSnapshot plan
+                expectedBytes = stablePlanSnapshotBytes stable
+            NonEmpty.length (forward plan) @?= 2
+            stablePlanSnapshotFormatVersion stable @?= 8
+            assertBool
+                "the persisted fixture contains its two-field delivery record"
+                (framedCount "config-delivery" 2 `ByteString.isInfixOf` expectedBytes)
+            persisted <- withPersistedPlanSnapshot root unbound plan (\_ _ _ _ _ -> pure ())
+            either (fail . show) pure persisted
+            before <- readAllProtectedRecords store
+            callbacks <- newIORef (0 :: Int)
+            recovered <-
+                withBoundPlanSnapshot
+                    store
+                    project
+                    (\_ -> assertFailure "the delivering snapshot entered the terminal callback")
+                    ( \exactRoot modeLease boundLease verified bound binding recovery -> do
+                        modifyIORef' callbacks (+ 1)
+                        pure
+                            ( withRecoveredProductionLifecycleProfile
+                                exactRoot
+                                modeLease
+                                boundLease
+                                verified
+                                bound
+                                binding
+                                recovery
+                                ( \profile ->
+                                    ( planSnapshotCanonicalBytes verified
+                                    , boundPlanSnapshotBytes bound
+                                    , recoveredProductionProfileCanonicalBytes profile
+                                    )
+                                )
+                            )
+                    )
+            recovered @?= Right (Right (Just expectedBytes, expectedBytes, expectedBytes))
+            readIORef callbacks >>= (@?= 1)
+            readAllProtectedRecords store >>= (@?= before)
+    , refusalCase
+        "a rehashed version-8 delivery record with three fields is refused"
+        (replaceCanonicalFragment (framedCount "config-delivery" 2) (framedCount "config-delivery" 3))
+    , refusalCase
+        "a rehashed version-7 header cannot admit a current two-field delivery"
+        ( replaceCanonicalFragment
+            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 8)
+            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 7)
+        )
+    , refusalCase
+        "a rehashed legacy version-7 delivery snapshot is refused"
+        ( \bytes -> do
+            let currentPrefix = framedCount "config-delivery" 2 <> framedText "write-path" <> framedText "/app/config.dhall"
+                legacyPrefix =
+                    framedCount "config-delivery" 3
+                        <> framedText "write-path"
+                        <> framedText "/app/config.dhall"
+                        <> framedText "exec-path"
+                        <> framedText "/app/project"
+            legacy <- replaceCanonicalFragment currentPrefix legacyPrefix bytes
+            replaceCanonicalFragment
+                ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 8)
+                ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 7)
+                legacy
+        )
+    ]
+  where
+    framedText = LazyByteString.toStrict . Builder.toLazyByteString . encodeSnapshotText
+    refusalCase label mutate = testCase label $
+        withSnapshotPlan deliverySnapshotPlan $ \store project root unbound _spec _canonicalRoot _config _drafts plan -> do
+            let stable = renderSnapshot plan
+                runName = unboundRunLeaseRunText unbound
+                specDigest = stablePlanSnapshotSpecDigest stable
+            NonEmpty.length (forward plan) @?= 2
+            persisted <- withPersistedPlanSnapshot root unbound plan (\_ _ _ _ _ -> pure ())
+            either (fail . show) pure persisted
+            changedBytes <- mutate (stablePlanSnapshotBytes stable)
+            assertBool "the negative fixture changes canonical bytes" (changedBytes /= stablePlanSnapshotBytes stable)
+            let changedDigest = specDigest <> ":" <> sha256Text changedBytes
+                epoch = Text.pack (show (brokerEpochWord (rootAuthorityEpoch root)))
+            snapshotKey <- either (fail . show) pure (fixtureSnapshotKey project runName)
+            leaseKey <- either (fail . show) pure (fixtureLeaseKey project runName)
+            replaceSnapshotTestRecord
+                store
+                leaseKey
+                (TextEncoding.encodeUtf8 (Text.intercalate "\t" ["bound", epoch, specDigest, changedDigest]))
+            replaceSnapshotTestRecord
+                store
+                snapshotKey
+                (deliverySnapshotEnvelope stable changedDigest changedBytes)
+            before <- readAllProtectedRecords store
+            callbacks <- newIORef (0 :: Int)
+            outcome <-
+                withBoundPlanSnapshot
+                    store
+                    project
+                    (\_ -> modifyIORef' callbacks (+ 1))
+                    (\_ _ _ _ _ _ _ -> modifyIORef' callbacks (+ 1))
+            outcome @?= Left (SnapshotVerificationError (ModeMalformedRecord (recordKeyText snapshotKey)))
+            readIORef callbacks >>= (@?= 0)
+            readAllProtectedRecords store >>= (@?= before)
+
+-- The fixture persists this actual descent, rather than a singleton recorded
+-- plan with a delivery supplied only as a later reconstruction candidate.
+deliverySnapshotPlan :: StepPlan
+deliverySnapshotPlan =
+    expectStepPlan
+        [ descendsVia
+            (inContainer container emptyVMStack)
+            (buildImageStep "image" (StepFrame "host" "Host") (const (pure StepChanged)))
+        , contextInitStep "context" (StepFrame "container" "Container") (const (pure StepChanged))
+        ]
+  where
+    container =
+        ContainerLift
+            { clImage = "fixture:latest"
+            , clPlacement = ProviderGuestContainer
+            , clMounts = []
+            , clExtraArgs = []
+            , clRemoveAfter = True
+            , clConfigDelivery = Just (ConfigDelivery "/app/config.dhall" "fixture projection")
+            }
+
+replaceCanonicalFragment :: ByteString.ByteString -> ByteString.ByteString -> ByteString.ByteString -> IO ByteString.ByteString
+replaceCanonicalFragment old new bytes =
+    case ByteString.breakSubstring old bytes of
+        (_, remainder) | ByteString.null remainder ->
+            assertFailure "the expected canonical fixture fragment is missing"
+        (prefix, remainder) -> do
+            let suffix = ByteString.drop (ByteString.length old) remainder
+            assertBool "the canonical fixture fragment must be unique" (not (old `ByteString.isInfixOf` suffix))
+            pure (prefix <> new <> suffix)
+
+deliverySnapshotEnvelope :: StablePlanSnapshot -> Text.Text -> ByteString.ByteString -> ByteString.ByteString
+deliverySnapshotEnvelope stable planDigest canonicalBytes =
+    LazyByteString.toStrict
+        ( Builder.toLazyByteString
+            ( Builder.byteString "HOSTBOOTSTRAP-SNAPSHOT"
+                <> Builder.word64BE 1
+                <> Builder.word64BE 1
+                <> encodeSnapshotText (stablePlanSnapshotSpecDigest stable)
+                <> encodeSnapshotText planDigest
+                <> Builder.word8 1
+                <> encodeSnapshotText (stablePlanSnapshotConfigDigest stable)
+                <> encodeSnapshotBytes canonicalBytes
+            )
+        )
+
+fixtureLeaseKey :: InstalledProjectIdentity projectId -> Text.Text -> Either ProtectedError RecordKey
+fixtureLeaseKey project runName = do
+    encodedProject <- mkRecordName (installedProjectName project)
+    encodedRun <- mkRecordName runName
+    mkRecordKey ("lease." <> encodedProject <> recordTupleSeparator <> encodedRun)
+
+replaceSnapshotTestRecord :: ProtectedStore -> RecordKey -> ByteString.ByteString -> IO ()
+replaceSnapshotTestRecord store key bytes = do
+    written <-
+        withProtectedEntry store $ \session -> do
+            observed <- readProtectedRecord session key
+            record <- either (fail . show) (maybe (fail "the snapshot fixture record is absent") pure) observed
+            compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) bytes
+    either (fail . show) (const (pure ())) written
 
 recoveredProductionProjectPlanCases :: [TestTree]
 recoveredProductionProjectPlanCases =
@@ -1759,7 +1937,10 @@ sourceBoundaryTests =
                     -- attribution just like the five frame-child lines. The
                     -- read-only shipped cluster-exposure dispatcher contributes
                     -- eight more later CLI lines.
-                    frozenBaseline = 394 + 618 + 46 + 5 + 10 + 3 + 8
+                    -- The process runner's native working-directory entry adds
+                    -- four shared CLI lines: its import and three dispatch
+                    -- lines. They belong to the runner, outside this projector.
+                    frozenBaseline = 394 + 618 + 46 + 5 + 10 + 3 + 8 + 4
                     sourceAttribution =
                         cliSignificant
                             + constructSignificant
@@ -2172,7 +2353,7 @@ sourceBoundaryTests =
                     handoff
                 assertContains
                     "both admitted routes are held to exactly one lift layer"
-                    "oneLayer (LiftContext [_]) = True oneLayer _ = False"
+                    "oneLayer context = case liftLayers context of [_] -> True _ -> False"
                     handoff
                 mapM_
                     (\identifier -> SourceGuard.countHaskellIdentifier identifier handoffSource @?= 0)
@@ -2221,8 +2402,8 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text handoffBytes
-                    @?= "161c490e8921b365339b6dec5648c3bc6368855b172c356253b63c5debd4f368"
-                significantHaskellLineCount handoffSource @?= 338
+                    @?= "e56df2633605bd76186b246881ff7b2a8f911c9f3c6cdd431008c7e63819c29d"
+                significantHaskellLineCount handoffSource @?= 339
                 assertBool
                     "the forward-package owner crossed the hard 400-line split boundary"
                     (significantHaskellLineCount handoffSource < 400)
@@ -2359,7 +2540,7 @@ sourceBoundaryTests =
                     , "Context.contextPlacement parentContext"
                     , "topologyDescentEdgesKernel (topologyKernel parent)"
                     , "edgeParent == parentFrameId"
-                    , "[(child, rawRoute@(LiftContext [_]))]"
+                    , "[(child, rawRoute)] | [_] <- liftLayers rawRoute ->"
                     , "withFinalizedForwardChildProjectionKernel finalized parentConfig parentFrameId child rawRoute"
                     , "admitProjection placement child rawRoute"
                     ]
@@ -2456,11 +2637,12 @@ sourceBoundaryTests =
                     , "requestedChildFrame = child"
                     , "requestedChildConfigDigest = validatedConfigDigest childConfig"
                     , "requestedPhase = \"execute\""
+                    , "containerPayloadMatches route payload | [ViaContainer container] <- liftLayers route ="
                     , "TextEncoding.encodeUtf8 (cdPayload delivery) == payload"
                     , "Nothing -> refusal \"container handoff has no canonical config delivery\""
-                    , "containerPayloadMatches _ _ = Right ()"
-                    , "LiftContext [ViaContainer container{clConfigDelivery = Nothing}]"
-                    , "withoutConfigDelivery route = route"
+                    , "| otherwise = Right ()"
+                    , "withoutConfigDelivery route | [ViaContainer _] <- liftLayers route = mapTerminalContainer (\\container -> container{clConfigDelivery = Nothing}) route"
+                    , "| otherwise = route"
                     ]
                     projection
                 mapM_
@@ -2481,8 +2663,8 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text projectionBytes
-                    @?= "a424529d34ce42cd8e49c6cd8377b719e48dc670ca8e9e57dc9625c9225f5d07"
-                significantHaskellLineCount projectionSource @?= 274
+                    @?= "252742d3ba09fa228f8ddc17ab7c1a099cc2bd0810a8aab0a1bfc2ccd9e17c8a"
+                significantHaskellLineCount projectionSource @?= 281
         , testCase "the recursive rooted plan catalog is nominal, hidden, fold-only, and inert" $
             withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 let catalogPath =
@@ -3044,10 +3226,12 @@ sourceBoundaryTests =
                     "the sealed Entry wrapper admits only its root Up constructor"
                     "case entry of RootUpLifecycleEntry root _ _ _ _ _ _ catalog -> withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use"
                     entry
-                assertContains
-                    "the hidden module is built but not exposed"
-                    "other-modules: HostBootstrap.CLI.Bare HostBootstrap.Authority.Kernel HostBootstrap.Authority.FailedUp.Internal"
-                    (normalizeWhitespace cabalSource)
+                mainLibrary <- maybe (assertFailure "the main library stanza is absent") pure (mainLibraryStanza cabalSource)
+                assertBool "the failed-Up authority module is built but not exposed"
+                    ( "HostBootstrap.Authority.FailedUp.Internal" `elem` fieldModules "other-modules" mainLibrary
+                        && "HostBootstrap.Authority.FailedUp.Internal" `notElem` fieldModules "exposed-modules" mainLibrary
+                        && "HostBootstrap.Authority.FailedUp.Internal" `notElem` fieldModules "reexported-modules" mainLibrary
+                    )
                 publicExports <- readPublicModuleExports packageRoot sourceRoot
                 modulesExporting "FailedUpUnwindAuthority" publicExports @?= []
                 assertBool
@@ -3602,7 +3786,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "the process route derivation"
                         "withForwardLifecycleProcessRouteKernel ::"
-                        "{- | Render exactly one argv shape"
+                        "{- | Render the closed single-layer or root-relative lifecycle route grammar."
                         routeSource
                 launchSource <-
                     requiredSourceSection
@@ -3724,13 +3908,18 @@ sourceBoundaryTests =
                 assertFragmentsInOrder
                     "the route validates policy and delegates every crossing argv to the sole Lift fold"
                     [ "admitted <- admittedContainer child container"
-                    , "folded (LiftContext [ViaContainer admitted]) \"\" inner InteractiveChannel"
-                    , "folded route targetBinary inner NoninteractiveChannel"
+                    , "folded [ViaContainer admitted] \"\" inner InteractiveChannel"
+                    , "folded [ViaVM vm] targetBinary inner NoninteractiveChannel"
+                    , "folded [ViaLimaVM vm] targetBinary inner NoninteractiveChannel"
+                    , "folded [ViaWsl2VM vm] targetBinary inner NoninteractiveChannel"
                     , "AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary"
-                    , "folded (LiftContext admitted) targetBinary inner interactivity"
+                    , "folded admitted targetBinary inner interactivity"
                     , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
                     , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack (admittedText frame)"
                     , "++ placementArgs"
+                    , "route <- case liftContextFromLayers layers of"
+                    , "Left failure -> Left (routeFailure (\"the sanitized lift context is invalid: \" <> Text.pack failure))"
+                    , "Right context -> Right context"
                     , "case foldLeaf route (lifecycleProcessLeaf"
                     , "DispatchTool tool argv -> Right"
                     ]
@@ -4632,10 +4821,32 @@ sourceBoundaryTests =
                     @?= [ "HostBootstrap.Lifecycle.Mode"
                         , "HostBootstrap.Lifecycle.Session"
                         ]
-                freshBrokerSites
+                -- The private test seam forwards the existing allocator and
+                -- reifier; it introduces no production allocation owner.
+                filter (/= "HostBootstrap.Authority.Testing") freshBrokerSites
                     @?= [ "HostBootstrap.Authority.Kernel"
                         , "HostBootstrap.Lifecycle.Mode"
                         ]
+                authorityTesting <- maybe (assertFailure "the private authority fixture source is missing") pure
+                    (lookup "HostBootstrap.Authority.Testing" [(name, body) | (name, _, body) <- sources])
+                fixtureExports <- requiredModuleExports "HostBootstrap.Authority.Testing" authorityTesting
+                fixtureImports <- maybe (assertFailure "the authority fixture must explicitly import the kernel") pure
+                    (SourceGuard.moduleImportTokens "HostBootstrap.Authority.Kernel" authorityTesting)
+                fixtureImports @?= fixtureExports
+                filter (== "withFreshBrokerEpochKernel") fixtureExports @?= ["withFreshBrokerEpochKernel"]
+                filter (== "withFreshBrokerEpochKernel") fixtureImports @?= ["withFreshBrokerEpochKernel"]
+                SourceGuard.countHaskellIdentifier "withFreshBrokerEpochKernel" authorityTesting @?= 2
+                filter (== "withReifiedAllocatedBrokerEpochKernel") fixtureExports @?= ["withReifiedAllocatedBrokerEpochKernel"]
+                filter (== "withReifiedAllocatedBrokerEpochKernel") fixtureImports @?= ["withReifiedAllocatedBrokerEpochKernel"]
+                SourceGuard.countHaskellIdentifier "withReifiedAllocatedBrokerEpochKernel" authorityTesting @?= 2
+                -- The whole module is one explicit export list and one matching
+                -- import, so it contains no allocation call or forwarding body.
+                SourceGuard.haskellTokens authorityTesting
+                    @?= SourceGuard.haskellTokens "module HostBootstrap.Authority.Testing ("
+                        <> fixtureExports
+                        <> SourceGuard.haskellTokens ") where import HostBootstrap.Authority.Kernel ("
+                        <> fixtureImports
+                        <> [")"]
                 -- Mode chooses the intent key. The shared redo coordinator may
                 -- validate that key in its closed finalization descriptor.
                 filter (/= "HostBootstrap.Lifecycle.Transaction") reverseKeyLiteralSites
@@ -5377,7 +5588,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the sole liveness extent contains the complete selector"
-                        , "held <- withRunLiveness store (installedProjectName project) select"
+                        , "held <- withRunLiveness store livenessName select"
                         , facade
                         )
                     ,
@@ -5410,8 +5621,10 @@ sourceBoundaryTests =
                     , "case selected of"
                     , "failure == ModeReverseRootInProgress || failure == ModeWrongMode \"production\" \"absent\""
                     , "withResumedExistingBoundReverseRootKernel"
-                    , "underLiveness = do"
-                    , "withRunLiveness store (installedProjectName project) select"
+                    , "underLiveness = case mkRecordName (installedProjectName project) of"
+                    , "Left failure -> pure (Left (SnapshotLivenessFailure failure))"
+                    , "Right livenessName -> do"
+                    , "withRunLiveness store livenessName select"
                     , "in case verb of"
                     ]
                     facade
@@ -5627,8 +5840,8 @@ sourceBoundaryTests =
                         , target
                         )
                     ,
-                        ( "authorization consumes the callback-derived Teardown cursor"
-                        , "ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext"
+                        ( "authorization consumes the callback-derived Teardown cursor and verified installed identity"
+                        , "ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext project"
                         , target
                         )
                     ,
@@ -6461,7 +6674,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the private replay action closes over the exact first reservation inputs"
-                        , "let reauthorize = ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext reserved <- reauthorize"
+                        , "let reauthorize = ProjectAuthority.authorizeRootProject targetRoot targetVerb targetVerified targetBound targetBinding targetLease targetPlan journal teardownCursor lifecycleContext project reserved <- reauthorize"
                         , target
                         )
                     ,
@@ -6529,6 +6742,7 @@ sourceBoundaryTests =
                     , "journal"
                     , "teardownCursor"
                     , "lifecycleContext"
+                    , "project"
                     , "reserved <- reauthorize"
                     , "case reserved of"
                     , "Right authority"
@@ -7035,16 +7249,16 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withRecoveredProductionPlan" teardownCommand @?= 0
                 SourceGuard.countHaskellIdentifier "withFreshProductionPlan" teardownCommand @?= 0
         , testCase "descriptive context and nominal authorities retain broker continuity" $
-            withPackageSourceRoot $ \_packageRoot sourceRoot -> do
+            withPackageSourceRoot $ \packageRoot sourceRoot -> do
                 frameSource <-
                     readFile
                         (sourceRoot </> "HostBootstrap" </> "ProjectPlan" </> "Frame.hs")
                 sessionSource <-
                     readFile
                         (sourceRoot </> "HostBootstrap" </> "Lifecycle" </> "Session.hs")
+                description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 authorityKernelSource <-
-                    readFile
-                        (sourceRoot </> "HostBootstrap" </> "Authority" </> "Kernel.hs")
+                    SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Authority.Kernel" >>= readFile
                 projectAuthoritySource <-
                     readFile
                         (sourceRoot </> "HostBootstrap" </> "Authority" </> "ProjectPlan.hs")
@@ -7178,13 +7392,9 @@ withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
 readProductionSources sourceRoot = do
-    paths <- listHaskellSources sourceRoot
-    traverse
-        ( \path -> do
-            source <- readFile path
-            pure (moduleNameFromPath sourceRoot path, path, source)
-        )
-        paths
+    let packageRoot = takeDirectory sourceRoot
+    description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+    SourceGuard.readLibrarySources packageRoot description
 
 readPublicModuleExports :: FilePath -> FilePath -> IO [(String, [String])]
 readPublicModuleExports packageRoot sourceRoot = do
@@ -7244,9 +7454,6 @@ containsTokenSequence expected observed@(_ : rest) =
     tokenPrefix _ [] = False
     tokenPrefix (wanted : wantedRest) (actual : actualRest) =
         wanted == actual && tokenPrefix wantedRest actualRest
-
-moduleNameFromPath :: FilePath -> FilePath -> String
-moduleNameFromPath = SourceGuard.repoRelativeModuleName
 
 requiredSourceSection :: String -> String -> String -> String -> IO String
 requiredSourceSection label opening closing source =
@@ -7887,7 +8094,7 @@ writeRawPlanSnapshot store project runName specDigest planDigest configDigest ca
         either
             (fail . show)
             pure
-            (mkRecordKey ("snapshot." <> installedProjectName project <> "." <> runName))
+            (fixtureSnapshotKey project runName)
     written <-
         withProtectedEntry store $ \session ->
             fmap
@@ -7913,6 +8120,12 @@ writeRawPlanSnapshot store project runName specDigest planDigest configDigest ca
                     <> encodeSnapshotBytes canonicalBytes
                 )
             )
+
+fixtureSnapshotKey :: InstalledProjectIdentity projectId -> Text.Text -> Either ProtectedError RecordKey
+fixtureSnapshotKey project runName = do
+    encodedProject <- mkRecordName (installedProjectName project)
+    encodedRun <- mkRecordName runName
+    mkRecordKey ("snapshot." <> encodedProject <> recordTupleSeparator <> encodedRun)
 
 encodeSnapshotText :: Text.Text -> Builder.Builder
 encodeSnapshotText = encodeSnapshotBytes . TextEncoding.encodeUtf8
@@ -8234,7 +8447,7 @@ hexBytes = Text.pack . concatMap byteHex . ByteString.unpack
 goldenSnapshotBytesHex :: FilePath -> Text.Text
 goldenSnapshotBytesHex root =
     Text.concat
-        [ "484f5354424f4f5453545241502d504c414e0000000000000007"
+        [ "484f5354424f4f5453545241502d504c414e0000000000000008"
         , hexFramedText "root"
         , hexRoot root
         , "000000000000000b737065632d646967657374"

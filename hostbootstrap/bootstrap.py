@@ -30,6 +30,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -191,7 +192,7 @@ def _discover_executable(cabal_file: Path) -> str:
         if not line or line.startswith("--"):
             continue
         parts = line.split()
-        if len(parts) == 2 and parts[0] == "executable":
+        if len(parts) == 2 and parts[0].lower() == "executable":
             executables.append(parts[1])
     if not executables:
         raise ProjectDiscoveryError(f"no executable stanza found in {cabal_file}")
@@ -308,7 +309,17 @@ class CabalIndexState(StrEnum):
 def cabal_index_path() -> Path:
     """The standard secure Hackage index used by Cabal."""
     configured = os.environ.get("CABAL_DIR")
-    cabal_dir = Path(configured) if configured else Path.home() / ".cabal"
+    if configured:
+        cabal_dir = Path(configured)
+    elif os.name == "nt":
+        cabal_dir = Path(os.environ["APPDATA"]) / "cabal"
+    else:
+        legacy = Path.home() / ".cabal"
+        if legacy.is_dir():
+            cabal_dir = legacy
+        else:
+            cache = os.environ.get("XDG_CACHE_HOME")
+            cabal_dir = (Path(cache) if cache else Path.home() / ".cache") / "cabal"
     return cabal_dir / "packages" / "hackage.haskell.org" / "01-index.tar"
 
 
@@ -385,12 +396,15 @@ async def _already_present(probe: tuple[str, ...]) -> bool:
     for _attempt in range(6):
         try:
             result = await process.run(probe, quiet=True, env=_toolchain_env())
-        except FileNotFoundError:
-            return False
-        except OSError as exc:
-            if os.name == "nt" and getattr(exc, "winerror", None) == 32:
+        except process.CommandError as exc:
+            if not isinstance(exc.outcome, process.CommandUnavailable):
+                raise
+            cause = exc.__cause__
+            if os.name == "nt" and getattr(cause, "winerror", None) == 32:
                 await asyncio.sleep(5)
                 continue
+            if cause is None or isinstance(cause, FileNotFoundError):
+                return False
             raise
         return result.ok
     return False
@@ -449,7 +463,9 @@ async def _install_verified_ghcup(sub: Substrate) -> None:
                 _POWERSHELL,
                 "-NoProfile",
                 "-Command",
-                f"Invoke-WebRequest -Uri '{url}' -OutFile '{downloaded}'",
+                "& { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o }",
+                url,
+                str(downloaded),
             )
         else:
             curl = shutil.which("curl")
@@ -476,10 +492,35 @@ def _files_identical(left: Path, right: Path) -> bool:
 
 
 def _copy_if_changed(source: Path, destination: Path) -> bool:
-    """Copy *source* only when the stable artifact bytes changed."""
+    """Publish changed bytes through a flushed sibling, preserving open binaries."""
     if _files_identical(source, destination):
         return False
-    shutil.copy2(source, destination)
+    descriptor, name = tempfile.mkstemp(prefix=f".{destination.name}-", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output, source.open("rb") as input_file:
+            shutil.copyfileobj(input_file, output)
+            output.flush()
+            os.fsync(output.fileno())
+        shutil.copystat(source, temporary)
+        try:
+            os.replace(temporary, destination)
+        except PermissionError:
+            if os.name != "nt" or not destination.is_file():
+                raise
+            previous = temporary.with_suffix(".previous")
+            os.replace(destination, previous)
+            try:
+                os.replace(temporary, destination)
+            except OSError:
+                os.replace(previous, destination)
+                raise
+            # A running Windows image permits renaming, but holds its bytes
+            # until its final handle closes. Keep that uniquely named copy.
+            with suppress(PermissionError):
+                previous.unlink()
+    finally:
+        temporary.unlink(missing_ok=True)
     return True
 
 
@@ -566,8 +607,8 @@ def _exec_project_binary(
     # branches name the environment instead of letting one be inherited.
     if os.name == "nt":
         outcome = process.probe(argv, cwd=project_root, env=context, stdio=process.Stdio.INHERIT)
-        if isinstance(outcome, process.CommandUnavailable):
+        if not isinstance(outcome, process.CommandResult):
             raise RuntimeError(process.describe(outcome))
         raise SystemExit(outcome.returncode)
     os.chdir(project_root)
-    os.execve(argv[0], list(argv), process.merged_environment(context))  # pragma: no cover
+    os.execve(argv[0], list(argv), process.merged_environment(context))

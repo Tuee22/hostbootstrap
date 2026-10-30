@@ -160,9 +160,8 @@ import HostBootstrap.Reconcile (
     planProviderForceDestroy,
     plannedProjectPhaseOperation,
     resourceHandleGeneration,
-    withPreparedPhaseTransition,
     withPreparedProviderStart,
-    zeroDependencyPreconditions,
+    withPreparedZeroDependencyPhaseTransition,
  )
 import HostBootstrap.Substrate (detect, isAppleSilicon)
 import System.Directory (createDirectoryIfMissing)
@@ -1534,9 +1533,8 @@ prepareColimaCleanupCall plan planned gate authority@(ColimaCleanupAuthority _ _
                 case plannedProjectPhaseOperation plan planned handle receipt transition (colimaCleanupCallDigest authority) of
                     Left err -> pure (Left err)
                     Right descriptor ->
-                        pure $ do
-                            sealed <- zeroDependencyPreconditions descriptor
-                            withPreparedPhaseTransition handle receipt transition descriptor sealed gate $ \prepared ->
+                        pure $
+                            withPreparedZeroDependencyPhaseTransition handle receipt transition descriptor gate $ \prepared ->
                                 PreparedColimaCleanupCall
                                     authority
                                     gate

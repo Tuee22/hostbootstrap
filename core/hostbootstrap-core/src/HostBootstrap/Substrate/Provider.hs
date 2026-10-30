@@ -132,7 +132,7 @@ import HostBootstrap.Incus (
     stopVMArgs,
  )
 import HostBootstrap.Lift (
-    LiftContext (..),
+    LiftContext,
     LiftDispatch (..),
     LiftLayer (..),
     LiftLeaf (..),
@@ -142,6 +142,7 @@ import HostBootstrap.Lift (
     inWsl2VM,
     localContext,
  )
+import HostBootstrap.Lift.Context (emptyVMStack, liftContextFromLayers, vmContext)
 import HostBootstrap.Lima (LimaVM (..))
 import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Readiness (
@@ -153,6 +154,7 @@ import HostBootstrap.Readiness (
     ProbeResult (..),
     mkPollPolicy,
     pollStep,
+    renderPollError,
     seconds,
  )
 import HostBootstrap.Reconcile (Running)
@@ -651,6 +653,9 @@ observationFromPollError pollError = case pollError of
     PollUnavailable _ reason -> ProviderObservedUnavailable reason
     PollConflict _ conflict -> ProviderObservedConflict conflict
     PollFailed _ failure -> ProviderObservedFailure failure
+    PollInvalidReady _ _ ->
+        ProviderObservedFailure
+            (ProbeFailure "validate backend readiness" (renderPollError pollError))
 
 unitPlan :: String -> Either String ProviderProbeRequest -> ProbePlan ()
 unitPlan label request = ProbePlan label request parseUnit
@@ -850,7 +855,7 @@ selectProviderKind kind h = case kind of
          in SubstrateProvider
                 { spVmId = limaName vm
                 , spProviderKind = ProviderLima
-                , spLiftContext = inLimaVM vm localContext
+                , spLiftContext = vmContext (inLimaVM vm emptyVMStack)
                 , spExists = ExistsProbe Lima ["list", "-q"] LinesMember
                 , spLaunch = \env share -> do
                     sizing <- limaSizingArgs env
@@ -871,7 +876,7 @@ selectProviderKind kind h = case kind of
          in SubstrateProvider
                 { spVmId = vmName vm
                 , spProviderKind = ProviderIncus
-                , spLiftContext = inVM vm localContext
+                , spLiftContext = vmContext (inVM vm emptyVMStack)
                 , spExists = ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
                 , spLaunch = \env _ -> do
                     sizing <- incusSizingArgs env
@@ -905,7 +910,7 @@ selectProviderKind kind h = case kind of
          in SubstrateProvider
                 { spVmId = distro
                 , spProviderKind = ProviderWsl2
-                , spLiftContext = inWsl2VM vm localContext
+                , spLiftContext = vmContext (inWsl2VM vm emptyVMStack)
                 , spExists = ExistsProbe Wsl ["--list", "--quiet"] WslQuietMember
                 , spLaunch = \env _ -> do
                     body <- wsl2SizingArgs env
@@ -1044,8 +1049,9 @@ container layer (a container is reached through 'HostBootstrap.Lift', not here).
 -}
 vmShellArgs :: LiftLayer -> [String] -> Maybe (HostTool, [String])
 vmShellArgs _layer [] = Nothing
-vmShellArgs layer (exe : arguments) =
-    case foldLeaf (LiftContext [layer]) (RawCmd exe arguments) of
+vmShellArgs layer (exe : arguments) = do
+    context <- either (const Nothing) Just (liftContextFromLayers [layer])
+    case foldLeaf context (RawCmd exe arguments) of
         DispatchTool tool args
             | layerIsVM layer -> Just (tool, args)
         _ -> Nothing

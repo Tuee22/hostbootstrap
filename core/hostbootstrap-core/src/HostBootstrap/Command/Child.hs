@@ -123,8 +123,9 @@ import HostBootstrap.Lifecycle.FrameExecutor (
 import HostBootstrap.Lifecycle.Plan (PlannedStep (..))
 import qualified HostBootstrap.Lifecycle.Plan as LifecyclePlan
 import HostBootstrap.Lift.Context (
-    LiftContext (LiftContext),
+    LiftContext,
     LiftLayer (ViaContainer),
+    liftLayers,
  )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -752,8 +753,10 @@ drive key runtime link host finalized config plan current carrier planDigest loc
                             )
             )
 
-    targetBinary (LiftContext [ViaContainer _]) = Text.empty
-    targetBinary _ = "/usr/local/bin/" <> Context.binary (cfgContext (validatedConfigValue config))
+    targetBinary :: LiftContext -> Text
+    targetBinary route = case liftLayers route of
+        [ViaContainer _] -> Text.empty
+        _ -> "/usr/local/bin/" <> Context.binary (cfgContext (validatedConfigValue config))
 
     descentObservation (Right ()) =
         frameWire "hostbootstrap/forward-descent-result/v1" <> frameWire "succeeded"

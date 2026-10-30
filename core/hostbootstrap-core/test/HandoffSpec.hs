@@ -15,7 +15,7 @@ The production recovery and root-scope signers remain inaccessible.
 module HandoffSpec (tests) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, evaluate, finally, try)
+import Control.Exception (SomeException, bracket, evaluate, finally, try)
 import Control.Monad (forM_, when)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import qualified Crypto.PubKey.Ed25519 as Ed25519
@@ -86,7 +86,16 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
  )
 import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelfPath), localContext, mkSelfRef)
-import HostBootstrap.Lift.Context (IncusVM (..), inVM)
+import HostBootstrap.Lift.Context (
+    ConfigDelivery (..),
+    ContainerLift (..),
+    ContainerPlacement (ProviderGuestContainer),
+    IncusVM (..),
+    emptyVMStack,
+    inContainer,
+    inVM,
+    vmContext,
+ )
 import HostBootstrap.Protected (
     ProtectedStore,
     openProtectedStore,
@@ -105,7 +114,7 @@ import SourceGuard (
  )
 import qualified SourceGuard
 import System.Directory (doesPathExist, removePathForcibly)
-import System.Environment (getExecutablePath)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -203,9 +212,28 @@ frameCrossingTests =
             withFrameChildTransaction
                 unresolvedHostConfig
                 (mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable))
-                (inVM IncusVM{vmName = "absent", vmImage = "absent"} localContext)
+                (vmContext (inVM IncusVM{vmName = "absent", vmImage = "absent"} emptyVMStack))
                 "one transaction"
         crossed @?= Left "frame child: the crossing's host tool resolves to no absolute path"
+    , testCase "a frame transaction refuses staged config delivery before resolving a crossing" $ do
+        executable <- getExecutablePath
+        let self = mkSelfRef (LocalSelfPath executable) (InVMSelfPath executable)
+            container =
+                ContainerLift
+                    { clImage = "frame-transaction:unused"
+                    , clPlacement = ProviderGuestContainer
+                    , clMounts = []
+                    , clExtraArgs = []
+                    , clRemoveAfter = False
+                    , clConfigDelivery = Just (ConfigDelivery "/app/project.dhall" "inert projection")
+                    }
+            contexts =
+                [ inContainer container emptyVMStack
+                , inContainer container (inVM IncusVM{vmName = "absent", vmImage = "absent"} emptyVMStack)
+                ]
+        forM_ contexts $ \context -> do
+            crossed <- withFrameChildTransaction unresolvedHostConfig self context "one transaction"
+            crossed @?= Left "frame child: the frame transaction cannot launch staged container config delivery"
     , testCase "a local crossing answers one transaction across a real process boundary" $ do
         executable <- getExecutablePath
         crossed <-
@@ -231,7 +259,9 @@ frameCrossingTests =
                 "runCLI classifies argv once and otherwise runs the parser"
                 [ "argv <- getArgs"
                 , "case runExposureRelayEntry argv of"
-                , "Nothing -> if argv == shippedCommandEntryArguments"
+                , "Nothing -> if take 1 argv == workingDirectoryEntryArguments"
+                , "then runWorkingDirectoryEntry (drop 1 argv)"
+                , "if argv == shippedCommandEntryArguments"
                 , "if argv == lifecycleChildArguments"
                 , "case classifyFrameChild argv of"
                 , "Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry"
@@ -258,11 +288,23 @@ frameCrossingTests =
                 , "getArgs"
                 , "unsafeCoerce"
                 ]
-            -- Down from 302: the child-group escalation and its three timeouts
-            -- moved to the one shared module both transports now call, so this
-            -- module carries the transaction and no longer a second copy of how
-            -- to end a process group.
-            significantHaskellLineCount transactionSource @?= 260
+            -- One fold selects the crossing; the process callback delegates
+            -- cleanup to its group owner rather than repeating its reaper.
+            crossing <-
+                either
+                    (\failure -> assertFailure ("could not read the frame transaction binding: " <> failure) >> pure [])
+                    pure
+                    (SourceGuard.haskellDefinitionTokens "withFrameChildTransaction" transactionSource)
+            forM_ ["foldLift", "frameChildArguments", "withCreateProcess", "endChildGroup"] $ \identifier ->
+                length (filter (== identifier) crossing) @?= 1
+            assertBool
+                "the exchange is bracketed by the shared child-group cleanup"
+                ( SourceGuard.haskellTokens
+                    "Exception.bracket_ (pure ()) (endChildGroup child childStdin childStdout) (exchange childStdin childStdout)"
+                    `isInfixOf` crossing
+                )
+            forM_ ["askChildGroupToStop", "awaitChildExit", "killChildGroup", "waitForProcess"] $ \identifier ->
+                length (filter (== identifier) crossing) @?= 0
             assertBool
                 "shared CLI lost the frame-child classifier"
                 (significantHaskellLineCount cliSource >= 424)
@@ -1157,6 +1199,10 @@ protocolTests =
                 admit (ByteString.pack [0xff]) >>= (@?= Left ConfigWireInvalidUtf8)
                 admit "this is not a project config" >>= (@?= Left ConfigWireCodecRejected)
                 admit (canonical <> " ") >>= (@?= Left ConfigWireNonCanonical)
+    , testCase "authenticated config admission rejects an environment import before its callback" $
+        rejectAuthenticatedConfigImport 74 (const "env:HOSTBOOTSTRAP_PROBE")
+    , testCase "authenticated config admission rejects an unused-let import before normalization" $
+        rejectAuthenticatedConfigImport 75 (\canonical -> "let unused = env:HOSTBOOTSTRAP_PROBE in " <> canonical)
     , testCase "authenticated sibling install is atomic, idempotent, and conflict-preserving" $
         withNamedHandoff 15 ProjectUp $ \(project :: InstalledProjectIdentity projectId) broker ->
             withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \codec -> do
@@ -5327,13 +5373,10 @@ sealedFacadeTests =
     , testCase "rooted lifecycle response authentication is capability-specialized, ordered, acyclic, and exactly budgeted" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            internalSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
-            rootedSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
-            protocolSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            (handoffSource, handoffSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            (internalSource, internalSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
+            (rootedSource, rootedSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
+            (protocolSource, protocolSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
             responseFacade <-
                 requiredSourceSection
@@ -5386,7 +5429,6 @@ sealedFacadeTests =
                         - handoffBaselineLines
                         + internalLines
                         - internalBaselineLines
-                digest = childConfigDigest . TextEncoding.encodeUtf8 . Text.pack
             assertBool
                 "the facade exposes only the abstract response, complete renderer, gated signer, and CPS verifier"
                 ( all
@@ -5544,11 +5586,11 @@ sealedFacadeTests =
             (handoffLines - handoffBaselineLines - 30 - 54 - 129, internalLines - internalBaselineLines, sprintDelta - 30 - 54 - 129)
                 @?= (223, 13, 236)
             assertBool "the three-owner response authentication increment is within its 240-line budget" (sprintDelta - 30 - 54 - 129 <= 240)
-            digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
-            digest internalSource @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
-            digest rootedSource @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
+            handoffSourceDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
+            internalSourceDigest @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
+            rootedSourceDigest @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
             significantHaskellLineCount protocolSource @?= 541
-            digest protocolSource @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
+            protocolSourceDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             cabalRows <- handoffPackageRows cabalSource
             cabalRows @?= frozenHandoffPackageRows
     , testCase "rooted relay envelopes are bounded before splitting and match exact authenticated paths" $
@@ -5739,16 +5781,15 @@ sealedFacadeTests =
     , testCase "rooted relay transport is keyless, acyclic, exactly owned, frozen, and budgeted" $
         withHandoffSourceRoot $ \packageRoot sourceRoot -> do
             sources <- readHaskellSources sourceRoot
-            relaySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
-            receiverInternalSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver" </> "Internal.hs")
-            receiverSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
-            handoffSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
-            handoffInternalSource <-
-                readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
-            rootedSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
-            recoverySource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Recovery.hs")
-            protocolSource <- readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
+            relayBytes <- ByteString.readFile (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Relay.hs")
+            let relaySource = Text.unpack (TextEncoding.decodeUtf8 relayBytes)
+            (receiverInternalSource, receiverInternalSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver" </> "Internal.hs")
+            receiverSourceDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Receiver.hs")
+            handoffSourceDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff.hs")
+            handoffInternalSourceDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Internal.hs")
+            rootedSourceDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Rooted.hs")
+            recoverySourceDigest <- frozenSourceDigest (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Recovery.hs")
+            (protocolSource, protocolSourceDigest) <- readFrozenSource (sourceRoot </> "HostBootstrap" </> "Handoff" </> "Protocol.hs")
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
             rootedTransport <-
                 requiredSourceSection
@@ -5780,7 +5821,6 @@ sealedFacadeTests =
                         | (path, source) <- sources
                         , SourceGuard.importsModule moduleName source
                         ]
-                digest = childConfigDigest . TextEncoding.encodeUtf8 . Text.pack
                 frozenRelayLines :: Int
                 frozenRelayLines = 1852
                 -- A pre-reformat count of a file the committed formatter has
@@ -5861,15 +5901,22 @@ sealedFacadeTests =
             assertBool
                 "the two-owner rooted transport increment and its two adopted root call sites stay within 400 significant lines"
                 (transportDelta <= 400)
-            digest transportOnly @?= "e6da9c59f8fffb13167a5773990d29e7c3543ad0dbbe20beaab7ce29f6a56fa0"
-            digest receiverInternalSource @?= "a28ed069bc4434cf4b8eac69271d202e4b164190754cf52c7ca5f20d9d7fc5d8"
-            digest receiverSource @?= "40b9686dc16bd183a64702366871f78ff5d4d51bc724e75f6e41b1f79d17b6b5"
-            digest recoverySource @?= "815f5f78ecc803d3749a3aedd3dea52d3e6123a22b059ac1ecce983f6d5453dc"
-            digest handoffInternalSource @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
-            digest handoffSource @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
-            digest rootedSource @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
+            transportSections <-
+                traverse
+                    (\(opening, closing) -> requiredFrozenSourceSection "rooted transport bytes" opening closing relayBytes)
+                    [ ("receiveRootedLifecycleResponseThroughLink ::", "rootedSigningDomain, rootedSigningVersion ::")
+                    , ("relayRootedLifecycle ::", "exactLifecycleFrames ::")
+                    , ("serveRootedLifecycle ::", "serveOpen ::")
+                    ]
+            childConfigDigest (ByteString.concat transportSections) @?= "e6da9c59f8fffb13167a5773990d29e7c3543ad0dbbe20beaab7ce29f6a56fa0"
+            receiverInternalSourceDigest @?= "a28ed069bc4434cf4b8eac69271d202e4b164190754cf52c7ca5f20d9d7fc5d8"
+            receiverSourceDigest @?= "40b9686dc16bd183a64702366871f78ff5d4d51bc724e75f6e41b1f79d17b6b5"
+            recoverySourceDigest @?= "815f5f78ecc803d3749a3aedd3dea52d3e6123a22b059ac1ecce983f6d5453dc"
+            handoffInternalSourceDigest @?= "214b1138f2a4a06e23839ab1600055a4d7611eb0d60eac643aa06a7420259dbc"
+            handoffSourceDigest @?= "365b4ccb35c2d622bc39201ac409c8c69bae849d3ef5208a88678104f460e808"
+            rootedSourceDigest @?= "55cede42469173f8a1523d5ee93ff3657342ae2317c46f84f8feb4e4b4504354"
             significantHaskellLineCount protocolSource @?= 541
-            digest protocolSource @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
+            protocolSourceDigest @?= "59efed93557ddea190940e0b78acbfae120da8dc5b168eb6df0b833d2fc6d454"
             cabalRows <- handoffPackageRows cabalSource
             cabalRows @?= frozenHandoffPackageRows
     , testCase "recovery child package ownership is bounded, hidden, additive, and exactly attributed" $
@@ -9685,6 +9732,41 @@ canonicalConfigBytes codec =
         . (<> "\n")
         . renderProjectCodecHoisted codec Context.vocabUnions
 
+rejectAuthenticatedConfigImport :: Word8 -> (ByteString.ByteString -> ByteString.ByteString) -> IO ()
+rejectAuthenticatedConfigImport seedByte renderImport =
+    withHandoff seedByte ProjectUp $ \broker ->
+        withProductionProjectCodec @Fixture.ProjectConfig $ \codec -> do
+            let cfg =
+                    Fixture.defaultProjectConfig
+                        "hostbootstrap-demo"
+                        "/workspace/demo"
+                        Context.HostOrchestrator
+                canonical = canonicalConfigBytes codec cfg
+                payload = renderImport canonical
+                variable = "HOSTBOOTSTRAP_PROBE"
+            canonicalText <- expectRight (TextEncoding.decodeUtf8' canonical)
+            authenticated <- authenticatedPayload broker payload
+            authenticatedConfigBytes authenticated @?= payload
+            authenticatedConfigDigest authenticated @?= childConfigDigest payload
+            callbacks <- newIORef (0 :: Int)
+            bracket
+                (do
+                    previous <- lookupEnv variable
+                    setEnv variable (Text.unpack canonicalText)
+                    pure previous
+                )
+                (\previous -> case previous of
+                    Nothing -> unsetEnv variable
+                    Just value -> setEnv variable value
+                )
+                (\_ -> do
+                    admitted <-
+                        withAuthenticatedConfigWire codec authenticated $ \_ _ ->
+                            modifyIORef' callbacks (+ 1)
+                    admitted @?= Left ConfigWireCodecRejected
+                    readIORef callbacks >>= (@?= 0)
+                )
+
 withHandoff ::
     Word8 ->
     ProjectVerb verb ->
@@ -9984,6 +10066,21 @@ normalizedModuleExports = map concat . splitAtTopLevelCommas 0 []
             splitAtTopLevelCommas (depth - 1) (token : current) remaining
         | otherwise =
             splitAtTopLevelCommas depth (token : current) remaining
+
+-- | Select a frozen region directly from the source bytes, without re-encoding text.
+requiredFrozenSourceSection :: String -> ByteString.ByteString -> ByteString.ByteString -> ByteString.ByteString -> IO ByteString.ByteString
+requiredFrozenSourceSection label opening closing source =
+    case ByteString.breakSubstring opening source of
+        (_, fromOpening)
+            | ByteString.null fromOpening ->
+                assertFailure (label <> " is missing opening marker " <> show opening)
+            | otherwise ->
+                case ByteString.breakSubstring closing fromOpening of
+                    (_, fromClosing)
+                        | ByteString.null fromClosing ->
+                            assertFailure (label <> " is missing closing marker " <> show closing)
+                        | otherwise ->
+                            pure (ByteString.take (ByteString.length fromOpening - ByteString.length fromClosing) fromOpening)
 
 requiredSourceSection :: String -> String -> String -> String -> IO String
 requiredSourceSection label opening closing source =

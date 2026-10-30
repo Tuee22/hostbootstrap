@@ -1,3 +1,5 @@
+{-# LANGUAGE RoleAnnotations #-}
+
 {- | Private construction boundary for harness configuration authority.
 
 Only lifecycle code that has acquired a typed Harness root imports this module's
@@ -12,7 +14,6 @@ module HostBootstrap.Config.Authority.Internal (
     mintAuthenticatedHarnessConfigAuthority,
     harnessConfigAuthority,
     harnessRunName,
-    harnessConfigRunName,
 ) where
 
 import Data.Text (Text)
@@ -20,8 +21,12 @@ import Data.Text (Text)
 -- | Authority for one exact generative Harness root.
 newtype HarnessAuthority projectId runId = HarnessAuthority Text
 
+type role HarnessAuthority nominal nominal
+
 -- | Narrow authority allowed to introduce fixture plaintext for that run.
-newtype HarnessConfigAuthority projectId runId = HarnessConfigAuthority Text
+data HarnessConfigAuthority projectId runId = HarnessConfigAuthority
+
+type role HarnessConfigAuthority nominal nominal
 
 -- | Mint authority while constructing the matching typed lifecycle root.
 mintHarnessAuthority :: Text -> HarnessAuthority projectId runId
@@ -31,18 +36,14 @@ mintHarnessAuthority = HarnessAuthority
 authenticated the exact Harness scope capsule.
 -}
 mintAuthenticatedHarnessConfigAuthority :: Text -> HarnessConfigAuthority projectId runId
-mintAuthenticatedHarnessConfigAuthority = HarnessConfigAuthority
+mintAuthenticatedHarnessConfigAuthority runName = runName `seq` HarnessConfigAuthority
 
 -- | Narrow root authority to config-assembly authority.
 harnessConfigAuthority ::
     HarnessAuthority projectId runId ->
     HarnessConfigAuthority projectId runId
-harnessConfigAuthority (HarnessAuthority runName) = HarnessConfigAuthority runName
+harnessConfigAuthority (HarnessAuthority runName) = runName `seq` HarnessConfigAuthority
 
 -- | Descriptive run name; this does not expose or recreate authority.
 harnessRunName :: HarnessAuthority projectId runId -> Text
 harnessRunName (HarnessAuthority runName) = runName
-
--- | Internal read needed to bind fixture plaintext to its exact run.
-harnessConfigRunName :: HarnessConfigAuthority projectId runId -> Text
-harnessConfigRunName (HarnessConfigAuthority runName) = runName

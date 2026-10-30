@@ -819,7 +819,7 @@ their directory, and focused spec legs are Sprint 25.20.
 A check nothing has seen fail is a check nobody has tested. `realRepoCase` asserts only that the real tree
 produces no violation, so a check whose guard is deleted or inverted keeps it green. Every rule therefore
 needs a miniature-repository fixture in `DocValidatorSpec` that turns red when its guard goes. This sprint
-gives one to the deferred-evidence rules of `checkGateEvidence`, the phase-level Remaining Work rules,
+completes the fixtures for the deferred-evidence rules of `checkGateEvidence`, the phase-level Remaining Work rules,
 the drift guard's reading of the suites, the fence exclusion of `checkIdentifierResolution`, and the
 agreeing half of `checkRootDocStatus`. It also makes three violation and comment texts name things that
 exist. The drift-guard message names `phase-29-documentation-reconciliation.md`, a file the tree does not
@@ -829,15 +829,15 @@ have, and the export list and the reconciliation banner cite a `documentation_st
 
 #### Deliverables
 
-- `citationCase` (or a new `deferredEvidenceCase`) builds a `Done` phase with `**Gate kind**: deferred`,
-  `**Evidence covers**: ` naming `core/x.hs`, and a row covering the digest `measurePathSetDigest root
-  ["core/x.hs"]` returns. `checkGateEvidence` returns `[]` for it. Rewriting `core/x.hs` makes it return
-  exactly one violation containing `now measures`.
-- The same case asserts exactly one violation for each of these. A deferred `Done` phase whose row
+- The existing `digestCase` builds a `Done` phase with `**Gate kind**: deferred`, `**Evidence covers**`
+  naming a source tree, and a row covering the digest `measurePathSetDigest` returns.
+  `checkGateEvidence` returns `[]` for it. Changing one covered source byte makes it return exactly one
+  violation containing `now measures`. The case also asserts typed refusals and `cannot be measured`
+  evidence violations for missing, empty, and generated-only covers paths.
+- Additional deferred-mode fixtures assert exactly one violation for each of these. A deferred `Done` phase whose row
   `covers in-gate` gives `must name the digest it covers`. A self-verifying `Done` phase whose row covers a
   64-hex digest gives `covers 'in-gate'`. A deferred `Done` phase with no `**Evidence covers**` field gives
-  `names no '**Evidence covers**' paths`. A deferred `Done` phase whose `**Evidence covers**` names a path
-  that does not exist gives `cannot be measured`.
+  `names no '**Evidence covers**' paths`. The existing `digestCase` retains the unmeasurable-path refusal.
 - The owed case is built with `phaseDocumentWith "Active" present "The dated run." ""` (no row), and again
   with the `2026-02-30` row. `checkGateEvidence` returns `[]` for both. The repeated
   `checkGateEvidence root intact` assertion under the "no gate evidence" comment is deleted.
@@ -883,10 +883,10 @@ result. With the case in place, each of these edits to `DocValidator.hs` turns `
 
 #### Remaining Work
 
-- Add the deferred-evidence fixture: a matching digest gives `[]`, and an edited covered file gives one
-  `now measures` violation.
-- Add the four single-violation deferred and self-verifying cases: `in-gate` on deferred, a digest on
-  self-verifying, no `**Evidence covers**`, and an unmeasurable path.
+- Reuse `digestCase`'s matching, stale-digest, and unmeasurable-path assertions, and prove the applicable
+  guards through the mutations listed under Validation.
+- Add the three remaining single-violation deferred and self-verifying cases: `in-gate` on deferred,
+  a digest on self-verifying, and no `**Evidence covers**`.
 - Rebuild the owed case without an evidence row and with a malformed row, both asserting `[]`. Delete the
   duplicated `intact` assertion.
 - Add the five `negativeCase` needles and the three Active and Done phase fixtures they need.
@@ -916,7 +916,7 @@ shape the rule forbids:
 - evidence rows and `**Evidence covers**` taken from anywhere in the document;
 - a later phase cited in prose inside a Remaining Work section;
 - a renamed contracts heading that leaves nothing to check;
-- a ledger row with a blank or missing `Deleted by` cell;
+- a malformed ledger row with a missing `Deleted by` cell;
 - a combined substrate declaration that the standard permits, which the check refuses.
 
 #### Deliverables
@@ -955,7 +955,7 @@ The sprint closes when `DocValidatorSpec` carries one fixture per deliverable an
 - a Done phase whose only `**Gate evidence**` line sits in a sprint body, which gives `records no`;
 - a Remaining Work line citing a later phase in prose, and one citing it through a `./` link;
 - a standards fixture with the contracts heading renamed;
-- ledger rows with a blank `Deleted by` cell and with three cells;
+- the existing `negativeCase` blank-`Deleted by` regression, plus a ledger row with three cells;
 - the three substrate declarations above.
 
 The real plan stays green, and the host static gate passes.
@@ -967,7 +967,8 @@ The real plan stays green, and the host static gate passes.
   two fixtures.
 - Read Remaining Work citations through `referencedPhaseNumbers`, and add the prose and `./` fixtures.
 - Refuse the missing or empty contracts section in `checkContractOwnership`, with its fixture.
-- Rewrite ledger row splitting, tracking and arity as stated, with the blank-cell and short-row fixtures.
+- Extend ledger row splitting, tracking and malformed-row arity checks as stated; preserve `negativeCase`'s
+  blank-`Deleted by` regression and add the short-row fixture.
 - Tokenize `**Substrates**` declarations, with the three fixtures. The Haddock on `checkSubstrateBudget`
   states the comma-separated form.
 
@@ -1415,9 +1416,9 @@ passes only once every lower phase's owed walker deletion has landed.
 - Sprint 25.4: the reachability page counts its three exposure mints.
 - Sprint 25.5: governed prose names `testPlaintextSecret` where it means the Haskell construction, and
   keeps `TestPlaintext` for the Dhall wire alternative.
-- Sprint 25.17: the deferred-evidence, phase-level Remaining Work, drift-reach, fence and agreeing-status
-  fixtures, three violation texts naming files and sections that exist, and an allowlist with no
-  uncited entry.
+- Sprint 25.17: the remaining deferred-mode, phase-level Remaining Work, drift-reach, fence and agreeing-status
+  fixtures, mutation checks including the existing `digestCase`, three violation texts naming files and
+  sections that exist, and an allowlist with no uncited entry.
 - Sprint 25.18: the sprint-structure, header-block, Remaining Work prose-citation, contracts-heading,
   ledger-row and substrate-token gaps in the doctrine checks.
 - Sprint 25.19: case-exact path resolution, a strict UTF-8 reader, same-page and fence-aware anchors, and

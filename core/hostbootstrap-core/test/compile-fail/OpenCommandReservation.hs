@@ -1,13 +1,9 @@
 module OpenCommandReservation where
 
--- Reservation construction and replay policy remain entirely behind the
--- public opaque CommandAuthority surface.
+-- Reservation construction and consumption stay behind the opaque command authority.
+
 import HostBootstrap.Authority (
     CommandReservation,
-    childCommandReservationKernel,
     commandReservationKernel,
     reserveCommandInvocationKernel,
  )
-
-hidden :: ()
-hidden = ()

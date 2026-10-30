@@ -60,7 +60,10 @@ module FakeProvider (
 
 import Control.Exception (bracket_)
 import Control.Monad (when)
+import qualified Data.ByteString as ByteString
 import Data.List (isPrefixOf)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Substrate.Provider (RawProviderOutcome (..))
 import HostBootstrap.Substrate.Provider.Command (
     providerIdentityConfigKey,
@@ -70,7 +73,7 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Environment (setEnv, unsetEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
 import System.FilePath ((</>))
-import System.IO (hPutStr, hPutStrLn, readFile', stderr)
+import System.IO (Handle, readFile', stderr, stdout)
 
 -- ---------------------------------------------------------------------------
 -- Entering the role
@@ -242,23 +245,23 @@ serveProviderCommand guest root role behaviour argv = case argv of
     -- a provider that is not answering at all is told from one that answers and
     -- names nothing.
     ["list", "--format", "csv", "-c", "n"] ->
-        whileAnswering root behaviour (mapM_ (putStrLn . fst))
+        whileAnswering root behaviour (mapM_ (emitLine . fst))
     ["list", name, "--format", "csv", "-c", "ns"] ->
         whileAnswering root behaviour $ \instances ->
             case lookup name instances of
                 Nothing -> pure ()
-                Just held -> putStrLn (name <> "," <> instanceRunState held)
+                Just held -> emitLine (name <> "," <> instanceRunState held)
     ["list", name, "--format", "csv", "-c", "s"] ->
         whileAnswering root behaviour $ \instances ->
             case lookup name instances of
                 Nothing -> pure ()
-                Just held -> putStrLn (instanceRunState held)
+                Just held -> emitLine (instanceRunState held)
     ["config", "get", name, key] ->
         instanceNamed root name >>= \case
             Nothing -> refuseProviderCommand ("Failed to fetch instance " <> show name <> ": Instance not found")
             Just held
-                | key == providerIdentityConfigKey -> putStrLn (instanceIdentity held)
-                | key == providerOwnerConfigKey -> putStrLn (instanceOwnerClaim held)
+                | key == providerIdentityConfigKey -> emitLine (instanceIdentity held)
+                | key == providerOwnerConfigKey -> emitLine (instanceOwnerClaim held)
                 | otherwise -> pure ()
     ("--quiet" : "launch" : _image : name : options) -> do
         instances <- readInstances root
@@ -290,12 +293,12 @@ serveProviderCommand guest root role behaviour argv = case argv of
         | otherwise -> pure ()
     ["config", "device", "list", name] -> do
         held <- instanceNamed root name
-        mapM_ putStrLn (maybe [] (map fst . instanceDevices) held)
+        mapM_ emitLine (maybe [] (map fst . instanceDevices) held)
     ["config", "device", "get", name, device, key] -> do
         held <- instanceNamed root name
         case held >>= lookup device . instanceDevices >>= lookup key of
             Nothing -> pure ()
-            Just value -> putStrLn value
+            Just value -> emitLine value
     ("config" : "device" : "add" : name : device : "disk" : settings) -> do
         alterInstance
             root
@@ -407,12 +410,20 @@ reported as one.
 -}
 emitGuestAnswer :: RawProviderOutcome -> IO ()
 emitGuestAnswer (RawProviderExit code out err) = do
-    putStr out
-    hPutStr stderr err
+    writeUtf8 stdout out
+    writeUtf8 stderr err
     exitWith code
 emitGuestAnswer (RawProviderFailure reason) = refuseProviderCommand reason
 
 refuseProviderCommand :: String -> IO ()
 refuseProviderCommand reason = do
-    hPutStrLn stderr reason
+    writeUtf8 stderr (reason <> "\n")
     exitWith (ExitFailure 1)
+
+-- Protocol fixtures emit UTF-8 bytes with their declared LF terminators.
+-- Text handles translate newlines on Windows and would change the wire.
+writeUtf8 :: Handle -> String -> IO ()
+writeUtf8 handle = ByteString.hPut handle . TextEncoding.encodeUtf8 . Text.pack
+
+emitLine :: String -> IO ()
+emitLine = writeUtf8 stdout . (<> "\n")

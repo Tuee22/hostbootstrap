@@ -51,7 +51,7 @@ let CommandClass =
       | ProjectCommand
       >
 
-in  { dockerfile = "docker/demo.Dockerfile"
+in  { dockerfile = "docker/Dockerfile"
     , resources = { cpu = 4, memory = "8GiB", storage = "20GiB" }
     , context =
       { project = "demo"

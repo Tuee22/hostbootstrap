@@ -30,11 +30,6 @@ explanation; individual boundaries cite it instead of re-deriving the method.
 
 The method below is the target every boundary is held to. These boundaries fall short of it in the tree:
 
-- **`AbsExe` admits record update.** `HostBootstrap.HostTool` hides the constructor but exports the record
-  field `absExePath`, so a caller holding an `AbsExe` can record-update it to a bare command name, and no
-  compile-fail fixture pins the boundary. The
-  [host-tools-and-substrate-detection phase](../../DEVELOPMENT_PLAN/phase-3-host-tools-and-substrate-detection.md)
-  owns this gap.
 - **One `PreparedGate` producer is public.** The production mints are `withPreparedGate` in
   `HostBootstrap.Lifecycle.Session` and the frame executor's local reification in
   `HostBootstrap.Lifecycle.FrameExecutor`, both through the package-private `mintPreparedGate`. The third
@@ -53,17 +48,6 @@ The method below is the target every boundary is held to. These boundaries fall 
   `PreparedColimaWallCall` or `ColimaCleanupAuthority`. The
   [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
   owns this gap.
-- **Harness authority indices are phantom.** `HarnessAuthority projectId runId` and
-  `HarnessConfigAuthority projectId runId` are newtypes over `Text` with no `type role` annotation, so
-  `coerce` re-indexes a witness to another project or run without the constructor, and no compile-fail fixture
-  pins either against `coerce`. The
-  [Dhall configuration and project model
-  phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) owns the role annotations and
-  their two fixtures; [harness_workflow.md](harness_workflow.md#current-status) states the gap for the Harness.
-- **Readiness forging is pinned for one of three values.** `RawReadiness.hs` registers only the `PollPolicy`
-  diagnostic; its `Ready` forgery has no registered phrase and no fixture forges `Probe`. The
-  [canonical-quantities-and-reconcile-results
-  phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md) owns this gap.
 - **A Windows host reaps only the direct child.** On Windows both the stop and the kill step of
   `HostBootstrap.Effect.ChildGroup` call `terminateProcess` on the launched child, so the recursive
   process bracket ends that child but neither signals a group nor reaps its descendants, and the fixed grace
@@ -80,15 +64,6 @@ The method below is the target every boundary is held to. These boundaries fall 
   because the worked demo's Apple Silicon path provisions through Lima; the adapter's live coverage is the
   direct-Colima lane of the
   [Apple Silicon substrate phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md).
-- **Some registered fixtures do not ask their own question.** `RawRegistryPlan.hs` and `ForgeReadyBlobRoute.hs`
-  are pinned to the kind error their own under-applied signatures raise, which fires whether or not the
-  constructor is exported, and several registrations still split one expectation into separately matched
-  fragments. The
-  [installed-identity-and-authority-kernels
-  phase](../../DEVELOPMENT_PLAN/phase-5-installed-identity-and-authority-kernels.md) owns their repair. The same
-  phase owns the registration-completeness check: some registered fixtures import names the tree never defines,
-  so they pass because those names are absent rather than because a live boundary holds.
-  `OpenValidatedLifecycleContextAuthority.hs` is one of them, which is why the table below does not cite it.
 
 Phase status is tracked in [the development plan](../../DEVELOPMENT_PLAN/README.md).
 
@@ -114,15 +89,19 @@ The constructor is absent from every exposed module — including any module mer
 The producer validates and is the only way in. A record type also keeps its field names out of every
 exposed export list, because an exported field admits record update without the constructor.
 
-`HostBootstrap.HostTool.AbsExe` shows the shape and its most common leak: `mkAbsExe` rejects a non-absolute
-path, so a bare command name is not an `AbsExe` when it is built, but the exported `absExePath` field lets a
-caller record-update one into a bare command name, so § K's doctrine holds by review rather than by
-construction until that field is withdrawn (see [Current Status](#current-status)).
+`HostBootstrap.HostTool.AbsExe` exposes its admitted path through the ordinary function `absExePath`.
+`mkAbsExe` rejects a non-absolute path, and `RelabelAbsExe.hs` requires the record-update attempt to fail
+because that reader is not a record field.
 `HostBootstrap.Step.ProjectStepId`, `HostBootstrap.Readiness.PollPolicy`, and
 `HostBootstrap.Lifecycle.Prepared.PreparedGate` are the same shape at increasing stakes — the last of
 these is minted only through the package-private `mintPreparedGate` after a durable Unknown compare-and-swap,
-and `ForgePreparedGate.hs` pins both construction and record update; one of its producers is public, which
-[Current Status](#current-status) records. The root's journal admission, `withPreparedGate`, mints it directly
+and `ForgePreparedGate.hs` pins the constructor's absence from the public export. Its six coordinate
+readers are ordinary functions. The typed `RecordUpdatePreparedGatePlan.hs`,
+`RecordUpdatePreparedGateOperation.hs`, `RecordUpdatePreparedGateSession.hs`,
+`RecordUpdatePreparedGateFence.hs`, `RecordUpdatePreparedGateAttempt.hs`, and
+`RecordUpdatePreparedGateJournalVersion.hs` fixtures refuse replacement through each reader. Its public
+producer is recorded in [Current Status](#current-status). The root's journal admission,
+`withPreparedGate`, mints it directly
 after its CAS;
 a storeless `FrameExecutor` may reify the same gate only through that hidden allow-listed mint after exact
 comparison of the root-signed prepared response's node/dependencies/operation-gate/projected-gates packages
@@ -203,9 +182,51 @@ the public plan facade wraps it before Chain classifies or settles it. This prov
 configuration continuity, not a separate node identity: exact Chain supplies the matching planned node and
 descriptor at the call site, while the wrapper itself has no node index.
 
-`HarnessAuthority projectId runId` and `HarnessConfigAuthority projectId runId` are the counter-example:
-they declare no role, so their indices are phantom and `coerce` crosses them (see
-[Current Status](#current-status)).
+`HarnessAuthority projectId runId` and `HarnessConfigAuthority projectId runId` make both indices nominal.
+The public Harness authority retains its descriptive run text; the narrower configuration authority is an
+opaque token without a stored copy of that text. Their hidden constructors and run-index coercion fixtures
+hold the scope boundary even when their runtime representation carries no index:
+[CoerceHarnessAuthorityRun.hs](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessAuthorityRun.hs)
+and [CoerceHarnessConfigAuthorityRun.hs](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessConfigAuthorityRun.hs).
+
+The project-mode boundary likewise uses empty `ProductionMode` and `HarnessMode runId` type tags,
+with a nominal Harness run parameter. They have no term constructors to expose. The real capability is
+`ProjectModeLease projectId mode brokerGeneration`, whose constructor is private and all three indices
+are nominal. A protected mode transition produces it; the private wire sum and generic mutation kernel
+do not cross the public facade. Constructor privacy and mode/run coercion are separate proof obligations.
+
+The journal carriers `ProjectPermit`, `ClosingProjectPermit`, `ClosedProjectPermit`, `OperationSession`
+and `OperationAdvance` each make scope and plan nominal. Ten newtype-alias probes hold the two axes
+independently, while a positive payload-coercion control preserves `OperationAdvance`'s representational
+result. This prevents relabelling an already typed value through `coerce`; it does not authenticate the
+raw plan text accepted by `openProjectJournal`. That generic producer still permits caller-selected
+scope and plan instantiation. Journal versions govern runtime exclusion, and higher admission bridges
+perform their own plan joins. Deterministic same-permit order controls and cross-process exclusion are
+distinct evidence.
+
+`VerifiedAllSessionsClosed scope planId` is an abstract observation with nominal scope and plan roles.
+Its two newtype-alias probes hold each axis independently. The generic `verifyAllSessionsClosed`
+producer accepts raw plan text and caller-selected result indices; nominal roles do not authenticate
+that text, scope or store identity. Consumers retain their runtime bound-lease plan comparison. The
+exact export inventory holds the existing abstract boundary, while its dedicated constructor-forgery
+compiler proof remains owned by the
+[recovery-and-migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
+
+`FenceEpoch scope planId` likewise keeps both roles nominal behind its private single-field constructor.
+Its newtype-alias probes target scope and plan separately, and `ForgeFenceEpoch.hs` uses the actual
+constructor shape. `OldPermitsFenced scope planId` also keeps both roles nominal behind its private
+constructor, with a newtype-alias probe for each axis. Nominal value separation does not authenticate
+the raw plan text accepted by the generic `currentFence`, `establishInitialFence`, and `fenceOldPermits`
+producers or constrain their caller-selected indices. The fence set's protected-entry index remains
+owed by the [recovery-and-migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
+
+`IntentOrigin` exposes the lawful absent-record choice `NoHistory`, while its released variant is private.
+`readReleasedIntentOrigin` observes ordinary `Released` at the operation session's derived key and retains
+the store identity, key and physical record version. Registration re-reads all of them and the phase before
+its existing transaction; another key/store, a changed or missing record, or `AdoptionReleased` cannot
+supply that origin. This proves the recorded observation's eligibility, not complete payload validation
+or backend history. An absent new key uses `NoHistory`, not an origin copied from an old released key.
+The actual hidden-constructor child import is `ForgeReleasedIntentOrigin.hs`.
 
 Indices are only as strong as the values that carry them. An index on a type whose every accessor
 returns plain `Text` is documentation, not enforcement — worth writing when a future consumer will
@@ -260,7 +281,7 @@ Worked examples: `ForgeStepExecution.hs` (a project cannot fabricate a plan-mint
 `CoercePlannedStepObservationRoles.hs` (an interpreter-carried observation cannot be relabelled across
 scope, plan, or configuration), `CrossAuthorityChain.hs` and `CrossCursorChain.hs` (an exact Chain entry
 cannot substitute foreign command evidence),
-`ForgePreparedGate.hs` (nor a prepare gate, nor reach one by record update), `ForgeTeardownForest.hs`
+`ForgePreparedGate.hs` (a caller cannot name the prepare-gate constructor), `ForgeTeardownForest.hs`
 (nor a teardown forest, nor substitute one verb's projection for another's), and
 `ForgeProviderWallSettlementPermit.hs` / `ImportBudgetInternal.hs` /
 `ImportColimaSettlementInternal.hs` (nor turn a descriptive wall observation into live authority or import
@@ -277,17 +298,25 @@ Two rules make a fixture worth having:
 2. **The expectation must not be satisfiable by an unrelated error.** Splitting an expected diagnostic
    into separately-matched tokens is the common way to get this wrong: an unrelated in-scope error on
    the same source line can satisfy each token independently. Keep the expectation one contiguous
-   phrase; the matcher collapses whitespace so compiler line-wrapping does not break it.
+   phrase inside one diagnostic block. Distinct expectations require distinct error blocks; the matcher
+   backtracks across candidate blocks and collapses whitespace and quote variants within each block.
 
-Every fixture in the public boundary suite states a phrase it expects, read from the diagnostic the fixture
-actually produces. A fixture whose diagnostic names an arity or kind error rather than the boundary it is
-registered under is repaired to ask its own question — its signatures fully apply every type they name —
-rather than pinned to what it happened to say, because a fixture pinned to the wrong reason is a fixture
-that will keep passing after the boundary it names is gone. Not every registration meets both rules yet:
-[Current Status](#current-status) names the fixtures still pinned to their own kind errors and the split
-registrations, and
-[the installed-identity-and-authority-kernels phase](../../DEVELOPMENT_PLAN/phase-5-installed-identity-and-authority-kernels.md)
-owns their repair.
+Every registration takes `NonEmpty String` and states the rejection phrases observed from its fixture.
+Fixtures compile with `-fno-diagnostics-show-caret`, so echoed source excerpts cannot supply an expectation.
+The matcher separates error diagnostics before normalization; warning text, paths and preambles supply no
+rejection evidence. A fixture whose arity or kind error precedes its intended question needs fully applied
+types before its hidden-constructor or nominal-role diagnostic can hold the boundary. The source-definition and registration inventories enforce the same discipline across the complete fixture tree.
+
+The fixture inventory compares every file with its unique registration and checks first-party import
+modules and names against real library definitions under every declared source root. The definition
+reader collects declaration binders, constructors, record labels, class members and foreign binders;
+imports, exports, type references, patterns, comments and literals cannot supply a definition.
+Unsupported forms fail explicitly. A private name remains eligible for a negative import probe because
+it exists in the implementation even while its public facade withholds it.
+
+A separate inventory pins the exact export tokens of every exposed main-library module importing a
+hidden or private implementation, plus the explicitly included locally sealed registry plan. Missing,
+duplicate, stale or changed pins fail, and every named library unit must declare private visibility.
 
 ## Tests that pin a defect
 
@@ -337,22 +366,27 @@ version, and variant frames, not the fields of the Haskell constructor.
 
 | Boundary | Sealed value | Fixture |
 |---|---|---|
-| Host-tool resolution (§ K) | `AbsExe` — constructor hidden, but the exported `absExePath` field admits record update (see [Current Status](#current-status)) | — (smart constructor, `HostToolSpec`) |
+| Host-tool resolution (§ K) | `AbsExe` — constructor hidden, admitted by `mkAbsExe`, inspected through the ordinary `absExePath` function | `RelabelAbsExe.hs`, `HostToolSpec` |
 | Owned-object vocabulary (§ EE) | `ObjectIdentity`, `PayloadDigest`, `OriginRecord` — the kernel answers the identity, the digest is computed from the payload a run intends to install, and the record has no updatable field, so its binding cannot be replaced | `ForgeObjectIdentity.hs`, `ForgeOwnershipPayloadDigest.hs`, `ForgeOwnershipOriginRecord.hs`, `RebindOwnershipOriginRecord.hs` |
 | The four clause tokens (§ EE) | `Entered`, `Recorded`, `Bound`, `Releasable` — each minted by a clause actually being held, each indexed nominally by the protected entry that authorized it and by the object it names, with the entry index the protected session's own rank-2 variable so a token cannot outlive its entry | `ForgeOwnershipEntered.hs`, `ForgeOwnershipRecorded.hs`, `ForgeOwnershipBound.hs`, `ForgeOwnershipReleasable.hs`, `CoerceOwnershipClauseSession.hs`, `CoerceOwnershipClauseObject.hs`, `EscapeOwnershipClauseEntry.hs`, `ImportOwnershipInternal.hs` |
-| Readiness (§ CC) | `Ready`, `Probe`, `PollPolicy` — constructors hidden; only the `PollPolicy` forgery has a registered diagnostic | `RawReadiness.hs` (pins `PollPolicy` only) |
+| Readiness (§ CC) | `Ready`, `PollPolicy`, and `Micros` are public abstract types; the public `Probe` synonym exposes no `Probe` term constructor | `RawReadiness.hs` independently pins `PollPolicy`, `Micros`, and `Ready`; `RawProbe.hs` pins the unavailable public `Probe` term spelling |
 | Capabilities and lifecycle state (§ EE) | `PreparedGate`, ownership receipts, `UnboundRunLease` and `BoundRunLease`. `PreparedGate`'s coordinates are typed one role each — plan digest, operation key, session, fence, attempt, journal version, and for a rooted package the catalog identity, frame, and supersession generation — so two adjacent coordinates of the same underlying type cannot be transposed between the producer and the canonical renderer | `ForgePreparedGate.hs`, `ForgeRunLease.hs` |
-| The interrupted-transaction seam (§ NN) | The vocabulary a recovery fixture writes durable coordinator state in lives in the Cabal-private `lifecycle-transaction-internal` sublibrary. Its types mint no authority, but the bytes they render are the coordinator's own | `ForgeTransactionPermitFromDescriptor.hs` |
+| The interrupted-transaction seam (§ NN) | The already private `lifecycle-transaction-internal` unit exposes only `Session.Testing`'s coordinator DATA vocabulary, which mints no authority. `Lifecycle.Transaction` is hidden in that unit's `other-modules`; the main library retains its own hidden copy. The rendered bytes are still the coordinator's own | Required controls: `ForgeTransactionPermitFromDescriptor.hs` for public hidden-package refusal and testing-unit DATA access; `ImportTransactionRunnerFromTestingUnit.hs` for testing-unit hidden-module refusal; `SessionSpec` stanza guard |
 | Provider-wall admission and settlement (§ EE) | journal-derived `ProviderWallReservation`; nominal backend-produced `ProviderWallSettlementPermit`; journal-bound provider start completed only by a hidden owning adapter | `CallerFenceProviderWallReservation.hs`, `CrossPartitionProviderWallReservation.hs`, `ForgeProviderWallSettlementPermit.hs`, `RawObservationProviderWallSettlement.hs`, `ImportBudgetInternal.hs`, `ImportColimaSettlementInternal.hs`, `ForgePreparedProviderStart.hs`, `ImportProviderStartInternal.hs`, `CoerceProviderWallSettlementPermitRoles.hs`, `CoercePreparedProviderStartRoles.hs` |
 | Exact direct-Colima ownership (§ EE/§ HH) | opaque `PreparedColimaWallCall`, backend-minted `ColimaWallObservation`, `LiveColimaWall`, `ColimaCleanupAuthority`, and journal-bound `PreparedColimaCleanupCall`; private resolver/backend/settlement constructors and mutation arguments on the `HostBootstrap.Ensure.Colima` facade. The exposed `HostBootstrap.Ensure.Colima.Ownership` module still exports unsealed string-argument mutations (see [Current Status](#current-status)) | `CrossPlanColimaConsumer.hs`, `ForgeColimaAuthorities.hs`, `CoerceColimaAuthorityRoles.hs`, `ImportColimaBackendRunner.hs`, `ImportColimaResolverOverride.hs`, `ImportColimaResolverTesting.hs`, `ImportColimaResolverInstall.hs`, `ImportColimaSettlementInternal.hs`, `OpenColimaOwnershipBackend.hs`, `OpenPreparedColimaMutationArgs.hs`, `ColimaAcquireCallAsCleanupGate.hs`, `WrongColimaCleanupPhase.hs` |
 | Installed and broker identity (§ X) | `InstalledProjectIdentity`, `BrokerEpoch` | `EscapeInstalledProjectIdentity.hs`, `ForgeInstalledProjectIdentity.hs`, `CoerceInstalledProjectIdentity.hs`, `CoerceBrokerEpoch.hs` |
+| Indexed project mode (§ EE/§ HH) | Private-constructor, three-role-nominal `ProjectModeLease projectId mode brokerGeneration`; empty Production/Harness type tags and a private runtime wire sum. Only the protected scope-specific transitions mint a lease; the generic mutation kernel is not public | `ForgeProjectModeLease.hs` imports the real constructor; `CoerceProjectModeLease.hs`, `CoerceHarnessModeRun.hs`, `OpenGenericProjectModeMutation.hs` |
+| Indexed journal values (§ EE/§ HH) | Nominal scope and plan roles on `ProjectPermit`, `ClosingProjectPermit`, `ClosedProjectPermit`, `OperationSession` and `OperationAdvance`; the advance's result remains representational. These roles hold value non-coercibility, not runtime authentication of the generic producer's plan text | `CoerceProjectPermitScope.hs`, `CoerceProjectPermitPlan.hs`, `CoerceClosingProjectPermitScope.hs`, `CoerceClosingProjectPermitPlan.hs`, `CoerceClosedProjectPermitScope.hs`, `CoerceClosedProjectPermitPlan.hs`, `CoerceOperationSessionScope.hs`, `CoerceOperationSessionPlan.hs`, `CoerceOperationAdvanceScope.hs`, `CoerceOperationAdvancePlan.hs`; positive payload control in `CompileFailSpec` |
+| Closed-session observation (§ EE/§ HH) | Abstract `VerifiedAllSessionsClosed scope planId` has both roles nominal. Held-value separation does not authenticate the raw-text producer's plan, scope or store | `CoerceVerifiedAllSessionsClosedScope.hs`, `CoerceVerifiedAllSessionsClosedPlan.hs`; abstract export pin in `SealedExportInventory`, with the dedicated constructor-forgery proof still owed |
+| Indexed fence values (§ EE/§ HH) | Private-constructor `FenceEpoch scope planId` and `OldPermitsFenced scope planId` with both roles nominal. A held value cannot be coerced to another scope or plan; generic raw-text producer instantiation and fence-set entry binding remain separate boundaries | `ForgeFenceEpoch.hs`, `CoerceFenceEpochScope.hs`, `CoerceFenceEpochPlan.hs`, `CoerceOldPermitsFencedScope.hs`, `CoerceOldPermitsFencedPlan.hs` |
+| Observed intent origin (§ EE/§ HH) | Public absent-only `NoHistory` and a private released variant retaining observed store/key/physical version. Registration revalidates the same ordinary `Released` phase; it grants no old-key-to-new-key rollover or backend-history proof | `ForgeReleasedIntentOrigin.hs`, `SessionSpec` origin controls |
 | Root authority (§ X) | `RootInvocationAuthority`, `RootScopeAuthority`; no public root or recorded-epoch opener | `ForgeCommandAuthority.hs`, `CrossRootScopeAuthority.hs`, `ForgeRootScopeAuthority.hs`, `OpenRootInvocationAuthority.hs`, `OpenRecordedBrokerEpoch.hs` |
-| Command authority (§ X) | nominally indexed `CommandAuthority`; no generic producer in the safe authority facade | `ForgeCommandAuthority.hs`, `CrossScopeCommandAuthority.hs`, `CrossPlanCommandAuthority.hs`, `CrossFrameCommandAuthority.hs`, `OpenGenericCommandAuthority.hs` |
-| Authority kernel package boundary (§ X) | hidden `HostBootstrap.Authority.Kernel` | `ImportAuthorityKernel.hs` |
+| Command authority (§ X) | nominally indexed `CommandAuthority`; no generic producer in the safe authority facade | `ForgeCommandAuthority.hs`, `CrossScopeCommandAuthority.hs`, `CrossPlanCommandAuthority.hs`, `CrossFrameCommandAuthority.hs`, `OpenCommandReservation.hs` |
+| Authority kernel package boundary (§ X) | `HostBootstrap.Authority.Kernel` and its narrow fixture seam share the Cabal-private `authority-internal` unit; the main library re-exports only the shared project-scope module | `ImportAuthorityKernel.hs`, `ImportAuthorityTesting.hs` |
 | Plan-bound acquisition and frame cursor (§ W/§ EE) | hidden-constructor `AcquisitionJournal`; six-role nominal `LifecycleCursor`; existential current-phase recovery; only adjacent phase successors | `ForgeLifecycleCursor.hs`, `CoerceLifecycleCursorScope.hs`, `CrossPlanLifecycleCursorOpen.hs`, `CrossFrameLifecycleCursor.hs`, `CrossBrokerLifecycleCursor.hs`, `CrossVerbLifecycleCursor.hs`, `CrossPhaseLifecycleCursor.hs`, `SkipLifecycleCursorExecute.hs`, `AdvanceTerminalLifecycleCursor.hs` |
-| Durable reverse-root intent substrate (§ W/§ X/§ Y) | module-private, three-role-nominal `ReverseRootIntent`; exactly Pending, Committed, and Terminal states for Down and for Destroy (six constructors); no public producer, projection, transition, repair, deletion, recovery, or test seam; ordinary snapshot, allocation, migration, Harness, profile-slot, and terminal-mutation funnels refuse its stable key, while lower acquisition/cursor open and reopen remain deliberately non-authorizing | `OpenReverseRootIntent.hs`, `ProjectPlanSpec`, `SessionSpec` |
+| Durable reverse-root intent substrate (§ W/§ X/§ Y) | module-private, three-role-nominal `ReverseRootIntent`; exactly Pending, Committed, and Terminal states for Down and for Destroy (six constructors); no public producer, projection, transition, repair, deletion, recovery, or test seam; ordinary snapshot, allocation, migration, Harness, profile-slot, and terminal-mutation funnels refuse an active or malformed intent at its stable key, while lower acquisition/cursor open and reopen remain deliberately non-authorizing | `OpenReverseRootIntent.hs`, `ProjectPlanSpec`, `SessionSpec` |
 | Durable reverse descent (§ W/§ X/§ Y/§ HH) | Cabal-hidden, eight-role-nominal `ReverseDescent` has only private Prepared and Bound constructors. Prepared retains the exact entry/work/adapter/authority package; Bound retains canonical binding bytes plus its exact durable successor, never an offer or token. Planned-token replay may reproduce the same offer for transmission, while a separate strict hidden path reauthorizes and rehydrates exact Bound state without opening the token map. Neither constructor nor retained term enters the public library surface, and full Prepared bytes are bounded before publication | `OpenReverseDescentSubstrate.hs`, `OpenPreparedRootReverseDescentProducer.hs`, `ProjectPlanSpec` |
-| Sealed semantic lifecycle completion (§ W/§ X/§ Y/§ HH) | Cabal-private lower `Handoff.Completion` owns exactly five exports: the four-role-nominal `LifecycleCompletion`, three fixed-unit acknowledged producers, and its proof-only fold. Cabal-private `Handoff.TerminalReport` accepts only an exact typed rooted Up session plus coordinator-produced canonical origin bytes and renders the completed report without a store, signer, process, Chain, or command import. `Command.LifecycleEntry` is its sole origin producer and adopts the lower completion fold inside validated receipt confirmation; Process retains the other fixed forward/reverse completion call sites. The root coordinator produces canonical forward and reverse terminal origins; storeless children return authenticated observations. Receiver imports none of them, and no testing seam exists | `ImportHandoffCompletion.hs`, `ImportHandoffTerminalReport.hs`, `ImportHandoffLifecycle.hs`, `HandoffSpec`, `ProjectPlanSpec` |
+| Sealed semantic lifecycle completion (§ W/§ X/§ Y/§ HH) | Cabal-private lower `Handoff.Completion` owns exactly five exports: the four-role-nominal `LifecycleCompletion`, three fixed-unit acknowledged producers, and its proof-only fold. Cabal-private `Handoff.TerminalReport` accepts only an exact typed rooted Up session plus coordinator-produced canonical origin bytes and renders the completed report without a store, signer, process, Chain, or command import. `Command.LifecycleEntry` is its sole origin producer and adopts the lower completion fold inside validated receipt confirmation; Process retains the other fixed forward/reverse completion call sites. The root coordinator produces canonical forward and reverse terminal origins; storeless children return authenticated observations. Receiver imports none of them, and no testing seam exists | `ImportHandoffCompletion.hs`, `ImportHandoffTerminalReport.hs`, `HandoffLifecycleProducers.hs`, `HandoffSpec`, `ProjectPlanSpec` |
 | Root-resident lifecycle acknowledgement substrate (§ W/§ X/§ Y/§ HH) | Hidden root-parent kernels retain exact binding, challenge, full grant, report, acknowledgement, and lawful Reported→Acknowledged→Adopted successors. Exact CAS losers converge, strict readback runs under the root broker guard, and fixed callbacks expose no store, durable row, disposition, or caller-selected result. No child-side persistence claim belongs to this boundary | [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) proof matrix |
 | Keyless rooted transport (§ W/§ X/§ Y/§ HH) | The authenticated-handoff phase limits Relay to singleton outer fields, bounded sealed external requester-path construction, exact inner-byte preservation, strict structural request/response pairing, one outstanding request, intermediate path-suffix checks, and complete root-path equality. Only the originating typed operation verifies the signed response with the independently installed key. Outer and signed rooted refusals remain distinct uninterpreted bytes. After that structural validation the root link runs the rooted lifecycle service the recursive-lifecycle-command phase installs, whose shape is the link field's own, so the transport decides whether a request is well formed and never what it is answered with. Relay exposes no broker, store, catalog, retained session path, semantic replay/receipt decision, process owner, raw response, polymorphic result, or terminal callback, and reaches the fixed signer only through its own hidden recovery signing admission; it constructs no recursive child and claims no successful rooted process exchange | `ImportHandoffRelay.hs`, `HandoffSpec` source guards, [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) semantic/process proof matrix |
 | Rooted terminal receipt (§ W/§ X/§ Y/§ HH) | Only the root writes Published/Received: it retains the exact admitted offer for the matching session, produces a terminal origin only after all exact frame work settles, publishes before signed `FrameComplete`, admits fixed semantic completion inside idempotent `ReceiptConfirm`, and only then returns signed `ReceiptRecorded`. A child receives no `ProtectedStore`, raw receipt key, receipt mutation helper, completion constructor, catalog, or signer | [the recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) proof matrix |
@@ -377,8 +411,8 @@ version, and variant frames, not the fields of the Haskell constructor.
 | Exact current-frame Chain (§ W/§ X/§ EE) | one `ProjectPlan` plus matching execute-phase `CommandAuthority` and `LifecycleCursor`; nominal observation flow | `CrossAuthorityChain.hs`, `CrossCursorChain.hs`, `CoercePlannedStepObservationRoles.hs` |
 | Production command plan continuity (§ W/§ X/§ Y) | one retained or fixed-identity reconstructed `ProjectPlan` across render/persist, the hidden fixed root-Up entry, lower Chain, and current-frame reverse work; only that entry derives journal/cursor/authority and no plan-only alternate producer exists | `CLISpec`, `AuthoritySpec`, `ChainSpec`, `TeardownSpec` |
 | Exact current-frame reverse projection (§ W/§ Y) | nominal `TeardownPlan scope planId frame verb`, produced only from the matching `ProjectPlan` and `CurrentFrame`; projection-only opening retains `frame` through forest/progress/authorization/work/completion/`SubtreeSettled` | `CrossPlanCurrentFrameTeardown.hs`, `CrossFrameTeardownPlan.hs`, `CoerceTeardownPlanFrame.hs`, `CrossFrameTeardownPipeline.hs`, `CoerceTeardownFrameRoles.hs`, `LifecyclePlanAsTeardownPlanSource.hs`, `CallerFrameNameTeardown.hs`, `DuplicateCurrentFrameTeardown.hs`, `OpenTeardownForestWithLifecyclePlan.hs`, `OpenTeardownForestWithCurrentFrame.hs`, `ForgeTeardownPlan.hs`, `ForgeInitialTeardownForest.hs`, `ForgeTeardownForest.hs` |
-| Canonical reverse verb (§ X/§ Y) | the same nominal `ProjectVerb verb` admitted by the command boundary is retained through teardown plan, forest, work, completion, recursive argv, and cluster action selection; no local teardown-verb universe or caller text exists | `ImportLegacyTeardownVerb.hs`, `CoerceProjectVerb.hs`, `CrossVerbTeardownWork.hs`, `ProjectUpCannotVerifyDestroy.hs`, `CallerTextAsProjectVerb.hs` |
-| Recursive teardown work classification (§ X/§ Y) | hidden-constructor nominal `TeardownWork`, `LocalWork`, and existential-child `DescentWork`; only local work exposes execution, descent exposes only the exact immediate edge, and the driver has no generic point-effect callback | `ForgeTeardownWork.hs`, `LocalWorkAsDescentWork.hs`, `DescentWorkAsLocalRunner.hs`, `CrossFrameLocalWork.hs`, `CrossFrameDescentWork.hs`, `EscapeDescentChildFrame.hs`, `CoerceTeardownWorkRoles.hs`, `OpenTeardownWorkAgainstForeignForest.hs`, `GenericPointTeardownDriver.hs`, `ImportFormerTeardownCursor.hs`, `ImportDirectTeardownAdvance.hs`, `ImportTeardownPlanNodeProjections.hs` |
+| Canonical reverse verb (§ X/§ Y) | the same nominal `ProjectVerb verb` admitted by the command boundary is retained through teardown plan, forest, work, completion, recursive argv, and cluster action selection; no local teardown-verb universe or caller text exists | `CoerceProjectVerb.hs`, `CrossVerbTeardownWork.hs`, `ProjectUpCannotVerifyDestroy.hs`, `CallerTextAsProjectVerb.hs` |
+| Recursive teardown work classification (§ X/§ Y) | hidden-constructor nominal `TeardownWork`, `LocalWork`, and existential-child `DescentWork`; only local work exposes execution, descent exposes only the exact immediate edge, and the driver has no generic point-effect callback | `ForgeTeardownWork.hs`, `LocalWorkAsDescentWork.hs`, `DescentWorkAsLocalRunner.hs`, `CrossFrameLocalWork.hs`, `CrossFrameDescentWork.hs`, `EscapeDescentChildFrame.hs`, `CoerceTeardownWorkRoles.hs`, `OpenTeardownWorkAgainstForeignForest.hs`, `GenericPointTeardownDriver.hs`, `ImportFormerTeardownCursor.hs`, `ImportDirectTeardownAdvance.hs` |
 | Frame-bound subtree settlement and root destroy (§ X/§ Y) | nominal hidden-constructor `SubtreeSettled scope planId frame verb` retains the exact ordered terminal observations; descent accepts only its existential child's matching proof; unframed `DestroySettled scope planId` requires the exact plan/current-frame package and unique topology root | `ForgeSubtreeSettlement.hs`, `CoerceSubtreeSettlementRoles.hs`, `CrossSubtreeDescentSettlement.hs`, `CrossFrameTeardownPipeline.hs`, `ProjectUpCannotVerifyDestroy.hs`, `DownCannotVerifyDestroy.hs`, `SubtreeAsDestroySettled.hs`, `SubtreeAsDestroyClosure.hs`, `FramedDestroySettled.hs`, `LegacyRootDestroyVerifier.hs`, `ImportDirectTeardownAdvance.hs` |
 | Process launch (§ HH) | `DetachedLaunch`, `DetachedChild`, `DetachedWorkingDirectory`, `DetachedOutputSink` | `ForgeDetachedLaunch.hs`, `RelabelDetachedLaunch.hs` |
 | Authenticated recursive teardown entry (§ X/§ Y) | the exact child-entry wire consumed only with the plan-bound `DescentWork` edge; the root reverse-descent kernel and its bound/prepared descent types are unexported, and a caller cannot select the descent subtree | `OpenPreparedRootReverseDescentProducer.hs`, `OpenReverseDescentSubstrate.hs`, `CallerSelectedDescentSubtree.hs` |

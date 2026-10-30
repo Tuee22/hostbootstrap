@@ -1,23 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-{- | The one SHA-256 spelling, and the one way to measure a set of paths.
+{- | Lowercase-hex SHA-256, byte framing, and source-path measurements.
 
-Before this module the tree carried the same hash in several spellings — some
-folding nibbles by hand, some relying on @Show (Digest SHA256)@ happening to
-render lowercase hex, one prefixing @sha256:@. They agreed, but nothing made
-them agree, and a digest that is recomputed elsewhere has to be byte-identical
-or the comparison it exists for is meaningless.
+'sha256Hex' hashes bytes, and 'frameWire' prefixes a payload with its length as
+an eight-byte big-endian integer. 'measurePathSetDigest' measures the explicit
+@**Evidence covers**@ paths used by @HostBootstrap.DocValidator@. Entries are
+sorted, paths are UTF-8 with forward slashes, and both paths and file contents
+are length-prefixed before hashing. An unavailable input or a cited directory
+contributing no files is a typed refusal.
 
-'measurePathSetDigest' is the currency primitive the plan's gate evidence uses.
-It keeps every property the build-authority measurement already had: entries are
-sorted, each is framed as length-prefixed path followed by length-prefixed
-contents so moving bytes to a differently named file changes the digest, paths
-are encoded as UTF-8 rather than through a lossy low-byte projection, contents
-are read as bytes so a locale cannot decode them differently on another gate
-host, and a missing input is a typed refusal rather than a digest over nothing.
-
-That last property is the load-bearing one: a digest over an empty set would let
-a phase whose cited files have all been deleted keep reporting a stable value.
+@Build.measureSourceDigest@ separately measures a build's source context.
 -}
 module HostBootstrap.Digest (
     sha256Hex,
@@ -91,15 +83,26 @@ measurePathSetDigest root paths = do
 
 collect :: FilePath -> FilePath -> IO (Either DigestError [(FilePath, ByteString)])
 collect root path = do
-    let absolute = root </> path
+    collected <- collectEntries root path
+    pure $ case collected of
+        Right [] -> Left (DigestPathUnavailable (Text.pack (path <> ": directory contributes no files")))
+        result -> result
+
+collectEntries :: FilePath -> FilePath -> IO (Either DigestError [(FilePath, ByteString)])
+collectEntries root path = do
+    let absolute = root </> forwardSlashes path
     isFile <- doesFileExist absolute
     isDirectory <- doesDirectoryExist absolute
     case (isFile, isDirectory) of
         (True, _) -> fmap (fmap (\contents -> [(forwardSlashes path, contents)])) (readBytes absolute)
         (_, True) -> do
-            names <- listDirectory absolute
-            nested <- traverse (collect root . (path </>)) (sort (filter (`notElem` generatedNames) names))
-            pure (fmap concat (sequence nested))
+            listed <- try (listDirectory absolute) :: IO (Either SomeException [FilePath])
+            case listed of
+                Left err ->
+                    pure (Left (DigestPathUnavailable (Text.pack (path <> ": " <> firstLine (show err)))))
+                Right names -> do
+                    nested <- traverse (collectEntries root . (path </>)) (sort (filter (`notElem` generatedNames) names))
+                    pure (fmap concat (sequence nested))
         _ ->
             pure (Left (DigestPathUnavailable (Text.pack (path <> ": no such file or directory"))))
 

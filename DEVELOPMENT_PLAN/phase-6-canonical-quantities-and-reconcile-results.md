@@ -1,11 +1,13 @@
 # Phase 6 — Canonical quantities, readiness, and reconcile results
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 5 (operator, root, and command authority)
 **Substrates**: none (static)
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-12 ; x86_64 Ubuntu 24.04.4 LTS, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-27 ; native Windows 11 x86_64, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-27 ; native-filesystem Ubuntu 24.04.4 x86_64 CPU container, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` ; pass ; covers in-gate
 
 > **Purpose**: Supply one canonical parser for every quantity, the provider-neutral capacity and cordon
 > foundation, opaque generative readiness bound to a hidden probe, and the ownership- and phase-indexed
@@ -21,19 +23,25 @@ that distinguishes what we own from what we merely found.
 
 ## Sprints
 
-### Sprint 6.1: Canonical quantities and the provider-neutral cordon foundation [Active]
+### Sprint 6.1: Canonical quantities and the provider-neutral cordon foundation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
-`core/hostbootstrap-core/hostbootstrap-core.cabal`,
-`core/hostbootstrap-core/test/CordonSpec.hs`
+`core/hostbootstrap-core/test/CordonSpec.hs`, `core/hostbootstrap-core/test/BudgetSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/RecordUpdateBudget.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`
 **Substrates**: none
-**Docs to update**: `documents/engineering/resource_budgeting.md`
+**Docs to update**: `documents/engineering/resource_budgeting.md`,
+`documents/engineering/applied_cordon.md`
 
 #### Objective
 
 One parser, one exact unit model, and one pure capacity/sizing vocabulary for every provider consumer.
+
+Phase 7 owns the configuration-envelope facade and `fitsBudget`; Phase 12 owns the plan-indexed proof
+families.
 
 #### Deliverables
 
@@ -41,6 +49,7 @@ One parser, one exact unit model, and one pure capacity/sizing vocabulary for ev
   construct a zero, negative, or overflowed budget directly, and cannot reach one by record update either:
   `budgetCpu`, `budgetMemoryBytes`, and `budgetStorageBytes` are exported as plain accessor functions, not
   as record field labels, so `b { budgetCpu = 0 }` does not type-check outside `Cordon.Foundation`.
+  Its existing Eq behavior and record-style Show rendering, including precedence, are preserved.
 - `parseQuantity` is total: malformed, inexact, or unsupported input returns a descriptive refusal naming the
   input rather than a default or rounded value.
 - `HostCapacity`, `CapacityReadPlan`, `verifyBudget`, and `verifyHostBudget` form the provider-neutral
@@ -58,65 +67,35 @@ One parser, one exact unit model, and one pure capacity/sizing vocabulary for ev
 
 #### Validation
 
-`CordonSpec` covers parsing/refusal, capacity and reserve overflow, provider exactness, the storage-wall
-matrix, and fail-closed argument construction. A source guard permits the exposed
-`HostBootstrap.Cluster.Cordon.Foundation` to import only `HostBootstrap.Effect.Run`,
-`HostBootstrap.HostConfig`, `HostBootstrap.HostTool`, and `HostBootstrap.Substrate` from `HostBootstrap.*`.
+On 2026-10-27, native Windows 11 x86_64 (GHC 9.12.4, Cabal 3.16.1.0) and native-filesystem
+Ubuntu 24.04.4 x86_64 CPU container (same toolchain) passed focused `cabal test hostbootstrap-core-test`
+runs from `core/`: `CordonSpec` 67 cases, `BudgetSpec` 29 cases, `RecordUpdateBudget.hs` 1 case,
+sealed-surface checks 60 cases, and `DocValidatorSpec` 17 cases. Package `-Werror` remained enabled.
 
-Dated evidence: on 2026-08-09 (aarch64-osx, GHC 9.12.4), focused `CordonSpec` passed 54/54 and
-`BudgetSpec` passed 19/19 under `-Werror`; the exact phase gate
-`cabal test all --ghc-options=-Werror` from `core/` then passed 1463/1463.
-
-The sprint closes when these cases also exist and pass under `cabal test all` from `core/`:
-
-- a `CompileFailSpec` fixture `RecordUpdateBudget.hs` doing `relabel b = b { budgetCpu = 0 }` is rejected;
-- `CordonSpec` cases for `mkResourceBudget` above each bound — CPU `fromIntegral (maxBound :: Int) + 1`,
-  memory and storage `toInteger (maxBound :: Int64) + 1` — each answering
-  `Left (DimensionAboveBound <dimension>)`, plus one through `budgetFromResources` with memory
-  `"9000000Ti"` answering `DimensionAboveBound BudgetMemory`;
-- a `BudgetSpec` case that every prepared storage-wall mechanism and every `Unsupported` storage refusal
-  equals what `storageCordonPolicy` answers for that provider target;
-- the `CordonSpec` idle-timeout case asserts the two rendered timeout lines and the absence of a `=-`
-  value, with no line that restates `managedWslIdleTimeoutMillis`'s definition; the sibling WSL2 sizing case
-  pins the exact `21600000` value.
+`CordonSpec` covers each above-bound dimension, overflow through resource text, record-shaped Show at
+nested precedence, the canonical Docker unsupported decision, and finite rendered WSL2 idle timeouts.
+`BudgetSpec` compares all four prepared mechanisms and the complete Docker/BareLinux refusals with the
+canonical policy and rejects the removed duplicate enums across library sources. The negative fixture
+imports both the budget type and its reader; the public-only GHC invocation rejects its record update
+with `Not in scope: record field 'budgetCpu'`.
 
 #### Remaining Work
 
-- Stop exporting the `ResourceBudget` field labels from `Cordon/Foundation.hs` (make the constructor
-  positional and define `budgetCpu`, `budgetMemoryBytes`, `budgetStorageBytes` as functions) and keep the
-  `Cordon` facade's re-exports; add `test/compile-fail/RecordUpdateBudget.hs` and register it in
-  `CompileFailSpec` with the diagnostic GHC gives for a record update with no field in scope.
-- Add the three above-bound `mkResourceBudget` cases and the `budgetFromResources "9000000Ti"` case to
-  `CordonSpec`, each asserting the exact `DimensionAboveBound` dimension.
-- Delete `StorageWallMechanism` and `StorageWallUnsupported` from `Cluster/Budget.hs`: add the kind node
-  container to `StorageCordonTarget` with its own `StorageCordonUnsupportedReason`, have the prepared
-  storage-wall call carry `StorageCordonMechanism`, and derive each provider's mechanism or `Unsupported`
-  refusal from `storageCordonPolicy`; add the `BudgetSpec` equality case above.
-- Correct three Haddocks in `Cordon/Foundation.hs`: `hostMemoryReserveBytes` (a 16 GiB host and a 10 GiB VM
-  passes 10 + 4 ≤ 16; use an example the 4 GiB reserve refuses, such as a 13 GiB budget),
-  `kindNodeCordonArgsForBudget` (drop "a quota'd hostPath on bare Linux"; bare Linux is
-  `StorageCordonUnsupported`, and the walls are Colima, Lima, Incus, and the WSL2 VHDX), and
-  `managedWslIdleTimeoutHours` / `wsl2SizingArgsForBudget` (cite the recorded 2 h 57 min Windows gate and
-  the roughly 2x margin six hours gives).
-- Rename the `CordonSpec` case "windows storage shortage fails before WSL2 VHDX pressure" to name what it
-  checks, a pure `preflightBudget` storage refusal; it involves no Windows substrate and no WSL2 ordering.
-- In the `CordonSpec` case "both managed idle timeouts are finite, so the host always recovers the balloon",
-  drop the `managedWslIdleTimeoutMillis > 0` line and the line that recomputes it as
-  `managedWslIdleTimeoutHours * 60 * 60 * 1000` (both restate the production definition and cannot fail
-  where the rendered `21600000` assertion would not), keep the two-timeout count and the `=-` check, and
-  rename the case to "both managed idle timeouts render a finite value", since recovery of the balloon is a
-  runtime WSL2 property this case cannot observe.
+None. Docker-specific numeric bounds and their admission propagation are owned by Sprints 6.8 and 6.9.
 
-Phase 7 owns the configuration-envelope facade and `fitsBudget`; Phase 12 owns the plan-indexed proof
-families.
+### Sprint 6.2: Opaque readiness and total probes [Done]
 
-### Sprint 6.2: Opaque readiness and total probes [Active]
-
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/test/ReadinessSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
-`core/hostbootstrap-core/test/compile-fail/RawReadiness.hs`
+`core/hostbootstrap-core/test/compile-fail/RawReadiness.hs`,
+`core/hostbootstrap-core/test/compile-fail/RawProbe.hs`,
+`core/hostbootstrap-core/test/compile-fail/EscapeProbe.hs`,
+`core/hostbootstrap-core/test/compile-fail/DockerProbeForCluster.hs`,
+`core/hostbootstrap-core/test/compile-fail/CoerceReadyPlan.hs`,
+`core/hostbootstrap-core/test/compile-fail/CoerceProbePlan.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/readiness.md`
 
@@ -128,11 +107,15 @@ Make readiness an observation, not a flag.
 
 - A readiness value (`Ready scope planId id resource dependency`) is opaque, generative, and indexed by
   lifecycle scope, plan, resource instance, and the exact dependency a closed `BackendProbeKey` selected. A
-  caller cannot construct one, and cannot re-index one or a `Probe` with `coerce`: both carry
-  `type role ... nominal` annotations on every index.
+  caller cannot construct one, and cannot re-index one or a `Probe` with `coerce`: `Ready` declares its
+  nominal roles, and the public `Probe` synonym inherits the private kernel's six nominal identity roles.
 - Every probe is **total**: `ProbeResult` is `ProbeReady`, `NotReady` with its cause, `Unavailable`
-  (unsupported), `ProbeConflicted`, or `Failed` — never an exception and never a silent false — and
-  `pollStep` decides each of the five.
+  (unsupported), `ProbeConflicted`, or `Failed`, and `pollStep` decides each of the five. Expected backend
+  failures are values; backend adapters classify their IO failures. The poll loop preserves cancellation
+  and programmer exceptions rather than concealing them as observations.
+- A plain `BackendReady a` payload reports generation, phase version, observation version, and the backend
+  value through `ProbeReady`; `ProbeVersionError` and `PollInvalidReady` retain typed zero-version refusals.
+  The provider observation adapter exhaustively maps that polling refusal to its failure result.
 - A readiness value carries the generation, phase version, and observation version the backend reported
   when it answered ready, taken from the probe's `ProbeReady` payload rather than stamped from numbers the
   caller passed at probe construction, so `planDependencyProbe` refuses a stale one rather than re-using it.
@@ -142,71 +125,33 @@ Make readiness an observation, not a flag.
 
 #### Validation
 
-`ReadinessSpec` covers each `pollStep` outcome, the named policy budgets, and indexed readiness retaining
-the versions the probe reported.
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed focused `cabal test hostbootstrap-core-test` runs from `core/`:
+`ReadinessSpec`, `ProviderSpec`, each of the five new negative fixtures, inventory checks, and
+`DocValidatorSpec`. Windows selected 34 readiness, 27 provider, 5 individual fixture, 54 inventory, and
+17 documentation cases. All components compiled with the package's `-Werror` policy.
 
-The sprint closes when these cases also exist and pass under `cabal test all` from `core/`:
+`ReadinessSpec` drives the actual IO loop with counted probes/recovery, checks all seven policy values
+and exact policy refusals, and changes a backend report after probe construction to establish observation
+at await time. It independently checks each zero reported version. Its managed-dependency cases traverse
+the real snapshot/precondition runner and check matching, stale generation, stale observation version,
+and bounded not-ready failure with exact structured results. Its source-definition guard excludes the
+test-only polling driver and partial named-policy builder.
 
-- `ReadinessSpec` registers a `planDependencyProbe` for a `ResourceHandle ... Managed` and runs it through
-  `withDependencySnapshotEntry` and `withOperationPreconditions` (the only runner of a `DependencyProbe`),
-  asserting: a reported generation different from `resourceHandleGeneration` refuses with
-  `Conflict` whose expected side is `"generation=<n>"`; a reported observation version different from
-  `resourceHandleObservationVersion` refuses with `Conflict` whose expected side is
-  `"observation version=<n>"`; a probe that stays `NotReady` past its policy refuses with
-  `Failure (FailureDetail ... ReprobeBeforeRetry)`; and a matching probe seals the preconditions.
-- `ReadinessSpec` asserts each `withBackendProbe` zero guard separately: generation 0 →
-  `ZeroProbeGeneration`, phase version 0 → `ZeroProbePhaseVersion`, observation version 0 →
-  `ZeroProbeObservationVersion` (or, once the versions come from the payload, the equivalent refusal of a
-  zero reported version).
-- `ReadinessSpec` drives `pollUntilReadyWith` with a scripted probe popping results from an `IORef`, a
-  `recover` action that counts its calls, and a zero-delay policy: it converges after two `NotReady`
-  results with two recover calls, exhausts a three-attempt budget with exactly three probe calls and a
-  `PollTimeout`, and stops at `Failed` without further probe calls.
-- `ReadinessSpec` asserts each named policy equals the `mkPollPolicy` result for its attempts and delay.
-- `ReadinessSpec` pins every named policy's delay as an absolute `microsValue`, not through `seconds`:
-  `rolloutPoll`, `pushPoll`, and `reachPoll` 5000000, `vmBootPoll` and `dockerPoll` 2000000, `networkPoll`
-  and `nodePoll` 3000000; and `microsValue <$> seconds 5` is `Right 5000000`.
-- `ReadinessSpec` asserts each `PollPolicyError` constructor exactly rather than `isLeft`:
-  `seconds (toInteger (maxBound :: Int))` gives `Left (DelayOverflow (toInteger (maxBound :: Int)))`;
-  `seconds 0 >>= mkPollPolicy 1000001` gives `Left (AttemptsTooLarge 1000001)`;
-  `seconds 9000000000000 >>= mkPollPolicy 3` gives `Left TotalDurationOverflow`; and
-  `seconds 86401 >>= mkPollPolicy 2` gives `Left (TotalDurationTooLarge 86401000000)`.
-- `CompileFailSpec` rejects: a `Ready` built with its constructor (fixture separate from `RawReadiness.hs`,
-  asserting the diagnostic names `'Ready'`); a `Probe` built with its constructor (asserting the diagnostic
-  names `'Probe'`); a `Probe` returned out of `withBackendProbe`'s continuation
-  (skolem escape); `DockerDaemonProbe` applied to a `ClusterResource` planned resource; and `coerce` of a
-  `Ready` and of a `Probe` across `planId`.
+Public-only GHC invocations and the registered negative fixtures reject raw probe
+construction, a fresh probe identity re-indexed by a caller, a Docker key for a cluster, and both `Ready` and
+`Probe` re-indexed across plans. The three independent `RawReadiness` diagnostic pins remain registered.
 
 #### Remaining Work
 
-- Make the probe a `withBackendProbe` wraps report the observed generation, phase version, and observation
-  version as its `ProbeReady` payload, build `Ready` in `awaitPlanReadyWith` from that payload, refuse a zero
-  reported version there, and drop the construction-time version arguments together with the unreachable
-  `readyPhaseVersion ready == 0` branch of `readyPhaseVersionFor`; correct the `planDependencyProbe` Haddock
-  and `documents/architecture/readiness.md` to match.
-- Add `{-# LANGUAGE RoleAnnotations #-}` and `type role Probe nominal nominal nominal nominal nominal nominal
-  representational` and `type role Ready nominal nominal nominal nominal nominal` to `Readiness.hs`, with the
-  two `coerce` compile-fail fixtures.
-- Add the `planDependencyProbe` generation, observation-version, poll-failure, and matching-probe cases and
-  the three separate zero-version cases to `ReadinessSpec`.
-- Delete `drivePure` from `Readiness.hs` and its export, and replace the three "pure driver" cases with the
-  scripted `pollUntilReadyWith` cases above.
-- Build the seven named policies (`rolloutPoll` … `nodePoll`) with the private `PollPolicy` constructor
-  instead of `namedPolicy`'s `error` branch, and add the policy-equality case.
-- Split the `Ready 0 0 0` line out of `test/compile-fail/RawReadiness.hs` into its own fixture (today
-  `CompileFailSpec` pins only the `PollPolicy` diagnostic for that file, so exporting `Ready(..)` would still
-  pass), and add a raw-`Probe` constructor fixture and the `Probe`-escape and wrong-key fixtures, each
-  registered in `CompileFailSpec` with its own diagnostic.
-- Replace `fiveSeconds = seconds 5` as the expected side of the policy cases with absolute `microsValue`
-  assertions for all seven named policies, and replace the `isLeft` checks of the rejection case with the
-  four exact `DelayOverflow`, `AttemptsTooLarge`, `TotalDurationOverflow`, and `TotalDurationTooLarge` cases
-  listed above.
+None. Private backend-only injection is owned by Sprint 6.7, after the shared plan-resource kernel.
 
-### Sprint 6.3: Ownership- and phase-indexed reconcile results [Active]
+### Sprint 6.3: Ownership- and phase-indexed reconcile results [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
-`core/hostbootstrap-core/test/ReconcileSpec.hs`
+`core/hostbootstrap-core/test/ReconcileSpec.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -231,62 +176,36 @@ Distinguish what we own from what we found, in the type.
   expected and observed values and a remedy; `SafetyRefusal` and `Unsupported` are terminal and carry no
   retry disposition.
 - Explicit adoption requires matching opaque authority and reports `Changed Adopted`; it is never implicit.
+- A created resource retains the positive generation the backend actually created. Repair and adoption
+  retain the exact observed generation; phase transitions validate the resulting managed receipt.
 - Receipt rebinding re-types an ownership receipt only after `validateOwnershipReceipt` agrees on key and
   generation. The one rebinding opener is plan-bound, `withPlannedReboundManagedResourceEvidence`, so the
   rebound handle's resource kind comes from the `PlannedResource` rather than from the caller.
 
 #### Validation
 
-`ReconcileSpec` covers the `Created`, `Foreign`, `Adopted`, `Unchanged`, `Conflict`, `SafetyRefusal`, and
-`Failure` branches and the `DoNotRetry` disposition. The type-level rejection of a foreign handle at
-teardown is covered by the `CompileFailSpec` fixtures `ForeignProviderStop.hs`, `ForeignClusterCleanup.hs`,
-and `ForeignGuestAliasRelease.hs`.
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed focused `cabal test hostbootstrap-core-test` runs from `core/`:
+filter `Reconcile` 111 cases (including `ReconcileSpec` and provider/cluster reconciliation),
+`ReadinessSpec` 34, `BudgetSpec` 29, sealed-surface checks 60, and `DocValidatorSpec` 17. The package's
+`-Werror` remained enabled. Reconciliation took 17.08 seconds on Windows and 12.07 seconds on Linux.
 
-The sprint closes when these cases also exist and pass under `cabal test all` from `core/`:
+`ReconcileSpec` covers exact absent/unsupported/failure branches and recovery dispositions for acquisition
+and adoption; zero observation version; noncommitted prior-proof refusals; matching adopted-commit replay
+and wrong-operation refusal; foreign-origin generation/version mismatches; and created-generation zero.
+Its phase transition observes generation 3, creates 9, accepts 9, and refuses stale 3. Repair and adoption
+retain their exact-generation controls.
 
-- `ReconcileSpec` drives `completeReconcile` and `completeAdoption` with `BackendAbsent`,
-  `BackendUnsupported`, and `BackendFailed` observations and asserts the exact answers:
-  `Failure (FailureDetail "reconcile resource" "resource remained absent" ReprobeBeforeRetry)`,
-  `Unsupported (UnsupportedDetail "reconcile resource" <reason>)`, the `BackendFailed` disposition passed
-  through unchanged (one case each for `RetrySameOperationKeyAfterFencing` and
-  `OperatorResolutionRequired`), and `Failure (FailureDetail "adopt resource" "resource became absent"
-  OperatorResolutionRequired)`.
-- `ReconcileSpec` asserts `withObservedPlannedResource` with generation 1 and observation version 0 answers
-  `Failure (FailureDetail "observe resource" "observation version must be positive" DoNotRetry)`.
-- `ReconcileSpec` asserts `withPriorCommitProof` on an `IntentRecorded` and on an `ObservedManaged` record
-  answers `Failure (FailureDetail "rebind ownership" "journal record is not committed"
-  OperatorResolutionRequired)`, and on a matching `AdoptionCommitted` record yields a proof that
-  `completePreparedUnchanged` accepts as `Unchanged`.
-- `ReconcileSpec` asserts `withAdoptionAuthority` refuses a `VerifiedForeignOrigin` whose key or generation
-  differs from the planned resource with its specific `Conflict`.
-- `ReconcileSpec` asserts `validateOwnershipReceipt` (and `withPlannedReboundManagedResourceEvidence` over it)
-  answers `Conflict` with expected side `"generation=<n>"` for a receipt at generation + 1, `Conflict` with
-  expected side `"resource key=<key>"` for a receipt of another key, and
-  `Failure (FailureDetail "validate ownership receipt" "operation key is empty" DoNotRetry)` for an empty
-  operation key.
-- A source guard in `ReconcileSpec` asserts `HostBootstrap.Reconcile` exports no
-  `withReboundManagedResourceEvidence`.
-- The `ReconcileSpec` case "managed phase transition retains receipt generation" uses distinct generations:
-  the resource is observed at generation 3, the backend answers `BackendCreated 9`, and
-  `verifyPhaseTransition managed receipt transition 9` yields a ready handle whose
-  `resourceHandleGeneration` is 9; a sibling case passes observed generation 3 to `verifyPhaseTransition`
-  and answers `Conflict` with expected side `"9"` and observed side `"3"`.
+Receipt generation cases use genuine rendered, verified durable bundles, with a matching-generation
+control before the mismatch. Key cases use genuine provider/share evidence through cross-identity public
+rebinding. Empty operations are refused by durable rendering/parsing and verified-journal ingress; parser
+mutation first proves the unmodified record verifies. The source-definition/export guard and sealed export
+inventory exclude the unplanned opener while retaining planned rebinding. Independent source/test review
+found no additional defect.
 
 #### Remaining Work
 
-- Add the `BackendAbsent`, `BackendUnsupported`, and `BackendFailed` cases for `completeReconcile` and
-  `completeAdoption`, the generation-1/version-0 observation case, and the `withAdoptionAuthority`
-  mismatch case to `ReconcileSpec`.
-- Make `withPriorCommitProof` in `Reconcile.hs` admit a verified `AdoptionCommitted` record whose resource,
-  generation, and operation match (its own exact-operation check), keep refusing every other phase, and add
-  the three `withPriorCommitProof` cases.
-- Delete `withReboundManagedResourceEvidence` from `Reconcile.hs` and its export (it has no caller and lets
-  the continuation pick any `resource` and `phase` index), and add the export source guard.
-- Add the three `validateOwnershipReceipt` refusal cases, each driven through
-  `withPlannedReboundManagedResourceEvidence` as well as directly.
-- Rewrite `phaseSummary` in `ReconcileSpec` so the observed generation (3), the created generation (9), and
-  the `verifyPhaseTransition` argument differ, assert the ready handle carries 9, and add the stale-argument
-  `Conflict` case.
+None.
 
 ### Sprint 6.4: The budget path answers with a closed result [Done]
 
@@ -328,15 +247,23 @@ string matching, and that their rendering is unchanged. Dated evidence: on 2026-
 None. The exact `InvalidQuantity` cases at the plan-indexed admission belong to `BudgetSpec`, which the
 step-algebra phase (phase 12) owns.
 
-### Sprint 6.5: Host capacity is read through typed host effects and a Win32 binding [Planned]
+### Sprint 6.5: Host capacity is read through typed host effects and a Win32 binding [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/internal/capacity/HostBootstrap/Cluster/Cordon/WindowsCapacity.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
-`core/hostbootstrap-core/test/CordonSpec.hs`
+`core/hostbootstrap-core/test/CordonSpec.hs`,
+`core/hostbootstrap-core/test/CoverageManifest.hs`,
+`core/hostbootstrap-core/test/Spec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/test/compile-fail/MemorySourceAsCpu.hs`,
+`core/hostbootstrap-core/test/compile-fail/ImportWindowsCapacity.hs`
 **Substrates**: none
-**Docs to update**: `documents/engineering/resource_budgeting.md`
+**Docs to update**: `documents/engineering/resource_budgeting.md`,
+`documents/architecture/hostbootstrap_core_library.md`
 
 #### Objective
 
@@ -362,60 +289,108 @@ match.
 
 #### Validation
 
-The sprint closes when these cases exist and pass under `cabal test all` from `core/`:
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed focused `cabal test hostbootstrap-core-test` runs from `core/`:
+filter `CordonSpec` 85 cases (including the two declared-family manifest checks), `BudgetSpec` 29,
+`MemorySourceAsCpu.hs` 1, `ImportWindowsCapacity.hs` 1, sealed checks 60, inventory checks 54, and
+`DocValidatorSpec` 17. The Windows library build also passed without native-compiler pointer warnings;
+package `-Werror` remained enabled.
 
-- `CordonSpec`: the pure cpuinfo counter over a two-processor fixture answers 2 and over a zero-processor
-  fixture answers the refusal naming no processors; the meminfo parser over a fixture with
-  `MemAvailable: 1024 kB` answers 1048576 bytes and over one without the key answers the refusal naming
-  `MemAvailable`; `parsePositiveInteger` answers 16 for `"16\r\n"` after stripping, a non-positive refusal
-  for `"0"`, and a non-integer refusal for `"abc"`; and the unresolved-tool refusal for `df` and for
-  `sysctl`.
-- The live capacity case runs on every gate host: it resolves the host's own substrate and tools and asserts
-  positive cpu, memory, and storage from `resolveHostCapacity`; a host that cannot read capacity asserts the
-  declared refusal instead of `pure ()`, and the family has a `CoverageManifest` row.
-- A source guard asserts `Cordon/Foundation.hs` contains no `-Command` token, and the Foundation import guard
-  admits exactly the modules this sprint adds to its import list.
+`CordonSpec` checks exact cpuinfo/meminfo fixtures and integer refusals, whole-entry unresolved sysctl/df
+refusals, the exact lower import set, and absence of PowerShell interpreter/direct-runner tokens. The df
+case uses the test executable as an actual described sysctl process, retaining the production interpreter.
+Each supported native host resolved positive CPU, memory, and storage. All three private Win32 readers and
+the empty-tool-table Windows configuration ran positively on Windows; Linux asserted their exact declared
+unsupported results. `CoverageManifest` declares native capacity 1 and Windows capacity 4, with successful
+conditional callbacks. The final phase gate checks all family completion totals together.
+
+The two public-only GHC fixtures reject a memory source in the CPU slot for the actual type mismatch and
+reject the private Windows kernel import for its hidden capacity unit. The production change spans three
+modules; no scalar IO API was exported for tests.
 
 #### Remaining Work
 
-- Replace `readPowerShellPositiveInteger` and its three PowerShell expressions in `Cordon/Foundation.hs`
-  with Win32 reads in a new Windows capacity module under `src/HostBootstrap/Cluster/Cordon/` (registered in
-  `hostbootstrap-core.cabal`, `Win32` under `if os(windows)`), and add the no-`-Command` source guard and a
-  `CordonSpec` `mingw32` case: with a `HostConfig` whose tool table resolves no `PowerShell`, the three Windows
-  reads each return a positive `Right`.
-- Route `readDfFreeBytes` and `readSysctlPositiveInteger` through `hostCommand` and `interpretHostCommand`,
-  update the `CordonSpec` "foundation imports only modules below the canonical-quantities boundary" guard to
-  the new import list, and add the unresolved-tool cases.
-- Split `CapacityReadSource` into `CpuSource`, `MemorySource`, and `StorageSource`, make `CapacityReadPlan`
-  use them, and drop the three wildcard reader branches of `readCores`, `readAvailableMemory`, and
-  `readAvailableStorage`.
-- Factor the procfs counting and `MemAvailable` parsing into pure functions with the fixture cases and the
-  `parsePositiveInteger` cases.
-- Replace the `else pure ()` branch of the live Apple-only capacity case "live apple-silicon sysctl read
-  resolves positive capacity" with a case that runs on every host (or asserts the declared refusal) and
-  register the family in `CoverageManifest`.
+None.
 
-### Sprint 6.6: Only backend modules build a readiness probe [Planned]
+### Sprint 6.6: A shared private kernel owns planned resource identities [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/internal/plan-resource/HostBootstrap/Plan/Resource.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
-`core/hostbootstrap-core/test/ReadinessSpec.hs`,
-`core/hostbootstrap-core/test/CompileFailSpec.hs`
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ImportPlanResource.hs`
 **Substrates**: none
-**Docs to update**: `documents/architecture/readiness.md`
+**Docs to update**: `documents/architecture/readiness.md`,
+`documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/hostbootstrap_core_library.md`
 
 #### Objective
 
-The observation function behind a `Probe` is a backend's, never a consumer's. `withBackendProbe` (in
-`HostBootstrap.Readiness`) is exported from an exposed module and accepts any caller-supplied action, so a
-consumer holding a `PlannedResource` can mint a `Ready` from a constant `ProbeReady`. This sprint makes the rule
-a visibility boundary: the injector sits behind a Cabal-private boundary that core's backend modules and the
-test component reach and no consumer does. The dependency-probe wrapper `dependencyProbe` is the cluster
-lifecycle phase's (Phase 16), which moves it into `lifecycle-dependency-internal` once every caller exists.
+The plan and backend readiness share one opaque planned-resource identity without a dependency cycle
+between the main library and the private readiness injector.
 
 #### Deliverables
 
+- A private plan-resource unit owns the existing positional `PlannedResource` and resource-family tags.
+  All identity indices retain nominal roles; the representation and public reader behavior are unchanged.
+- `Lifecycle.Plan` consumes that exact representation and remains the owner of validated-graph projection.
+  No public module exposes its constructor or a new minting route.
+
+#### Validation
+
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed the library build and focused `cabal test hostbootstrap-core-test`
+runs from `core/`: `project-plan` 92 cases, `Reconcile` 111, `ImportPlanResource.hs` 1,
+`CoercePlannedResourceRoles.hs` 1, `EscapePlannedResourceIndices.hs` 1, sealed checks 60,
+inventory checks 54, and `DocValidatorSpec` 17. Package `-Werror` remained enabled.
+
+The public-only compiler rejects the constructor-import fixture because the shared module belongs to the
+hidden plan-resource unit. Existing nominal-role and generative-identity fixtures retain their named
+rejections. Plan snapshot/projection and reconciliation cases retain their behavior. Independent review
+confirmed one positional three-Text representation, five nominal indices, seven real resource tags, and
+unchanged public facade exports, graph minting sites, and readers.
+
+#### Remaining Work
+
+None.
+
+### Sprint 6.7: Only backend modules build a readiness probe [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
+`core/hostbootstrap-core/internal/readiness/HostBootstrap/Readiness/Kernel.hs`,
+`core/hostbootstrap-core/hostbootstrap-core.cabal`,
+`core/hostbootstrap-core/test/ReadinessSpec.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/test/compile-fail/RawProbe.hs`,
+`core/hostbootstrap-core/test/compile-fail/EscapeProbe.hs`,
+`core/hostbootstrap-core/test/compile-fail/DockerProbeForCluster.hs`,
+`core/hostbootstrap-core/test/compile-fail/CallerMintedBackendProbe.hs`,
+`core/hostbootstrap-core/test/compile-fail/ImportReadinessKernel.hs`
+**Substrates**: none
+**Docs to update**: `documents/architecture/readiness.md`,
+`documents/architecture/lifecycle_state_model.md`,
+`documents/architecture/hostbootstrap_core_library.md`
+
+#### Objective
+
+The observation function behind a `Probe` belongs to its backend. Its injector and observer sit behind a
+Cabal-private boundary that core backend modules and the test component reach and no consumer does.
+The kernel shares the lower planned-resource identity and abstracts over configuration, so it depends on
+neither the main library nor a duplicate host configuration. Public polling still consumes the existing
+host-specialized probe. The dependency-probe wrapper `dependencyProbe` belongs to the cluster lifecycle
+phase, which moves it into `lifecycle-dependency-internal` once every caller exists.
+
+#### Deliverables
+
+- The private kernel owns the generic-config `Probe`, backend observation/result payloads, and closed
+  backend key relation. Its injector consumes the shared opaque `PlannedResource`; it depends only on the
+  lower plan-resource unit, never on the main library.
+- The public seven-parameter `Probe` is a `HostConfig`-specialized synonym for that private representation;
+  its nominal indices inherit the kernel roles. Public polling and `Ready` integration remain in
+  `Readiness`, so no second poll loop or configuration representation is introduced.
 - `withBackendProbe` is absent from the export list of every exposed module of `hostbootstrap-core`; it lives
   behind a `visibility: private` sublibrary boundary (the pattern `ownership-internal` uses) that core backend
   modules and `hostbootstrap-core-test` depend on.
@@ -423,37 +398,128 @@ lifecycle phase's (Phase 16), which moves it into `lifecycle-dependency-internal
 
 #### Validation
 
-The sprint closes when these cases exist and pass under `cabal test all` from `core/` and from `demo/`:
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed the library build and focused `cabal test hostbootstrap-core-test`
+runs from `core/`: `ReadinessSpec` 34 cases, `ProviderSpec` 27, eight individual public-boundary fixtures,
+sealed checks 60, inventory checks 54, and `DocValidatorSpec` 17. Package `-Werror` remained enabled.
+The complete core/demo host static runs are recorded at phase closure.
 
-- `CompileFailSpec` registers `CallerMintedBackendProbe.hs` (imports `HostBootstrap.Readiness` and calls
-  `withBackendProbe` with `const (pure (ProbeReady ()))`), rejected with `Variable not in scope:
-  withBackendProbe`;
-- the existing `CallerForgedClusterProbe.hs` rejection still passes;
-- `ReadinessSpec` builds against the private boundary unchanged in behaviour.
+All 34 readiness case bodies are unchanged and now consume the actual private factory. Public-only GHC
+rejects `CallerMintedBackendProbe.hs` for the unavailable injector and `ImportReadinessKernel.hs` for the
+hidden readiness unit. `RawProbe.hs` rejects raw construction through the public synonym; the fresh-probe
+identity and plan-role fixtures retain nominal coercion refusals. The Docker-key fixture rejects the
+public closed relation independently of injection. `CallerForgedClusterProbe.hs` retains its existing
+rejection. Each expectation was captured from the actual compiler after the extraction.
+
+The sealed-export inventory now includes `Readiness` and excludes the injector. One generic probe
+representation, shared resource identity, configuration alias, and production polling loop remain.
 
 #### Remaining Work
 
-- Move `withBackendProbe` out of the exposed `HostBootstrap.Readiness` export list into a `visibility: private`
-  sublibrary registered in `hostbootstrap-core.cabal`, re-point `ReadinessSpec`'s import, and add the
-  compile-fail fixture with its diagnostic.
-- Correct the `documents/architecture/readiness.md` gap list and `BackendProbeKey` bullet so they state that
-  `withBackendProbe` is private.
+None.
+
+### Sprint 6.8: Docker limits refuse values outside the runtime representation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+`core/hostbootstrap-core/test/CordonSpec.hs`,
+`core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/engineering/resource_budgeting.md`,
+`documents/engineering/applied_cordon.md`
+
+#### Objective
+
+A canonical budget can exceed Docker's representation even though its dimensions fit the generic bounds.
+The Docker renderer refuses that budget before any ownership observation or container mutation.
+
+#### Deliverables
+
+- The one Docker limit renderer returns `Either String [String]`; its named-container wrapper and public
+  facade propagate the same refusal without a second rendering.
+- Whole CPU counts fit Docker's signed 64-bit NanoCPUs field, and doubling memory for `--memory-swap`
+  fits its signed 64-bit field. Memory meets the Linux daemon's 6 MiB minimum and survives the CLI's
+  binary64 byte parsing exactly; doubling an exactly represented value preserves that precision. Checks
+  use unbounded arithmetic before conversion or rendering.
+- `cordonOwnedCluster` propagates invalid limits as a structured ownership refusal before invoking its
+  backend. Representable budgets retain their exact argv and existing ownership checks.
+
+#### Validation
+
+On 2026-10-27, native Windows 11 x86_64 and native-filesystem Ubuntu 24.04.4 x86_64 CPU container,
+GHC 9.12.4/Cabal 3.16.1.0, passed focused `cabal test hostbootstrap-core-test` runs from `core/`:
+`CordonSpec` selection 95 cases, `ownership` selection 103, `BudgetSpec` 29, sealed checks 60, and
+`DocValidatorSpec` 17. Package `-Werror` remained enabled. The ownership selection took 32.29 seconds
+on Windows and 22.31 seconds on Linux.
+
+Ten literal Docker renderer cases cover ordinary argv, CPU 9223372036 and its overflow, memory minimum
+6291456 and the byte below it, maximum CLI-exact memory 4611686018427387392, the inexact raw half-Int64
+bound and signed swap overflow, and 2^53+1 refusal versus 2^53+2 acceptance. Each checks the lower/public
+limit renderers and all named wrappers against the same independently specified argv or refusal.
+
+Four owned-cluster cases create genuine owned records, then use a concrete empty-tool configuration.
+A valid-budget control reaches the first ownership query's exact unresolved-tool refusal; each invalid
+budget instead produces the canonical `ClusterOwnershipBudget` before that query. Complete protected
+record keys/versions/bytes, node state, and mutation history remain unchanged. Existing valid argv and
+replacement/unclaimed-identity checks also pass. Production scope is three modules.
+
+#### Remaining Work
+
+None.
+
+### Sprint 6.9: Docker budget admission uses the exact runtime renderer [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
+`core/hostbootstrap-core/test/BudgetSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/engineering/resource_budgeting.md`,
+`documents/engineering/applied_cordon.md`
+
+#### Objective
+
+Provider admission refuses every Docker budget that the canonical runtime renderer cannot express.
+
+#### Deliverables
+
+- Replace the unconditional Docker-node admission success with the canonical renderer's exactness check.
+- Preserve byte-granular admission within Docker's range; its unsupported storage wall remains a separate
+  typed policy result.
+
+#### Validation
+
+On 2026-10-27, the admission-only `BudgetSpec` control run against the unconditional Docker branch
+failed exactly five of 39 cases (4.10 seconds): CPU overflow, sub-minimum memory, raw-half-Int64 precision,
+swap overflow, and 2^53+1 precision were incorrectly admitted. Its helper stops in the real admission
+continuation and returns exact effective values; no later workload or renderer can produce those results.
+The five positive controls passed. Docker admission then delegated to the canonical renderer.
+
+The complete host static gate passed natively on Windows 11 x86_64 with GHC 9.12.4/Cabal 3.16.1.0:
+
+- `cabal test all --test-options=--hide-successes` from `core/`: 2972 main cases in 537.01 seconds, all
+  declared suites passed;
+- the same command from `demo/`: 164 demo cases in 5.84 seconds and 2972 core cases in 503.25 seconds,
+  all declared suites passed;
+- `poetry run python -m hostbootstrap.check_code`: Ruff, Black, and mypy passed;
+- `poetry run python -m hostbootstrap.test_all`: 376 cases in 9.06 seconds, with 100% coverage of
+  1585 statements and 460 branches.
+
+The complete declared core gate also passed on the native-filesystem Ubuntu 24.04.4 x86_64 CPU container
+with the same Haskell toolchain: 2979 main cases in 420.87 seconds and all declared suites passed.
+The full runs include all 39 budget cases and all public compile-fail boundaries, with package `-Werror`.
+Capacity completion checks observed native/Windows row counts (1,0)/(4,0) on Windows and (1,0)/(0,4) on
+Linux; no unsupported branch disappeared. Demo consumer validation includes the private readiness boundary.
+
+#### Remaining Work
+
+None.
+
 
 ## Remaining Work
 
-- Sprint 6.1: close `ResourceBudget` against record update, add the above-bound cases, make
-  `StorageCordonResult` the one storage-wall vocabulary, correct three Foundation Haddocks, and rename two
-  `CordonSpec` cases.
-- Sprint 6.2: build `Ready` from the observed `ProbeReady` payload versions, add role annotations, add the
-  staleness, zero-version, and exact poll-policy cases, delete `drivePure`, build the named policies without
-  `error`, and add the `Ready`, raw-`Probe`, escape, wrong-key, and `coerce` compile-fail fixtures.
-- Sprint 6.3: add the backend-branch, disposition, and distinct-generation phase-transition cases, admit an
-  `AdoptionCommitted` commit proof, delete `withReboundManagedResourceEvidence`, and add the receipt refusal
-  cases.
-- Sprint 6.5: read host capacity through Win32 and `interpretHostCommand` with per-dimension source types
-  and pure procfs parsers, and run the live capacity case on every gate host.
-- Sprint 6.6: move `withBackendProbe` behind a Cabal-private boundary and pin its rejection with a compile-fail
-  fixture.
+None.
 
 ## Documentation Requirements
 
@@ -468,5 +534,6 @@ The sprint closes when these cases exist and pass under `cabal test all` from `c
   plan-indexed proof consumption attributed to Phase 12.
 
 **Cross-references to add:**
+- [system-components.md](system-components.md) records the three private kernel modules under this phase.
 - `development_plan_standards.md` § O and § CC name this phase as the owner of the provider-neutral quantity,
   capacity, storage-policy, and readiness contracts.

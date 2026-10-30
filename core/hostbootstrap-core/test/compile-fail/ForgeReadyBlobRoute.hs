@@ -5,5 +5,5 @@ module ForgeReadyBlobRoute where
 
 import HostBootstrap.RegistryPlan
 
-forged :: ReadyBlobRoute client store
+forged :: ReadyBlobRoute client store lifecycleScope planId clusterId service
 forged = ReadyBlobRoute 1
