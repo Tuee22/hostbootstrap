@@ -6,9 +6,9 @@
 **Gate**: `poetry run python -m hostbootstrap.check_code` and
 `poetry run python -m hostbootstrap.test_all` from the repository root
 **Gate kind**: deferred
-**Gate evidence**: 2026-10-26 ; `hostbootstrap-cpu-gate-20261026`, x86_64 Ubuntu 24.04 CPU-only container on WSL2 Linux 6.18.33.2, Python 3.12.3, Poetry 2.5.1 ;
-`poetry run python -m hostbootstrap.check_code && poetry run python -m hostbootstrap.test_all` ; pass ;
-covers 816a21c91f8455bdc87f2d4d820bedd23589c364e87a4fd8e99eaf6cb971571f
+**Gate evidence**: 2026-11-09 ; native Windows 11 Pro 10.0.26300 x86_64 gate host, Python 3.14.3 and Poetry 2.4.1 ;
+`poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the repository root (379 tests, coverage 100%) ; pass ;
+covers 11c38c13a347ec155963e2b850bea740ad408d834e13194014afd0a8f5a0e604
 **Evidence covers**: `hostbootstrap` `tests` `pyproject.toml`
 
 > **Purpose**: Assert the irreducible host floor, prepare the native Haskell toolchain, build the project
@@ -276,6 +276,57 @@ The CPU container has no NVIDIA file markers or GPU device and its real detector
 byte-framed path/content measurement agrees. No baseline confirmation is claimed from the Windows
 Python run alone.
 
+On 2026-10-26, the declared Linux Python gate in `hostbootstrap-cpu-gate-20261026` with Python 3.12.3
+and Poetry 2.5.1 records passing both commands over the covered-tree digest
+`816a21c91f8455bdc87f2d4d820bedd23589c364e87a4fd8e99eaf6cb971571f`.
+
+On 2026-11-01, covered-source evidence is re-established after the named Context formatter path and its
+existing enumeration regression follow the declared source home. The exact Linux commands from the
+repository root pass in order: `poetry run python -m hostbootstrap.check_code` exits zero in 0.9846372
+seconds at 03:07:10-03:07:11 UTC; unfiltered `poetry run python -m hostbootstrap.test_all` passes all
+376 cases in 5.34 seconds with 100% statement and branch coverage, no misses or partial branches, and
+parent exit zero at 03:07:15-03:07:21 UTC. The host is the x86_64 Ubuntu 24.04 CPU container
+`hostbootstrap-plan-gate-20261029` on WSL2 Linux 6.18.33.2, Python 3.12.3 and Poetry 2.4.3.
+
+Native Windows also passes the same two commands with Python 3.14.3 and Poetry 2.4.1: checks exit
+zero in 4.394 seconds; all 376 cases pass in 5.86 seconds, parent exit zero, with 1,585 statements,
+zero misses, 460 branches, zero partial branches and 100% coverage. After both commands pass,
+`HostBootstrap.Digest.measurePathSetDigest` from the actual compiled ownership unit measures
+`hostbootstrap`, `tests` and `pyproject.toml` on each host. Both independently return
+`43460ba7dd0f5e74500d3c40fdc1784031a67dccf7a60f1a86b66c01c109bfb3`, with exit zero and empty
+stderr (Linux 0.202841477 seconds at 03:07:49 UTC; native 1.3121 seconds). This uses the canonical
+path/content framing and cache exclusions, without a copied source module or hash reimplementation.
+All 26 covered Python files match between the hosts; only the two declared files change. This is
+covered-source evidence revalidation, with no change to the Python-floor contract.
+
+The restored phase/sprint status and current covered-source evidence passed all 17 `DocValidatorSpec`
+cases in 4.10 seconds on 2026-11-01 at 03:10:51-03:11:07 UTC, with explicit completion, Cabal PASS
+and parent exit zero. The header has one current evidence row, and its canonical digest matches the
+unchanged covered Python tree.
+
+On 2026-11-01, the provider source census includes physical `core/hostbootstrap-core/src`, `core/hostbootstrap-core/internal`, and `demo/src`
+sources. The Python test changes six nonempty lines only; its AST is unchanged outside the source-list
+assignment, with every forbidden-name, caller-use and parser control retained. The covered edit expires
+the prior evidence digest `43460ba7dd0f5e74500d3c40fdc1784031a67dccf7a60f1a86b66c01c109bfb3`;
+the same quality contract is revalidated here before dependent work continues.
+Native Windows Python 3.14.3 and Poetry 2.4.1 passed the exact supported checks with parent exit zero
+in 2.512 seconds and all 376 unfiltered tests in 5.50 seconds (command 7.087 seconds), parent exit zero.
+Coverage is 1,585 statements and 460 branches, with zero misses or partial branches and 100% coverage.
+The Linux CPU host's Python 3.12.3 and Poetry 2.4.3 passed the exact checks at 05:28:34-05:28:35 UTC,
+parent exit zero in 0.7297032 seconds, then all 376 unfiltered tests at 05:28:38-05:28:44 UTC in 5.64
+seconds (command 6.4686031 seconds), parent exit zero with the same complete coverage.
+The canonical compiled `HostBootstrap.Digest.measurePathSetDigest` over this phase's declared paths
+returns `0d111e033fc7e7ed6ed0161f4021889092eb9fecb68c1ff73ee8d08badd905b7` on both hosts:
+native at 05:27:14-05:27:15 UTC, exit zero in 1.4733 seconds with empty stderr, and Linux at
+05:28:48-05:28:50 UTC, exit zero in 0.225019883 seconds. The native invocation resolves its actual
+GHC 9.12.4 store/local databases and `ownership-internal` unit; neither measurement copies the source
+or reimplements the hash. The header retains exactly one current evidence field for this matching digest.
+
+The restored status and current covers digest passed all 17 DocValidator cases within a combined
+19-case reader/census/documentation selection on 2026-11-01 at 05:31:22-05:31:42 UTC. The selection
+passed in 4.68 seconds with explicit Cabal PASS and parent exit zero. The header and README agree on
+Done, with one current evidence field and the matching new covered-source digest.
+
 #### Remaining Work
 
 None.
@@ -521,6 +572,58 @@ does not depend on the console's encoding to show its own usage.
   commands enabled, requiring ASCII text and successful cp1252 encoding for all help strings.
 
 The dated clean Python code check and test results are recorded in Sprint 1.4.
+
+#### Remaining Work
+
+None.
+
+
+### Sprint 1.11: Packaging follows the reduced Incus surface [Done]
+
+**Status**: Done
+**Implementation**: `tests/test_packaging.py`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/testing.md`
+
+#### Objective
+
+Keep the packaging guard aligned with the deliberately removed Incus lifecycle vocabulary while
+retaining the production-consumer requirement for every live builder. This test edit expires the
+deferred phase evidence; it is evidence expiry under section C, not a design-error reopening.
+
+#### Deliverables
+
+- Replace presence requirements for the four globally retired Incus builders with absence assertions.
+- Assert all six retired Incus lifecycle builders are absent from that realization. Keep the shared
+  start/stop names in the live-consumer list because Lima still uses them.
+- Re-run both declared Python gate commands and remeasure the exact Evidence covers paths.
+
+#### Validation
+
+The complete static gate for the
+[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) found
+375 of 376 Python cases passing; the packaging guard alone still required createVMArgs after its
+deliberate removal. The two in-flight Haskell legs were explicitly interrupted and count as unfinished.
+The corrected Python gate and canonical digest are recorded below. No production Python changes.
+
+Both declared gate commands pass on 2026-11-06 UTC in hostbootstrap-linux, Ubuntu 24.04.5
+x86_64 under WSL2, UID 1000, Python 3.12.3 and Poetry 2.4.3.
+
+| Command | Start UTC | End UTC | Wall seconds | Result |
+|---|---|---|---|---|
+| `poetry run python -m hostbootstrap.check_code` | 2026-11-06T00:23:19.433187+00:00 | 2026-11-06T00:23:20.600158+00:00 | 1.166968 | ruff, black and mypy pass; exit 0 |
+| `poetry run python -m hostbootstrap.test_all` | 2026-11-06T00:23:19.433261+00:00 | 2026-11-06T00:23:25.543944+00:00 | 6.110682 | 376 cases; 100% coverage; exit 0 |
+
+Both verify the same 1175-file Windows and Linux source copies before and after. Python covers
+all 1585 statements and 460 branches. All production Python and Haskell retain baseline bytes.
+Only the packaging guard changes: four globally removed names become required absences and all
+six retired Incus builders are absent from that realization; live Lima start/stop remain required.
+
+The actual canonical `HostBootstrap.Digest.measurePathSetDigest` implementation measures
+`hostbootstrap`, `tests` and `pyproject.toml` on the same native source tree through Cabal/runghc.
+It returns `c33f06841c3edd8851d3e6fcfc0f15ac1691ee5e9e668ffb2e088cc3614e1c96` in 4.090131 wall seconds,
+exit 0, with both source copies unchanged. No digest algorithm is reimplemented. This refresh closes
+evidence expiry and preserves the production-consumer guard.
 
 #### Remaining Work
 

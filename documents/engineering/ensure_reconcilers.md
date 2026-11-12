@@ -314,6 +314,72 @@ still returns a result-free reconciler action:
   resource wall it applies is in [applied_cordon](applied_cordon.md). The
   [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
   owns it.
+
+  The direct Colima backend uses one pure socket admission predicate before profile mutation.
+  The longest derived Darwin socket path must be shorter than 104 UTF-8 bytes; 103 bytes is
+  admitted and 104 is refused. Counting bytes also holds for multibyte effective-home names.
+  Home acquisition refuses a planted symbolic link. Live use of an owned home that disappears
+  refuses before commands and does not recreate that path.
+
+  Docker-config parent directories below the protected plan root have shared origin records.
+  Preparation creates each missing parent through the shared no-follow row inside the entry;
+  an existing unrecorded parent refuses adoption. Later preparation and live start, artifact,
+  settlement, Docker and cleanup paths re-enter the retained parent identities. Missing or
+  replaced owned parents refuse, even if the context directory itself kept its inode.
+  Parent keys derive from the relative component sequence with lossless length-prefixed
+  character words, so profiles sharing a parent re-enter one binding. Cleanup checks those
+  identities and removes empty created parents child-first, retaining any nonempty directory
+  and its record for shared or foreign contents. Repeated completed cleanup does not recreate
+  a parent. The prepared driver performs no recursive parent mkdir before ownership entry.
+
+  Direct backend discovery freshly detects the actual host and admits only Apple silicon.
+  It obtains the effective user's home from the OS account database before native resolution.
+  Production resolution validates the bootstrap executable and uses the fixed native observer;
+  no fixture registry redirects discovery. Missing Colima yields distinct trusted-Brew evidence
+  to the explicit install-and-rediscover path. Settlement alone never grants ready authority
+  from Brew evidence. Acquisition, live Docker and cleanup revalidate ready evidence around effects.
+
+  The resolver's native observation and wire decoder both apply `validateTrustedProtocol` with
+  their exact production or fixture layout before settlement can construct a trusted toolchain.
+  One policy validates canonical tool paths, formula/Docker locations, positive device/inode
+  identities, ordered unique helper paths and their complete bindings. Wire identities also use
+  canonical decimal spelling, and framing admits exactly one LF-terminated report with no embedded
+  newline or CR. READY carries no Brew evidence; only MISSING_COLIMA retains the trusted install route.
+  Protocol constructors are confined by the private component boundary.
+
+  `Resolver.Native` applies one total owner/mode policy to production and fixture observations.
+  Production system directories and executables require root ownership, Homebrew entries require the
+  effective user, and Docker Desktop executables and directories below `/Applications` admit root
+  or that user. Administrative anchor exceptions are explicit; formula versions and their `bin` directories
+  cannot gain their group-write allowance. The fixture kind explicitly uses its effective-user-owned private
+  root, then applies the shared mode checks and logical administrative-directory policy. Pure table
+  cases exercise both kinds on every host. The hostile-ambient fixture actually plants executable
+  candidates, changes PATH/HOME and the working directory, and observes the fixed Cellar targets
+  before restoring process state. Native admission opens each executable and directory with no-follow,
+  close-on-exec and nonblocking flags, checks the opened entry's kind and owner/mode policy, and
+  compares its device/inode with pathname observations before and after the open. Helper bindings
+  carry the checked descriptor identity. Failure to open an entry produces strict unsupported output.
+
+  The shipped tool transaction starts in a dedicated process group, launches its tool there,
+  then supervises from the owning parent's group. Its live PID reserves the tool group's
+  identifier until cleanup ends. Tool exit kills remaining group members and waits for their
+  absence before returning the tool's status. Parent death kills the retained group and the
+  supervisor. The tool receives a readable binary null-device stdin and inherits only its
+  declared standard streams. The bounded runner retains its unreaped leader before its last
+  possible group signal; after final kill, reaping remains bounded. Cancellation propagates
+  unchanged and excess retained output reports output-limit. A completed process handle disarms
+  further group signals. Pipe readers are stopped before handles close, including capture failure
+  and cancellation, so a writer outside the retained group cannot hold a Handle lock past cleanup.
+
+  Ready-toolchain and missing-Colima Brew revalidation each resolve freshly, then apply one
+  total pure classifier to the retained value and fresh result. Unchanged evidence is admitted;
+  changed ready evidence and missing Colima refuse with trusted-apple-toolchain-changed and
+  trusted-colima-missing. Changed Brew evidence and newly present Colima refuse with
+  trusted-apple-brew-changed and trusted-colima-now-present. Native unsupported reasons pass
+  through unchanged. The private testing view returns only descriptive classification results,
+  with no callback that redirects a production resolver. Actual native fixture replacements and
+  alias changes exercise the classifiers; repeated observations and a new tool inode exercise
+  fingerprint determinism and sensitivity.
 - **`ensure incus` on Apple and Linux** converges its substrate-specific provider, then probes daemon
   reachability, VM capability, and `images:ubuntu/24.04` metadata egress. Absence, permission denial, and
   unreachability are three readings of the one daemon listing's failure, not separate probes; they, VM
@@ -547,13 +613,158 @@ in the development plan. The closed registry contains no `ensure-tart` member.
 Direct Colima is a plan-owned adapter rather than a context-free reconciler. Its public prepared-wall
 path uses one native protected-entry acquisition, cleanup, and routed-Docker driver over the shared
 ownership seam and closed durable-stage vocabulary. External commands run through the installed binary's
-bounded parent-death transaction in the isolated Colima/Docker namespace. No production recursive or demo
+bounded parent-death transaction in the isolated Colima/Docker namespace. Its wall is the caller's
+timeout as given, with a 16 MiB transcript ceiling and six seconds of termination grace. No production recursive or demo
 call site consumes the adapter — the CLI reaches only its backend runner's private command entry — and no
 phase schedules such a consumer. Its live coverage is the separate direct-Colima lane of
 [Apple Silicon acceptance](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md); the Apple demo
 uses Lima. The native ownership driver and resolver are owned by the
 [cluster-lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 
+Acquisition holds one native protected-store entry across namespace preparation,
+start and settlement. A failed start or refused post-start report retains Prepared;
+it does not publish Managed evidence. Settlement re-enters the retained context identity and
+compares the bound data-disk identity with the artifact observation before publishing Managed;
+a missing context binding or changed disk leaves the Prepared stage intact. Managed evidence and stage
+records expose read-only accessors; their validated values cannot be changed through record updates. Prepared re-entry with an already-present
+profile has an unknown start outcome and cannot adopt it. Competing calls on the
+same scope serialize through the real entry lock: only one can create, and the
+other observes exact Managed evidence or receives an entry refusal. Static collector
+cases verify those driver outcomes with real temporary namespaces and protected
+records; the direct-Colima live confirmation remains in Apple Silicon acceptance.
+
+The descriptive reconciler-refusal types have one declaration home in the private
+reconcile-error-internal leaf library. Public Reconcile reexports the same
+constructors and selectors. Private policy can share these values without importing
+the main library; the vocabulary depends only on base and text and carries no
+plan, ownership, lifecycle or effect authority.
+
+Direct Colima derives its local profile, 128-bit namespace key and home path through
+the private Backend.Names policy. The admitted project, lifecycle profile, provider
+resource/frame and canonical plan root all contribute to the domain-separated digest.
+Production and separate Harness runs have separate keys and projected homes. The
+public profile predicate delegates to the same project validator; the shared default
+profile returns the production Conflict detail. Full key lineage in the protected
+stage refuses a short-profile collision instead of adopting the other scope. These
+pure projections grant no effect authority; the prepared public adapter still binds
+them to its admitted plan, budget and closed backend.
+
 The accelerator build-stack reconcilers are implemented. Current static and hardware closure, including
 native Linux `nvkind` and accelerator lifecycle validation, is owned by
 [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
+
+The Colima ownership driver lives in the private `colima-ownership-internal` library.
+Its interpreter-taking entry points are available only to the owning adapter and private tests;
+the public `HostBootstrap.Ensure.Colima` adapter supplies the retained trusted resolver.
+The HostConfig-taking wrappers have been removed. The descriptive Command and Report modules
+remain available through public reexports. Static tests exercise private policy and native
+protected-store operations; the public Apple toolchain chain still requires Apple Silicon acceptance.
+
+Provider-wall observations share one declaration in the private wall-observation-internal leaf.
+The public budget API reexports the same six descriptive constructors through its hidden kernel.
+The leaf depends only on base and the shared refusal vocabulary; it carries no settlement permit
+or plan-indexed authority. Private backend policy can classify failures without importing the
+public budget authority implementation.
+
+Direct-Colima acquisition classifies mutation faults in the private ownership driver. A conflicting
+profile or mismatched ownership origin is a refusal that leaves the namespace untouched. Entry,
+command, report, start and delete failures carry ReprobeBeforeRetry. The public adapter passes the
+complete expected wall description to that pure classification and retains only the closed
+backend's successful ownership observation for settlement.
+
+The private native resolver fixture entry retains the actual opaque resolver result produced by
+its existing kernel walk and settlement. Descriptive views are pure projections of that same result.
+Ready toolchain and missing-Colima Brew values remain private; no authority constructor or alternate
+production resolver is exposed. These fixtures confirm native observation and static joins, while
+the public Apple execution chain remains a separate live confirmation.
+
+The live Colima Docker result separates refusal before a completed command from revalidation
+failure after completion. Pure `ColimaSpec` cases cover exact route admission, every non-Managed
+stage, individual owner/lineage/invocation mismatches, timeout classification and complete output
+retention through ownership/toolchain recheck failures. Source guards pin the actual driver's
+use of those decisions and absence of stage writes in that route. These cases execute no
+stand-in Docker interpreter; the public Apple execution chain remains live acceptance work.
+
+Static native fixture-backed settlement also exercises `withColimaCleanupAuthority` on the actual
+opaque live wall. The private cleanup driver consumes one pure owner/lineage/acquisition-invocation
+admission before any replay or mutation branch; mismatches keep the exact managed-lineage refusal.
+Pure cases and source guards establish that branch boundary, while the native fixture case
+establishes the real eliminator path. They claim no public Apple delete execution.
+
+The Colima cleanup invocation's private identity algebra binds the cleanup call digest, plan,
+operation and reservation fence. Session, attempt and physical journal version remain coordinates
+of the separately prepared journal transition; they do not rename the durably bound release.
+Pure cases over actual protected-store gates pin that retry stability and an independent SHA-256
+vector pins canonical framing. Native fixture-backed live-wall cases exercise actual cleanup
+preparation at the retained fence and refusal at a different fence without executing deletion.
+
+A retained unbound directory origin can resume creation when the target remains absent. A present
+target is occupied; a stale present-origin record is forgotten at its retained version only after the
+target is observed absent.
+
+A Prepared Colima acquisition re-enters already-bound creation records when the retained claim and
+fresh machine identity match. An unbound present profile remains an outcome-unknown conflict.
+
+Colima stage owners contain printable ASCII only, so their byte encoding round-trips without changing
+the owner identity. Both construction and parsing enforce this bound.
+
+A cleanup retry with the same invocation resumes after profile deletion without deleting again, and
+resumes namespace release from a retained `ColimaContextReleased` stage.
+
+Cleanup retry admission is one private closed decision over the actual durable stage record:
+Managed begins release, Releasing resumes only the committed cleanup invocation, and Released
+replays only that invocation. Other stages and mismatched release invocations refuse before
+context admission or command work. Pure cases cover those choices; source guards pin the actual
+driver's delegation. Conditional profile readback and namespace completion have separate checks.
+
+Conditional Colima profile release classifies the retained wall/runtime, machine and origin binding,
+delete completion, and strict absence readback through pure private decisions. A missing profile
+before release commits grants nothing. A committed Releasing record can finish an already-absent
+profile/disk without reissuing delete: it rechecks the durable stage/version, fresh profile absence,
+kernel disk absence and retained reported bindings, then uses the shared reported-removal recovery.
+
+A frozen Releasing manifest admits only unchanged retained remainders. Its digest and directory
+chain remain bound to committed evidence, and both namespace roots retain their original identities.
+New entries and replacements refuse. Managed operation still requires an exact full manifest.
+Static coverage combines actual pure decisions, source-flow pins and the shared native ownership
+kernel/protected-store cases; public Apple execution remains separate live acceptance.
+
+The managed Colima Docker route first reads and admits its retained stage and lineage before
+parent validation, context-directory re-entry or command work. The route re-enters the retained
+context identity and refuses a missing binding instead of acquiring a replacement. Released, in-progress release,
+missing and mismatched stages therefore cannot recreate a context or origin. Actual protected-store
+cases hold the records unchanged, and source-flow checks connect that admission to the driver.
+The described commands themselves identify their target tools; there is no separate unused tool list.
+The routed command requires an allowed Docker subcommand before any user arguments. It refuses leading
+global options and route-changing subcommands; flags after the subcommand remain that command's inputs. The
+shipped command transaction encodes Unicode scalar arguments as UTF-8, refuses NULs and surrogate
+code points, and executes the received bytes without a locale-dependent conversion.
+Context removal shares the pure delete-completion decision; failure retains the releasing stage
+and context ownership, while successful strict absence readback precedes ContextReleased.
+
+ContextReleased is a committed retry stage for the same cleanup invocation. Fresh completion and
+that retry share one kernel-only context namespace settlement: it checks the exact held stage and
+version, retained manifest evidence and parent bindings, then removes only unchanged retained
+entries and the bound created directory. Already removed directories settle their origins through
+the shared absence/sync boundary. Replacements or added entries preserve their objects and records.
+The durable transition to Released follows successful context and remaining namespace settlement. Static cases exercise
+actual temporary kernel objects and protected records; public provider commands remain live evidence.
+
+Before publishing Released, the kernel-only namespace finisher verifies
+the actual held stage/version, committed manifest evidence and every remaining root binding before
+removing retained entries, then settles temporary, cache and home origins child-first. The manifest
+is forgotten only at its retained version, after all owned roots settle. Missing evidence authorizes
+no deletion: only actual complete vacancy can finish without a manifest. A Released replay also requires
+complete vacancy before it can settle retained parent origins. Scaffolding is removed
+through retained identity-bearing manifest entries. Empty retained parents release conditionally;
+a removed parent's origin recovers over fresh absence, while shared or replaced parents remain.
+
+The opaque prepared Colima cleanup call completes its retained Running-to-Destroyed transition
+at the original managed resource generation whenever conditional release returns success, including
+exact Released replay. Its result pairs that sealed phase advance with any post-call toolchain
+diagnostic; a later standing failure does not withhold an already committed completion. A release
+refusal completes nothing and retains its own typed error. Cleanup discovery explicitly requires an
+existing Colima installation: trusted missing-tool evidence is a retryable failure, while acquisition
+alone may install. A live Docker route revalidates its retained toolchain and never discovers or
+installs. Pure decisions and actual native resolver-fixture results validate these choices; public
+Apple cleanup execution remains live acceptance.

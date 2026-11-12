@@ -21,6 +21,7 @@ module HostBootstrap.Cluster.Budget (
     providerBackend,
     withProviderKeyForBackend,
     BudgetError (..),
+    BudgetCfg (..),
     ValidatedBudget,
     withValidatedBudget,
     validatedBudgetValue,
@@ -75,7 +76,7 @@ module HostBootstrap.Cluster.Budget (
     storageWallCallArgs,
     storageWallCallMechanism,
     storageWallCeilingBytes,
-    StorageWallObservation (..),
+    StorageWallSettlementPermit,
     AppliedStorageWall,
     appliedStorageWallChange,
     settleStorageWallCall,
@@ -98,7 +99,14 @@ import HostBootstrap.Cluster.Budget.Internal (
     ProviderBackend (..),
     ProviderKey (..),
     ProviderWallReservation (..),
+    ProviderWallAuthority (..),
+    PreparedStorageWallCall (..),
+    StorageWallObservation (..),
+    StorageWallSettlementPermit,
+    samePreparedStorageWallCall,
+    withStorageWallSettlementPermit,
     ProviderWallSettlementPermit,
+    SettledWallObservation (..),
     WallAcquireObservation (..),
     Wsl2Provider,
     providerBackend,
@@ -114,7 +122,9 @@ import HostBootstrap.Cluster.Cordon.Foundation (
     budgetStorageBytes,
  )
 import qualified HostBootstrap.Cluster.Cordon.Foundation as Cordon
+import HostBootstrap.Config.Schema (validatedConfigValue)
 import HostBootstrap.Context (ResourceEnvelope)
+import HostBootstrap.Lifecycle.Plan (projectPlanValidatedConfigKernel)
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     preparedGateAttempt,
@@ -168,19 +178,30 @@ data BudgetError
     | InvalidProviderPackage String
     deriving (Eq, Show)
 
+{- | Optional resource projection for configuration families that admit budgets.
+
+The universal project codec/context interface needs no resource fields. This
+domain projection describes the configuration already retained by a project plan;
+budget admission accepts no independently supplied envelope.
+-}
+class BudgetCfg cfg where
+    budgetResourceEnvelope :: cfg scope -> ResourceEnvelope
+
 data ValidatedBudget scope planId budgetId = ValidatedBudget ResourceBudget
 
 type role ValidatedBudget nominal nominal nominal
 
 withValidatedBudget ::
+    (BudgetCfg cfg) =>
     ProjectPlan scope specDigest planId configId cfg ->
-    ResourceEnvelope ->
     (forall budgetId. ValidatedBudget scope planId budgetId -> result) ->
     Either BudgetError result
-withValidatedBudget _plan envelope consume =
+withValidatedBudget plan consume =
     case budgetFromResources envelope of
         Left err -> Left (InvalidQuantity err)
         Right budget -> Right (consume (ValidatedBudget budget))
+  where
+    envelope = budgetResourceEnvelope (validatedConfigValue (projectPlanValidatedConfigKernel plan))
 
 validatedBudgetValue :: ValidatedBudget scope planId budgetId -> ResourceBudget
 validatedBudgetValue (ValidatedBudget budget) = budget
@@ -743,7 +764,8 @@ partition, or reservation from another admitted plan.  The term checks below
 also defend the internal boundary: the supplied topology must be the exact
 projection retained by the plan, the provider frame must belong to it, the
 capability must have been minted for the supplied provider resource, and the
-wall must retain the validated budget byte-for-byte.
+wall must retain the validated budget byte-for-byte. The reservation must retain
+this plan digest and this provider operation key from its journal gate.
 -}
 preparePlanOwnedProviderWallCall ::
     ProjectPlan scope specDigest planId configId cfg ->
@@ -768,8 +790,14 @@ preparePlanOwnedProviderWallCall
     wall@(ProviderWallSpec _wallProviderKey wallBudget)
     VerifiedWorkloadFit
     partition@(BudgetPartition _)
-    reservation@(ProviderWallReservation _plan _operation _session _fenceValue _attempt _journalVersion)
+    reservation@(ProviderWallReservation reservedPlan reservedOperation _session _fenceValue _attempt _journalVersion)
     name = do
+        requirePackage
+            "the reservation was journaled under another project plan"
+            (reservedPlan == stablePlanSnapshotDigest (renderSnapshot plan))
+        requirePackage
+            "the reservation was journaled for another provider operation"
+            (reservedOperation == plannedResourceKey providerResource)
         requirePackage
             "the supplied topology is not the exact topology projected by the project plan"
             (sameTopology suppliedTopology (topology plan))
@@ -808,11 +836,6 @@ providerWallCallFence ::
     PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     Word64
 providerWallCallFence (PreparedProviderWallCall _ _ _ _ _ fenceValue _ _) = fenceValue
-
-data ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence
-    = ProviderWallAuthority Word64 Word64
-
-type role ProviderWallAuthority nominal nominal nominal nominal nominal nominal
 
 providerWallEpoch ::
     ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence ->
@@ -891,41 +914,24 @@ settleProviderWallCall prepared permit consume =
         (PreparedProviderWallCall providerKey _ _ _ _ fenceValue _ _)
         observation =
             case observation of
-                WallApplied epoch -> successful providerKey fenceValue epoch (Changed Created) "applied"
-                WallAlreadyExact epoch -> successful providerKey fenceValue epoch Unchanged "unchanged"
-                WallMigrated epoch receipt -> successful providerKey fenceValue epoch (Changed Repaired) receipt
-                WallRefused detail -> Left (Conflict detail)
-                WallAcquireFailed detail -> Left (Failure detail)
-                WallAcquireUncertain detail ->
-                    Left
-                        ( Failure
-                            (FailureDetail "acquire provider wall" (Text.pack detail) ReprobeBeforeRetry)
+                SettledApplied epoch -> successful providerKey fenceValue epoch (Changed Created) "applied"
+                SettledAlreadyExact epoch -> successful providerKey fenceValue epoch Unchanged "unchanged"
+                SettledMigrated epoch receipt -> successful providerKey fenceValue epoch (Changed Repaired) receipt
+    successful providerKey fenceValue epoch change receipt =
+        let authority = ProviderWallAuthority epoch fenceValue
+            wallReceipt = WallReceipt receipt
+            ordinary = Right (consume (LiveProviderWall authority wallReceipt change))
+         in case providerKey of
+                Wsl2ProviderKey ->
+                    Right
+                        ( consume
+                            (LiveWslProviderWall authority (WslGlobalWallLease epoch fenceValue) wallReceipt change)
                         )
-    successful providerKey fenceValue epoch change receipt
-        | epoch == 0 =
-            Left
-                ( Failure
-                    (FailureDetail "acquire provider wall" "wall epoch must be positive" DoNotRetry)
-                )
-        | otherwise =
-            let authority = ProviderWallAuthority epoch fenceValue
-                wallReceipt = WallReceipt receipt
-             in case providerKey of
-                    Wsl2ProviderKey ->
-                        Right
-                            ( consume
-                                ( LiveWslProviderWall
-                                    authority
-                                    (WslGlobalWallLease epoch fenceValue)
-                                    wallReceipt
-                                    change
-                                )
-                            )
-                    _ ->
-                        Right
-                            ( consume
-                                (LiveProviderWall authority wallReceipt change)
-                            )
+                ColimaProviderKey -> ordinary
+                LimaProviderKey -> ordinary
+                IncusProviderKey -> ordinary
+                DockerNodeProviderKey -> ordinary
+                BareLinuxProviderKey -> ordinary
 
 withLiveProviderWall ::
     LiveProviderWall scope planId provider wallSpecId wallEpoch fence ->
@@ -959,15 +965,6 @@ backendStorageCordon backend =
         DockerNodeBackend -> Cordon.DockerNodeStorage
         BareLinuxBackend -> Cordon.BareLinuxStorage
 
-{- | An opaque prepared storage-wall call. It exists only for a provider whose
-mechanism can actually apply the ceiling, and it carries the exact declared
-byte value the observation must match.
--}
-data PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence
-    = PreparedStorageWallCall Cordon.StorageCordonMechanism [String] Integer Word64
-
-type role PreparedStorageWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
-
 {- | Prepare the storage-wall call from already-validated budget inputs: the
 admitted wall spec, the proved partition, and the journaled reservation. A
 provider that cannot enforce the ceiling returns a typed 'Unsupported' rather
@@ -986,7 +983,7 @@ prepareStorageWallCall
     name
     (ProviderWallSpec providerKey budget)
     _partition
-    (ProviderWallReservation _plan _operation _session fenceValue _attempt _journalVersion) =
+    reservation =
         case backendStorageCordon backend of
             Cordon.StorageCordonUnsupported reason ->
                 unsupportedStorageWall backend reason
@@ -1006,7 +1003,7 @@ prepareStorageWallCall
                             mechanism
                             args
                             storageBytes
-                            fenceValue
+                            reservation
       where
         backend = providerBackend providerKey
         storageBytes = budgetStorageBytes budget
@@ -1017,11 +1014,19 @@ storageWallMechanismArgs :: String -> ResourceBudget -> Cordon.StorageCordonMech
 storageWallMechanismArgs name budget mechanism =
     case mechanism of
         Cordon.ColimaDiskFlag -> Cordon.colimaSizingArgsForBudget name budget
-        Cordon.LimaDiskFlag -> Right ["--disk", show storageGiB]
-        Cordon.IncusRootDiskLimit -> Right ["-d", "root,size=" ++ show storageGiB ++ "GiB"]
-        Cordon.Wsl2VhdSize -> Right ["--vhd-size", show storageGiB ++ "GB"]
-  where
-    storageGiB = budgetStorageBytes budget `div` storageGibibyte
+        Cordon.LimaDiskFlag -> do
+            rendered <- Cordon.limaSizingArgsForBudget budget
+            case rendered of
+                ["--cpus", _, "--memory", _, "--disk", storage] -> Right ["--disk", storage]
+                _ -> Left "the Lima sizing renderer returned an unexpected storage token"
+        Cordon.IncusRootDiskLimit -> do
+            rendered <- Cordon.incusSizingArgsForBudget budget
+            case rendered of
+                [_, _, storage] | take 10 storage == "root,size=" -> Right ["-d", storage]
+                _ -> Left "the Incus sizing renderer returned an unexpected storage token"
+        Cordon.Wsl2VhdSize -> do
+            storage <- Cordon.wsl2VhdSizeArgForBudget budget
+            Right ["--vhd-size", storage]
 
 storageGibibyte :: Integer
 storageGibibyte = 1024 ^ (3 :: Integer)
@@ -1033,11 +1038,11 @@ exactStorageWall ::
     Cordon.StorageCordonMechanism ->
     [String] ->
     Integer ->
-    Word64 ->
+    ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     Either
         ReconcileError
         (PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
-exactStorageWall mechanism args storageBytes fenceValue
+exactStorageWall mechanism args storageBytes reservation
     | (storageBytes `div` storageGibibyte) * storageGibibyte /= storageBytes =
         Left
             ( Failure
@@ -1050,7 +1055,7 @@ exactStorageWall mechanism args storageBytes fenceValue
                 )
             )
     | otherwise =
-        Right (PreparedStorageWallCall mechanism args storageBytes fenceValue)
+        Right (PreparedStorageWallCall mechanism args storageBytes reservation)
 
 unsupportedStorageWall ::
     ProviderBackend ->
@@ -1085,18 +1090,6 @@ storageWallCeilingBytes ::
     Integer
 storageWallCeilingBytes (PreparedStorageWallCall _ _ ceiling_ _) = ceiling_
 
-{- | What the provider reported after the storage-wall call. The observed
-ceiling is carried explicitly so settlement can reject a value the provider
-rounded rather than accepting any success.
--}
-data StorageWallObservation
-    = StorageWallApplied Word64 Integer
-    | StorageWallAlreadyExact Word64 Integer
-    | StorageWallRefused ConflictDetail
-    | StorageWallFailed FailureDetail
-    | StorageWallUncertain String
-    deriving (Eq, Show)
-
 {- | Proof that the exact declared storage ceiling is in force, with the change
 view that produced it.
 -}
@@ -1117,23 +1110,23 @@ make impossible (§ O).
 -}
 settleStorageWallCall ::
     PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
-    StorageWallObservation ->
-    ( forall wallEpoch.
-      AppliedStorageWall scope planId provider wallSpecId wallEpoch fence ->
-      result
-    ) ->
+    ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence ->
+    StorageWallSettlementPermit scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence wallEpoch ->
+    (AppliedStorageWall scope planId provider wallSpecId wallEpoch fence -> result) ->
     Either ReconcileError result
-settleStorageWallCall prepared observation consume =
-    case observation of
-        StorageWallApplied epoch observed -> settled epoch observed (Changed Created)
-        StorageWallAlreadyExact epoch observed -> settled epoch observed Unchanged
-        StorageWallRefused detail -> Left (Conflict detail)
-        StorageWallFailed detail -> Left (Failure detail)
-        StorageWallUncertain detail ->
-            Left
-                ( Failure
-                    (FailureDetail "apply storage wall" (Text.pack detail) ReprobeBeforeRetry)
-                )
+settleStorageWallCall prepared authority permit consume =
+    withStorageWallSettlementPermit permit $ \authorized retained observation ->
+        if not (samePreparedStorageWallCall prepared authorized)
+            || providerWallEpoch authority /= providerWallEpoch retained
+            || providerWallFence authority /= providerWallFence retained
+            then Left (Conflict (ConflictDetail "storage-wall" "the exact prepared call and live wall" "a different call or wall" "settle only the authorized storage call"))
+            else case observation of
+                StorageWallApplied epoch observed -> settled epoch observed (Changed Created)
+                StorageWallAlreadyExact epoch observed -> settled epoch observed Unchanged
+                StorageWallRefused detail -> Left (Conflict detail)
+                StorageWallFailed detail -> Left (Failure detail)
+                StorageWallUncertain detail ->
+                    Left (Failure (FailureDetail "apply storage wall" (Text.pack detail) ReprobeBeforeRetry))
   where
     declared = storageWallCeilingBytes prepared
     settled epoch observed change
@@ -1142,6 +1135,8 @@ settleStorageWallCall prepared observation consume =
                 ( Failure
                     (FailureDetail "apply storage wall" "wall epoch must be positive" DoNotRetry)
                 )
+        | epoch /= providerWallEpoch authority =
+            Left (Conflict (ConflictDetail "storage-wall" "the live provider wall epoch" (Text.pack (show epoch)) "observe the exact live provider wall"))
         | observed /= declared =
             Left
                 ( Conflict

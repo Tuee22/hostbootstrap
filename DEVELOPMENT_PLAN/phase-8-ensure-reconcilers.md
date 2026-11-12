@@ -119,7 +119,7 @@ None.
 ### Sprint 8.3: Baseline tool plans and discovery [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Ghc.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Homebrew.hs`,
 `core/hostbootstrap-core/test/EnsureSpec.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
@@ -227,7 +227,7 @@ None.
 ### Sprint 8.5: Curl is a resolved host tool [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`
@@ -340,12 +340,12 @@ None.
 ### Sprint 8.7: Reconcilers as frame rows [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Docker.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Wsl2.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs`,
 `core/hostbootstrap-core/test/EnsureSpec.hs`, `core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/ensure_reconcilers.md`
@@ -725,7 +725,7 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ensure/Incus.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`, `core/hostbootstrap-core/test/EnsureSpec.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/incus.md`, `documents/engineering/ensure_reconcilers.md`,
@@ -1431,8 +1431,8 @@ None.
 ### Sprint 8.26: Container delivery describes only its filesystem projection [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/LiftSpec.hs`,
 `core/hostbootstrap-core/test/LiftContextSpec.hs`, `core/hostbootstrap-core/test/ReconcileSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
@@ -1489,7 +1489,7 @@ None.
 ### Sprint 8.27: Lift contexts have one checked layer reconstruction [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/test/LiftContextSpec.hs`,
 `core/hostbootstrap-core/test/SealedExportInventory.hs`
@@ -1594,7 +1594,7 @@ None.
 ### Sprint 8.29: Reverse descent reconstructs a checked root-relative route [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
@@ -1656,7 +1656,7 @@ None.
 ### Sprint 8.30: Canonical lift binding reads the context layer view [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
 **Substrates**: linux-cpu
@@ -1909,7 +1909,7 @@ None.
 ### Sprint 8.35: Finalized child projection adopts shared context views [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: linux-cpu
@@ -2073,7 +2073,7 @@ None.
 ### Sprint 8.38: VM-only lift builders retain an opaque open stack [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
 `core/hostbootstrap-core/test/LiftContextSpec.hs`,
@@ -2158,7 +2158,7 @@ None.
 ### Sprint 8.39: A container closes the lift context by type [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`,
 `core/hostbootstrap-core/test/LiftContextSpec.hs`,
@@ -2272,7 +2272,7 @@ None.
 ### Sprint 8.40: The lifecycle crossing is a placement of the one VM renderer [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`, `core/hostbootstrap-core/test/LiftContextSpec.hs`,
 `core/hostbootstrap-core/test/LiftSpec.hs`,
 `core/hostbootstrap-core/test/SealedExportInventory.hs`

@@ -6,16 +6,15 @@
 
 {- | Package-private root lifecycle entries and fixed interpreters.
 
-The public command facade exposes this type only abstractly.  Its sole
-root constructor joins the exact root @up@ authority, plan, lifecycle context,
-acquisition journal, Execute cursor, and command reservation. Child execution
-uses the storeless frame executor and cannot inhabit this entry. No caller can
-project those retained values or substitute a raw Chain invocation.
+The public command facade exposes this type only abstractly. RootUpLifecycleEntry
+retains the exact Up authority, Execute cursor, and catalog. RootDownLifecycleEntry
+and RootDestroyLifecycleEntry retain their teardown cursor, command authority,
+reauthorization action, and catalog. Child execution uses the storeless frame
+executor and cannot inhabit these entries.
 -}
 module HostBootstrap.Command.LifecycleEntry (
     LifecycleEntry,
     lifecycleEntryFrameName,
-    lifecycleEntryVerbName,
     withRootProjectUpLifecycleEntry,
     withBoundProjectDestroyLifecycleEntry,
     withRootProjectReverseLifecycleEntry,
@@ -46,12 +45,16 @@ import Data.Word (Word64)
 import HostBootstrap.Activation (
     ActivationError (..),
     ActivationGrant,
-    ActivationManifest (..),
+    ActivationManifest,
     ActivationSigningKey,
     activationErrorMessage,
     activationGrantSignature,
     activationManifestFromWire,
     activationSigningPolicy,
+    manifestFrame,
+    manifestPermittedEffects,
+    manifestPlanDigest,
+    manifestService,
     signActivationManifest,
     withActivationBroker,
  )
@@ -333,8 +336,10 @@ import HostBootstrap.Teardown.Internal (
     withReverseDescentProcessInputsKernel,
  )
 
-{- | The exact root lifecycle leaf consumed by the fixed @project up@
-interpreter.
+{- | The exact root lifecycle leaf consumed by the fixed root interpreters.
+
+Up carries an Execute cursor; Down and Destroy carry Teardown cursors and
+their retained reauthorization actions.
 
 The specification/configuration indices remain existential inside the package;
 the five identities shared with consumers are all nominal.
@@ -391,15 +396,6 @@ lifecycleEntryFrameName (RootDownLifecycleEntry _ _ _ _ _ cursor _ _ _) =
     lifecycleCursorFrame cursor
 lifecycleEntryFrameName (RootDestroyLifecycleEntry _ _ _ _ _ cursor _ _ _) =
     lifecycleCursorFrame cursor
-
--- | Descriptive canonical project verb; this grants no command authority.
-lifecycleEntryVerbName :: LifecycleEntry scope planId frame broker verb -> Text
-lifecycleEntryVerbName (RootUpLifecycleEntry _ verb _ _ _ _ _ _) =
-    projectVerbName verb
-lifecycleEntryVerbName (RootDownLifecycleEntry _ verb _ _ _ _ _ _ _) =
-    projectVerbName verb
-lifecycleEntryVerbName (RootDestroyLifecycleEntry _ verb _ _ _ _ _ _ _) =
-    projectVerbName verb
 
 {- | Admit or exactly resume one root @project up@ entry.
 
@@ -952,6 +948,7 @@ withRootProjectReverseLifecycleEntry
                 )
         pure $ case admitted of
             Left SnapshotReverseRootTerminal -> Right ()
+            Left (SnapshotVerificationError failure) -> Left ("lifecycle entry: " <> Text.unpack (modeErrorMessage failure))
             Left failure -> Left ("lifecycle entry: " <> show failure)
             Right result -> result
       where

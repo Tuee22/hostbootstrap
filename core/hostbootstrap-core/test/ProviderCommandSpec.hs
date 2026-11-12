@@ -13,6 +13,11 @@ guard rather than restating what the guard decides.
 -}
 module ProviderCommandSpec (tests) where
 
+import qualified Data.Aeson as Aeson
+import Data.Aeson ((.=))
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
+import HostBootstrap.Ownership.Object (mkOwnerClaim, ownerClaimText)
 import Data.List (isInfixOf)
 import HostBootstrap.Effect.Vocabulary (
     EffectFrame (OuterHost),
@@ -20,7 +25,7 @@ import HostBootstrap.Effect.Vocabulary (
     EffectTarget (ToolTarget),
     HostCommand (commandArguments, commandFrame, commandStdio, commandTarget),
  )
-import HostBootstrap.HostTool (HostTool (Incus))
+import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
 import HostBootstrap.Substrate.Provider.Command
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -29,11 +34,59 @@ tests :: TestTree
 tests =
     testGroup
         "described provider commands"
-        [ testGroup "observing" observationTests
+        [ testGroup "guest VM creation" guestVmCommandTests
+        , testGroup "observing" observationTests
         , testGroup "mutating" mutationTests
         , testGroup "the guarded delete" deleteTests
         , testGroup "the shape every command has" shapeTests
         ]
+
+guestVmCommandTests :: [TestTree]
+guestVmCommandTests =
+    [ testCase "native Lima observation requests JSON and suppresses progress stderr" $ do
+        let command = listLimaInstanceCommand "demo"
+        commandTarget command @?= ToolTarget Lima
+        commandArguments command @?= ["--log-level=error", "--tty=false", "list", "--format", "json", "demo"]
+        commandStdio command @?= CaptureStreams ""
+        commandFrame command @?= OuterHost
+    , testCase "Lima start has no creating input or metadata edit" $ do
+        let command = startLimaInstanceCommand "demo"
+        commandTarget command @?= ToolTarget Lima
+        commandArguments command @?= ["--log-level=error", "--tty=false", "start", "--timeout", "15m", "demo"]
+        commandStdio command @?= CaptureStreams ""
+    , testCase "WSL install names exactly the owned location and disk budget" $ do
+        let command = installWslInstanceCommand "demo" "C:\\owned path\\demo" "40GB"
+        commandTarget command @?= ToolTarget Wsl
+        commandArguments command @?=
+            ["--install", "-d", "Ubuntu-24.04", "--name", "demo", "--location", "C:\\owned path\\demo", "--no-launch", "--vhd-size", "40GB"]
+        commandStdio command @?= CaptureStreams ""
+        commandFrame command @?= OuterHost
+    ]
+        <> [ testCase ("create-only Lima configuration preserves " <> label) $ do
+                let claim = mkOwnerClaim "recorded VM generation"
+                    command = createLimaInstanceCommand "demo" (ProviderSizing 2 "4GiB" "40GiB") source "/srv/guest data" claim
+                commandTarget command @?= ToolTarget Lima
+                commandArguments command @?= ["--log-level=error", "--tty=false", "create", "--name", "demo", "-"]
+                commandFrame command @?= OuterHost
+                let CaptureStreams stdin = commandStdio command
+                    decoded = Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack stdin)) :: Either String Aeson.Value
+                    expected = Aeson.object
+                        [ "base" .= (["template:_images/ubuntu-24.04"] :: [String])
+                        , "vmType" .= ("vz" :: String), "cpus" .= (2 :: Int)
+                        , "memory" .= ("4GiB" :: String), "disk" .= ("40GiB" :: String)
+                        , "containerd" .= Aeson.object ["system" .= False, "user" .= False]
+                        , "mounts" .= [Aeson.object ["location" .= source, "mountPoint" .= ("/srv/guest data" :: String), "writable" .= True]]
+                        , "env" .= Aeson.object ["HOSTBOOTSTRAP_OWNER" .= ownerClaimText claim]
+                        ]
+                decoded @?= Right expected
+                assertBool "the create-only command must not start or edit an existing instance"
+                    (not (any (\argument -> elem argument ["start", "--set", "--param"]) (commandArguments command)))
+           | (label, source) <-
+                [ ("a simple host path", "/host/data")
+                , ("spaces and quotes", "/host/a space/\"quoted\"")
+                , ("Unicode and backslashes", "/Users/\x00c5/back\\slash")
+                ]
+           ]
 
 -- ---------------------------------------------------------------------------
 -- Observing
@@ -130,7 +183,7 @@ deleteTests =
 
 shapeTests :: [TestTree]
 shapeTests =
-    [ testCase "every command names the frame table's tool for this frame" $
+    [ testCase "every command names the Incus tool" $
         mapM_ (\command -> commandTarget command @?= ToolTarget Incus) everyCommand
     , testCase "every command is interpreted by a process of the outer host" $
         -- A vector that crossed into the instance would be a second crossing

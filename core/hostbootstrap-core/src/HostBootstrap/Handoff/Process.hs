@@ -37,15 +37,12 @@ that never completed its edge can produce. The only evidence that an edge
 finished is the rooted completion the relay obtained and the root recorded, so
 that is the only thing this bracket reports as success.
 
-Every obligation above is a POSIX primitive: the child is launched into a new
-process group, the group is signalled rather than the process, and the
-escalation is a signal the child cannot ignore. A host without those primitives
-cannot hold the contract, so this is a platform row. It is compiled on every
-gate host and refuses totally where it cannot apply, rather than being dropped
-from the package there (§ JJ): a caller sees the same two entry points
-everywhere, an absent row is a refusal it can read rather than a module that is
-not there, and the case that covers it asserts that refusal instead of
-disappearing.
+The shared child-group owner supplies both host rows. On Windows the acquired
+kill-on-close job survives leader polling and is terminated and closed on every
+exit of its bracket. The POSIX row retains the group identity captured at
+launch, so its stop, grace and kill still reach descendants after the leader
+has been reaped. Its outer cleanup keeps a kill fallback when inner teardown
+fails. Both rows keep the same protocol, relay, and rooted completion obligations.
 -}
 module HostBootstrap.Handoff.Process (
     withForwardLifecycleChildProcess,
@@ -65,12 +62,14 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.Effect.ChildGroup (
+    ChildGroup,
     askChildGroupToStop,
-    awaitChildExit,
+    awaitChildGroupExit,
     closeQuietly,
     killChildGroup,
     launchMicros,
     terminationGraceMicros,
+    withChildGroupProcess,
  )
 import HostBootstrap.Handoff (HandoffBindingInput, providerDependencyPackagesFields, providerDependencyProbeRequestFromFields, withProviderDependencyReprobeKernel)
 import HostBootstrap.Handoff.Completion (
@@ -116,7 +115,6 @@ import System.Process (
     StdStream (CreatePipe, Inherit),
     proc,
     waitForProcess,
-    withCreateProcess,
  )
 import System.Timeout (timeout)
 
@@ -365,13 +363,13 @@ withLifecycleChild config route serve =
     spawned executable arguments = do
         attempted <-
             Exception.try
-                ( withCreateProcess (childProcess executable arguments) $
-                    \inbound outbound _ child ->
+                ( withChildGroupProcess (childProcess executable arguments) $
+                    \inbound outbound _ child group ->
                         case (inbound, outbound) of
                             (Just childStdin, Just childStdout) ->
                                 Exception.bracket_
                                     (pure ())
-                                    (terminateChildGroup child childStdin childStdout)
+                                    (terminateChildGroup group child childStdin childStdout)
                                     (exchange childStdin childStdout serve)
                             _ ->
                                 pure (Left (processFailure "the child was launched without its own pipes"))
@@ -429,13 +427,11 @@ operator's problem. The wait is unconditional — a reaped child is the only kin
 that is not a zombie — and the pipes are closed last, quietly, because a
 descriptor left open outlives the process that justified it.
 -}
-terminateChildGroup :: ProcessHandle -> Handle -> Handle -> IO ()
-terminateChildGroup child childStdin childStdout = do
-    askChildGroupToStop child
-    lingering <- awaitChildExit terminationGraceMicros child
-    case lingering of
-        Just _ -> pure ()
-        Nothing -> killChildGroup child
+terminateChildGroup :: ChildGroup -> ProcessHandle -> Handle -> Handle -> IO ()
+terminateChildGroup group child childStdin childStdout = do
+    askChildGroupToStop group
+    ended <- awaitChildGroupExit terminationGraceMicros group
+    if ended then pure () else killChildGroup group
     _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout

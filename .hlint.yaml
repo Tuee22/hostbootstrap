@@ -1,10 +1,11 @@
 # The committed Haskell linting contract (DEVELOPMENT_PLAN § R).
 #
-# Like fourmolu.yaml beside it, this file exists so the gate's verdict is a
-# property of this repository rather than of whichever hlint the rolling base
-# image last installed. It keeps hlint's default rule set and records, by name,
-# every hint family the library's own conventions decline — so a finding outside
-# these families is a new one, and fails.
+# Like fourmolu.yaml beside it, this file fixes the configurable options of the
+# linter: it keeps hlint's default rule set and records, by name, every hint
+# family the library's own conventions decline, so a finding outside these
+# families is a new one, and fails. It does not fix the hlint version. The
+# rolling base image installs the current compatible release, and a newer
+# release can add a default hint under identical options.
 #
 # Two families are absent from this list on purpose. `Unused LANGUAGE pragma`
 # and `Use fewer imports` name real defects rather than a spelling preference,
@@ -12,10 +13,10 @@
 # modules named at the bottom of this file, where hlint reports a duplicate
 # import that only a preprocessor branch it does not evaluate keeps apart.
 #
-# The worked consumer under demo/ is clean against the default set and is kept
-# that way by the container check-code; nothing here relaxes it, because every
-# entry below is a family the library declines and the consumer does not
-# contain.
+# The worked consumer under demo/ is linted with this same file, by the host
+# source gate's linter legs over demo/src and demo/app and by a derived image's
+# check-code, so every family declined below applies to it as well. It currently
+# contains no instance of them.
 
 # --- Positional elimination -------------------------------------------------
 # hostbootstrap-core.cabal carries -Wpartial-fields precisely so a sum's fields

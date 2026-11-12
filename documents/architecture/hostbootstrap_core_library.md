@@ -51,10 +51,11 @@
   `service init`, and arbitrary output paths do not reach it. Effectful `project up` runs the read-only
   `validateInstalledIdentity` over all five files before opening durable command authority, so an
   incomplete set is refused there.
-- **A small closed set of argument vectors is classified before the parser.** `runCLI` recognizes five
-  core-owned internal entries (identity installation, the cluster exposure relay, the Colima command
-  transaction, the authenticated lifecycle child, and the frame child) before `optparse-applicative` sees the
-  arguments; none is in the command tree or in `--help`. Those five are the closed set
+- **A small closed set of argument vectors is classified before the parser.** `runCLI` recognizes six
+  core-owned entries in order: identity installation, cluster exposure relay, native working-directory
+  wrapper, Colima command transaction, authenticated lifecycle child, and frame child. Only unmatched
+  arguments reach `optparse-applicative`; none of these entries is in the command tree or in `--help`.
+  These six are the closed set
   [development_plan_standards.md § P](../../DEVELOPMENT_PLAN/development_plan_standards.md) admits, and a
   project adds no pre-parser entry of its own. The demo's `main` still intercepts one marker before it calls
   `runHostBootstrapCLI`, a departure the
@@ -99,6 +100,13 @@
 - The canonical home of this model is [composition_methodology](composition_methodology.md); this doc
   describes the library surface that realizes it and defers there for the model itself.
 
+The one closed command vocabulary is declared in the private effect-command-internal
+unit and reexported unchanged by the public core library. Its physical source home
+is internal/effect-command; the interpreter and Effect facade consume that same
+module. Private backend components can depend on the vocabulary and its HostTool
+declaration owner without depending back on the public library. This is packaging
+within L0, not another application-level library or another effect representation.
+
 ## Current Status
 
 The core surface is the fixed **`project` command and current-frame interpreter substrate**. It merges the `context`
@@ -112,6 +120,20 @@ from which exact project-plan admission derives `forward` and `DerivedTopology`;
 contributes its `web` and `accelerator` service variants and its VM/provider IO as chain steps — the
 surface is fixed, so it adds no verbs. The binary-context gate and
 the project-local `<project>.dhall` schema decoder/encoder back the interpreter.
+
+The relay implementation lives in the separate private `cluster-exposure-internal` unit under
+`internal/cluster-exposure`. Main and core-test consume that same compiled implementation; it is
+absent from the downstream public surface.
+
+The public Main library retains an effective surface of 104 modules. Its home sources are `src` and
+`internal/cluster-backend`; the 57 modules under `internal/handoff-implementation` belong to the private
+`handoff-implementation-internal` unit. Main reexports 29 of that unit's modules beside its eight
+existing lower-unit reexports. Its 19 additional implementation imports grant no downstream facade route.
+Core-test consumes the same compiled implementation through a four-module mixin selecting only
+`Handoff.Protocol`, `Handoff.Receiver`, `Handoff.Relay` and `Handoff.Internal`. The unit's five
+`other-modules` remain hidden. The [Cabal layout](../engineering/cabal_layout.md#package-stanzas) records
+the exact component and DATA boundaries; source and compiler controls distinguish physical ownership,
+public reexports and the test component's selected exposure.
 
 The public `HostBootstrap.Chain` surface is exact-plan-only, but it is a lower substrate rather than a
 command-entry authority. Production dispatch retains or reconstructs one admitted plan across rendering
@@ -215,6 +237,13 @@ owns pure `HostBootstrap.Lift.Context`; the
 owns provider lifecycle realizations that consume and reexport the lower target records/renderers. Registry
 policy is additive above generic Lift, never an import of generic Lift itself.
 
+Provider-bound execution retains one strong backend and one managed Running provider. Its producer
+checks the ownership receipt and compares the origin resource key, generation, semantic fingerprint,
+and backend realization before entering the continuation. A mismatch returns the corresponding complete
+`ConflictDetail` without running a provider command. The bound route retains the resolved tools;
+Incus guest execution checks UUID and nonce around the guest command, and Direct has no guest route.
+
+
 On Incus/Linux, `project up` constructs the persistent stack: a cordoned kind cluster, registry, pushed
 project image, and service workloads. `project down` and `project destroy` traverse the same plan's
 child-first reverse forest and apply each node's exact managed cleanup policy. The demo calls config-free
@@ -243,7 +272,9 @@ contract is the generic `ProjectSpec cfg tcfg`, parameterized over a project's c
 `<project>.test.dhall`). Core then owns no fixed config type and **no default values**.
 `ProjectCfg cfg` exposes only read-only `cfgContext` and installs identity-generative Production and
 authority-closed Harness mapped `ProjectCodec`s; it exposes no raw context updater. Canonical
-render/hash/strict re-decode yields scope-correct root-local `ValidatedConfig` identity. The surfaced
+render/hash/strict re-decode yields scope-correct root-local `ValidatedConfig` identity. Optional
+`BudgetCfg` supplies a pure resource projection for plan-owned budget admission without extending
+the universal config interface. The surfaced
 command tree (`project`, `test`, `service`, `context`, `check-code`) is core-owned and fixed. One
 restricted `psAssemble` is the default-bearing project-config path for Production init and exact-run
 Harness variants; `psTestInit` separately builds `tcfg`. An opaque typed service registry is jointly
@@ -273,20 +304,19 @@ These gaps between the tree and the contract this page states are open:
   vector through `liftSubcommandWithStdin` at a descent instead of handing it to the rooted coordinator. The
   [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owes
   its deletion.
-- The hidden handoff owners (`HostBootstrap.Handoff.Protocol`, `HostBootstrap.Handoff.Receiver`,
-  `HostBootstrap.Handoff.Relay`, `HostBootstrap.Handoff.Internal`) are main-library `other-modules`, so the
-  test suite reaches them only through source guards and compile-fail fixtures. The
-  [authenticated-handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
-  owes a test-only route that lets their refusals be exercised by value while consumer imports stay
-  refused, and the kill-on-close Job Object Windows row of `HostBootstrap.Effect.ChildGroup`.
 
 ## Module Surface
+
+The table describes the consumer facade. A module hidden from Main's consumers may still be exposed
+inside a Cabal-private implementation unit for trusted Main imports; the explicit core-test mixin
+controls its separate five-module view. Those cases do not add a public reexport.
 
 The library namespace is `HostBootstrap.*`. The set below is indicative of the surface consumers depend
 on; the canonical inventory is tracked in
 [`../../DEVELOPMENT_PLAN/system-components.md`](../../DEVELOPMENT_PLAN/system-components.md). A module is
-importable by a downstream package unless its row says **Cabal-hidden** (listed in the main library's
-`other-modules`) or names a private Cabal sublibrary; the Cabal file is authoritative for visibility.
+importable by a downstream package unless its row says **Cabal-hidden** (a Main `other-modules` member or
+a private-unit member absent from Main's reexports) or names a private Cabal sublibrary. The Cabal file
+is authoritative for effective consumer visibility.
 
 | Module | Responsibility |
 |--------|----------------|
@@ -297,12 +327,13 @@ importable by a downstream package unless its row says **Cabal-hidden** (listed 
 | `HostBootstrap.Ensure` | The `Reconciler` value type and `runEnsure` runner. It is not exposed as a command; the current demo calls it from composite step actions, while `HostBootstrap.Step.ensureStep` is available for projects that model a reconcile call as its own row. |
 | `HostBootstrap.Ensure.*` | Nine context-free dependency reconcilers live in `allReconcilers`; `Ensure.Colima` is instead an implemented exact plan-owned adapter. It consumes the matching plan/provider/topology/budget/fit/partition plus journal-derived reservation/start, derives one 128-bit isolated-home/global-lock authority and socket-safe local profile, and accepts no compatibility lifecycle plan, caller profile/root, raw envelope, executor, or host config. The canonical start fixes side-effecting defaults and binds CPU/memory plus a 20-GiB root and `total-20`-GiB data disk. Its Cabal-private backend contains the fixed Apple resolver, bounded runner/supervisor, descriptor-relative filesystem/context/namespace/origin programs, and opaque settlement bridge. The private `Resolver.Install` kernel orders retained-Brew revalidation, bounded fixed invocation, and a complete fresh resolver pass. `Resolver.Testing` adds descriptive views plus a bracketed thread-local fixture execution seam: it is unavailable to downstream clients, every public-adapter discovery/revalidation still runs strict resolver parsing and settlement, and it exports no trusted-toolchain or backend-result constructor. Self-bound origin states, machine/context and complete artifact identities gate provider-start/wall settlement, live Docker, and independently journaled conditional `colima delete --force --data` cleanup. A prepared-but-present outcome, foreign/replaced identity, or partial foreign stage mints no authority. The [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) owns these exact library adapters. `Ensure.Wsl2` owns prerequisite diagnostics, normalization, virtualization classification, and `bcdedit` rendering without importing the WSL2 lifecycle realization. Other probe strengths and platform install coverage still vary: Docker installs only on Linux and delegates/refuses on Apple/Windows, and Homebrew can only verify the pre-binary minimum. `Ensure.Cuda` owns the signed NVIDIA apt bootstrap, default-runtime/CDI/volume-injection configuration, and the exact nvkind Docker smoke. See [ensure_reconcilers](../engineering/ensure_reconcilers.md). |
 | `HostBootstrap.Step` | Opaque `Step`/`StepKind`, disjoint typed core/project identities, explicit reverse policies, namespaced operation keys, plan-authored chart and standalone service-activation declarations, and opaque `StepPlan`. Smart constructors are public; raw constructors are not. `mkStepPlan` rejects empty/duplicate/conflicting plans, noncontiguous `A/B/A` returns, and a post-handoff suffix that does not unwind deepest participating frame first while preserving every valid list's exact order. Activation admission additionally requires one non-empty role/effect declaration per authoring step and a frame unique across both declaration families; its canonical commitment carries no runtime measurement or signing authority. See [composition_methodology](composition_methodology.md). |
-| `HostBootstrap.ProjectPlan` | Pure public facade for one generative admitted plan. It exposes opaque `PlannedStep` forward order, `DerivedTopology`, stable snapshot, exact resource/edge projections, and reverse policy/callback projections while keeping construction in the trusted admission layer. |
+| `HostBootstrap.ProjectPlan` | Pure public facade for one generative admitted plan. It exposes opaque `PlannedStep` forward order, `DerivedTopology`, stable snapshot, exact resource/edge projections, and reverse policy/callback projections while keeping construction in the trusted admission layer. Its generic `ObjectStoreResource` / `ObjectStoreResourceKind` family matches `project:deploy-object-store` and shares its private tag with readiness; see [ownership invariant](ownership_invariant.md). |
 | `HostBootstrap.Plan.Resource` | **Cabal-private `plan-resource-internal`.** The single positional `PlannedResource` representation and seven resource-family tags, depending only on `base` and `text`. All five identity indices are nominal. `Lifecycle.Plan` retains validated-graph minting and readers; public facades and the private readiness kernel share the same opaque identity. |
 | `HostBootstrap.Readiness.Kernel` | **Cabal-private `readiness-internal`.** Generic-config `Probe`, closed backend keys and observation payloads, and the private probe factory and observer. It depends only on `base` and the shared plan-resource unit. The six identity indices are nominal; configuration and payload parameters are representational. It defines no configuration representation or polling loop. |
 | `HostBootstrap.Readiness` | Opaque validated polling and total probe results. Its public seven-parameter `Probe` synonym specializes the private kernel's eight-parameter type to `HostConfig`; polling, version validation, and `Ready` integration stay here. Closed backend keys require an exact planned resource; probe injection is private. The public `dependencyProbe` wrapper remains a separate gap in `Reconcile`. `ObservedReady` is non-authorizing evidence for local convenience helpers. See [readiness](readiness.md). |
 | `HostBootstrap.Reconcile` | Final-codec/step-plan lifecycle identity; opaque planned resources/edges, reconcile/adoption outcomes, prepared operation pairs, phase-indexed handles, and legal persisted journal transitions. The result/handle foundation belongs to the [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md). Its consumers are the protected-store journal in `HostBootstrap.Lifecycle.Transaction`, `HostBootstrap.Chain`, and the live adapters `HostBootstrap.Cluster.Reconcile`, `HostBootstrap.Substrate.Provider.Reconcile`, and `Ensure.Colima`. |
 | `HostBootstrap.Chain` | Exact public current-frame substrate. Root-local execution consumes matching Execute authority/cursor evidence and rereads the acquisition/cursor row inside protected transitions. At a process boundary Chain does not lend those values: `DerivedTopology` feeds root catalog construction and a storeless frame executor runs only root-granted nodes. See [composition_methodology](composition_methodology.md). |
+| `HostBootstrap.Chain.EntryPolicy` | **Cabal-private `chain-entry-internal`.** One pure entry policy shared by Main and package tests, consuming actual lower authority/store values and descriptive cursor/topology projections. It creates no authority and imports no main cursor or plan representation. See [binary-context admission](binary_context_config.md). |
 | `HostBootstrap.Config.Schema` | Owner for project-local `<project>.dhall` schema surfaces, sibling lookup, canonical root admission, canonical render/hash/re-decode verification, child projections, and service/daemon snapshot metadata. `withSiblingValidatedProjectConfigContext` binds service selection and execution to one verified snapshot. Core owns no defaults. The named `context-init` action is still only an announcer; VM/container/service delivery remains split across lifecycle actions. See [dhall_topology](../engineering/dhall_topology.md). |
 | `HostBootstrap.Config.Fields` | Opaque common framework view, full-vs-role and Production-vs-Harness discriminators, `RoleCodec`, structural `RuntimeRoleWire`, `ValidatedServiceRequest`, and `RoleParams`. Role wires include mandatory framework validation plus only the selected service fields. |
 | `HostBootstrap.Context` | Binary-context substrate inside `<project>.dhall`: discover the sibling path, render topology frames, validate the whole graph, selected ancestry, and the placement-complete required/exact witness set, and gate the chain per frame on handoff. Duplicate identifiers, missing parents, cycles, disconnected frames, and incomplete or extraneous witnesses refuse validation. Read-only introspection backs the `context` command. See [binary_context_config](binary_context_config.md). |
@@ -318,20 +349,20 @@ importable by a downstream package unless its row says **Cabal-hidden** (listed 
 | `HostBootstrap.Protected` | Versioned durable record store with OS-released exclusive entry, store identity, exact-version compare-and-swap/delete, atomic publish, injective record-name encoding, and an effective create/remove probe for the exact records directory. |
 | `HostBootstrap.Cluster.Cordon.Foundation` | Implemented exposed lower boundary. The [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md) owns opaque canonical-unit `ResourceBudget`, exact quantity parsing/refusal, provider-neutral capacity reads/verification, exact-budget sizing renderers, and storage-wall policy. Its guarded imports stay within host configuration/tools/substrates, the effect vocabulary/interpreter, and the private native Windows capacity kernel. Per-dimension source types reject a memory source in a CPU slot. Whole-GiB providers reject inexact hard ceilings rather than rounding upward. See [resource_budgeting](../engineering/resource_budgeting.md). |
 | `HostBootstrap.Cluster.Cordon` | Implemented configuration-facing facade owned by the [Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md). It reexports the foundation and adapts `Config.Vocab.Resources`/`ResourceEnvelope`, preflight wrappers, and descriptive pure `fitsBudget`; it owns no plan-indexed workload/fit/partition/slice proof. Its exact dependency direction is mechanically guarded. |
-| `HostBootstrap.Cluster.Budget` | Closed provider keys plus opaque plan-indexed validated/effective budgets, workload fit, and constructive partitions/slices remain pure. The only public provider-wall reservation producer consumes the exact plan/provider resource, wall, partition, and durable `PreparedGate`, deriving its session/fence/attempt/journal lineage from that gate. Raw wall observations stay descriptive: an unexposed provider-specific bridge first validates its closed backend result, then package-hidden `HostBootstrap.Cluster.Budget.Internal` can mint the nominal settlement permit from only that owning observation and the matching prepared operation/preconditions. Public settlement consumes the permit rather than a caller observation. The same hidden path completes the opaque journal-bound provider start to its exact generic Running handle/receipt without substituting provider-specific machine identity for resource generation. WSL success returns its lease inseparably; uncertain acquisition returns no authority. The [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) closes this boundary with direct Colima's descriptor-held `flock(2)` acquisition and identity-conditional cleanup. The Apple demo uses Lima, and the [Apple Silicon acceptance phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md) exercises the direct-Colima adapter through a separate native lane. |
+| `HostBootstrap.Cluster.Budget` | Optional `BudgetCfg` projects the resource envelope from the exact plan's retained validated configuration; admission accepts no separate envelope. Closed provider keys plus opaque plan-indexed validated/effective budgets, workload fit, and constructive partitions/slices remain pure. The only public provider-wall reservation producer consumes the exact plan/provider resource, wall, partition, and durable `PreparedGate`, deriving its session/fence/attempt/journal lineage from that gate. Raw wall observations stay descriptive: an unexposed provider-specific bridge first validates its closed backend result, then package-hidden `HostBootstrap.Cluster.Budget.Internal` can mint the nominal settlement permit from only that owning observation and the matching prepared operation/preconditions. Public settlement consumes the permit rather than a caller observation. The same hidden path completes the opaque journal-bound provider start to its exact generic Running handle/receipt without substituting provider-specific machine identity for resource generation. WSL success returns its lease inseparably; uncertain acquisition returns no authority. The [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) closes this boundary with direct Colima's descriptor-held `flock(2)` acquisition and identity-conditional cleanup. The Apple demo uses Lima, and the [Apple Silicon acceptance phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md) exercises the direct-Colima adapter through a separate native lane. |
 | `HostBootstrap.Cluster.Lifecycle` | The [cluster-lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)'s opaque nominal `PlanOwnedCluster` joins one admitted plan to its matching cluster/provider resources, topology, plan-derived Production or generative Harness profile/root/config presence, and exact budget slice. `HostBootstrap.Cluster.Reconcile` additionally requires an opaque backend-minted Running-provider dependency, binds config bytes and budget into preparation, retains backend container identity separately from journal generation, and gates readiness behind identity-checked cordon. Cabal-hidden `HostBootstrap.Cluster.Workload` then binds the planned chart to fresh cluster readiness, canonical values, its optional exact activation-revision basename, and its durable gate; activation signing remains root-owned and the installed revision remains runtime input rather than deployment-controller authority. `Cluster.Backend` alone renders Helm/Kubectl forward and Helm absence-checked reverse calls, both settling through existing generic reconciliation results. See [cluster_lifecycle](../engineering/cluster_lifecycle.md). |
 | `HostBootstrap.Cluster.Backend` | Public production discovery resolves the selected Kind/nvkind driver plus Docker, Kubectl, and Helm through typed `HostConfig`/`HostTool`, exposing only an opaque strong backend and exact-indexed calls. The executor, injected-test constructor, raw result constructors, relay implementation, and durable protocol live behind Cabal-private/hidden modules. Tools resolve once through `HostConfig`; the backend retains that configuration and no per-tool executable identity or store, and each transaction opens the clause-holding protected store in its state directory. The closed backend contract fixes the child environment/cwd/PATH and watchdog, self-binds cluster records and exact config/kube snapshots, retains every node container ID, and conditions cordon/readiness/cleanup on those identities. Exposure preparation consumes only service/target semantics and an exact applied cordon; reconciliation creates an identity-labelled relay with Docker's atomic loopback-only host-port selection, persists the exact mapping, and mints opaque `ResolvedExposure` values only after exact identity and mapping inspection. Exposure release precedes cluster cleanup and refuses replacement, wildcard, missing, added, or changed mappings. |
 | `HostBootstrap.Lift.Context` | Implemented public boundary owned by the [Dhall-configuration-and-generic-project-model phase](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md): Incus/Lima/WSL2 target records, container/config delivery, and same-root `canonicalHostMount`. The [ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) supplies opaque `VMStack` and `LiftContext`: the VM builders extend the open stack, `vmContext` closes it without a container, and `inContainer` closes it with one terminal container. Ordinary `liftLayers`, `liftVMStack` and terminal readers expose the retained structure without record update; the Lift facade reexports the same abstract types and API. Target/container/config records remain public descriptive values. One renderer per VM provider consumes `VMPlacement` for both ordinary and lifecycle leaves, carrying optional workdir, non-interactivity and elevation. Lima and WSL include sudo only when elevated; ordinary Lima enables it to retain `sudo -H`, while Incus already executes as root. Every WSL crossing uses `--exec` followed by the supplied command vector. The authenticated lifecycle authority channel remains distinct. The module resolves no tool and performs no effect. |
 | `HostBootstrap.Lift` | The generic self-reference fold and effect dispatch is implemented over `Lift.Context`; the [ensure-reconcilers phase](../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md) owns its effect seam, adversarial quoting, and import-guard coverage. Lift reexports selected pure vocabulary, resolves only the outer host tool, and imports no provider realization or Registry module. Ordinary container config delivery is staged create/copy/start work: supplied stdin becomes a ustar projection for `docker cp`, then attached start retains the image entry point. The public stdin execution signatures are unchanged; the single-command eliminator refuses staged delivery. Known-ID failure cleanup follows the remove/retain policy and preserves the primary result. The exact Chain derives each frame boundary's context from `DerivedTopology` and hands off `pb project up` through this lower seam. Reachability/blob leaf helpers are later additive network/registry extensions rather than part of this generic contract. See [composition_methodology](composition_methodology.md#the-recursive-project-up-interpreter) for the protocol, cleanup limits and static validation boundary. |
-| `HostBootstrap.Substrate.Provider` | Implemented boundary. `SubstrateProvider` is abstract and selected from a closed Incus/Lima/WSL2/Direct kind; narrow projections expose descriptive identity, Lift context, and pure plans without exposing construction or record update. Discovery executes provider-owned closed requests against raw outcomes, bounds retry, and mints a generative backend-indexed capability only from the exact opaque managed Running provider. `Provider.Reconcile` exposes opaque nominal managed provider/share authorities and exact prepared provision/ready/share/stop/delete calls. Its fresh CPS opener rebinds carried evidence to the exact planned provider identity and keeps the backend/provider indices lexical through dependent share and alias work. The Incus realization holds the four ownership clauses over VM/share mutation and bound guest execution, through the seam's reported face: every effect is a described command run by the one interpreter, every answer a total classification, and the transaction's standing a total function of the durable record, that observation, and the claim the instance carries. Direct is only a plan-local admission and identity share, with structured stop/delete/guest/alias refusals and no physical-host ownership. `Provider.Alias` consumes the matching managed provider/share authority and ships a closed symbolic-link transaction to the installed guest binary. The far-side ownership row uses the shared protected store and origin codec for no-replace publication, interruption recovery, exact kernel-identity binding, and conditional release; provider discovery retains no guest `flock`, `stat`, or Python front end. The demo's exact copy-source action completes `reconcileNodeGuestAlias` before releasing either lexical handle, and its reverse releases the alias before provider deletion. The [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) owns this boundary, its native Linux/x86_64 KVM/Incus gate, and its remaining provider, alias, shipped-row, and guest-VM work; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns demo call-site adoption. |
-| `HostBootstrap.Incus` / `HostBootstrap.Lima` / `HostBootstrap.Wsl2` | Provider lifecycle probes and argv builders consume and reexport their target records and inner renderers from `Lift.Context`, leaving lifecycle-specific create/start/copy/stop/delete behavior in the provider modules. The [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) owns that boundary, and the Apple Silicon and Windows acceptance phases own the native Lima and WSL2 confirmations. `Ensure.Wsl2` owns prerequisite diagnostics; `HostBootstrap.Wsl2` only compatibility-reexports those lower definitions. See [Incus](../engineering/incus.md), [Lima](../engineering/lima.md), and [WSL2](../engineering/wsl2.md). |
+| `HostBootstrap.Substrate.Provider` | Implemented boundary. `SubstrateProvider` is abstract and selected from a closed Incus/Lima/WSL2/Direct kind; narrow projections expose descriptive identity, Lift context, and pure plans without exposing construction or record update. Discovery executes provider-owned closed requests against raw outcomes, bounds retry, and mints a generative backend-indexed capability only from the exact opaque managed Running provider. `Provider.Reconcile` exposes opaque nominal managed provider/share authorities and exact prepared provision/ready/share/stop/delete calls. Its fresh CPS opener rebinds carried evidence to the exact planned provider identity and keeps the backend/provider indices lexical through dependent share and alias work. The Incus realization holds the four ownership clauses over VM/share mutation and bound guest execution, through the seam's reported face: every effect is a described command run by the one interpreter, every answer a total classification, and the transaction's standing a total function of the durable record, that observation, and the claim the instance carries. Direct is only a plan-local admission and identity share, with structured stop/delete/guest/alias refusals and no physical-host ownership. `Provider.Alias` consumes the matching managed provider/share authority and ships a closed symbolic-link transaction to the installed guest binary. The far-side ownership row uses the shared protected store and origin codec for no-replace publication, interruption recovery, exact kernel-identity binding, and conditional release; provider discovery retains no guest `flock`, `stat`, or Python front end. The demo's exact copy-source action completes `reconcileNodeGuestAlias` before releasing either lexical handle, and its reverse releases the alias before provider deletion. The [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) owns this boundary and its native Linux/x86_64 KVM/Incus gate; the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owns demo call-site adoption. |
+| `HostBootstrap.Incus` / `HostBootstrap.Lima` / `HostBootstrap.Wsl2` | The Incus facade reexports its lower target and retains existing execution/file-push argv consumers; prepared Incus lifecycle commands live in `HostBootstrap.Substrate.Provider.Command`. Lima and WSL2 consume and reexport their lower target records/renderers and supply descriptive lifecycle builders. The [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) owns that boundary; native Lima and WSL2 confirmation belongs to their terminal acceptance phases. `Ensure.Wsl2` owns prerequisite diagnostics, which `HostBootstrap.Wsl2` compatibility-reexports. See [Incus](../engineering/incus.md), [Lima](../engineering/lima.md), and [WSL2](../engineering/wsl2.md). |
 | `HostBootstrap.Registry` | Registry credential discovery/forwarding exists. The [composition-and-network-algebra phase](../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md) owns the registry-aware `liftSubcommandWithAuth` consumer here so Registry imports generic Lift and its quoting helper while Lift imports no Registry policy. Credentials are forwarded only at the stdin effect boundary and remain absent from argv. See [registry_credentials](../engineering/registry_credentials.md). |
 | `HostBootstrap.Harness` | The standardized assertion engine. Its five-field existential `TestSuite` contains the safety precondition, assertion-environment opener, case matrix, per-case assertion, and post-reverse absence assertion—no bring-up or teardown callback. For each variant the command-owned `ConfigVariant` supplies an opaque lifecycle over one exact Harness plan; the engine runs forward, assertions, reverse, and the absence check in that order and reports lifecycle/cleanup failures separately. Terminal close requires the reverse action's settled-destroy `ProjectClosureEvidence`; callback success alone is not close authority. See [harness_workflow](harness_workflow.md). |
 | `HostBootstrap.Harness.Lifecycle.Internal` | Constructor and eliminators for the opaque `HarnessLifecycle`. It lives in the private `harness-lifecycle-internal` Cabal component, which the main library and its own test suite may depend on but downstream packages cannot. Command constructs the runtime value from one exact Harness plan; engine tests use the same private component rather than exposing a public constructor. |
 | `HostBootstrap.Command.LifecycleEntry` | Cabal-hidden owner of root Up, Down, and Destroy entries. Each nominal package joins the exact root authority, verb, plan, root lifecycle context, acquisition journal, cursor, command reservation, and rooted catalog. Root admission reserves the command only after the exact evidence joins; retained reverse terminalization validates complete subtree and session settlement. Children cannot inhabit this sum: `Command.Child` drives the storeless frame executor through signed rooted grants and terminal receipts. No public constructor or authority projection exists. |
 | `HostBootstrap.Command` | The **fixed** core command tree (`coreCommands`): `project init|up|down|destroy`, `test init|run`, `service init|schema|run`, `context`, and `check-code`. Both Production and typed Harness `up` paths validate one exact lifecycle context before snapshot persistence and immediately pass the hidden lifecycle entry to its fixed interpreter; an Execute reservation is one-use and a Teardown retry performs no second effect or reservation. `project down|destroy` are two verb-indexed projections of the one plan: core Kind cleanup runs only when the current frame owns `deploy-kind`, every other node runs the reverse its own step declared, and per-node outcomes are structured with failures aggregated after every independent node has run. No per-project verbs. |
 | `HostBootstrap.CLI` | Opaque identity-parametric `ProjectSpec cfg tcfg`, unfinished `ProjectSpecBuilder`, checked additive operations (step fragments rank-2 in one shared root/config scope), `finalizeProjectSpec`, and the two entrypoints. Finalization validates suite/case/artifact/input/service contributions; dispatch verifies and retains the executable identity before selecting codecs or commands, and per-config plan projection validates the exact non-empty `StepPlan` before interpretation. One restricted identity-polymorphic `psAssemble` supplies Production/Harness configs and `psTestInit` supplies `tcfg`. |
-| `HostBootstrap.Config.Class` | The single typeclass coupling core to a project's config family: `ProjectCfg` (read-only `cfgContext` plus the codec), `TestCfg`, `InitArgs`, `ExistingOutputPolicy`, `AssemblyRequest`, `ConfigAssembly`, and the `ProjectCodec` family. Core names no concrete config record; project defaults live only in the project's assembler. |
+| `HostBootstrap.Config.Class` | The universal codec/context interface for a project's config family: `ProjectCfg` (read-only `cfgContext` plus the codec), `TestCfg`, `InitArgs`, `ExistingOutputPolicy`, `AssemblyRequest`, `ConfigAssembly`, and the `ProjectCodec` family. Core names no concrete config record; project defaults live only in the project's assembler. |
 | `HostBootstrap.Identity.Install` | `provisionInstalledIdentity` installs or validates the five sibling identity files with per-file no-replace publication, and `validateInstalledIdentity` checks the complete set read-only. See the TL;DR and [Entries before the parser](#entries-before-the-parser). |
 | `HostBootstrap.Handoff.Transaction` | Both ends of one frame crossing: `classifyFrameChild` and `runFrameChildEntry` on the far side, `withFrameChildTransaction` on the near side. It carries one opaque transaction and one opaque outcome and interprets neither. See [The frame-child entry](#the-frame-child-entry). |
 | `HostBootstrap.Teardown` | The verb-indexed reverse projection `TeardownPlan` and its child-first teardown forest. `openTeardownForest` is the sole initial producer of a forest; only a completed forest reaches `verifySubtreeSettled`, and only a root-frame destroy subtree reaches `verifyDestroySettled`. It owns `SubtreeSettled` and `DescentWork`. |
@@ -341,7 +372,7 @@ importable by a downstream package unless its row says **Cabal-hidden** (listed 
 ## Host-Tool Resolution And Substrate Ownership
 
 External tools resolve through the closed `HostTool` enumeration to absolute paths; the
-[HostTool module](../../core/hostbootstrap-core/src/HostBootstrap/HostTool.hs) owns the boundary.
+[HostTool module](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs) owns the boundary.
 `AbsExe` hides its constructor, `mkAbsExe` rejects non-absolute paths, and `absExePath` is an ordinary
 accessor that cannot be used in a record update. Managed host effects consume this representation. A
 described guest command is resolved in the frame that interprets it; the guest is reached through its
@@ -448,6 +479,10 @@ prepared call, and carried resource remains under the same plan indices. The bac
 success, detail, and terminal settlement.
 Every protected entry rereads the exact acquisition source and current cursor row while holding that
 entry, so advancing the retained Execute row to Teardown makes later Chain transitions refuse.
+
+Current-frame callback failure closes its exact terminal journal scope before the original exception
+escapes Chain. Successful callbacks and returned non-success observations use the distinct projected-gate
+settlement rules in [terminal acknowledgement](lifecycle_state_model.md#sessions-fences-and-terminal-acknowledgement).
 
 The exact Chain is the **current-frame substrate** of the recursive/fractal interpreter. It asks
 `DerivedTopology` whether a descent follows the authorized current-frame segment, and Production hands an
@@ -564,9 +599,11 @@ This guarantees the **parser tree and command names** are shared, not that bare 
 identical. `runBareHostBootstrapCLI` uses the private specification in `HostBootstrap.CLI.Bare`: an empty
 service registry, no project artifacts, a `check-code` that only prints that the bare binary has no project
 checks, and a forward-child projector that refuses. Its Production plan is empty, so a bare `project up`
-refuses at plan admission (`EmptyStepPlan`). Its Harness plan is one `deploy-kind` step whose declared
-reverse is `clusterDelete`, exercised by the single compiled `cluster-live` case: a bare `test run all`
-creates a run-scoped Kind cluster, asserts on it, and deletes it, so it needs Docker, Kind, and Kubectl and
+refuses at plan admission (`EmptyStepPlan`). Its Harness plan reserves a Direct host provider and then
+creates a plan-owned Kind cluster through the prepared backend. Its cluster reverse is
+`releaseRetainedCluster`, exercised by the single compiled `cluster-live` case: a bare `test run all`
+creates, cordons and readies one run-scoped cluster, verifies runtime loopback allocations, and
+conditionally releases its recorded identities. It requires Docker, Kind, Kubectl and Helm and
 changes host state. A project binary supplies an opaque finalized `ProjectSpec`; its plan, test seams, typed
 services, schema artifacts, and cleanup make those same routes useful. Exact plan, resource, and lifecycle joins
 validate those contributed relationships before effects.
@@ -619,7 +656,7 @@ parser. Each entry is absent from `--help` because none is in the command tree. 
 | Argument vector | Owner | Launched by | What the vector carries | Action |
 |---|---|---|---|---|
 | exactly `--hostbootstrap-install-identity` (`installedIdentityEntryArguments`) | `HostBootstrap.Identity.Install` | the Python bootstrapper, after it installs a newly built binary | nothing | `provisionInstalledIdentity` for the running executable's path |
-| `__hostbootstrap-exposure-relay-v1` followed by one or more groups of service, listen port, target host, and target port (`runExposureRelayEntry`) | Cabal-hidden `HostBootstrap.Cluster.Exposure.Internal` | `HostBootstrap.Cluster.Backend`, as the command of the identity-labelled relay container on the `kind` network | caller-selected relay targets, validated for distinct services and listen ports; a malformed vector refuses instead of falling through to the parser | runs the TCP relay |
+| `__hostbootstrap-exposure-relay-v1` followed by one or more groups of service, listen port, target host, and target port (`runExposureRelayEntry`) | private `cluster-exposure-internal` sublibrary, `HostBootstrap.Cluster.Exposure.Internal` | `HostBootstrap.Cluster.Backend`, as the command of the identity-labelled relay container on the `kind` network | caller-selected relay targets, validated for distinct services and listen ports; a malformed vector refuses instead of falling through to the parser | runs the TCP relay |
 | `--hostbootstrap-working-directory-entry` followed by directory, executable, and arguments (`workingDirectoryEntryArguments`) | `HostBootstrap.Effect.Run` | the bounded runner on macOS, relaunching the current executable | absolute working directory and executable plus the exact argument vector; the runner supplies the complete environment | changes directory and execs the executable without an intermediate shell; malformed entry exits 126; refused on Windows |
 | exactly `__hostbootstrap-colima-command-transaction-v1` (`shippedCommandEntryArguments`) | private `colima-backend-internal` sublibrary, `HostBootstrap.Ensure.Colima.Backend.Runner` | the binary itself, relaunched by the Colima backend's bounded runner | nothing on the vector; the absolute executable and its arguments arrive encoded on standard input | runs that one command in its own process group until the launcher's standard input closes; refuses on Windows |
 | exactly `--hostbootstrap-lifecycle-child` (`lifecycleChildArguments`) | `HostBootstrap.Command.Child` | the rooted lifecycle process route, for one authenticated forward or reverse descent | nothing; project, scope, verb, plan, frame, and every coordinate arrive through the authenticated Offer or a root-signed response | the storeless `FrameExecutor` described in the `Command.Child` row |
@@ -637,8 +674,9 @@ argument count. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-d
 and releases the Direct cluster through the authenticated reverse child instead; see
 [Current Status](#current-status).
 
-Every core entry matches the whole argument vector or nothing and opens no route to a `ProjectSpec`
-extension stream. The identity, lifecycle-child, and frame-child entries carry nothing on the vector: no
+Each core entry owns its complete argument-vector grammar and opens no route to a `ProjectSpec`
+extension stream. Malformed arguments to a recognized parameterized marker refuse within its owner.
+The identity, lifecycle-child, and frame-child entries carry nothing on the vector: no
 coordinates, no path, no authority, and no caller-selected action. The exposure relay and the Colima command
 transaction carry caller-selected work (relay targets, a command to run), and § P admits both because their
 launcher confines that work. Only `HostBootstrap.Cluster.Backend` writes the relay targets, as the relay
@@ -670,18 +708,40 @@ What travels across the crossing is one opaque transaction out and one opaque ou
 the same magic, version, tag, and request identity as every other message on the handoff channel. The
 near side folds the lift context to the invocation that crosses the frames, launches the child into its
 own process group with the protocol on private pipes and diagnostics inherited, sends one transaction,
-reads one answer, and then ends the group — on a returned outcome, a refusal, a protocol failure, an
-exception, or asynchronous cancellation alike. Ending the group rather than the process is what makes a
-shell or provider the child launched go away with it. The platform rows live in the private
+reads one answer, and then runs the shared child cleanup on a returned outcome, refusal, protocol failure,
+exception or cancellation. The crossing has no wall-clock deadline. The platform rows live in the private
 `HostBootstrap.Effect.ChildGroup` (the `effect-internal` sublibrary), shared with `HostBootstrap.Handoff.Process`,
-so `HostBootstrap.Handoff.Transaction` carries no platform conditional. On POSIX hosts the row signals the
-child's process group, waits a grace, then kills the group. The Windows row terminates only the launched
-process; the target row is a kill-on-close Job Object that ends the whole tree (see
-[Current Status](#current-status)).
+so `HostBootstrap.Handoff.Transaction` carries no platform conditional. Both transports launch through
+the shared scoped ChildGroup. On Windows the pinned process library assigns a kill-on-close Job Object
+before the child can start descendants. A masked transfer retains that exact job before leader polling
+or restored caller execution; an early or already-reaped leader does not release group ownership.
+Every exit of the acquired bracket runs a finalizer that attempts termination and bounded observation
+of active processes, and always closes the exact job handle in `finally`. The Windows ask step is hard
+termination, not a graceful-stop request. Leader reaping and pipe closure remain with the transport owners.
+On POSIX the shared launch creates a new process group and captures its identity once, before leader
+polling or caller execution. TERM, KILL and null-signal presence checks use that retained identity even
+after the leader is reaped. Cleanup attempts TERM and a fixed grace before KILL and bounded observation;
+the outer finalizer retains a kill fallback if inner teardown raises. Completion requires both leader
+exit and group absence. Only ESRCH is treated as absence; other native errors remain errors.
 
 The bytes are interpreted by whichever phase owns the object the transaction concerns, never by the
 transport. A frame that has no interpreter installed answers a refusal rather than falling silent, so
 the near side learns that the far side declined instead of inferring it from a closed pipe.
+
+The strict protocol decoder must establish a message and request identity before a reply is possible.
+A decoded wrong tag receives one `Refused` under that identity while retaining the original failure.
+Raw invalid bytes or excess transaction fields fail decoding without a trusted id and produce no reply.
+Only an ordinary `IOException` thrown by the interpreter receives code `unavailable` and fixed detail
+`the frame interpreter failed`, followed by rethrowing that same exception. Channel and cleanup errors
+retain their existing handling; asynchronous interpreter or notification exceptions still propagate.
+
+`withPrivateProtocolStdio` duplicates the protocol streams before redirecting ordinary stdin to the null
+device and stdout to stderr. Later acquisition failure closes earlier duplicates; partial redirection
+uses the existing best-effort restoration of both saved globals before closing duplicates. The outer bracket
+restores stdio after callback success, exceptions or cancellation through that same policy. Child-entry
+subprocess tests exercise this Transaction body; the complete six-entry `runCLI` join is held by source
+tokens because the suite's main is not `runCLI`.
+Joined lifecycle execution remains with the recursive-lifecycle-command owner.
 
 ## Consumption
 

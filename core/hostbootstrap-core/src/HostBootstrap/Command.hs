@@ -25,7 +25,6 @@ module HostBootstrap.Command (
     allReconcilers,
     LifecycleEntry,
     lifecycleEntryFrameName,
-    lifecycleEntryVerbName,
 )
 where
 
@@ -35,28 +34,34 @@ import Control.Monad (unless, when)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
 import Data.Functor.Identity (Identity (Identity), runIdentity)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (find, intercalate, isInfixOf, stripPrefix)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
 import HostBootstrap.Activation (
     ActivationSigningKey,
-    MeasuredInstance (HostServiceInstance, KubernetesInstance),
     activationErrorMessage,
     activationSigningKeyFromBytes,
     activationVerificationKeyFromBytes,
+    hostServiceInstance,
+    kubernetesInstance,
  )
 import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Build (
     authorizeCheckCode,
+    buildConfigDigestFromText,
     buildErrorMessage,
+    buildProjectNameFromText,
+    buildSpecDigestFromText,
+    coordinatorDigestFromText,
+    buildSourceRootFromFilePath,
+    builderPathFromFilePath,
     installedBuildVerificationKey,
     readBuildChannel,
     verifyBuildInvocation,
  )
 import HostBootstrap.Chain (
-    nextFrameAfter,
     renderChain,
  )
 import HostBootstrap.Cluster.Backend (releaseRecordedClusterExposure, releaseRetainedCluster, runVerifiedChartWorkloadCleanupCall)
@@ -69,7 +74,6 @@ import HostBootstrap.Cluster.Lifecycle (
 import HostBootstrap.Command.LifecycleEntry (
     LifecycleEntry,
     lifecycleEntryFrameName,
-    lifecycleEntryVerbName,
     runRootProjectReverseLifecycleEntry,
     runRootProjectUpLifecycleEntry,
     withBoundProjectDestroyLifecycleEntry,
@@ -86,10 +90,11 @@ import HostBootstrap.Config.Class (
     ProjectCodec,
     TestCfg (..),
     decodeProjectCodecFile,
+    decodeProjectCodecWithSettings,
     projectCodecSchemaText,
     projectCodecSpecDigest,
  )
-import HostBootstrap.Config.Fields (KnownScopeKind)
+import HostBootstrap.Config.Fields (KnownScopeKind, WireKind (ServiceRoleWire), inspectConfigWireKind)
 import HostBootstrap.Config.Schema (
     ConfigPublishOutcome (ConfigKeptExisting, ConfigPublished, ConfigRefusedExisting),
     TestConfigReplacement (RefuseExistingTestConfig, ReplaceExistingTestConfig),
@@ -220,8 +225,6 @@ import HostBootstrap.Lift (
     InVMSelfPath (InVMSelfPath),
     SelfRef,
     currentSelfRef,
-    liftStdin,
-    liftSubcommandWithStdin,
  )
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
@@ -230,7 +233,6 @@ import HostBootstrap.ProjectPlan (
     plannedStepIdentity,
     renderSnapshot,
     stablePlanSnapshotDigest,
-    topology,
     withChartWorkloadResource,
  )
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
@@ -248,7 +250,6 @@ import HostBootstrap.ProjectPlan.Frame (
     CurrentFrame,
     ProjectFrame,
     ValidatedContext,
-    currentFrameId,
     validatedContextValue,
     withCurrentFrame,
  )
@@ -299,7 +300,7 @@ import Numeric.Natural (Natural)
 import Options.Applicative
 import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv)
-import System.Exit (ExitCode (ExitSuccess), die)
+import System.Exit (die)
 import System.FilePath (isAbsolute, normalise, takeDirectory, (</>))
 import Text.Read (readMaybe)
 
@@ -356,7 +357,7 @@ coreCommands project finalizedSpec testCodec progName projectArtifacts suite che
     withFinalizedProjectSpecParts finalizedSpec $ \cfgCodec services _scopePlanBuilder ->
         [ contextCommand @cfg @(V.Production projectId) cfgCodec progName projectArtifacts initBuilder
         , projectCommandGroup project finalizedSpec progName initBuilder
-        , testCommand @projectId @cfg @tcfg project finalizedSpec testCodec progName suite assemblyInputs assemble testInit
+        , testCommand @projectId @cfg @tcfg cfgCodec project finalizedSpec testCodec progName suite assemblyInputs assemble testInit
         , serviceCommandGroup cfgCodec progName services initBuilder
         , checkCodeCommand @cfg @(V.Production projectId) cfgCodec progName checkCode
         ]
@@ -378,6 +379,7 @@ restricted assembler and its matching codec, writes it as the sibling
 testCommand ::
     forall projectId cfg tcfg specDigest.
     (ProjectCfg cfg, TestCfg tcfg) =>
+    ProjectCodec (V.Production projectId) specDigest cfg ->
     Authority.InstalledProjectIdentity projectId ->
     FinalizedProjectSpec (V.Production projectId) specDigest cfg ->
     CodecWitness tcfg ->
@@ -390,12 +392,12 @@ testCommand ::
     ) ->
     (InitArgs -> tcfg) ->
     Mod CommandFields (IO ())
-testCommand project productionSpec testCodec progName suite assemblyInputs assemble testInit =
+testCommand codec project productionSpec testCodec progName suite assemblyInputs assemble testInit =
     command
         "test"
         ( info
             (hsubparser (testInitCmd <> testRunCmd))
-            (progDesc "Test surface: `init` writes <project>.test.dhall; `run` runs compiled cases against the live stack (root-only)")
+            (progDesc "Test surface: `init` writes <project>.test.dhall; `run` runs compiled cases against the live stack; both refuse an off-root sibling project config")
         )
   where
     testInitCmd =
@@ -415,6 +417,31 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
             ( long "replace"
                 <> help "replace an existing <project>.test.dhall instead of refusing"
             )
+    {- The one root gate, evaluated before a test config is built or read and before
+    any protected-store access. When the executable's sibling project config exists it
+    must decode, validate its topology, and name a root frame; with no sibling config
+    the invocation is admitted, so @test init@ stays a bootstrap entrypoint. -}
+    rootGate :: IO ()
+    rootGate = do
+        path <- siblingProjectConfigPath (T.pack progName)
+        exists <- doesFileExist path
+        when exists $ do
+            decoded <- try (decodeProjectCodecFile codec path)
+            case decoded of
+                Left (e :: SomeException) ->
+                    die ("test: failed to decode " ++ path ++ ": " ++ takeWhile (/= '\n') (show e))
+                Right cfg -> do
+                    let context = cfgContext cfg
+                    either
+                        (\failure -> die ("test: refusing an invalid topology in " ++ path ++ ": " ++ show failure))
+                        pure
+                        (Context.validateTopology context)
+                    unless (Context.isRootFrame context) $
+                        die
+                            ( "test: refusing a non-root invocation: current frame "
+                                ++ T.unpack (Context.currentFrame context)
+                                ++ " is not the root frame"
+                            )
     testRunCmd =
         command
             "run"
@@ -443,7 +470,8 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
     test-config value. So @test init@ cannot be asked to write arbitrary bytes,
     or to write them anywhere but the file @test run@ reads. -}
     runTestInit replacement = do
-        request <- testConfigWriteFor (T.pack progName) testCodec (testInit defaultInitArgs)
+        rootGate
+        request <- testConfigWriteFor project testCodec (testInit defaultInitArgs)
         outcome <- installTestConfig replacement request
         case outcome of
             TestConfigWritten path -> putStrLn ("test init: wrote " ++ path)
@@ -458,6 +486,7 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
     -- (the harness generates it); its guards are the test config's existence
     -- precondition plus the suite's own safety preconditions.
     runTestRun selector = do
+        rootGate
         tpath <- siblingTestConfigPath (T.pack progName)
         exists <- doesFileExist tpath
         unless exists (die ("test run: missing " ++ tpath ++ "; run `" ++ progName ++ " test init` first"))
@@ -492,10 +521,10 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
         resolved <-
             withCanonicalProjectRoot cfgPath stateRoot $ \ownershipRoot -> do
                 let variantFor selectedVariant =
-                        ConfigVariant
-                            { variantId = variantDraftId draft
-                            , variantCaseIds = selectedVariantCaseIds selectedVariant
-                            , variantWithLifecycle = \ownedRoot useLifecycle ->
+                        ScopedConfigVariant
+                            (variantDraftId draft)
+                            (selectedVariantCaseIds selectedVariant)
+                            (\ownedRoot useLifecycle ->
                                 withOwnedHarnessRoot ownedRoot $ \store ownedProject root closeControl -> do
                                     let authority = harnessRootHarnessAuthority root
                                         runName = V.harnessRunName authority
@@ -814,6 +843,8 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                                                                                                                                 )
                                                                                                                                                         either (throwIO . LifecycleFailure) pure destroyed
                                                                                                                                                 useLifecycle
+                                                                                                                                                    authority
+                                                                                                                                                    (renderScopedProjectConfigBytes harnessCodec (validatedConfigValue validated))
                                                                                                                                                     (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)
                                                                                                                                         lifecycleBody
                                                                                                                                             `finally` removeGeneratedConfig ownedRoot ownedPayload
@@ -845,7 +876,7 @@ testCommand project productionSpec testCodec progName suite assemblyInputs assem
                                                         )
                                                 either die pure assembled
                                             )
-                            }
+                            )
                       where
                         draft = selectedVariantDraft selectedVariant
                     ownership =
@@ -945,12 +976,12 @@ checkCodeCommand codec progName checkCode =
         verified <-
             verifyBuildInvocation
                 key
-                (T.pack progName)
-                (projectCodecSpecDigest codec)
-                (validatedConfigDigest validated)
-                coordinator
-                (T.unpack (Context.sourceRoot ctx))
-                executable
+                (buildProjectNameFromText (T.pack progName))
+                (buildSpecDigestFromText (projectCodecSpecDigest codec))
+                (buildConfigDigestFromText (validatedConfigDigest validated))
+                (coordinatorDigestFromText coordinator)
+                (buildSourceRootFromFilePath (T.unpack (Context.sourceRoot ctx)))
+                (builderPathFromFilePath executable)
                 delivered
                 ( \frame authority -> do
                     admitted <- authorizeCheckCode frame authority
@@ -1050,10 +1081,28 @@ contextCommand codec progName projectArtifacts _initBuilder =
     readContextConfig path = do
         exists <- doesFileExist path
         unless exists (die ("context: no config at " ++ path))
-        decoded <- try (decodeProjectCodecFile codec path)
+        -- First-stage envelope check, before any decoder runs: a service role wire is
+        -- not a project config, and the Production codec would only mislead about it.
+        raw <- ByteString.readFile path
+        text <-
+            either
+                (const (die ("context: failed to decode " ++ path ++ " with the Production project codec: the file is not valid UTF-8")))
+                pure
+                (TextEncoding.decodeUtf8' raw)
+        -- Imports resolve from the file's own directory, as the sibling-config read does.
+        let settings = runIdentity (Dhall.rootDirectory (const (Identity (takeDirectory path))) Dhall.defaultInputSettings)
+        kind <- inspectConfigWireKind settings text
+        when (kind == ServiceRoleWire) $
+            die ("context: " ++ path ++ " holds a service role wire; context renders a full project config")
+        decoded <- try (decodeProjectCodecWithSettings codec settings text)
         case decoded of
             Left (e :: SomeException) ->
-                die ("context: failed to decode " ++ path ++ ": " ++ takeWhile (/= '\n') (show e))
+                die
+                    ( "context: failed to decode "
+                        ++ path
+                        ++ " with the Production project codec: "
+                        ++ takeWhile (/= '\n') (show e)
+                    )
             Right cfg -> pure cfg
 
 {- | The @init@ parser shared by @project init@ (§ Y) and @service init@ (§ AA):
@@ -1242,19 +1291,15 @@ projectCommandGroup project finalizedSpec progName initBuilder =
             "destroy"
             (info (pure runDestroy) (progDesc "Stop then delete everything the chain provisioned, including any provider VM and its disk"))
 
-    -- @project up@ is the recursive interpreter that runs in EVERY orchestration
-    -- frame (host → VM → container), so it gates as 'ClusterLifecycleCommand',
-    -- which is permitted in the three orchestration kinds (HostOrchestrator /
-    -- VMOrchestrator / VMProjectContainer) plus the TestHarness kind, and
-    -- rejected in the ClusterService / Daemon / OneShotJob / ImageBuildContainer
-    -- leaves, where a recursive @project up@ must not run (§ X).
+    -- @project up@ is an operator entry at the host root. Child frames enter
+    -- through the lifecycle-child dispatch, not another operator command.
     --
     -- The sibling is read and admitted **once** here (§ 15.9). Plan
     -- construction and every step the plan runs consume that one
     -- 'ValidatedConfig' snapshot, so replacing @<project>.dhall@ mid-run cannot
     -- change what the running chain executes.
     runUp dryRun =
-        withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.ClusterLifecycleCommand [] $ \_wire validated ctx root -> do
+        withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
                 die "project up: operator entry requires the root frame; invoke this command from the installed root binary"
             unless dryRun $ do
@@ -1342,35 +1387,6 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                                         pure
                                         lifecycle
                 Left failure -> die ("project snapshot: " ++ show failure)
-    {- Run the best-effort `destroy` reverse projection at the root frame, then
-    die. It is the *same* projection `project destroy` runs — one representation
-    (§ W) — so a failed `project up` cannot leak resources a real destroy would
-    have released. Best-effort: the whole unwind must not hinge on one node, and
-    the run is failing already, so a failure here is announced and swallowed
-    rather than replacing the chain's own cause.
-    -}
-    _failChain ::
-        forall rootId spec planId configId frame.
-        ProjectPlan (V.Production projectId) spec planId configId cfg ->
-        CurrentFrame (V.Production projectId) planId frame ->
-        CanonicalProjectRoot (V.Production projectId) rootId ->
-        HostConfig ->
-        Context.BinaryContext ->
-        String ->
-        IO ()
-    _failChain plan current root cfg ctx reason = do
-        when (null (Context.parentChain ctx)) $ do
-            putStrLn "project up: chain failed — running best-effort teardown (project destroy) so the VM/cluster/.wslconfig are not leaked"
-            _ignoreChainExc (_reverseProjection plan current root ctx cfg Authority.ProjectDestroy)
-        die reason
-    -- Swallow a teardown step's exception (best-effort): the whole teardown must not
-    -- hinge on one step succeeding.
-    _ignoreChainExc act = do
-        r <- try act
-        case (r :: Either SomeException ()) of
-            Right () -> pure ()
-            Left e -> putStrLn ("  (teardown step skipped: " ++ show e ++ ")")
-
     runDown =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
@@ -1810,281 +1826,6 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 Right outcome -> outcome
                 Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
 
-    {- Run the verb's reverse projection of the same validated plan (§ W).
-
-    @down@ and @destroy@ are not two hand-written cleanup routines: each is
-    'Teardown.teardownPlan' applied to this plan and its verb, driven deepest
-    frame first. Every effect is a node of that plan — the reverse its own step
-    declared with 'Step.reversedBy' — except a @CoreManagedReverse@ node that
-    declared none, which the core's own cluster adapter releases. A
-    @PreserveOnReverse@ step (the durable host root) never enters either
-    projection at all, which is the whole of the never-delete-@.data@ invariant.
-    -}
-    _reverseProjection ::
-        forall rootId spec planId configId frame verb.
-        ProjectPlan (V.Production projectId) spec planId configId cfg ->
-        CurrentFrame (V.Production projectId) planId frame ->
-        CanonicalProjectRoot (V.Production projectId) rootId ->
-        Context.BinaryContext ->
-        HostConfig ->
-        Authority.ProjectVerb verb ->
-        IO ()
-    _reverseProjection plan currentFrame root ctx cfg verb = do
-        let projection = Teardown.teardownPlan plan currentFrame verb
-        self <- currentSelfRef (InVMSelfPath ("/usr/local/bin/" ++ progName))
-        descended <- newIORef Nothing
-        let current = currentFrameId currentFrame
-        case Teardown.openTeardownForest projection of
-            Left err -> die ("project teardown: " ++ Teardown.teardownErrorMessage err)
-            Right opened -> do
-                {- The forest drives itself: the child-first ordering and the
-                destroy-only pre-descent reachability step are its, not this
-                call site's. This supplies only the effect for one offered
-                node and the row for its outcome. -}
-                driven <-
-                    Teardown.driveTeardownForest
-                        opened
-                        (\_ -> descendCurrent self descended current)
-                        (\_ -> ordinaryReverse)
-                        (\_ -> descentReverse self descended current)
-                        _announce
-                case driven of
-                    Left outstanding ->
-                        die
-                            ( "project teardown attempted every reverse step but "
-                                ++ "these nodes did not settle:\n"
-                                ++ unlines (map (("  - " ++) . T.unpack) outstanding)
-                            )
-                    -- Frame-bound settlement is minted from the completed
-                    -- forest, never from the fact that the verb returned.
-                    -- Project-wide destroy is a second, root-only refinement.
-                    Right completed ->
-                        case Teardown.verifySubtreeSettled projection completed of
-                            Left err ->
-                                die ("project teardown: " ++ Teardown.teardownErrorMessage err)
-                            Right subtree ->
-                                case Teardown.settledDestroyEvidence plan currentFrame subtree of
-                                    Nothing -> announceSubtree subtree
-                                    Just (Left (Teardown.TeardownRootFrameMismatch _ _)) ->
-                                        -- A nested command returns after settling its
-                                        -- own exact subtree. Only the root can promote
-                                        -- that proof to project-wide closure.
-                                        announceSubtree subtree
-                                    Just (Left err) ->
-                                        die ("project teardown: " ++ Teardown.teardownErrorMessage err)
-                                    Just (Right settled) ->
-                                        putStrLn
-                                            ( "project teardown: settled root destroy with "
-                                                ++ show
-                                                    ( length
-                                                        ( Teardown.destroySettledTerminalObservations
-                                                            settled
-                                                        )
-                                                    )
-                                                ++ " terminal observations of plan "
-                                                ++ T.unpack (Teardown.destroySettledPlanDigest settled)
-                                            )
-      where
-        announceSubtree subtree =
-            putStrLn
-                ( "project teardown: settled frame "
-                    ++ T.unpack (Teardown.subtreeSettledOpeningFrame subtree)
-                    ++ " with "
-                    ++ show
-                        (length (Teardown.subtreeSettledTerminalObservations subtree))
-                    ++ " terminal observations"
-                )
-
-        {- One ordinary node's attempt.
-
-        Only a 'LocalWork' can enter this runner. A node of a deeper frame is
-        represented by the disjoint descent branch and therefore cannot reach
-        a declared reverse or the core adapter in this process.
-        -}
-        ordinaryReverse ::
-            Teardown.LocalWork (V.Production projectId) planId frame verb ->
-            IO Step.TeardownOutcome
-        ordinaryReverse local =
-            case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
-                (Just declared, _) ->
-                    guardedReverse (declared cfg (Teardown.localWorkAction local))
-                (Nothing, Step.CoreManagedReverse) ->
-                    guardedReverse
-                        ( coreManaged
-                            (Teardown.localWorkKey local)
-                            (Teardown.localWorkAction local)
-                        )
-                (Nothing, _) ->
-                    pure
-                        ( Step.TeardownForeignRetained
-                            "the node acquired nothing this frame must release"
-                        )
-
-        {- Invoke this verb in the next frame, at most once per run.
-
-        The descent context is the plan's own — the same node that announced the
-        child on the way down — so the reverse crosses exactly the boundary the
-        forward pass crossed. Every node of every deeper frame is settled by that
-        one invocation, because the child binary runs the same forest over its own
-        segment and recurses further itself.
-        -}
-        descentReverse ::
-            forall childFrame.
-            SelfRef ->
-            IORef (Maybe Step.TeardownOutcome) ->
-            T.Text ->
-            Teardown.DescentWork
-                (V.Production projectId)
-                planId
-                frame
-                childFrame
-                verb ->
-            IO
-                ( Either
-                    T.Text
-                    ( Teardown.SubtreeSettled
-                        (V.Production projectId)
-                        planId
-                        childFrame
-                        verb
-                    )
-                )
-        descentReverse self descended current descent
-            | Teardown.descentWorkParentFrame descent /= current =
-                pure (Left (invalidDescentDetail "the descent parent is not this opening frame"))
-            | otherwise =
-                Teardown.withDescentWorkSubtree descent $ \childProjection ->
-                    if Teardown.teardownPlanFrameId childProjection /= Teardown.descentWorkChildFrame descent
-                        then pure (Left (invalidDescentDetail "the retained child projection does not match the descent edge"))
-                        else do
-                            raw <-
-                                descendOnce
-                                    self
-                                    descended
-                                    (Teardown.descentWorkParentFrame descent)
-                                    (Teardown.descentWorkChildFrame descent)
-                            pure (Left (rawChildProofRefusal (Teardown.descentWorkChildFrame descent) raw))
-
-        descendCurrent self descended current = case nextFrameAfter (topology plan) current of
-            Nothing ->
-                pure
-                    ( Step.TeardownForeignRetained
-                        "this frame is the innermost one the chain enters"
-                    )
-            Just (nextFrame, _) -> descendOnce self descended current nextFrame
-
-        descendOnce self descended parent child =
-            case nextFrameAfter (topology plan) parent of
-                Just (nextFrame, nextCtx)
-                    | nextFrame == child -> do
-                        already <- readIORef descended
-                        case already of
-                            Just outcome -> pure outcome
-                            Nothing -> do
-                                outcome <- runDescent self nextFrame nextCtx
-                                writeIORef descended (Just outcome)
-                                pure outcome
-                _ -> pure (invalidDescent "the descent child is not the topology's immediate edge")
-
-        invalidDescent detail =
-            Step.TeardownFailed ("plan-bound teardown descent mismatch: " ++ detail)
-
-        invalidDescentDetail detail =
-            "plan-bound teardown descent mismatch: " <> T.pack detail
-
-        rawChildProofRefusal child outcome =
-            "child frame "
-                <> child
-                <> " returned only an untyped recursive outcome ("
-                <> T.pack (show outcome)
-                <> "); an exact SubtreeSettled proof is required"
-
-        runDescent self nextFrame nextCtx = do
-            putStrLn
-                ( "project teardown: descending into "
-                    ++ T.unpack nextFrame
-                    ++ " to run its own reverse steps first"
-                )
-            result <-
-                liftSubcommandWithStdin
-                    cfg
-                    self
-                    nextCtx
-                    ["project", T.unpack (Authority.projectVerbName verb)]
-                    (liftStdin nextCtx)
-            case result of
-                Right (ExitSuccess, out, _) ->
-                    putStr out >> pure Step.TeardownReleased
-                Right (_, out, err) ->
-                    putStr out >> pure (Step.TeardownFailed err)
-                Left err -> pure (Step.TeardownFailed err)
-
-        guardedReverse effect = do
-            attempted <- try effect
-            pure $ case attempted of
-                Right outcome -> outcome
-                Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
-
-        {- The one resource the core releases itself is the kind cluster, and
-        only from the frame that owns the `deploy-kind` step: the kube tools live
-        in the cluster-bearing project container, not on every host frame. A
-        nested cluster is instead released with its provider frame, or by a
-        reverse the project declares on that node (the direct Linux GPU lane does
-        exactly that). Reporting the other case as retained rather than released
-        keeps the distinction visible instead of treating expected host-side tool
-        absence as cleanup.
-
-        The action selects, not the frame alone: `deploy-chart` and
-        `expose-port` are core-managed too, but they are *inside* the cluster
-        and have no separate backend call — deleting the cluster removes the
-        Helm release and the NodePort with it. Handing them to the cluster
-        adapter would run the cluster teardown once per node.
-        -}
-        coreManaged _key reverseAction = case reverseAction of
-            Step.DeleteCluster
-                | currentFrameOwnsCluster ctx plan -> do
-                    case clusterEffectFor verb of
-                        False ->
-                            pure
-                                ( Step.TeardownFailed
-                                    "project up cannot execute reverse cluster work"
-                                )
-                        True -> do
-                            case profileFromPlanName (ProjectPlan.projectPlanProfileName plan) of
-                                Left failure -> pure (Step.TeardownFailed (show failure))
-                                Right profile -> do
-                                    let clusterPlan = planForRootWithProfile profile root ctx
-                                    withCurrentDirectory
-                                        (canonicalProjectRootPath root)
-                                        (releaseRetainedClusterLifecycle cfg clusterPlan)
-                                    pure Step.TeardownReleased
-                | otherwise ->
-                    pure
-                        ( Step.TeardownForeignRetained
-                            ( "cluster is owned by a different chain frame; skipping kind cleanup in "
-                                ++ T.unpack (Context.currentFrame ctx)
-                            )
-                        )
-            _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
-
-        clusterEffectFor :: Authority.ProjectVerb selectedVerb -> Bool
-        clusterEffectFor selected = case selected of
-            Authority.ProjectUp -> False
-            Authority.ProjectDown -> True
-            Authority.ProjectDestroy -> True
-
-    {- One structured row per node of the reverse projection (§ Y). The five
-    outcomes stay distinct because an operator resolves them differently, and
-    because the test harness's report card consumes exactly these rows. -}
-    _announce key outcome = case outcome of
-        Step.TeardownReleased -> putStrLn ("project teardown: released " ++ T.unpack key)
-        Step.TeardownForeignRetained detail ->
-            putStrLn ("project teardown: retained " ++ T.unpack key ++ " — " ++ detail)
-        Step.TeardownRefused detail ->
-            putStrLn ("project teardown: refused " ++ T.unpack key ++ " — " ++ detail)
-        Step.TeardownFailed detail ->
-            putStrLn ("project teardown: FAILED " ++ T.unpack key ++ " — " ++ detail)
-
     {- The project's own protected authority store, under the canonical root
     (§ X) rather than the caller's working directory.
 
@@ -2092,9 +1833,9 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     single project root can legitimately host more than one installed binary —
     this repository hosts both @hostbootstrap@ and @hostbootstrap-demo@ — and
     each is a distinct installed project with its own broker generations and
-    invocation records. 'Authority.withVerifiedRootInvocation' still refuses a
-    store whose recorded project is not this one, so a directory copied under
-    another name is caught.
+    invocation records. The Mode root entry uses
+    'Authority.withVerifiedRootInvocationKernel' to refuse a store whose recorded
+    project is not this one, so a directory copied under another name is caught.
     -}
     openAuthorityStore ::
         forall rootScope rootId. CanonicalProjectRoot rootScope rootId -> IO ProtectedStore
@@ -2632,8 +2373,12 @@ serviceCommandGroup codec progName registry initBuilder =
         hostNonce <- lookupEnv "HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE"
         case (podUid, restartCount, hostNonce) of
             (Just uid, Just rawCount, Nothing)
-                | Just count <- readMaybe rawCount -> pure (KubernetesInstance (T.pack uid) count)
-            (Nothing, Nothing, Just nonce) -> pure (HostServiceInstance (T.pack nonce))
+                | Just count <- readMaybe rawCount ->
+                    either (die . serviceRuntimePrefix . activationErrorMessage) pure
+                        (kubernetesInstance (T.pack uid) count)
+            (Nothing, Nothing, Just nonce) ->
+                either (die . serviceRuntimePrefix . activationErrorMessage) pure
+                    (hostServiceInstance (T.pack nonce))
             _ ->
                 die
                     "service run: supply exactly Kubernetes pod UID plus restart count, or one host-service invocation nonce"

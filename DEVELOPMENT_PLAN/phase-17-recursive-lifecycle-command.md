@@ -53,11 +53,12 @@ Harness confirmation.
 
 ## Sprints
 
-### Sprint 17.1: Independent root gate for the three verbs [Active]
+### Sprint 17.1: Independent root gate for the three verbs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
@@ -91,48 +92,24 @@ Authorize every lifecycle verb independently of the configuration being interpre
 no verb. `CLISpec` drives the three authorized verbs end to end. `ContextSpec` executes `project init` from a
 separate source directory and asserts that the generated config records its absolute path.
 
-The "operator entry requires the root frame" refusals in `runUp`, `runDown`, and `runDestroy` have no
-test.
+The sibling context gate rejects a child VM frame before the later defensive "operator entry requires the
+root frame" checks can execute: `HostOrchestratorCommand` is refused for that placement. The CLI cases
+therefore assert the earlier context refusal and absence of store writes for each verb.
 
-The sprint closes when a command-level operator-refusal case and a root-frame refusal case exist for each of
-`project up`, `project down`, and `project destroy`, the sibling-context case asserts its own precondition, and
-all pass in the warning-clean `cabal test all` from `core/` on linux-cpu.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/`: 5,290 core tests and the provider suite passed. `CLISpec`'s "operator
+refusal precedes lifecycle work" and "child frame refuses operator entry" cover all three verbs; "parentless
+VM orchestrator cannot enter project up or down" covers matching root admission. The `CLISpec` and
+`ContextSpec` missing-sibling cases establish and check their own preconditions. The focused selection of
+those cases and its `CoverageManifest` declaration also passed (10 cases).
 
 #### Remaining Work
 
-- Add a `CLISpec` test group "operator refusal precedes lifecycle work", one case per verb. Each case runs in
-  `withIsolatedProjectConfig`, as "Destroy resumes the retained Pending continuation after Down" does, with
-  counting fixture steps. The Down and Destroy cases first run `project up` successfully. Each case then makes
-  the store's `records` directory reject `verifyProtectedStoreWritable`'s temp-file probe by removing its
-  write permission (`setPermissions`), runs the verb through `runHostBootstrapCLI`, and restores the
-  permission. Assert that the command exits non-zero with the `authorityErrorMessage` text for
-  `AuthorityOperatorRefused` ("operator authorization refused: …"), that `readProtectedStoreImage` is
-  byte-identical before and after the refused verb (no mode, lease, journal, reverse-root intent, or
-  broker-generation write), and that no fixture-step counter moved. Where a read-only directory still accepts
-  the probe (native Windows, or uid 0), the case records a declared refusal in `CoverageManifest` instead of
-  passing vacuously.
-- Correct the `openAuthorityStore` comment in `Command.hs` (near line 2090). It cites the nonexistent
-  `Authority.withVerifiedRootInvocation`; it should name the Mode root entry and
-  `withVerifiedRootInvocationKernel` as the check that refuses a store whose recorded project differs.
-- Add `CLISpec` cases for the root-frame refusals in `runUp`, `runDown`, and `runDestroy` (`Command.hs`, near
-  lines 1255, 1373, and 1384). Each case writes a VM-orchestrator sibling config with a non-empty parent
-  chain (`Fixture.deriveProjectConfigForKind VMOrchestrator`), runs the verb, and asserts exit 1 with
-  "project <verb>: operator entry requires the root frame" and no new protected-store record.
-- Rewrite the comment above `runUp` in `Command.hs` (near line 1241). It says `project up` runs in every
-  orchestration frame (host, VM, container), but `runUp` dies whenever `Context.parentChain` is non-empty and
-  child frames enter through `--hostbootstrap-lifecycle-child`; describe the root-only operator entry. Gate
-  `runUp` on `Context.HostOrchestratorCommand`, as `runDown` and `runDestroy` do, so the forward and reverse
-  verbs admit the same root, and add a `CLISpec` case where a parentless vm-orchestrator config is refused by
-  `project up` as it is by `project down`.
-- `CLISpec` "project up fails fast without a sibling context" (near line 1725) runs against the
-  executable-sibling `<exe>.dhall` path every CLI case shares, so a config left by a killed earlier run makes
-  it exit 1 for another reason. Remove any stale file at that path first, assert
-  `doesFileExist cfgPath >>= (@?= False)` before running `project up --dry-run`, and assert that stderr names
-  the missing sibling configuration, not only `ExitFailure 1`.
+None.
 
-### Sprint 17.2: Current-frame forward interpretation [Active]
+### Sprint 17.2: Current-frame forward interpretation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/ChainSpec.hs`
@@ -159,56 +136,23 @@ the root coordinator's callback; no lifecycle descent runs `project <verb>` thro
 
 #### Validation
 
-`ChainSpec` covers frame order, typed descent selection, plan-minted descriptors, and failure containment.
-
-The sprint closes when the deletions below have landed and the two-frame pre/child/post order case passes. The four rewritten compile-fail fixtures must fail to
-compile under `CompileFailSpec`, the new `ChainSpec` source guards and the retargeted `TeardownSpec`,
-`CLISpec`, and `CommandsSpec` guards must pass, and the warning-clean
-`cabal test all` from `core/` must pass on linux-cpu.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/` (5,289 core tests and the provider suite) and from `demo/` (169 demo
+tests, 5,289 core tests, and the provider suite). `ChainSpec`'s "a two-frame descent runs between pre and
+post handoff nodes" verifies ordering and the exact child context; its source guards reject the legacy
+exports and argv route. `TeardownSpec`, `CLISpec`, `ProjectPlanSpec`, and demo `CommandsSpec` check the
+live reverse owners. The four retargeted compile-fail fixtures retain their indexed mismatch assertions.
 
 #### Remaining Work
 
-- Delete `runChainFromFrame` and its `legacyDescent`, which launches `<self> project up` through
-  `liftSubcommandWithStdin … handoffArgv`, from `Chain.hs`. In the same change delete
-  `runChainFromFrameWithDescent`, whose only caller is `runChainFromFrame`, and
-  `handoffDispatch`/`handoffArgv`, which only render that `argv`. Drop them from the export list and drop
-  the `ChainSpec` "handoffDispatch (recursive `project up` handoff)" group. Rewrite the `renderChain` Haddock
-  in `Chain.hs`, which names `runChainFromFrame` as the interpreter that selects the current-frame segment, to
-  name `runChainFromFrameWithDescentFailure`, which selects it through `runChainFromFrameWithDescentObserved`.
-- Delete the dead `_failChain`, `_ignoreChainExc`, `_reverseProjection`, and `_announce` bindings from
-  `Command.hs`, together with the helpers only `_reverseProjection` uses: `descendCurrent`,
-  `descentReverse`, `descendOnce`, `runDescent` (an `argv` `project <verb>` descent), and `coreManaged`,
-  which holds an unreachable `releaseRetainedClusterLifecycle` call. `_failChain`'s comment claims a failed
-  `project up` runs a best-effort `project destroy` projection, which is false.
-- Retarget the compile-fail fixtures `CrossAuthorityChain.hs`, `CrossCursorChain.hs`,
-  `CrossRunHarnessProjectPlanChain.hs`, and `ProductionProjectPlanAsHarnessChain.hs` at
-  `runChainFromFrameWithDescentFailure`, keeping their mismatched authority, cursor, and run indices. Replace
-  the `runChainFromFrame` signature pin in `ChainSpec`'s `sourceShapeCases` with the exact
-  `runChainFromFrameWithDescentFailure` signature.
-- Add `ChainSpec` source guards asserting that the `HostBootstrap.Chain` export list names neither
-  `runChainFromFrame` nor `handoffDispatch`, and that neither `Chain.hs` nor `Command.hs` contains
-  `liftSubcommandWithStdin`.
-- Retarget the source guards that only the dead `_failChain`/`_reverseProjection` code satisfies, so the
-  deletion does not break them. The `TeardownSpec` guards on `Teardown.DescentWork`, `driveTeardownForest`,
-  `withDescentWorkSubtree`, "nextFrameAfter (topology plan) parent", "plan-bound teardown descent mismatch",
-  "Authority.projectVerbName verb", `clusterEffectFor`, and
-  "profileFromPlanName (ProjectPlan.projectPlanProfileName plan)", the `CLISpec` guard near line 1680, and the
-  `CommandsSpec` guards near lines 313-319 point at the live owners instead: `runSealedLocal`,
-  `runExactHarnessDestroyProjection.runLocal`, `LifecycleEntry.runRootProjectReverseLifecycleEntry`, and
-  `Command/Child/Reverse.hs`. A guard with no live owner is deleted.
-- No executed test distinguishes the pre/post-handoff partition `interpret` takes through
-  `plannedStepRunsAfterHandoff`: the `ChainSpec` post-handoff case checks only `renderChain`, and the only
-  execution with a post-handoff node is single-frame. Add a `ChainSpec` case that runs a two-frame plan
-  through `runChainFromFrameWithDescentFailure` with a descent callback: a pre-handoff root node, the declared
-  child-frame descent, and a post-handoff root node each append their name to one shared log. Assert the log
-  is exactly `["pre", "child", "post"]`, so a constant or inverted partition fails the case.
+None.
 
-### Sprint 17.3: Teardown-forest frame-index propagation [Active]
+### Sprint 17.3: Teardown-forest frame-index propagation [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`, `core/hostbootstrap-core/test/SourceGuard.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -227,24 +171,21 @@ Keep every reverse-progress value indexed by the exact frame that opened its sub
 
 #### Validation
 
-Dated 2026-08-10 evidence includes `TeardownSpec` 27/27, the eight affected compile-fail groups 8/8,
-`DocValidatorSpec` 2/2, and warning-clean library/test builds.
-
-`TeardownSpec`'s `sourceShapeTests` match raw `Text.isInfixOf` over three source files, so a commented-out
-or string-literal occurrence satisfies them. The sprint closes when they run through `SourceGuard`, cover
-every module under `HostBootstrap/Command/`, and pass in the warning-clean `cabal test all` from `core/`.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/` (5,289 core tests and the provider suite). `TeardownSpec`'s "the complete
+forest pipeline retains the projection frame" uses lexical tokens and parsed exports, tests comment and
+string-literal controls, and scans every physical command module. `CoerceTeardownWorkRoles` and
+`CoerceTeardownFrameRoles` independently pin the indexed coercion refusals. Their focused selection with
+`TeardownSpec` and `DocValidatorSpec` also passed (66 cases).
 
 #### Remaining Work
 
-- Rewrite `TeardownSpec`'s `sourceShapeTests` through `SourceGuard` (comment-stripped tokens and parsed
-  export lists) instead of `Text.isInfixOf`, extend the Command-side guards to every module under
-  `HostBootstrap/Command/`, and drop the text guards whose role or coercibility claim `CompileFailSpec`
-  already proves.
+None.
 
-### Sprint 17.4: Closed local/descent teardown work [Active]
+### Sprint 17.4: Closed local/descent teardown work [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeTeardownForest.hs`
@@ -265,30 +206,22 @@ Make local reverse execution and recursive descent the exhaustive next-work bran
 
 #### Validation
 
-Dated 2026-08-10 evidence includes `TeardownSpec` 25/25, sixteen affected compile-fail groups 16/16,
-`DocValidatorSpec` 2/2, and warning-clean library/test builds.
-
-`ForgeTeardownForest.hs` forges `TeardownAuthorizationPoint`, `CompletedTeardownForest`, `SettledChildren`,
-`PreDescentStep`, and `ProgressCompleted`, but `CompileFailSpec` pins only three phrases for the whole file,
-and the `CompletedTeardownForest` forgery also fails on its `String` literals. GHC stops at the first errors,
-so the unpinned forgeries are not proven to be refused for the stated reason. The sprint closes when each
-forgery has its own fixture with a pinned diagnostic and `CompileFailSpec` passes in the warning-clean
-`cabal test all` from `core/`.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/` (5,294 core tests and the provider suite). `CompileFailSpec` independently
+pins `ForgeTeardownAuthorizationPoint`, `ForgeCompletedTeardownForest`, `ForgeSettledTeardownChildren`,
+`ForgePreDescentStep`, and `ForgeTeardownProgressCompleted`; the existing `ForgeTeardownForest` retains its
+verb, forest, and destroy-settlement checks. All six affected fixtures passed in isolation too.
 
 #### Remaining Work
 
-- Split `ForgeTeardownForest.hs` into one compile-fail fixture per forged value (`TeardownAuthorizationPoint`,
-  `CompletedTeardownForest`, `SettledChildren`, `PreDescentStep`, `ProgressCompleted`), each with
-  `OverloadedStrings` so a literal cannot be the failing term, and register each in `CompileFailSpec` with
-  its exact "Illegal term-level use of the type constructor '…'" or "Data constructor not in scope: …"
-  phrase.
+None.
 
-### Sprint 17.5: One `ProjectVerb` universe [Active]
+### Sprint 17.5: One `ProjectVerb` universe [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Step.hs`, `core/hostbootstrap-core/test/TeardownSpec.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`, `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -310,37 +243,24 @@ Carry the command gate's exact `ProjectVerb verb` through both forward and rever
 
 #### Validation
 
-`TeardownSpec` proves the exact share action under each verb, unchanged child-first ordering, and the
-separate provider stop/delete actions. Run the complete warning-clean core gate.
-
-On 2026-09-09, native Ubuntu 24.04.4 WSL x86_64 passes the complete core gate at 2,505/2,505
-in 291.83 seconds with GHC 9.12.4 and Cabal 3.16.1.0 under `--ghc-options=-Werror`.
-The same source passes native Windows 11 Home 10.0.26200 at 2,500/2,500 in 504.50 seconds.
-The post-status Linux documentation gate passes 5/5 in 1.72 seconds.
-
-`Teardown.nest`'s `attachDeeper` (`Teardown.hs`, near lines 433-444) hangs the deeper subtree only under the
-level's first reverse node; the frame's other nodes are `SelfPending` siblings and run while a failed child
-subtree is unsettled, so Destroy can offer `ReleaseResource` for `copy-source` before its child subtree
-settles. No case over `workedDemoReversePlan` pins the first offer or the drain order. The sprint closes when
-the cases in Remaining Work exist and pass in the warning-clean `cabal test all` from `core/`.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/` (5,296 core tests and the provider suite). `TeardownSpec`'s "worked demo
+destroy waits for its child before all parent cleanup" pins the first offer and exact drain order, and
+"failed worked demo descent blocks every parent cleanup" proves the parent share, build, and provider
+remain blocked. The latter failed against the previous scheduler, which offered `core:build-pb` after
+child failure. The existing "a failed branch does not starve an independent sibling" remains green; the
+focused teardown, real-process recursive lifecycle, and documentation selection passed 75 cases.
 
 #### Remaining Work
 
-- Make every reverse node of a frame wait on that frame's child subtree in `Teardown.nest`, not only the
-  level's first node, keeping `retainFrameOwner`. Add a `TeardownSpec` case where a failed descent leaves the
-  frame's other nodes (`OfferedLocal "core:copy-source" ReleaseResource`) unoffered.
-- Over `workedDemoReversePlan` under `ProjectDestroy`, assert
-  `firstWork destroyForest == Just (OfferedPreDescent "core:deploy-vm" "host-orchestrator-0")` and the exact
-  `drainOrder`, with `OfferedLocal "core:copy-source" ReleaseResource` after the descent edges.
-- Add a case that fails the copy-source descent and asserts that neither `OfferedLocal "core:build-pb"` nor
-  `OfferedLocal "core:deploy-vm"` is offered afterwards, so removing `retainFrameOwner` fails it.
+None.
 
-### Sprint 17.6: Frame-bound settlement and root destroy proof [Active]
+### Sprint 17.6: Frame-bound settlement and root destroy proof [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -359,79 +279,20 @@ Separate settlement of one frame-bound subtree from proof that the whole project
 
 #### Validation
 
-Dated 2026-08-10 evidence includes `TeardownSpec` 31/31, the affected compile-fail matrix 39/39,
-`ReconcileSpec` 30/30, `LifecycleSpec` 100/100, and `DocValidatorSpec` 2/2.
-
-The forged-completion test varies one coordinate, the bulk-settle case never presents a mismatched proof, and
-the terminal-validation case has no positive control. The sprint closes when the cases in Remaining Work
-exist and pass in the warning-clean `cabal test all` from `core/`.
-
-#### Remaining Work
-
-- Extend `TeardownSpec`'s forged-completion test with a wrong verb, a wrong plan digest, and a wrong frame,
-  asserting `TeardownProjectVerbMismatch`, `TeardownPlanDigestMismatch`, and `TeardownOpeningFrameMismatch`
-  from `verifySubtreeSettled`, and feed a forged `SubtreeSettled` to `settleDescentWork` and
-  `verifyDestroySettled`, asserting each refuses.
-- In "the exact child proof bulk-settles only its matching parent continuation", forge a mismatched
-  `SubtreeSettled` (wrong digest or reordered keys), assert `settleDescentWork` returns that `Left`, and assert
-  `teardownForestOutstanding joined == ["core:deploy-vm"]`.
-- In "exact terminal validation rejects ...", add the positive control
-  `verifySubtreeSettled projection (forgeCompleted ProjectDestroy digest frame exact) == Right …`.
-
-### Sprint 17.7: Root-resident validated lifecycle-context join [Active]
-
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Context.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Context/Internal.hs`
-**Substrates**: linux-cpu
-**Docs to update**: `documents/architecture/binary_context_config.md`,
-`documents/architecture/lifecycle_state_model.md`
-
-#### Objective
-
-Join descriptive binary context to an exact root-coordinator plan/frame package before lifecycle entry.
-
-#### Deliverables
-
-- `ValidatedLifecycleContext` retains the exact root-owned `ProtectedStore`, current frame, project frame, and
-  decoded context under nominal indices.
-- Root/nested classification describes plan frames coordinated inside the root process; the value is never a
-  child-process input or a claim that a child can open the store.
-- The join rechecks root, store origin, identities, topology, placement, and live witnesses without reading
-  command authority from config.
-- A mismatch refuses before any journal, rooted session, catalog, or effect action.
-- Package-private eliminators may borrow the store and frame evidence only while constructing root-resident
-  coordinator state.
-
-#### Validation
-
-Dated 2026-08-10 evidence includes `ContextSpec` 78/78, seven lifecycle-context compile-fail groups 7/7,
-`DocValidatorSpec` 2/2, and a warning-clean complete test build.
-
-The membership refinement is asserted only as source text: `ContextSpec` (near lines 1459 and 1467) pins the
-two refusal lines, no test hands a nested-frame context to a root-only borrower, and no test renders any row
-of `lifecycleContextErrorMessage`, the exported renderer every production consumer uses. The sprint closes
-when the cases in Remaining Work exist and pass in the warning-clean `cabal test all` from `core/`.
+On 2026-11-09, WSL2 Ubuntu 24.04.5 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0 passed
+`cabal test all` from `core/` (5,296 core tests and the provider suite). `TeardownSpec`'s "the exact child
+proof bulk-settles only its matching parent continuation" refuses a foreign digest and checks the exact
+remaining parent operation. "exact terminal validation rejects missing, extra, duplicate, reordered, and
+failed observations" includes a valid positive control, wrong verb/digest/frame refusals, and a forged root
+subtree refusal. Both cases also passed in isolation.
 
 #### Remaining Work
 
-- Add a `ContextSpec` case that admits the nested context of "admits the exact nested context without a
-  caller-selected child frame" (near line 1143) and passes it to `withValidatedRootLifecycleContext`,
-  asserting `Left (LifecycleContextRootFrameRequired "<the nested frame>")`, beside the root-context control
-  that returns `Right`. The nested eliminator `withValidatedNestedLifecycleContext` and
-  `LifecycleContextNestedFrameRequired` go with the planned-forward package (Sprint 17.24).
-- Add a `ContextSpec` golden table over every `LifecycleContextError` constructor that asserts the exact
-  `lifecycleContextErrorMessage` text of each.
-- Drive `mintValidatedLifecycleContext`'s `LifecycleContextFrameEvidenceMismatch`,
-  `LifecycleContextFrameOutsidePlan`, and `LifecycleContextPlanRootCount` refusals through
-  `withValidatedLifecycleContext` (drifted frame evidence, a frame outside the plan, a plan with two roots),
-  asserting each constructor. A refusal that `withValidatedLifecycleContext` cannot produce is deleted with
-  its renderer row, and the case asserts its absence instead.
+None.
 
-### Sprint 17.8: Opaque root lifecycle entry [Active]
+### Sprint 17.8: Opaque root lifecycle entry [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`
@@ -459,30 +320,21 @@ The sprint closes when the Haddocks below name the three entry constructors, `li
 gone with its export guards updated, the single-importer guard runs on `SourceGuard` tokens over both
 main-library source roots, and the warning-clean `cabal test all` from `core/` passes.
 
+Closing evidence, 2026-11-09, native x86_64 Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0):
+`cabal test all` from `core/` passed after the `ProjectPlanSpec` entry-sealing guard was updated from 9 to 8
+constructor sites per name, because deleting `lifecycleEntryVerbName` removed one `RootDownLifecycleEntry` and
+one `RootDestroyLifecycleEntry` pattern. The first run before that edit failed 1 of 5296 on exactly that guard.
+
 #### Remaining Work
 
-- Rewrite the `Command/LifecycleEntry.hs` module header ("sole root constructor") and the `LifecycleEntry`
-  type Haddock ("consumed by the fixed project up interpreter") to name the three constructors
-  `RootUpLifecycleEntry`, `RootDownLifecycleEntry`, and `RootDestroyLifecycleEntry`: Up retains an Execute
-  cursor and catalog; Down and Destroy retain a Teardown cursor, a teardown `CommandAuthority`, and the stored
-  reauthorize action.
-- Delete the callerless `lifecycleEntryVerbName` (`LifecycleEntry.hs`, export line 18, definition near
-  395-400) and its re-export from `Command.hs` (lines 28 and 73), and update the `ChainSpec` export-list guard
-  (near line 414) and the `ProjectPlanSpec` name list (near line 6588).
-- Rewrite the `CLISpec` single-importer guard for `HostBootstrap.Command.LifecycleEntry` (near line 1634) on
-  `SourceGuard`. Enumerate the files of every main-library `hs-source-dirs` entry (`src` and
-  `internal/cluster-backend`) through `SourceGuard.listHaskellSources`, deleting the private, unsorted
-  `CLISpec.lifecycleHaskellSources` walker, find importers through the token-level import parser so
-  `import qualified HostBootstrap.Command.LifecycleEntry as E` counts, and match the required route fragments
-  against comment-stripped tokens. Replace the cabal occurrence count with an explicit check that the module
-  is in the main library's `other-modules` and in no `exposed-modules` field (`fieldModules`).
+None.
 
 ### Sprint 17.9: Sealed handoff facade and root-signing admission [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -495,7 +347,7 @@ Expose one handoff facade while keeping every fixed-domain signature inside a li
 
 - `HostBootstrap.Handoff` is the sole exposed handoff facade and does not reexport protocol/channel internals.
   The library exposes exactly one other `HostBootstrap.Handoff.*` module, `HostBootstrap.Handoff.Transaction`
-  (Sprint 13.18). It is the frame-child entry that `runCLI` routes to, and it grants nothing beyond
+  (Sprint 13.41). It is the frame-child entry that `runCLI` routes to, and it grants nothing beyond
   `HostBootstrap.Lift` and `HostBootstrap.CLI`.
 - Hidden `Handoff.Internal` owns the unconstructible root-signing admission `RecoverySigningKernel` and its
   sole producer; the capability name does not make it a generic byte signer.
@@ -514,11 +366,11 @@ exposed `HostBootstrap.Handoff*` modules to exactly `HostBootstrap.Handoff` and
 
 None.
 
-### Sprint 17.10: Durable verb-tagged reverse-root intent [Active]
+### Sprint 17.10: Durable verb-tagged reverse-root intent [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/durable_state.md`
@@ -560,27 +412,36 @@ admission gate that keeps a Pending or Committed intent exclusive, `refuseRevers
 no test produces `ModeReverseRootInProgress` or its malformed-intent `ModeMalformedRecord`. The sprint closes
 when the cases in Remaining Work exist and pass in the warning-clean `cabal test all` from `core/`.
 
+2026-11-09 (native Windows, GHC 9.12.4): the store-backed gate cases and the placement relabel landed, and the
+reverse-root schema and codec moved out of `Mode.hs` into the pure module
+`HostBootstrap.Lifecycle.ReverseRootIntent`, which the private sublibrary `reverse-root-intent-internal`
+(`core/hostbootstrap-core/internal/reverse-root-intent`) exposes to `Mode.hs` and the test suite only.
+`AuthoritySpec` "the reverse-root intent codec round-trips only its exact canonical bytes" asserts that canonical
+Down and Destroy Pending, Committed, and Terminal values round-trip; that a Down row is refused as Destroy, a
+Destroy row as Down, and every row as Up; and that a trailing byte, a truncated row, a field count of 33, a
+mis-shaped well-framed row, and a future wire version each decode to `Nothing`. `AuthoritySpec` "a recognized
+Pending Destroy intent refuses a profile and every ordinary root while its matching Terminal permits one" asserts
+that `withProductionRoot` and `withHarnessRoot` return `ModeReverseRootInProgress` without running their body, and
+that a trailing byte and an over-bound field count return `ModeMalformedRecord` naming the intent key. The
+`ProjectPlanSpec` substrate guard reads the new module for the schema and codec sections, and the
+`AuthoritySpec` kernel-importer set and the `ProjectPlanSpec` source-root and module-home lists name it. The
+full `cabal test all` from `core/` passed. The edit added a package to `hostbootstrap-core.cabal`, a path in
+Phase 16's `**Evidence covers**` set, so Phase 16 is `Active` and Sprint 16.68 owes its re-run.
+
+`AuthoritySpec` "Harness short-close refuses while a reverse-root intent row exists, without changing the store"
+reaches the lease-close funnel through the public `closeHarnessRun`: with an intent row present it returns
+`Left (ModeMalformedRecord <intent key>)` and leaves the store image unchanged; the recognized Pending row's
+`ModeReverseRootInProgress` text is asserted by the ordinary-root case above. The warning-clean `cabal test all`
+from `core/` passed with every case above.
+
 #### Remaining Work
 
-- Expose `encodeReverseRootIntent` and `decodeReverseRootIntent` to the test suite through a private Cabal
-  sublibrary module (the `lifecycle-transaction-internal` pattern), keeping them out of every public facade.
-  Add pure cases: canonical Down and Destroy Pending, Committed, and Terminal values round-trip to `Just`;
-  a canonical encoding plus one trailing byte, a field count one above the codec's bound, a canonical Down row
-  decoded as `ProjectUp`, and a parseable but non-canonical re-framing each decode to `Nothing`.
-- Add store-backed cases for the ordinary admission gate. After `project up` and `project down`, rewrite the
-  `reverse-root.<project>.production` row to Pending Destroy bytes (`pendingDestroyAfterDown`, `CLISpec`
-  near line 1954). Assert that `withProductionRoot`, `withHarnessRoot`, and the lease close
-  (`closeLeaseForKey`) each return `Left ModeReverseRootInProgress` without running their continuation, and
-  that `readProtectedStoreImage` is unchanged. A malformed intent row yields `ModeMalformedRecord` naming the
-  intent key; an absent intent row is the control and admits.
-- Change the `ProjectPlanSpec` guard "ordinary lifecycle funnels refuse reverse intent" (near line 6775) so it
-  pins the refusing bodies `refuseReverseRootIntentAt` and `withOrdinaryProjectAdmissionForName` as well as
-  the call sites, and label it a placement check; the behavioural cases above carry the refusal claim.
+None.
 
-### Sprint 17.11: Exact reverse-root continuation and redo [Active]
+### Sprint 17.11: Exact reverse-root continuation and redo [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`, `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
@@ -632,28 +493,23 @@ the `finishCommitted` call inside `drive` rather than its definition, so the Com
 satisfied by `commitAllocated`'s Pending guard. The sprint closes when the change and cases in Remaining Work
 exist and pass in the warning-clean `cabal test all` from `core/`.
 
+Closing evidence, 2026-11-09, native x86_64 Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): the
+opposite-verb branch of `withExistingBoundReverseRootTransition` now answers a settled Destroy under
+`project down` with `ModeReverseRootTerminal` and keeps `ModeReverseRootInProgress` for Pending and Committed
+opposite rows; `CLISpec` "project down after a terminal destroy reports the terminal outcome without an effect"
+and "a repeated destroy refuses a recreated Production mode after its terminal closure" pass; the
+`ProjectPlanSpec` resume/redo guard pins the terminal-Down epoch check, the opposite-row fallback, and the
+`terminalDestroy` version, lease-version, and closure checks, and its Committed section opens at the
+`finishCommitted` definition with no `commitAllocated`. `cabal test all` from `core/` passed.
+
 #### Remaining Work
 
-- In `withExistingBoundReverseRootTransition`'s opposite-verb branch, decode the opposite row's phase. A
-  Destroy Terminal row (version 3 or 6) under `project down` returns `ModeReverseRootTerminal`; only Pending
-  or Committed opposite rows return `ModeReverseRootInProgress`. Add a `CLISpec` case: `project up`,
-  `project destroy`, then `project down` reports the same terminal outcome an exact repeated `destroy`
-  reports, runs no effect, and leaves `readProtectedStoreImage` unchanged.
-- Cover the remaining resume/redo branches: the terminal-Down epoch check (`target > source`, "terminal Down
-  epoch"), the `_ -> pure (Left ModeReverseRootInProgress)` fallback, and `terminalDestroy`'s version 3-or-6
-  check, its `leaseVersion` `maxBound` check, and its closed-journal, closed-lease, and absent-mode
-  requirement. Add a `CLISpec` case that, after `project destroy`, rewrites the lease (or recreates the mode)
-  record and asserts a repeated `destroy` refuses with the "terminal Production closure" mismatch and leaves
-  the store otherwise unchanged; pin the epoch check and the fallback in the `ProjectPlanSpec` ordered list.
-- Anchor `ProjectPlanSpec`'s `committedSource` section (near line 4689) on the `finishCommitted` definition
-  rather than its call inside `drive`, and assert the section does not contain `commitAllocated`, so the
-  "Committed validates before target reification" order reads `finishCommitted`'s own `target <= source`
-  guard.
+None.
 
 ### Sprint 17.12: Fresh reverse-root source admission [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -718,23 +574,33 @@ cases in Remaining Work exist and pass in the warning-clean `cabal test all` fro
 
 #### Remaining Work
 
-- In `withReauthorizedBoundPlanSnapshotKernel` (`ProjectPlan/Snapshot.hs`), resume on
-  `ModeWrongMode "production" "absent"` only when a reverse-root intent row exists; with none, return the
-  original `SnapshotVerificationError (ModeWrongMode "production" "absent")`. Add a `CLISpec` case: on a freshly
-  initialised store `project down` exits 1 naming the absent Production mode, not
-  `ModeReverseRootInProgress`.
-- Add `LifecycleSpec` cases that hold `withRunLiveness` for the installed project name from a second thread
-  (or a probe process, as `AuthoritySpec` does) and call `withReauthorizedBoundPlanSnapshotKernel` for
-  `ProjectDown`, asserting `Left SnapshotLivenessContended` and no `reverse-root.` row; make the liveness
-  store unwritable to assert `SnapshotLivenessFailure`; and move the bound lease between
-  `withPersistedPlanSnapshot`'s persist and bind steps to assert `SnapshotLeaseConflict`.
-- Relabel `ProjectPlanSpec`'s "only the selector's outer InProgress failure resumes" (near line 5374) to
-  "InProgress or absent-mode selector failures resume", and pin
-  `fromMode (Left ModeReverseRootTerminal) = Left SnapshotReverseRootTerminal`.
-- In `LifecycleSpec`'s three "forces ... on partial application" cases (near lines 871, 888, and 916),
-  evaluate the partial application itself, for example
-  `try (evaluate (withResumedExistingBoundReverseRootKernel (error "bottom ...")))`, and assert the admission
-  message; keep the fully applied variants as the argument-order check.
+2026-11-09 (native Windows, GHC 9.12.4): `withReauthorizedBoundPlanSnapshotKernel` now keeps the original
+`SnapshotVerificationError (ModeWrongMode "production" "absent")` when the absent-mode resume finds no retained
+intent; `CLISpec` "project down on a never-brought-up project names the absent Production mode, not a reverse
+intent" and "project down refuses while another holder owns the project's run liveness" pass;
+`ProjectPlanSpec` relabels the selector guard and pins `fromMode (Left ModeReverseRootTerminal)`; and
+`LifecycleSpec` "the reverse-root wrappers force their hidden token when only it is applied" evaluates each
+partial application. That case failed at `-O2` because GHC eta-expanded the wrappers over the inlined
+single-constructor match, so `consumeExistingBoundSnapshotAdmissionKernel` (`Lifecycle/Plan.hs`) is now
+`NOINLINE`. The full `cabal test all` from `core/` passed. The contended-liveness case was observed only on
+native Windows, where a second handle conflicts in-process; the POSIX run owes it.
+
+`CLISpec` "project down reports a liveness store failure and writes no reverse-root row" makes the lock path
+unopenable and asserts `SnapshotLivenessFailure`, an unchanged store, and no effect. "project down reports a
+typed liveness failure while an in-process holder owns the lock file" shows that on native Windows a second
+in-process holder fails at open with `SnapshotLivenessFailure` (`take the run liveness lock`, "file is locked"),
+because GHC enforces single-writer file locking inside one process; it is not `SnapshotLivenessContended`.
+
+On 2026-11-11 `CLISpec` "project down reports contended liveness while a peer process holds the lock and writes no
+reverse-root row" spawns `--hostbootstrap-liveness-hold-probe` (`AuthoritySpec.runLivenessHoldProbe`), which takes
+the run liveness lock, announces `held` and holds it until its standard input closes; `project down` then refuses
+with `SnapshotLivenessContended`, no teardown action runs and the store image is unchanged. It passes on native
+Windows; the POSIX gate run is owed with the phase's next Linux run.
+
+- `SnapshotLeaseConflict` is produced only by `bindRunLeaseWithPlanRecovery` inside the callback that
+  `withPersistedPlanSnapshot` runs immediately after persisting, so no test can move the lease between the two
+  steps without a seam. Either add a private test seam in that callback or retire the constructor's claim that a
+  case reaches it.
 
 ### Sprint 17.14: Sealed reverse-root lifecycle entry [Active]
 
@@ -775,28 +641,29 @@ single-frame failed-up-then-destroy bridge case belongs to Sprint 17.53.
 
 #### Remaining Work
 
-- Add `CLISpec` cases, built with `seedBoundExecute`-style helpers, for each admission refusal of
-  `withRootProjectReverseLifecycleEntry`: a source cursor still at Prepare (`LifecycleEntry.hs`, near line
-  790), an acquisition seed at Execute or Teardown (near 805-806), root, mode, or profile epochs that differ
-  (near 966-971), a target plan with another broker epoch (near 846-847), and `project down`/`project destroy`
-  with no bound Up snapshot. Each asserts exit 1 with the refusal text and an unchanged protected-store image.
-- Back the reverse-root refusals that `ProjectPlanSpec` names only as source text (near line 5389) with
-  value-level `CLISpec` cases in the same style: a Destroy Pending left in place, then `project down`, refuses
-  with `ModeReverseRootInProgress`'s text; an acquisition seed at Execute and at Teardown each refuse with
-  `SessionAcquisitionBindingMismatch` ("seed phase"); a mode or lease record rewritten to version `maxBound`
-  refuses with the version-exhaustion text. Each asserts an unchanged protected-store image.
-- The reverse-root target cursor's exact versions (`Lifecycle/Session.hs`, near lines 1225-1255) are pinned
-  only as call shapes. Pin `checkedVersion`'s definition (`requireCursorBindingWord "reverse root target cursor
-  version" expected (lifecycleCursorRecordVersion cursor)`) and the
-  `| otherwise -> refuseAcquisition "record version" "1"` branch in `ProjectPlanSpec`, and add a `CLISpec`
-  case that rewrites the cursor record to a version its phase does not admit and asserts `project down`
-  refuses with "reverse root target cursor version" and an unchanged store image.
+2026-11-09 (native Windows, GHC 9.12.4): three of the owed `CLISpec` cases landed and pass in their selection:
+`project down` with a retained Destroy Pending exits 1 with the in-progress text and an unchanged store,
+`project destroy` on a never-brought-up project names the absent Production mode, and (Sprint 17.13)
+`project down` does the same. They have not yet been re-run in a full gate for this sprint.
+
+2026-11-09 finding: the reverse verb run after `seedBoundExecute` (a Bound lease, an Execute cursor, and no
+completed Up) succeeds, because a failed-Up leftover is legitimately torn down by the reverse verb (Sprint 17.53).
+The seed-phase refusals therefore need a seed whose journal phase, not only its cursor, is Execute or Teardown,
+which no existing `CLISpec` helper writes.
+
+- Add the remaining `CLISpec` cases for `withRootProjectReverseLifecycleEntry`'s admission refusals: a source
+  cursor still at Prepare, an acquisition seed at Execute or Teardown (`SessionAcquisitionBindingMismatch`
+  "seed phase"), root/mode/profile epochs that differ, and a target plan with another broker epoch. Each asserts
+  exit 1 with the refusal text and an unchanged protected-store image.
+- Add the version-exhaustion case (a mode or lease record at version `maxBound`) and the target-cursor version
+  case ("reverse root target cursor version"), and pin `checkedVersion` and the
+  `| otherwise -> refuseAcquisition "record version" "1"` branch in `ProjectPlanSpec`.
 
 ### Sprint 17.15: Durable prepared reverse-descent substrate [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/durable_state.md`
@@ -835,9 +702,9 @@ The sprint closes when the cases in Remaining Work exist and pass in the warning
   leaves the row byte-identical; a command authority from store A presented with store B refuses before any
   write, and store B's `readProtectedStoreImage` is unchanged.
 
-### Sprint 17.16: Root prepared reverse-descent producer [Active]
+### Sprint 17.16: Root prepared reverse-descent producer [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -869,15 +736,18 @@ recovery-child refusals, but `withPreparedRootReverseDescentKernel` has only the
 as substrings of longer identifiers. The sprint closes when the guard below is corrected and the
 warning-clean `cabal test all` from `core/` passes.
 
+Closing evidence, 2026-11-09 (native Windows, GHC 9.12.4): the `ProjectPlanSpec` producer-ordering guard is
+relabelled "the producer refuses Up before the two exact root branches" and its single-word trailing fragments
+are deleted, leaving the exact call-shape assertions; `cabal test all` from `core/` passed.
+
 #### Remaining Work
 
-- Drop "recovery-child" from the producer-ordering label and delete its single-word trailing fragments,
-  relying on the exact call-shape assertion near line 6508.
+None.
 
 ### Sprint 17.17: Durable recoverable-open map and token repair [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -919,26 +789,39 @@ exist and pass in the warning-clean `cabal test all` from `core/`. Admitting the
 
 #### Remaining Work
 
-- Keep the compare-and-swap failure in `writeExact` and `publishMap`: bind the `ProtectedError`; when the
-  readback does not show the exact written record and no other record is present, return
-  `Left (HandoffStoreFailure writeFailure)`, as `consumeRegisteredEdge` does; return the token or map conflict
-  only when a different record is present.
-- Make the kernel reachable from the suite with a real `RecoverySigningKernel` through a private Cabal
-  sublibrary seam, and add store-backed `HandoffSpec` cases: first registration writes the version-1 map and
-  planned-edge token rows; an exact retry returns the same binding and token and writes nothing; a retry after
-  the token row is `granted:` rotates to a fresh token and advances the map by exactly one version; a map at
-  the wrong version, a map advanced by a concurrent writer, a token row at version 2, a foreign token row, and
-  a corrupt map record each refuse with their exact `HandoffBindingMismatch` text or `HandoffTokenConsumed`;
-  and each `recoveryOpenIdentity` refusal (verb, phase, empty adapter, digest mismatch) yields its exact
-  error.
-- Add a case whose store rejects the write (a read-only records directory; a declared refusal in
-  `CoverageManifest` where the host still accepts the write) and assert `HandoffStoreFailure`.
+2026-11-09 (native Windows, GHC 9.12.4): `writeExact` and `publishMap` (`Handoff.hs`) now keep the compare-and-swap
+failure: when readback shows neither the exact written record nor any other record, they return
+`Left (HandoffStoreFailure writeFailure)`, and a conflict only when a different record is present. The
+`HandoffSpec` token-repair guard pins `readExactInitial ... writeFailure`; the full `cabal test all` from `core/`
+passed.
+
+`HostBootstrap.Handoff.Internal` is already selected into the test suite by its private mixin, so no new Cabal seam is
+needed: `recoverySigningKernel` is a real, importable value. `HandoffSpec` "a recoverable open registers once,
+retries exactly, and refuses each malformed coordinate" registers a recovery edge through a real
+`withRecoveryBroker`, asserts that the first registration writes exactly two records (the map and the planned
+token), that an exact retry returns the same binding and token and writes nothing, and that an empty adapter, an
+adapter digest mismatch, a non-teardown phase, a non-recovery payload kind, an empty coordinate, and the `up`
+verb each refuse with their exact error. The full `cabal test all` from `core/` passed.
+
+`HandoffSpec` "a recoverable open rotates its token once the edge is granted and refuses a corrupt map" grants the
+registered edge and asserts that the next exact registration returns a fresh token and binding with the map at
+version 2, that a retry after rotation is stable, that a well-framed map with another domain refuses with
+"the recoverable-open map is malformed or conflicting" and writes nothing, and that a map record the store cannot
+serve (a directory at its path) yields `HandoffStoreFailure`. The full `cabal test all` from `core/` passed.
+
+`HandoffSpec` "a recoverable open refuses a token row that is neither planned nor granted, writing nothing" replaces the
+planned token row of a registered recovery edge with foreign bytes and asserts that the next registration refuses
+with "the recoverable token record conflicts" and leaves the store unchanged. The full `cabal test all` from `core/`
+passed.
+
+- Add the remaining registration cases: a map at the wrong version, a map advanced by a concurrent writer, and the
+  `HandoffTokenConsumed` outcome of the verify step.
 
 ### Sprint 17.18: Bound reverse-descent attachment [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -966,17 +849,22 @@ the refusal, and the warning-clean `cabal test all` from `core/` passes.
 
 #### Remaining Work
 
-- Make `recoveryHandoffScope` total: map `production` and `harness:<run>` through the `Handoff`
-  `productionScopeTag`/`harnessScopeTagFor` helpers and refuse any other stable scope with "the recovery
-  offer scope differs". Add a `HandoffSpec` or `TeardownSpec` case with an unrecognised stable scope that
-  asserts the refusal.
+2026-11-09 (native Windows, GHC 9.12.4): `recoveryHandoffScope` (`Teardown/Internal.hs`) is now total. It maps
+`production` and `harness:<run>` through `productionScopeTag` and `harnessScopeTagFor`, returns `Nothing` for any
+other stable scope, and the offer check compares `Just (handoffScope binding)` against it, so an unrecognised
+scope matches no offer. The `TeardownSpec` source guard pins that shape and the full `cabal test all` from
+`core/` passed.
 
-### Sprint 17.19: Canonical lifecycle completion wire [Active]
+- Add the behavioural case: a prepared descent whose journal carries an unrecognised stable scope refuses a
+  recovery offer with "the recovery offer scope differs". It needs a prepared-descent fixture, which the
+  Sprint 17.15 and 17.17 test seam supplies.
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+### Sprint 17.19: Canonical lifecycle completion wire [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/composition_methodology.md`
@@ -1008,29 +896,27 @@ cases (near line 1845) accept any `Left` with no positive control. `validateLife
 accepts forward-only `succeeded` rows in a reverse failed report, which no teardown decoder admits. The sprint
 closes when the change and cases below exist and pass in the warning-clean `cabal test all` from `core/`.
 
+2026-11-09 (native Windows, GHC 9.12.4): `TeardownSpec` "typed decoding refuses a well-framed row whose status is
+not a teardown status" renders `[("one", "succeeded", "none")]` and asserts `Left (TeardownObservationWireRefused _)`;
+the full `cabal test all` from `core/` passed.
+
+`HandoffSpec` "observation and enclosing report bounds apply to the complete wire" now pads a well-formed observations
+wire and a well-formed acknowledgement past `maxWireBytes` and asserts "lifecycle observations exceeds the wire
+bound" and "lifecycle acknowledgement exceeds the wire bound", so deleting either `bounded` call fails it. "terminal
+origins enforce exact fields, versions, and every reverse binding join" now asserts each of the ten forward and
+thirteen reverse mutations against its exact `HandoffBindingMismatch` message. The full `cabal test all` from
+`core/` passed with every case above.
+
 #### Remaining Work
 
-- Add a `TeardownSpec` decode case that renders `[("one", "succeeded", "none")]` with
-  `renderLifecycleObservations` and asserts `teardownObservationsFromWire` returns
-  `Left (TeardownObservationWireRefused _)`.
-- Rewrite the two receive-side over-bound cases to pad an otherwise well-formed observations wire and
-  acknowledgement wire (a valid domain and version prefix followed by filler) past `maxWireBytes`, and assert
-  the bound refusal's exact text, so deleting `bounded "lifecycle observations" raw` or
-  `bounded "lifecycle acknowledgement" observed` fails them.
-- In `validateLifecycleBranch`, restrict `("reverse", "failed")` rows to the teardown statuses released,
-  foreign-retained, refused, and failed; add a case where a reverse failed report carrying a `succeeded` row
-  is refused.
-- In the terminal-origin negative cases, first assert that the unmutated forward (seed 64) and reverse
-  (seed 65, with `observations`) completed reports are `Right`, then match each mutation's exact
-  `HandoffBindingMismatch` message, for example "the reverse terminal origin differs from its binding" for the
-  join cases.
+None.
 
 ### Sprint 17.20: Lower sealed completion ownership [Active]
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (completion module registration)
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
@@ -1069,17 +955,18 @@ sprint closes when the changes and cases in Remaining Work exist and pass in the
 
 #### Remaining Work
 
-- In `Handoff/Completion.hs`, the reverse kernel's `refused` and `failed` branches return
-  `Left ("lifecycle completion: the reverse child " <> status <> ": " <> detail)` after a successful
-  acknowledgement, mirroring the forward kernel; the root's settlement check keeps its role, and its refusal
-  carries the child's detail.
-- In `Handoff/Relay.hs`, carry the callback's text when the acknowledgement succeeded and the terminal callback
-  then refused (a `RelayLifecycleCallbackRefused Text` variant), so a forward child's refusal or failure
-  detail reaches the operator.
-- In `Handoff/Receiver.hs` `runTerminalAction`, rethrow with base `Control.Exception.throwIO` (or catch only
-  synchronous exceptions with `tryAny`). Add a case whose terminal continuation throws `UserInterrupt` and
-  assert that the exception escaping `receiveScopedHandoffEdge` is `UserInterrupt`, not a
-  `SyncExceptionWrapper`.
+2026-11-09 (native Windows, GHC 9.12.4): three production changes landed and the full `cabal test all` from `core/`
+passed. `Handoff/Completion.hs`'s reverse kernel now acknowledges a refused or failed child and then returns
+`Left ("lifecycle completion: the reverse child " <> status <> ": " <> detail)`, as the forward kernel does.
+`Handoff/Relay.hs` classifies an acknowledged-then-refused terminal callback as `RelayLifecycleCallbackRefused
+reason`, so the callback's text reaches the operator, and the `HandoffSpec` terminal-persistence guard pins it.
+`Handoff/Receiver.hs` `runTerminalAction` rethrows with base `Control.Exception.throwIO`.
+
+`HandoffSpec` "a terminal callback that throws UserInterrupt escapes the receiver unwrapped" runs a scripted receiver
+whose terminal continuation throws `UserInterrupt` and asserts that the exception escaping is `UserInterrupt` itself.
+An asynchronous exit is not announced as a child refusal (the receiver's `try` does not catch it), so the parent sees
+silence, not a refusal. The full `cabal test all` from `core/` passed.
+
 - Expose the live completion kernels through a private Cabal sublibrary seam and add cases for "a forward
   offer refuses a reverse report", "the forward child refused/failed", "a reverse descent refuses a forward
   report", and "the report binding differs from the exact offer", each asserting the exact text.
@@ -1090,11 +977,11 @@ sprint closes when the changes and cases in Remaining Work exist and pass in the
   `Command/Child.hs`, `Command/Child/*.hs`, `Lifecycle/FrameExecutor.hs`, or
   `Teardown/Executor/Internal.hs`.
 
-### Sprint 17.21: Root-resident parent acknowledgement substrate [Active]
+### Sprint 17.21: Root-resident parent acknowledgement substrate [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Protocol.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -1116,6 +1003,15 @@ Persist exact parent Reported, Acknowledged, and Adopted stages in the root-owne
 Dated 2026-08-11 evidence includes the focused durable-acknowledgement cases 3/3, `HandoffSpec` 66/66,
 protected-store cases 9/9, compile-fail 447/447, the complete suite 1901/1901, and `DocValidatorSpec` 2/2.
 
+The parent-acknowledgement source guard retains exact tag/field tables, real child send/receive and
+acknowledgement clauses, redaction, closed exports/datatypes, importer/caller/producer inventories, and
+ordered assertions. Its only Protocol definition freeze is the wholly owned `requireAcknowledgement`
+clause, encoded as 45 tokens / 483 ordered Aeson bytes with fixed saved-baseline digest
+`116088b6fbcb48a1e31e920b6c8146362c6923fed4eec178e186f3ee28587b54`. The independent Handoff attribution
+remains 343; the original `(343, 71, 414)` tuple and original budget remain dated 2026-08-11 evidence rather
+than a current whole-Protocol line count or unchanged-complement subtraction. These source checks do not
+replace the store-backed row-kernel obligations below.
+
 No test runs the four row kernels (`publishLifecycleReportKernel`, `receiveLifecycleAcknowledgementKernel`,
 `prepareLifecycleAcknowledgementKernel`, `adoptLifecycleAcknowledgementKernel`) on values: they appear only as
 forced partial applications, source fragments, and a compile-fail export list. `HandoffSpec` "durable
@@ -1126,29 +1022,41 @@ pending, `Right True` already adopted) or written-version check. The row writers
 `lifecycleRowConflict`. The sprint closes when the change and cases in Remaining Work exist and pass in the
 warning-clean `cabal test all` from `core/`.
 
+2026-11-09 (native Windows, GHC 9.12.4): the row writers (`prepareParentRow`, its `advance`, `publishChildRow`,
+`adoptParentRow`, `writeLifecycleRow`) now return `Left (HandoffStoreFailure writeFailure)` when a rejected
+compare-and-swap leaves no row or leaves the unchanged predecessor, and keep `lifecycleRowConflict` for a different
+row actually present. The `HandoffSpec` durable-row guard's frozen line measurement is updated to 450; the full
+`cabal test all` from `core/` passed.
+
+`HandoffSpec` "child lifecycle rows publish, converge, receive, and refuse conflicts against a real store" drives
+`publishLifecycleReportKernel` and `receiveLifecycleAcknowledgementKernel` with the already-selected
+`HandoffInternal.recoverySigningKernel` against a real protected store: a fresh publish and an exact re-publish
+converge, a different report under the same binding conflicts, receive and a repeated receive converge, a late
+re-publish converges, a report naming another store refuses with "the lifecycle report names a different protected
+store", and receiving a never-published report finds no row. The full `cabal test all` from `core/` passed.
+
+`HandoffSpec` also drives the parent kernels against a real store, broker, and granted edge: "parent lifecycle rows
+advance one to two to three and answer pending, fresh, and replay exactly" asserts the row at versions 2 then 3,
+repeated pending answers, the fresh continuation once, and the replay continuation (writing nothing) for an exact
+version-3 replay and a late prepare; "of two concurrent adopters exactly one is the fresh winner" runs two adopters
+and asserts one fresh and one replay; and "parent lifecycle rows refuse an ungranted edge, an unprepared adoption,
+and a foreign row" asserts the exact refusal text for an ungranted edge and an unrecognised challenge, the conflict
+for adopting a never-prepared row, and a byte-identical store after a foreign row conflicts. The durable-row source
+guard is retitled a placement check. The full `cabal test all` from `core/` passed.
+
+`HandoffSpec` "a store that cannot write a lifecycle row reports a store failure, not a row conflict" places a
+directory where the child row, then the parent row, belongs and asserts `HandoffStoreFailure` from
+`publishLifecycleReportKernel` and `prepareLifecycleAcknowledgementKernel`. The full `cabal test all` from `core/`
+passed with every case above.
+
 #### Remaining Work
 
-- In each row writer, when the compare-and-swap returns `Left failure` and the re-read does not show the
-  expected row, return `Left (HandoffStoreFailure failure)`; keep `lifecycleRowConflict` for a different row
-  actually present.
-- Make the four row kernels reachable from the suite with a real `RecoverySigningKernel` through a private
-  Cabal sublibrary seam, and add store-backed `HandoffSpec` cases: a fresh publish and an exact re-publish
-  converge; a different report under the same binding conflicts; a report naming another store refuses with
-  its exact text; receive after publish writes the version-2 Received row; prepare and adopt move the parent
-  row from version 1 to 2 to 3, a version-2 row answers pending (`Right False`) and an exact version-3 replay
-  takes the replay continuation (`Right True`); of two concurrent adopters exactly one is the fresh winner; a
-  missing token row and a token row not at version 2 refuse; a foreign row conflicts; and `Right Nothing` at
-  receive and at adopt is asserted; a store that rejects the write yields `HandoffStoreFailure`.
-- Rename "durable lifecycle rows are exact, transcript-bound, convergent, and callback-safe" to a placement
-  name, and either extend the convergence fragment lists with each guard's result
-  (`exactLifecycleRow 2 acknowledged record -> pure (Right False)`,
-  `exactLifecycleRow 3 adopted record -> pure (Right True)`, `recordVersionWord version == 1 -> Right ()`) or
-  drop them in favour of the behavioural cases.
+None.
 
 ### Sprint 17.22: Routed acknowledgement transport substrate [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -1182,25 +1090,36 @@ Sprint 17.36 adopts the Phase 13 rooted protocol into the relay service.
 
 #### Remaining Work
 
-- In `runLifecycleTerminal` (`Handoff/Relay.hs`), keep the pending branch's adopt-stage disposition in a local
-  and record it only after `sendAcknowledgement` succeeds, as the already-Adopted branch does, and state in the
-  Haddock how a replayed non-completed report is classified.
-- Make the pure lifecycle relay codec and the terminal gate reachable from the suite through a private Cabal
-  sublibrary seam. Render canonical request and response wires with `renderLifecycleAcknowledgementRequest`
-  and `renderLifecycleAcknowledgementResponse`, mutate the domain, version, stage, a trailing byte, the field
-  count, the disposition, and the acknowledgement one at a time, and assert each exact
-  `RelayHandoffFailure (HandoffBindingMismatch …)`. Drive the gate with a callback that calls `persist` twice
-  and once after returning, asserting the second and late calls receive `fixedPersistFailure`; and assert that
-  a transmit failure on the pending branch returns the transmission failure.
-- Replace the Relay line-budget constants with `significantHaskellLineCount relaySource @?= <measured>` and
-  derive the attribution from it, as the Protocol case does, or delete the constant-only asserts.
-- Assert the exact `BrokerLink` field-name list instead of the one contained signature.
+2026-11-09 (native Windows, GHC 9.12.4): `runLifecycleTerminal`'s pending branch now keeps its adopt-stage
+disposition in a local (`adoptedStage`) and records it only after `sendAcknowledgement` succeeds, as the
+already-Adopted branch does. The `HandoffSpec` terminal-persistence guard pins the new shape and its Handoff
+attribution measurement is 355; the full `cabal test all` from `core/` passed. The Haddock still owes a sentence on
+how a replayed non-completed report is classified.
+
+`renderLifecycleAcknowledgementResponse` and `withLifecycleAcknowledgementResponse` are now exported from the
+hidden `HostBootstrap.Handoff.Relay`, which the test suite already selects, and the `HandoffSpec` Relay export
+inventory names them. `HandoffSpec` "the relay's lifecycle response codec accepts only its exact canonical wire"
+asserts that the canonical `fresh` and `replay` responses reach their own continuations, and that a wrong domain,
+version, stage, disposition, or acknowledgement ("the lifecycle response differs from the exact request"), a
+trailing byte or a sixth field ("the lifecycle envelope has trailing bytes"), and a truncated wire each refuse with
+no continuation run. The full `cabal test all` from `core/` passed.
+
+`runLifecycleTerminal`'s Haddock now states that a callback refusal after a successful acknowledgement is carried as
+`RelayLifecycleCallbackRefused`, that a replayed report is acknowledgement-only with its disposition recorded after
+the send, and that a replayed non-completed report is classified exactly like a replayed completed one. The
+`HandoffSpec` Relay guards no longer carry tautological line-count constants: the terminal-relay figure is measured
+from the live source (2728 significant lines), and the `BrokerLink` guard asserts its exact 14-field list. The full
+`cabal test all` from `core/` passed.
+
+- Add the request-codec cases (`renderLifecycleAcknowledgementRequest` and its root-side parse) and the terminal
+  gate cases: a callback that calls `persist` twice and once after returning receives `fixedPersistFailure` on the
+  second and late calls, and a transmit failure on the pending branch returns the transmission failure.
 
 ### Sprint 17.23: Finalized forward-child projector foundation [Active]
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (build metadata only)
 **Substrates**: linux-cpu
@@ -1226,11 +1145,23 @@ Give every finalized project an acyclic project-owned child-plan projector.
 Dated 2026-08-11 evidence includes `CLISpec` 52/52, `ProjectPlanSpec` 67/67, `SchemaSpec` 21/21,
 compile-fail 449/449, the complete suite 1909/1909, and `DocValidatorSpec` 2/2.
 
-Retention of the installed projector rests on `ProjectPlanSpec` fragments over raw `CLI.hs` text (near lines
-1867-1873), which a comment can satisfy, and `CLI.hs` carries no digest pin; `CLISpec` covers only the
-missing and duplicate installation refusals. The `< 400` and `>= 424` size checks (near lines 1933-1939 and
-2225-2228) are implied by the exact pins before them. The sprint closes when the cases in Remaining Work exist
-and pass in the warning-clean `cabal test all` from `core/`.
+The source guard retains exact exports, hidden-owner/constructor boundaries, importer/user/type
+inventories, projector ordering and CLI installation fragments. Its Construct freeze covers only the
+five forwarding declarations `withFinalizedProjectSpec`, `withHarnessFinalizedProjectSpec`,
+`withFinalizedProjectSpecParts`, `finalizedProjectCodec` and `finalizedProjectServices`: the saved-baseline
+typed tokens and complete clauses encode to 2,458 ordered Aeson bytes with fixed digest
+`c49bb152f01599b443a774dc506b11655665f209a31f3ab11b2b14f38c2326bd`. The actual private-owner
+hash/count and one metadata registration remain independent controls.
+
+Dated 2026-11-01 bookkeeping records Construct 631, private owner 226 and the shared CLI/later allowances
+as source 216 plus metadata one, 217 total, below 400. These figures are dated attribution, not a live
+whole-Construct hash, size pin or subtraction of another owner's edit. The remaining CLI count proxy
+and separate forward-package size assertions are addressed by their own Remaining Work below.
+
+`CLISpec` proves missing and duplicate installation refusals; source observations alone do not prove
+that the retained projector runs or that the bare CLI selects its default refusal. The sprint closes
+when those runtime cases and the remaining scoped source policies pass the warning-clean gate. This
+owned-scope adoption changes no status or dated execution record.
 
 #### Remaining Work
 
@@ -1239,16 +1170,17 @@ and pass in the warning-clean `cabal test all` from `core/`.
   asserts the installed projector ran; and a `bareStepPlan` case asserting `refuseForwardChildPlan`'s refusal.
   Match the `(psStepPlan spec) (psForwardChildPlan spec)` and
   `(bareStepPlan progName) refuseForwardChildPlan` fragments against comment-stripped `SourceGuard` tokens.
-- Drop the `< 400` and `>= 424` assertions that follow the exact `(216, 217)` and `(631, 226)` pins, and the
-  `< 400` after the exact forward-package size pin, or keep the size budgets and drop the exact counts; name the remaining CLI count a
-  pin rather than a sprint attribution.
+- Replace or justify the remaining shared CLI `>= 424` count proxy using its actually owned surface,
+  without a shared-file complement or attribution rebase. Retain independent installation/ordering checks.
+- Resolve the implied `< 400` assertion after the separate exact forward-package size pin as an owned
+  budget or fixed measurement, preserving that package's independent semantic and ownership controls.
 
 ### Sprint 17.24: Exact projected child plan [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Handoff/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Context/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Context/Internal.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (build metadata only)
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -1311,8 +1243,8 @@ Remaining Work land and pass in the warning-clean `cabal test all` from `core/`.
 ### Sprint 17.25: Recursive rooted plan catalog [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Handoff/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -1408,11 +1340,11 @@ rebase cases in Remaining Work pass; then `cabal test all` from `core/` and `dem
 ### Sprint 17.26: Digest-proven codec and registry reindex [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Class/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Schema/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema/Internal.hs`,
 `core/hostbootstrap-core/test/SpecIndexSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/generic_project_model.md`,
@@ -1500,7 +1432,7 @@ in Remaining Work are corrected and pass in the warning-clean `cabal test all` f
 ### Sprint 17.27: Recovered finalized-specification reindex [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
@@ -1569,7 +1501,7 @@ The sprint closes when the cases in Remaining Work exist and pass in the warning
 ### Sprint 17.28: Root catalog persistence and readback [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
@@ -1651,7 +1583,7 @@ reported, the cases below pass, and the warning-clean `cabal test all` from `cor
 ### Sprint 17.29: Catalog-admitted forward package [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Handoff/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -1745,9 +1677,9 @@ pass in the warning-clean `cabal test all` from `core/`.
 ### Sprint 17.30: Catalog-produced recovery child package [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -1846,8 +1778,8 @@ Work lands and the warning-clean `cabal test all` from `core/` passes.
 ### Sprint 17.31: Installed recursive handoff runtime [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Runtime.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Runtime.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
@@ -1929,8 +1861,8 @@ Work exist and pass in the warning-clean `cabal test all` from `core/`.
 ### Sprint 17.32: Rooted frame session [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -2081,8 +2013,8 @@ hidden-module boundary.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/unrepresentable_state.md`
@@ -2184,7 +2116,7 @@ three-owner mint allowlist, and the absence of any response builder, signer, or 
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -2282,8 +2214,8 @@ ordinal-keyed row, the absence of any gate mint, and both owners' line budgets.
 ### Sprint 17.35: Root terminal receipt confirmation [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Receipt.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -2385,9 +2317,9 @@ warning-clean `cabal test all` from `core/` passes.
 ### Sprint 17.36: Rooted relay service [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Runtime.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Runtime.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -2481,7 +2413,7 @@ coordinator's exact-replay answer to a retransmitted `OpenFrame`.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (build metadata only)
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`,
@@ -2613,7 +2545,7 @@ nonempty observation through the same executor-owned path and exact retained coo
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Runtime.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Runtime.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -2761,8 +2693,8 @@ the sole source of the verb and edge coordinates.
 ### Sprint 17.39: Protocol-safe child standard-I/O isolation [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Protocol.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/binary_context_config.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -2850,7 +2782,7 @@ inside an owner that now stands at 680, so the sprint's work is well inside its 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal` (build metadata only)
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -2946,7 +2878,7 @@ its command entry from Windows. Native gate evidence belongs to this phase and t
   route has no opened form). Replace the `HandoffSpec` fragments that pin the timed `handoffChannel` call and
   "the launch bound is the owner's only deadline" with a pin of the untimed call.
 - Delete `launchMicros` and its export from `Effect.ChildGroup`
-  (`core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/ChildGroup.hs`): Phase 13 Sprint 13.18 removes
+  (`core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/ChildGroup.hs`): Phase 13 Sprint 13.41 removes
   the `Handoff/Transaction.hs` use, and the bullet above removes the last one, so the constant has no importer.
   A `HandoffSpec` source guard asserts that no module under `src/` or `internal/` names `launchMicros`.
 - Add an `EffectSpec` case for the escalation `terminateChildGroup` composes: on a POSIX host, launch
@@ -3048,13 +2980,13 @@ change, the case, and the budget guard below pass in the warning-clean `cabal te
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
-`documents/architecture/hostbootstrap_core_library.md`
+`documents/architecture/hostbootstrap_core_library.md`, `documents/architecture/harness_workflow.md`
 
 #### Objective
 
@@ -3111,6 +3043,15 @@ commands pass.
 
 #### Remaining Work
 
+- Apply the common live prepare-admission contract to each rooted grant: re-read the actual Harness or
+  Production mode/epoch, live broker allocation, bound lease/version and retained snapshot binding under
+  the protected entry before any Unknown publication. Re-run the plan-owned target/dependency probes
+  and conditional-version checks before granting. The current `serveForwardFrame` route derives its node
+  from the retained child plan and delegates to the rooted grant publisher, which checks the attached
+  session/runtime and strictly reads its writes but does not perform those live-binding or probe reads.
+  Add exact per-grant stale-mode, rotated-broker, missing/versioned/frozen-lease, changed-snapshot and
+  stale-dependency refusals with callback counts and complete before-images. Split this adoption into
+  bounded implementation sprints before editing if it exceeds the three-module or production-line cap.
 - Answer an exact `OpenFrame` replay in `serveForwardFrame` (`Command/LifecycleEntry.hs`): keep the pre-attach
   `RootedFrameSession` in its own `IORef` beside `sessionRef`, and route an `open` request that arrives after
   attachment through `withRootedOpenedResponseKernel` with that retained value, so
@@ -3170,8 +3111,8 @@ commands pass.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/TerminalReport.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Receipt.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/unrepresentable_state.md`
@@ -3235,8 +3176,8 @@ texts. The sprint closes when the change and cases in Remaining Work exist and p
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Completion.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/durable_state.md`,
@@ -3495,9 +3436,9 @@ core-managed node through `project down` or `project destroy`.
 ### Sprint 17.47: Reverse terminalization and rearm [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
 `documents/architecture/durable_state.md`
@@ -3571,7 +3512,7 @@ passes from `core/`.
 ### Sprint 17.48: Prepared reverse process route [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`
 **Substrates**: linux-cpu
@@ -3614,8 +3555,8 @@ None.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -3694,7 +3635,7 @@ warning-clean core gate passed 2,463/2,463 in 366.69 seconds. `DocValidatorSpec`
 ### Sprint 17.50: Root-authorized nested reverse descent [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -3745,7 +3686,7 @@ corrected and the warning-clean `cabal test all` from `core/` passes.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/hostbootstrap_core_library.md`
@@ -3786,7 +3727,7 @@ None.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority/FailedUp/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -3889,12 +3830,12 @@ followed by `destroy`, and only on the POSIX row.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/TerminalReport.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Teardown/Executor/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
@@ -4156,7 +4097,7 @@ one and nothing beyond it.
 ### Sprint 17.55: Protected fresh Harness invocation [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.Mode`, `HostBootstrap.ProjectPlan.Snapshot`,
@@ -4238,7 +4179,7 @@ warning-clean `cabal test all` from `core/` and the four host static gate comman
 ### Sprint 17.56: Stable released-resource successor [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`, `core/hostbootstrap-core/test/ChainSpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.ResourceRecord`, `HostBootstrap.Chain` (2; cap 3)
 **Sprint budget**: no new public named type and one exact stable-member transition; at most 120 production
@@ -4275,7 +4216,7 @@ host-static gate passed.
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Production modules**: `HostBootstrap.Harness.Ownership.Internal`,
 `HostBootstrap.Harness.Ownership`, `HostBootstrap.Lifecycle.Mode` (3; cap 3)
@@ -4411,7 +4352,7 @@ Work lands, the argv fixtures render unchanged, and the host static gate passes.
 ### Sprint 17.59: The descent resolves a provider its own chain just installed [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostConfig.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Production modules**: `HostBootstrap.HostConfig`, `HostBootstrap.Handoff.Process` (2; cap 3)
@@ -4464,8 +4405,8 @@ predates resolves to exactly what discovery answers, absolute or absent, for eve
 ### Sprint 17.60: The reachability step actually reaches [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Teardown`,
@@ -4563,7 +4504,7 @@ refused with `Error: Instance is not running`.
 ### Sprint 17.61: Canonical resource records refuse the short close [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`,
@@ -4603,7 +4544,7 @@ None. The worked-demo phase owns live confirmation against the preserved run.
 ### Sprint 17.62: Typed rooted catalog entry coordinates [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Handoff/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
@@ -4647,7 +4588,7 @@ static gate commands pass.
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -4734,8 +4675,8 @@ root-frame-required subject. The four host static gate commands pass.
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Projection/Internal.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/generic_project_model.md`,
@@ -4778,7 +4719,7 @@ static gate commands pass.
 ### Sprint 17.66: The rooted post-open response family is a closed sum [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
@@ -4814,7 +4755,7 @@ four host static gate commands pass.
 ### Sprint 17.67: The resource-record set hashes and frames through Digest [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
 
@@ -4839,7 +4780,7 @@ static gate (§ JJ) passes.
 #### Remaining Work
 
 - Delete `sha256Hex`, `frameWire` and its `word64BigEndian` helper from
-  `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`, and import `sha256Hex` and
+  `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`, and import `sha256Hex` and
   `frameWire` from `HostBootstrap.Digest`.
 
 ### Sprint 17.68: The core test fixture's init assembler refuses through `failConfigAssembly` [Planned]
@@ -4888,7 +4829,7 @@ The sprint closes when this case exists and passes under `cabal test all` from `
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Construct/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
@@ -4998,8 +4939,8 @@ existing child-admission cases pass, under `cabal test all` from `core/`.
 ### Sprint 17.71: The prepared gate binds the journaled transition and call digest [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
 `core/hostbootstrap-core/test/PrepareFixture.hs`
@@ -5054,7 +4995,7 @@ and the existing `SessionSpec` and `ReconcileSpec` prepare cases passing with `t
 ### Sprint 17.72: No exposed module produces a prepared gate [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`, `core/hostbootstrap-core/test/PrepareFixture.hs`,
 `core/hostbootstrap-core/provider-live/ProviderLiveAliasFixture.hs`,
 `core/hostbootstrap-core/test/compile-fail/OpenFrameExecutorGate.hs`
@@ -5106,34 +5047,40 @@ allowlist, beside the `mintPreparedGate` one, naming no module under `src/`.
 ### Sprint 17.73: Rooted request kernels take the nominal lifecycle coordinates [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Rooted.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process/Route.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Receipt.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 
 #### Objective
 
-The authenticated handoff phase (Phase 13, Sprint 13.19) gives the rooted kernel coordinates private nominal
-types and retypes the kernels whose callers that phase owns. The six rooted lifecycle request kernels and
+The authenticated handoff phase (Phase 13, Sprints 13.43 through 13.49) gives the rooted input roles private
+checked scalars and retypes the kernels whose callers it owns. The five post-open request builders and
 `rootedOpenedResponseUnsignedKernel` are called only from this phase's modules, so retyping them, and adopting
 the newtypes at those callers, lands here (§ HH).
 
 #### Deliverables
 
-- `rootedOpenFrameRequestKernel`, `rootedNextNodeRequestKernel`, `rootedSettleNodeRequestKernel`,
-  `rootedDescendResultRequestKernel`, `rootedCloseFrameRequestKernel`, and `rootedReceiptConfirmRequestKernel`
-  take `LifecycleSession`, `LifecycleStage`, `LifecycleOrdinal`, and `PredecessorDigest` instead of
+- `rootedOpenFrameRequestKernel` retains its nonce-only shape. The five post-open builders
+  `rootedNextNodeRequestKernel`, `rootedSettleNodeRequestKernel`, `rootedDescendResultRequestKernel`,
+  `rootedCloseFrameRequestKernel` and `rootedReceiptConfirmRequestKernel` take `LifecycleSession`, `LifecycleStage`, `LifecycleOrdinal`, and `PredecessorDigest` instead of
   `Text`/`Word64`.
-- `rootedOpenedResponseUnsignedKernel` takes `RequestDigest`, `LifecycleSession`, and `LifecycleStage`.
+- `rootedOpenedResponseUnsignedKernel` takes `RequestDigest`, `LifecycleSession`, `LifecycleStage` and
+  `LifecycleOrdinal`, retaining its existing nonzero ordinal rule.
 - `Handoff.Process.Route`, `Lifecycle.FrameExecutor`, `Lifecycle.Rooted` with its `Node` and `Receipt`
   submodules, and `Command.Child` construct the newtypes at their own boundaries.
 - The canonical bytes are byte-identical to the current wire; the change is type-level only. Callers beyond
   the three production modules or 400 lines § G allows this sprint are adopted by a following sprint.
+
+- Adopt the broader request/response descriptive fold-return coordinates at their actual Receipt, Node
+  and Command.Child consumers here; that caller closure was not claimed by the earlier two-owner input
+  adoptions. Recut this work into bounded call-site sprints before implementation; add no raw compatibility
+  shim to hide an over-cap atomic migration.
 
 #### Validation
 
@@ -5143,51 +5090,26 @@ stability, and the four host static gate commands pass.
 
 #### Remaining Work
 
-- Retype the six request kernels and `rootedOpenedResponseUnsignedKernel` in `Handoff/Rooted.hs` to the
-  Sprint 13.19 newtypes.
+- Audit and split the actual kernel/fold-return caller closures into at most three production owners per
+  sprint before implementation, preserving all named coordinate and consumer obligations.
+- Retype the five post-open request kernels and `rootedOpenedResponseUnsignedKernel` in `Handoff/Rooted.hs` to the
+  Sprints 13.43 through 13.49 checked scalars; keep nonce-only OpenFrame unchanged.
 - Adopt the newtypes at `Handoff/Process/Route.hs`, `Lifecycle/FrameExecutor.hs`, `Lifecycle/Rooted.hs`,
   `Lifecycle/Rooted/Node.hs`, `Lifecycle/Rooted/Receipt.hs`, and `Command/Child.hs`, splitting into a following
   sprint if the adoption exceeds the § G module cap.
 
 ## Remaining Work
 
-- Sprint 17.1: add command-level operator-refusal and root-frame-refusal cases per verb, gate `project up` on
-  the host orchestrator, fix the stale `withVerifiedRootInvocation` and `runUp` comments, and make the
-  sibling-context case assert its precondition.
-- Sprint 17.2: delete the argv-descent `runChainFromFrame`/`handoffDispatch` and the dead
-  `_failChain`/`_reverseProjection` teardown in `Command.hs`, retarget the guards they satisfy, and add the
-  two-frame pre/child/post order case.
-- Sprint 17.3: rewrite `TeardownSpec`'s source-shape guards through `SourceGuard`.
-- Sprint 17.4: split `ForgeTeardownForest.hs` into one pinned compile-fail fixture per forged value.
-- Sprint 17.5: make every frame node wait on its child subtree and pin the worked-demo first offer and drain
-  order.
-- Sprint 17.6: add the wrong-verb/digest/frame, mismatched-proof, and positive-control settlement cases.
-- Sprint 17.7: add the root-refinement refusal case, the `lifecycleContextErrorMessage` golden table, and the
-  mint-refusal cases.
-- Sprint 17.8: correct the `LifecycleEntry` Haddocks, delete the callerless `lifecycleEntryVerbName`, and move
-  the single-importer guard onto `SourceGuard` tokens over both source roots, deleting `CLISpec`'s private
-  walker.
-- Sprint 17.10: add reverse-root codec value cases and store-backed ordinary-admission refusal cases.
-- Sprint 17.11: report Down after a terminal Destroy as terminal, cover the remaining resume/redo branches,
-  and anchor the Committed section on its definition.
-- Sprint 17.13: keep the absent-mode failure when no intent exists, and add the liveness, lease-conflict, and
-  partial-application forcing cases.
+- Sprint 17.13: add the `SnapshotLivenessContended` case with a peer-process holder and decide the
+  `SnapshotLeaseConflict` seam.
 - Sprint 17.14: add `CLISpec` cases for each reverse-root admission, in-progress, version-exhaustion, and
   target-cursor-version refusal.
 - Sprint 17.15: add behavioural cases for the prepared reverse-descent refusals, including the foreign-store
   command authority.
-- Sprint 17.16: correct the producer-ordering label and its substring fragments.
-- Sprint 17.17: keep compare-and-swap store failures in the recoverable-open map and add its store-backed
-  registration, retry, rotation, and refusal cases.
-- Sprint 17.18: make `recoveryHandoffScope` total with a refusal and a case.
-- Sprint 17.19: add the unknown-outcome decode case and well-formed over-bound cases, restrict reverse-failed
-  rows, and positive-control the origin cases.
-- Sprint 17.20: report refused/failed reverse children as failures, keep the child's detail through the relay,
-  preserve asynchronous exceptions in the receiver, test the live completion refusals, and rename the
-  tombstone guards.
-- Sprint 17.21: keep row-writer store failures and add store-backed lifecycle row state-machine cases.
-- Sprint 17.22: record the replay disposition only after the acknowledgement is sent, and add the relay codec,
-  one-shot gate, line-budget, and `BrokerLink` field cases.
+- Sprint 17.17: add the wrong-version-map, concurrent-writer, and `HandoffTokenConsumed` cases.
+- Sprint 17.18: add the unrecognised-scope offer refusal case through the prepared-descent test seam.
+- Sprint 17.20: add the completion-kernel cases (the kernels live in `HostBootstrap.Handoff.Completion`, which the test suite cannot import without a Cabal change) and consolidate the retired-identifier guards.
+- Sprint 17.22: add the request-codec and terminal-gate cases.
 - Sprint 17.23: prove projector retention behaviourally and drop the implied size checks.
 - Sprint 17.24: delete the planned-forward package and the nested lifecycle-context eliminator, and add the
   projected-root refusal table.

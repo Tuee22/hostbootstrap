@@ -6,8 +6,6 @@ module HostBootstrap.Wsl2 (
     bcdeditHypervisorLaunchArgs,
     normalizeWslText,
     wslListDistros,
-    wslDistroStates,
-    wslRunningDistros,
     wslReportsNoInstalledDistributions,
     wslReportsVirtualizationDisabled,
     wslInstallArgs,
@@ -17,7 +15,6 @@ module HostBootstrap.Wsl2 (
 )
 where
 
-import Data.Char (toLower)
 import HostBootstrap.Ensure.Wsl2 (
     bcdeditHypervisorLaunchArgs,
     normalizeWslText,
@@ -35,25 +32,6 @@ checks that go through 'normalizeWslText'.
 wslListDistros :: String -> [String]
 wslListDistros = words . filter (/= '\0')
 
-{- | Parse @wsl --list --verbose@ into @(distro, lowercased-state)@ pairs: strip the
-UTF-16 NUL padding, drop the leading @*@ default marker on each row, and skip the
-@NAME/STATE/VERSION@ header. Distro names preserve case (WSL2 names are
-case-sensitive); the state is lowercased for comparison. Pure, so it is unit-tested.
--}
-wslDistroStates :: String -> [(String, String)]
-wslDistroStates raw =
-    [ (name, map toLower state)
-    | line <- lines (filter (/= '\0') raw)
-    , (name : state : _) <- [dropStar (words line)]
-    , map toLower name /= "name"
-    ]
-  where
-    dropStar ("*" : rest) = rest
-    dropStar toks = toks
-
--- | The distro names reported RUNNING by @wsl --list --verbose@. Pure.
-wslRunningDistros :: String -> [String]
-wslRunningDistros = map fst . filter ((== "running") . snd) . wslDistroStates
 
 wslInstallArgs :: String -> String -> [String]
 wslInstallArgs distro vhdSize =

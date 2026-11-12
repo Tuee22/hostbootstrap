@@ -26,9 +26,13 @@ In order, a run now:
    effect; a lease that *did* bind one is reopened through
    'HostBootstrap.Lifecycle.Mode.withAbandonedHarnessRun', which yields the old
    snapshot, the retained lease and mode, a @destroy@-only root, and a recovered
-   close authority on a fresh broker generation. Only the branch whose records
-   prove it acquired nothing is resolved; every other branch names the exact run
-   that needs operator recovery, and no new run starts;
+   close authority on a fresh broker generation. The reopened run is resolved
+   by whichever branch its records prove: a pre-effect close, finalization of a
+   persisted @Closing@ epoch, discard of an incomplete migration, activation of
+   a completed migration, or teardown of its recovered forest through the
+   'RecoveredResourceExecutor'. Only the executor's refusal or an unresolved
+   ownership error names the exact run that needs operator recovery and stops a
+   new run from starting;
 2. takes the project-wide Harness mode and this run's lease in one protected
    compare-and-swap, so a Production opener cannot interleave between the
    safety recheck and ownership;
@@ -57,7 +61,7 @@ In order, a run now:
 Both owned objects are also what the __sweep__ resolves. An abandoned unbound
 run's data root and generated config are reclaimed from their durable origin
 records before its lease closes; an abandoned __bound__ run is reopened,
-classified, and — when its records prove it acquired nothing — closed under the
+classified, and resolved through the branch its records prove under the
 reopening's own close authority, where it previously could only be named in a
 refusal an operator had to resolve by deleting protected records by hand.
 -}
@@ -77,6 +81,7 @@ module HostBootstrap.Harness.Ownership (
 
 import Control.Exception.Safe (generalBracket, throwIO)
 import Data.ByteString (ByteString)
+import Data.Either (isLeft)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -232,9 +237,11 @@ ownedHarnessConfigPath :: OwnedHarnessRoot projectId -> FilePath
 ownedHarnessConfigPath (OwnedHarnessRoot _ _ path _ _) = path
 
 {- | Install this run's generated config under all four § EE clauses. An object
-already at the path is refused before any mutation — that refusal is the
-authoritative "a production config already exists" one, and it runs here, inside
-the ownership bracket and therefore /after/ the abandoned-run sweep.
+already at the path is refused before any mutation. That refusal is the
+acquisition-time one: 'HostBootstrap.Lifecycle.Mode.harnessPreconditions' is the
+authoritative recheck inside the mode compare-and-swap, and this refusal closes
+the window after it, inside the ownership bracket and therefore /after/ the
+abandoned-run sweep.
 -}
 acquireOwnedRunConfig ::
     OwnedHarnessRoot projectId ->
@@ -418,11 +425,10 @@ ownProjectRun recoveryExecutor project storeRoot siblingDirectory dataParent saf
                         store
                         project
                         ProjectUp
-                        -- The suite's own probe has just refused any live
-                        -- production cluster after recovery; this half rechecks
-                        -- the sibling config inside the same entry that takes
-                        -- the mode.
-                        (harnessPreconditions project siblingDirectory (pure False))
+                        -- Both halves are re-run inside the same entry that takes the
+                        -- mode: the sibling config, and the suite's own safety probe,
+                        -- so a production cluster that appears after recovery refuses.
+                        (harnessPreconditions project siblingDirectory (isLeft <$> safety))
                         proof
                         (runOwned store)
                 pure (either (Left . modeRefused) Right outcome)

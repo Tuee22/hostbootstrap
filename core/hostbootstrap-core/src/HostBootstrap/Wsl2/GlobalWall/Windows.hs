@@ -26,8 +26,10 @@ where
 
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Wsl2.GlobalWall.Host
+import HostBootstrap.Wsl2.GlobalWall.Location (openHostWallLocation)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import qualified System.FilePath.Windows as WindowsPath
 
 -- | Whether this host is the one the per-user WSL wall exists on.
 windowsGlobalWallSupported :: Bool
@@ -73,11 +75,19 @@ withCurrentUserWall use
                             "USERPROFILE is not set, so this user has no .wslconfig target"
                         )
                     )
-            Just home -> do
-                opened <-
-                    openHostWallLocation
-                        (home </> ".wslconfig")
-                        (home </> ".hostbootstrap" </> "global-wall")
-                case opened of
-                    Left err -> pure (Left err)
-                    Right location -> use location
+            Just home
+                | null home || not (WindowsPath.isAbsolute home) ->
+                    pure
+                        ( Left
+                            ( HostWallUnsupported
+                                "USERPROFILE must be a non-empty absolute Windows path"
+                            )
+                        )
+                | otherwise -> do
+                    opened <-
+                        openHostWallLocation HostWallJournalFailure
+                            (home </> ".wslconfig")
+                            (home </> ".hostbootstrap" </> "global-wall")
+                    case opened of
+                        Left err -> pure (Left err)
+                        Right location -> use location

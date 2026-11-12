@@ -9,8 +9,9 @@ description:
   `wuss`). Listing them as one tiny executable's build-depends lets the base build
   prebuild them into the shared Cabal store.
   .
-  Note: `http-client` / `http-client-tls` are NOT here — they are pulled into the
-  core closure by `dhall` (remote imports), so the core manifest already lists them.
+  Note: `http-client` / `http-client-tls` are NOT here — they reach the core
+  closure transitively through `dhall` (remote imports), and the core manifest
+  does not list them either.
   .
   Consumers do not import this package or a generated freeze. The base, core,
   and shared web-build cache inputs live in the sibling

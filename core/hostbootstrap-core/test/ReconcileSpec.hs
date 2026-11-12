@@ -1,14 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE TypeApplications #-}
 
 module ReconcileSpec (tests) where
 
-import Control.Monad (forM)
+import qualified TestDependency
+import Control.Monad (forM, forM_)
 import Data.Bits (shiftR)
 import qualified Data.ByteString as ByteString
+import Data.Char (isAlphaNum, isLower, isUpper)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (find)
+import Data.List (find, nub, sort)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -16,16 +17,25 @@ import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TextIO
 import Data.Word (Word64)
 import qualified Fixture
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
-import HostBootstrap.Config.Schema (verifiedConfigDigest, withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Config.Vocab as Vocab
-import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.Incus (IncusVM (..))
+import qualified HostBootstrap.Readiness as Readiness
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
 import qualified HostBootstrap.Lifecycle.Execution as Execution
-import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore (
+    carriedResourceGeneration,
+    carriedResourceKey,
+    carriedResourceObservationVersion,
+    carriedResourceOwnershipOperation,
+    carriedResourceSettlement,
+    newResourceCarrierCore,
+    newStepRuntimeCore,
+    readCarriedResources,
+ )
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, preparedGateJournalVersion)
 import HostBootstrap.Lift (
     ConfigDelivery (..),
     ContainerLift (..),
@@ -37,6 +47,7 @@ import HostBootstrap.Lift (
 import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.ProjectPlan (
     PlanError,
+    PlannedStepObservation,
     ProjectPlan,
     forward,
     plannedEdgeDependencyKey,
@@ -44,11 +55,16 @@ import HostBootstrap.ProjectPlan (
     plannedStepDependencyOperations,
     plannedStepFrameId,
     plannedStepIdentity,
+    plannedStepObservationDetail,
+    plannedStepObservationSucceeded,
     plannedStepOperationKey,
     plannedStepProjectedOperationKeys,
     renderSnapshot,
+    runPlannedStep,
     stablePlanSnapshotConfigDigest,
     stablePlanSnapshotDigest,
+    stablePlanSnapshotRoot,
+    stablePlanSnapshotSpecDigest,
     withChartWorkloadResource,
     withPlannedEdge,
     withPlannedResourceOfKind,
@@ -63,9 +79,10 @@ import HostBootstrap.Substrate (
 import PrepareFixture (gateFor, gateForValues)
 import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Unsafe.Coerce (unsafeCoerce)
 
 tests :: TestTree
 tests =
@@ -73,51 +90,43 @@ tests =
         "ReconcileSpec"
         [ testGroup
             "canonical lifecycle plan snapshot"
-            [ testCase "is deterministic for the same closed plan vocabulary" $ do
-                first <- canonicalSummary "config-a" canonicalFixturePlan
-                second <- canonicalSummary "config-a" canonicalFixturePlan
-                first @?= second
-            , testCase "uses the reserved non-absolute root for compatibility plans" $
-                withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \codec ->
-                    withLifecyclePlan codec canonicalFixturePlan $ \lifecycle ->
-                        canonicalPlanSnapshotRoot (lifecyclePlanSnapshot lifecycle)
-                            @?= "<hostbootstrap:unrooted-lifecycle-plan>"
-            , testCase "length framing separates delimiter-shaped field boundaries" $ do
-                first <- canonicalSummary "config-a" (singleStepPlan "a|b:c" "frame|one" "label:two")
-                second <- canonicalSummary "config-a" (singleStepPlan "a" "frame|one" "b:c|label:two")
-                assertBool "distinct framed labels collapsed" (first /= second)
-            , testCase "step order and its derived dependency topology are digest material" $ do
-                ordered <- canonicalSummary "config-a" orderedCanonicalPlan
-                reordered <- canonicalSummary "config-a" reorderedCanonicalPlan
+            [ testCase "step order and its derived dependency topology are digest material" $ do
+                (ordered, reordered) <- canonicalPairSummaries orderedCanonicalPlan reorderedCanonicalPlan
                 assertBool
                     "a reordered plan retained the same snapshot"
                     (ordered /= reordered)
             , testCase "provider and explicit implementation/adapter revisions change the snapshot" $ do
-                ubuntu <- canonicalSummary "config-a" (providerCanonicalPlan "images:ubuntu/24.04")
-                debian <- canonicalSummary "config-a" (providerCanonicalPlan "images:debian/13")
+                (ubuntu, debian) <-
+                    canonicalPairSummaries
+                        (providerCanonicalPlan "images:ubuntu/24.04")
+                        (providerCanonicalPlan "images:debian/13")
                 assertBool
                     "an Incus image substitution retained the same snapshot"
                     (ubuntu /= debian)
-                defaultImplementation <- canonicalSummary "config-a" defaultReversePlan
-                revisedImplementation <- canonicalSummary "config-a" revisedImplementationPlan
+                (defaultImplementation, revisedImplementation) <- canonicalPairSummaries defaultReversePlan revisedImplementationPlan
                 assertBool
                     "a forward implementation revision retained the same snapshot"
                     (defaultImplementation /= revisedImplementation)
-                defaultAdapter <- canonicalSummary "config-a" declaredReversePlan
-                revisedAdapter <- canonicalSummary "config-a" revisedReverseAdapterPlan
+                (defaultAdapter, revisedAdapter) <- canonicalPairSummaries declaredReversePlan revisedReverseAdapterPlan
                 assertBool
                     "a reverse-adapter revision retained the same snapshot"
                     (defaultAdapter /= revisedAdapter)
             , testCase "the exact admitted config digest is substitution-sensitive" $ do
-                first <- canonicalSummary "config-a" canonicalFixturePlan
-                second <- canonicalSummary "config-b" canonicalFixturePlan
+                (first, second) <-
+                    Fixture.withFixtureCanonicalSnapshotVariants
+                        canonicalFixturePlan
+                        canonicalFixturePlan
+                        (\config -> config{Fixture.dockerfile = "changed.Dockerfile"})
+                        (\base _ changed -> pure (canonicalSnapshotSummary base, canonicalSnapshotSummary changed))
                 assertBool
                     "a config digest substitution retained the same snapshot"
                     (first /= second)
             , testCase "child config contributes only its digest, never payload bytes" $ do
                 let secret = "fixture-secret-payload"
-                first <- canonicalSummary "config-a" (containerCanonicalPlan secret)
-                second <- canonicalSummary "config-a" (containerCanonicalPlan "replacement-payload")
+                (first, second) <-
+                    canonicalPairSummaries
+                        (containerCanonicalPlan secret)
+                        (containerCanonicalPlan "replacement-payload")
                 let firstBytes = fst first
                 assertBool
                     "the raw child config entered the canonical snapshot"
@@ -125,8 +134,10 @@ tests =
                 assertBool "a child config substitution retained the same snapshot bytes" (fst first /= fst second)
                 assertBool "a child config substitution retained the same snapshot digest" (snd first /= snd second)
             , testCase "delivery destination changes canonical bytes and digest" $ do
-                first <- canonicalSummary "config-a" (containerCanonicalPlanAt "/app/config.dhall" "fixture-secret-payload")
-                second <- canonicalSummary "config-a" (containerCanonicalPlanAt "/other/config.dhall" "fixture-secret-payload")
+                (first, second) <-
+                    canonicalPairSummaries
+                        (containerCanonicalPlanAt "/app/config.dhall" "fixture-secret-payload")
+                        (containerCanonicalPlanAt "/other/config.dhall" "fixture-secret-payload")
                 assertBool "a delivery destination substitution retained the same snapshot bytes" (fst first /= fst second)
                 assertBool "a delivery destination substitution retained the same snapshot digest" (snd first /= snd second)
             , testCase "delivery binding is exactly the two-field filesystem projection" $
@@ -142,8 +153,18 @@ tests =
                 assertExactDescriptorProduction
             , testCase "node resource projection admits own and prefix resources only" $
                 assertExactNodeResources
+            , testCase "another operation's descriptor in the same plan refuses before the callback" $
+                assertSamePlanDescriptorOperationBoundary
+            , testCase "another frame's descriptor with the same operation refuses before the callback" $
+                assertDescriptorFrameBoundary
             , testCase "owned settlement carries the exact managed receipt under the same plan" $
                 assertExactResourceCarrier
+            , testCase "a dependent node cannot replace its dependency's carried settlement" $
+                assertDependencySettlementBoundary
+            , testCase "a declared projected alias carries canonical settlement in its declaring frame" $
+                assertProjectedAliasSettlement
+            , testCase "a typed carried-resource opener refuses a later resource outside the node prefix" $
+                assertTypedCarrierPrefixBoundary
             , testCase "every opaque reconciliation and execution index has a nominal role" $
                 assertNominalRoleInventory
             , testCase "the neutral package has one producer and introduces no Plan import cycle" $
@@ -151,7 +172,7 @@ tests =
             ]
         , testCase "observed resources require stable positive identity versions" $ do
             observed <-
-                withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+                withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned ->
                     pure $
                         withObservedPlannedResource plan planned 0 0 (const ())
             observed
@@ -159,13 +180,21 @@ tests =
                     (Failure (FailureDetail "observe resource" "generation must be positive" DoNotRetry))
         , testCase "positive generations still require a positive observation version" $ do
             observed <-
-                withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+                withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned ->
                     pure (withObservedPlannedResource plan planned 1 0 (const ()))
             observed
                 @?= Left
                     (Failure (FailureDetail "observe resource" "observation version must be positive" DoNotRetry))
         , testCase "chart preparation seals exactly its ready cluster dependency" $
             chartPreparationSummary True False >>= (@?= Right ("core:deploy-chart", ["core:deploy-kind"]))
+        , testCase "a GPU-plugin readiness probe cannot satisfy a cluster-API edge" $ do
+            calls <- newIORef (0 :: Int)
+            outcome <- chartPreparationWithTaggedProbe (Just ProbeKernel.GpuPluginKind)
+                (modifyIORef' calls (+ 1) >> pure (Right 8)) False (\_ _ -> ())
+            case outcome of
+                Left (Conflict _) -> pure ()
+                other -> assertFailure ("expected readiness-kind conflict, got " ++ show other)
+            readIORef calls >>= (@?= 0)
         , testCase "chart preparation refuses a failed readiness reprobe" $ do
             outcome <- chartPreparationSummary False False
             case outcome of
@@ -184,8 +213,20 @@ tests =
             adoptionSummary >>= (@?= Right (Changed Adopted))
         , testGroup "backend observations and dispositions" backendObservationCases
         , testGroup "adoption origin identity" adoptionOriginCases
-        , testCase "journal verification rejects another plan digest" $
-            journalMismatch >>= (@?= True)
+        , testCase "journal verification rejects another plan digest" $ do
+            (digest, outcome) <- journalMismatch
+            outcome
+                @?= Left
+                    ( Conflict
+                        ( ConflictDetail
+                            "core:deploy-kind"
+                            ("plan digest=" <> digest)
+                            "plan digest=other"
+                            "load the matching protected journal record"
+                        )
+                    )
+        , testCase "journal verification rejects another frame in the same plan" $
+            assertJournalFrameMismatch
         , testCase "only a committed verified record can prove Unchanged" $
             unchangedSummary >>= (@?= Right Unchanged)
         , testGroup "prior commit phases" priorCommitCases
@@ -216,9 +257,15 @@ tests =
                 >>= (@?= Right ("core:copy-source", "core:deploy-vm"))
         , testCase "operation preparation rejects an omitted plan dependency" $ do
             outcome <- missingDependencyPreparation
-            case outcome of
-                Left (Conflict _) -> pure ()
-                other -> fail ("expected dependency conflict, got " ++ show other)
+            outcome
+                @?= Left
+                    ( Failure
+                        ( FailureDetail
+                            "seal operation preconditions"
+                            "no managed resource for plan dependency core:deploy-vm of core:copy-source"
+                            ReprobeBeforeRetry
+                        )
+                    )
         , testCase "a gate recorded for another operation cannot prepare this one" $ do
             outcome <- createdSummaryWithGate (\digest -> gateFor digest "core:deploy-vm")
             case outcome of
@@ -237,6 +284,9 @@ tests =
         , testCase "the traversal seals the resource-bearing edge set it derived" $
             sealedCopySourceKeys >>= (@?= Right ["core:deploy-vm"])
         , testGroup "explicit zero-dependency preparation" zeroDependencyPreparationCases
+        , testGroup "fresh snapshot preparation" freshSnapshotPreparationCases
+        , testCase "canonical preparation has exactly the fresh and pure zero-edge entry families" $
+            assertCanonicalPreparationSurface
         , testCase "journal graphs admit only observed success into commit" $ do
             legalJournalTransition ObservedManaged Committed @?= True
             legalJournalTransition ReservationAbsent Committed @?= False
@@ -247,7 +297,7 @@ tests =
             legalJournalTransition PhaseObservedTo PhaseCommitted @?= True
             legalJournalTransition PhaseObservedFrom PhaseCommitted @?= False
         , testCase "journal advancement increments the durable version and refuses illegal edges" $ do
-            let initial = journalRecord "spec" IntentRecorded
+            let initial = journalRecord "spec" "metal" IntentRecorded
             fmap persistedRecordVersion (advancePersistedJournalRecord initial ReservationOutcomeUnknown)
                 @?= Right 5
             case advancePersistedJournalRecord initial Committed of
@@ -258,11 +308,11 @@ tests =
 assertExactDescriptorContinuity :: IO ()
 assertExactDescriptorContinuity =
     Fixture.withFixtureProjectPlan exactExecutionPlan $ \plan -> do
-        carrier <- Execution.newResourceCarrier
+        carrier <- ExecutionCore.newResourceCarrierCore
         let snapshot = renderSnapshot plan
         executions <-
             forM (NonEmpty.toList (forward plan)) $ \node -> do
-                runtime <- Execution.newStepRuntime carrier
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
                 pure (node, stepExecutionFor plan exactExecutionHostConfig runtime node)
         mapM_
             ( \(node, execution) ->
@@ -282,27 +332,70 @@ assertExactDescriptorContinuity =
             executions
 
 assertPlanExecutionPackageBoundary :: IO ()
-assertPlanExecutionPackageBoundary = do
-    found <- getCurrentDirectory >>= findRepoRoot
-    root <- maybe (assertFailure "repository root not found") pure found
-    let source = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap"
-    execution <- TextIO.readFile (source </> "Lifecycle" </> "Execution" </> "Internal.hs")
-    reconcile <- TextIO.readFile (source </> "Reconcile.hs")
-    child <- TextIO.readFile (source </> "Command" </> "Child.hs")
-    assertBool "Execution.Internal imports the plan kernel" (not ("import HostBootstrap.Lifecycle.Plan" `Text.isInfixOf` execution))
-    assertBool "the package constructor is absent from recursive command code" (not ("mintPlanExecutionPackage" `Text.isInfixOf` child))
-    assertBool "Reconcile is not the package producer" ("mintPlanExecutionPackage" `Text.isInfixOf` reconcile)
-    assertBool "the recursive forward frame uses its plan-indexed opener" ("withOpenedFrameExecutorForPlanKernel" `Text.isInfixOf` child)
-    assertBool "the recursive child retains the exact planned node" ("(ExecutionNode, Step, PlannedStep scope planId configId (cfg scope))" `Text.isInfixOf` child)
-    assertBool "the recursive child uses the sole execution producer" ("stepExecutionFor plan host stepRuntime planned" `Text.isInfixOf` child)
+assertPlanExecutionPackageBoundary =
+    SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+        description <- SourceGuard.readPackageDescription
+        sources <- SourceGuard.mainImplementationSources packageRoot description
+        let modules = [(name, body) | (name, _, body) <- sources]
+            planModule = "HostBootstrap.Lifecycle.Plan"
+            internalModule = "HostBootstrap.Lifecycle.Execution.Internal"
+            reconcileModule = "HostBootstrap.Reconcile"
+            expectedSites = [(internalModule, "mintPlanExecutionPackage", 1), (reconcileModule, "stepExecutionFor", 1)]
+            internalFixture = "module HostBootstrap.Lifecycle.Execution.Internal where\nmintPlanExecutionPackage = Package\n"
+            reconcileFixture = "module HostBootstrap.Reconcile where\nimport HostBootstrap.Lifecycle.Execution.Internal (mintPlanExecutionPackage)\nstepExecutionFor = mintPlanExecutionPackage\n"
+        execution <- maybe (assertFailure "Execution.Internal source missing") pure (lookup internalModule modules)
+        child <- maybe (assertFailure "Command.Child source missing") pure (lookup "HostBootstrap.Command.Child" modules)
+        assertBool "Execution.Internal imports the plan kernel" (not (SourceGuard.importsModule planModule execution))
+        sites <- either assertFailure pure (executionPackageSites modules)
+        sites @?= expectedSites
+        forM_
+            [ "import qualified HostBootstrap.Lifecycle.Plan as Plan"
+            , "import {-# SOURCE #-} qualified HostBootstrap.Lifecycle.Plan as Plan"
+            ] $ \actualImport ->
+                SourceGuard.importsModule planModule actualImport @?= True
+        SourceGuard.importsModule planModule "-- import HostBootstrap.Lifecycle.Plan\ntext = \"import HostBootstrap.Lifecycle.Plan\"" @?= False
+        executionPackageSites [(internalModule, internalFixture), (reconcileModule, reconcileFixture)] @?= Right expectedSites
+        executionPackageSites [(internalModule, internalFixture), (reconcileModule, reconcileFixture <> "-- mintPlanExecutionPackage\ntext = \"mintPlanExecutionPackage\"\n")]
+            @?= Right expectedSites
+        executionPackageSites [(reconcileModule, "module HostBootstrap.Reconcile (mintPlanExecutionPackage) where\nimport HostBootstrap.Lifecycle.Execution.Internal (mintPlanExecutionPackage)\nstepExecutionFor = ()\n")]
+            @?= Right []
+        executionPackageSites [("Extra", "module Extra where\nimport qualified HostBootstrap.Lifecycle.Execution.Internal as Execution\nextra = Execution.mintPlanExecutionPackage\n")]
+            @?= Right [("Extra", "extra", 1)]
+        executionPackageSites [("Extra", "module Extra where\nextra True = ()\nextra False = mintPlanExecutionPackage\n")]
+            @?= Right [("Extra", "extra", 1)]
+        assertBool "the recursive forward frame uses its plan-indexed opener" ("withOpenedFrameExecutorForPlanKernel" `elem` SourceGuard.haskellTokens child)
+        SourceGuard.countHaskellTokenSequence
+            (SourceGuard.haskellTokens "(ExecutionNode, Step, PlannedStep scope planId configId (cfg scope))") child @?= 1
+        SourceGuard.countHaskellTokenSequence
+            (SourceGuard.haskellTokens "stepExecutionFor plan host stepRuntime planned") child @?= 1
+
+-- DEVELOPMENT_PLAN/rationale.md#reconciliation-guards-inspect-actual-producers
+-- Imports, exports and signatures cannot stand in for a real producer body.
+executionPackageSites :: [(String, String)] -> Either String [(String, String, Int)]
+executionPackageSites sources = sort . concat <$> traverse moduleSites sources
+  where
+    moduleSites (_, source)
+        | SourceGuard.countHaskellIdentifier "mintPlanExecutionPackage" source == 0 = Right []
+    moduleSites (moduleName, source) = do
+        names <- SourceGuard.haskellDefinitionNames source
+        concat <$> traverse (bindingSites moduleName source) (filter valueName names)
+    bindingSites moduleName source name = do
+        clauses <- case SourceGuard.haskellDefinitionClauseTokens name source of
+            Right tokens -> Right tokens
+            Left missing | missing == "value definition missing: " <> name -> Right []
+            Left failure -> Left failure
+        let occurrences = length (filter (== "mintPlanExecutionPackage") (concat clauses))
+        pure [(moduleName, name, occurrences) | occurrences > 0]
+    valueName (first : _) = isLower first || first == '_'
+    valueName [] = False
 
 assertExactDescriptorOperations :: IO ()
 assertExactDescriptorOperations =
     Fixture.withFixtureProjectPlan exactExecutionPlan $ \plan -> do
-        carrier <- Execution.newResourceCarrier
+        carrier <- ExecutionCore.newResourceCarrierCore
         executions <-
             forM (NonEmpty.toList (forward plan)) $ \node -> do
-                runtime <- Execution.newStepRuntime carrier
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
                 pure (node, stepExecutionFor plan exactExecutionHostConfig runtime node)
         mapM_
             ( \(node, execution) ->
@@ -322,20 +415,136 @@ assertExactDescriptorOperations =
 assertExactDescriptorProduction :: IO ()
 assertExactDescriptorProduction =
     Fixture.withFixtureProjectPlan exactExecutionPlan $ \plan -> do
-        carrier <- Execution.newResourceCarrier
+        carrier <- ExecutionCore.newResourceCarrierCore
+        let snapshot = renderSnapshot plan
         executions <-
             forM (NonEmpty.toList (forward plan)) $ \node -> do
-                runtime <- Execution.newStepRuntime carrier
-                pure (stepExecutionFor plan exactExecutionHostConfig runtime node)
-        length executions @?= NonEmpty.length (forward plan)
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
+                let execution = stepExecutionFor plan exactExecutionHostConfig runtime node
+                pure
+                    ( Execution.stepExecutionNodeIdentity execution
+                    , Execution.stepExecutionOperationKey execution
+                    , Execution.stepExecutionFrame execution
+                    , Execution.stepExecutionDependencyKeys execution
+                    , Execution.stepExecutionProjectedOperations execution
+                    , Execution.stepExecutionPlanDigest execution
+                    , Execution.stepExecutionSpecDigest execution
+                    , Execution.stepExecutionConfigDigest execution
+                    )
+        executions
+            @?= [ ( Text.pack (show (plannedStepIdentity node))
+                  , Text.pack (operationKeyText (plannedStepOperationKey node))
+                  , plannedStepFrameId node
+                  , map (Text.pack . operationKeyText . fst) (plannedStepDependencyOperations node)
+                  , map (Text.pack . operationKeyText) (plannedStepProjectedOperationKeys node)
+                  , stablePlanSnapshotDigest snapshot
+                  , stablePlanSnapshotSpecDigest snapshot
+                  , stablePlanSnapshotConfigDigest snapshot
+                  )
+                | node <- NonEmpty.toList (forward plan)
+                ]
+
+assertSamePlanDescriptorOperationBoundary :: IO ()
+assertSamePlanDescriptorOperationBoundary = do
+    firstCallbacks <- newIORef (0 :: Int)
+    secondCallbacks <- newIORef (0 :: Int)
+    let node name callbacks =
+            projectStep
+                (either error id (projectStepId name))
+                PreserveOnReverse
+                name
+                exactExecutionFrame
+                (\_ -> modifyIORef' callbacks (+ 1) >> pure StepChanged)
+        steps = planFrom [node "node-a" firstCallbacks, node "node-b" secondCallbacks]
+    Fixture.withFixtureProjectPlan steps $ \plan ->
+        case NonEmpty.toList (forward plan) of
+            [first, second] -> do
+                carrier <- ExecutionCore.newResourceCarrierCore
+                firstRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                secondRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                let firstExecution = stepExecutionFor plan exactExecutionHostConfig firstRuntime first
+                    secondExecution = stepExecutionFor plan exactExecutionHostConfig secondRuntime second
+                (Text.pack (operationKeyText (plannedStepOperationKey first)), plannedStepFrameId first)
+                    @?= ("project:node-a", "host")
+                (Execution.stepExecutionOperationKey secondExecution, Execution.stepExecutionFrame secondExecution)
+                    @?= ("project:node-b", "host")
+                refused <- runPlannedStep first secondExecution
+                assertPlannedObservation
+                    (StepRefused "planned step project:node-a in frame host cannot run descriptor project:node-b in frame host")
+                    refused
+                readIORef firstCallbacks >>= (@?= 0)
+                readIORef secondCallbacks >>= (@?= 0)
+                runPlannedStep first firstExecution >>= assertPlannedObservation StepChanged
+                readIORef firstCallbacks >>= (@?= 1)
+                readIORef secondCallbacks >>= (@?= 0)
+                runPlannedStep second secondExecution >>= assertPlannedObservation StepChanged
+                readIORef firstCallbacks >>= (@?= 1)
+                readIORef secondCallbacks >>= (@?= 1)
+            nodes -> assertFailure ("expected two genuine same-frame nodes, got " <> show (length nodes))
+
+assertDescriptorFrameBoundary :: IO ()
+assertDescriptorFrameBoundary = do
+    firstCallbacks <- newIORef (0 :: Int)
+    secondCallbacks <- newIORef (0 :: Int)
+    let graph frame callbacks =
+            planFrom
+                [ contextInitStep
+                    "frame-local context"
+                    (StepFrame frame "Host")
+                    (\_ -> modifyIORef' callbacks (+ 1) >> pure StepChanged)
+                ]
+    Fixture.withFixtureProjectPlanPair
+        (graph "first-frame" firstCallbacks)
+        (graph "second-frame" secondCallbacks) $ \firstPlan secondPlan ->
+            case (NonEmpty.toList (forward firstPlan), NonEmpty.toList (forward secondPlan)) of
+                ([first], [second]) -> do
+                    let firstSnapshot = renderSnapshot firstPlan
+                        secondSnapshot = renderSnapshot secondPlan
+                    stablePlanSnapshotRoot firstSnapshot @?= stablePlanSnapshotRoot secondSnapshot
+                    stablePlanSnapshotSpecDigest firstSnapshot @?= stablePlanSnapshotSpecDigest secondSnapshot
+                    stablePlanSnapshotConfigDigest firstSnapshot @?= stablePlanSnapshotConfigDigest secondSnapshot
+                    firstCarrier <- ExecutionCore.newResourceCarrierCore
+                    secondCarrier <- ExecutionCore.newResourceCarrierCore
+                    firstRuntime <- ExecutionCore.newStepRuntimeCore firstCarrier
+                    secondRuntime <- ExecutionCore.newStepRuntimeCore secondCarrier
+                    let firstExecution = stepExecutionFor firstPlan exactExecutionHostConfig firstRuntime first
+                        secondExecution = stepExecutionFor secondPlan exactExecutionHostConfig secondRuntime second
+                    (Text.pack (operationKeyText (plannedStepOperationKey first)), plannedStepFrameId first)
+                        @?= ("core:context-init", "first-frame")
+                    (Execution.stepExecutionOperationKey secondExecution, Execution.stepExecutionFrame secondExecution)
+                        @?= ("core:context-init", "second-frame")
+                    refused <- runPlannedStep first (alignDescriptorPlanForRefusal secondExecution)
+                    assertPlannedObservation
+                        (StepRefused "planned step core:context-init in frame first-frame cannot run descriptor core:context-init in frame second-frame")
+                        refused
+                    readIORef firstCallbacks >>= (@?= 0)
+                    readIORef secondCallbacks >>= (@?= 0)
+                    runPlannedStep first firstExecution >>= assertPlannedObservation StepChanged
+                    readIORef firstCallbacks >>= (@?= 1)
+                    readIORef secondCallbacks >>= (@?= 0)
+                    runPlannedStep second secondExecution >>= assertPlannedObservation StepChanged
+                    readIORef firstCallbacks >>= (@?= 1)
+                    readIORef secondCallbacks >>= (@?= 1)
+                (first, second) -> assertFailure ("expected singleton admitted plans, got " <> show (length first, length second))
+
+-- Only this defensive negative substitutes a plan brand; the genuine scope is retained.
+alignDescriptorPlanForRefusal ::
+    Execution.StepExecution scope sourcePlanId ->
+    Execution.StepExecution scope targetPlanId
+alignDescriptorPlanForRefusal = unsafeCoerce
+
+assertPlannedObservation :: StepObservation -> PlannedStepObservation scope planId configId -> IO ()
+assertPlannedObservation expected observed = do
+    plannedStepObservationSucceeded observed @?= observationSucceeded expected
+    plannedStepObservationDetail observed @?= observationDetail expected
 
 assertExactNodeResources :: IO ()
 assertExactNodeResources =
     Fixture.withFixtureProjectPlan exactExecutionPlan $ \plan -> do
-        carrier <- Execution.newResourceCarrier
+        carrier <- ExecutionCore.newResourceCarrierCore
         executions <-
             forM (NonEmpty.toList (forward plan)) $ \node -> do
-                runtime <- Execution.newStepRuntime carrier
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
                 pure (stepExecutionFor plan exactExecutionHostConfig runtime node)
         case executions of
             [providerExecution, _shareExecution, clusterExecution] -> do
@@ -366,13 +575,77 @@ assertExactNodeResources =
                     other -> fail ("expected an out-of-prefix refusal, got " ++ show other)
             other -> fail ("expected three exact execution descriptors, got " ++ show (length other))
 
+assertTypedCarrierPrefixBoundary :: IO ()
+assertTypedCarrierPrefixBoundary =
+    Fixture.withFixtureProjectPlan fixturePlan $ \plan ->
+        case NonEmpty.toList (forward plan) of
+            [earlyNode, clusterNode] -> do
+                carrier <- ExecutionCore.newResourceCarrierCore
+                earlyRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                clusterRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                let earlyExecution = stepExecutionFor plan exactExecutionHostConfig earlyRuntime earlyNode
+                    clusterExecution = stepExecutionFor plan exactExecutionHostConfig clusterRuntime clusterNode
+                    operationKey = Text.pack (operationKeyText (plannedStepOperationKey clusterNode))
+                gate <- gateFor (Execution.stepExecutionPlanDigest clusterExecution) operationKey
+                -- Resolve through the plan: narrowing through the early node
+                -- would refuse before the carried-resource opener under test.
+                case withPlannedResourceOfKind plan ClusterResourceKind (plannedStepOperationKey clusterNode) $ \planned -> do
+                    let acquireAndCarry =
+                            joinReconcile $
+                                withNodeObservedResource clusterExecution planned 5 7 $ \observed -> do
+                                    descriptor <- plannedNodeOperation clusterExecution planned observed "cluster:create"
+                                    joinReconcile $
+                                        withPreparedZeroDependencyOperation descriptor gate $ \prepared sealed -> do
+                                            reconciled <- completeReconcile observed prepared sealed (BackendCreated 5)
+                                            withReconcileResult
+                                                reconciled
+                                                ( \managed receipt _ ->
+                                                    Right (carryManagedResourceSettlement clusterExecution managed receipt "provisioned" "cluster-adapter-1")
+                                                )
+                                                (\_ _ -> Left (Failure (FailureDetail "typed carrier fixture" "unexpected foreign resource" DoNotRetry)))
+                    carry <- either (assertFailure . show) pure acquireAndCarry
+                    carry >>= either (assertFailure . show) pure
+                    Execution.carriedResourceKeys carrier >>= (@?= [operationKey])
+                    owned <-
+                        withCarriedManagedResourceOfKind clusterExecution planned $ \handle ->
+                            (resourceHandleKey handle, resourceHandleGeneration handle, resourceHandleObservationVersion handle)
+                    owned @?= Right (operationKey, 5, 7)
+                    callbacks <- newIORef (0 :: Int)
+                    attempted <-
+                        withCarriedManagedResourceOfKind earlyExecution planned $ \_ ->
+                            modifyIORef' callbacks (+ 1)
+                    -- Execute a mistakenly returned IO action before checking it.
+                    executed <- traverse id attempted
+                    callbackCount <- readIORef callbacks
+                    (executed, callbackCount)
+                        @?= ( Left
+                                ( Conflict
+                                    ( ConflictDetail
+                                        operationKey
+                                        "this node's own operation or a member of its plan dependency prefix"
+                                        "an operation this node neither owns nor depends on"
+                                        "declare the dependency in the plan before adopting its handle"
+                                    )
+                                )
+                            , 0
+                            ) of
+                    Left failure -> assertFailure (show failure)
+                    Right action -> action
+            nodes -> assertFailure ("expected early and cluster nodes, got " ++ show (length nodes))
+  where
+    fixturePlan =
+        planFrom
+            [ projectStep (either error id (projectStepId "early")) PreserveOnReverse "early" exactExecutionFrame (const (pure StepChanged))
+            , deployKindStep "cluster" exactExecutionFrame (const (pure StepChanged))
+            ]
+
 assertExactResourceCarrier :: IO ()
 assertExactResourceCarrier =
     Fixture.withFixtureProjectPlan testPlan $ \plan ->
         case NonEmpty.toList (forward plan) of
             [node] -> do
-                carrier <- Execution.newResourceCarrier
-                runtime <- Execution.newStepRuntime carrier
+                carrier <- ExecutionCore.newResourceCarrierCore
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
                 let execution = stepExecutionFor plan exactExecutionHostConfig runtime node
                     operationKey = Text.pack (operationKeyText (plannedStepOperationKey node))
                 gate <- gateFor (Execution.stepExecutionPlanDigest execution) operationKey
@@ -382,9 +655,8 @@ assertExactResourceCarrier =
                                 joinReconcile $
                                     withNodeObservedResource execution planned 5 7 $ \observed -> do
                                         descriptor <- plannedNodeOperation execution planned observed "cluster:create"
-                                        preconditions <- zeroDependencyPreconditions descriptor
                                         joinReconcile $
-                                            withPreparedOperation descriptor preconditions gate $ \prepared sealed -> do
+                                            withPreparedZeroDependencyOperation descriptor gate $ \prepared sealed -> do
                                                 reconciled <-
                                                     completeReconcile observed prepared sealed (BackendCreated 5)
                                                 withReconcileResult
@@ -433,8 +705,8 @@ assertExactResourceCarrier =
                 case outside of
                     Left (Conflict _) -> pure ()
                     other -> assertFailure ("expected foreign carried ownership refusal, got " ++ show other)
-                freshCarrier <- Execution.newResourceCarrier
-                freshRuntime <- Execution.newStepRuntime freshCarrier
+                freshCarrier <- ExecutionCore.newResourceCarrierCore
+                freshRuntime <- ExecutionCore.newStepRuntimeCore freshCarrier
                 let freshExecution = stepExecutionFor plan exactExecutionHostConfig freshRuntime node
                 missing <- withCarriedManagedResourceReceipt freshExecution operationKey (\_ _ -> ())
                 case missing of
@@ -442,8 +714,202 @@ assertExactResourceCarrier =
                     other -> assertFailure ("expected fresh-carrier ownership refusal, got " ++ show other)
             nodes -> fail ("expected one exact carrier node, got " ++ show (length nodes))
 
+assertDependencySettlementBoundary :: IO ()
+assertDependencySettlementBoundary =
+    Fixture.withFixtureProjectPlan fixturePlan $ \plan ->
+        case NonEmpty.toList (forward plan) of
+            [dependencyNode, dependentNode] -> do
+                carrier <- ExecutionCore.newResourceCarrierCore
+                dependencyRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                dependentRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                callbacks <- newIORef (0 :: Int)
+                let dependencyExecution = stepExecutionFor plan exactExecutionHostConfig dependencyRuntime dependencyNode
+                    dependentExecution = stepExecutionFor plan exactExecutionHostConfig dependentRuntime dependentNode
+                    key = Text.pack (operationKeyText (plannedStepOperationKey dependencyNode))
+                    operation = key <> ":cluster:create"
+                    summary handle receipt =
+                        ( resourceHandleKey handle
+                        , resourceHandleGeneration handle
+                        , resourceHandleObservationVersion handle
+                        , ownershipReceiptOperationKey receipt
+                        , validateOwnershipReceipt handle receipt
+                        )
+                    expectedSummary = (key, 5, 7, operation, Right ())
+                Execution.stepExecutionDependencyKeys dependentExecution @?= [key]
+                gate <- gateFor (Execution.stepExecutionPlanDigest dependencyExecution) key
+                either (assertFailure . show) id $
+                    withNodeResourceOfKind dependencyExecution ClusterResourceKind key $ \planned ->
+                        either (assertFailure . show) id $
+                            withNodeObservedResource dependencyExecution planned 5 7 $ \observed -> do
+                                descriptor <- either (assertFailure . show) pure $
+                                    plannedNodeOperation dependencyExecution planned observed "cluster:create"
+                                either (assertFailure . show) id $
+                                    withPreparedZeroDependencyOperation descriptor gate $ \prepared sealed -> do
+                                        result <- either (assertFailure . show) pure $
+                                            completeReconcile observed prepared sealed (BackendCreated 5)
+                                        withReconcileResult result
+                                            ( \managed receipt change -> do
+                                                change @?= Changed Created
+                                                carryManagedResourceSettlement dependencyExecution managed receipt "provisioned" "cluster-adapter-1"
+                                                    >>= either (assertFailure . show) pure
+                                                before <- ExecutionCore.readCarriedResources carrier
+                                                case before of
+                                                    [entry] -> do
+                                                        ExecutionCore.carriedResourceOwnershipOperation entry @?= operation
+                                                        case ExecutionCore.carriedResourceSettlement entry of
+                                                            Just (frame, Nothing, bytes) -> do
+                                                                frame @?= Execution.stepExecutionFrame dependencyExecution
+                                                                verified <- either (assertFailure . show) pure $
+                                                                    verifyResourceRecordBundle plan planned 5 operation 7 "provisioned" "cluster-adapter-1" bytes
+                                                                withVerifiedResourceRecordBundle verified
+                                                                    (\owned -> validateOwnershipReceipt managed owned @?= Right ())
+                                                                    (\_ _ _ _ _ _ _ -> assertFailure "the dependency settlement is released")
+                                                            other -> assertFailure ("expected the actual owned dependency settlement, got " ++ show other)
+                                                    other -> assertFailure ("expected one carried dependency, got " ++ show other)
+                                                withCarriedManagedResourceReceipt dependentExecution key summary
+                                                    >>= (@?= Right expectedSummary)
+                                                attempted <-
+                                                    withCarriedManagedResourceReceipt dependentExecution key $ \dependency dependencyReceipt -> do
+                                                        modifyIORef' callbacks (+ 1)
+                                                        carryManagedResourcePhaseSettlement
+                                                            dependentExecution dependency dependencyReceipt "provisioned" "ready" "cluster-adapter-1"
+                                                executed <- traverse id attempted
+                                                executed @?= Right
+                                                    ( Left
+                                                        ( Conflict
+                                                            ( ConflictDetail
+                                                                key
+                                                                "this node's own operation or a declared projected operation"
+                                                                "a resource outside this node's settlement view"
+                                                                "carry settlement only for a resource owned by this node"
+                                                            )
+                                                        )
+                                                    )
+                                                readIORef callbacks >>= (@?= 1)
+                                                ExecutionCore.readCarriedResources carrier >>= (@?= before)
+                                                withCarriedManagedResourceReceipt dependentExecution key summary
+                                                    >>= (@?= Right expectedSummary)
+                                            )
+                                            (\_ _ -> assertFailure "the prepared dependency did not become managed")
+            other -> assertFailure ("expected a dependency and its dependent node, got " ++ show (length other))
+  where
+    fixturePlan = planFrom
+        [ deployKindStep "dependency" exactExecutionFrame (const (pure StepChanged))
+        , projectStep (either error id (projectStepId "dependent")) PreserveOnReverse "dependent" exactExecutionFrame (const (pure StepChanged))
+        ]
+
+assertProjectedAliasSettlement :: IO ()
+assertProjectedAliasSettlement =
+    Fixture.withFixtureProjectPlan (planFrom (take 2 (NonEmpty.toList (stepPlanSteps exactExecutionPlan)))) $ \plan ->
+        case NonEmpty.toList (forward plan) of
+            [providerNode, shareNode] -> do
+                carrier <- ExecutionCore.newResourceCarrierCore
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
+                providerProbes <- newIORef (0 :: Int)
+                shareProbes <- newIORef (0 :: Int)
+                let execution = stepExecutionFor plan exactExecutionHostConfig runtime shareNode
+                    digest = Execution.stepExecutionPlanDigest execution
+                    aliasKey = "core:deploy-vm/core:copy-source/guest-alias"
+                    aliasOperation = aliasKey <> ":alias:create"
+                    phase = "provisioned"
+                    adapter = "guest-alias-adapter-1"
+                providerGate <- gateFor digest (Text.pack (operationKeyText (plannedStepOperationKey providerNode)))
+                shareGate <- gateFor digest (Text.pack (operationKeyText (plannedStepOperationKey shareNode)))
+                aliasGate <- gateFor digest aliasKey
+                either (assertFailure . show) id $
+                    withNodeResourceOfKind execution ProviderResourceKind "core:deploy-vm" $ \provider ->
+                        either (assertFailure . show) id $
+                            withNodeResourceOfKind execution DurableShareResourceKind "core:copy-source" $ \share ->
+                                either (assertFailure . show) id $
+                                    withManagedProvider providerGate plan provider $ \managedProvider ->
+                                        either (assertFailure . show) id $
+                                            withNodeObservedResource execution share 11 13 $ \observedShare -> do
+                                                descriptor <- either (assertFailure . show) pure $
+                                                    plannedNodeOperation execution share observedShare "share:mount"
+                                                sharePrepared <- withPreparedOperation descriptor
+                                                    ( withDependencySnapshotEntry managedProvider
+                                                        (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (modifyIORef' providerProbes (+ 1) >> pure (Right 7)))
+                                                        emptyDependencySnapshot
+                                                    )
+                                                    shareGate $ \prepared sealed -> do
+                                                        reconciled <- either (assertFailure . show) pure $
+                                                            completeReconcile observedShare prepared sealed (BackendCreated 11)
+                                                        withReconcileResult reconciled
+                                                            ( \managedShare _ shareChange -> do
+                                                                shareChange @?= Changed Created
+                                                                either (assertFailure . show) id $
+                                                                    withNodeGuestAliasProjection execution provider share $ \alias edge ->
+                                                                        either (assertFailure . show) id $
+                                                                            withNodeObservedResource execution alias 307 1 $ \observedAlias -> do
+                                                                                aliasDescriptor <- either (assertFailure . show) pure $
+                                                                                    plannedGuestAliasOperation alias edge observedAlias "alias:create"
+                                                                                aliasPrepared <- withPreparedOperation aliasDescriptor
+                                                                                    ( withDependencySnapshotEntry managedShare
+                                                                                        (TestDependency.dependencyProbeWithKind ProbeKernel.DurableShareKind (modifyIORef' shareProbes (+ 1) >> pure (Right 13)))
+                                                                                        emptyDependencySnapshot
+                                                                                    )
+                                                                                    aliasGate $ \aliasPreparedOperation aliasSealed -> do
+                                                                                        aliasResult <- either (assertFailure . show) pure $
+                                                                                            completeReconcile observedAlias aliasPreparedOperation aliasSealed (BackendCreated 307)
+                                                                                        withReconcileResult aliasResult
+                                                                                            ( \managedAlias receipt aliasChange -> do
+                                                                                                aliasChange @?= Changed Created
+                                                                                                ownershipReceiptOperationKey receipt @?= aliasOperation
+                                                                                                carryManagedResourceSettlement execution managedAlias receipt phase adapter
+                                                                                                    >>= either (assertFailure . show) pure
+                                                                                                carried <- ExecutionCore.readCarriedResources carrier
+                                                                                                case carried of
+                                                                                                    [entry] -> do
+                                                                                                        ExecutionCore.carriedResourceKey entry @?= aliasKey
+                                                                                                        ExecutionCore.carriedResourceGeneration entry @?= 307
+                                                                                                        ExecutionCore.carriedResourceObservationVersion entry @?= 1
+                                                                                                        ExecutionCore.carriedResourceOwnershipOperation entry @?= aliasOperation
+                                                                                                        case ExecutionCore.carriedResourceSettlement entry of
+                                                                                                            Just (frame, Nothing, bytes) -> do
+                                                                                                                assertBool "the declaring frame is empty" (not (Text.null frame))
+                                                                                                                frame @?= Execution.stepExecutionFrame execution
+                                                                                                                frame @?= plannedResourceFrame alias
+                                                                                                                expected <- either (assertFailure . show) pure $
+                                                                                                                    renderResourceRecordBundle plan alias 307 aliasOperation 1 phase adapter True
+                                                                                                                bytes @?= expected
+                                                                                                                verified <- either (assertFailure . show) pure $
+                                                                                                                    verifyResourceRecordBundle plan alias 307 aliasOperation 1 phase adapter bytes
+                                                                                                                withVerifiedResourceRecordBundle verified
+                                                                                                                    (\owned -> validateOwnershipReceipt managedAlias owned @?= Right ())
+                                                                                                                    (\_ _ _ _ _ _ _ -> assertFailure "the projected alias settlement is released")
+                                                                                                            other -> assertFailure ("expected a canonical local projection settlement, got " ++ show other)
+                                                                                                    other -> assertFailure ("expected one carried projection, got " ++ show other)
+                                                                                            )
+                                                                                            (\_ _ -> assertFailure "the prepared alias did not become managed")
+                                                                                either (assertFailure . show) id aliasPrepared
+                                                            )
+                                                            (\_ _ -> assertFailure "the prepared durable share did not become managed")
+                                                either (assertFailure . show) id sharePrepared
+                readIORef providerProbes >>= (@?= 1)
+                readIORef shareProbes >>= (@?= 1)
+            other -> assertFailure ("expected provider and projecting share nodes, got " ++ show (length other))
+
 chartPreparationSummary :: Bool -> Bool -> IO (Either ReconcileError (Text.Text, [Text.Text]))
 chartPreparationSummary probeReady wrongGate =
+    chartPreparationWithProbe
+        (pure (if probeReady then Right 8 else Left (Failure (FailureDetail "readiness" "not ready" ReprobeBeforeRetry))))
+        wrongGate
+        (\keys key -> (key, keys))
+
+chartPreparationWithProbe ::
+    IO (Either ReconcileError Word64) ->
+    Bool ->
+    ([Text.Text] -> Text.Text -> result) ->
+    IO (Either ReconcileError result)
+chartPreparationWithProbe = chartPreparationWithTaggedProbe Nothing
+
+chartPreparationWithTaggedProbe ::
+    Maybe ProbeKernel.BackendProbeKind ->
+    IO (Either ReconcileError Word64) ->
+    Bool ->
+    ([Text.Text] -> Text.Text -> result) ->
+    IO (Either ReconcileError result)
+chartPreparationWithTaggedProbe kind probe wrongGate consume =
     Fixture.withFixtureProjectPlan chartPreparationPlan $ \plan ->
         case NonEmpty.toList (forward plan) of
             [clusterNode, chartNode] -> do
@@ -454,20 +920,22 @@ chartPreparationSummary probeReady wrongGate =
                             withChartWorkloadResource plan (plannedStepOperationKey chartNode) $ \chart ->
                                 withObservedProjectResource plan cluster 5 7 $ \observed -> do
                                     descriptor <- plannedProjectOperation plan cluster observed "cluster-call"
-                                    preconditions <- zeroDependencyPreconditions descriptor
-                                    withPreparedOperation descriptor preconditions clusterGate $ \prepared sealed -> do
+                                    withPreparedZeroDependencyOperation descriptor clusterGate $ \prepared sealed -> do
                                         created <- completeReconcile observed prepared sealed (BackendCreated 5)
                                         withReconcileResult
                                             created
                                             ( \managed _ _ ->
-                                                Right
-                                                    ( withPreparedChartWorkloadOperation
-                                                        chart
-                                                        managed
-                                                        (dependencyProbe (pure (if probeReady then Right 8 else Left (Failure (FailureDetail "readiness" "not ready" ReprobeBeforeRetry)))))
-                                                        "chart-call"
-                                                        chartGate
-                                                        (\keys handle _ _ -> (resourceHandleKey handle, keys))
+                                                let prepareChart selected = withPreparedChartWorkloadOperation
+                                                        chart managed selected "chart-call" chartGate
+                                                        (\keys handle _ _ -> consume keys (resourceHandleKey handle))
+                                                 in Right
+                                                    ( case kind of
+                                                        Nothing -> prepareChart (TestDependency.dependencyProbeWithKind ProbeKernel.ClusterApiKind probe)
+                                                        Just _ -> ProbeKernel.withBackendProbe ProbeKernel.GpuPluginProbe cluster
+                                                            (\_ -> error "a wrong-kind probe must not run")
+                                                            (\gpuProbe -> prepareChart
+                                                                (Readiness.planDependencyProbe Readiness.vmBootPoll "gpu" managed gpuProbe
+                                                                    (error "a wrong-kind probe must not need host configuration")))
                                                     )
                                             )
                                             (\_ _ -> Left (Failure (FailureDetail "chart fixture" "cluster became foreign" DoNotRetry)))
@@ -501,57 +969,122 @@ assertNominalRoleInventory = do
     root <-
         findRepoRoot cwd
             >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-    let sourceRoot =
+    let packageRoot =
             root
                 </> "core"
                 </> "hostbootstrap-core"
-                </> "src"
-                </> "HostBootstrap"
-    reconcileSource <- TextIO.readFile (sourceRoot </> "Reconcile.hs")
-    executionSource <-
-        TextIO.readFile
-            (sourceRoot </> "Lifecycle" </> "Execution" </> "Internal.hs")
-    roleLines reconcileSource @?= reconcileRoleInventory
-    roleLines executionSource @?= executionRoleInventory
+        coreModule = "HostBootstrap.Lifecycle.Execution.Core"
+        dependencyModule = "HostBootstrap.Lifecycle.Dependency.Internal"
+        preparedModule = "HostBootstrap.Lifecycle.Prepared.Internal"
+    description <- SourceGuard.readPackageDescription
+    reconcilePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Reconcile"
+    executionPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Execution.Internal"
+    reconcileSource <- TextIO.readFile reconcilePath
+    executionSource <- TextIO.readFile executionPath
+    corePath <- SourceGuard.libraryModulePath packageRoot description coreModule
+    coreSource <- TextIO.readFile corePath
+    reconcileDeclarations <- either assertFailure pure (nominalDeclarationRoles (Text.unpack reconcileSource))
+    executionDeclarations <- either assertFailure pure (nominalDeclarationRoles (Text.unpack executionSource))
+    assertBool "Reconcile has no discovered parameterized declarations" (not (null reconcileDeclarations))
+    assertBool "Execution.Internal has no discovered parameterized declarations" (not (null executionDeclarations))
+    let ordinary = "data Token scope planId = Token\ntype role Token nominal nominal\n"
+        gadt = "data Token scope planId where\n    Token :: Token scope planId\ntype role Token nominal nominal\n"
+        missing = Left "missing or invalid nominal roles for Token (arity 2)"
+    nominalDeclarationRoles ordinary @?= Right [("Token", 2)]
+    nominalDeclarationRoles (ordinary <> "newtype NewToken scope = NewToken Int\ntype role NewToken nominal\n")
+        @?= Right [("Token", 2), ("NewToken", 1)]
+    nominalDeclarationRoles gadt @?= Right [("Token", 2)]
+    nominalDeclarationRoles ("data Empty\n" <> ordinary) @?= Right [("Token", 2)]
+    nominalDeclarationRoles "data Token scope planId = Token\n" @?= missing
+    nominalDeclarationRoles "newtype Token scope planId = Token Int\n" @?= missing
+    nominalDeclarationRoles "data Token scope planId = Token\n-- type role Token nominal nominal\ntext = \"type role Token nominal nominal\"\n" @?= missing
+    nominalDeclarationRoles "data Token scope planId = Token\ntype role Token nominal\n" @?= missing
+    nominalDeclarationRoles "data Token scope planId = Token\ntype role Token nominal representational\n" @?= missing
+    nominalDeclarationRoles (ordinary <> "type role Token nominal nominal\n") @?= missing
+    nominalDeclarationRoles "data Token (scope :: Type) = Token\n"
+        @?= Left "unsupported data/newtype header for Token"
+    sort (roleLines coreSource)
+        @?= sort
+            [ "type role ResourceCarrierCore nominal nominal nominal"
+            , "type role StepRuntimeCore nominal nominal nominal nominal"
+            ]
+    SourceGuard.countHaskellTokenSequence
+        (SourceGuard.haskellTokens "type ResourceCarrier scope planId = ResourceCarrierCore scope planId (RuntimeDependencyPackage scope planId)")
+        (Text.unpack executionSource)
+        @?= 1
+    SourceGuard.countHaskellTokenSequence
+        (SourceGuard.haskellTokens "type StepRuntime scope planId = StepRuntimeCore scope planId PreparedGate (RuntimeDependencyPackage scope planId)")
+        (Text.unpack executionSource)
+        @?= 1
+    dependencyImports <-
+        maybe (assertFailure "the carrier alias has no exact main dependency-package import") pure $
+            SourceGuard.moduleImportTokens dependencyModule (Text.unpack executionSource)
+    assertBool "the carrier alias does not specialize the main dependency package" ("RuntimeDependencyPackage" `elem` dependencyImports)
+    preparedImports <-
+        maybe (assertFailure "the runtime alias has no exact main prepared-gate import") pure $
+            SourceGuard.moduleImportTokens preparedModule (Text.unpack executionSource)
+    assertBool "the runtime alias does not specialize the main prepared gate" ("PreparedGate" `elem` preparedImports)
+    mainLibrary <-
+        maybe (assertFailure "the package has no main library") pure $
+            SourceGuard.namedStanza "library" description
+    implementation <-
+        maybe (assertFailure "the production handoff implementation unit is absent") pure $
+            SourceGuard.namedStanza "library handoff-implementation-internal" description
+    owners <- either assertFailure pure (SourceGuard.mainImplementationOwners description)
+    publicModules <- either assertFailure pure (SourceGuard.effectiveMainExposedModules description)
+    mapM_
+        ( \moduleName -> do
+            lookup moduleName owners @?= Just "library handoff-implementation-internal"
+            assertBool "the production identity is unavailable to trusted Main" (moduleName `elem` SourceGuard.fieldModules "exposed-modules" implementation)
+            assertBool "the production identity escaped through Main's facade" (moduleName `notElem` publicModules)
+        )
+        [dependencyModule, preparedModule]
+    assertBool
+        "the carrier alias imports the separate dependency-testing identity"
+        ("hostbootstrap-core:lifecycle-dependency-internal" `notElem` SourceGuard.fieldValues "build-depends" mainLibrary)
+    assertBool
+        "the production implementation imports the separate dependency-testing identity"
+        ("hostbootstrap-core:lifecycle-dependency-internal" `notElem` SourceGuard.fieldValues "build-depends" implementation)
   where
     roleLines =
         filter ("type role " `Text.isPrefixOf`)
             . map Text.strip
             . Text.lines
 
-reconcileRoleInventory :: [Text.Text]
-reconcileRoleInventory =
-    [ "type role LifecyclePlan nominal nominal"
-    , "type role ResourceHandle nominal nominal nominal nominal nominal nominal"
-    , "type role OwnershipReceipt nominal nominal nominal nominal"
-    , "type role VerifiedForeignOrigin nominal nominal nominal nominal nominal"
-    , "type role AdoptionAuthority nominal nominal nominal nominal nominal nominal"
-    , "type role OperationDescriptor nominal nominal nominal nominal nominal nominal"
-    , "type role DependencyObservation nominal nominal nominal nominal"
-    , "type role DependencyProbe nominal nominal nominal nominal"
-    , "type role DependencySnapshotEntry nominal nominal"
-    , "type role DependencySnapshot nominal nominal"
-    , "type role OperationPreconditionSet nominal nominal nominal nominal"
-    , "type role PreparedOperation nominal nominal nominal nominal nominal nominal nominal nominal"
-    , "type role PreparedPreconditions nominal nominal nominal nominal nominal nominal nominal nominal"
-    , "type role PreparedProviderStart nominal nominal nominal nominal nominal nominal nominal"
-    , "type role SomeDependencyObservation nominal nominal"
-    , "type role ReconcileResult nominal nominal nominal nominal nominal"
-    , "type role VerifiedJournalRecord nominal nominal nominal nominal"
-    , "type role PriorCommitProof nominal nominal nominal nominal"
-    , "type role PhaseTransition nominal nominal nominal nominal nominal nominal"
-    , "type role PreparedPhaseTransition nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal"
-    , "type role VerifiedAtPhase nominal nominal nominal nominal nominal"
-    , "type role PhaseAdvance nominal nominal nominal nominal nominal"
-    ]
-
-executionRoleInventory :: [Text.Text]
-executionRoleInventory =
-    [ "type role PlanExecutionPackage nominal nominal"
-    , "type role StepExecution nominal nominal"
-    , "type role StepRuntime nominal nominal"
-    , "type role ResourceCarrier nominal nominal"
-    ]
+-- Discover the current plain binder grammar with the shared lexer. In
+-- particular, an empty nullary declaration must stop before the next one.
+-- DEVELOPMENT_PLAN/rationale.md#reconciliation-guards-inspect-actual-producers
+nominalDeclarationRoles :: String -> Either String [(String, Int)]
+nominalDeclarationRoles source = do
+    declarations <- dataDeclarations tokens
+    let parameterized = filter ((> 0) . snd) declarations
+    if length (map fst declarations) /= length (nub (map fst declarations))
+        then Left "duplicate data/newtype declarations"
+        else traverse validate parameterized
+  where
+    tokens = SourceGuard.haskellTokens source
+    dataDeclarations [] = Right []
+    dataDeclarations (keyword : name : rest)
+        | keyword `elem` ["data", "newtype"] = do
+            let (header, remaining) = break (`elem` ["=", "where", "data", "newtype", "type", "class", "instance", "deriving"]) rest
+            if typeName name && all parameterName header
+                then ((name, length header) :) <$> dataDeclarations remaining
+                else Left ("unsupported data/newtype header for " <> name)
+    dataDeclarations (_ : rest) = dataDeclarations rest
+    validate declaration@(name, arity) =
+        case [roles | (annotated, roles) <- roleDeclarations tokens, annotated == name] of
+            [roles] | roles == replicate arity "nominal" -> Right declaration
+            _ -> Left ("missing or invalid nominal roles for " <> name <> " (arity " <> show arity <> ")")
+    roleDeclarations ("type" : "role" : name : rest) =
+        let (roles, remaining) = span (`elem` ["nominal", "representational", "phantom"]) rest
+         in (name, roles) : roleDeclarations remaining
+    roleDeclarations (_ : rest) = roleDeclarations rest
+    roleDeclarations [] = []
+    typeName (first : rest) = isUpper first && all identifierCharacter rest
+    typeName [] = False
+    parameterName (first : rest) = (isLower first || first == '_') && all identifierCharacter rest
+    parameterName [] = False
+    identifierCharacter character = isAlphaNum character || character `elem` ("_'" :: String)
 
 exactExecutionHostConfig :: HostConfig
 exactExecutionHostConfig =
@@ -572,21 +1105,22 @@ exactExecutionPlan =
 exactExecutionFrame :: StepFrame
 exactExecutionFrame = StepFrame "host" "Host"
 
-canonicalSummary :: Text.Text -> StepPlan -> IO (ByteString.ByteString, Text.Text)
-canonicalSummary configRoot plan =
-    withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \codec ->
-        do
-            admitted <-
-                withValidatedConfig
-                    codec
-                    (Fixture.defaultProjectConfig "hostbootstrap-demo" configRoot Context.HostOrchestrator)
-                    ( \wire _ ->
-                        pure
-                            ( withLifecyclePlanForConfig codec (verifiedConfigDigest wire) plan $ \lifecycle ->
-                                (lifecyclePlanSnapshotBytes lifecycle, lifecyclePlanDigest lifecycle)
-                            )
-                    )
-            either fail pure admitted
+canonicalSummary :: StepPlan -> IO (ByteString.ByteString, Text.Text)
+canonicalSummary plan =
+    Fixture.withFixtureProjectPlan plan $
+        pure . canonicalSnapshotSummary . Fixture.canonicalSnapshotFromProjectPlan
+
+canonicalPairSummaries :: StepPlan -> StepPlan -> IO ((ByteString.ByteString, Text.Text), (ByteString.ByteString, Text.Text))
+canonicalPairSummaries first second =
+    Fixture.withFixtureCanonicalSnapshotVariants first second id $ \base changed _ ->
+        pure (canonicalSnapshotSummary base, canonicalSnapshotSummary changed)
+
+canonicalSnapshotSummary :: CanonicalPlanSnapshot -> (ByteString.ByteString, Text.Text)
+canonicalSnapshotSummary snapshot =
+    (canonicalPlanSnapshotBytes snapshot, canonicalPlanSnapshotDigest snapshot)
+
+admittedPlanDigest :: ProjectPlan scope specDigest planId configId cfg -> Text.Text
+admittedPlanDigest = stablePlanSnapshotDigest . renderSnapshot
 
 canonicalFixturePlan :: StepPlan
 canonicalFixturePlan = singleStepPlan "context" "host" "Host"
@@ -674,7 +1208,7 @@ containerCanonicalPlanAt destination payload =
 
 assertCanonicalDeliveryRecord :: IO ()
 assertCanonicalDeliveryRecord = do
-    (bytes, _) <- canonicalSummary "config-a" (containerCanonicalPlan "fixture-secret-payload")
+    (bytes, _) <- canonicalSummary (containerCanonicalPlan "fixture-secret-payload")
     let wrapper = oracleText "config-delivery" <> ByteString.singleton 1
         expected =
             oracleText "config-delivery"
@@ -738,15 +1272,14 @@ reconcileObservationSummary ::
     BackendReconcileObservation ->
     IO (Either ReconcileError (ChangeView, Word))
 reconcileObservationSummary openGate observation =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- openGate (lifecyclePlanDigest plan)
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- openGate (admittedPlanDigest plan)
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:one"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
-                        withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                             result <- completeReconcile handle prepared preconditions observation
                             pure $
                                 withReconcileResult
@@ -759,15 +1292,14 @@ createdSummary = createdSummaryWithGate (\digest -> gateFor digest "core:deploy-
 
 foreignSummary :: IO (Either ReconcileError String)
 foreignSummary =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:one"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
-                        withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                             result <-
                                 completeReconcile
                                     handle
@@ -785,15 +1317,14 @@ adoptionSummary = adoptionObservationSummary (BackendRepaired 7)
 
 adoptionObservationSummary :: BackendReconcileObservation -> IO (Either ReconcileError ChangeView)
 adoptionObservationSummary backendObservation =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:observe-foreign"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
-                        withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                             foreignResult <-
                                 completeReconcile
                                     handle
@@ -815,38 +1346,68 @@ adoptionObservationSummary backendObservation =
                                                         (\_ _ -> error "adoption must return managed ownership")
                                 )
 
-journalMismatch :: IO Bool
+assertJournalFrameMismatch :: IO ()
+assertJournalFrameMismatch =
+    withTestResource twoFramePlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        let expectedFrame = plannedResourceFrame planned
+            otherFrame = plannedStepFrameId (NonEmpty.head (forward plan))
+        map plannedStepFrameId (NonEmpty.toList (forward plan)) @?= ["host", "cluster"]
+        expectedFrame @?= "cluster"
+        assertBool "the journal frame mutation did not change frames" (otherFrame /= expectedFrame)
+        case withObservedPlannedResource plan planned 7 3 $ \handle -> do
+            let matching =
+                    journalRecord (Text.unpack (admittedPlanDigest plan)) expectedFrame Committed
+                verify record = fmap (const ()) (verifyPersistedJournalRecord plan planned handle "acquire" record)
+            verify matching @?= Right ()
+            verify matching{persistedFrameKey = otherFrame}
+                @?= Left
+                    ( Conflict
+                        ( ConflictDetail
+                            "core:deploy-kind"
+                            ("frame key=" <> expectedFrame)
+                            ("frame key=" <> otherFrame)
+                            "load the matching protected journal record"
+                        )
+                    ) of
+            Left failure -> assertFailure ("journal fixture observation failed: " <> show failure)
+            Right action -> action
+  where
+    twoFramePlan =
+        planFrom
+            [ descendsVia localContext (contextInitStep "host context" (StepFrame "host" "Host") (const (pure StepChanged)))
+            , deployKindStep "cluster" (StepFrame "cluster" "Cluster") (const (pure StepChanged))
+            ]
+
+journalMismatch :: IO (Text.Text, Either ReconcileError ())
 journalMismatch =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
-        pure $
-            case withObservedPlannedResource plan planned 7 3 $ \handle ->
-                case verifyPersistedJournalRecord plan handle "acquire" (journalRecord "other" Committed) of
-                    Left _ -> True
-                    Right _ -> False of
-                Left _ -> True
-                Right mismatched -> mismatched
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        outcome <-
+            either (assertFailure . show) pure $
+                withObservedPlannedResource plan planned 7 3 $ \handle ->
+                    () <$ verifyPersistedJournalRecord plan planned handle "acquire" (journalRecord "other" (plannedResourceFrame planned) Committed)
+        pure (admittedPlanDigest plan, outcome)
 
 unchangedSummary :: IO (Either ReconcileError ChangeView)
 unchangedSummary = unchangedSummaryFor Committed "core:deploy-kind:call:one"
 
 unchangedSummaryFor :: PersistedJournalPhase -> Text.Text -> IO (Either ReconcileError ChangeView)
 unchangedSummaryFor phase operation =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         let semanticOperation = if phase == AdoptionCommitted then "adopt" else "acquire"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:one"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
-                        withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                             verified <-
                                 verifyPersistedJournalRecord
                                     plan
+                                    planned
                                     handle
                                     semanticOperation
-                                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) phase)
+                                    ( (journalRecord (Text.unpack (admittedPlanDigest plan)) (plannedResourceFrame planned) phase)
                                         { persistedOperationKey = operation
                                         , persistedOperation = semanticOperation
                                         }
@@ -862,24 +1423,28 @@ unchangedSummaryFor phase operation =
 
 phaseSummary :: Word64 -> IO (Either ReconcileError Word)
 phaseSummary observedGeneration =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
-        pure $
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
+        phaseGate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
+        joinIO $
             joinReconcile $
                 withObservedPlannedResource plan planned 3 4 $ \handle -> do
                     descriptor <- plannedOperation plan planned handle "call:one"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
                     joinReconcile $
-                        withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                        withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                             result <- completeReconcile handle prepared preconditions (BackendCreated 9)
                             withReconcileResult
                                 result
                                 ( \managed receipt _ -> do
                                     transition <- planMarkReady managed
-                                    advance <- verifyPhaseTransition managed receipt transition observedGeneration
+                                    phaseDescriptor <- plannedProjectPhaseOperation plan planned managed receipt transition "cluster:ready"
                                     pure $
-                                        withPhaseAdvance advance $ \readyHandle _ _ ->
-                                            fromIntegral (resourceHandleGeneration readyHandle)
+                                        fmap joinReconcile $
+                                            withPreparedPhaseTransition managed receipt transition phaseDescriptor emptyDependencySnapshot phaseGate $ \preparedPhase -> do
+                                                advance <- completePreparedPhaseTransition preparedPhase observedGeneration
+                                                pure $
+                                                    withPhaseAdvance advance $ \readyHandle _ _ ->
+                                                        fromIntegral (resourceHandleGeneration readyHandle)
                                 )
                                 (\_ _ -> error "created resource must be managed")
 
@@ -970,8 +1535,8 @@ adoptionOriginCases =
 
 adoptionAuthoritySummary :: Word64 -> Word64 -> Text.Text -> IO (Either ReconcileError ())
 adoptionAuthoritySummary originGeneration originVersion operation =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         pure $
             withForeignResource gate plan planned 7 3 $ \target _ ->
                 withForeignResource gate plan planned originGeneration originVersion $ \source observation ->
@@ -980,7 +1545,7 @@ adoptionAuthoritySummary originGeneration originVersion operation =
 
 withForeignResource ::
     PreparedGate ->
-    LifecyclePlan scope planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId resourceId resource frame ->
     Word64 ->
     Word64 ->
@@ -990,9 +1555,8 @@ withForeignResource gate plan planned generation observationVersion consume =
     joinReconcile $
         withObservedPlannedResource plan planned generation observationVersion $ \observed -> do
             descriptor <- plannedOperation plan planned observed "call:observe-foreign"
-            preconditionSet <- zeroDependencyPreconditions descriptor
             joinReconcile $
-                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                     reconciled <-
                         completeReconcile observed prepared preconditions (BackendForeign generation (ForeignObservation "manual-vm" "not owned"))
                     withReconcileResult
@@ -1065,8 +1629,8 @@ receiptGenerationSummary ::
     Word64 ->
     IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
 receiptGenerationSummary receiptGeneration =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         pure $
             withCreatedResource gate plan planned 7 3 $ \managed _ ->
                 withDurableReceipt plan planned receiptGeneration $ \receipt ->
@@ -1078,15 +1642,15 @@ receiptGenerationSummary receiptGeneration =
 receiptKeySummary ::
     IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
 receiptKeySummary =
-    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan provider -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
+    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \plan provider -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
         case find
             ((== "core:copy-source") . operationKeyText . plannedStepOperationKey)
-            (NonEmpty.toList (forward projectPlan)) of
+            (NonEmpty.toList (forward plan)) of
             Nothing -> fail "the receipt fixture plan lacks its durable share"
             Just shareNode ->
                 case withPlannedResourceOfKind
-                    projectPlan
+                    plan
                     DurableShareResourceKind
                     (plannedStepOperationKey shareNode)
                     ( \share ->
@@ -1103,7 +1667,7 @@ receiptKeySummary =
 
 withCreatedResource ::
     PreparedGate ->
-    LifecyclePlan scope planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId resourceId resource frame ->
     Word64 ->
     Word64 ->
@@ -1116,9 +1680,8 @@ withCreatedResource gate plan planned generation observationVersion consume =
     joinReconcile $
         withObservedPlannedResource plan planned generation observationVersion $ \observed -> do
             descriptor <- plannedOperation plan planned observed "call:one"
-            preconditionSet <- zeroDependencyPreconditions descriptor
             joinReconcile $
-                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                     reconciled <- completeReconcile observed prepared preconditions (BackendCreated generation)
                     withReconcileResult
                         reconciled
@@ -1127,7 +1690,7 @@ withCreatedResource gate plan planned generation observationVersion consume =
 
 -- The receipt comes from the same public durable evidence path as recovery.
 withDurableReceipt ::
-    LifecyclePlan scope planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId resourceId resource frame ->
     Word64 ->
     (OwnershipReceipt scope planId resourceId resource -> Either ReconcileError result) ->
@@ -1143,11 +1706,11 @@ withDurableReceipt plan planned generation consume = do
 emptyOperationCases :: [TestTree]
 emptyOperationCases =
     [ testCase "durable rendering refuses an empty ownership operation" $
-        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned ->
             renderResourceRecordBundle plan planned 7 "" 3 "provisioned" "adapter-v1" True
                 @?= Left emptyDurableOperation
     , testCase "durable parsing refuses an empty ownership operation" $
-        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
+        withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
             canonical <-
                 either (assertFailure . show) pure $
                     renderResourceRecordBundle plan planned 7 "ownership:acquire" 3 "provisioned" "adapter-v1" True
@@ -1157,16 +1720,17 @@ emptyOperationCases =
             (() <$ verify withoutOperation) @?= Left emptyDurableOperation
     , testCase "journal ingress refuses an empty stable ownership operation" $ do
         outcome <-
-            withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned ->
+            withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned ->
                 pure $
                     joinReconcile $
                         withObservedPlannedResource plan planned 7 3 $ \handle ->
                             ()
                                 <$ verifyPersistedJournalRecord
                                     plan
+                                    planned
                                     handle
                                     "acquire"
-                                    ( (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+                                    ( (journalRecord (Text.unpack (admittedPlanDigest plan)) (plannedResourceFrame planned) Committed)
                                         { persistedOperationKey = ""
                                         }
                                     )
@@ -1210,107 +1774,135 @@ assertPlannedReceiptRebindingBoundary =
         assertBool "the plan-bound rebinding opener is not exported" $
             "withPlannedReboundManagedResourceEvidence" `elem` exports
 
+assertCanonicalPreparationSurface :: IO ()
+assertCanonicalPreparationSurface =
+    -- DEVELOPMENT_PLAN/rationale.md: "Preparation owns fresh dependency observations".
+    SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+        description <- SourceGuard.readPackageDescription
+        path <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Reconcile"
+        source <- readFile path
+        definitions <- either assertFailure pure (SourceGuard.haskellDefinitionNames source)
+        exports <-
+            maybe
+                (assertFailure "could not parse the Reconcile export list")
+                pure
+                (SourceGuard.moduleExportTokens "HostBootstrap.Reconcile" source)
+        let required =
+                [ "withPreparedOperation"
+                , "withPreparedPhaseTransition"
+                , "withPreparedZeroDependencyOperation"
+                , "withPreparedZeroDependencyPhaseTransition"
+                ]
+            retired = ["withFreshPreparedOperation", "operationPreconditionKeys"]
+            privateSetSurface = ["OperationPreconditionSet", "withOperationPreconditions", "zeroDependencyPreconditions"]
+        sort (filter (`elem` (required <> retired)) definitions) @?= required
+        sort (filter (`elem` (required <> retired <> privateSetSurface)) exports) @?= required
+        rationale <- readFile (takeDirectory (takeDirectory packageRoot) </> "DEVELOPMENT_PLAN" </> "rationale.md")
+        assertBool
+            "the canonical preparation guard names an existing rationale heading"
+            ("### Preparation owns fresh dependency observations" `elem` lines rationale)
+
 providerForceDestroyChecks ::
     IO (Either ReconcileError (Word, Text.Text, Bool, Bool, Bool))
 providerForceDestroyChecks =
-    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan _ planned -> do
-        let planDigest = stablePlanSnapshotDigest (renderSnapshot projectPlan)
+    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \plan planned -> do
+        let planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
             operationKey = "core:deploy-vm"
         createGate <- gateFor planDigest operationKey
+        bootGate <- gateFor planDigest operationKey
         replacementGate <- gateFor planDigest operationKey
         destroyGate <- gateFor planDigest operationKey
-        pure $
+        joinIO $
             joinReconcile $
-                withObservedProjectResource projectPlan planned 7 3 $ \observed -> do
-                    createDescriptor <- plannedProjectOperation projectPlan planned observed "provider:create"
-                    createPreconditions <- zeroDependencyPreconditions createDescriptor
+                withObservedProjectResource plan planned 7 3 $ \observed -> do
+                    createDescriptor <- plannedProjectOperation plan planned observed "provider:create"
                     joinReconcile $
-                        withPreparedOperation createDescriptor createPreconditions createGate $ \prepared sealed -> do
+                        withPreparedZeroDependencyOperation createDescriptor createGate $ \prepared sealed -> do
                             created <- completeReconcile observed prepared sealed (BackendCreated 7)
                             withReconcileResult
                                 created
                                 ( \provisioned receipt _ -> do
                                     boot <- planProviderBoot provisioned
-                                    runningAdvance <- verifyPhaseTransition provisioned receipt boot 7
-                                    withPhaseAdvance runningAdvance $ \running runningReceipt _ ->
-                                        joinReconcile $
-                                            withObservedProjectResource projectPlan planned 8 4 $ \replacementObserved -> do
-                                                replacementDescriptor <-
-                                                    plannedProjectOperation projectPlan planned replacementObserved "provider:replacement"
-                                                replacementPreconditions <- zeroDependencyPreconditions replacementDescriptor
-                                                joinReconcile $
-                                                    withPreparedOperation
-                                                        replacementDescriptor
-                                                        replacementPreconditions
-                                                        replacementGate
-                                                        ( \replacementPrepared replacementSealed -> do
-                                                            replacement <-
-                                                                completeReconcile
-                                                                    replacementObserved
-                                                                    replacementPrepared
-                                                                    replacementSealed
-                                                                    (BackendCreated 8)
-                                                            withReconcileResult
-                                                                replacement
-                                                                ( \_ replacementReceipt _ -> do
-                                                                    destroy <- planProviderForceDestroy running
-                                                                    destroyDescriptor <-
-                                                                        plannedProjectPhaseOperation
-                                                                            projectPlan
-                                                                            planned
-                                                                            running
-                                                                            runningReceipt
-                                                                            destroy
-                                                                            "provider:destroy-force"
-                                                                    destroyPreconditions <- zeroDependencyPreconditions destroyDescriptor
-                                                                    joinReconcile $
-                                                                        withPreparedPhaseTransition
-                                                                            running
-                                                                            runningReceipt
-                                                                            destroy
-                                                                            destroyDescriptor
-                                                                            destroyPreconditions
-                                                                            destroyGate
-                                                                            ( \preparedDestroy -> do
-                                                                                advance <- completePreparedPhaseTransition preparedDestroy 7
-                                                                                let exactSummary =
-                                                                                        withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
-                                                                                            ( fromIntegral (resourceHandleGeneration destroyed)
-                                                                                            , ownershipReceiptOperationKey destroyedReceipt
-                                                                                            )
-                                                                                    wrongGenerationRefused =
-                                                                                        isConflict (completePreparedPhaseTransition preparedDestroy 8)
-                                                                                    emptyDigestRefused =
-                                                                                        isFailure
-                                                                                            ( plannedProjectPhaseOperation
-                                                                                                projectPlan
-                                                                                                planned
-                                                                                                running
-                                                                                                runningReceipt
-                                                                                                destroy
-                                                                                                ""
-                                                                                            )
-                                                                                    replacementReceiptRefused =
-                                                                                        isConflict
-                                                                                            ( plannedProjectPhaseOperation
-                                                                                                projectPlan
-                                                                                                planned
-                                                                                                running
-                                                                                                replacementReceipt
-                                                                                                destroy
-                                                                                                "provider:destroy-force"
-                                                                                            )
-                                                                                pure
-                                                                                    ( fst exactSummary
-                                                                                    , snd exactSummary
-                                                                                    , wrongGenerationRefused
-                                                                                    , emptyDigestRefused
-                                                                                    , replacementReceiptRefused
-                                                                                    )
+                                    bootDescriptor <- plannedProjectPhaseOperation plan planned provisioned receipt boot "provider:boot"
+                                    pure $
+                                        fmap joinReconcile $
+                                            withPreparedPhaseTransition provisioned receipt boot bootDescriptor emptyDependencySnapshot bootGate $ \preparedBoot -> do
+                                                runningAdvance <- completePreparedPhaseTransition preparedBoot 7
+                                                withPhaseAdvance runningAdvance $ \running runningReceipt _ ->
+                                                    joinReconcile $
+                                                        withObservedProjectResource plan planned 8 4 $ \replacementObserved -> do
+                                                            replacementDescriptor <-
+                                                                plannedProjectOperation plan planned replacementObserved "provider:replacement"
+                                                            joinReconcile $
+                                                                withPreparedZeroDependencyOperation
+                                                                    replacementDescriptor
+                                                                    replacementGate
+                                                                    ( \replacementPrepared replacementSealed -> do
+                                                                        replacement <-
+                                                                            completeReconcile
+                                                                                replacementObserved
+                                                                                replacementPrepared
+                                                                                replacementSealed
+                                                                                (BackendCreated 8)
+                                                                        withReconcileResult
+                                                                            replacement
+                                                                            ( \_ replacementReceipt _ -> do
+                                                                                destroy <- planProviderForceDestroy running
+                                                                                destroyDescriptor <-
+                                                                                    plannedProjectPhaseOperation
+                                                                                        plan
+                                                                                        planned
+                                                                                        running
+                                                                                        runningReceipt
+                                                                                        destroy
+                                                                                        "provider:destroy-force"
+                                                                                joinReconcile $
+                                                                                    withPreparedZeroDependencyPhaseTransition
+                                                                                        running
+                                                                                        runningReceipt
+                                                                                        destroy
+                                                                                        destroyDescriptor
+                                                                                        destroyGate
+                                                                                        ( \preparedDestroy -> do
+                                                                                            advance <- completePreparedPhaseTransition preparedDestroy 7
+                                                                                            let exactSummary =
+                                                                                                    withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
+                                                                                                        ( fromIntegral (resourceHandleGeneration destroyed)
+                                                                                                        , ownershipReceiptOperationKey destroyedReceipt
+                                                                                                        )
+                                                                                                wrongGenerationRefused =
+                                                                                                    isConflict (completePreparedPhaseTransition preparedDestroy 8)
+                                                                                                emptyDigestRefused =
+                                                                                                    isFailure
+                                                                                                        ( plannedProjectPhaseOperation
+                                                                                                            plan
+                                                                                                            planned
+                                                                                                            running
+                                                                                                            runningReceipt
+                                                                                                            destroy
+                                                                                                            ""
+                                                                                                        )
+                                                                                                replacementReceiptRefused =
+                                                                                                    isConflict
+                                                                                                        ( plannedProjectPhaseOperation
+                                                                                                            plan
+                                                                                                            planned
+                                                                                                            running
+                                                                                                            replacementReceipt
+                                                                                                            destroy
+                                                                                                            "provider:destroy-force"
+                                                                                                        )
+                                                                                            pure
+                                                                                                ( fst exactSummary
+                                                                                                , snd exactSummary
+                                                                                                , wrongGenerationRefused
+                                                                                                , emptyDigestRefused
+                                                                                                , replacementReceiptRefused
+                                                                                                )
+                                                                                        )
                                                                             )
-                                                                )
-                                                                (\_ _ -> error "replacement provider must be managed")
-                                                        )
+                                                                            (\_ _ -> error "replacement provider must be managed")
+                                                                    )
                                 )
                                 (\_ _ -> error "created provider must be managed")
   where
@@ -1369,60 +1961,39 @@ projectPrefixedPlan =
 -- | The exact ordered edge set the plan derives for @core:copy-source@.
 copySourceDependencies :: IO (Either ReconcileError [Text.Text])
 copySourceDependencies =
-    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \_ plan planned ->
+    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \plan planned ->
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle ->
                     operationDescriptorDependencies
                         <$> plannedOperation plan planned handle "share:mount"
 
-{- | The same edge set, sealed through the traversal against a snapshot holding
-only the managed provider.  Before the resource-bearing filter this could not
-succeed at all: the descriptor demanded an observation for the project's own
-@ensure@ step, and no 'PlannedResource' — hence no managed handle — exists for it.
+{- | The resource-bearing edge set prepared through the canonical fresh boundary.
+The project-owned @ensure@ step has no resource, so the genuine snapshot needs
+only the managed provider rather than an invented handle for that step.
 -}
 sealedCopySourceKeys :: IO (Either ReconcileError [Text.Text])
 sealedCopySourceKeys =
-    withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $
-        \projectPlan plan provider -> do
-            providerGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
-            case find
-                ( (== "core:copy-source")
-                    . Text.pack
-                    . operationKeyText
-                    . plannedStepOperationKey
+    withFreshShareFixture $ \digest observed descriptor _provider managedProvider -> do
+        gate <- freshShareGate digest
+        prepared <-
+            withPreparedOperation
+                descriptor
+                (withDependencySnapshotEntry managedProvider (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (pure (Right 17))) emptyDependencySnapshot)
+                gate
+                ( \operation preconditions -> do
+                    acquired <- completeReconcile observed operation preconditions (BackendCreated 11)
+                    withReconcileResult
+                        acquired
+                        (\_ _ _ -> Right (operationDescriptorDependencies descriptor))
+                        (\_ _ -> Left (Failure (FailureDetail "prepared edge fixture" "share became foreign" DoNotRetry)))
                 )
-                (NonEmpty.toList (forward projectPlan)) of
-                Nothing -> fail "copy-source node missing from prefixed fixture plan"
-                Just shareNode ->
-                    case withPlannedResourceOfKind
-                        projectPlan
-                        DurableShareResourceKind
-                        (plannedStepOperationKey shareNode)
-                        ( \share ->
-                            joinIO $
-                                withManagedProvider providerGate plan provider $ \managedProvider ->
-                                    joinIO $
-                                        withObservedPlannedResource plan share 11 13 $ \shareHandle ->
-                                            case plannedOperation plan share shareHandle "share:mount" of
-                                                Left failure -> pure (Left failure)
-                                                Right descriptor ->
-                                                    fmap (fmap operationPreconditionKeys) $
-                                                        withOperationPreconditions
-                                                            descriptor
-                                                            ( withDependencySnapshotEntry
-                                                                managedProvider
-                                                                (dependencyProbe (pure (Right 17)))
-                                                                emptyDependencySnapshot
-                                                            )
-                        ) of
-                        Left failure -> pure (Left (planProjectionFailure failure))
-                        Right action -> action
+        pure (joinReconcile prepared)
 
 -- | Own the provider so the share has a managed dependency to observe.
 withManagedProvider ::
     PreparedGate ->
-    LifecyclePlan scope planId ->
+    ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ( ResourceHandle scope planId providerId ProviderResource Managed Provisioned ->
       result
@@ -1432,14 +2003,285 @@ withManagedProvider gate plan planned consume =
     joinReconcile $
         withObservedPlannedResource plan planned 5 7 $ \observed -> do
             descriptor <- plannedOperation plan planned observed "provider:create"
-            preconditionSet <- zeroDependencyPreconditions descriptor
             joinReconcile $
-                withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                     reconciled <- completeReconcile observed prepared preconditions (BackendCreated 5)
                     withReconcileResult
                         reconciled
                         (\managed _ _ -> Right (consume managed))
                         (\_ _ -> Left (Failure (FailureDetail "test provider" "unexpected foreign provider" DoNotRetry)))
+
+freshSnapshotPreparationCases :: [TestTree]
+freshSnapshotPreparationCases =
+    [ testCase "a readiness edge refuses an untagged probe without running it" $ do
+        result <- withFreshShareFixture $ \digest _observed descriptor _provider managedProvider -> do
+            gate <- freshShareGate digest
+            probes <- newIORef (0 :: Int)
+            let untagged = TestDependency.dependencyProbe (modifyIORef' probes (+ 1) >> pure (Right 17))
+                snapshot = withDependencySnapshotEntry managedProvider untagged emptyDependencySnapshot
+            outcome <- withPreparedOperation descriptor snapshot gate (\_ _ -> ())
+            case outcome of
+                Left (Conflict _) -> pure ()
+                _ -> assertFailure "untagged readiness was accepted"
+            readIORef probes >>= (@?= 0)
+            pure (Right ())
+        result @?= Right ()
+    , testCase "fresh preparation runs the ready dependency once and yields its matching pair" $ do
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary freshShareGate FreshMemberPresent (Right 17)
+        outcome @?= Right ("core:copy-source", 11, "core:copy-source:share:mount", Changed Created)
+        (probes, callbacks) @?= (1, 1)
+    , testCase "fresh preparation takes the empty-edge branch without probing an unused snapshot member" $
+        withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $ \plan planned -> do
+            managedGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+            gate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+            preparedGateJournalVersion gate @?= 1
+            probes <- newIORef (0 :: Int)
+            callbacks <- newIORef (0 :: Int)
+            prepared <-
+                joinIO $
+                    withManagedProvider managedGate plan planned $ \managedProvider ->
+                        joinIO $
+                            withObservedPlannedResource plan planned 5 7 $ \observed ->
+                                case plannedOperation plan planned observed "provider:empty-snapshot" of
+                                    Left failure -> pure (Left failure)
+                                    Right descriptor -> do
+                                        operationDescriptorDependencies descriptor @?= []
+                                        let snapshot =
+                                                withDependencySnapshotEntry
+                                                    managedProvider
+                                                    (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (modifyIORef' probes (+ 1) >> pure (Right 17)))
+                                                    emptyDependencySnapshot
+                                        readIORef probes >>= (@?= 0)
+                                        withPreparedOperation descriptor snapshot gate $ \operation preconditions -> do
+                                            modifyIORef' callbacks (+ 1)
+                                            pure $ do
+                                                acquired <- completeReconcile observed operation preconditions (BackendCreated 5)
+                                                withReconcileResult
+                                                    acquired
+                                                    ( \managed receipt change ->
+                                                        Right
+                                                            ( resourceHandleKey managed
+                                                            , resourceHandleGeneration managed
+                                                            , ownershipReceiptOperationKey receipt
+                                                            , change
+                                                            )
+                                                    )
+                                                    (\_ _ -> Left (Failure (FailureDetail "fresh empty-edge fixture" "provider became foreign" DoNotRetry)))
+            settled <- traverse id prepared
+            joinReconcile settled @?= Right ("core:deploy-vm", 5, "core:deploy-vm:provider:empty-snapshot", Changed Created)
+            readIORef probes >>= (@?= 0)
+            readIORef callbacks >>= (@?= 1)
+    , testCase "provider network readiness cannot satisfy a provider responding edge" $ do
+        result <- withFreshShareFixture $ \digest _observed descriptor provider managed -> do
+            gate <- freshShareGate digest
+            ProbeKernel.withBackendProbe ProbeKernel.ProviderNetworkProbe provider
+                (\_ -> error "a wrong-kind provider probe must not run") $ \networkProbe -> do
+                    let probe = Readiness.planDependencyProbe Readiness.vmBootPoll "network" managed networkProbe
+                            (error "a wrong-kind provider probe must not need host configuration")
+                        snapshot = withDependencySnapshotEntry managed probe emptyDependencySnapshot
+                    outcome <- withPreparedOperation descriptor snapshot gate (\_ _ -> ())
+                    case outcome of
+                        Left (Conflict _) -> pure (Right ())
+                        other -> assertFailure ("expected provider readiness-kind conflict, got " ++ show other)
+        result @?= Right ()
+    , testCase "fresh preparation refuses the dependency's first not-ready observation" $ do
+        let refusal = Failure (FailureDetail "fresh dependency" "not ready at preparation" ReprobeBeforeRetry)
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary freshShareGate FreshMemberPresent (Left refusal)
+        (outcome, probes, callbacks) @?= (Left refusal, 1, 0)
+    , testCase "fresh preparation refuses another plan's gate before probing" $ do
+        (digest, outcome, probes, callbacks) <-
+            freshPreparationSummary
+                (\_ -> gateFor "some-other-plan-digest" "core:copy-source")
+                FreshMemberPresent
+                (Right 17)
+        outcome
+            @?= Left
+                ( Conflict
+                    ( ConflictDetail
+                        "core:copy-source"
+                        ("a prepare gate from plan " <> digest)
+                        "a prepare gate from plan some-other-plan-digest"
+                        "prepare each operation through its own plan's journal"
+                    )
+                )
+        (probes, callbacks) @?= (0, 0)
+    , testCase "fresh preparation refuses another operation's gate before probing" $ do
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary
+                (\digest -> gateFor digest "core:deploy-vm")
+                FreshMemberPresent
+                (Right 17)
+        outcome
+            @?= Left
+                ( Conflict
+                    ( ConflictDetail
+                        "core:copy-source"
+                        "a prepare gate recorded for core:copy-source"
+                        "a prepare gate recorded for core:deploy-vm"
+                        "record this operation's unknown phase before preparing it"
+                    )
+                )
+        (probes, callbacks) @?= (0, 0)
+    , testCase "fresh preparation refuses a zero attempt before probing" $ do
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary
+                (\digest -> gateForValues digest "core:copy-source" "session-1" 1 0)
+                FreshMemberPresent
+                (Right 17)
+        (outcome, probes, callbacks)
+            @?= (Left (Failure (FailureDetail "prepare operation" "attempt must be positive" DoNotRetry)), 0, 0)
+    , testCase "fresh preparation refuses a missing member through its own traversal" $ do
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary freshShareGate FreshMemberMissing (Right 17)
+        outcome
+            @?= Left
+                ( Failure
+                    ( FailureDetail
+                        "seal operation preconditions"
+                        "no managed resource for plan dependency core:deploy-vm of core:copy-source"
+                        ReprobeBeforeRetry
+                    )
+                )
+        (probes, callbacks) @?= (0, 0)
+    , testCase "fresh preparation refuses a duplicate member before running its probe" $ do
+        (_, outcome, probes, callbacks) <-
+            freshPreparationSummary freshShareGate FreshMemberDuplicated (Right 17)
+        outcome
+            @?= Left
+                ( Conflict
+                    ( ConflictDetail
+                        "core:deploy-vm"
+                        "one managed resource per plan dependency"
+                        "the dependency snapshot carries the key more than once"
+                        "register each acquired resource under its plan operation key exactly once"
+                    )
+                )
+        (probes, callbacks) @?= (0, 0)
+    , testCase "chart preparation runs its ready cluster probe exactly once" $ do
+        (outcome, probes, callbacks) <- countedChartPreparation (Right 8) False
+        outcome @?= Right ("core:deploy-chart", ["core:deploy-kind"])
+        (probes, callbacks) @?= (1, 1)
+    , testCase "chart preparation refuses its first not-ready cluster observation" $ do
+        let refusal = Failure (FailureDetail "readiness" "not ready" ReprobeBeforeRetry)
+        (outcome, probes, callbacks) <- countedChartPreparation (Left refusal) False
+        (outcome, probes, callbacks) @?= (Left refusal, 1, 0)
+    , testCase "chart preparation checks its gate before its cluster probe" $ do
+        (outcome, probes, callbacks) <- countedChartPreparation (Right 8) True
+        outcome
+            @?= Left
+                ( Conflict
+                    ( ConflictDetail
+                        "core:deploy-chart"
+                        "a prepare gate recorded for core:deploy-chart"
+                        "a prepare gate recorded for core:deploy-kind"
+                        "record this operation's unknown phase before preparing it"
+                    )
+                )
+        (probes, callbacks) @?= (0, 0)
+    ]
+
+data FreshSnapshotMembers = FreshMemberPresent | FreshMemberMissing | FreshMemberDuplicated
+
+freshShareGate :: Text.Text -> IO PreparedGate
+freshShareGate digest = gateFor digest "core:copy-source"
+
+freshPreparationSummary ::
+    (Text.Text -> IO PreparedGate) ->
+    FreshSnapshotMembers ->
+    Either ReconcileError Word64 ->
+    IO (Text.Text, Either ReconcileError (Text.Text, Word64, Text.Text, ChangeView), Int, Int)
+freshPreparationSummary openGate members answer = do
+    result <- withFreshShareFixture $ \digest observed descriptor _provider managedProvider -> do
+        gate <- openGate digest
+        -- Every supplied gate is a real fresh-store CAS, including refusals
+        -- with caller-selected attempts. No caller supplies a journal version.
+        preparedGateJournalVersion gate @?= 1
+        probes <- newIORef (0 :: Int)
+        callbacks <- newIORef (0 :: Int)
+        let probe = TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (modifyIORef' probes (+ 1) >> pure answer)
+            entry = withDependencySnapshotEntry managedProvider probe
+            snapshot = case members of
+                FreshMemberPresent -> entry emptyDependencySnapshot
+                FreshMemberMissing -> emptyDependencySnapshot
+                FreshMemberDuplicated -> entry (entry emptyDependencySnapshot)
+        readIORef probes >>= (@?= 0)
+        readIORef callbacks >>= (@?= 0)
+        prepared <- withPreparedOperation descriptor snapshot gate $ \operation preconditions -> do
+            modifyIORef' callbacks (+ 1)
+            pure $ do
+                acquired <- completeReconcile observed operation preconditions (BackendCreated 11)
+                withReconcileResult
+                    acquired
+                    ( \managed receipt change ->
+                        Right
+                            ( resourceHandleKey managed
+                            , resourceHandleGeneration managed
+                            , ownershipReceiptOperationKey receipt
+                            , change
+                            )
+                    )
+                    (\_ _ -> Left (Failure (FailureDetail "fresh preparation fixture" "share became foreign" DoNotRetry)))
+        -- Run any returned callback action even when refusal was expected.
+        settled <- traverse id prepared
+        probeCount <- readIORef probes
+        callbackCount <- readIORef callbacks
+        pure (Right (digest, joinReconcile settled, probeCount, callbackCount))
+    either (assertFailure . show) pure result
+
+withFreshShareFixture ::
+    ( forall scope planId providerId providerFrame shareId.
+      Text.Text ->
+      ResourceHandle scope planId shareId DurableShareResource Unclassified Observed ->
+      OperationDescriptor scope planId shareId DurableShareResource Observed Provisioned ->
+      PlannedResource scope planId providerId ProviderResource providerFrame ->
+      ResourceHandle scope planId providerId ProviderResource Managed Provisioned ->
+      IO (Either ReconcileError result)
+    ) ->
+    IO (Either ReconcileError result)
+withFreshShareFixture consume =
+    withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $ \plan provider -> do
+        providerGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+        case find
+            ((== "core:copy-source") . Text.pack . operationKeyText . plannedStepOperationKey)
+            (NonEmpty.toList (forward plan)) of
+            Nothing -> assertFailure "copy-source node missing from fresh preparation fixture"
+            Just shareNode ->
+                case withPlannedResourceOfKind
+                    plan
+                    DurableShareResourceKind
+                    (plannedStepOperationKey shareNode)
+                    ( \share ->
+                        joinIO $
+                            withManagedProvider providerGate plan provider $ \managedProvider ->
+                                joinIO $
+                                    withObservedPlannedResource plan share 11 13 $ \observed ->
+                                        case plannedOperation plan share observed "share:mount" of
+                                            Left failure -> pure (Left failure)
+                                            Right descriptor -> consume (admittedPlanDigest plan) observed descriptor provider managedProvider
+                    ) of
+                    Left failure -> pure (Left (planProjectionFailure failure))
+                    Right action -> action
+
+countedChartPreparation ::
+    Either ReconcileError Word64 ->
+    Bool ->
+    IO (Either ReconcileError (Text.Text, [Text.Text]), Int, Int)
+countedChartPreparation answer wrongGate = do
+    probes <- newIORef (0 :: Int)
+    callbacks <- newIORef (0 :: Int)
+    let probe = modifyIORef' probes (+ 1) >> pure answer
+    readIORef probes >>= (@?= 0)
+    readIORef callbacks >>= (@?= 0)
+    prepared <-
+        chartPreparationWithProbe probe wrongGate $ \keys key -> do
+            modifyIORef' callbacks (+ 1)
+            pure (key, keys)
+    outcome <- traverse id prepared
+    probeCount <- readIORef probes
+    callbackCount <- readIORef callbacks
+    pure (outcome, probeCount, callbackCount)
 
 zeroDependencyPreparationCases :: [TestTree]
 zeroDependencyPreparationCases =
@@ -1484,8 +2326,8 @@ zeroDependencyPreparationCases =
 
 zeroOperationUnchangedSummary :: IO (Either ReconcileError ChangeView)
 zeroOperationUnchangedSummary =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:deploy-kind"
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:deploy-kind"
         pure $
             joinReconcile $
                 withObservedPlannedResource plan planned 7 3 $ \handle -> do
@@ -1495,9 +2337,10 @@ zeroOperationUnchangedSummary =
                             verified <-
                                 verifyPersistedJournalRecord
                                     plan
+                                    planned
                                     handle
                                     "acquire"
-                                    (journalRecord (Text.unpack (lifecyclePlanDigest plan)) Committed)
+                                    (journalRecord (Text.unpack (admittedPlanDigest plan)) (plannedResourceFrame planned) Committed)
                             joinReconcile $
                                 withPriorCommitProof verified $ \proof -> do
                                     result <- completePreparedUnchanged handle prepared preconditions proof
@@ -1511,8 +2354,8 @@ zeroOperationRefusal ::
     (Text.Text -> ReconcileError) ->
     IO ()
 zeroOperationRefusal openGate expectedFailure =
-    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \_ plan planned -> do
-        gate <- openGate (lifecyclePlanDigest plan)
+    withTestResource testPlan ClusterResourceKind "core:deploy-kind" $ \plan planned -> do
+        gate <- openGate (admittedPlanDigest plan)
         delivered <- newIORef (0 :: Int)
         let outcome =
                 joinReconcile $
@@ -1520,7 +2363,7 @@ zeroOperationRefusal openGate expectedFailure =
                         descriptor <- plannedOperation plan planned handle "call:one"
                         withPreparedZeroDependencyOperation descriptor gate $ \_ _ ->
                             modifyIORef' delivered (+ 1)
-        assertPreparationNotDelivered delivered (expectedFailure (lifecyclePlanDigest plan)) outcome
+        assertPreparationNotDelivered delivered (expectedFailure (admittedPlanDigest plan)) outcome
 
 assertPreparationNotDelivered :: IORef Int -> ReconcileError -> Either ReconcileError (IO ()) -> IO ()
 assertPreparationNotDelivered delivered expectedFailure outcome = do
@@ -1542,8 +2385,8 @@ zeroDependencyConflict =
 -- | The public zero entry must reject a genuine edge-bearing descriptor itself.
 zeroBranchOnDependentOperation :: IO ()
 zeroBranchOnDependentOperation =
-    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
+    withTestResource projectPrefixedPlan DurableShareResourceKind "core:copy-source" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:copy-source"
         delivered <- newIORef (0 :: Int)
         let outcome =
                 joinReconcile $
@@ -1555,39 +2398,45 @@ zeroBranchOnDependentOperation =
 
 zeroPhaseDestroySummary :: IO (Either ReconcileError (Word64, Text.Text))
 zeroPhaseDestroySummary =
-    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan planned -> do
-        createGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
-        destroyGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
-        pure $
+    withTestResource dependentTestPlan ProviderResourceKind "core:deploy-vm" $ \plan planned -> do
+        createGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+        bootGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+        destroyGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+        joinIO $
             withCreatedResource createGate plan planned 7 3 $ \provisioned receipt -> do
                 boot <- planProviderBoot provisioned
-                runningAdvance <- verifyPhaseTransition provisioned receipt boot 7
-                withPhaseAdvance runningAdvance $ \running runningReceipt _ -> do
-                    destroy <- planProviderForceDestroy running
-                    descriptor <-
-                        plannedProjectPhaseOperation projectPlan planned running runningReceipt destroy "provider:destroy-force"
-                    joinReconcile $
-                        withPreparedZeroDependencyPhaseTransition running runningReceipt destroy descriptor destroyGate $ \prepared -> do
-                            advance <- completePreparedPhaseTransition prepared 7
-                            pure $
-                                withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
-                                    (resourceHandleGeneration destroyed, ownershipReceiptOperationKey destroyedReceipt)
+                bootDescriptor <- plannedProjectPhaseOperation plan planned provisioned receipt boot "provider:boot"
+                pure $
+                    fmap joinReconcile $
+                        withPreparedPhaseTransition provisioned receipt boot bootDescriptor emptyDependencySnapshot bootGate $ \preparedBoot -> do
+                            runningAdvance <- completePreparedPhaseTransition preparedBoot 7
+                            withPhaseAdvance runningAdvance $ \running runningReceipt _ -> do
+                                destroy <- planProviderForceDestroy running
+                                descriptor <-
+                                    plannedProjectPhaseOperation plan planned running runningReceipt destroy "provider:destroy-force"
+                                joinReconcile $
+                                    withPreparedZeroDependencyPhaseTransition running runningReceipt destroy descriptor destroyGate $ \prepared -> do
+                                        advance <- completePreparedPhaseTransition prepared 7
+                                        pure $
+                                            withPhaseAdvance advance $ \destroyed destroyedReceipt _ ->
+                                                (resourceHandleGeneration destroyed, ownershipReceiptOperationKey destroyedReceipt)
 
 zeroPhaseDependencyRefusal :: IO ()
 zeroPhaseDependencyRefusal =
-    withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $ \projectPlan plan provider -> do
-        providerGate <- gateFor (lifecyclePlanDigest plan) "core:deploy-vm"
-        shareGate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
-        phaseGate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
+    withTestResource projectPrefixedPlan ProviderResourceKind "core:deploy-vm" $ \plan provider -> do
+        providerGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+        shareGate <- gateFor (admittedPlanDigest plan) "core:copy-source"
+        phaseGate <- gateFor (admittedPlanDigest plan) "core:copy-source"
+        probes <- newIORef (0 :: Int)
         delivered <- newIORef (0 :: Int)
         case find
             ((== "core:copy-source") . Text.pack . operationKeyText . plannedStepOperationKey)
-            (NonEmpty.toList (forward projectPlan)) of
+            (NonEmpty.toList (forward plan)) of
             Nothing -> assertFailure "copy-source node missing from dependent phase fixture"
             Just shareNode -> do
                 outcome <-
                     case withPlannedResourceOfKind
-                        projectPlan
+                        plan
                         DurableShareResourceKind
                         (plannedStepOperationKey shareNode)
                         ( \share ->
@@ -1601,42 +2450,92 @@ zeroPhaseDependencyRefusal =
                                                     let snapshot =
                                                             withDependencySnapshotEntry
                                                                 managedProvider
-                                                                (dependencyProbe (pure (Right 17)))
+                                                                (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (modifyIORef' probes (+ 1) >> pure (Right 17)))
                                                                 emptyDependencySnapshot
-                                                    acquisitionSet <- withOperationPreconditions descriptor snapshot
-                                                    case acquisitionSet of
+                                                    acquired <-
+                                                        withPreparedOperation descriptor snapshot shareGate $ \prepared sealed -> do
+                                                            original <- completeReconcile observed prepared sealed (BackendCreated 11)
+                                                            replacement <- completeReconcile observed prepared sealed (BackendCreated 12)
+                                                            pure (original, replacement)
+                                                    case joinReconcile acquired of
                                                         Left failure -> pure (Left failure)
-                                                        Right preconditions ->
-                                                            joinIO $
-                                                                joinReconcile $
-                                                                    withPreparedOperation descriptor preconditions shareGate $ \prepared sealed -> do
-                                                                        acquired <- completeReconcile observed prepared sealed (BackendCreated 11)
-                                                                        withReconcileResult
-                                                                            acquired
-                                                                            ( \managed receipt _ -> do
+                                                        Right (original, replacement) ->
+                                                            withReconcileResult
+                                                                original
+                                                                ( \managed receipt _ ->
+                                                                    withReconcileResult
+                                                                        replacement
+                                                                        ( \replaced replacementReceipt _ ->
+                                                                            case do
                                                                                 ready <- planMarkReady managed
-                                                                                phaseDescriptor <-
-                                                                                    plannedProjectPhaseOperation projectPlan share managed receipt ready "share:ready"
-                                                                                pure $ do
-                                                                                    phaseSet <- withOperationPreconditions phaseDescriptor snapshot
-                                                                                    case phaseSet of
-                                                                                        Left failure -> pure (Left failure)
-                                                                                        Right checkedSet -> do
-                                                                                            let generic =
-                                                                                                    joinReconcile $
-                                                                                                        withPreparedPhaseTransition managed receipt ready phaseDescriptor checkedSet phaseGate $ \preparedPhase -> do
-                                                                                                            advance <- completePreparedPhaseTransition preparedPhase 11
-                                                                                                            pure $
-                                                                                                                withPhaseAdvance advance $ \readyShare readyReceipt _ ->
-                                                                                                                    (resourceHandleGeneration readyShare, ownershipReceiptOperationKey readyReceipt)
-                                                                                            generic @?= Right (11, "core:copy-source:share:mount")
-                                                                                            let zero =
-                                                                                                    withPreparedZeroDependencyPhaseTransition managed receipt ready phaseDescriptor phaseGate $ \_ ->
-                                                                                                        modifyIORef' delivered (+ 1)
-                                                                                            assertPreparationNotDelivered delivered zeroDependencyConflict zero
-                                                                                            pure (Right ())
-                                                                            )
-                                                                            (\_ _ -> Left (Failure (FailureDetail "test share" "expected managed ownership" DoNotRetry)))
+                                                                                replacementReady <- planMarkReady replaced
+                                                                                phaseDescriptor <- plannedProjectPhaseOperation plan share managed receipt ready "share:ready"
+                                                                                pure (ready, replacementReady, phaseDescriptor) of
+                                                                                Left failure -> pure (Left failure)
+                                                                                Right (ready, replacementReady, phaseDescriptor) -> do
+                                                                                    operationDescriptorDependencies phaseDescriptor @?= ["core:deploy-vm"]
+                                                                                    readIORef probes >>= (@?= 1)
+                                                                                    phaseCallbacks <- newIORef (0 :: Int)
+                                                                                    generic <-
+                                                                                        withPreparedPhaseTransition managed receipt ready phaseDescriptor snapshot phaseGate $ \preparedPhase -> do
+                                                                                            modifyIORef' phaseCallbacks (+ 1)
+                                                                                            pure $ do
+                                                                                                advance <- completePreparedPhaseTransition preparedPhase 11
+                                                                                                pure $
+                                                                                                    withPhaseAdvance advance $ \readyShare readyReceipt _ ->
+                                                                                                        (resourceHandleGeneration readyShare, ownershipReceiptOperationKey readyReceipt)
+                                                                                    settled <- traverse id generic
+                                                                                    joinReconcile settled @?= Right (11, "core:copy-source:share:mount")
+                                                                                    readIORef probes >>= (@?= 2)
+                                                                                    readIORef phaseCallbacks >>= (@?= 1)
+
+                                                                                    wrongGate <- gateFor (admittedPlanDigest plan) "core:deploy-vm"
+                                                                                    wrongReceipt <-
+                                                                                        withPreparedPhaseTransition managed replacementReceipt ready phaseDescriptor snapshot wrongGate $ \_ ->
+                                                                                            modifyIORef' delivered (+ 1)
+                                                                                    assertPreparationNotDelivered
+                                                                                        delivered
+                                                                                        (Conflict (ConflictDetail "core:copy-source" "generation=11" "generation=12" "load the ownership receipt for the exact managed generation"))
+                                                                                        wrongReceipt
+                                                                                    wrongTransition <-
+                                                                                        withPreparedPhaseTransition managed receipt replacementReady phaseDescriptor snapshot wrongGate $ \_ ->
+                                                                                            modifyIORef' delivered (+ 1)
+                                                                                    assertPreparationNotDelivered
+                                                                                        delivered
+                                                                                        (Conflict (ConflictDetail "core:copy-source" "transition generation=11" "transition generation=12" "replan the phase transition from the current managed generation"))
+                                                                                        wrongTransition
+                                                                                    wrongOperation <-
+                                                                                        withPreparedPhaseTransition managed receipt ready phaseDescriptor snapshot wrongGate $ \_ ->
+                                                                                            modifyIORef' delivered (+ 1)
+                                                                                    assertPreparationNotDelivered
+                                                                                        delivered
+                                                                                        (Conflict (ConflictDetail "core:copy-source" "a prepare gate recorded for core:copy-source" "a prepare gate recorded for core:deploy-vm" "record this operation's unknown phase before preparing it"))
+                                                                                        wrongOperation
+                                                                                    readIORef probes >>= (@?= 2)
+
+                                                                                    notReadyProbes <- newIORef (0 :: Int)
+                                                                                    let refusal = Failure (FailureDetail "phase dependency" "not ready at phase preparation" ReprobeBeforeRetry)
+                                                                                        notReadySnapshot =
+                                                                                            withDependencySnapshotEntry
+                                                                                                managedProvider
+                                                                                                (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind (modifyIORef' notReadyProbes (+ 1) >> pure (Left refusal)))
+                                                                                                emptyDependencySnapshot
+                                                                                    notReady <-
+                                                                                        withPreparedPhaseTransition managed receipt ready phaseDescriptor notReadySnapshot phaseGate $ \_ ->
+                                                                                            modifyIORef' delivered (+ 1)
+                                                                                    assertPreparationNotDelivered delivered refusal notReady
+                                                                                    readIORef notReadyProbes >>= (@?= 1)
+
+                                                                                    let zero =
+                                                                                            withPreparedZeroDependencyPhaseTransition managed receipt ready phaseDescriptor phaseGate $ \_ ->
+                                                                                                modifyIORef' delivered (+ 1)
+                                                                                    assertPreparationNotDelivered delivered zeroDependencyConflict zero
+                                                                                    readIORef probes >>= (@?= 2)
+                                                                                    pure (Right ())
+                                                                        )
+                                                                        (\_ _ -> pure (Left (Failure (FailureDetail "test share" "expected managed replacement ownership" DoNotRetry))))
+                                                                )
+                                                                (\_ _ -> pure (Left (Failure (FailureDetail "test share" "expected managed ownership" DoNotRetry))))
                         ) of
                         Left failure -> pure (Left (planProjectionFailure failure))
                         Right action -> action
@@ -1644,20 +2543,28 @@ zeroPhaseDependencyRefusal =
 
 missingDependencyPreparation :: IO (Either ReconcileError ())
 missingDependencyPreparation =
-    withTestResource dependentTestPlan DurableShareResourceKind "core:copy-source" $ \_ plan planned -> do
-        gate <- gateFor (lifecyclePlanDigest plan) "core:copy-source"
-        pure $
-            joinReconcile $
-                withObservedPlannedResource plan planned 7 3 $ \handle -> do
-                    descriptor <- plannedOperation plan planned handle "share:mount"
-                    preconditionSet <- zeroDependencyPreconditions descriptor
-                    withPreparedOperation descriptor preconditionSet gate (\_ _ -> ())
+    withTestResource dependentTestPlan DurableShareResourceKind "core:copy-source" $ \plan planned -> do
+        gate <- gateFor (admittedPlanDigest plan) "core:copy-source"
+        callbacks <- newIORef (0 :: Int)
+        prepared <-
+            joinIO $
+                withObservedPlannedResource plan planned 7 3 $ \handle ->
+                    case plannedOperation plan planned handle "share:mount" of
+                        Left failure -> pure (Left failure)
+                        Right descriptor -> do
+                            operationDescriptorDependencies descriptor @?= ["core:deploy-vm"]
+                            withPreparedOperation descriptor emptyDependencySnapshot gate $ \_ _ ->
+                                modifyIORef' callbacks (+ 1)
+        -- Execute any wrongly returned action before checking that none ran.
+        outcome <- traverse id prepared
+        readIORef callbacks >>= (@?= 0)
+        pure outcome
 
-journalRecord :: String -> PersistedJournalPhase -> PersistedJournalRecord
-journalRecord digest phase =
+journalRecord :: String -> Text.Text -> PersistedJournalPhase -> PersistedJournalRecord
+journalRecord digest frame phase =
     PersistedJournalRecord
         { persistedPlanDigest = text digest
-        , persistedFrameKey = "metal"
+        , persistedFrameKey = frame
         , persistedResourceKey = "core:deploy-kind"
         , persistedGeneration = 7
         , persistedOperation = "acquire"
@@ -1698,26 +2605,25 @@ withTestResource ::
         planId
         configId
         Fixture.ProjectConfig ->
-      LifecyclePlan (Production projectId) planId ->
       PlannedResource (Production projectId) planId resourceId resource frame ->
       IO result
     ) ->
     IO result
 withTestResource stepPlan resourceKind expectedKey use =
-    Fixture.withFixtureProjectPlan stepPlan $ \projectPlan ->
+    Fixture.withFixtureProjectPlan stepPlan $ \plan ->
         case find
             ( (== expectedKey)
                 . Text.pack
                 . operationKeyText
                 . plannedStepOperationKey
             )
-            (NonEmpty.toList (forward projectPlan)) of
+            (NonEmpty.toList (forward plan)) of
             Nothing -> fail ("resource operation missing from fixture plan: " ++ Text.unpack expectedKey)
             Just node ->
                 case withPlannedResourceOfKind
-                    projectPlan
+                    plan
                     resourceKind
                     (plannedStepOperationKey node)
-                    (use projectPlan (lifecyclePlanFromProjectPlan projectPlan)) of
+                    (use plan) of
                     Left failure -> fail (show failure)
                     Right action -> action

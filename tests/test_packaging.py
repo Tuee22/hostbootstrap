@@ -101,8 +101,10 @@ def test_provider_surface_has_one_dispatch_and_no_definition_only_builders() -> 
     root = Path(__file__).resolve().parents[1]
     core = root / "core/hostbootstrap-core"
     cabal = (core / "hostbootstrap-core.cabal").read_text(encoding="utf-8")
-    production_sources = tuple((core / "src").rglob("*.hs")) + tuple(
-        (root / "demo/src").rglob("*.hs")
+    production_sources = (
+        tuple((core / "src").rglob("*.hs"))
+        + tuple((core / "internal").rglob("*.hs"))
+        + tuple((root / "demo/src").rglob("*.hs"))
     )
     source_texts = tuple(source.read_text(encoding="utf-8") for source in production_sources)
     production = "\n".join(source_texts)
@@ -117,19 +119,32 @@ def test_provider_surface_has_one_dispatch_and_no_definition_only_builders() -> 
         "rebootVMArgs",
         "wslImportArgs",
         "wslTerminateArgs",
+        "createVMArgs",
+        "deviceListArgs",
+        "addDiskDeviceArgs",
+        "destroyVMArgs",
     ):
         assert removed not in production
 
     # Exports, imports, signatures, and defining equations prove no production use.
-    for builder in (
+    incus_code = _strip_haskell_comments(
+        (core / "src/HostBootstrap/Incus.hs").read_text(encoding="utf-8")
+    )
+    for retired in (
         "createVMArgs",
+        "startVMArgs",
+        "stopVMArgs",
+        "deviceListArgs",
+        "addDiskDeviceArgs",
+        "destroyVMArgs",
+    ):
+        assert re.search(rf"\b{re.escape(retired)}\b", incus_code) is None, retired
+
+    for builder in (
         "startVMArgs",
         "stopVMArgs",
         "execVMArgs",
         "pushFileArgs",
-        "deviceListArgs",
-        "addDiskDeviceArgs",
-        "destroyVMArgs",
         "bcdeditHypervisorLaunchArgs",
         "wslInstallArgs",
         "wslExecArgs",

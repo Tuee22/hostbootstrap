@@ -25,7 +25,26 @@ tests :: TestTree
 tests =
     testGroup
         "runtime dependency package"
-        [ testCase "provider, provider-share, and cluster domains render separately and open exactly" $ do
+        [ testCase "dependency probes retain a supplied kind and leave the compatibility bridge untagged" $ do
+            let tagged = dependencyProbeWithKind ("provider" :: String) (pure (Right 17)) :: DependencyProbe String String () Scope Plan () ()
+                untagged = dependencyProbe (pure (Right 19)) :: DependencyProbe String String () Scope Plan () ()
+            dependencyProbeKind tagged @?= Just "provider"
+            dependencyProbeKind untagged @?= Nothing
+            case tagged of
+                DependencyProbe _ run -> run >>= (@?= Right 17)
+            case untagged of
+                DependencyProbe _ run -> run >>= (@?= Right 19)
+        , testCase "ordinary observation metadata opens only for the provider domain" $ do
+            provider <- expectRight providerPackage
+            providerShare <- expectRight providerSharePackage
+            cluster <- expectRight clusterPackage
+            providerRuntimeObservationMetadata provider @?= Just "receipt"
+            providerRuntimeObservationMetadata providerShare @?= Nothing
+            providerRuntimeObservationMetadata cluster @?= Nothing
+            decoded <- expectRight (runtimeDependencyPackageFromWire (runtimeDependencyPackageWire provider))
+            decoded @?= provider
+            providerRuntimeObservationMetadata decoded @?= Just "receipt"
+        , testCase "provider, provider-share, and cluster domains render separately and open exactly" $ do
             provider <- expectRight providerPackage
             providerShare <- expectRight providerSharePackage
             cluster <- expectRight clusterPackage
@@ -160,17 +179,10 @@ tests =
         , testCase "each domain's coordinate check is an application of one implementation" $ do
             cwd <- getCurrentDirectory
             root <- findRepoRoot cwd >>= maybe (assertFailure "repository root not found") pure
-            dependencySource <-
-                readFile
-                    ( root
-                        </> "core"
-                        </> "hostbootstrap-core"
-                        </> "src"
-                        </> "HostBootstrap"
-                        </> "Lifecycle"
-                        </> "Dependency"
-                        </> "Internal.hs"
-                    )
+            let packageRoot = root </> "core" </> "hostbootstrap-core"
+            description <- SourceGuard.readPackageDescription
+            dependencyPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Dependency.Internal"
+            dependencySource <- readFile dependencyPath
             -- Each implementation is named at its signature, its definition, and
             -- once per domain that opens through it. A requirement added to one
             -- of them therefore reaches every domain rather than one of a pair.
@@ -179,10 +191,16 @@ tests =
         , testCase "the leaf is acyclic and execution owns distinct canonical and live registry fields" $ do
             cwd <- getCurrentDirectory
             root <- findRepoRoot cwd >>= maybe (assertFailure "repository root not found") pure
-            let sourceRoot = root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Lifecycle"
-            dependencySource <- readFile (sourceRoot </> "Dependency" </> "Internal.hs")
-            executionSource <- readFile (sourceRoot </> "Execution" </> "Internal.hs")
-            handoffSource <- readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Handoff.hs")
+            let packageRoot = root </> "core" </> "hostbootstrap-core"
+            description <- SourceGuard.readPackageDescription
+            dependencyPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Dependency.Internal"
+            executionPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Execution.Internal"
+            handoffPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Handoff"
+            dependencySource <- readFile dependencyPath
+            executionSource <- readFile executionPath
+            handoffSource <- readFile handoffPath
+            corePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Execution.Core"
+            coreSource <- readFile corePath
             let packageDeclaration =
                     unlines
                         ( takeWhile
@@ -194,6 +212,12 @@ tests =
                         ( takeWhile
                             (not . isPrefixOf "withAuthenticatedProviderDependencyProbeRequest ::")
                             (dropWhile (not . isPrefixOf "providerDependencyPackageFields ::") (lines handoffSource))
+                        )
+                runtimeDeclaration =
+                    unlines
+                        ( takeWhile
+                            (not . isPrefixOf "type role StepRuntimeCore")
+                            (dropWhile (not . isPrefixOf "data StepRuntimeCore") (lines coreSource))
                         )
             mapM_
                 (\forbidden -> assertBool ("canonical package retains forbidden witness " ++ forbidden) (not (forbidden `isInfixOf` packageDeclaration)))
@@ -214,7 +238,13 @@ tests =
             assertBool "runtime dependency indices are not nominal" ("type role RuntimeDependencyPackage nominal nominal" `isInfixOf` dependencySource)
             assertBool "canonical and live registries are not distinct tuple fields" ("packages, services" `Text.isInfixOf` Text.pack executionSource)
             assertBool "a live service does not check exact canonical membership before running" ("if package `notElem` canonical then pure (Left" `Text.isInfixOf` Text.unwords (Text.words (Text.pack executionSource)))
-            assertBool "StepRuntime does not retain a second registry copy" ("(ResourceCarrier scope planId)" `Text.isInfixOf` Text.pack executionSource)
+            SourceGuard.haskellTokens runtimeDeclaration
+                @?= SourceGuard.haskellTokens
+                    "data StepRuntimeCore scope planId gate dependencyPayload = StepRuntimeCore (IORef (Maybe gate)) (IORef [gate]) (IORef [gate]) (ResourceCarrierCore scope planId dependencyPayload)"
+            SourceGuard.countHaskellTokenSequence
+                (SourceGuard.haskellTokens "type StepRuntime scope planId = StepRuntimeCore scope planId PreparedGate (RuntimeDependencyPackage scope planId)")
+                executionSource
+                @?= 1
             mapM_
                 (\forbidden -> assertBool ("provider wire serializes forbidden authority " ++ forbidden) (not (forbidden `isInfixOf` providerWireSection)))
                 [ "ManagedProviderHandle"

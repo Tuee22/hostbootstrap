@@ -1,32 +1,40 @@
 # Phase 11 — Prepared operations and preconditions
 
-**Status**: Active
+**Status**: Done
 **Depends on**: Phase 10 (versioned sessions, the project journal, and durable fences)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
 **Gate evidence**: 2026-09-06 ; arm64 macOS 26.6.2 (build 25G83), GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --ghc-options=-Werror` ; pass ; covers in-gate
+**Gate evidence**: 2026-10-30 ; MATT-JUNCTION x86_64 Linux CPU container, kernel 6.18.33.2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` ; pass ; covers in-gate
 
 > **Purpose**: Make every external effect require a value whose only lawful origin is one protected
 > compare-and-swap taken immediately before it, over freshly re-probed evidence.
 
 ## Phase Objective
 
-This is the gate every reservation, mutation, and delete passes through. An adapter does not accept a request;
-it accepts a `PreparedOperation` paired with the `PreparedPreconditions` minted with it, and the pair records
-the exact target identity, generation, operation key, precondition set, call digest, session, fence, attempt,
-and journal version. Anything stale, replaced, or not-ready yields no pair at all.
+Prepared adapters consume an inseparable `PreparedOperation`/`PreparedPreconditions` pair inside their
+exact typed package. The pair binds scope, plan and resource indices and retains matching target,
+operation/call, attempt and journal-version evidence. The surrounding resource handles and receipts
+retain generation; `PreparedGate` retains the journal session and fence. Preparation checks the
+descriptor's complete ordered preconditions before returning the pair rather than exposing a sealed
+set a caller can retain and present later.
 
-The point is not extra checking. It is that a caller has no way to *express* an effect without the pair, so
-"the preconditions were verified before the call" is a fact about the type rather than a discipline.
+These prepared boundaries make checked preconditions a prerequisite of the adapter's input. The
+[step-algebra phase](phase-12-step-algebra-and-project-plan.md) owns invocation mode, broker, lease,
+revision, verb and frame admission; the
+[cluster-lifecycle phase](phase-16-cluster-lifecycle-and-cordoning.md) owns backend-minted probe authority;
+and the [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md) owns root
+unknown-phase/call-digest binding and closure of the unchecked gate writer. Those stronger admission
+obligations remain explicit in their owning phases.
 
 ## Sprints
 
 ### Sprint 11.1: Prepared gate coordinate opacity [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`, `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgePreparedGate.hs`,
 `core/hostbootstrap-core/test/compile-fail/RecordUpdatePreparedGatePlan.hs`,
@@ -136,7 +144,7 @@ None.
 ### Sprint 11.2: Exact UTF-8 prepared-record fields [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -304,9 +312,9 @@ cleanup or hardware acceptance completion is claimed.
 
 None.
 
-### Sprint 11.4: Zero-dependency prepared pairs [Active]
+### Sprint 11.4: Zero-dependency prepared pairs [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
@@ -321,8 +329,8 @@ None.
 #### Objective
 
 A descriptor with no plan dependencies reaches a pure prepared pair without a caller-retained
-precondition set. Existing zero-edge checks and pure start/phase/provision wrappers are partially
-built; their single admitted boundary completes that contract. The existing Provider and Colima
+precondition set. Existing zero-edge checks and pure start/phase/provision wrappers share that
+single admitted boundary. The existing Provider and Colima
 consumers adopt this shared boundary as whole-tree compatibility maintenance. Their backend and live
 hardware contracts remain owned by their provider and cluster-lifecycle phases; this foundation uses
 only the plan, gate and receipt vocabulary already available. Command mode, lease, revision, verb and
@@ -397,31 +405,78 @@ Dated evidence, 2026-10-29, native Windows 11 x86_64, GHC 9.12.4 and Cabal 3.16.
 - The live-provider executable reported its default not-requested branch; these results claim no
   live-provider validation. Linux source sync and test launch returned that the owned gate container
   was not running; no Linux test process started and no Linux pass is recorded.
-- The four-command host static gate has not run against this sprint's tree on either host. These
-  focused results leave the sprint Active and do not close the phase.
+- At the time of these focused runs, the four-command host static gate had not run against this
+  sprint's tree on either host. Those focused results alone do not close the sprint or phase.
+
+2026-10-29: The complete four-command host static gate passed on MATT-JUNCTION, native Windows 11
+Pro x86_64 (10.0.26300), GHC 9.12.4 and Cabal 3.16.1.0. From `core/`, unfiltered `cabal test all`
+passed all 3,554 core cases in 367.93 seconds. From `demo/`, unfiltered `cabal test all` passed the
+demo suite and all 3,554 included core cases in 364.56 seconds. Both parent commands exited zero;
+the runtime durations name the core suite, not compilation. From the repository root,
+`poetry run python -m hostbootstrap.check_code` passed Ruff, Black and mypy, and
+`poetry run python -m hostbootstrap.test_all` passed all 376 cases in 7.04 seconds with 100% line
+and branch coverage. Source and test bytes remained unchanged throughout these runs. The provider-live
+component reported its default not-requested branch; no live-provider result is claimed.
+
+The initial Python invocations did not reach the suites: the new Poetry environment lacked Ruff,
+and simultaneous first-use environment creation refused an existing Include directory. After
+`poetry install --with dev --no-interaction`, both complete Python commands passed as recorded above.
+These environment-setup failures are not test failures or a production change.
+
+2026-10-29: The first focused Linux x86_64 CPU-container run failed 1 of 465 cases in 27.75 seconds
+(parent exit one). ColimaSpec's "the shipped command transaction kills its group on hard parent
+death" reported process 9111 present after 5.02 seconds. Its actual `/proc/9111/status` was
+`State: Z (zombie)`, `PPid: 1`; runner 9109 was also a zombie, and PID 1 was `sleep infinity`.
+This container lacked an orphan-reaping init. The unchanged test is owed again in a container
+started with `--init`, as required by the gate-host environment. No test assertion or process-kill
+implementation is changed on this evidence.
+The first unfiltered Linux demo attempt was stopped while its included core suite was running in
+that same unreaping container (parent exit 137, command elapsed 322.31 seconds); it has no complete
+suite result and supplies no passing gate evidence.
+
+The Linux Python checks passed, and all 376 Python cases passed in 5.40 seconds with 100% line and
+branch coverage. The first Python suite attempt on a copy without `.git` failed 35 maintainer-authority
+checks; restoring the genuine checkout metadata made the unchanged complete suite pass. These Python
+passes alone do not close the Linux static gate.
+
+2026-10-29: With the same production and test bytes in the corrected CPU container, all 465 focused
+controls passed in 24.78 seconds (parent exit zero), including the real Colima hard-parent-death case,
+ReconcileSpec/ClusterReconcileSpec/ProviderReconcileSpec, ColimaSpec, SessionSpec, all 19 sealed-export
+inventory cases, DocValidatorSpec, ForgePreparedGate, the six RecordUpdatePreparedGate fixtures and
+MismatchPreparedPairRoles. The gate host was x86_64 Linux kernel 6.18.33.2, GHC 9.12.4 and Cabal
+3.16.1.0, using published `docker.io/tuee22/hostbootstrap:basecontainer-cpu-amd64` at pulled digest
+`sha256:64ccb7f28c96c8c4810bae44719118bf49fbed4700f93919d4d5b06cb22a36d8` with `--init`.
+The detector reported `linux-cpu`; no accelerator was passed into the container.
+
+All four Linux host-static commands then passed. From `core/`, unfiltered `cabal test all` passed
+all 3,556 cases in 208.15 seconds; from `demo/`, unfiltered `cabal test all` passed all 165 demo cases
+in 1.39 seconds and all 3,556 included core cases in 208.16 seconds. From the repository root,
+`poetry run python -m hostbootstrap.check_code` passed Ruff, Black and mypy, and
+`poetry run python -m hostbootstrap.test_all` passed all 376 cases in 5.75 seconds with 100% line and
+branch coverage. Each parent command exited zero, with no failing test context. The provider-live
+component reported its default not-requested branch. The complete Windows and Linux static gates
+close this sprint; the failed and interrupted setup attempts above remain recorded.
 
 #### Remaining Work
 
-Run the focused ReconcileSpec/ProviderReconcileSpec/ColimaSpec, SessionSpec, sealed inventory,
-DocValidatorSpec and prepared-gate/pair compiler controls on Linux. Run all four host-static commands
-of section JJ on Windows and Linux against the completed implementation, record their actual results,
-and then close this sprint. The pure zero-edge implementation and its documentation are complete.
+None.
 
-### Sprint 11.5: The plan-minted execution descriptor [Active]
+### Sprint 11.5: The plan-minted execution descriptor [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
-`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
 #### Objective
 
-Give a step a value that names its own node, so it can reach a gate. The descriptor and
-Protected token-boundary checks are already implemented; current closure owes exact regression
-evidence rather than another parser rewrite.
+A step carries a value that names its own node, so it can reach its gate. The plan-minted descriptor
+and protected-store token-boundary checks bind that gate and its durable record to one exact operation
+identity.
 
 #### Deliverables
 
@@ -454,22 +509,47 @@ descriptor from another plan cannot prepare in this session", and "a plain opera
 encoded key's record", which refuses `core.deploy-kind` and `a:b:c`.
 `cabal test all --ghc-options=-Werror` from `core/` passed 944/944 on 2026-08-05 (aarch64-osx, GHC 9.12.4).
 
-The sprint closes when a `SessionSpec` case exists and passes under `cabal test all` from `core/` asserting
-that `mkRecordName` refuses `core:.x` and `core:x.` with `ProtectedInvalid`, and that
-`registerOperationIntent` of `core:.x` in a session that holds `core/x` refuses rather than addressing
-`core/x`'s record.
+SessionSpec's "mkRecordName refuses a namespaced token beginning with a dot" and "mkRecordName refuses
+a namespaced token ending with a dot" assert exact `ProtectedInvalid` refusals for `core:.x` and
+`core:x.`. Its "a dot-prefixed namespaced operation cannot address an existing path operation" registers
+`core/x` in a real open session, then requires the exact `SessionStoreFailure ProtectedInvalid` refusal
+for `core:.x`, unchanged existing record bytes and physical version, and an unchanged complete protected
+image. These cases and the retained descriptor route controls must pass under unfiltered `cabal test all`
+from `core/`, together with the complete host static gate.
+
+2026-10-29: The three exact regressions add 21 lines in one test module; the production descriptor
+and parser are unchanged. The six focused controls (the three new cases and the retained own-gate,
+cross-plan and plain-versus-encoded cases) passed on native Windows 11 x86_64 in 0.29 seconds and
+the Linux x86_64 CPU container in 0.33 seconds, both GHC 9.12.4 / Cabal 3.16.1.0, with parent exits
+zero. An initial Windows shell-quoting attempt was refused by Cabal's target parser before any test
+ran; the argument-vector launch passed all six controls.
+
+All four Linux host-static commands passed on the same `--init` CPU gate host recorded for Sprint
+11.4. Unfiltered `cabal test all` from `core/` passed all 3,559 cases in 244.95 seconds. From `demo/`,
+unfiltered `cabal test all` passed all 165 demo cases in 1.67 seconds and all 3,559 included core
+cases in 245.63 seconds. From the repository root, `poetry run python -m hostbootstrap.check_code`
+passed Ruff, Black and mypy; `poetry run python -m hostbootstrap.test_all` passed all 376 cases in
+5.96 seconds with 100% line and branch coverage. Every parent exited zero with no failing test
+context, and source/test bytes remained frozen. The provider-live component reported its default
+not-requested branch.
+
+2026-10-29: The complete Windows host static gate passed on MATT-JUNCTION, native Windows 11 Pro
+x86_64, GHC 9.12.4 and Cabal 3.16.1.0. Unfiltered `cabal test all` from `core/` passed all 3,557
+cases in 377.52 seconds. From `demo/`, unfiltered `cabal test all` passed all 165 demo cases in
+5.10 seconds and all 3,557 included core cases in 381.99 seconds. From the repository root,
+`poetry run python -m hostbootstrap.check_code` passed Ruff, Black and mypy;
+`poetry run python -m hostbootstrap.test_all` passed all 376 cases in 6.77 seconds with 100% line
+and branch coverage. Every parent exited zero with no failing test context, source/test bytes
+remained frozen, and the provider-live component reported its default not-requested branch.
+The complete Windows and Linux static gates close this sprint.
 
 #### Remaining Work
 
-- The existing recordNameSegment implementation already refuses a namespaced token beginning or
-  ending with a dot. Add the exact SessionSpec regressions declared in Validation: core:.x and
-  core:x. yield ProtectedInvalid, and registering core:.x cannot address an existing core/x record.
-  Preserve the existing descriptor, cross-plan and plain-versus-encoded route controls and record
-  their complete declared gate results; no production parser change is owed.
+None.
 
-### Sprint 11.6: Fresh snapshot admission [Planned]
+### Sprint 11.6: Fresh snapshot admission [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`,
@@ -482,8 +562,8 @@ that `mkRecordName` refuses `core:.x` and `core:x.` with `ProtectedInvalid`, and
 #### Objective
 
 Fresh IO preparation validates a gate and descriptor before it observes the complete dependency
-snapshot. The chart and existing provider-share path adopt that behavior. The plan-derived edge set
-and traversal exist, but this gate-first boundary and these fresh-call adoptions are not started.
+snapshot. The chart and existing provider-share path adopt that behavior over the plan-derived edge set
+and traversal.
 The cluster-lifecycle phase owns whether each supplied backend probe performs a real external
 re-observation; this foundation owns when it runs and which complete members it must observe.
 
@@ -510,8 +590,13 @@ re-observation; this foundation owns when it runs and which complete members it 
 #### Validation
 
 A counted ready dependency probe reports zero runs before fresh preparation and one afterwards;
-assert the actual matching pair. A first-run not-ready probe returns Left with no pair. Wrong gate
-plan/operation and invalid attempt/version must return their exact refusals with probe count zero.
+assert the actual matching pair. A genuine empty-edge descriptor also prepares a matching pair through
+the fresh entry while an unused managed snapshot member's counted probe stays at zero; the descriptor
+determines the traversal. A first-run not-ready probe returns Left with no pair. Wrong gate
+plan/operation and a zero attempt return their exact refusals with probe count zero. Positive journal
+versions are proved by real first-write/successor CAS readback, the durable-before-callback control and
+the gate constructor/journal-version record-update compiler boundaries. The public gate producer cannot
+mint a zero physical version, so no forged runtime gate supplies that negative.
 The traversal's missing-member and duplicate-member controls exercise the actual preparation path;
 retain "chart preparation refuses a failed readiness reprobe", "chart preparation seals exactly its
 ready cluster dependency", and "the traversal seals the resource-bearing edge set it derived".
@@ -521,15 +606,43 @@ sealed inventory and DocValidatorSpec, then the unfiltered core gate and all fou
 commands on both hosts. These controls prove observation timing and complete membership, not a
 live backend's implementation or an independent journal transaction.
 
+2026-10-29: The implementation changes 236 production lines across the two declared source modules.
+The native Windows `cabal build lib:hostbootstrap-core` passed with the package's `-Werror` policy.
+ReconcileSpec's "fresh snapshot preparation" group contains the actual ready-pair, first-not-ready,
+pre-probe gate refusal, missing/duplicate member and counted chart controls. Its "fresh preparation
+takes the empty-edge branch without probing an unused snapshot member" uses a genuine empty-edge
+provider descriptor, an unused managed snapshot entry, a CAS-issued gate, zero probes and one
+successful pair-consuming callback. ProviderReconcileSpec's "fresh provider-share preparation" group
+exercises the actual share consumer with counted ready/not-ready and gate-first refusal controls.
+
+The completed native Windows focused selection passed all 484 cases in 37.45 seconds (parent exit
+zero), including all 16 new controls, retained reconciliation/Colima/session cases, all 19 sealed-export
+cases, DocValidatorSpec and the prepared gate/pair compiler boundaries. The source/test tree is frozen
+for the complete static gates; that focused result alone does not close the sprint.
+
+2026-10-29: The final Linux focused selection passed the same 484 controls in 23.79 seconds, parent
+exit zero. Both complete four-command host-static gates then passed against the final source/test
+tree, using the native Windows and `--init` Linux CPU gate hosts and pinned toolchains recorded above:
+
+| Gate leg | Native Windows x86_64 | Linux x86_64 CPU container |
+|---|---|---|
+| `cabal test all` from `core/` | 3,573 cases, 388.28 seconds | 3,575 cases, 253.45 seconds |
+| `cabal test all` from `demo/`: demo suite | 165 cases, 5.09 seconds | 165 cases, 1.61 seconds |
+| Same demo command: included core suite | 3,573 cases, 365.01 seconds | 3,575 cases, 250.57 seconds |
+| `poetry run python -m hostbootstrap.check_code` from the repository root | Ruff, Black and mypy passed | Ruff, Black and mypy passed |
+| `poetry run python -m hostbootstrap.test_all` from the repository root | 376 cases, 5.84 seconds, 100% line and branch coverage | 376 cases, 5.66 seconds, 100% line and branch coverage |
+
+Each parent command exited zero with no failing test context, and source/test bytes remained frozen
+through the final runs. The provider-live component reported its default not-requested branch.
+These complete gates close the sprint without claiming a live backend or hardware acceptance.
+
 #### Remaining Work
 
-Implement gate-first fresh snapshot admission and chart/provider-share adoption, add counted ready,
-first-run not-ready and pre-probe refusal controls, correct traversal documentation and any actual
-standing bridge ledger entry, and record all four host-static commands on both hosts.
+None.
 
-### Sprint 11.7: Canonical snapshot preparation [Planned]
+### Sprint 11.7: Canonical snapshot preparation [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs`,
@@ -538,7 +651,10 @@ standing bridge ledger entry, and record all four host-static commands on both h
 `core/hostbootstrap-core/test/ProviderReconcileSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/test/ChainSpec.hs`,
+`core/hostbootstrap-core/test/ReadinessSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgePreconditionSet.hs`,
+`core/hostbootstrap-core/test/compile-fail/ImportOperationPreconditions.hs`,
 `core/hostbootstrap-core/test/compile-fail/MismatchPreparedPairRoles.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -549,7 +665,7 @@ standing bridge ledger entry, and record all four host-static commands on both h
 
 The canonical withPreparedOperation boundary takes a snapshot and performs fresh IO preparation;
 its Cluster and guest-alias consumers use that boundary. No caller can retain an authoritative
-OperationPreconditionSet and present it later. This API/caller adoption is not started. Existing
+OperationPreconditionSet and present it later. Existing
 Cluster and Alias consumers remain compatibility adoptions here; their backend and provider behavior
 belongs to their owning phases, independently of this lower prepared-pair contract.
 
@@ -597,33 +713,71 @@ ForgePreparedGate and MismatchPreparedPairRoles with live, well-typed subjects. 
 or unrelated String/Text mismatch may mask the intended boundary. Run sealed inventory,
 DocValidatorSpec and the complete four-command host-static gate on both hosts before closure.
 
+2026-10-29: The canonical snapshot/IO operation and generic phase APIs, chart/Cluster/Alias adoptions
+and private retained-set producers are implemented. The production delta from the completed Sprint
+11.6 tree is 111 changed lines across three source modules. Native Windows `cabal build
+lib:hostbootstrap-core` passed with the package's warning policy.
+
+The genuine public import in ImportOperationPreconditions compiled before export closure with the
+public-main-only GHC arguments and no source fallback. After the library was rebuilt with both
+retained-set producer exports hidden, the unchanged import failed with GHC-61689 and the complete
+diagnostic `Module 'HostBootstrap.Reconcile' does not export 'withOperationPreconditions'`.
+CompileFailSpec registers that measured phrase. ForgePreconditionSet supplies typed Text coordinates
+and all four actual set fields; its two independent GHC-01928 constructor refusals for
+OperationPreconditionSet and DependencySnapshot were measured and are both required. These compiler
+observations alone do not close the sprint.
+
+The expanded native Windows focused selection passed all 587 cases in 46.86 seconds, parent exit
+zero. It includes canonical preparation and phase cases, the exact missing-dependency refusal,
+ChainSpec, ReadinessSpec, ProviderAliasSpec, retained reconciliation/Colima/session controls, sealed
+exports, documentation validation and the named prepared/compiler/coercion boundaries. Linux focused
+validation and both complete static gates are recorded below.
+
+2026-10-29: Linux passed the same expanded 587-case focused selection in 31.14 seconds, parent exit
+zero. The complete four-command static gate passed on each recorded gate host against the completed
+canonical snapshot/IO implementation:
+
+| Gate leg | Native Windows x86_64 | Linux x86_64 CPU container |
+|---|---|---|
+| `cabal test all` from `core/` | 3,574 cases, 374.20 seconds | 3,576 cases, 228.16 seconds |
+| `cabal test all` from `demo/`: demo suite | 165 cases, 5.08 seconds | 165 cases, 1.40 seconds |
+| Same demo command: included core suite | 3,574 cases, 360.36 seconds | 3,576 cases, 228.86 seconds |
+| `poetry run python -m hostbootstrap.check_code` from the repository root | Ruff, Black and mypy passed | Ruff, Black and mypy passed |
+| `poetry run python -m hostbootstrap.test_all` from the repository root | 376 cases, 5.74 seconds, 100% line and branch coverage | 376 cases, 5.58 seconds, 100% line and branch coverage |
+
+Every parent exited zero with no failing test context, and source/test bytes remained frozen. The
+provider-live component reported its default not-requested branch. These complete static gates close
+the sprint; they do not establish live backend behavior or hardware acceptance.
+
 #### Remaining Work
 
-Adopt the canonical operation and generic phase IO/snapshot signatures in Reconcile, Cluster and Alias,
-hide the public retained-set
-producers, make the omitted-dependency control reach its exact traversal failure, capture/register
-actual compiler diagnostics, align docs and the resolved ledger row, and record all declared gates.
+None.
 
-### Sprint 11.8: Canonical provider-share preparation [Planned]
+### Sprint 11.8: Canonical provider-share preparation [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Readiness.hs`,
 `core/hostbootstrap-core/test/ProviderReconcileSpec.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`,
-`core/hostbootstrap-core/test/SealedExportInventory.hs`
+`core/hostbootstrap-core/test/SealedExportInventory.hs`,
+`core/hostbootstrap-core/test/CompileFailSpec.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgePreconditionSet.hs`,
+`core/hostbootstrap-core/test/compile-fail/ForgeDependencySnapshot.hs`,
+`core/hostbootstrap-core/test/compile-fail/CoerceReconcilePlanRoles.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
-`documents/engineering/testing.md`, `DEVELOPMENT_PLAN/rationale.md`,
-`DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md`
+`documents/architecture/unrepresentable_state.md`, `documents/engineering/testing.md`, `DEVELOPMENT_PLAN/rationale.md`,
+`DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md`, `documents/architecture/readiness.md`,
+`documents/architecture/durable_state.md`, `documents/architecture/composition_methodology.md`
 
 #### Objective
 
 The remaining provider-share caller reaches the canonical fresh preparation boundary. The final
 surface has the generic fresh operation/phase family and explicit pure zero-edge operation/phase
-family, with one shared observation/matching policy and no duplicate alias. This final call-site
-adoption is not started. Provider/backend and live
+family, with one shared observation/matching policy, a private precondition-set representation and
+no duplicate alias. Provider/backend and live
 hardware confirmation remain owned by their provider and cluster-lifecycle phases; this stage
 holds the lower preparation contract and compiles the existing consumers.
 
@@ -634,6 +788,10 @@ holds the lower preparation contract and compiles the existing consumers.
 - Reconcile has one shared fresh snapshot implementation and no duplicate fresh alias. Exact
   export/definition inventory holds the generic operation/phase family and both permanent pure
   zero-edge wrappers; full dependency-aware phase preparation remains available.
+- The precondition-set representation is private to preparation. A genuine public-import fixture
+  proves that boundary, and every retained role-coercion fixture names a public subject and fails
+  for its own registered diagnostic; no missing import masks another boundary. The snapshot
+  constructor has its own independent fixture so a private-set import refusal cannot hide it.
 - Readiness's dependency-probe Haddock names the canonical prepare boundary as the place that runs
   the plan-owned probe, preserving its generation/observation-version checks and backend-probe limits.
 - Lifecycle/testing docs describe the canonical final paths; a named rationale explains the owned
@@ -648,34 +806,72 @@ ProviderReconcileSpec and ReconcileSpec retain the actual ready/not-ready, gate-
 complete-snapshot and exact pair controls under the canonical provider-share call. Exact export and
 definition inventory require the final generic operation/phase and pure empty-edge families; any scoped
 absence guard cites its named rationale. The actual source and exports carry no duplicate alias.
+ForgePreconditionSet imports the actual private representation through the public facade and records
+the measured missing-export diagnostic. CoerceReconcilePlanRoles retains all publicly nameable role
+subjects, with only the private precondition-set subject and its expectation absent; each remaining
+binding must still fail for its own complete diagnostic.
 
 Run these focused controls, SessionSpec, compiler boundaries, sealed inventory, PortabilitySpec and
 DocValidatorSpec, then all four host-static commands on both hosts. Finally rerun Phase 11's own
 exact `cabal test all` from `core/`, record fresh in-gate evidence and close the phase only when every
 sprint has no remaining work. No live provider or hardware confirmation is inferred from these runs.
 
+2026-10-30: The final canonical provider-share adoption and private representation change modifies
+46 production lines across the three declared modules, measured against the completed Sprint 11.7
+tree. Native Windows `cabal build lib:hostbootstrap-core` passed with the package's warning policy.
+The actual definition/export guard requires the four generic/pure-zero entries, private set/producers
+and no redundant entry or reader, and names the existing rationale heading "Preparation owns fresh
+dependency observations".
+
+The genuine OperationPreconditionSet public import with a typed subject compiled on 2026-10-29
+before closure. Against the rebuilt private-type library on 2026-10-30, the same public-main-only
+arguments produced GHC-61689: `Module 'HostBootstrap.Reconcile' does not export 'OperationPreconditionSet'`.
+That observed complete phrase is registered. The independent ForgeDependencySnapshot fixture produced
+its GHC-01928 constructor refusal. All 15 remaining CoerceReconcilePlanRoles bindings independently
+produced their complete expected GHC-18872 diagnostics; no missing import masked them. These compiler
+observations and the library build do not substitute for the complete gates recorded below.
+
+2026-10-30: The final focused selection passed all 614 cases on native Windows in 59.69 seconds and
+on the Linux CPU container in 35.96 seconds, with parent exits zero. Both complete static gates also
+passed against the final source/test tree:
+
+| Gate leg | Native Windows x86_64 | Linux x86_64 CPU container |
+|---|---|---|
+| `cabal test all` from `core/` | 3,576 cases, 399.47 seconds | 3,578 cases, 238.66 seconds |
+| `cabal test all` from `demo/`: demo suite | 165 cases, 5.10 seconds | 165 cases, 1.63 seconds |
+| Same demo command: included core suite | 3,576 cases, 377.75 seconds | 3,578 cases, 232.97 seconds |
+| `poetry run python -m hostbootstrap.check_code` from the repository root | Ruff, Black and mypy passed | Ruff, Black and mypy passed |
+| `poetry run python -m hostbootstrap.test_all` from the repository root | 376 cases, 5.97 seconds, 100% line and branch coverage | 376 cases, 5.85 seconds, 100% line and branch coverage |
+
+Every parent command exited zero with no failing test context; source/test bytes remained frozen.
+The provider-live component reported its default not-requested branch. Completion review also aligned
+the readiness, durable-state and composition descriptions with the snapshot/IO API and clarified where
+prepared-call coordinates are retained.
+
+2026-10-30: After both hosts' complete static gates passed, the separate phase-closing exact
+`cabal test all` from `core/` passed all 3,578 cases in 213.41 seconds, parent exit zero (217.61 seconds
+including Cabal overhead). It ran in the same x86_64 Linux CPU container against the final byte-verified
+governed documentation, including all 17 DocValidator cases, with no source/test/doc changes during
+execution and no failing test context. The provider-live component reported its explicit not-requested
+branch. This closes the sprint and the phase's declared gate without claiming live provider or hardware
+acceptance.
+
 #### Remaining Work
 
-Complete the canonical provider-share adoption and single-entry implementation/inventory, align
-Readiness's Haddock and lifecycle/testing/rationale descriptions, remove any actually resolved bridge
-ledger entry, and record all four static commands plus the phase's exact core gate before closure.
+None.
 
 ## Remaining Work
 
-- Sprint 11.4: validate the implemented pure zero-edge preparation on Linux and run all four host-static commands on Windows and Linux.
-- Sprint 11.5: prove the already implemented token-boundary refusal through exact SessionSpec regressions.
-- Sprint 11.6: add gate-first fresh snapshot admission with counted chart/provider-share observations.
-- Sprint 11.7: adopt canonical IO/snapshot preparation in Cluster/Alias, hide retained-set producers,
-  and prove the exact missing-dependency and compiler refusals.
-- Sprint 11.8: finish canonical provider-share adoption, final single-entry inventory and documentation,
-  then run the phase's complete declared gates.
+None.
 
 ## Documentation Requirements
 
 **Architecture docs to create/update:**
 - `documents/architecture/lifecycle_state_model.md` — gate coordinate opacity, exact fields, canonical fixture addresses, pure zero-edge and fresh snapshot preparation, the prepare compare-and-swap and the prepared pair.
-- `documents/architecture/unrepresentable_state.md` — ordinary gate readers, typed record-update boundaries and private precondition-set producers.
+- `documents/architecture/unrepresentable_state.md` — ordinary gate readers, typed record-update boundaries and the private precondition-set representation/producers.
 - `documents/architecture/composition_methodology.md` — the plan-minted execution descriptor.
+- `documents/architecture/readiness.md` — canonical snapshot preparation and the pure zero-edge family.
+- `documents/architecture/durable_state.md` — the alias consumer's single fresh snapshot traversal.
 
 **Engineering docs to create/update:**
 - `documents/engineering/testing.md` — the durable-before-adapter control, counted fresh observations and prepared-pair compiler boundaries.

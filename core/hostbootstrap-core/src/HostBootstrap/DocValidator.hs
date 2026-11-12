@@ -966,7 +966,7 @@ checkActivePhaseOwnsRemainingWork root file = do
             ]
     pure (missingCitation ++ unknownSprint ++ noneActive)
 
--- | Every @Sprint N.M@ label a line names.
+-- | Every complete @Sprint N.M@ label, including a split sprint's suffix.
 sprintCitations :: String -> [String]
 sprintCitations = go
   where
@@ -974,8 +974,9 @@ sprintCitations = go
     go s
         | "Sprint " `isPrefixOf` s
         , (major@(_ : _), '.' : afterDot) <- span isDigit (drop 7 s)
-        , (minor@(_ : _), _) <- span isDigit afterDot =
-            ("Sprint " ++ major ++ "." ++ minor) : go (drop 7 s)
+        , (minor@(_ : _), afterMinor) <- span isDigit afterDot =
+            let (suffix, remaining) = span isAlphaNum afterMinor
+             in ("Sprint " ++ major ++ "." ++ minor ++ suffix) : go remaining
         | otherwise = go (drop 1 s)
 
 {- | § C and § G: a @Done@ sprint has a @#### Remaining Work@ and it reads

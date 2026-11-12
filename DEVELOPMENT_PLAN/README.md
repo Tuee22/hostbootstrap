@@ -50,33 +50,37 @@ its row here.
 | 8 | [Ensure reconcilers](phase-8-ensure-reconcilers.md) | Done | linux-cpu | — |
 | 9 | [Lifecycle modes and run leases](phase-9-lifecycle-modes-and-run-leases.md) | Done | linux-cpu | — |
 | 10 | [Sessions, journal, and fences](phase-10-sessions-journal-and-fences.md) | Done | linux-cpu | — |
-| 11 | [Prepared operations](phase-11-prepared-operations.md) | Active | linux-cpu | Sprint 11.4; 2 Active, 3 Planned |
-| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Active | linux-cpu | Sprint 12.1; 23 Active, 8 Planned |
-| 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Active | linux-cpu | Sprint 13.1; 17 Active, 7 Planned |
-| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Active | linux-cpu | Sprint 14.4; 12 Active, 8 Planned |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | Sprint 15.2; 28 Active, 7 Planned |
-| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Active | linux-cpu | Sprint 16.1a; 45 Active, 10 Planned |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | Sprint 17.1; 54 Active, 12 Planned |
+| 11 | [Prepared operations](phase-11-prepared-operations.md) | Done | linux-cpu | — |
+| 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
+| 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
+| 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | Sprint 15.50t; 1 Active |
+| 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | Sprint 17.13; 41 Active, 12 Planned |
 | 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | Sprint 18.1; 19 Active, 6 Planned |
-| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | Sprint 19.1; 4 Active, 7 Planned |
-| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | Sprint 20.1; 4 Active, 1 Planned |
-| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | Sprint 21.1; 3 Active, 9 Planned |
-| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | Sprint 22.1; 3 Active, 9 Planned |
-| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | Sprint 23.1; 8 Active |
+| 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | Sprint 19.1; 3 Active, 7 Planned |
+| 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | Sprint 20.10; 1 Active |
+| 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | Sprint 21.1; 3 Active, 7 Planned |
+| 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | Sprint 22.1; 3 Active, 8 Planned |
+| 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | Sprint 23.3; 4 Active |
 | 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.1; 37 Active, 29 Planned |
 | 25 | [Documentation reconciliation](phase-25-documentation-reconciliation.md) | Active | — | Sprint 25.4; 3 Active, 10 Planned |
 | 26 | [Apple Silicon substrate](phase-26-apple-silicon-substrate.md) | Active | **apple-silicon** | Sprint 26.8; 1 Active |
 | 27 | [NVIDIA GPU substrate](phase-27-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 27.11; 1 Active |
-| 28 | [Windows and WSL2 substrate](phase-28-windows-and-wsl2-substrate.md) | Active | **windows** | Sprint 28.5; 1 Active, 1 Planned |
+| 28 | [Windows and WSL2 substrate](phase-28-windows-and-wsl2-substrate.md) | Active | **windows** | Sprint 28.5; 1 Active, 2 Planned |
 | 29 | [Host-portability acceptance](phase-29-host-portability-acceptance.md) | Active | — | Sprint 29.6; 1 Active |
 
 ## The current frontier
 
-Phases 0 through 10 are `Done`; phases 11 through 29 are `Active`. Each Active baseline phase owes
+Phases 0 through 14 and 16 are `Done`; phases 15 and 17 through 29 are `Active`. A `Done` phase whose
+covered source a later sprint edits expires its evidence (§ C) and owes its gate again; phase 16 was reopened that way by
+a `hostbootstrap-core.cabal` edit and closed again on 2026-11-10 once the baseline phases that edit its covered paths
+settled. Phase 15 was reopened the same way on 2026-11-10 by the `provider-live` formatting, and Sprint 15.50t owes its re-run. Each Active baseline phase owes
 code changes and behavioural tests that its own contracts name. Its `## Remaining Work` lists the owing
 sprints; each owing sprint's `#### Remaining Work` names the change and the case that proves it, and its
-`#### Validation` names the cases that close it. Work resumes at the lowest Active phase, phase 11, and
+`#### Validation` names the cases that close it. Work resumes at phase 17, the lowest Active phase that owes code, and
 proceeds in numerical order; inside a phase, the Active sprints come before the Planned ones.
+
 
 Phases 26 and 28 each owe the live accelerator-daemon kill-and-restart that the worked demo hands to
 hardware it cannot reach, at the next visit to an Apple Silicon host and to a native Windows host

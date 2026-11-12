@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ast
+import re
+
 from pathlib import Path
 
 import httpx
@@ -193,6 +196,25 @@ def test_cuda_arch_detection_and_selection(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def test_resolve_cuda_picks_the_newest_numeric_version_not_the_first_or_lexical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    amd64 = [{"architecture": "amd64"}]
+    tags = [
+        {"name": "11.8.0-cudnn-devel-ubuntu24.04", "images": amd64},
+        {"name": "12.9.1-cudnn-devel-ubuntu24.04", "images": amd64},
+        {"name": "12.10.0-cudnn-devel-ubuntu24.04", "images": amd64},
+        {"name": "12.9.0-cudnn-devel-ubuntu24.04", "images": amd64},
+    ]
+    monkeypatch.setattr(base_image, "_iter_cuda_tags", lambda: tags)
+    # "12.9.x" sorts after "12.10.x" lexically and the older tag is listed first:
+    # only a descending numeric sort selects 12.10.0.
+    assert (
+        base_image.resolve_cuda_base_image(Arch.AMD64)
+        == "nvidia/cuda:12.10.0-cudnn-devel-ubuntu24.04"
+    )
+
+
 def test_resolve_cuda_raises_without_compatible_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(base_image, "_iter_cuda_tags", lambda: [])
     with pytest.raises(RuntimeError, match="no nvidia/cuda"):
@@ -309,12 +331,9 @@ def test_compatibility_smoke_can_validate_local_base_before_publish() -> None:
 def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:
     """The smoke's consumer must be buildable by the command this module emits.
 
-    The previous consumer was the demo's Dockerfile, which requires a named build
-    context and four ``required=true`` secrets -- two of them a signed one-use
-    build grant only the project binary's coordinator can mint. The spec looked
-    correct because it pointed at a real consumer; the emitted ``docker build``
-    could never have succeeded. Asserting the spec's fields could not catch that,
-    so this asserts the consumer's own requirements instead.
+    The demo's Dockerfile needs the ``hostbootstrap-builder`` named build context,
+    the ``hostbootstrap-build-config`` secret and a ``check-code`` step presenting
+    three more build secrets, so the smoke's own consumer asks for none of them.
     """
     dockerfile = Path(__file__).resolve().parent.parent / "docker/compatibility-smoke.Dockerfile"
     body = dockerfile.read_text(encoding="utf-8")
@@ -326,21 +345,182 @@ def test_compatibility_smoke_consumer_needs_only_the_base_image() -> None:
     assert "--from=" not in body
 
 
+def test_compatibility_smoke_asks_a_consumer_question_past_the_store() -> None:
+    """Toolchain and store are separate steps, and the consumer reaches past the store."""
+    repo = Path(__file__).resolve().parent.parent
+    body = (repo / "docker/compatibility-smoke.Dockerfile").read_text(encoding="utf-8")
+    runs = re.split(r"^RUN ", body, flags=re.MULTILINE)[1:]
+    toolchain = [run for run in runs if "ghc --version" in run]
+    store = [run for run in runs if "package.db/*.conf" in run]
+    assert len(toolchain) == 1 and len(store) == 1 and toolchain != store
+    assert "'optimization: 2'" in body and "'packages: .'" in body
+    depends = body.split("'  build-depends:'")[1].split("> /tmp/compatibility-smoke")[0]
+    consumer = set(re.findall(r"'\s{4,6},?\s*([a-z][a-z0-9-]*)'", depends))
+    manifests = "".join(
+        manifest.read_text(encoding="utf-8")
+        for manifest in (repo / "core" / "warm-deps").rglob("*.cabal")
+    )
+    absent = {name for name in consumer if name and name not in manifests}
+    assert absent, "the consumer must depend on a package absent from both warm-deps manifests"
+
+
+def _cabal_build_depends(path: Path) -> set[str]:
+    """Every package name any ``build-depends`` field of one Cabal file lists."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    names: set[str] = set()
+    index = 0
+    while index < len(lines):
+        field = re.match(r"^(\s*)build-depends:(.*)$", lines[index])
+        index += 1
+        if field is None:
+            continue
+        indent, body = len(field.group(1)), field.group(2)
+        while index < len(lines) and (
+            not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent
+        ):
+            body += " " + lines[index]
+            index += 1
+        for part in body.split(","):
+            name = re.match(r"\s*([A-Za-z][A-Za-z0-9-]*)", part)
+            if name:
+                names.add(name.group(1))
+    return names
+
+
+def test_core_warm_manifest_lists_every_direct_non_boot_dependency() -> None:
+    """The core closure is warm by listing, not by a transitive path."""
+    repo = Path(__file__).resolve().parent.parent
+    # GHC boot packages, `Win32` (Windows-only) and the package's own libraries.
+    exempt = {"bytestring", "file-io", "Win32", "hostbootstrap-core"}
+    direct = _cabal_build_depends(repo / "core/hostbootstrap-core/hostbootstrap-core.cabal")
+    listed = _cabal_build_depends(repo / "core/warm-deps/core/basecontainer-core-deps.cabal")
+    assert sorted(direct - exempt - listed) == []
+
+
+def test_base_dockerfile_probes_fail_the_build_and_name_its_input_classes() -> None:
+    """No probe pipes into ``grep``; the toolchain is reachable by any uid."""
+    repo = Path(__file__).resolve().parent.parent
+    body = (repo / "docker/basecontainer.Dockerfile").read_text(encoding="utf-8")
+    code = [line for line in body.splitlines() if not line.lstrip().startswith("#")]
+    assert [line for line in code if re.search(r"\|\s*grep\b", line)] == []
+    assert "/root/.ghcup" not in body
+    assert "GHCUP_INSTALL_BASE_PREFIX=/opt/ghcup" in body
+    header = body.split("ARG BASE_IMAGE")[0]
+    assert "GHC_VERSION" in header and "LLVM_MAJOR" in header
+    smoke = (repo / "docker/compatibility-smoke.Dockerfile").read_text(encoding="utf-8")
+    for tool in ("ghc", "cabal"):
+        assert (
+            f"setpriv --reuid=65534 --regid=65534 --clear-groups -- {tool} --numeric-version"
+            in smoke
+        )
+
+
+def test_base_style_sample_check_reads_the_committed_contract() -> None:
+    """Both style tools find the committed options before the sample check runs."""
+    lines = (
+        (Path(__file__).resolve().parent.parent / "docker/basecontainer.Dockerfile")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    check = next(i for i, line in enumerate(lines) if "fourmolu --mode check" in line)
+    for name in ("fourmolu.yaml", ".hlint.yaml"):
+        copy = f"COPY {name} /opt/basecontainer/haskell-deps/{name}"
+        assert copy in lines
+        assert lines.index(copy) < check
+
+
+def test_dockerignore_excludes_build_state_at_every_depth() -> None:
+    """Docker ignore patterns are context-root-anchored, unlike ``.gitignore``."""
+    entries = {
+        line.strip()
+        for line in (Path(__file__).resolve().parent.parent / ".dockerignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    anchored = {
+        "**/dist-newstyle/",
+        "**/.data/",
+        "**/.build/",
+        "**/.hostbootstrap/",
+        "**/.test_data/",
+        "**/cabal.project.freeze",
+    }
+    assert anchored <= entries
+    # No root-only spelling of an anchored entry remains beside its `**/` form.
+    assert {entry.removeprefix("**/") for entry in anchored}.isdisjoint(entries)
+
+
+_DEMO_ALLOWED_ASSIGNMENTS = frozenset({"_FORMATTER_ROOTS", "_LINTER_ROOTS"})
+_DEMO_ALLOWED_FUNCTIONS = frozenset({"_quality_gates"})
+
+
+def _demo_path_constants(source: str, *, allow_cli: bool) -> list[str]:
+    """String constants that spell a ``demo`` path segment, outside the cli allow-list."""
+    tree = ast.parse(source)
+    allowed: set[int] = set()
+    if allow_cli:
+        for node in ast.walk(tree):
+            targets: list[ast.expr] = []
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+            names = {target.id for target in targets if isinstance(target, ast.Name)}
+            owned = bool(names & _DEMO_ALLOWED_ASSIGNMENTS) or (
+                isinstance(node, ast.FunctionDef) and node.name in _DEMO_ALLOWED_FUNCTIONS
+            )
+            if owned:
+                allowed.update(id(child) for child in ast.walk(node))
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in allowed
+        and (
+            node.value == "demo"
+            or node.value.startswith(("demo/", "demo\\"))
+            or "/demo/" in node.value
+        )
+    ]
+
+
 def test_python_owns_no_demo_path() -> None:
     """The bootstrapper never reaches into the demo.
 
     Building the demo means holding build authority, and that authority has one
-    home in the Haskell coordinator. A ``demo/`` path appearing anywhere under
-    ``hostbootstrap/`` is the shape of the defect this replaced: the Python side
-    reaching for a consumer whose build it cannot authorize.
+    home in the Haskell coordinator. A ``demo`` path segment appearing in any
+    string constant under ``hostbootstrap/`` is the shape of the defect this
+    replaced: the Python side reaching for a consumer whose build it cannot
+    authorize. The check parses each module, so ``Path("demo") / "docker"`` and
+    ``("demo", "docker")`` spell the segment and fail it, while the ``cli.py``
+    quality-gate roots are the one named allow-list.
     """
     package = Path(__file__).resolve().parent.parent / "hostbootstrap"
-    offenders = [
-        module.name
+    offenders = {
+        module.name: found
         for module in sorted(package.glob("*.py"))
-        if "demo/" in module.read_text(encoding="utf-8")
-    ]
-    assert offenders == []
+        if (
+            found := _demo_path_constants(
+                module.read_text(encoding="utf-8"), allow_cli=module.name == "cli.py"
+            )
+        )
+    }
+    assert offenders == {}
+
+
+def test_demo_path_check_refuses_a_segment_spelling() -> None:
+    for source in (
+        'target = context / "demo" / "docker" / "Dockerfile"',
+        'roots = ("demo", "docker")',
+        'path = "demo/docker/Dockerfile"',
+        'path = "build/demo/Dockerfile"',
+    ):
+        assert _demo_path_constants(source, allow_cli=False) != []
+    allowed = '_FORMATTER_ROOTS = (("demo", "src"),)'
+    assert _demo_path_constants(allowed, allow_cli=True) == []
+    assert _demo_path_constants(allowed, allow_cli=False) == ["demo"]
 
 
 def test_one_ghc_version_governs_host_image_and_guest() -> None:

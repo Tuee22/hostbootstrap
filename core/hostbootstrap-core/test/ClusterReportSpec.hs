@@ -14,7 +14,7 @@ to a value needs no POSIX (§ JJ).
 module ClusterReportSpec (tests) where
 
 import Data.Either (isLeft)
-import Data.List (intercalate)
+import Data.List (intercalate, sort)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Cluster.Report
@@ -75,6 +75,13 @@ answerTests =
         classifyNvkindCreateReport (Left "nvkind missing") @?= Left (ClusterCommandUnrun "nvkind missing")
         classifyNvkindCreateReport (Right (CapturedRun (ExitFailure 1) "" "setup failed\n"))
             @?= Left (ClusterCommandExited 1 "setup failed")
+    , testCase "mutations admit progress but retain exact process refusals" $ do
+        classifyClusterMutationReport (Right (CapturedRun ExitSuccess "created\n" "Creating cluster\n")) @?= Right ()
+        classifyClusterMutationReport (Left "kind missing") @?= Left (ClusterCommandUnrun "kind missing")
+        classifyClusterMutationReport (Right (CapturedRun (ExitFailure 7) "ignored\n" "refused by kind\nmore\n"))
+            @?= Left (ClusterCommandExited 7 "refused by kind")
+        classifyClusterMutationReport (Right (CapturedRun (ExitFailure 1) "" ""))
+            @?= Left (ClusterCommandExited 1 "no diagnostic")
     , testCase "each fault renders as itself" $ do
         let rendered =
                 map
@@ -93,11 +100,14 @@ answerTests =
     , testCase "a body that does not end in a newline is a refusal" $
         assertBool "unterminated" (isLeft (classifyClusterListing "demo" (answered "demo")))
     , testCase "a carriage return is a refusal rather than a trimmed row" $
-        assertBool "carriage return" (isLeft (classifyClusterListing "demo" (answered "demo\r\n")))
+        classifyClusterReport clusterReportLineBound (answered "a\r\n")
+            @?= Left (ClusterReportUnreadable "the cluster report carries a carriage return")
     , testCase "a byte outside ASCII is a refusal" $
-        assertBool "non-ascii" (isLeft (classifyClusterListing "demo" (answered "dem\xe9\n")))
+        classifyClusterReport clusterReportLineBound (answered "a\xe9\n")
+            @?= Left (ClusterReportUnreadable "the cluster report carries a byte outside ASCII")
     , testCase "an empty row is a refusal rather than a dropped one" $
-        assertBool "empty row" (isLeft (classifyClusterListing "demo" (answered "demo\n\n")))
+        classifyClusterReport clusterReportLineBound (answered "a\n\n")
+            @?= Left (ClusterReportUnreadable "the cluster report carries an empty row")
     , testCase "a line past the admitted bound is a refusal" $
         assertBool
             "over-long"
@@ -176,6 +186,11 @@ kubeconfigTests :: [TestTree]
 kubeconfigTests =
     [ testCase "a well-framed document is returned whole" $
         classifyKubeconfig (answered body) @?= Right body
+    , testCase "successful kubeconfig read admits chatter but validates its body" $ do
+        classifyKubeconfig (Right (CapturedRun ExitSuccess body "Reading kubeconfig\n")) @?= Right body
+        classifyKubeconfig (Right (CapturedRun (ExitFailure 2) body "no such cluster\nmore\n"))
+            @?= Left (ClusterCommandExited 2 "no such cluster")
+        assertBool "progress cannot authorize an empty body" (isLeft (classifyKubeconfig (Right (CapturedRun ExitSuccess "" "progress\n"))))
     , testCase "an empty kubeconfig is a refusal" $
         assertBool "empty" (isLeft (classifyKubeconfig (answered "")))
     , testCase "an unterminated kubeconfig is a refusal" $
@@ -198,13 +213,18 @@ kubeconfigTests =
 readinessTests :: [TestTree]
 readinessTests =
     [ testCase "a quiet success is ready" $
-        classifyApiReadiness (answered "ok") @?= ApiReady
+        classifyApiReadiness (answered "ok") @?= Right ApiReady
     , testCase "a control plane that refuses is not ready rather than a fault" $
-        classifyApiReadiness (Right (CapturedRun (ExitFailure 1) "" "connection refused\n")) @?= ApiNotReady
+        classifyApiReadiness (Right (CapturedRun (ExitFailure 1) "" "Unauthorized\nmore\n")) @?= Right (ApiNotReady "Unauthorized")
     , testCase "a success that complained is not ready" $
-        classifyApiReadiness (Right (CapturedRun ExitSuccess "ok" "warning\n")) @?= ApiNotReady
-    , testCase "a command that produced no child is not ready" $
-        classifyApiReadiness (Left "kubectl not found") @?= ApiNotReady
+        classifyApiReadiness (Right (CapturedRun ExitSuccess "ok" "warning\n")) @?= Right (ApiNotReady "warning")
+    , testCase "an unlaunched kubectl is a refusal, never API-not-ready" $
+        classifyApiReadiness (Left "kubectl not found") @?= Left (ClusterCommandUnrun "kubectl not found")
+    , testCase "an API refusal with no diagnostic still retains an explicit message" $
+        classifyApiReadiness (Right (CapturedRun (ExitFailure 1) "" "")) @?= Right (ApiNotReady "no diagnostic")
+    , testCase "an API refusal retains only one bounded diagnostic line" $
+        classifyApiReadiness (Right (CapturedRun (ExitFailure 1) "" (replicate (clusterReportLineBound + 20) 'x' <> "\nsecond\n")))
+            @?= Right (ApiNotReady (Text.replicate clusterReportLineBound "x"))
     ]
 
 -- ---------------------------------------------------------------------------
@@ -215,6 +235,18 @@ nodeTests =
     [ testCase "every declared node Ready is readiness" $
         classifyApiNodes declared (answered (nodeDocument [(controlPlane, True), (worker, True)]))
             @?= Right NodesReady
+    , testCase "Ready node order is independent of declaration order" $ do
+        let names = controlPlane : ["demo-worker" <> show number | number <- [2 :: Int .. 10]]
+        classifyApiNodes names (answered (nodeDocument [(name, True) | name <- sort names])) @?= Right NodesReady
+    , testCase "non-ASCII label bytes are refused before decoding" $
+        classifyApiNodes [] (answered "{\"items\":[],\"label\":\"\xe9\"}\n")
+            @?= Left (ClusterReportUnreadable "the API server reported a node list carrying a byte outside ASCII")
+    , testCase "a wide character cannot become a JSON quote through low-byte packing" $
+        classifyApiNodes [] (answered "{\"items\":[],\"label\":\"\x122\"}\n")
+            @?= Left (ClusterReportUnreadable "the API server reported a node list carrying a byte outside ASCII")
+    , testCase "a node list past the shared document ceiling is refused before decoding" $
+        classifyApiNodes [] (answered (replicate (kubeconfigByteBound + 1) ' ' <> "\n"))
+            @?= Left (ClusterReportUnreadable "the API server reported a node list past the admitted bound")
     , testCase "one declared node not Ready is not readiness" $
         classifyApiNodes declared (answered (nodeDocument [(controlPlane, True), (worker, False)]))
             @?= Right NodesNotReady

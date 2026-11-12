@@ -85,8 +85,48 @@ tests =
             , testCase "an unsettled record under the same key is a conflict, not an overwrite" $
                 withOwnership $ \_ session key path -> do
                     _ <- expectRight =<< acquireDataRoot row session key path
+                    before <- readRecordBytes session key
                     again <- acquireDataRoot row session key path
                     expectConflict "a second acquisition" again
+                    after <- readRecordBytes session key
+                    after @?= before
+            , testCase "the unbound absent record exists before exclusive directory creation" $
+                withOwnership $ \_ session key path ->
+                    withOwnershipRow row $ \primitives -> do
+                        let ordered =
+                                ownershipRow
+                                    primitives
+                                        { rowCreateDirectory = \target -> do
+                                            bytes <- readRecordBytes session key
+                                            record <- expectRight (parseOriginRecord bytes)
+                                            originRecordOrigin record @?= OriginAbsent
+                                            originRecordBinding record @?= Nothing
+                                            rowCreateDirectory primitives target
+                                        }
+                        _ <- expectRight =<< acquireDataRoot ordered session key path
+                        present <- doesDirectoryExist path
+                        assertBool "the actual kernel created the directory" present
+            , testCase "losing exclusive creation forgets the unbound record and preserves the winner" $
+                withOwnership $ \_ session key path ->
+                    withOwnershipRow row $ \primitives -> do
+                        let raced =
+                                ownershipRow
+                                    primitives
+                                        { rowCreateDirectory = \target -> do
+                                            createDirectory target
+                                            writeFile (target </> "winner.txt") "another process"
+                                            rowCreateDirectory primitives target
+                                        }
+                        refused <- acquireDataRoot raced session key path
+                        case refused of
+                            Left (DataRootFailure _ _) -> pure ()
+                            other -> assertFailure ("expected occupied creation, got " <> show other)
+                        settled <- readProtectedRecord session key
+                        settled @?= Right Nothing
+                        recovered <- expectRight =<< recoverDataRoot row session key path
+                        recovered @?= DataRootAlreadyAbsent
+                        content <- readFile (path </> "winner.txt")
+                        content @?= "another process"
             , testCase "the record round-trips through the one canonical codec" $ do
                 let encoded = renderOriginRecord (originRecord OwnedDirectory OriginAbsent)
                 fmap originRecordOrigin (parseOriginRecord encoded) @?= Right OriginAbsent
@@ -149,16 +189,48 @@ tests =
                     renameDirectory path (path <> "-original")
                     createDirectory path
                     writeFile (path </> "stranger.txt") "not yours"
+                    before <- readRecordBytes session key
                     refused <- releaseDataRoot row session key acquired
                     expectConflict "releasing a replacement" refused
                     survived <- doesFileExist (path </> "stranger.txt")
                     assertBool "the replacement is untouched" survived
+                    after <- readRecordBytes session key
+                    after @?= before
             , testCase "a vanished directory is refused rather than reported removed" $
                 withOwnership $ \_ session key path -> do
                     acquired <- expectRight =<< acquireDataRoot row session key path
                     removeDirectoryRecursive path
+                    before <- readRecordBytes session key
                     refused <- releaseDataRoot row session key acquired
                     expectConflict "releasing an absent root" refused
+                    after <- readRecordBytes session key
+                    after @?= before
+            , testCase "a replacement after clause-four observation is refused before content clearing" $
+                withOwnership $ \_ session key path -> do
+                    acquired <- expectRight =<< acquireDataRoot row session key path
+                    before <- readRecordBytes session key
+                    withOwnershipRow row $ \primitives -> do
+                        let parked = path <> "-observed-original"
+                            raced =
+                                ownershipRow
+                                    primitives
+                                        { rowObserveIdentity = \target -> do
+                                            observed <- rowObserveIdentity primitives target
+                                            moved <- doesDirectoryExist parked
+                                            if moved
+                                                then pure ()
+                                                else do
+                                                    renameDirectory target parked
+                                                    createDirectory target
+                                                    writeFile (target </> "stranger.txt") "late replacement"
+                                            pure observed
+                                        }
+                        refused <- releaseDataRoot raced session key acquired
+                        expectConflict "clearing a late replacement" refused
+                    content <- readFile (path </> "stranger.txt")
+                    content @?= "late replacement"
+                    after <- readRecordBytes session key
+                    after @?= before
             , testCase "a receipt cannot release another run's record" $
                 withOwnership $ \store session key path -> do
                     acquired <- expectRight =<< acquireDataRoot row session key path
@@ -175,19 +247,39 @@ tests =
                 withOwnership $ \_ session key path -> do
                     -- Exactly the crash window: the origin says absent, the
                     -- directory exists, and no managed identity was ever bound.
-                    _ <-
-                        expectRight
-                            =<< compareAndSwapProtectedRecord
-                                session
-                                key
-                                ExpectAbsent
-                                (renderOriginRecord (originRecord OwnedDirectory OriginAbsent))
+                    recordUnboundAbsence session key
                     createDirectory path
-                    writeFile (path </> "generated.txt") "from the dead run"
                     recovered <- expectRight =<< recoverDataRoot row session key path
                     recovered @?= DataRootAbsenceRestored
                     present <- doesDirectoryExist path
-                    assertBool "generated content is not adopted" (not present)
+                    assertBool "the empty unbound generation is removed" (not present)
+                    settled <- readProtectedRecord session key
+                    settled @?= Right Nothing
+            , testCase "an unbound non-empty directory is a conflict with content and record unchanged" $
+                withOwnership $ \_ session key path -> do
+                    recordUnboundAbsence session key
+                    createDirectory path
+                    writeFile (path </> "stranger.txt") "unattributed content"
+                    before <- readRecordBytes session key
+                    refused <- recoverDataRoot row session key path
+                    expectConflict "recovering unbound content" refused
+                    content <- readFile (path </> "stranger.txt")
+                    content @?= "unattributed content"
+                    after <- readRecordBytes session key
+                    after @?= before
+            , testCase "an unbound absent-origin record whose directory is gone settles already absent" $
+                withOwnership $ \_ session key path -> do
+                    recordUnboundAbsence session key
+                    recovered <- expectRight =<< recoverDataRoot row session key path
+                    recovered @?= DataRootAlreadyAbsent
+                    settled <- readProtectedRecord session key
+                    settled @?= Right Nothing
+            , testCase "a bound absent-origin record whose directory is gone settles already absent" $
+                withOwnership $ \_ session key path -> do
+                    _ <- expectRight =<< acquireDataRoot row session key path
+                    removeDirectoryRecursive path
+                    recovered <- expectRight =<< recoverDataRoot row session key path
+                    recovered @?= DataRootAlreadyAbsent
                     settled <- readProtectedRecord session key
                     settled @?= Right Nothing
             , testCase "a kill after the identity binding restores absence too" $
@@ -207,7 +299,7 @@ tests =
                     expectConflict "recovering over a replacement" refused
                     survived <- doesFileExist (path </> "stranger.txt")
                     assertBool "the replacement is untouched" survived
-            , testCase "an absent-original run whose directory is already gone settles cleanly" $
+            , testCase "recovery with no record reports already absent" $
                 withOwnership $ \_ session key path -> do
                     acquired <- expectRight =<< acquireDataRoot row session key path
                     _ <- expectRight =<< releaseDataRoot row session key acquired
@@ -240,7 +332,7 @@ unsupportedRow :: OwnershipRow
 unsupportedRow =
     ownershipRow
         OwnershipPrimitive
-            { rowCapabilities = OwnershipCapabilities False False False False
+            { rowCapabilities = OwnershipCapabilities False False False
             , rowObserveIdentity = unreachable
             , rowOpenExclusive = unreachable
             , rowCreateDirectory = unreachable
@@ -291,6 +383,17 @@ readRecordBytes session key = do
     case stored of
         Right (Just record) -> pure (protectedRecordBytes record)
         other -> assertFailure ("expected a stored record, got " <> show other)
+
+recordUnboundAbsence :: ProtectedSession session -> RecordKey -> IO ()
+recordUnboundAbsence session key = do
+    _ <-
+        expectRight
+            =<< compareAndSwapProtectedRecord
+                session
+                key
+                ExpectAbsent
+                (renderOriginRecord (originRecord OwnedDirectory OriginAbsent))
+    pure ()
 
 expectConflict :: (Show value) => String -> Either DataRootError value -> IO ()
 expectConflict label outcome = case outcome of

@@ -36,6 +36,6 @@ runAsStillRunning ::
     IO
         ( Either
             ReconcileError
-            (PhaseAdvance Scope Plan ProviderResourceIdentity ProviderResource Running)
+            (PhaseAdvance Scope Plan ProviderResourceIdentity ProviderResource Running, Maybe ReconcileError)
         )
 runAsStillRunning call = runColimaCleanup call

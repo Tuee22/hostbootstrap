@@ -3,46 +3,17 @@ module HostBootstrap.Ensure.Colima.Backend.Routing (
 )
 where
 
-{- | Admit only commands whose connection and credential route remains the
-exact owned Colima context. Refusal is decided before any effect.
+{- | Docker parses global options before the subcommand. The managed route
+supplies the context itself, so callers must start with an allowed subcommand;
+subsequent arguments belong to that subcommand or its child program.
 -}
-validRoutedDockerArguments :: [String] -> Bool
+validRoutedDockerArguments :: [String] -> Either String ()
 validRoutedDockerArguments arguments =
     case arguments of
-        command : _ -> validCommand command && all validArgument arguments
-        [] -> False
-  where
-    validCommand command =
-        case command of
-            initial : _ ->
-                initial /= '-'
-                    && command `notElem` ["context", "login", "logout", "buildx"]
-            [] -> False
-    validArgument value =
-        value `notElem` exactOverrides
-            && not (any (`prefixOf` value) attachedOverrides)
-    exactOverrides =
-        [ "-c"
-        , "-H"
-        , "--context"
-        , "--host"
-        , "--config"
-        , "--tls"
-        , "--tlsverify"
-        , "--tlscacert"
-        , "--tlscert"
-        , "--tlskey"
-        ]
-    attachedOverrides =
-        [ "-c"
-        , "-H"
-        , "--context="
-        , "--host="
-        , "--config="
-        , "--tls="
-        , "--tlsverify="
-        , "--tlscacert="
-        , "--tlscert="
-        , "--tlskey="
-        ]
-    prefixOf prefix value = take (length prefix) value == prefix
+        [] -> Left "Docker command requires a subcommand"
+        "" : _ -> Left "Docker command requires a subcommand"
+        ('-' : _) : _ -> Left "Docker command may not override the owned Colima route"
+        command : _
+            | command `elem` ["context", "login", "logout", "buildx"] ->
+                Left "Docker subcommand is forbidden on the owned Colima route"
+            | otherwise -> Right ()

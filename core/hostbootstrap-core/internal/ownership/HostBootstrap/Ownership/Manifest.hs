@@ -26,6 +26,8 @@ module HostBootstrap.Ownership.Manifest (
     ownershipManifestEntries,
     prefixOwnershipManifest,
     mergeOwnershipManifests,
+    projectOwnershipManifest,
+    admitOwnershipManifestRemainders,
     ownershipManifestDigest,
     ownershipDirectoryChainDigest,
     renderOwnershipManifest,
@@ -39,11 +41,10 @@ import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import Data.List (group, sortOn)
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text.Encoding
 import Data.Word (Word32, Word8)
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
-    OwnershipFault (OwnershipMalformed),
+    OwnershipFault (OwnershipMalformed, OwnershipOccupied),
     PayloadDigest,
     objectIdentityText,
     parseObjectIdentityHex,
@@ -51,7 +52,6 @@ import HostBootstrap.Ownership.Object (
     payloadDigestText,
  )
 import Numeric (readHex, readOct, showHex, showOct)
-import System.FilePath (isAbsolute, normalise, splitDirectories)
 
 data ManifestEntryKind
     = ManifestMutableFile
@@ -61,35 +61,42 @@ data ManifestEntryKind
     | ManifestSocket
     deriving (Eq, Show)
 
-data OwnershipManifestEntry = OwnershipManifestEntry
-    { manifestEntryPath :: FilePath
-    , manifestEntryIdentity :: ObjectIdentity
-    , manifestEntryMode :: Word32
-    , manifestEntryKind :: ManifestEntryKind
-    }
+data OwnershipManifestEntry = OwnershipManifestEntry ByteString.ByteString ObjectIdentity Word32 ManifestEntryKind
     deriving (Eq, Show)
+
+manifestEntryPath :: OwnershipManifestEntry -> ByteString.ByteString
+manifestEntryPath (OwnershipManifestEntry path _ _ _) = path
+
+manifestEntryIdentity :: OwnershipManifestEntry -> ObjectIdentity
+manifestEntryIdentity (OwnershipManifestEntry _ identity _ _) = identity
+
+manifestEntryMode :: OwnershipManifestEntry -> Word32
+manifestEntryMode (OwnershipManifestEntry _ _ mode _) = mode
+
+manifestEntryKind :: OwnershipManifestEntry -> ManifestEntryKind
+manifestEntryKind (OwnershipManifestEntry _ _ _ kind) = kind
 
 newtype OwnershipManifest = OwnershipManifest [OwnershipManifestEntry]
     deriving (Eq, Show)
 
-mutableManifestEntry :: FilePath -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
+mutableManifestEntry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
 mutableManifestEntry path identity mode = entry path identity mode ManifestMutableFile
 
-immutableManifestEntry :: FilePath -> ObjectIdentity -> Word32 -> PayloadDigest -> Either OwnershipFault OwnershipManifestEntry
+immutableManifestEntry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> PayloadDigest -> Either OwnershipFault OwnershipManifestEntry
 immutableManifestEntry path identity mode digest = entry path identity mode (ManifestImmutableFile digest)
 
-directoryManifestEntry :: FilePath -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
+directoryManifestEntry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
 directoryManifestEntry path identity mode = entry path identity mode ManifestDirectory
 
-symbolicLinkManifestEntry :: FilePath -> ObjectIdentity -> Word32 -> ByteString.ByteString -> Either OwnershipFault OwnershipManifestEntry
+symbolicLinkManifestEntry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> ByteString.ByteString -> Either OwnershipFault OwnershipManifestEntry
 symbolicLinkManifestEntry path identity mode target
     | ByteString.null target || ByteString.length target > 4096 = Left (OwnershipMalformed "an ownership manifest link target is empty or over-long")
     | otherwise = entry path identity mode (ManifestSymbolicLink target)
 
-socketManifestEntry :: FilePath -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
+socketManifestEntry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> Either OwnershipFault OwnershipManifestEntry
 socketManifestEntry path identity mode = entry path identity mode ManifestSocket
 
-entry :: FilePath -> ObjectIdentity -> Word32 -> ManifestEntryKind -> Either OwnershipFault OwnershipManifestEntry
+entry :: ByteString.ByteString -> ObjectIdentity -> Word32 -> ManifestEntryKind -> Either OwnershipFault OwnershipManifestEntry
 entry path identity mode kind
     | not (validRelative path) = Left (OwnershipMalformed "an ownership manifest path is not canonical and relative")
     | mode .&. 0o7777 /= mode = Left (OwnershipMalformed "an ownership manifest mode exceeds permission bits")
@@ -105,13 +112,50 @@ mkOwnershipManifest entries
 ownershipManifestEntries :: OwnershipManifest -> [OwnershipManifestEntry]
 ownershipManifestEntries (OwnershipManifest entries) = entries
 
-prefixOwnershipManifest :: FilePath -> OwnershipManifest -> Either OwnershipFault OwnershipManifest
+prefixOwnershipManifest :: ByteString.ByteString -> OwnershipManifest -> Either OwnershipFault OwnershipManifest
 prefixOwnershipManifest prefix (OwnershipManifest entries)
     | not (validRelative prefix) = Left (OwnershipMalformed "an ownership manifest prefix is not canonical and relative")
-    | otherwise = mkOwnershipManifest [value{manifestEntryPath = prefix ++ "/" ++ manifestEntryPath value} | value <- entries]
+    | otherwise = traverse (\value -> repath (prefix <> "/" <> manifestEntryPath value, value)) entries >>= mkOwnershipManifest
+
+repath :: (ByteString.ByteString, OwnershipManifestEntry) -> Either OwnershipFault OwnershipManifestEntry
+repath (path, OwnershipManifestEntry _ identity mode kind) = entry path identity mode kind
 
 mergeOwnershipManifests :: [OwnershipManifest] -> Either OwnershipFault OwnershipManifest
 mergeOwnershipManifests manifests = mkOwnershipManifest (concatMap ownershipManifestEntries manifests)
+
+-- | Project one namespace without decoding any retained name.
+projectOwnershipManifest :: ByteString.ByteString -> OwnershipManifest -> Either OwnershipFault OwnershipManifest
+projectOwnershipManifest prefix (OwnershipManifest entries)
+    | not (validRelative prefix) = Left (OwnershipMalformed "the manifest namespace prefix is not canonical and relative")
+    | otherwise = traverse repath
+        [ (ByteString.drop (ByteString.length opening) (manifestEntryPath value), value)
+        | value <- entries
+        , opening `ByteString.isPrefixOf` manifestEntryPath value
+        ] >>= mkOwnershipManifest
+  where
+    opening = prefix <> "/"
+
+-- | Return only present entries whose complete retained authority still matches.
+-- Canonical manifests are path-sorted, so a merge skips lawful absence while
+-- refusing an added or changed entry. Exclusions cover whole raw subtrees.
+admitOwnershipManifestRemainders :: [ByteString.ByteString] -> OwnershipManifest -> OwnershipManifest -> Either OwnershipFault [OwnershipManifestEntry]
+admitOwnershipManifestRemainders exclusions (OwnershipManifest retained) (OwnershipManifest current)
+    | not (all validRelative exclusions) = Left (OwnershipMalformed "a manifest subtree exclusion is not canonical and relative")
+    | otherwise = admit (filter included retained) (filter included current)
+  where
+    included value = not (any (contains (manifestEntryPath value)) exclusions)
+    contains path root = path == root || (root <> "/") `ByteString.isPrefixOf` path
+    admit _ [] = Right []
+    admit [] (value : _) = outside value
+    admit (retainedEntry : retainedRest) observed@(currentEntry : currentRest) =
+        case compare (manifestEntryPath retainedEntry) (manifestEntryPath currentEntry) of
+            LT -> admit retainedRest observed
+            GT -> outside currentEntry
+            EQ
+                | retainedEntry == currentEntry -> (retainedEntry :) <$> admit retainedRest currentRest
+                | otherwise -> Left (OwnershipOccupied ("a namespace remainder differs from its retained authority: " <> label currentEntry))
+    outside value = Left (OwnershipOccupied ("a namespace remainder is outside its retained authority: " <> label value))
+    label = Text.pack . hexBytes . manifestEntryPath
 
 ownershipManifestDigest :: OwnershipManifest -> String
 ownershipManifestDigest = show . Hash.hashWith Hash.SHA256 . renderOwnershipManifest
@@ -133,7 +177,7 @@ renderOwnershipManifest (OwnershipManifest entries) =
     renderEntry value =
         unwords
             [ kindTag (manifestEntryKind value)
-            , hexBytes (Text.Encoding.encodeUtf8 (Text.pack (manifestEntryPath value)))
+            , hexBytes (manifestEntryPath value)
             , Text.unpack (objectIdentityText (manifestEntryIdentity value))
             , showOct (manifestEntryMode value) ""
             , kindDetail (manifestEntryKind value)
@@ -161,8 +205,7 @@ parseOwnershipManifest raw
   where
     parseEntry row = case words (ByteString.Char8.unpack row) of
         [tag, rawPath, rawIdentity, rawMode, detail] -> do
-            pathBytes <- parseHexBytes rawPath
-            path <- either (const malformed) (Right . Text.unpack) (Text.Encoding.decodeUtf8' pathBytes)
+            path <- parseHexBytes rawPath
             identity <- parseObjectIdentityHex (Text.pack rawIdentity)
             mode <- parseMode rawMode
             case (tag, detail) of
@@ -178,16 +221,14 @@ parseOwnershipManifest raw
         _ -> malformed
     malformed = Left (OwnershipMalformed "ownership manifest bytes are not canonical")
 
-validRelative :: FilePath -> Bool
+validRelative :: ByteString.ByteString -> Bool
 validRelative path =
-    not (null path)
-        && length path <= 4096
-        && not (isAbsolute path)
-        && normalise path == path
-        && all validComponent (splitDirectories path)
-        && all (`notElem` ("\r\n\0" :: String)) path
+    not (ByteString.null path)
+        && ByteString.length path <= 4096
+        && all validComponent (ByteString.split 47 path)
+        && not (ByteString.any (`elem` [0, 10, 13]) path)
   where
-    validComponent component = not (null component) && component /= "." && component /= ".."
+    validComponent component = not (ByteString.null component) && component /= "." && component /= ".."
 
 hexBytes :: ByteString.ByteString -> String
 hexBytes = concatMap byteHex . ByteString.unpack

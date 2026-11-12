@@ -30,18 +30,34 @@ by authority ownership:
 
 | Boundary | Source owner | Retained evidence |
 |---|---|---|
-| Plan admission and projections | [ProjectPlan](../../core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs) | Exact scope, finalized specification, configuration, canonical root, and plan |
-| Installed identity and invocation | [Authority](../../core/hostbootstrap-core/src/HostBootstrap/Authority.hs) | Installed executable, protected-store origin, live root, and closed verb |
-| Mode, lease, recovery, and migration | [Lifecycle.Mode](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs) | Project/store/epoch, snapshot and lease versions, exact recovery lineage |
-| Journals, sessions, fences, and receipts | [Lifecycle.Session](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs) | Exact operation, broker generation, journal version, and terminal state |
+| Plan admission and projections | [ProjectPlan](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan.hs) | Exact scope, finalized specification, configuration, canonical root, and plan |
+| Installed identity and invocation | [Authority](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs) | Installed executable, protected-store origin, live root, and closed verb |
+| Mode, lease, recovery, and migration | [Lifecycle.Mode](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs) | Project/store/epoch, snapshot and lease versions, exact recovery lineage |
+| Journals, sessions, fences, and receipts | [Lifecycle.Session](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs) | Exact operation, broker generation, journal version, and terminal state |
 | Root command entry | [Command.LifecycleEntry](../../core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs) | One root store, admitted plan and catalog, and verb-specific terminal continuation |
-| Recursive catalog | [Lifecycle.RootedPlan](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/RootedPlan.hs) | Exact parent/child edges and independently reproducible child plans |
-| Rooted execution | [Lifecycle.Rooted](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted.hs) | Catalog-selected sessions, signed grants, observations, and receipt order |
-| Reverse traversal | [Teardown](../../core/hostbootstrap-core/src/HostBootstrap/Teardown.hs) | Same-plan reverse forest and complete settlement evidence |
-| Durable multi-record publication | [Lifecycle.Transaction](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs) | Canonical target roles, exact predecessors, and idempotent successors |
+| Recursive catalog | [Lifecycle.RootedPlan](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs) | Exact parent/child edges and independently reproducible child plans |
+| Rooted execution | [Lifecycle.Rooted](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs) | Catalog-selected sessions, signed grants, observations, and receipt order |
+| Reverse traversal | [Teardown](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs) | Same-plan reverse forest and complete settlement evidence |
+| Durable multi-record publication | [Lifecycle.Transaction](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs) | Canonical target roles, exact predecessors, and idempotent successors |
 
 The linked modules are the signature reference. This document describes their contracts without maintaining
 a second set of illustrative signatures that can drift from the compiled API.
+
+The descriptive reconciler-refusal types have one declaration home in the private
+reconcile-error-internal leaf library. Public Reconcile reexports the same
+constructors and selectors. Private policy can share these values without importing
+the main library; the vocabulary depends only on base and text and carries no
+plan, ownership, lifecycle or effect authority.
+
+Direct Colima derives its local profile, 128-bit namespace key and home path through
+the private Backend.Names policy. The admitted project, lifecycle profile, provider
+resource/frame and canonical plan root all contribute to the domain-separated digest.
+Production and separate Harness runs have separate keys and projected homes. The
+public profile predicate delegates to the same project validator; the shared default
+profile returns the production Conflict detail. Full key lineage in the protected
+stage refuses a short-profile collision instead of adopting the other scope. These
+pure projections grant no effect authority; the prepared public adapter still binds
+them to its admitted plan, budget and closed backend.
 
 Root command entry carries the original executable-verified `InstalledProjectIdentity` from Command
 through the private Entry brackets into `authorizeRootProject`. Before reserving an invocation, the
@@ -52,23 +68,26 @@ The same identity continues into the Session reservation bridge under its one pr
 Live journal/source/current-cursor checks precede the leaf comparison and one-use reservation;
 recorded project text cannot supply its own independent comparator.
 
+The provider-wall reservation retains its gate's plan, operation, session, fence, attempt and journal
+version. `preparePlanOwnedProviderWallCall` compares the reservation's recorded plan digest and
+provider operation key with the exact supplied plan and provider resource before preparing a wall call.
+Two provider operations with the same fence cannot use each other's reservation. The reservation's
+constructor remains hidden and every type index is nominal; its gate admission still has the producer
+boundary described below.
+
 These boundaries fall short of the contracts below:
 
 - `PreparedGate` has three producers. The two production mints are `withPreparedGate` in
-  [Lifecycle.Session](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs) (the root's journal
+  [Lifecycle.Session](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs) (the root's journal
   admission) and the frame executor's local reification in
   [Lifecycle.FrameExecutor](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs), both
   through the package-private `mintPreparedGate`. The third, `recordDurableUnknown`, is exported unchecked from
-  the Cabal-exposed [Lifecycle.Prepared](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs)
+  the Cabal-exposed [Lifecycle.Prepared](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs)
   and has no caller under `src/`. A holder of a `ProtectedSession` can call it with a record key and coordinates
   of its own choosing, so a gate does not by itself prove that the interpreter's journal admission prepared that
   operation. The [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
   owns this gap, because the producer's remaining callers and its compile-fail boundary live in files that
   phase and the providers phase introduce.
-- Generic operation and phase preparation still accept a retainable `OperationPreconditionSet` from
-  public producers. The pure zero-edge entries derive their own empty set, but complete fresh snapshot
-  admission remains a target of the
-  [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md).
 - The migration brackets in `Lifecycle.Mode` described under [Recovery and migration](#recovery-and-migration)
   have no command caller: a Production `up` never freezes a revision, and no Production recovery path
   dispatches on an incomplete or completed migration. The only revision-kind dispatcher is the Harness
@@ -94,11 +113,26 @@ plan builder, and child projector into one `FinalizedProjectSpec`. `withProjectP
 its validated configuration, canonical root, and lifecycle profile together and generates a fresh plan identity.
 A recovered plan instead reproduces the exact persisted snapshot under a verified recovered profile.
 
+Generic budget admission reads the optional `BudgetCfg` resource projection from that plan's retained
+validated configuration. It carries the same plan indices through fit, partition, slice and prepared-wall
+planning; it accepts no separate envelope and grants no provider mutation authority. The
+[resource-budgeting guide](../engineering/resource_budgeting.md) owns this planning contract and its
+current production-adoption boundary.
+
+Reconstruction and independent-input refinement are pure joins. Their mismatch diagnostic reports the
+recovered profile's expected specification/configuration digest followed by the candidate's observed
+digest. Successful reconstruction retains the existing local plan identity and exact persisted bytes.
+
+`withRecoveredProductionLifecycleProfile` purely checks the retained project's name, store identity,
+epoch coordinates, canonical bytes and binding evidence from one Open package. Its profile retains the
+admitted local plan identity. The bridge checks supplied evidence; the protected opener establishes
+that evidence against the store before this pure join.
+
 The single `PlannedResource` representation and its seven resource-family tags live in
 [`Plan.Resource`](../../core/hostbootstrap-core/internal/plan-resource/HostBootstrap/Plan/Resource.hs),
 inside the Cabal-private `plan-resource-internal` library. That leaf depends only on `base` and `text`.
 It retains the plan digest, operation key, and frame, with all five identity indices nominal.
-[`Lifecycle.Plan`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs) owns validated-graph
+[`Lifecycle.Plan`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs) owns validated-graph
 projection, resource minting, and the readers; public facades re-export the same opaque identity.
 
 The admitted `ProjectPlan` derives its non-empty forward order, topology, stable snapshot, and verb-indexed
@@ -107,11 +141,19 @@ non-contiguous frame segments, and invalid descent structure before execution. `
 plan-derived topology to the descriptive binary context and generates matching frame evidence. Decoded
 context fields alone grant no lifecycle authority.
 
+Canonical snapshot format 8 frames the exact root with a big-endian 64-bit byte count and big-endian
+32-bit `Char` code points. The kernel exports `IndexedPlanSnapshot` abstractly; the public stable view
+is descriptive. Existing-bound structural refusal preserves the snapshot record key and kernel reason
+in `ModeMalformedCanonicalSnapshot`, before callbacks or protected-record mutation. Structural
+admission accepts only an absolute root. Reconciliation consumes that same admitted `ProjectPlan`;
+the plan kernel alone owns the canonical encoder.
+
 An executing step receives `StepExecution`, containing its own operation identity and validated dependency
 prefix. Its own and projected prepared gates come from the interpreter's journal admission. A step cannot
 choose an unrelated plan operation or replace its dependency set with caller-supplied observations.
-`withOperationPreconditions` traverses the complete resource-bearing prefix and runs its registered
-probes, returning a set the caller can retain.
+`withPreparedOperation` traverses the complete resource-bearing prefix and runs its registered probes
+inside preparation. The sealed set is an implementation detail, not an argument a caller can retain
+and present later.
 
 `withPreparedZeroDependencyOperation` and `withPreparedZeroDependencyPhaseTransition` are pure entries
 for descriptors with no dependencies. They derive the empty set internally, accept no retained set,
@@ -119,14 +161,49 @@ and refuse a descriptor that declares any edge. No dependency probe IO is needed
 phase entry also preserves the managed receipt and transition checks. Provider start, provision and
 phase callers and the existing Colima cleanup caller use these explicit zero-edge paths.
 
-Generic `withPreparedOperation` and `withPreparedPhaseTransition` retain their dependency-aware,
-set-taking behavior. Matching such a set does not re-run its probes. The complete target is that
-preparation validates the gate and descriptor, then observes the whole ordered snapshot itself;
-the [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) owns that fresh
-admission and its caller adoptions. The generic phase capability remains available for nonempty
-dependencies; the pure zero-edge entry does not replace it.
+`withPreparedOperation` validates the gate's plan, operation, attempt and journal version before
+running any dependency probe. It owns the traversal of the descriptor's complete ordered snapshot and
+jointly returns the matching prepared pair only after every required observation succeeds. Missing or
+duplicate members and failed observations refuse without delivering the pair. Chart and provider-share
+preparation use the same fresh implementation, with one probe per required member and no earlier sealed set.
+
+Generic `withPreparedPhaseTransition` takes a snapshot in IO and validates its exact managed receipt and
+transition before canonical operation preparation. It retains full nonempty-dependency capability;
+the pure zero-edge entry does not replace it. Cluster and guest-alias preparation pass their actual
+complete snapshots directly. The traversal and empty-set producers are private, so callers cannot
+retain an authoritative set outside preparation.
+
+`completePreparedPhaseTransition` is the sole public producer of `PhaseAdvance`. It consumes that
+opaque prepared package, retains its matched handle/receipt/transition, checks the observed generation
+and yields the target-phase handle and receipt. The generation-check helper is module-private.
+Completion is pure; the supplied gate's journal admission and phase/call binding belong to its producer.
+The separately owned public gate-producer gap remains recorded in [Current Status](#current-status).
+
+Provider-share preparation also uses the canonical operation entry. The precondition-set type and
+its representation remain private to preparation; the public surface consists of the generic fresh
+operation/phase family and the explicit pure zero-edge operation/phase family.
 
 ## Opaque capabilities
+
+Provider-bound execution retains one strong backend and one managed Running provider. Its producer
+checks the ownership receipt and compares the origin resource key, generation, semantic fingerprint,
+and backend realization before entering the continuation. A mismatch returns the corresponding complete
+`ConflictDetail` without running a provider command. The bound route retains the resolved tools;
+Incus guest execution checks UUID and nonce around the guest command, and Direct has no guest route.
+
+A guest-alias declaration requires canonical absolute POSIX paths. The alias cannot equal or be a
+segment-wise ancestor of its target, or lie at or beneath the target's alias authority directory.
+Preparation joins the strong alias backend's provider generation, the provider-derived managed share,
+and the alias plan digest before probing the share. Any mismatch returns its complete conflict
+without entering the probe or continuation; a failed fresh share probe prevents sealing the call.
+
+The node alias route receives planned resources and managed handles from its caller and compares
+their keys before deriving its declared projection. It takes the projected gate once; preparation
+owns generation/origin/plan agreement and the fresh share probe. The node supplies no prior commit
+proof, so a retained recorded link settles Repaired. Private alias observations carry ownership
+outcomes; settlement obtains generation from its prepared handle, while the indexed result retains
+only descriptive generation metadata for its public view.
+
 
 The lifecycle and reconcile modules keep constructors for handles, readiness, ownership receipts, prepared
 operations, and settlement evidence private. Nominal roles prevent coercion across scope, plan, frame,
@@ -142,14 +219,25 @@ bounded and classifies ready, retryable not-ready, failure, conflict, and unsupp
 versions, with zero versions refused before `Ready` is constructed. Probe construction and observation
 live in the Cabal-private readiness kernel, which shares the single planned-resource identity. Public
 `Readiness` specializes its generic-config probe to `HostConfig` and retains the polling and validation.
-The public `dependencyProbe` wrapper remains a separate visibility gap;
-[readiness](readiness.md#current-status) states its owner.
+Dependency probes have a nominal readiness index and retain their runtime kind. Public producers require
+backend-minted evidence, and traversal refuses an absent or different kind on a readiness-bearing edge;
+[readiness](readiness.md#current-status) describes the producers.
 `ObservedReady` is descriptive compatibility evidence and is not accepted as plan-indexed authority.
 
 Managed provider, share, cluster, and guest-alias wrappers retain their backend origin. The prepared adapter
 consumes the matching gate, current handle, and matched dependency observations; settlement verifies that the returned
 observation belongs to that exact operation. A readiness value or receipt from another backend cannot be
 substituted merely because its fields would have the same shape.
+
+`discoverProvider` mints `ProviderCapability` only from a matching managed Running handle and its
+bound executor. The opaque capability retains that handle, the selected provider and the complete
+discovery report. Its accessors expose provider kind, discovery, the managed handle's runtime
+`Word64` generation and lift context. Scope, plan, provider, backend and fresh capability indices
+remain nominal; the fresh capability identity is contained by the rank-2 continuation.
+
+The capability carries no guest executor or arbitrary argv runner. The narrower strong alias backend
+takes its retained lift context to reach the provider frame. This descriptive capability does not
+replace prepared mutation authority or the alias backend's ownership checks.
 
 Some convenience actions return `IO ()` and the demo's `changed` wrapper reports only that they returned.
 That wrapper does not claim idempotence, ownership, or readiness. Managed effects and destructive release
@@ -195,14 +283,16 @@ identity.
 
 Every receipt producer rejects an empty operation at its ingress, including durable resource-record
 rendering/parsing and persisted-journal verification. Receipt validation compares key and generation; it
-does not repeat an unreachable empty-operation check. The planned rebinding bridge still has a generic
-phase index; the [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
-owns the later phase-specific recovery restriction.
+does not repeat an unreachable empty-operation check. The planned rebinding bridge preserves the handle's existing phase. The dependency owner supplies
+sealed phase authority only after a fresh package probe; running-provider recovery checks the actual
+native observation separately from the already checked logical package generation. The
+[host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) records the
+phase-specific recovery and its negative-client and runtime validation.
 
 ## Sessions, fences, and terminal acknowledgement
 
 This page is the architectural home of the session, journal, fence, prepare, and terminal-acknowledgement
-protocol that every lifecycle invocation runs; [Lifecycle.Session](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs)
+protocol that every lifecycle invocation runs; [Lifecycle.Session](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs)
 implements it, and [harness workflow](harness_workflow.md) summarizes what the Harness path relies on.
 
 | Term | Meaning |
@@ -227,9 +317,19 @@ epochs. An unsettled live fence refuses prepare before its operation record chan
 
 `FenceEpoch scope planId` and `OldPermitsFenced scope planId` have nominal scope and plan parameters
 and private constructors. Neither a held token nor a held fence set can be re-indexed through `coerce`.
-The generic `currentFence`, `establishInitialFence`, and `fenceOldPermits` still address caller-supplied
-plan text and permit caller-selected result indices; those roles do not authenticate a canonical
-runtime plan or make the indices generative. The fence set is not yet indexed by its protected entry.
+`currentFence`, `establishInitialFence`, `rotateFence` and `fenceOldPermits` take an actual
+`ProjectPermit scope planId`, read its privately retained journal coordinate and return values at its
+indices. The permit retains that coordinate alongside its transaction version without a public digest
+reader. This binds outputs to the supplied witness; it does not authenticate an admitted `ProjectPlan`
+or make permit indices generative. The fence set is not yet indexed by its protected entry.
+
+Recovery obtains its internal permit by opening the project journal before fencing. An Open/Idle
+journal is read-only; absent state creates coordinator/project bookkeeping, and published Applying
+targets are redone before fencing enumerates outstanding operations. Closing, corrupt or unreadable
+state can refuse before fence mutation. That administrative pre-open calls no session-allocation or prepare API,
+interpreter or backend; redo can materialize already-published operation/session targets. Fencing still precedes the complete manifest and recorded-session
+interpreter, with current-broker readmission last. The existing post-manifest open obtains a fresh
+permit if coordinator recovery advanced its version.
 
 `ProjectPermit`, `ClosingProjectPermit`, `ClosedProjectPermit`, `OperationSession` and
 `OperationAdvance` have nominal scope and plan parameters. An already typed value cannot be re-indexed
@@ -312,7 +412,19 @@ and `AdoptionTeardownObservedForeign` classify as `TerminalDisposition`, alongsi
 branches. Neither disposition grants further effect authority. Classifying an observed success writes
 no `Committed` state and mints no `PriorCommitProof` or ownership receipt.
 
-**Prepare.** A prepare retains the session/epoch broker comparison and re-reads the journal under the
+**Prepare.** The common Chain interpreter enters `withLifecyclePrepareEntry` before initial journal
+bookkeeping and before each node's intent registration, projected preparations and own preparation.
+The actual cursor retains the acquisition journal's original Mode-owned live validator through fresh,
+resumed and successor values. Under the same protected entry as the accepted writes, that fixed
+boundary checks command/cursor origin, verb and frame, the actual descriptor frame, live Mode/epoch,
+the private broker allocation, the bound lease and the retained snapshot binding. Snapshot identity
+consists of its specification, plan, configuration and canonical bytes. Frozen lease data refuses on
+state before lease version comparison; bound records still require the exact physical version.
+An authority refusal retains its typed cause in `SessionAuthorityFailure`. No registration, unknown
+record or accepted callback follows refusal, and initial refusal precedes journal/session bookkeeping.
+Settlement and cleanup retain their existing entry checks for already-prepared work.
+
+The lower Session prepare retains the session/epoch broker comparison and re-reads the journal under the
 exclusive protected entry. After the shared project-journal permit check, it requires an Open session,
 canonically decodes that record's durable broker marker, and compares it with the presented broker epoch.
 Malformed marker text returns `SessionRecordCorrupt "session"`; disagreement returns
@@ -356,6 +468,14 @@ successful transition returns the sole successor permit. In the rooted path the 
 `FrameComplete`, and returns `ReceiptRecorded` only after an idempotent `ReceiptConfirm` (see
 [Cross-process authority handoff](#cross-process-authority-handoff)). A later teardown invocation receives a
 fresh per-edge token and session.
+
+For a successful current-frame callback, Chain settles its own gate and the projected gates the callback
+took. A declared projection left untaken keeps that successful session open. A returned non-success
+observation or synchronous callback exception terminalizes every gate the node opened, including untaken
+projections, and closes the exact session before reporting the observation or rethrowing the original
+exception value. The exception retains its type above Chain; the root command entry may render it at its
+operator boundary. A secondary terminal-settlement or close failure reports both that failure and the
+original callback exception. Such unresolved settlement remains recoverable rather than being acknowledged.
 
 A listed operation whose record is absent is not settled. Both `unsettledOperations` and the recovery
 classifier `classifySessionOperations` return `SessionOperationUnregistered name`, so neither session
@@ -545,14 +665,55 @@ bounds, strict text decoding, positive revision, known tags and exact trailing-b
 `verifyPlanSnapshot` scopes a decoded protected record; it does not independently authenticate an admitted
 plan. Indexed snapshot admission performs the exact specification, config, bytes and plan-digest join.
 
+The outer envelope's specification-text frame accepts up to 1,048,576 bytes. Canonical step decoding
+separately checks closed reverse policies, boolean tags, positive revisions, lift kinds and provider
+targets before comparing the content digest. A recomputed digest cannot admit a malformed field.
+
+`withPersistedPlanSnapshot` validates the retained root, lease and plan origin before writing. One
+protected entry persists and reads back the exact snapshot, then closes before fresh lease binding
+opens its own entry. The evidence continuation runs after both stages succeed.
+
 Fresh lease binding compare-and-swaps one exact unbound version against its same-scope verified snapshot
 and retains its digest indices and fresh-binding origin. Rebinding returns the exact bound-state conflict.
 An unbound lease can already have a persisted snapshot while awaiting this transition. An existing bound
 lease has a separate recovery admission; it does not enter the fresh-Up continuation.
 
+The opaque `ValidatedLifecycleContext` joins the canonical root and already-open store to the current
+frame, project frame and validated context that `withCurrentFrame` admits together. Public admission
+checks root/store origin, configuration identities and fresh runtime witnesses. Its private constructor
+retains that established evidence and classifies root membership from the first frame of the admitted
+nonempty topology. The earlier public topology refusals remain live. Hidden root and nested borrowers
+retain their distinct membership refusals and expose no projection through the public facade. The
+[context evidence rationale](../../DEVELOPMENT_PLAN/rationale.md#lifecycle-context-retains-jointly-admitted-frame-evidence)
+explains why the private constructor needs no repeated failure alternatives for jointly admitted inputs.
+
+The plan-bound acquisition journal admits only the exact root, bound lease, snapshot, digest binding and
+plan after rechecking live mode, lease and snapshot under the lease store's exclusive entry. Its callback
+runs after unlock. One descriptive `AcquisitionBindingCoordinates` record names the eleven immutable
+coordinates: stable scope, project, store, snapshot digest, lease key and version, run, specification digest,
+lease plan digest, broker epoch and root verb. The opener and retained-journal validator share an ordered
+comparison that reports the differing field. The validator receives an independently expected typed verb;
+root authorization supplies its checked verb and reverse-root recovery supplies the source root's Up verb.
+The coordinate record grants no authority and cannot replace the opener's hidden admission token. The live
+plan-bound opener is the acquisition admission route; cursor recovery derives from its admitted journal.
+Reverse-root recovery retains its separately admitted source-record reader. The validated acquisition key
+is derived directly from the immutable binding's project/run/broker coordinates. Lexical definition and
+export guards hold this boundary, with the design justification in
+[the acquisition-admission rationale](../../DEVELOPMENT_PLAN/rationale.md#acquisition-admission-has-one-live-route).
+
+The canonical seven-field cursor record retains its exact acquisition source and frame binding. Its frame
+limit is 4,096 encoded UTF-8 bytes and its complete payload limit is 65,536 bytes. An over-limit requested
+frame yields `SessionCursorBindingInvalid "frame length"`. Malformed or noncanonical durable bytes yield `SessionRecordCorrupt "lifecycle cursor"`; a valid unequal binding yields the specific
+durable-binding mismatch. Neither refusal normalizes the row. Exact resume retains the row's current
+protected record version and writes nothing. `SessionSpec` measures both sides of the byte limits using
+real frame openers and canonical payloads; the largest unequal-payload control proves decoding reaches
+binding validation, without claiming cursor admission from that unequal source.
+
 Down projects `RetainResource` for the provider's `copy-source` node, so its durable share and guest
 alias survive provider stop/restart. Destroy projects `ReleaseResource` for that node only after its
-child subtree settles. Provider `StopFrame` and `DeleteFrame` remain the forest's frame-owner actions.
+child subtree settles. The forest records that child-operation dependency for every parent-frame node,
+without duplicating the child work. Provider `StopFrame` and `DeleteFrame` remain the forest's frame-owner
+actions; independent sibling cleanup may continue after the child settles.
 
 Production closure has two authorized branches:
 
@@ -570,7 +731,7 @@ The mode deletion is last. Every target accepts only its exact predecessor or ex
 so interruption after any prefix is recoverable.
 
 "One redo transaction" is logical, not physical, atomicity. The protected store publishes one record
-atomically. [Lifecycle.Transaction](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs)
+atomically. [Lifecycle.Transaction](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs)
 first publishes a `CoordinatorApplying` descriptor naming every target's expectation and successor, redoes
 each target deterministically, then returns the coordinator to idle. Every authority-producing Session API
 recovers an applying descriptor before it reads state, so a cooperating lifecycle caller never observes a
@@ -617,8 +778,9 @@ The pure `decodeCoordinator` observer is forwarded beside `encodeCoordinator` th
 `Session.Testing` value vocabulary. It returns descriptive data, with no permit producer or transaction
 runner. A decoded Unicode descriptor field is not an admitted Protected identity: the public session
 name grammar remains ASCII. The private `lifecycle-transaction-internal` unit exposes only
-`Session.Testing`; `Lifecycle.Transaction` is hidden in its `other-modules`. The main library retains
-its own hidden Transaction copy. The facade's value vocabulary exposes no permit producer or runner.
+`Session.Testing`; `Lifecycle.Transaction` is hidden in its `other-modules`. Main consumes the separate
+production Transaction copy owned by `handoff-implementation-internal`, where that module is also hidden.
+The facade's value vocabulary exposes no permit producer or runner.
 
 Harness closure is run-specific. Its lease remains live throughout execution and settlement; the abandoned-run
 sweep checks liveness again after recovery callbacks, attempts every incomplete run, and releases Harness mode
@@ -634,6 +796,70 @@ The receiver authenticates the root scope capsule using the independently instal
 key before interpreting the child package. Ordinary and recovery offers retain distinct exact bindings.
 Recovery transports the complete canonical `RecoveryChildPackage`; an adapter alone is insufficient.
 Intermediate links relay bytes and hold no root signing, journal, cursor, or storage authority.
+
+The direct rooted config signer refuses recovery-kind offers. The separate package-aware recovery signer
+derives complete-package and child-config digest claims from one checked canonical `RecoveryChildPackage`
+already carried by the offer. A verified rooted recovery value alone authenticates two unequal signed
+claims; it does not establish package membership or child-config-field admission. The recovery-package
+join reverifies that value against the exact `VerifiedHandoff` and independently installed key, decodes the canonical
+verified payload, and recomputes both the complete-package and embedded child-config digests. Local plan
+admission and live coordinator/process execution remain separate consumers of that evidence.
+
+The standing production consumers have distinct roles: `Handoff.Relay` calls the package-aware signer,
+`Handoff.Receiver` performs the verified package join, and `Teardown.Internal` constructs package DATA
+from catalog-selected child configuration and adapter bytes. These actual call sites establish ownership;
+package/signing/join validation does not establish those consumers' complete carrier, catalog-admission,
+coordinator or real-process integration. Neither package bytes nor either signed value alone grants
+lifecycle, protected-store or signing authority.
+
+Recovery receiver admission checks the signed phase and closed verb before interpreting the remaining
+recovery evidence. Genuine Down offers supply the positive control for wrong-phase and cross-paired
+rooted-proof refusals, with no recovery callback before the complete join. An unsupported wire verb is
+separate hostile DATA: an independently signed transcript retains the same known-key oracle as its
+matching Down control. It establishes the receiver's verb refusal, not a broker-issued unsupported verb
+or a valid later package join.
+
+The receiver's embedded-payload limit is 7 MiB after valid scope authentication and before key-digest,
+binding, Challenge or branch processing. Exact-limit admission and one-byte-over refusal concern that
+payload alone; Protocol separately bounds the complete body at 8 MiB. The recovery continuation retains
+opaque joined evidence. Its private eliminator supplies the edge and closed verb with four derived byte
+views, forcing the rooted binding without exposing it. These DATA boundaries create no catalog package
+producer and establish no process execution or lifecycle authority.
+
+Outer wire sequencing retains one request identity and expected response while an admitted child waits.
+A matching rooted response resumes its running state; completion waits for an exact acknowledgement or
+matching refusal before finishing. Request identity is checked before acknowledgement bytes. An initial
+refusal before any offer has no held identity to compare. Connected-pipe DATA validation covers
+these codec and child-state observations independently of the durable inner lifecycle coordinator. Those
+observations neither admit root/child authority nor establish real-process execution or settlement.
+
+Receiver refusal announcements pass through `childProtocolSend` against the tracked child state and
+active request. An accepted parent `RefusedTag` is not echoed; an accepted `AcknowledgedTag` also makes
+the channel terminal. Receiver and Relay both record terminal consumption, including refusals received
+while serving a relayed request. Later report sends and relay requests are denied locally with no further
+frame, including a callback's first report attempt after a consumed relay refusal. After an acknowledged terminal report, a continuation's later `Left`
+or exception emits no additional protocol frame. Before a decoded Offer establishes an active request,
+there is likewise no refusal to announce. This outer-channel rule establishes no additional durable
+coordinator, root-admission or real-process acceptance guarantee.
+
+Fixed upstream relay operations retain their admitted `ReceivedEdge` and derive their channel, request
+identity and route from it. An actual successful local upstream refusal closes that edge's shared
+transport progress monotonically, preserving the original cause. Later reports, repeated relay use and
+Receiver announcements then emit no frame. A pre-send validation failure inside the operation wrapper
+keeps progress open for the legitimate Receiver refusal. Ordinary and edge-aware awaits share one pure
+reply classification; terminal evidence follows the actual receive or successful send, not any `Left`.
+
+Local child-plan admission consumes `VerifiedConfigHandoff` and its jointly admitted wire/config pair.
+The closed verb, shared `configId` and canonical digest come from that earlier refinement. Project,
+protected-store origin, broker generation and lifecycle scope are derived from the signed binding.
+`withChildProjectPlan` uses the canonical root retained by the opaque drafts; ordinary plan admission
+checks their root, specification, configuration and structure, then compares the rebuilt stable plan digest
+with the signed parent revision. Only that join yields the local `ProjectPlan`, matching `PlanDigestBinding`
+and indexed `ChildPlanAuthority`. This authority proves admission and grants no execution capability.
+
+Production and Harness DATA validation exercises this admission boundary and its exact refusals using
+genuine config and handoff evidence. Catalog selection, live coordinator/session checks, prepared grants,
+child execution and durable settlement remain separate integration boundaries.
 
 A recovery edge keeps its handoff token in a durable map, because a token is 32 random bytes from
 `freshHandoffToken` and cannot be recomputed from its binding. `registerRecoverableAdmittedHandoffEdgeKernel`
@@ -654,6 +880,42 @@ rendered binding, and the token:
 Every path ends with a strict readback of the map at its version and of the token record; a token record that
 is `granted:` at readback refuses with `HandoffTokenConsumed`. The map owns no process, child store, executor,
 lifecycle settlement, or terminal receipt.
+
+`withVerifiedRootedLifecycleResponse` decodes the exact request before response decoding, pairing,
+signature/report validation or callback entry. Malformed-request DATA controls use the same installed key
+as canonical NextNode/Prepared and SettleNode/Settled positives. Each negative signs the exact malformed
+request bytes with a structurally valid response whose request digest commits to those bytes; an invalid
+request has no semantically matching response. Refusals compare the complete `HandoffBindingMismatch`
+detail, including the `rooted lifecycle response ` prefix, and require no callback execution.
+An unexpected successful IO continuation is run before failure, so a zero callback count cannot come
+from leaving that action unevaluated.
+
+One raw byte after a complete nine-frame request yields `rooted lifecycle request field is truncated
+before its frame header`; a complete extra frame instead yields the post-open wrong-field-count refusal.
+Strict framing and scalar admission leave no independent alternate encoding for the final canonical
+rerender backstop, and decoder path checks precede the constructor's cardinality backstop. Those source
+contracts remain separate from reachable malformed-request DATA checks and grant no lifecycle authority.
+
+The response verifier accepts an installed key, exact request bytes, complete signed wire and a
+continuation; it has no separate project-identity argument, and the neutral request carries none.
+Structural decoding and exact pairing precede signature verification. The transcript frames the fixed
+response domain, installed-key digest, complete request and complete unsigned response. Each of the seven
+response families has independent signed-DATA controls for another key and another domain, requiring
+`HandoffRootedLifecycleSignatureInvalid` while retaining the accepted unsigned bytes.
+
+Pairing, body and report refusals retain their complete typed errors. Body-malformation controls retain
+matching request coordinates. A correctly target-signed response with only a foreign request digest
+isolates the digest join; an ordinary cross-request replay already refuses at pairing before signature
+verification. The raw `not a canonical lifecycle report` subject yields `HandoffWireTooLarge` because its
+opening bytes declare an over-limit frame, distinct from a canonical report's domain/version refusal.
+Complete trailing frames exercise the actual field-count grammar; canonical rerendering remains a
+separate source backstop.
+
+The genuine live-broker signer uses the existing private recovery-signing capability and checks exact
+request/family/digest pairing plus the canonical `FrameComplete` report before signing. Its matching
+control and exact wrong-family, foreign-digest, report-domain/version and unsigned-tail refusals exercise
+that producer separately from independent signature DATA. Verification checks that report after signature
+authentication and before callback entry; neither path grants lifecycle execution or durable authority.
 
 `OpenFrame` carries its ancestry in a sealed external envelope. The root admits only a catalog edge and
 returns a signed `Opened` response naming the canonical path and root-issued session, stage, and ordinal.
@@ -706,6 +968,78 @@ unknown versions, trailing or truncated bytes, malformed lengths, duplicate memb
 coordinates. Cryptographic verification binds exact package bytes to the admitted scope and edge; local
 reconstruction then checks their semantic correspondence to the plan.
 
+Runtime activation's Service admission completely decodes the independently selected workload
+manifest before the received manifest. Selected structural or semantic refusal therefore wins before
+received decoding is considered. Existing file reads retain their order and complete before these
+decoder results are selected; this does not change file-read failure priority.
+
+Canonical manifest decoding preserves the existing interleaving: outer framing and UTF-8 in field
+order, canonical secret-digest format at field eight before later fields, and secret-channel outer
+text before inner effect parsing. Inner effects are parsed before outer trailing-byte refusal.
+Only after these checks does the decoder use the real semantic producer. Both opaque values have
+passed it before runtime verification with the installed Activation key.
+
+For two valid manifests, instance, revision and ordered field checks retain their existing order.
+Permitted effects compare as lists: `["read,write"]` differs from `["read", "write"]`; diagnostic
+rendering does not decide equality. Revision disagreement retains its earlier `ActivationRevisionStale`
+refusal.
+
+The canonical activation verifier receives its selected workload as `SelectedActivationManifest`.
+Service assigns that descriptive role only after completely decoding the selected manifest, before
+the existing verifier call. The total role producer accepts an already validated manifest; it neither
+replaces independent selection nor mints activation authority. Unwrapping precedes the unchanged
+ordered runtime comparisons, signature verification and protected-store origin binding.
+
+The received input separately carries `ReceivedActivationManifest`. Service assigns that DATA role
+after complete received-manifest admission, alongside the selected role at the actual verifier call.
+The public total role producer and ordinary eliminator preserve the already validated manifest;
+they add no provenance or authority. Directly swapping the two roles is a type error at both adjacent
+verifier positions. Runtime mismatch order, signature material and origin binding retain their
+existing contracts after both roles are unwrapped.
+
+The Command runtime retains its existing environment reader for measured instance coordinates.
+A present UID/restart pair or host nonce reaches the checked producer. On Windows the ordinary
+reader treats a raw empty value as absent, so that input takes the existing coordinate refusal
+before the producer; a present empty value on POSIX reaches the exact producer refusal.
+Coordinate and producer refusals both follow the existing key read, authority-store opening and
+executable hash, before `runInstalledServiceProgram` loads revision files or admits manifests.
+The producer checks nonemptiness only; it adds no independent platform provenance or lifecycle
+authority. Pure descriptor folding preserves the existing instance identity and framed
+role-admission commitment.
+
+`VerifiedRuntimeRoleActivation` binds the exact manifest, measured binary/wire/private-bundle identities,
+runtime instance and protected-store origin. `ActivationSpec` requires independent literal manifest-digest
+and signature vectors, plus exact malformed-signature parser refusals. These DATA checks establish no
+installation or deployment result. Origin-bound one-use role admission consumes the package before it grants
+lifecycle authority; the [service-runtime phase](../../DEVELOPMENT_PLAN/phase-22-service-runtime.md) owns
+manifest installation, deployment and live `service run` entry.
+
+### Cluster declaration and rendered configuration
+
+The plan-side `withPlanOwnedCluster` joins one admitted plan, its exact cluster/provider resources,
+retained topology and cluster slice. The execution-side `withExecutionOwnedCluster` joins the
+executing cluster descriptor, its provider dependency and matching slice without reconstructing a
+plan. The project supplies the closed Kind/nvkind choice at that declaration boundary; it is desired
+state data and grants no mutation authority. Both packages retain the driver in their resolved plan
+and derive their owner, name, profile, root and placement from the admitted plan or execution.
+
+`withPlanOwnedClusterConfig` reads that retained driver while checking the rendered bytes, digest,
+paths, semantic exposure intents, mappings and workload. It cannot accept another driver or rewrite
+the declaration's driver or node set. The demo's matching binder follows the same rule. Nominal
+plan/resource indices and the constructor's term checks continue to reject foreign members.
+
+Creation retains those canonical bytes and their SHA-256 in the ownership descriptor. Inside the
+exclusive entry, it writes a private config beside the temporary kubeconfig, reads it back and verifies
+its digest before issuing the create command. The driver receives that private config path; edits or
+removal of the consumer's plan-derived file cannot change the prepared creation. Both staging files
+and their private directory are removed on success or refusal.
+
+A managed cluster retains the actual control-plane container identity separately from its journal
+generation; `managedClusterBackendIdentity` projects that ordinary text without granting authority.
+Foreign settlement retains the observed container identity in its detail and offers no managed handle.
+An owned cluster whose bound containers stopped remains owned: its conflict names that identity and
+recommends starting the containers or running `project down` to release through the ownership record.
+
 ## Runtime dependency commitments
 
 Provider and cluster producers publish a canonical dependency package only after exact prepared Ready
@@ -717,6 +1051,21 @@ The invocation-local registry begins empty in each carrier. Its fixed reprobe se
 package and nonce-bound fresh observation request, rechecks lifetime and generation, and returns canonical
 observation data. Consumers open the package from their own execution descriptor and retain exact dependencies
 through preparation. A cached generation number is never substituted for a fresh backend probe.
+
+Rebinding a carried managed handle preserves its old phase; its continuation cannot choose a
+Running or Provisioned index. Carried evidence hides that old phase existentially. The provider
+recovery owner projects a new phase only after the fresh package probe returns the handle's exact
+generation: Running for a provider and Provisioned for its share. One sealed generation-checking
+producer serves all three recovery paths. Its authority constructor stays package-private, following
+the provider-start projection boundary; ordinary clients cannot call it with their own phase claim.
+A mismatched generation returns Conflict before the recovery continuation is delivered.
+
+`PreparedProviderStart` retains an observed handle and its exact journal operation/preconditions
+pair. Its constructor is private; projecting the pair or completing this package requires the
+Cabal-hidden provider-start capabilities. This does not prevent generic reconciliation from
+producing a `ResourceHandle ... ProviderResource Managed Running`. Generic managed handles do not
+supply the owning backend's `ManagedProviderHandle` or bound-exec authority, as pinned by
+`GenericProviderHandleAsManaged.hs` and `GenericProviderHandleAsBoundExec.hs`.
 
 A package is opened in one of three ways, and each is written once with the domain as its argument. The
 **full opener** checks every field the producer sealed, including the journal and receipt commitments. The
@@ -756,6 +1105,16 @@ Run `cabal test all` from `core/`. The evidence is divided by the boundary exerc
 | `OwnershipSpec`, `OwnershipShippedSpec`, provider and cluster suites | Kernel identity, exclusion, origin publication, substitution refusal, and conditional release |
 | `CompileFailSpec` | Nominal indices, constructor opacity, verb distinctions, and the closed service effect row |
 | `CoverageManifest`, `DocValidatorSpec`, `EffectSpec` | Fixed platform accounting, documentation/plan harmony, and single effect/frame/path boundaries |
+
+`ProviderReconcileSpec` asserts a foreign provision's resource key, exact canonical hexadecimal identity detail
+and identity-derived generation from the final settlement callback. Managed provider key, generation and
+observation-version assertions read the settled wrapper. Owner-text checks explicitly describe the
+prepared binding they read; Direct's resource key is read from its settled managed handle.
+
+The cursor callback-interruption case reads the actual persisted row, version and phase before any
+recovery opener can report the acquisition seed. Both callback errors match their exact `IOError` message.
+The source-seed controls compare actual protected acquisition records and freshly reopened journals, so
+retaining an immutable in-memory value cannot satisfy the durable-state evidence.
 
 Journal version controls present one permit to session-open and project-close in both deterministic
 orders. The stale-permit control closes the earlier session first, so an older-open refusal cannot mask
@@ -848,8 +1207,9 @@ ordinary public-only hidden-package refusal; despite its historical name, it che
 boundary, not permit construction. In the same testing-unit-only environment,
 `ImportTransactionRunnerFromTestingUnit.hs` must refuse because Transaction is a hidden module;
 a hidden-package refusal would instead mean that control's setup failed. `SessionSpec`'s named-stanza
-guard requires private visibility, only Testing exposed, Transaction hidden there and the main
-library's hidden copy retained. These controls establish no live provider or killed-at-every-write evidence.
+guard requires private visibility, only Testing exposed and Transaction hidden in its independent DATA
+unit, while Main consumes production Transaction from the hidden `handoff-implementation-internal`
+owner. These controls establish no live provider or killed-at-every-write evidence.
 
 Live-admission controls distinguish the retained-session broker comparison from a changed durable
 marker while keeping the original session, epoch and current permit. Malformed marker text pins the
@@ -872,8 +1232,9 @@ The explicit zero-dependency controls require successful unchanged-operation and
 preparation, exact wrong-plan/operation and positive-attempt checks, and direct refusal of edge-bearing
 descriptors without delivering the continuation. A genuine dependency-bearing managed phase first
 succeeds through generic preparation, then the same descriptor must refuse through the zero-phase
-entry. These are the zero-edge and capability-preservation validation targets; they do not establish
-fresh admission for the generic retained-set paths or live backend behavior.
+entry. The generic phase case also counts fresh snapshot observations and requires receipt,
+transition and gate refusals before probing. These controls establish static preparation behavior,
+not a live backend's observations.
 
 The recorded-phase acknowledgement control uses the existing public `Prepared.recordDurableUnknown`
 producer to write a committed record and mint its matching physical-version gate. Its exact category
@@ -939,3 +1300,45 @@ acceptance phases record the live host and substrate evidence.
 - [Readiness](readiness.md), [ownership invariant](ownership_invariant.md), and [ownership seam](ownership_seam.md)
 - [Composition methodology](composition_methodology.md), [durable state](durable_state.md), and [harness workflow](harness_workflow.md)
 - [Recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md)
+
+The generic provider-start result, projection capability and fresh-managed-phase capability share
+a declaration home in the private provider-start-internal leaf. That library depends only on base.
+The public lifecycle imports those same types without exposing their module or constructors;
+closed owning bridges and generic lifecycle code can share them without a dependency on the
+public authority implementation.
+
+The closed Colima settlement producer lives in the private colima-ownership-internal library.
+It maps native applied/exact results to the matching provider-start result and wall epoch, and
+supplies the private projection capability. The public adapter's unexported continuation uses
+that capability to join the exact prepared journal pair, wall permit and provider-start completion.
+Only a successful pair reaches LiveColimaWall; the public interface retains the same sealed values.
+
+Colima's static owned joins retain the observed provider generation independently of the native
+wall epoch. The actual generic start completion validates the matching receipt against its
+managed handle, and the unexported adapter forwards that same handle and receipt into
+`LiveColimaWall`. Journal variants differing only in session, attempt or physical version settle
+against their own prepared call and refuse the original call. Public Apple execution remains a
+separate live acceptance boundary.
+
+A managed Colima Docker route admits only the exact Managed stage, owner, lineage and acquisition
+invocation through one pure private admission function. Unavailable commands, including native
+timeouts, have no captured run. After a command completes, the ownership driver retains its exit
+and both streams even if the second standing check refuses; the public wrapper preserves that
+capture through its subsequent toolchain check. The descriptive result reports those later
+failures without granting renewed ownership or retry authority.
+
+Colima teardown keeps its semantic release identity separate from the current prepared transition.
+The stable backend invocation digest binds the cleanup call, plan, operation and wall fence.
+A new session, attempt or journal version can prepare the same durably committed release, while
+the opaque transition still retains its exact current gate. A different fence refuses preparation;
+a different stable call, plan or operation changes the release identity.
+
+The opaque prepared Colima cleanup call completes its retained Running-to-Destroyed transition
+at the original managed resource generation whenever conditional release returns success, including
+exact Released replay. Its result pairs that sealed phase advance with any post-call toolchain
+diagnostic; a later standing failure does not withhold an already committed completion. A release
+refusal completes nothing and retains its own typed error. Cleanup discovery explicitly requires an
+existing Colima installation: trusted missing-tool evidence is a retryable failure, while acquisition
+alone may install. A live Docker route revalidates its retained toolchain and never discovers or
+installs. Pure decisions and actual native resolver-fixture results validate these choices; public
+Apple cleanup execution remains live acceptance.

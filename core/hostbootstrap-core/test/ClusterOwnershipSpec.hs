@@ -2,21 +2,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-{- | The cluster's four clauses, held over real objects.
+{- | Pure ownership decisions and authored cluster-model compatibility.
 
-Two kinds of case, and no third. The decisions are applied to values — record
-keys, node orderings, and the rendering of a refusal. The clause-holding effects
-run against a __real protected store__ in a temporary directory and a __real
-cluster client process__ ("FakeCluster"), so nothing here reaches a substitution
-point and nothing can pass against one (§ NN).
-
-Nothing here is host-specific: the client is this suite's own executable and its
-durable state is ordinary files, so the family runs — and is counted — on every
-gate host (§ JJ).
+Record keys, claims, standings and fault rendering are applied to values. The
+effect cases use a real protected store and FakeCluster's authored tool replies;
+those replies are models and do not establish real provider execution under
+section NN. The actual Docker/Kind live gate supplies provider agreement. The
+fixture itself, including its named tool roles, runs on every gate host.
 -}
 module ClusterOwnershipSpec (tests) where
 
 import Control.Monad (forM_)
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Char8 as Bytes
 import Data.Either (isLeft)
 import Data.List (isPrefixOf, isSuffixOf, sortOn)
@@ -24,22 +21,28 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified FakeCluster
 import HostBootstrap.Cluster.Command (ClusterDriver (KindDriver))
-import HostBootstrap.Cluster.Cordon (ResourceBudget, kindNodeCordonLimits, mkResourceBudget, renderQuantityError)
+import HostBootstrap.Cluster.Cordon (ResourceBudget, budgetCpu, budgetMemoryBytes, kindNodeCordonLimits, mkResourceBudget, renderQuantityError)
 import HostBootstrap.Cluster.Ownership hiding (reconcileOwnedCluster)
 import qualified HostBootstrap.Cluster.Ownership as Ownership
 import HostBootstrap.Cluster.Report (
     ClusterPresence (ClusterAbsent, ClusterPresent),
-    ClusterReportFault (ClusterCommandUnrun),
+    ClusterReportFault (ClusterCommandUnrun, ClusterCommandExited),
+    clusterReportFaultMessage,
  )
 import HostBootstrap.Cluster.Resume (
     ClusterStanding (ClusterCreatedUnbound, ClusterNothingDone, ClusterOwned),
+    ClusterStandingConflict (ClusterUnderNoRecord, NodeReplaced),
+    clusterStandingConflictMessage,
  )
+import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl), mkAbsExe)
-import HostBootstrap.Ownership.Object (Origin (OriginAbsent, OriginPresent))
+import HostBootstrap.HostTool (HostTool (Docker, Kind, Kubectl, Helm, Nvkind), mkAbsExe)
+import HostBootstrap.Ownership.Tape (RecordSubject (..), forgetRecord, publishFreshRecord, recordTape)
+import HostBootstrap.Ownership.Object (ObjectIdentity, ObjectKind (ReportedObject, OwnedDirectory), originRecord, Origin (OriginAbsent, OriginPresent), OwnershipFault (OwnershipProbeFailed, OwnershipMalformed), mkObjectIdentity, ownershipFaultMessage)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent),
     ProtectedError (ProtectedInvalid),
+    protectedErrorMessage,
     ProtectedRecord (protectedRecordBytes),
     ProtectedSession,
     RecordKey,
@@ -51,10 +54,8 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import System.Directory (canonicalizePath, createDirectoryIfMissing, doesFileExist, getTemporaryDirectory)
-import System.Environment (getExecutablePath)
+import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, removeFile)
 import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeFileName, (</>))
-import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -107,7 +108,19 @@ ownedAt root = owned{ownedClusterKubeconfig = root </> "store" </> "cluster.kube
 
 objectTests :: [TestTree]
 objectTests =
-    [ testCase "the cluster's record lives under its own declared name" $
+    [ testCase "canonical worker addresses accept 200 bytes and refuse 201" $ do
+        let name = replicate 89 'a'
+            subject = owned{ownedClusterName = name, ownedClusterControlPlane = name <> "-control-plane"}
+        fmap (Text.length . recordKeyText) (ownedNodeRecordKey subject (name <> "-worke")) @?= Right 200
+        ownedNodeRecordKey subject (name <> "-worker") @?= Left (ProtectedInvalid
+            "a record key must be at most 200 ASCII bytes (observed 201, namespace cluster)")
+    , testCase "a long standard worker address is refused at 221 encoded bytes" $ do
+        let name = replicate 99 'a'
+            subject = owned{ownedClusterName = name, ownedClusterControlPlane = name <> "-control-plane"}
+        fmap (Text.length . recordKeyText) (ownedClusterRecordKey subject) @?= Right 107
+        ownedNodeRecordKey subject (name <> "-worker") @?= Left (ProtectedInvalid
+            "a record key must be at most 200 ASCII bytes (observed 221, namespace cluster)")
+    , testCase "the cluster's record lives under its own declared name" $
         fmap recordKeyText (ownedClusterRecordKey owned) @?= Right ("cluster." <> Text.pack clusterName)
     , testCase "a node's record is discoverable from the cluster's own key" $
         fmap recordKeyText (ownedNodeRecordKey owned worker)
@@ -158,14 +171,20 @@ objectTests =
         assertBool
             "a different owner binding is a different claim"
             (ownedClusterClaim owned /= ownedClusterClaim owned{ownedClusterOwner = "other"})
-    , testCase "every fault renders through the one renderer" $
-        assertBool
-            "no fault renders as nothing"
-            ( not
-                ( Text.null
-                    (clusterOwnershipFaultMessage (ClusterOwnershipReport (ClusterCommandUnrun "no child")))
-                )
-            )
+    , testCase "every fault renders through the one renderer" $ do
+        let store = ProtectedInvalid "invalid session"
+            report = ClusterCommandUnrun "no child"
+            standing = ClusterUnderNoRecord
+            clause = OwnershipProbeFailed "observe" "denied"
+        forM_
+            [ (ClusterOwnershipStore store, protectedErrorMessage store)
+            , (ClusterOwnershipReport report, clusterReportFaultMessage report)
+            , (ClusterOwnershipStanding standing, clusterStandingConflictMessage standing)
+            , (ClusterOwnershipClause clause, ownershipFaultMessage clause)
+            , (ClusterOwnershipKubeconfig "denied", "cluster kubeconfig: denied")
+            , (ClusterOwnershipConfig "digest differs", "cluster config: digest differs")
+            , (ClusterOwnershipBudget "too small", "cluster budget: too small")
+            ] $ \(fault, expected) -> clusterOwnershipFaultMessage fault @?= expected
     ]
 
 -- ---------------------------------------------------------------------------
@@ -179,9 +198,8 @@ observationTests =
     , testCase "a present node answers with the identity it reports for itself" $
         withFixture $ \config root -> do
             standUpCluster root
-            observeOwnedNode config controlPlane >>= \case
-                Right (OriginPresent _) -> pure ()
-                other -> assertFailure ("expected a present node, got " <> show other)
+            identity <- either (assertFailure . show) pure (mkObjectIdentity (Bytes.replicate 64 'a'))
+            observeOwnedNode config controlPlane >>= (@?= Right (OriginPresent identity))
     , testCase "the driver's own listing decides presence" $
         withFixture $ \config root -> do
             observeOwnedClusterPresence config (ownedAt root) >>= (@?= Right ClusterAbsent)
@@ -207,8 +225,8 @@ reconcileTests =
                     Right (ClusterCreated _) -> pure ()
                     other -> assertFailure ("expected a created cluster, got " <> show other)
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
-                readFile' (ownedClusterKubeconfig (ownedAt root))
-                    >>= (@?= FakeCluster.fixtureKubeconfig clusterName)
+                ByteString.readFile (ownedClusterKubeconfig (ownedAt root))
+                    >>= (@?= Bytes.pack (FakeCluster.fixtureKubeconfig clusterName))
                 FakeCluster.recordedKubeconfigPaths root >>= \case
                     [staging] -> do
                         temporaryRoot <- getTemporaryDirectory
@@ -228,13 +246,63 @@ reconcileTests =
                 ownedClusterStanding config session key (ownedAt root) >>= \case
                     Right (ClusterOwned _) -> pure ()
                     other -> assertFailure ("expected an owned cluster, got " <> show other)
+    , testCase "a wrong prepared config digest issues no create" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                let bytes = "kind: Cluster\n"
+                    descriptor = (ownedAt root){ownedClusterConfig = Just (bytes, Text.replicate 64 "0")}
+                reconcileOwnedCluster config session key descriptor
+                    >>= (@?= Left (ClusterOwnershipConfig "the staged configuration digest disagrees with the prepared bytes"))
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
+                FakeCluster.recordedKubeconfigPaths root >>= (@?= [])
+                FakeCluster.recordedConfigFiles root >>= (@?= [])
+    , testCase "a refused create removes both private staging files" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                let bytes = "kind: Cluster\n"
+                    descriptor = (ownedAt root){ownedClusterConfig = Just (bytes, childConfigDigest bytes)}
+                FakeCluster.armCreateRefusal root
+                outcome <- reconcileOwnedCluster config session key descriptor
+                outcome @?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the cluster client refused the create it was asked for"))
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
+                FakeCluster.recordedConfigFiles root >>= \case
+                    [(path, observed)] -> do
+                        observed @?= bytes
+                        doesFileExist path >>= (@?= False)
+                        doesDirectoryExist (takeDirectory path) >>= (@?= False)
+                    other -> assertFailure ("expected one refused create's actual config read, got " <> show other)
+    , testCase "a refused create leaves no origin for a later unclaimed cluster" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                FakeCluster.armCreateRefusal root
+                refused <- reconcileOwnedCluster config session key (ownedAt root)
+                refused @?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the cluster client refused the create it was asked for"))
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
+                standUpCluster root
+                foreignCluster <- reconcileOwnedCluster config session key (ownedAt root)
+                foreignCluster @?= Left (ClusterOwnershipStanding ClusterUnderNoRecord)
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
     , testCase "an exact repeat is already owned and creates nothing more" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 reconcileOwnedCluster config session key (ownedAt root) >>= \case
                     Right (ClusterAlreadyOwned _) -> pure ()
                     other -> assertFailure ("expected an already-owned cluster, got " <> show other)
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "an owned cluster restores its missing durable credential without another create" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                first <- reconcileOwnedCluster config session key (ownedAt root)
+                identity <- case first of
+                    Right (ClusterCreated created) -> pure created
+                    other -> assertFailure ("expected creation, got " <> show other)
+                removeFile (ownedClusterKubeconfig (ownedAt root))
+                reconcileOwnedCluster config session key (ownedAt root) >>= (@?= Right (ClusterAlreadyOwned identity))
+                ByteString.readFile (ownedClusterKubeconfig (ownedAt root))
+                    >>= (@?= Bytes.pack (FakeCluster.fixtureKubeconfig clusterName))
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
     , testCase "an oversized node address publishes no partial origin records" $
         withFixture $ \config root ->
@@ -258,8 +326,8 @@ reconcileTests =
                     Right (ClusterRecovered _) -> pure ()
                     other -> assertFailure ("expected recovery, got " <> show other)
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
-                readFile' (ownedClusterKubeconfig (ownedAt root))
-                    >>= (@?= FakeCluster.fixtureKubeconfig clusterName)
+                ByteString.readFile (ownedClusterKubeconfig (ownedAt root))
+                    >>= (@?= Bytes.pack (FakeCluster.fixtureKubeconfig clusterName))
     , testCase "a durable publication failure binds nothing and recovery publishes before binding" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
@@ -281,8 +349,8 @@ reconcileTests =
                     Right (ClusterRecovered _) -> pure ()
                     other -> assertFailure ("expected publication recovery, got " <> show other)
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
-                readFile' (ownedClusterKubeconfig interrupted)
-                    >>= (@?= FakeCluster.fixtureKubeconfig clusterName)
+                ByteString.readFile (ownedClusterKubeconfig interrupted)
+                    >>= (@?= Bytes.pack (FakeCluster.fixtureKubeconfig clusterName))
                 ownedClusterStanding config session key interrupted >>= \case
                     Right (ClusterOwned _) -> pure ()
                     other -> assertFailure ("expected recovery to bind only after publication, got " <> show other)
@@ -291,15 +359,17 @@ reconcileTests =
             withEntry root $ \session key -> do
                 standUpCluster root
                 outcome <- reconcileOwnedCluster config session key (ownedAt root)
-                assertBool ("an unclaimed cluster is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding ClusterUnderNoRecord)
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedKubeconfigPaths root >>= (@?= [])
                 FakeCluster.recordedClusterMutations root >>= (@?= [])
     , testCase "a worker replaced under an owned cluster is refused" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 replaceNode root worker
                 outcome <- reconcileOwnedCluster config session key (ownedAt root)
-                assertBool ("a replaced worker is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding (NodeReplaced (fixtureIdentityFor worker) fixtureReplacementIdentity))
     , testCase "nothing at all under no record is nothing done" $
         withFixture $ \config root ->
             withEntry root $ \session key ->
@@ -314,43 +384,43 @@ readinessTests =
     [ testCase "a cluster whose declared nodes have all joined is ready" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
-                observeOwnedClusterReadiness config session key (ownedAt root) @?>= ClusterReady
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                observeOwnedClusterReadiness config session key (ownedAt root) @?>= (fixtureControlPlaneIdentity, ClusterReady)
     , testCase "a node that has not joined is not a readiness" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 setNodeRunning root worker False
-                observeOwnedClusterReadiness config session key (ownedAt root) @?>= ClusterNodesUnready
+                observeOwnedClusterReadiness config session key (ownedAt root) @?>= (fixtureControlPlaneIdentity, ClusterNodesUnready)
     , testCase "a control plane that has not come up is an answer, not a fault" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 FakeCluster.armApiUnready root
-                observeOwnedClusterReadiness config session key (ownedAt root) @?>= ClusterApiUnready
+                observeOwnedClusterReadiness config session key (ownedAt root) @?>= (fixtureControlPlaneIdentity, ClusterApiUnready "the control plane is not ready yet")
     , testCase "a node set the plan does not declare is not this cluster's readiness" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 held <- FakeCluster.readNodes root
                 FakeCluster.writeNodes
                     root
                     (held <> [(clusterName <> "-worker2", FakeCluster.ClusterNode (replicate 64 'c') True [])])
-                observeOwnedClusterReadiness config session key (ownedAt root) @?>= ClusterNodesUndeclared
+                observeOwnedClusterReadiness config session key (ownedAt root) @?>= (fixtureControlPlaneIdentity, ClusterNodesUndeclared)
     , testCase "a node replaced while the probe ran is a conflict rather than a readiness" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 FakeCluster.armReplacementAfter root "nodes"
                 outcome <- observeOwnedClusterReadiness config session key (ownedAt root)
-                assertBool ("a replacement is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding (NodeReplaced fixtureControlPlaneIdentity fixtureReplacementIdentity))
     , testCase "a cluster the driver no longer names cannot be re-entered" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 FakeCluster.writeClusters root []
                 outcome <- observeOwnedClusterReadiness config session key (ownedAt root)
-                assertBool ("an unnamed cluster is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left expectedReentryFault
     ]
 
 -- ---------------------------------------------------------------------------
@@ -371,57 +441,84 @@ declaredBudget =
 
 declaredLimits :: [String]
 declaredLimits =
-    ["--cpus", "2", "--memory", "4294967296", "--memory-swap", "8589934592"]
+    ["--cpus", "1", "--memory", "2147483648", "--memory-swap", "4294967296"]
 
 cordonTests :: [TestTree]
 cordonTests =
     [ testCase "the wall lands on every declared node, by its bound identity" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 cordonOwnedCluster config session key (ownedAt root) declaredBudget
                     @?>= [controlPlane, worker]
                 held <- FakeCluster.readNodes root
                 map (FakeCluster.nodeLimits . snd) held
                     @?= replicate (length held) declaredLimits
+                let cores = [read cpu :: Integer | (_, node) <- held, "--cpus" : cpu : _ <- [FakeCluster.nodeLimits node]]
+                    memories = [read memory :: Integer | (_, node) <- held, _ : _ : "--memory" : memory : _ <- [FakeCluster.nodeLimits node]]
+                length held @?= 2
+                assertBool "the applied CPU shares stay within the cluster slice" (sum cores <= toInteger (budgetCpu declaredBudget))
+                assertBool "the applied memory shares stay within the cluster slice" (sum memories <= budgetMemoryBytes declaredBudget)
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create", "update", "update"])
+    , testCase "a CPU slice smaller than the node count is refused before any update" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                budget <- either (assertFailure . renderQuantityError) pure (mkResourceBudget 1 (4 * 1024 * 1024 * 1024) (20 * 1024 * 1024 * 1024))
+                let noTools = config{hcToolPaths = Map.empty}
+                cordonOwnedCluster noTools session key (ownedAt root) budget
+                    >>= (@?= Left (ClusterOwnershipBudget "cluster node cordon: CPU slice is smaller than the node count"))
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
     , testCase "a node replaced while the wall was applied is a conflict" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 FakeCluster.armReplacementAfter root "update"
                 outcome <- cordonOwnedCluster config session key (ownedAt root) declaredBudget
-                assertBool ("a replacement is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding (NodeReplaced fixtureControlPlaneIdentity fixtureReplacementIdentity))
+    , testCase "cordon refuses an unlisted cluster before any update" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                beforeImage <- protectedImage session
+                FakeCluster.writeClusters root []
+                outcome <- cordonOwnedCluster config session key (ownedAt root) declaredBudget
+                outcome @?= Left expectedReentryFault
+                protectedImage session >>= (@?= beforeImage)
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
     , testCase "a cluster no record of this project's claims is never walled" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
                 standUpCluster root
                 outcome <- cordonOwnedCluster config session key (ownedAt root) declaredBudget
-                assertBool ("an unclaimed cluster is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding ClusterUnderNoRecord)
                 FakeCluster.recordedClusterMutations root >>= (@?= [])
     ]
         <> invalidCordonBudgetCases
 
 invalidCordonBudgetCases :: [TestTree]
 invalidCordonBudgetCases =
-    [ invalidBudgetCase "CPU overflow" 9223372037 (4 * gib)
-    , invalidBudgetCase "swap overflow" 2 4611686018427387904
-    , invalidBudgetCase "memory below the daemon minimum" 2 6291455
-    , invalidBudgetCase "CLI byte precision loss" 2 9007199254740993
+    [ invalidBudgetCase "CPU overflow" 2 9223372037 (4 * gib)
+    , invalidBudgetCase "swap overflow" 1 2 4611686018427387904
+    , invalidBudgetCase "memory below the daemon minimum" 2 2 6291455
+    , invalidBudgetCase "CLI byte precision loss" 2 2 9007199254740993
     ]
   where
     gib = 1024 ^ (3 :: Integer)
-    invalidBudgetCase label cpu memory =
+    invalidBudgetCase label nodeCount cpu memory =
         testCase (label <> " is refused before any ownership query") $ do
-            budget <- either (assertFailure . renderQuantityError) pure (mkResourceBudget cpu memory (20 * gib))
+            budget <- either (assertFailure . renderQuantityError) pure (mkResourceBudget (fromIntegral nodeCount * cpu) (toInteger nodeCount * memory) (20 * gib))
+            perNode <- either (assertFailure . renderQuantityError) pure (mkResourceBudget cpu memory (10 * gib))
             -- The policy's own cases pin its numeric bounds and exact reasons;
             -- this transaction must propagate that complete canonical refusal.
-            refusal <- case kindNodeCordonLimits budget of
+            refusal <- case kindNodeCordonLimits perNode of
                 Left reason -> pure (Text.pack reason)
                 Right arguments -> assertFailure ("the invalid canonical budget was rendered: " <> show arguments)
-            withFixture $ \config root ->
+            withFixture $ \config root -> do
+                let descriptor = (ownedAt root){ownedClusterWorkers = take (nodeCount - 1) [worker]}
+                FakeCluster.declareNodes root (ownedClusterNodeNames descriptor)
                 withEntry root $ \session key -> do
-                    reconcileOwnedCluster config session key (ownedAt root) >>= \case
+                    reconcileOwnedCluster config session key descriptor >>= \case
                         Right (ClusterCreated _) -> pure ()
                         other -> assertFailure ("expected a real owned cluster, got " <> show other)
                     before <- protectedImage session
@@ -431,9 +528,9 @@ invalidCordonBudgetCases =
                     let noTools = config{hcToolPaths = Map.empty}
                     -- With a valid budget the same entry reaches its first
                     -- ownership query, whose concrete unresolved tool refuses.
-                    cordonOwnedCluster noTools session key (ownedAt root) declaredBudget
+                    cordonOwnedCluster noTools session key descriptor declaredBudget
                         >>= (@?= Left (ClusterOwnershipReport (ClusterCommandUnrun "kind not found on this host")))
-                    outcome <- cordonOwnedCluster noTools session key (ownedAt root) budget
+                    outcome <- cordonOwnedCluster noTools session key descriptor budget
                     outcome @?= Left (ClusterOwnershipBudget refusal)
                     either clusterOwnershipFaultMessage (const "unexpected success") outcome
                         @?= ("cluster budget: " <> refusal)
@@ -458,10 +555,126 @@ protectedImage session = do
 
 releaseTests :: [TestTree]
 releaseTests =
-    [ testCase "releasing removes the cluster and forgets every record" $
+    [ testCase "a successful modeled delete with surviving nodes retains exact records" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                before <- recordSnapshots session
+                nodes <- FakeCluster.readNodes root
+                FakeCluster.armDeleteNoop root
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterStillPresent
+                recordSnapshots session >>= (@?= before)
+                FakeCluster.readNodes root >>= (@?= nodes)
+                FakeCluster.readClusters root >>= (@?= [clusterName])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
+    , testCase "retained release refuses a created but unbound origin exactly" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                writeFile (FakeCluster.crashAfterCreatePath root) "once\n"
+                refused <- reconcileOwnedCluster config session key (ownedAt root)
+                refused @?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the cluster client died after the create it performed"))
+                before <- recordSnapshots session
+                outcome <- releaseRetainedOwnedCluster config session key (ownedAt root)
+                outcome @?= Left (ClusterOwnershipClause (OwnershipProbeFailed "release the owned cluster"
+                    ("the cluster " <> Text.pack clusterName <> " was created and never bound, so no identity authorizes removing it")))
+                recordSnapshots session >>= (@?= before)
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "retained release refuses a non-reported record before any delete" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                standUpCluster root
+                let tape = recordTape session (RecordSubject "the cluster origin record" "bind the cluster node")
+                publishFreshRecord tape key (originRecord OwnedDirectory OriginAbsent) >>= (@?= Right ())
+                before <- recordSnapshots session
+                nodes <- FakeCluster.readNodes root
+                outcome <- releaseRetainedOwnedCluster config session key (ownedAt root)
+                outcome @?= Left (ClusterOwnershipClause (OwnershipMalformed "the retained cluster ownership record carries no owner claim"))
+                recordSnapshots session >>= (@?= before)
+                FakeCluster.readNodes root >>= (@?= nodes)
+                FakeCluster.recordedClusterMutations root >>= (@?= [])
+    , testCase "retained release preserves a replacement and exact bound record versions" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                before <- recordSnapshots session
+                replaceNode root controlPlane
+                nodes <- FakeCluster.readNodes root
+                replacement <- either (assertFailure . show) pure (mkObjectIdentity (Bytes.pack FakeCluster.replacementIdentity))
+                outcome <- releaseRetainedOwnedCluster config session key (ownedAt root)
+                outcome @?= Left (ClusterOwnershipStanding (NodeReplaced fixtureControlPlaneIdentity replacement))
+                recordSnapshots session >>= (@?= before)
+                FakeCluster.readNodes root >>= (@?= nodes)
+                FakeCluster.readClusters root >>= (@?= [clusterName])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "release resumes a delete whose client reported failure" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                FakeCluster.armDeleteThenRefusal root
+                failed <- releaseOwnedCluster config session key (ownedAt root)
+                failed @?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the modeled delete completed before its client refused"))
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+    , testCase "retained release resumes after all bound nodes disappear" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                FakeCluster.writeClusters root []
+                FakeCluster.writeNodes root []
+                releaseRetainedOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "all absent nodes retire an interrupted worker binding too" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                nodeKey <- either (assertFailure . show) pure (ownedNodeRecordKey (ownedAt root) worker)
+                let tape = recordTape session (RecordSubject "the cluster origin record" "bind the cluster node")
+                forgetRecord tape nodeKey >>= (@?= Right ())
+                publishFreshRecord tape nodeKey (originRecord (ReportedObject (ownedClusterClaim (ownedAt root))) OriginAbsent)
+                    >>= (@?= Right ())
+                FakeCluster.writeClusters root []
+                FakeCluster.writeNodes root []
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
+    , testCase "a vanished worker does not prevent deleting its remaining control plane" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                nodes <- FakeCluster.readNodes root
+                FakeCluster.writeNodes root (filter ((/= worker) . fst) nodes)
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
+    , testCase "a vanished control plane releases through a surviving bound worker" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                nodes <- FakeCluster.readNodes root
+                FakeCluster.writeNodes root (filter ((/= controlPlane) . fst) nodes)
+                FakeCluster.writeClusters root []
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
+                remainingRecords session >>= (@?= [])
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
+    , testCase "orphan worker metadata retires before a new claim creates" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                FakeCluster.writeClusters root []
+                FakeCluster.writeNodes root []
+                let tape = recordTape session (RecordSubject "the cluster origin record" "bind the cluster node")
+                forgetRecord tape key >>= (@?= Right ())
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterAlreadyReleased
+                remainingRecords session >>= (@?= [])
+                let next = (ownedAt root){ownedClusterOwner = "hostbootstrap/cluster-origin/v2:demo:next"}
+                reconcileOwnedCluster config session key next @?>= ClusterCreated fixtureControlPlaneIdentity
+    , testCase "releasing removes the cluster and forgets every record" $
+        withFixture $ \config root ->
+            withEntry root $ \session key -> do
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
                 releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
                 FakeCluster.readClusters root >>= (@?= [])
@@ -469,15 +682,15 @@ releaseTests =
     , testCase "a second release finds nothing left to do" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
-                _ <- releaseOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                releaseOwnedCluster config session key (ownedAt root) @?>= ClusterReleased
                 releaseOwnedCluster config session key (ownedAt root) @?>= ClusterAlreadyReleased
     , testCase "a record published over a create that never happened is forgotten" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
                 FakeCluster.armCreateRefusal root
                 refused <- reconcileOwnedCluster config session key (ownedAt root)
-                assertBool ("the refused create is a refusal, got " <> show refused) (isLeft refused)
+                refused @?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the cluster client refused the create it was asked for"))
                 releaseOwnedCluster config session key (ownedAt root) @?>= ClusterAlreadyReleased
                 remainingRecords session >>= (@?= [])
                 FakeCluster.recordedClusterMutations root >>= (@?= [])
@@ -485,28 +698,37 @@ releaseTests =
         withFixture $ \config root ->
             withEntry root $ \session key -> do
                 writeFile (FakeCluster.crashAfterCreatePath root) "once\n"
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root)
+                    >>= (@?= Left (ClusterOwnershipReport (ClusterCommandExited 1 "the cluster client died after the create it performed")))
                 outcome <- releaseOwnedCluster config session key (ownedAt root)
-                assertBool ("an unbound cluster is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left expectedUnboundReleaseFault
                 FakeCluster.recordedClusterMutations root >>= (@?= ["create"])
     , testCase "a replacement that took a node's name is left standing" $
         withFixture $ \config root ->
             withEntry root $ \session key -> do
-                _ <- reconcileOwnedCluster config session key (ownedAt root)
+                reconcileOwnedCluster config session key (ownedAt root) @?>= ClusterCreated fixtureControlPlaneIdentity
+                beforeImage <- protectedImage session
+                beforeOrigin <- readProtectedRecord session key
+                case beforeOrigin of
+                    Right (Just _) -> pure ()
+                    other -> assertFailure ("expected the bound cluster origin record: " <> show other)
                 FakeCluster.armReplacementAfter root "delete"
                 outcome <- releaseOwnedCluster config session key (ownedAt root)
-                assertBool ("a replacement is refused, got " <> show outcome) (isLeft outcome)
+                outcome @?= Left (ClusterOwnershipStanding (NodeReplaced fixtureControlPlaneIdentity fixtureReplacementIdentity))
                 held <- FakeCluster.readNodes root
                 lookup controlPlane held
                     @?= Just (FakeCluster.ClusterNode FakeCluster.replacementIdentity True [])
                 records <- remainingRecords session
-                assertBool "no record was forgotten over a replacement" (not (null records))
+                workerKey <- either (assertFailure . show) pure (ownedNodeRecordKey (ownedAt root) worker)
+                sortOn recordKeyText records @?= sortOn recordKeyText [key,workerKey]
+                protectedImage session >>= (@?= beforeImage)
+                readProtectedRecord session key >>= (@?= beforeOrigin)
     ]
 
 -- ---------------------------------------------------------------------------
 -- The fixture
 
-{- | A host whose three cluster tools are this suite's own executable.
+{- | A host whose modeled tools have distinct executable names.
 
 § KK's one interpreter launches whatever the configuration resolves with the
 exact argument vector the described command carries, so a fixture supplies a
@@ -519,15 +741,17 @@ withFixture consume =
         let toolRoot = root </> "tools"
         createDirectoryIfMissing True toolRoot
         _ <- FakeCluster.newClusterFixture toolRoot [controlPlane, worker]
-        self <- getExecutablePath
+        self <- FakeCluster.prepareFixtureExecutables toolRoot
         let config =
                 HostConfig
                     { hcSubstrate = Substrate LinuxCpu Amd64
                     , hcToolPaths =
                         Map.fromList
-                            [ (Kind, fixtureExe self)
-                            , (Docker, fixtureExe self)
-                            , (Kubectl, fixtureExe self)
+                            [ (Kind, fixtureExe (FakeCluster.fixtureToolPath self "kind"))
+                            , (Docker, fixtureExe (FakeCluster.fixtureToolPath self "docker"))
+                            , (Kubectl, fixtureExe (FakeCluster.fixtureToolPath self "kubectl"))
+                            , (Helm, fixtureExe (FakeCluster.fixtureToolPath self "helm"))
+                            , (Nvkind, fixtureExe (FakeCluster.fixtureToolPath self "nvkind"))
                             ]
                     }
         FakeCluster.withFakeClusterClient toolRoot (consume config toolRoot)
@@ -600,3 +824,29 @@ replaceNode root node = do
         [ (name, if name == node then current{FakeCluster.nodeIdentity = FakeCluster.replacementIdentity} else current)
         | (name, current) <- held
         ]
+
+fixtureControlPlaneIdentity :: ObjectIdentity
+fixtureControlPlaneIdentity = either (error . show) id (mkObjectIdentity (Bytes.pack (FakeCluster.fixtureNodeIdentity controlPlane)))
+
+-- | Keep exact bytes and versions in the supplementary real-store compatibility assertions.
+recordSnapshots :: ProtectedSession session -> IO [(RecordKey, Maybe ProtectedRecord)]
+recordSnapshots session = do
+    keys <- remainingRecords session
+    traverse (\key -> do
+        value <- readProtectedRecord session key >>= either (assertFailure . show) pure
+        pure (key, value)) keys
+
+-- Exact fixture values are compatibility expectations, not provider observations.
+fixtureIdentityFor :: String -> ObjectIdentity
+fixtureIdentityFor node = either (error . show) id (mkObjectIdentity (Bytes.pack (FakeCluster.fixtureNodeIdentity node)))
+
+fixtureReplacementIdentity :: ObjectIdentity
+fixtureReplacementIdentity = either (error . show) id (mkObjectIdentity (Bytes.pack FakeCluster.replacementIdentity))
+
+expectedReentryFault :: ClusterOwnershipFault
+expectedReentryFault = ClusterOwnershipClause (OwnershipProbeFailed "re-enter the owned cluster"
+    ("the driver names no cluster " <> Text.pack clusterName <> ", so this record's clauses cannot be re-entered"))
+
+expectedUnboundReleaseFault :: ClusterOwnershipFault
+expectedUnboundReleaseFault = ClusterOwnershipClause (OwnershipProbeFailed "release the owned cluster"
+    ("the cluster " <> Text.pack clusterName <> " was created and never bound, so no identity authorizes removing it"))

@@ -4,12 +4,15 @@
 
 module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withNvkindClusterFixtureM, withHarnessClusterFixtureM, withPlannedClusterFixture, withChartWorkloadFixture, withAppliedFixtureCordon) where
 
+import Control.Monad (forM, forM_)
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import Data.Foldable (find)
-import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
+import Data.IORef (readIORef, writeIORef)
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import qualified FakeCluster
 import qualified Fixture
@@ -25,19 +28,25 @@ import HostBootstrap.Cluster.Cordon (
  )
 import HostBootstrap.Cluster.Lifecycle (
     ClusterDriver (..),
+    ClusterPackageError (..),
     mkPlanExposureIntent,
+    planOwnedClusterConfigBase,
     planOwnedClusterDurableRoot,
     planOwnedClusterName,
+    planOwnedClusterConfigDriver,
+    planOwnedClusterDriver,
     withPlanOwnedCluster,
     withPlanOwnedClusterConfig,
+    withPlanOwnedClusterPreparation,
  )
 import HostBootstrap.Cluster.Reconcile
 import HostBootstrap.Config.Vocab (Harness, Production)
-import HostBootstrap.Context (ResourceEnvelope (..))
 import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (Docker, Helm, Kind, Kubectl, Nvkind), mkAbsExe)
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import qualified HostBootstrap.Lifecycle.Execution as Execution
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore (newResourceCarrierCore, newStepRuntimeCore, resourceCarrierCoreRefs)
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Network.Port (portNumber)
@@ -45,6 +54,7 @@ import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Protected (
     Expectation (ExpectVersion),
     ProtectedRecord (protectedRecordVersion),
+    RecordKey,
     compareAndDeleteProtectedRecord,
     listProtectedRecords,
     openProtectedStore,
@@ -56,9 +66,8 @@ import HostBootstrap.Step
 import HostBootstrap.Substrate (Arch (Arm64), Substrate (..), SubstrateName (LinuxCpu))
 import HostBootstrap.Substrate.Provider.Backend
 import HostBootstrap.Substrate.Provider.Reconcile
-import PrepareFixture (gateFor)
+import PrepareFixture (assertPackageGateCommitment, gateFor)
 import System.Directory (canonicalizePath, createDirectory)
-import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
@@ -69,8 +78,11 @@ type FixtureScope = Production Fixture.FixtureProject
 gib :: Integer
 gib = 1024 ^ (3 :: Integer)
 
-exactEnvelope :: ResourceEnvelope
-exactEnvelope = ResourceEnvelope 8 "16GiB" "100GiB"
+exactResources :: Fixture.Resources
+exactResources = Fixture.Resources 8 "16GiB" "100GiB"
+
+selectExactResources :: Fixture.ProjectConfig scope -> Fixture.ProjectConfig scope
+selectExactResources value = value{Fixture.resources = exactResources}
 
 type ClusterPreparedConsumer summary =
     forall projectId specDigest planId configId clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion.
@@ -165,7 +177,27 @@ type HarnessClusterPreparedConsumer summary =
     IO (Either ReconcileError summary)
 
 tests :: TestTree
-tests = testGroup "ClusterReconcileSpec" (packageCases <> inFrameReconcileCases)
+tests = testGroup "ClusterReconcileSpec" (commitmentCases <> apiReadinessRefusalCases <> packageCases <> configBinderCases <> inFrameReconcileCases)
+
+commitmentCases :: [TestTree]
+commitmentCases =
+    [ testCase "registered cluster package retains its prepared gate commitment" $ do
+        outcome <- withChartWorkloadFixture $ \_ _ _ _ _ _ _ _ _ _ -> pure (Right ())
+        outcome @?= Right ()
+    ]
+
+-- These cases apply the actual pure refusal classifier; no provider is substituted.
+apiReadinessRefusalCases :: [TestTree]
+apiReadinessRefusalCases =
+    [ testCase "API-not-ready retains its diagnostic and requires a fresh probe" $
+        clusterApiNotReadyRefusal "cluster-key" "managed-id" "managed-id" "Unauthorized"
+            @?= Failure
+                (FailureDetail "settle cluster readiness" "the managed cluster API is not ready: managed-id: Unauthorized" ReprobeBeforeRetry)
+    , testCase "API-not-ready cannot turn a replacement into this plan's readiness" $
+        clusterApiNotReadyRefusal "cluster-key" "managed-id" "replacement-id" "Unauthorized"
+            @?= Conflict
+                (ConflictDetail "cluster-key" "control-plane identity=managed-id" "control-plane identity=replacement-id" "a same-named replacement is not readiness evidence for this plan")
+    ]
 
 {- | Preparation and projection: what the plan hands the backend.
 
@@ -175,22 +207,31 @@ realization (§ JJ).
 -}
 packageCases :: [TestTree]
 packageCases =
-    [ testCase "preparation projects the complete exact cluster package" $
-        withClusterFixture (pure . packageSummary) >>= \case
-            Right (name, stateDirectory, durableRoot, placement, providerKey, owner, budget) -> do
-                assertBool "the plan projects a non-empty cluster name" (not (null name))
-                assertBool "the state directory is below the retained root" (durableRoot /= stateDirectory)
-                placement @?= ("host", "provider")
-                providerKey @?= "core:deploy-vm"
-                assertBool "ownership is derived from a stable digest and resource" ("core:deploy-kind" `Text.isSuffixOf` owner)
-                budget @?= (6, 10 * gib, 80 * gib)
-            other -> assertFailure ("expected an exact prepared package, got " ++ show other)
+    [ testCase "preparation projects the complete exact cluster package" $ do
+        outcome <- withClusterPlanFixtureM $ \plan prepared ->
+            case packageSummary prepared of
+                Left refusal -> pure (Left refusal)
+                Right (name, stateDirectory, durableRoot, placement, providerKey, owner, budget) -> do
+                    name @?= Text.unpack (ProjectPlan.projectPlanProjectName plan)
+                    stateDirectory @?= durableRoot </> "cluster" </> "kind" </> "state"
+                    placement @?= ("host", "provider")
+                    providerKey @?= "core:deploy-vm"
+                    owner @?= ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan) <> ":core:deploy-kind"
+                    budget @?= (6, 10 * gib, 80 * gib)
+                    pure (Right ())
+        outcome @?= Right ()
+    , testCase "Kind config binding retains the joined plan driver" $
+        withClusterFixtureM (\prepared -> pure (Right (preparedClusterDriver prepared))) >>= (@?= Right KindDriver)
+    , testCase "nvkind config binding retains the joined plan driver" $
+        withNvkindClusterFixtureM (\prepared -> pure (Right (preparedClusterDriver prepared))) >>= (@?= Right NvkindDriver)
     , testCase "Production preparation binds the exact plan-derived config digest" $
-        withClusterFixture (\prepared -> pure (Right (preparedClusterConfigPath prepared, preparedClusterConfigDigest prepared))) >>= \case
-            Right (Just path, Just digest) -> do
-                assertBool "config path is the driver-owned config.yaml" (("cluster" </> "kind" </> "config.yaml") `isSuffixOf` path)
-                assertBool "SHA-256 is lowercase hex" (Text.length digest == 64)
-            other -> assertFailure ("expected a bound config path/digest, got " ++ show other)
+        withClusterFixture
+            ( \prepared -> do
+                preparedClusterConfigPath prepared @?= Just (preparedClusterDurableRoot prepared </> "cluster" </> "kind" </> "config.yaml")
+                preparedClusterConfigDigest prepared @?= Just (childConfigDigest (preparedClusterConfigBytes prepared))
+                pure (Right ())
+            )
+            >>= (@?= Right ())
     , testCase "preparation retains the closed driver, canonical bytes, mappings, ports, and workload slice" $
         withClusterFixture
             ( \prepared ->
@@ -210,27 +251,6 @@ packageCases =
                     map (\intent -> (exposureIntentService intent, portNumber (exposureIntentTargetPort intent))) intents @?= [("registry", 30500)]
                     assertBool "the node mapping lost the plan-owned cluster identity" ("-control-plane" `Text.isSuffixOf` node)
                 other -> assertFailure ("expected complete exact cluster config retention, got " ++ show other)
-    , testCase "the config binder is closed over both drivers and every independent mismatch" $ do
-        lifecycleSource <- readFile "src/HostBootstrap/Cluster/Lifecycle.hs"
-        reconcileSource <- readFile "src/HostBootstrap/Cluster/Reconcile.hs"
-        let requiredBinderChecks =
-                [ "KindDriver -> \"kind\""
-                , "NvkindDriver -> \"nvkind\""
-                , "the canonical cluster config digest disagrees with its bytes"
-                , "the cluster state path disagrees with the plan-owned durable root and driver"
-                , "the cluster config path disagrees with the plan-owned durable root and driver"
-                , "the canonical cluster config contains a host port"
-                , "the canonical cluster config contains host publication"
-                , "the semantic exposure intent set contains a duplicate service"
-                , "the node mapping disagrees with the closed driver"
-                , "the workload slice is empty or contains a duplicate"
-                ]
-        assertBool "the opaque binder lost a closed driver or refusal" (all (`isInfixOf` lifecycleSource) requiredBinderChecks)
-        assertBool
-            "cluster preparation reconstructed raw plan/config inputs"
-            ( "withPreparedClusterReconcile ::\n    PlanOwnedClusterConfig" `isInfixOf` reconcileSource
-                && not ("prepareClusterConfig ::" `isInfixOf` reconcileSource)
-            )
     , testCase "a real Harness plan retains its run key and exact isolated config" $
         harnessPackageSummary >>= \case
             Right (profileName, name, durableRoot, configPath) -> do
@@ -253,15 +273,54 @@ packageCases =
                 other -> assertFailure ("expected the provider probe failure, got " ++ show other)
     ]
 
-{- | Settlement, readiness, and cleanup: what the backend does with that package.
+-- | Apply the public binder to values, changing one input at a time for each driver.
+configBinderCases :: [TestTree]
+configBinderCases =
+    [ testCase label $ forM_ [KindDriver, NvkindDriver] $ \driver -> do
+        outcome <- withClusterFixtureUsingPlanDriverM driver ReprobeAnswers $ \_ prepared ->
+            withPreparedPlanOwnedClusterConfig prepared $ \configured -> do
+                let original =
+                        ( preparedClusterConfigBytes prepared
+                        , childConfigDigest (preparedClusterConfigBytes prepared)
+                        , preparedClusterStateDirectory prepared
+                        , maybe (error "fixture has no config path") id (preparedClusterConfigPath prepared)
+                        , preparedClusterExposureIntents prepared
+                        , preparedClusterNodeMappings prepared
+                        , preparedClusterWorkloadSlice prepared
+                        )
+                    (bytes, digest, statePath, configPath, intents, mappings, workload) = change driver (preparedClusterName prepared) original
+                    observed = withPlanOwnedClusterConfig (planOwnedClusterConfigBase configured) bytes digest statePath configPath intents mappings workload (const ())
+                observed @?= expected
+                pure (Right ())
+        outcome @?= Right ()
+    | (label, change, expected) <-
+        [ ("config binder admits exact values for both drivers", \_ _ values -> values, Right ())
+        , ("config binder refuses a wrong digest", \_ _ (b, _, s, p, i, m, w) -> (b, Text.replicate 64 "0", s, p, i, m, w), mismatch "the canonical cluster config digest disagrees with its bytes")
+        , ("config binder refuses a wrong state path", \_ _ (b, d, s, p, i, m, w) -> (b, d, s </> "foreign", p, i, m, w), mismatch "the cluster state path disagrees with the plan-owned durable root and driver")
+        , ("config binder refuses a wrong config path", \_ _ (b, d, s, p, i, m, w) -> (b, d, s, p <> ".foreign", i, m, w), mismatch "the cluster config path disagrees with the plan-owned durable root and driver")
+        , ("config binder refuses hostPort bytes", \_ _ (b, _, s, p, i, m, w) -> let altered = b <> "hostPort: 80\n" in (altered, childConfigDigest altered, s, p, i, m, w), mismatch "the canonical cluster config contains a host port")
+        , ("config binder refuses extraPortMappings bytes", \_ _ (b, _, s, p, i, m, w) -> let altered = b <> "extraPortMappings: []\n" in (altered, childConfigDigest altered, s, p, i, m, w), mismatch "the canonical cluster config contains host publication")
+        , ("config binder refuses empty intents", \_ _ (b, d, s, p, _, m, w) -> (b, d, s, p, [], m, w), mismatch "the semantic exposure intent set is empty")
+        , ("config binder refuses duplicate intents", \_ _ (b, d, s, p, i, m, w) -> (b, d, s, p, i <> i, m, w), mismatch "the semantic exposure intent set contains a duplicate service")
+        , ("config binder refuses the other driver's mappings", \driver name (b, d, s, p, i, _, w) -> (b, d, s, p, i, otherMappings driver name, w), mismatch "the node mapping disagrees with the closed driver")
+        , ("config binder refuses an empty workload", \_ _ (b, d, s, p, i, m, _) -> (b, d, s, p, i, m, []), mismatch "the workload slice is empty or contains a duplicate")
+        , ("config binder refuses a duplicate workload", \_ _ (b, d, s, p, i, m, w) -> (b, d, s, p, i, m, w <> w), mismatch "the workload slice is empty or contains a duplicate")
+        ]
+    ]
+  where
+    mismatch = Left . ClusterPackageMismatch
+    otherMappings driver name =
+        [("control-plane", Text.pack (name <> "-control-plane"))]
+            <> case driver of
+                KindDriver -> [("worker", Text.pack (name <> "-worker"))]
+                NvkindDriver -> []
 
-Each of these runs the real clause-holding driver: a real protected store under
-the state directory the plan projects, and a real cluster client process the one
-interpreter launches. Nothing is host-specific about either — the store is
-ordinary files and the client is this suite's own executable — so the family runs
-and is counted on every gate host (§ JJ), and every case reaches its standing by
-arranging what the tools report rather than by substituting for a decision
-(§ NN).
+{- | Settlement and readiness against authored cluster-tool models.
+
+The production transaction uses an actual temporary protected store. FakeCluster
+provides authored tool answers, so these cases establish fixture compatibility
+and sequencing. The actual Docker/Kind live gate establishes provider agreement.
+Every fixture case remains present on every gate host.
 -}
 inFrameReconcileCases :: [TestTree]
 inFrameReconcileCases =
@@ -272,15 +331,29 @@ inFrameReconcileCases =
             other -> assertFailure ("expected managed creation, got " ++ show other)
     , testCase "a created backend identity stays separate from the prepared journal generation" $
         withClusterFixture createdIdentityWins >>= \case
-            Right (managedGeneration, preparedGeneration, observationVersion) -> do
+            Right (managedGeneration, preparedGeneration, observationVersion, backendIdentity, expectedIdentity) -> do
+                backendIdentity @?= expectedIdentity
                 managedGeneration @?= preparedGeneration
                 assertBool "the plan-derived generation is positive" (managedGeneration > 0)
                 assertBool "the gate-derived observation version is positive" (observationVersion > 0)
             other -> assertFailure ("expected stable plan/gate-derived identity, got " ++ show other)
     , testCase "a same-named cluster without the exact origin is foreign, never adopted" $
         withClusterFixture settleForeign >>= \case
-            Right identity -> identity @?= "core:deploy-kind"
+            Right observed -> do
+                foreignIdentity observed @?= "core:deploy-kind"
+                assertBool "the foreign detail retains the actual container identity" (Text.pack (foreignIdentityFor 0) `Text.isInfixOf` foreignDetail observed)
             other -> assertFailure ("expected a foreign observation, got " ++ show other)
+    , testCase "a listed foreign cluster without a control plane offers no identity or managed authority" $
+        withClusterFixture
+            ( \prepared ->
+                withClusterClient prepared $ \backend root -> do
+                    FakeCluster.writeClusters root [preparedClusterName prepared]
+                    FakeCluster.writeNodes root []
+                    observed <- runClusterReconcileCall backend prepared
+                    FakeCluster.recordedClusterMutations root >>= (@?= [])
+                    pure (Right (clusterReconcileResultView observed))
+            )
+            >>= (@?= Right (ClusterResultProbeFailed "the listed foreign cluster has no control-plane container"))
     , testCase "an origin-verified healthy cluster repairs post-effect/pre-commit recovery" $
         withClusterFixture settleHealthyRecovery >>= \case
             Right (Changed Repaired) -> pure ()
@@ -291,17 +364,36 @@ inFrameReconcileCases =
             other -> assertFailure ("expected a prior-commit rebind, got " ++ show other)
     , testCase "a no-origin cluster stays foreign even when a commit proof is supplied" $
         withClusterPlanFixtureM settleForeignWithPriorCommit >>= \case
-            Right identity -> identity @?= "core:deploy-kind"
+            Right observed -> do
+                foreignIdentity observed @?= "core:deploy-kind"
+                assertBool "a commit proof cannot hide the actual foreign identity" (Text.pack (foreignIdentityFor 0) `Text.isInfixOf` foreignDetail observed)
             other -> assertFailure ("expected a foreign no-origin observation, got " ++ show other)
-    , testCase "an unhealthy same-named cluster is a Conflict, never deleted" $
-        withClusterFixture settleUnhealthy >>= \case
-            Left (Conflict detail) ->
-                assertBool "the conflict refuses auto-delete" ("never auto-deleted" `Text.isInfixOf` conflictRemedy detail)
-            other -> assertFailure ("expected a conflict, got " ++ show other)
+    , testCase "this plan's owned cluster with stopped containers is a Conflict with record-owned recovery" $
+        withClusterFixture
+            ( \prepared -> do
+                (observed, mutations, clusters) <- settleUnhealthy prepared
+                mutations @?= ["create"]
+                clusters @?= [preparedClusterName prepared]
+                case observed of
+                    Left (Conflict detail) -> do
+                        conflictObserved detail @?= "this plan's owned cluster has stopped node containers (identity=" <> expectedControlPlaneIdentity prepared <> ")"
+                        assertBool "the remedy retains record-owned release" ("project down" `Text.isInfixOf` conflictRemedy detail)
+                        assertBool "the conflict refuses auto-delete" ("never auto-deleted" `Text.isInfixOf` conflictRemedy detail)
+                        forM_ [conflictObserved detail, conflictRemedy detail] $ \message ->
+                            forM_ ["same-named", "by hand"] $ \foreignAdvice ->
+                                assertBool "owned-cluster recovery must not give foreign-cluster removal advice" (not (foreignAdvice `Text.isInfixOf` message))
+                    other -> assertFailure ("expected an owned stopped-cluster conflict, got " <> show other)
+                pure (Right ())
+            )
+            >>= (@?= Right ())
     , testCase "a driver that contradicts its own listing fails closed" $
         withClusterFixture settleContradictoryListing >>= \case
-            Left (Failure _) -> pure ()
-            other -> assertFailure ("expected a typed failure, got " ++ show other)
+            Right (Left (Failure detail), paths, records) -> do
+                assertBool "the exact contradictory listing cause is missing"
+                    ("the driver listed the same cluster more than once" `Text.isInfixOf` failureCause detail)
+                paths @?= []
+                records @?= []
+            other -> assertFailure ("expected a typed failure with no create or records, got " ++ show other)
     , testCase "readiness evidence is unavailable until the managed generation is ready" $
         withClusterFixture readinessCases >>= \case
             Right (notReadyRefused, readyOffered) -> do
@@ -327,14 +419,6 @@ inFrameReconcileCases =
         withClusterFixture freshReadinessContinuationCase >>= \case
             Right (Right True, Left (Failure _)) -> pure ()
             other -> assertFailure ("expected one fresh continuation and one refusal, got " ++ show other)
-    , testCase "cleanup retains the exact package and refuses a replacement" $
-        withClusterFixture cleanupCases >>= \case
-            Right (removed, replaced) -> do
-                removed @?= Right ()
-                case replaced of
-                    Left (Conflict _) -> pure ()
-                    other -> assertFailure ("expected a cleanup conflict, got " ++ show other)
-            other -> assertFailure ("expected cleanup outcomes, got " ++ show other)
     ]
 
 packageSummary ::
@@ -372,7 +456,7 @@ settleCreated prepared =
 
 settleForeign ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError Text.Text)
+    IO (Either ReconcileError ForeignObservation)
 settleForeign prepared =
     withClusterClient prepared $ \backend root -> do
         standUpUnclaimedCluster prepared root
@@ -383,7 +467,7 @@ settleForeign prepared =
                 withClusterReconcileSettlement
                     settled
                     (\_ _ _ -> error "a no-origin cluster must not be adopted")
-                    (\_ _ _ foreignState -> foreignIdentity foreignState)
+                    (\_ _ _ foreignState -> foreignState)
 
 settleHealthyRecovery ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -401,22 +485,30 @@ settleHealthyRecovery prepared =
 
 settleUnhealthy ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError ())
-settleUnhealthy prepared =
-    withClusterClient prepared $ \backend root -> do
+    IO (Either ReconcileError (), [String], [String])
+settleUnhealthy prepared = do
+    outcome <- withClusterClient prepared $ \backend root -> do
         _ <- runClusterReconcileCall backend prepared
         setNodesRunning root False
         result <- runClusterReconcileCall backend prepared
-        pure (settleClusterReconcile Nothing prepared result >> Right ())
+        mutations <- FakeCluster.recordedClusterMutations root
+        clusters <- FakeCluster.readClusters root
+        pure (Right (settleClusterReconcile Nothing prepared result >> Right (), mutations, clusters))
+    either (fail . show) pure outcome
 
 settleContradictoryListing ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError ())
+    IO (Either ReconcileError (Either ReconcileError (), [String], [RecordKey]))
 settleContradictoryListing prepared =
     withClusterClient prepared $ \backend root -> do
         FakeCluster.writeClusters root [preparedClusterName prepared, preparedClusterName prepared]
         result <- runClusterReconcileCall backend prepared
-        pure (settleClusterReconcile Nothing prepared result >> Right ())
+        paths <- FakeCluster.recordedKubeconfigPaths root
+        opened <- openProtectedStore (preparedClusterStateDirectory prepared)
+        store <- either (fail . show) pure opened
+        listed <- withProtectedEntry store listProtectedRecords
+        records <- either (fail . show) pure listed
+        pure (Right (settleClusterReconcile Nothing prepared result >> Right (), paths, records))
 
 settleHealthyPriorCommit ::
     ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
@@ -445,9 +537,9 @@ settleHealthyPriorCommit plan prepared =
 settleForeignWithPriorCommit ::
     ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError Text.Text)
+    IO (Either ReconcileError ForeignObservation)
 settleForeignWithPriorCommit plan prepared =
-    withClusterClient prepared $ \backend _root -> do
+    withClusterClient prepared $ \backend root -> do
         createdResult <- runClusterReconcileCall backend prepared
         case settleClusterReconcile Nothing prepared createdResult of
             Left err -> pure (Left err)
@@ -456,6 +548,7 @@ settleForeignWithPriorCommit plan prepared =
                     created
                     ( \_managed receipt _change -> do
                         forgetEveryDurableRecord (preparedClusterStateDirectory prepared)
+                        standUpUnclaimedCluster prepared root
                         foreignResult <- runClusterReconcileCall backend prepared
                         pure $ do
                             proof <- matchingClusterPriorCommit plan prepared receipt
@@ -464,7 +557,7 @@ settleForeignWithPriorCommit plan prepared =
                                 withClusterReconcileSettlement
                                     settled
                                     (\_ _ _ -> error "a no-origin cluster must not be adopted")
-                                    (\_ _ _ foreignState -> foreignIdentity foreignState)
+                                    (\_ _ _ foreignState -> foreignState)
                     )
                     (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
 
@@ -473,25 +566,32 @@ matchingClusterPriorCommit ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
     OwnershipReceipt scope planId clusterId ClusterResource ->
     Either ReconcileError (PriorCommitProof scope planId clusterId ClusterResource)
-matchingClusterPriorCommit plan prepared receipt = do
-    let lifecycle = lifecyclePlanFromProjectPlan plan
-        handle = preparedClusterReconcileHandle prepared
-    verified <-
-        verifyPersistedJournalRecord
-            lifecycle
-            handle
-            "acquire"
-            PersistedJournalRecord
-                { persistedPlanDigest = lifecyclePlanDigest lifecycle
-                , persistedFrameKey = "provider"
-                , persistedResourceKey = resourceHandleKey handle
-                , persistedGeneration = resourceHandleGeneration handle
-                , persistedOperation = "acquire"
-                , persistedOperationKey = ownershipReceiptOperationKey receipt
-                , persistedRecordVersion = 1
-                , persistedPhase = Committed
-                }
-    withPriorCommitProof verified id
+matchingClusterPriorCommit plan prepared receipt =
+    withPreparedPlanOwnedClusterConfig prepared $ \configured ->
+        withPlanOwnedClusterPreparation
+            (planOwnedClusterConfigBase configured)
+            (\_ cluster -> verify cluster)
+            (\_ cluster -> verify cluster)
+  where
+    verify cluster = do
+        let handle = preparedClusterReconcileHandle prepared
+        verified <-
+            verifyPersistedJournalRecord
+                plan
+                cluster
+                handle
+                "acquire"
+                PersistedJournalRecord
+                    { persistedPlanDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
+                    , persistedFrameKey = plannedResourceFrame cluster
+                    , persistedResourceKey = resourceHandleKey handle
+                    , persistedGeneration = resourceHandleGeneration handle
+                    , persistedOperation = "acquire"
+                    , persistedOperationKey = ownershipReceiptOperationKey receipt
+                    , persistedRecordVersion = 1
+                    , persistedPhase = Committed
+                    }
+        withPriorCommitProof verified id
 
 readinessCases ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -582,7 +682,7 @@ freshReadinessContinuationCase prepared =
 
 createdIdentityWins ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError (Word64, Word64, Word64))
+    IO (Either ReconcileError (Word64, Word64, Word64, Text.Text, Text.Text))
 createdIdentityWins prepared =
     withClusterClient prepared $ \backend _root -> do
         result <- runClusterReconcileCall backend prepared
@@ -596,49 +696,18 @@ createdIdentityWins prepared =
                             ( managedClusterGeneration managed
                             , resourceHandleGeneration observed
                             , resourceHandleObservationVersion observed
+                            , managedClusterBackendIdentity managed
+                            , expectedControlPlaneIdentity prepared
                             )
                 )
                 (\_ _ _ _ -> Left (fixtureFailure "created cluster became foreign"))
 
-cleanupCases ::
+expectedControlPlaneIdentity ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError (Either ReconcileError (), Either ReconcileError ()))
-cleanupCases prepared =
-    withClusterClient prepared $ \backend root -> do
-        removed <- cleanupOnce backend prepared (pure ())
-        case removed of
-            Left err -> pure (Left err)
-            Right removedOutcome -> do
-                replaced <- cleanupOnce backend prepared (FakeCluster.armReplacementAfter root "delete")
-                pure (fmap (\replacedOutcome -> (removedOutcome, replacedOutcome)) replaced)
-
-{- | Create the cluster, arrange one external event, and release it once.
-
-Written as one step because a release is only reachable from a settlement, and
-each of the two cases wants the same three moves with a different thing
-happening between the second and the third.
--}
-cleanupOnce ::
-    StrongClusterBackend ->
-    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    IO () ->
-    IO (Either ReconcileError (Either ReconcileError ()))
-cleanupOnce backend prepared arrange = do
-    createdResult <- runClusterReconcileCall backend prepared
-    case settleClusterReconcile Nothing prepared createdResult of
-        Left err -> pure (Left err)
-        Right created ->
-            withClusterReconcileSettlement
-                created
-                ( \managed _receipt _ ->
-                    case withPreparedClusterCleanup prepared managed id of
-                        Left err -> pure (Left err)
-                        Right cleanup -> do
-                            arrange
-                            observed <- runClusterCleanupCall backend cleanup
-                            pure (Right (settleClusterCleanup cleanup observed))
-                )
-                (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
+    Text.Text
+expectedControlPlaneIdentity prepared = case preparedClusterNodeNames prepared of
+    controlPlane : _ -> Text.pack (FakeCluster.fixtureNodeIdentity controlPlane)
+    [] -> error "the exact cluster fixture must declare its control plane"
 
 -- | Create the cluster, apply its wall, and hand back the applied cordon.
 withAppliedFixtureCordon ::
@@ -705,17 +774,11 @@ withCordonAndApplied backend prepared consume = do
                 )
                 (\_ _ _ _ -> pure (Left (fixtureFailure "created cluster became foreign")))
 
-{- | A backend whose three cluster tools are this suite's own executable.
+{- | A model backend with distinct executable names for its cluster tools.
 
-§ KK's one interpreter launches whatever the typed configuration resolves with
-the exact argument vector a described command carries, so a fixture that wants
-the driver to have answered a particular way supplies a __program__ rather than a
-function beside it (§ NN). The program is "FakeCluster", entered by an
-environment variable held for exactly the span of this fixture.
-
-The node set the fixture's driver establishes is the plan's own, so the cluster
-this backend brings up is the one the prepared package declares rather than a
-topology the fixture guessed at.
+FakeCluster owns the answers and file state for this fixture. Those authored
+answers provide compatibility coverage, not provider execution evidence under
+section NN. The declared node set comes from the prepared package.
 -}
 withClusterClient ::
     PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
@@ -725,7 +788,7 @@ withClusterClient prepared consume =
     withSystemTempDirectory "hostbootstrap-cluster-client" $ \temporary -> do
         root <- canonicalizePath temporary
         _ <- FakeCluster.newClusterFixture root (preparedClusterNodeNames prepared)
-        self <- getExecutablePath
+        self <- FakeCluster.prepareFixtureExecutables root
         discovered <- withPreparedPlanOwnedClusterConfig prepared (discoverStrongClusterBackend (clusterClientHostConfig self))
         case discovered of
             Left err -> pure (Left err)
@@ -738,11 +801,11 @@ clusterClientHostConfig self =
         { hcSubstrate = Substrate LinuxCpu Arm64
         , hcToolPaths =
             Map.fromList
-                [ (Kind, fixtureExe self)
-                , (Docker, fixtureExe self)
-                , (Kubectl, fixtureExe self)
-                , (Helm, fixtureExe self)
-                , (Nvkind, fixtureExe self)
+                [ (Kind, fixtureExe (FakeCluster.fixtureToolPath self "kind"))
+                , (Docker, fixtureExe (FakeCluster.fixtureToolPath self "docker"))
+                , (Kubectl, fixtureExe (FakeCluster.fixtureToolPath self "kubectl"))
+                , (Helm, fixtureExe (FakeCluster.fixtureToolPath self "helm"))
+                , (Nvkind, fixtureExe (FakeCluster.fixtureToolPath self "nvkind"))
                 ]
         }
 
@@ -854,7 +917,8 @@ withHarnessClusterFixtureM ::
     HarnessClusterPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withHarnessClusterFixtureM consume =
-    Fixture.withFixtureHarnessProjectPlan testPlan $ \plan -> do
+    Fixture.withFixtureHarnessProjectPlanConfig selectExactResources testPlan $ \plan value -> do
+        Fixture.resources value @?= exactResources
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
         clusterGate <- gateFor planDigest "core:deploy-kind"
@@ -894,7 +958,8 @@ withChartWorkloadFixture ::
     ChartWorkloadFixtureConsumer summary ->
     IO (Either ReconcileError summary)
 withChartWorkloadFixture consume =
-    Fixture.withFixtureProjectPlan chartWorkloadPlan $ \plan -> do
+    Fixture.withFixtureProjectPlanConfig selectExactResources chartWorkloadPlan $ \plan value -> do
+        Fixture.resources value @?= exactResources
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
         clusterGate <- gateFor planDigest "core:deploy-kind"
@@ -911,9 +976,9 @@ withChartWorkloadFixture consume =
                                     prepareExactFixtureWithDriver KindDriver ReprobeAnswers providerGate clusterGate plan provider cluster $ \workloads partition prepared ->
                                         withClusterClient prepared $ \backend root ->
                                             withAppliedFixtureSettlement backend prepared $ \managed receipt applied -> do
-                                                carrier <- Execution.newResourceCarrier
-                                                runtime <- Execution.newStepRuntime carrier
-                                                self <- getExecutablePath
+                                                carrier <- ExecutionCore.newResourceCarrierCore
+                                                runtime <- ExecutionCore.newStepRuntimeCore carrier
+                                                self <- FakeCluster.prepareFixtureExecutables root
                                                 clusterNode <- requireNode "core:deploy-kind" plan
                                                 chartNode <- requireNode "core:deploy-chart" plan
                                                 let executionHostConfig = clusterClientHostConfig self
@@ -932,7 +997,24 @@ withChartWorkloadFixture consume =
                                                                     registered <- registerClusterRuntimeDependencyPackage backend clusterExecution scopeCommitment clusterGate applied readiness exposure route 100
                                                                     case registered of
                                                                         Left err -> pure (Left err)
-                                                                        Right _ -> do
+                                                                        Right registeredPackage -> do
+                                                                            assertPackageGateCommitment clusterGate registeredPackage
+                                                                            let (_, _, servicesRef, _) = ExecutionCore.resourceCarrierCoreRefs carrier
+                                                                                noncePath = root </> "runtime-probe-nonces"
+                                                                            writeFile noncePath ""
+                                                                            services <- readIORef servicesRef
+                                                                            observedServices <- forM services $ \(key, commitment, serve) -> do
+                                                                                package <- either (fail . Text.unpack) pure (Dependency.runtimeDependencyPackageFromWire (TextEncoding.encodeUtf8 commitment))
+                                                                                pure
+                                                                                    ( key
+                                                                                    , commitment
+                                                                                    , \request -> do
+                                                                                        case Dependency.withRuntimeDependencyProbeRequest package request id of
+                                                                                            Right requestNonce -> appendFile noncePath (Text.unpack requestNonce <> "\n")
+                                                                                            Left _ -> pure ()
+                                                                                        serve request
+                                                                                    )
+                                                                            writeIORef servicesRef observedServices
                                                                             successor <-
                                                                                 withFreshClusterRuntimeDependency chartExecution scopeCommitment cluster (Text.pack (ProjectPlan.operationKeyText clusterKey)) route 1 "fixture-readiness-nonce" $ \recovered resolved ->
                                                                                     consume plan cluster chart workloads partition chartExecution recovered resolved backend root
@@ -976,7 +1058,8 @@ withClusterFixtureUsingPlanDriverM ::
     ClusterPlanPreparedConsumer summary ->
     IO (Either ReconcileError summary)
 withClusterFixtureUsingPlanDriverM driver providerReprobe consume =
-    Fixture.withFixtureProjectPlan testPlan $ \plan -> do
+    Fixture.withFixtureProjectPlanConfig selectExactResources testPlan $ \plan value -> do
+        Fixture.resources value @?= exactResources
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
         clusterGate <- gateFor planDigest "core:deploy-kind"
@@ -1085,7 +1168,7 @@ prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate pl
         request <- requireBudget (mkSliceRequest cluster sliceBudget minimumBudget)
         let budgetAction =
                 joinBudget $
-                    withValidatedBudget plan exactEnvelope $ \validated ->
+                    withValidatedBudget plan $ \validated ->
                         withProviderBudgetCapability plan provider LimaProviderKey $ \capability ->
                             joinBudget $
                                 admitProviderBudget validated capability $ \_wall effective ->
@@ -1095,9 +1178,10 @@ prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate pl
                                             joinBudget $
                                                 withBudgetPartition effective fit overhead (request :| []) $ \_partition slices ->
                                                     withResourceSliceFor cluster slices $ \slice ->
-                                                        case withPlanOwnedCluster plan cluster provider (ProjectPlan.topology plan) slice of
+                                                        case withPlanOwnedCluster plan cluster provider (ProjectPlan.topology plan) slice driver of
                                                             Left packageError -> pure (Left (fixtureFailure (Text.pack (show packageError))))
                                                             Right base -> do
+                                                                planOwnedClusterDriver base @?= driver
                                                                 let bytes = ByteStringChar8.pack "kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\n"
                                                                     durableRoot = planOwnedClusterDurableRoot base
                                                                     driverName = case driver of KindDriver -> "kind"; NvkindDriver -> "nvkind"
@@ -1109,7 +1193,6 @@ prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate pl
                                                                     bound =
                                                                         withPlanOwnedClusterConfig
                                                                             base
-                                                                            driver
                                                                             bytes
                                                                             (childConfigDigest bytes)
                                                                             statePath
@@ -1121,6 +1204,7 @@ prepareExactFixtureWithDriver driver providerReprobe providerGate clusterGate pl
                                                                 case bound of
                                                                     Left packageError -> pure (Left (fixtureFailure (Text.pack (show packageError))))
                                                                     Right configured -> do
+                                                                        planOwnedClusterConfigDriver configured @?= planOwnedClusterDriver base
                                                                         prepared <- withPreparedClusterReconcile configured runningProvider Nothing clusterGate (consume workloads _partition)
                                                                         either (pure . Left) id prepared
         case budgetAction of
@@ -1131,13 +1215,10 @@ exposureIntent :: Text.Text -> Text.Text -> Int -> ExposureIntent
 exposureIntent service target port =
     either (error . show) id (mkPlanExposureIntent service target port)
 
-{- | Whether the provider's egress probe still answers when it is reprobed.
+{- | The provider fixture's authored egress-probe response sequence.
 
-The Direct realization observes its root and its provisioning egress through
-described commands, so "the probe stopped answering" is a property of the tool
-the interpreter launches rather than of an injected runner: an exhausting tool
-answers the readiness observation and refuses the reprobe, and both calls are
-real processes (§ NN).
+The model can answer readiness and refuse a later reprobe. These process replies
+exercise fixture compatibility; they do not establish real provider behavior.
 -}
 data ProviderReprobe
     = ReprobeAnswers
@@ -1158,8 +1239,8 @@ withRunningProviderDependencyFixture reprobe gate plan planned consume =
             Right backendSpec -> do
                 discovered <-
                     discoverStrongProviderBackend providerHostConfig backendSpec $ \backend -> do
-                        carrier <- Execution.newResourceCarrier
-                        runtime <- Execution.newStepRuntime carrier
+                        carrier <- ExecutionCore.newResourceCarrierCore
+                        runtime <- ExecutionCore.newStepRuntimeCore carrier
                         providerNode <-
                             maybe
                                 (fail "cluster fixture lacks provider node")
@@ -1207,13 +1288,10 @@ withRunningProviderDependencyFixture reprobe gate plan planned consume =
                                     Right action -> action
                 pure (either Left id discovered)
 
-{- | A host configuration whose Direct-provider tools are real programs.
+{- | Absolute executable paths for the authored Direct-provider fixture.
 
-Both Direct probes are described commands, so the interpreter launches whatever
-this configuration resolves and the fixture's control over them is the programs
-themselves rather than a seam beside them (§ NN). The paths are absolute because
-the fixture writes them, so the same total 'AbsExe' constructor production uses
-admits them wherever the static gate runs (§ JJ).
+The same AbsExe scalar validates their path form on every gate host. Their
+responses are fixture-authored models, not section NN provider evidence.
 -}
 withProviderHostConfig :: ProviderReprobe -> (HostConfig -> FilePath -> IO result) -> IO result
 withProviderHostConfig reprobe use =
@@ -1299,7 +1377,8 @@ fixtureFailure reason = Failure (FailureDetail "cluster fixture" reason DoNotRet
 harnessPackageSummary ::
     IO (Either ReconcileError (Text.Text, String, FilePath, Maybe FilePath))
 harnessPackageSummary =
-    Fixture.withFixtureHarnessProjectPlan testPlan $ \plan -> do
+    Fixture.withFixtureHarnessProjectPlanConfig selectExactResources testPlan $ \plan value -> do
+        Fixture.resources value @?= exactResources
         let planDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
         providerGate <- gateFor planDigest "core:deploy-vm"
         clusterGate <- gateFor planDigest "core:deploy-kind"

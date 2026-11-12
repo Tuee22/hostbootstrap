@@ -25,6 +25,8 @@
   schedules only the current-frame suffix. The projection is pure and non-authorizing; receipt-bound
   traversal is a separate layer above this projection
   ([development_plan_standards § W](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
+  Validation and interpretation share the [generic model's](generic_project_model.md) exhaustive
+  post-handoff classification through the retained plan node.
 - **The exact Chain is the current-frame foundation of the recursive, fractal interpreter.** `renderChain`
   consumes the admitted plan's complete `forward` projection. The implemented root-Up entry uses the
   root-only Chain path without loading a signing key, or, when its catalog has descendants, becomes the sole
@@ -109,7 +111,9 @@
   mount, or the WSL drvfs path below `/mnt/<drive>` that exposes the Windows project directory. Returning closes the
   continuation; neither execution packages nor the generic carried-resource channel contain the
   provider/share handles. Down projects `RetainResource` for this node, keeping its share and alias
-  across provider stop/restart; Destroy projects `ReleaseResource` after the child subtree settles.
+  across provider stop/restart; Destroy projects `ReleaseResource` after the child subtree settles. Every
+  reverse node in that parent frame waits for the same child operations, which are executed only once;
+  independent parent cleanup can still proceed when a sibling fails after the child has settled.
 - **The same algebra expresses deployment and runtime business logic.** As a design invariant, "bring up a
   cluster" and "run an inference/training pipeline" are the same kind of composition over durable external
   stores at different altitudes, both expressed as steps in the one chain. L0 realizes the deployment side
@@ -151,6 +155,45 @@ forward
   :: ProjectPlan scope specDigest planId configId cfg
   -> NonEmpty (PlannedStep scope planId configId (cfg scope))
 ```
+
+Each constructor starts both implementation and reverse-adapter revisions at one. Attaching a reverse
+effect with `reversedBy` preserves the declared reverse-adapter revision; `reversedByAt` selects its
+explicit replacement. Reordering an independent revision declaration and callback attachment therefore
+keeps the same revision.
+
+Named core steps (`ensure` and `post-handoff`) use the same non-empty ASCII token grammar as project
+identities: letters, digits, `-`, `_`, and `.`. `mkStepPlan` refuses an invalid name with
+`InvalidCoreStepName` before checking projected operations, so a name cannot introduce another `/`
+segment or `:` namespace into the operation key.
+
+An action receives `StepExecution scope planId`; its nominal indices bind plan-aware resource APIs.
+The prepared gate it exposes is unindexed. `acknowledgeOutcome` compares the gate's plan and session
+with the live lifecycle session at runtime, returning `SessionPreparedGateMismatch` on a mismatch,
+before checking its fence, journal version, and durable record.
+
+Validation permits at most one declared reverse effect and none on a preserved node. A project-managed
+node with no callback records `TeardownForeignRetained`; a core-managed node may use its core adapter.
+Those rules also permit the direct-host provider step that acquires no VM to release.
+
+`withProviderGuestAliasProjection` requires the durable-share node to depend on its provider.
+`withPlannedStepGuestAliasProjection` also restricts both resources to the node's own resource or its
+ordered dependency prefix, with the provider before the share. These checks precede the
+alias-declaration check.
+
+Two admissions under the same profile, canonical root, validated configuration and draft stream produce
+identical canonical snapshot bytes across fresh local plan identities. `PlanDraftConfigurationMismatch`
+reports the admitted configuration digest followed by the draft stream's configuration digest.
+
+Recovered reconstruction retains the admitted identity and reproduces its protected canonical bytes.
+Independent candidate refinement reports the profile's expected digest and the candidate's observed
+digest on mismatch. The private digest-equality helper checks supplied text; its reconstruction caller
+binds those texts and the target index to the recovered profile and candidate codec.
+
+The stable snapshot stores the exact canonical root as framed big-endian 32-bit `Char` code points,
+preserving filesystem names that a `Text` conversion would replace. Its indexed representation is
+abstract even to kernel importers; the public byte view grants no authority. Structural persisted-snapshot
+refusals retain the actual record key and parser reason. Structural admission accepts only an absolute
+root. Reconciliation consumes the same admitted `ProjectPlan` as its resource and operation projections.
 
 The project-defined `cfg` is decoded from the root `<project>.dhall` parameters, so plan projection is
 pure — there is no hidden, imperatively assembled command graph. Steps differ in execution semantics,
@@ -195,10 +238,10 @@ operates over that stack:
    receives its canonical config and plan through the authenticated Offer, reconstructs the exact plan, and
    executes only the nodes the root grants.
 2. Run those steps in order. Config-free reconcilers remain local probe/install helpers. A managed
-   resource operation instead receives its opaque scoped transition descriptor. The plan internally traverses the descriptor's complete edge set against the exact
-   rehydrated resources, runs every required readiness probe, and seals the resulting closed snapshot
-   into `OperationPreconditionSet`; prepare reruns the probes and the effect adapter receives only the
-   matching fresh `PreparedOperation`/`PreparedPreconditions` pair. A caller-retained readiness
+   resource operation instead receives its opaque scoped transition descriptor. Preparation validates
+   its gate, traverses the descriptor's complete edge set against the exact rehydrated resources, and
+   runs each required readiness probe once. Its private matching step then returns the matching fresh
+   `PreparedOperation`/`PreparedPreconditions` pair the effect adapter consumes. A caller-retained readiness
    capability never enters preparation or the adapter. The transition returns structured
    `ReconcileResult`. Placement
    is determined by the validated plan/frame, not by a caller-supplied descriptive context.
@@ -339,6 +382,15 @@ owns the rooted child-to-parent unwind. The root retains the only store, global 
 catalog, every frame journal, and all prepare, settle, replay, completion, and receipt transitions. Children
 return bounded observations through the closed rooted protocol; they never receive a durable cursor,
 `CommandAuthority`, raw record key, or store operation.
+
+Root journal admission and retained-journal validation use the same named immutable acquisition binding.
+The validator also consumes the independently expected typed verb: the checked command verb for root
+authorization and the source root's Up verb for reverse recovery. Durable resume reports the exact differing
+binding field. This descriptive coordinate record grants no admission or command authority.
+
+The frame cursor's canonical record collision-checks its exact acquisition source and semantic frame.
+Resume uses the current protected row version without normalization; its byte bounds and refusal rules
+are defined in [the lifecycle state model](lifecycle_state_model.md#lifecycle-profile-authority).
 
 The implemented reverse foundation preserves the frame phantom through `TeardownPlan`, `TeardownForest`,
 closed `LocalWork`/`DescentWork`, completion, and `SubtreeSettled`. A private verb-tagged root intent
@@ -815,7 +867,7 @@ still the chain and context graph, not a second hidden accelerator path; see
 A step's action receives the plan-minted `StepExecution scope planId` descriptor and never the plan
 itself. The descriptor is therefore the whole of what a node may act on, and it is derived from the
 validated plan rather than supplied beside it. The full exported surface is
-[`HostBootstrap.Lifecycle.Execution`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs).
+[`HostBootstrap.Lifecycle.Execution`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution.hs).
 
 **Its own operation.** `stepExecutionOperationKey`, `stepExecutionFrame`, `stepExecutionPlanDigest`, and
 `stepExecutionDependencyKeys` are the node's own identities and its exact ordered plan prefix;
@@ -826,6 +878,13 @@ before running the action — the same gate it settles against afterwards — so
 prepares the node's own effect rather than a fabricated one. `Nothing` means the descriptor was minted
 outside an interpretation, with no journal behind it, so a caller handles absence explicitly; the demo's
 producers refuse.
+
+The local `withStepPreparedGate` route in
+[`Lifecycle.Session`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs) reads the
+plan digest and operation key directly from that descriptor and refuses a different session plan before
+preparing an effect. The protected store's `mkRecordName` encoding preserves distinct operation identities:
+a namespaced token cannot begin or end with a dot, so `core:.x` and `core:x.` refuse with
+`ProtectedInvalid`, and registering `core:.x` cannot address the existing record for `core/x`.
 
 **Its host configuration and activation route.** `stepExecutionHostConfig` supplies the host-tool
 configuration an ordinary action resolves tools through. `stepExecutionSignActivationManifest` routes one
@@ -850,15 +909,20 @@ relation, because every other resource the key names is already behind it in the
 claimed by the durable-share node, whose prefix carries the provider.
 
 The interpreter registers each projection with its node, opens a gate for each in the same exclusive entry
-that publishes the node's own unknown phase, and settles the ones the action took at the phase the node
-itself settles at. `stepExecutionTakeProjectedGate` hands out each once; a key the plan did not place under
-this node yields `Nothing`. A declared projection whose gate is never taken stays unsettled and the session
-close refuses, so declaring a relation the node does not perform fails closed.
+that publishes the node's own unknown phase. A successful action settles the projections it took;
+`stepExecutionTakeProjectedGate` hands out each once, and a key the plan did not place under this node
+yields `Nothing`. A successful action's untaken declared projection keeps the session open. A returned
+non-success or synchronous exception terminalizes all gates opened for that node before session close;
+[terminal acknowledgement](lifecycle_state_model.md#sessions-fences-and-terminal-acknowledgement) owns
+the complete failure and exception policy.
 
 **Its dependencies' handles.** A prepared call's dependency snapshot consumes the dependency's `Managed`
 handle, and a generative handle is never serialised (see [ownership_invariant](ownership_invariant.md)).
 The interpreter opens one `ResourceCarrier scope planId` for the whole interpretation;
-`carryManagedResource` accepts only a handle `completeReconcile`/`completePreparedUnchanged` produced, and
+`carryManagedResourceSettlement` checks the managed handle and matching ownership receipt and retains
+the exact durable settlement for the node's own or declared projected operation under its declaring
+frame. Chain publishes those bytes before acknowledging that operation's journal outcome. Readback
+does not confer publication responsibility: a dependent cannot replace a dependency's settlement.
 `withCarriedManagedResource` reads one back under fresh generative indices, for this node's own key or a key
 in its exact ordered plan prefix. The own key is admitted so a relation a node performs can depend on the
 resource the same node just acquired without threading a generative handle through call signatures.
@@ -883,9 +947,9 @@ frame through every successor and `SubtreeSettled`. Only complete unique-root se
 Unknown effects retain their recorded recovery obligation and cannot be silently treated as absent.
 
 The reusable source contracts live in
-[ProjectPlan](../../core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs),
+[ProjectPlan](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan.hs),
 [Chain](../../core/hostbootstrap-core/src/HostBootstrap/Chain.hs), and
-[Teardown](../../core/hostbootstrap-core/src/HostBootstrap/Teardown.hs).
+[Teardown](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs).
 The [lifecycle state model](lifecycle_state_model.md) owns their journal, recovery, migration, and closure
 relationships; it links to the actual signatures rather than maintaining another illustrative API.
 

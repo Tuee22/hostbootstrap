@@ -3,6 +3,7 @@
 
 module WslGlobalWallSpec (tests) where
 
+import Control.Monad (forM_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word64)
@@ -37,6 +38,15 @@ tests =
             withWallSpec "" desiredBytes (const ())
                 @?= Left (InvalidWallIdentity "wall specification identity must not be empty")
             withWallFence 0 (const ()) @?= Left (InvalidWallFence 0)
+            let invalidReservation reservationIdentity receiptIdentity =
+                    joinModel $ withWallOwner "owner" $ \owner ->
+                        joinModel $ withWallSpec "spec" desiredBytes $ \spec ->
+                            joinModel $ withWallFence 1 $ \fence ->
+                                withWallReservation owner spec reservationIdentity receiptIdentity fence (const ())
+            invalidReservation "" "receipt"
+                @?= Left (InvalidWallIdentity "wall reservation identity must not be empty")
+            invalidReservation "reservation" ""
+                @?= Left (InvalidWallIdentity "wall receipt identity must not be empty")
             -- The object identity is the ownership vocabulary's own, so its
             -- refusal is stated once, where every owner reads it.
             assertBool
@@ -164,7 +174,7 @@ tests =
                     persistedWallPhase (wallReceiptRecord released) @?= WallReleased
                     persistedWallOrigin (wallReceiptRecord released)
                         @?= Just OriginalAbsent
-        , testCase "apply recovery is total for original, desired, replaced, absent, and ambiguous observations" $
+        , testCase "apply recovery is total in the outcome-unknown phase" $
             runReservation 21 "owner-a" "spec-a" "reservation-c" "receipt-c" $ \reservation -> do
                 originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-100")
                 managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-101")
@@ -178,12 +188,6 @@ tests =
                             (ObservedPresent originalIdentity originalBytes)
                             managedIdentity
                         )
-                classifyWallApply
-                    applying
-                    (preparedObservation origin managedIdentity)
-                    @?= ApplyRetryPublication
-                classifyWallApply applying (appliedObservation origin managedIdentity)
-                    @?= ApplyObservedDesired
                 classifyWallApply
                     applying
                     ( ApplyObservation
@@ -263,6 +267,9 @@ tests =
                             claimed
                             OriginalAbsent
                         )
+                assertLeft
+                    (InvalidWallIdentity "wall stage candidate identity must not be empty")
+                    (beginWallStageCreation (wallReceiptRecord withOrigin) withOrigin "")
                 creating <-
                     expectRight
                         ( beginWallStageCreation
@@ -280,6 +287,10 @@ tests =
                     creating
                     (ObservedPresent unboundIdentity desiredBytes)
                     @?= StageCreateBlocked (UnboundStagePresent unboundIdentity)
+                assertLeft
+                    (WallConflictError (UnboundStagePresent unboundIdentity))
+                    (bindWallStage (wallReceiptRecord creating) creating
+                        (ObservedPresent unboundIdentity desiredBytes) unboundIdentity)
                 bound <-
                     expectRight
                         ( bindWallStage
@@ -313,6 +324,18 @@ tests =
                     (ObservedPresent unboundIdentity desiredBytes)
                     @?= StageCreateBlocked
                         (TargetReplaced reboundIdentity unboundIdentity)
+                assertLeft
+                    (WallConflictError (TargetReplaced reboundIdentity unboundIdentity))
+                    (bindWallStage (wallReceiptRecord rebound) rebound
+                        (ObservedPresent unboundIdentity desiredBytes) reboundIdentity)
+                assertLeft
+                    (WallConflictError (TargetAmbiguous reboundIdentity))
+                    (bindWallStage (wallReceiptRecord rebound) rebound
+                        (ObservedPresent reboundIdentity "wrong bytes") reboundIdentity)
+                fmap wallReceiptRecord
+                    (bindWallStage (wallReceiptRecord rebound) rebound
+                        (ObservedPresent reboundIdentity desiredBytes) reboundIdentity)
+                    @?= Right (wallReceiptRecord rebound)
                 assertLeft
                     ( InvalidWallJournal
                         "stage-create retry proposed a different candidate identity"
@@ -484,7 +507,7 @@ tests =
                                 ObservedAbsent
                             )
                         )
-        , testCase "an old authority refuses a newer active fence before restoration" $
+        , testCase "a stale receipt and authority pair refuses a newer active fence" $
             runReservation 61 "owner-a" "spec-a" "reservation-i" "receipt-i" $ \oldReservation -> do
                 originalIdentity <- expectRight (mkObjectIdentity "volume-7:file-107")
                 managedIdentity <- expectRight (mkObjectIdentity "volume-7:file-108")
@@ -509,19 +532,181 @@ tests =
                                 oldApplied
                                 (restoreAppliedObservation origin managedIdentity)
                             )
-        , testCase "malformed durable phase data cannot mint a receipt or authority" $
-            runReservation 71 "owner-a" "spec-a" "reservation-k" "receipt-k" $ \reservation -> do
-                claimed <- expectRight (claimOrResumeWall reservation Nothing)
-                let malformed =
-                        (wallReceiptRecord claimed)
-                            { persistedWallPhase = WallApplied
-                            }
-                assertLeft
-                    ( InvalidWallJournal
-                        "post-origin phase has no durable origin"
-                    )
-                    (claimOrResumeWall reservation (Just malformed))
+        , testGroup "wall transition and replay contracts" contractTests
+        , testGroup "malformed durable phase data cannot mint a receipt or authority" malformedRecordTests
         ]
+
+contractTests :: [TestTree]
+contractTests =
+    [ testCase "phase guards reject authority and wrong-phase mutations" $
+        runReservation 81 "owner-a" "spec-a" "reservation-guards" "receipt-guards" $ \reservation -> do
+            managed <- expectRight (mkObjectIdentity "wall-guard-managed")
+            claimed <- expectRight (claimOrResumeWall reservation Nothing)
+            origin <- expectRight (recordWallOrigin (wallReceiptRecord claimed) claimed OriginalAbsent)
+            creating <- expectRight (beginWallStageCreation (wallReceiptRecord origin) origin "stage")
+            bound <- expectRight (bindWallStage (wallReceiptRecord creating) creating ObservedAbsent managed)
+            applying <- expectRight (beginWallApply (wallReceiptRecord bound) bound
+                (preparedObservation OriginalAbsent managed) managed)
+            forM_ [claimed, origin, bound, applying] $ \receipt ->
+                assertIllegalPhase (persistedWallPhase (wallReceiptRecord receipt))
+                    (withWallAuthority (wallReceiptRecord receipt) receipt (const ()))
+            classifyWallApply origin (ApplyObservation ObservedAbsent ObservedAbsent ObservedAbsent)
+                @?= ApplyRetryFromOrigin
+            assertIllegalPhase WallOriginRecorded
+                (settleWallApply (wallReceiptRecord origin) origin
+                    (ApplyObservation ObservedAbsent ObservedAbsent ObservedAbsent))
+            applied <- expectRight (settleWallApply (wallReceiptRecord applying) applying
+                (appliedObservation OriginalAbsent managed))
+            runAuthority (wallReceiptRecord applied) applied $ \authority ->
+                assertIllegalPhase WallApplied
+                    (releaseWall (wallReceiptRecord applied) authority applied
+                        (restoreAppliedObservation OriginalAbsent managed))
+    , testCase "recorded origins reject changed presence and identity" $
+        runReservation 82 "owner-a" "spec-a" "reservation-origin" "receipt-origin" $ \reservation -> do
+            first <- expectRight (mkObjectIdentity "wall-original-first")
+            second <- expectRight (mkObjectIdentity "wall-original-second")
+            claimed <- expectRight (claimOrResumeWall reservation Nothing)
+            absent <- expectRight (recordWallOrigin (wallReceiptRecord claimed) claimed OriginalAbsent)
+            assertLeft (WallConflictError (UnexpectedTargetPresent first))
+                (recordWallOrigin (wallReceiptRecord absent) absent (OriginalPresent first originalBytes))
+            present <- expectRight (recordWallOrigin (wallReceiptRecord claimed) claimed
+                (OriginalPresent first originalBytes))
+            assertLeft (WallConflictError (TargetReplaced first second))
+                (recordWallOrigin (wallReceiptRecord present) present (OriginalPresent second originalBytes))
+    , testCase "apply classification includes claimed origin-recorded and applied phases" $
+        runReservation 83 "owner-a" "spec-a" "reservation-classify" "receipt-classify" $ \reservation -> do
+            managed <- expectRight (mkObjectIdentity "wall-classify-managed")
+            foreignIdentity <- expectRight (mkObjectIdentity "wall-classify-foreign")
+            claimed <- expectRight (claimOrResumeWall reservation Nothing)
+            let absent = ApplyObservation ObservedAbsent ObservedAbsent ObservedAbsent
+            classifyWallApply claimed absent @?= ApplyNotInProgress WallClaimed
+            origin <- expectRight (recordWallOrigin (wallReceiptRecord claimed) claimed OriginalAbsent)
+            classifyWallApply origin absent @?= ApplyRetryFromOrigin
+            classifyWallApply origin (preparedObservation OriginalAbsent managed)
+                @?= ApplyBlocked (UnexpectedTargetPresent managed)
+            applied <- expectRight (prepareApplied reservation OriginalAbsent ObservedAbsent
+                managed (ObservedPresent managed desiredBytes))
+            classifyWallApply applied (appliedObservation OriginalAbsent managed) @?= ApplyAlreadyApplied
+            classifyWallApply applied (appliedObservation OriginalAbsent foreignIdentity)
+                @?= ApplyBlocked (TargetReplaced managed foreignIdentity)
+    , testCase "restoring and restored receipts require original bytes or exact absence" $
+        runReservation 84 "owner-a" "spec-a" "reservation-exact-restore" "receipt-exact-restore" $ \reservation -> do
+            original <- expectRight (mkObjectIdentity "wall-restore-original")
+            managed <- expectRight (mkObjectIdentity "wall-restore-managed")
+            foreignIdentity <- expectRight (mkObjectIdentity "wall-restore-foreign")
+            forM_ [OriginalAbsent, OriginalPresent original originalBytes] $ \origin -> do
+                applied <- expectRight (prepareApplied reservation origin (originObservation origin)
+                    managed (ObservedPresent managed desiredBytes))
+                runAuthority (wallReceiptRecord applied) applied $ \authority -> do
+                    restoring <- expectRight (beginWallRestore (wallReceiptRecord applied) authority applied
+                        (restoreAppliedObservation origin managed))
+                    restored <- expectRight (settleWallRestore (wallReceiptRecord restoring) authority restoring
+                        (restoredObservation origin))
+                    forM_ [restoring, restored] $ \receipt -> do
+                        let active = wallReceiptRecord receipt
+                        case origin of
+                            OriginalPresent identity _ -> do
+                                let changed = RestoreObservation
+                                        (ObservedPresent identity "tampered") ObservedAbsent ObservedAbsent
+                                    expected = WallConflictError (TargetAmbiguous identity)
+                                classifyWallRestore receipt changed @?= RestoreBlocked (TargetAmbiguous identity)
+                                assertLeft expected (settleWallRestore active authority receipt changed)
+                                assertLeft expected (releaseWall active authority receipt changed)
+                                assertLeft expected (verifyWallReleased active receipt changed)
+                            OriginalAbsent -> do
+                                let present = RestoreObservation
+                                        (ObservedPresent managed desiredBytes) ObservedAbsent ObservedAbsent
+                                    foreignTarget = RestoreObservation
+                                        (ObservedPresent foreignIdentity "foreign bytes") ObservedAbsent ObservedAbsent
+                                    expected = WallConflictError (TargetReplaced managed foreignIdentity)
+                                assertRefused (settleWallRestore active authority receipt present)
+                                assertRefused (releaseWall active authority receipt present)
+                                assertRefused (verifyWallReleased active receipt present)
+                                assertLeft expected (settleWallRestore active authority receipt foreignTarget)
+                                assertLeft expected (releaseWall active authority receipt foreignTarget)
+                                assertLeft expected (verifyWallReleased active receipt foreignTarget)
+                    case origin of
+                        OriginalPresent identity _ ->
+                            assertRefused (prepareApplying reservation origin
+                                (ObservedPresent identity "tampered") managed)
+                        OriginalAbsent -> pure ()
+    , testCase "stale phase receipts and both retained payloads are revalidated" $
+        runReservation 85 "owner-a" "spec-a" "reservation-stale" "receipt-stale" $ \reservation -> do
+            original <- expectRight (mkObjectIdentity "wall-stale-original")
+            managed <- expectRight (mkObjectIdentity "wall-stale-managed")
+            replacement <- expectRight (mkObjectIdentity "wall-stale-replacement")
+            let origin = OriginalPresent original originalBytes
+            applied <- expectRight (prepareApplied reservation origin (originObservation origin)
+                managed (ObservedPresent managed desiredBytes))
+            runAuthority (wallReceiptRecord applied) applied $ \authority -> do
+                restoring <- expectRight (beginWallRestore (wallReceiptRecord applied) authority applied
+                    (restoreAppliedObservation origin managed))
+                let newer = wallReceiptRecord restoring
+                    stale = WallConflictError (StaleWallReceipt WallApplied WallRestoreOutcomeUnknown)
+                assertLeft stale (beginWallRestore newer authority applied
+                    (restoreAppliedObservation origin managed))
+                assertLeft stale (releaseWall newer authority applied (restoredObservation origin))
+                assertLeft stale (recordWallOrigin newer applied origin)
+                let edits =
+                        [ (wallReceiptRecord applied){persistedTargetIdentity = Just replacement}
+                        , (wallReceiptRecord applied){persistedWallOrigin = Just (OriginalPresent original "tampered")}
+                        ]
+                forM_ edits $ \active -> do
+                    assertLeft
+                        (InvalidWallJournal "active record payload differs from the receipt under the same identity and fence")
+                        (recordWallOrigin active applied origin)
+                    resumed <- expectRight (claimOrResumeWall reservation (Just active))
+                    assertLeft
+                        (InvalidWallJournal "active record payload no longer matches the authority")
+                        (beginWallRestore active authority resumed (restoreAppliedObservation origin managed))
+    ]
+
+assertIllegalPhase :: WallJournalPhase -> Either WallModelError value -> Assertion
+assertIllegalPhase expected result = case result of
+    Left (IllegalWallTransition actual _) -> actual @?= expected
+    other -> assertFailure ("expected an illegal phase " ++ show expected ++ ", observed " ++ show (() <$ other))
+
+assertRefused :: Either WallModelError value -> Assertion
+assertRefused result = case result of
+    Left _ -> pure ()
+    Right _ -> assertFailure "an inexact wall layout must be refused"
+
+malformedRecordTests :: [TestTree]
+malformedRecordTests =
+    [ testCase label $
+        runReservation 71 "owner-a" "spec-a" "reservation-k" "receipt-k" $ \reservation -> do
+            identity <- expectRight (mkObjectIdentity "wall-malformed-identity")
+            claimed <- expectRight (claimOrResumeWall reservation Nothing)
+            let malformed = edit identity (wallReceiptRecord claimed)
+                expected = InvalidWallJournal message
+            assertLeft expected (claimOrResumeWall reservation (Just malformed))
+            withWallAuthority malformed claimed (const ()) @?= Left expected
+    | (label, edit, message) <- malformedRecords
+    ]
+
+malformedRecords :: [(String, ObjectIdentity -> PersistedWallRecord -> PersistedWallRecord, String)]
+malformedRecords =
+    [ ("empty owner", \_ r -> r{persistedOwnerIdentity = ""}, "persisted owner identity is empty")
+    , ("empty specification", \_ r -> r{persistedSpecIdentity = ""}, "persisted specification identity is empty")
+    , ("empty reservation", \_ r -> r{persistedReservationIdentity = ""}, "persisted reservation identity is empty")
+    , ("empty receipt", \_ r -> r{persistedReceiptIdentity = ""}, "persisted receipt identity is empty")
+    , ("zero fence", \_ r -> r{persistedFenceValue = 0}, "persisted fence is zero")
+    , ("claimed origin", \_ r -> r{persistedWallOrigin = Just OriginalAbsent}, "persisted origin is incompatible with the journal phase")
+    , ("claimed candidate", \_ r -> r{persistedStageCandidate = Just "stage"}, "persisted stage candidate is incompatible with the journal phase")
+    , ("claimed target", \identity r -> r{persistedTargetIdentity = Just identity}, "persisted target identity is incompatible with the journal phase")
+    , ("origin missing", \_ r -> r{persistedWallPhase = WallOriginRecorded}, "origin-recorded phase has no durable origin")
+    , ("origin candidate", \_ r -> r{persistedWallPhase = WallOriginRecorded, persistedWallOrigin = Just OriginalAbsent, persistedStageCandidate = Just "stage"}, "origin-recorded phase already carries a stage candidate")
+    , ("origin target", \identity r -> r{persistedWallPhase = WallOriginRecorded, persistedWallOrigin = Just OriginalAbsent, persistedTargetIdentity = Just identity}, "origin-recorded phase already carries a target identity")
+    , ("create origin missing", \_ r -> r{persistedWallPhase = WallStageCreateOutcomeUnknown}, "stage-create phase has no durable origin")
+    , ("create candidate missing", \_ r -> r{persistedWallPhase = WallStageCreateOutcomeUnknown, persistedWallOrigin = Just OriginalAbsent}, "stage-create phase has no durable candidate identity")
+    , ("create candidate empty", \_ r -> r{persistedWallPhase = WallStageCreateOutcomeUnknown, persistedWallOrigin = Just OriginalAbsent, persistedStageCandidate = Just ""}, "stage-create phase has an empty candidate identity")
+    , ("create target", \identity r -> r{persistedWallPhase = WallStageCreateOutcomeUnknown, persistedWallOrigin = Just OriginalAbsent, persistedStageCandidate = Just "stage", persistedTargetIdentity = Just identity}, "stage-create phase already carries a target identity")
+    , ("post-origin missing", \_ r -> r{persistedWallPhase = WallApplied}, "post-origin phase has no durable origin")
+    , ("post-origin candidate missing", \_ r -> r{persistedWallPhase = WallApplied, persistedWallOrigin = Just OriginalAbsent}, "post-origin phase has no durable stage candidate")
+    , ("post-origin candidate empty", \_ r -> r{persistedWallPhase = WallApplied, persistedWallOrigin = Just OriginalAbsent, persistedStageCandidate = Just ""}, "post-origin phase has an empty stage candidate")
+    , ("post-origin target missing", \_ r -> r{persistedWallPhase = WallApplied, persistedWallOrigin = Just OriginalAbsent, persistedStageCandidate = Just "stage"}, "post-origin phase has no target identity")
+    , ("present origin aliases target", \identity r -> r{persistedWallPhase = WallApplied, persistedWallOrigin = Just (OriginalPresent identity originalBytes), persistedStageCandidate = Just "stage", persistedTargetIdentity = Just identity}, "an originally present .wslconfig requires a distinct staged desired-object identity")
+    ]
 
 prepareApplying ::
     WallReservation ownerId wallSpecId reservationId receiptId fenceId ->

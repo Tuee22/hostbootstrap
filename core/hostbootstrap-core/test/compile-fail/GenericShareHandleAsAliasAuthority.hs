@@ -23,7 +23,7 @@ badAlias ::
         DurableShareResource
         shareFrame ->
     ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed ->
-    DependencyProbe scope planId shareId DurableShareResource ->
+    DependencyProbe scope planId shareId DurableShareResource readiness ->
     GuestAliasSpec ->
     PreparedGate ->
     IO (Either ReconcileError ())

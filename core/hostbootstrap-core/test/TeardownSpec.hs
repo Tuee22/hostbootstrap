@@ -111,6 +111,12 @@ observationCodecTests =
             case teardownObservationsFromWire candidate of
                 Left (TeardownObservationWireRefused _) -> pure ()
                 other -> assertFailure (label <> " wire was not refused: " <> show other)
+    , testCase "typed decoding refuses a well-framed row whose status is not a teardown status" $ do
+        -- "succeeded" is a structural status of the completion wire, never a teardown one.
+        wire <- expectHandoffRight (renderLifecycleObservations [("one", "succeeded", "none")])
+        case teardownObservationsFromWire wire of
+            Left (TeardownObservationWireRefused _) -> pure ()
+            other -> assertFailure ("an unknown teardown status was not refused: " <> show other)
     ]
 
 expectTeardownRight :: (Show error) => Either error value -> IO value
@@ -144,34 +150,26 @@ sourceShapeTests =
         root <-
             findRepoRoot cwd
                 >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-        source <-
-            TextIO.readFile
-                ( root
-                    </> "core"
-                    </> "hostbootstrap-core"
-                    </> "src"
-                    </> "HostBootstrap"
-                    </> "Teardown.hs"
-                )
-        commandSource <-
-            TextIO.readFile
-                ( root
-                    </> "core"
-                    </> "hostbootstrap-core"
-                    </> "src"
-                    </> "HostBootstrap"
-                    </> "Command.hs"
-                )
-        internalSource <-
-            TextIO.readFile
-                ( root
-                    </> "core"
-                    </> "hostbootstrap-core"
-                    </> "src"
-                    </> "HostBootstrap"
-                    </> "Teardown"
-                    </> "Internal.hs"
-                )
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        sourcePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Teardown"
+        commandPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command"
+        entryPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command.LifecycleEntry"
+        childPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command.Child.Reverse"
+        internalPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Teardown.Internal"
+        source <- TextIO.readFile sourcePath
+        commandSource <- TextIO.readFile commandPath
+        entrySource <- TextIO.readFile entryPath
+        childSource <- TextIO.readFile childPath
+        internalSource <- TextIO.readFile internalPath
+        commandModules <- SourceGuard.readHaskellSources (packageRoot </> "src" </> "HostBootstrap" </> "Command")
+        assertBool "the command module tree is not empty" (not (null commandModules))
+        exports <- maybe (assertFailure "Teardown must have an explicit export list") pure $
+            SourceGuard.moduleExportTokens "HostBootstrap.Teardown" (Text.unpack source)
+        let has fragment body = SourceGuard.haskellTokens (Text.unpack fragment) `isInfixOf` SourceGuard.haskellTokens (Text.unpack body)
+            commandSources = (commandPath, Text.unpack commandSource) : commandModules
+        assertBool "commented code cannot satisfy a source guard" (not (has "teardownPlan plan current verb" "-- teardownPlan plan current verb"))
+        assertBool "a quoted literal cannot satisfy a source guard" (not (has "teardownPlan plan current verb" "\"teardownPlan plan current verb\""))
         collector <-
             either assertFailure pure $
                 SourceGuard.haskellDefinitionTokens
@@ -204,16 +202,10 @@ sourceShapeTests =
                     (forbidden `notElem` collector)
             )
             ["LiftContext", "localContext", "error", "undefined", "fromJust"]
-        let declarations = map Text.strip (Text.lines source)
-            normalized = Text.unwords (Text.words source)
+        let normalized = source
             declaration name expected =
-                [ line
-                | line <- declarations
-                , any
-                    (`Text.isPrefixOf` line)
-                    ["data " <> name <> " ", "newtype " <> name <> " "]
-                ]
-                    @?= [expected]
+                assertBool ("missing or duplicated teardown declaration: " ++ Text.unpack name) $
+                    SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens (Text.unpack expected)) (Text.unpack source) == 1
             exactSignatures =
                 [ "teardownPlan :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId frame -> ProjectVerb verb -> TeardownPlan scope planId frame verb"
                 , "openTeardownForest :: TeardownPlan scope planId frame verb -> Either TeardownError (TeardownForest scope planId frame verb)"
@@ -234,9 +226,6 @@ sourceShapeTests =
                 , "type role TeardownAuthorizationPoint nominal nominal nominal nominal"
                 , "type role PreDescentStep nominal nominal nominal nominal"
                 , "type role SettledChildren nominal nominal nominal"
-                , "type role TeardownWork nominal nominal nominal nominal"
-                , "type role LocalWork nominal nominal nominal nominal"
-                , "type role DescentWork nominal nominal nominal nominal nominal"
                 , "type role SubtreeSettled nominal nominal nominal nominal"
                 , "type role DestroySettled nominal nominal"
                 ]
@@ -280,24 +269,24 @@ sourceShapeTests =
             ( \signature ->
                 assertBool
                     ("missing exact teardown signature: " ++ Text.unpack signature)
-                    (signature `Text.isInfixOf` normalized)
+                    (signature `has` normalized)
             )
             exactSignatures
         mapM_
             ( \role ->
                 assertBool
                     ("missing exact teardown role declaration: " ++ Text.unpack role)
-                    (role `Text.isInfixOf` normalized)
+                    (role `has` normalized)
             )
             exactRoles
         assertBool
             "the former TeardownCursor type must not remain public"
-            (not ("    TeardownCursor," `Text.isInfixOf` source))
+            ("TeardownCursor" `notElem` exports)
         mapM_
             ( \formerProjection ->
                 assertBool
                     ("former public cursor projection remains: " ++ Text.unpack formerProjection)
-                    (not (formerProjection `Text.isInfixOf` source))
+                    (not (formerProjection `has` source))
             )
             [ "teardownCursorAction"
             , "teardownCursorKey"
@@ -315,42 +304,43 @@ sourceShapeTests =
         mapM_
             ( \required ->
                 assertBool
-                    ("Command is missing the closed teardown-work boundary: " ++ Text.unpack required)
-                    (required `Text.isInfixOf` commandSource)
+                    ("lifecycle entry is missing the closed teardown-work boundary: " ++ Text.unpack required)
+                    (required `has` entrySource)
             )
-            [ "Teardown.LocalWork"
-            , "Teardown.DescentWork"
-            , "Teardown.driveTeardownForest"
-            , "Teardown.withDescentWorkSubtree"
-            , "Teardown.descentWorkParentFrame"
-            , "Teardown.descentWorkChildFrame"
-            , "nextFrameAfter (topology plan) parent"
-            , "plan-bound teardown descent mismatch"
+            [ "teardownPlan plan current verb"
+            , "driveTeardownForest"
+            , "descentWorkChildFrame"
             ]
-        assertBool
-            "Command must not retain the former public cursor route"
-            (not ("Teardown.TeardownCursor" `Text.isInfixOf` commandSource))
-        assertBool
-            "Command must not receive an unclassified teardown authorization point"
-            (not ("Teardown.withTeardownAuthorization" `Text.isInfixOf` commandSource))
+        forM_ commandSources $ \(path, body) -> do
+            let commandModule = Text.pack body
+            assertBool (path <> " retains the former public cursor route")
+                (not ("TeardownCursor" `has` commandModule))
+            if path == entryPath
+                then pure ()
+                else assertBool (path <> " receives an unclassified teardown authorization point")
+                    (not ("withTeardownAuthorization" `has` commandModule))
+            assertBool (path <> " retains parallel command and teardown verb parameters")
+                (not ("commandVerb" `has` commandModule) && not ("teardownVerb" `has` commandModule))
+            assertBool (path <> " accepts an external cluster teardown callback")
+                (not ("(ClusterPlan -> IO TeardownOutcome)" `has` commandModule))
         assertBool
             "the driver must not expose the former generic authorization-point handler"
             ( not
                 ( "(TeardownAuthorizationPoint scope planId frame verb -> IO TeardownOutcome)"
-                    `Text.isInfixOf` normalized
+                    `has` normalized
                 )
             )
         assertBool
             "Teardown must consume only the public project-plan facade"
-            (not ("import HostBootstrap.Lifecycle.Plan" `Text.isInfixOf` source))
+            (not ("import HostBootstrap.Lifecycle.Plan" `has` source))
         assertBool
             "Teardown must not retain the deleted LifecyclePlan compatibility projection"
-            (not ("withCompatibilityTeardownPlan" `Text.isInfixOf` source))
+            (not ("withCompatibilityTeardownPlan" `has` source))
         mapM_
             ( \legacyVerb ->
                 assertBool
                     ("legacy teardown verb remains: " ++ Text.unpack legacyVerb)
-                    (not (legacyVerb `Text.isInfixOf` source))
+                    (not (legacyVerb `has` source))
             )
             [ "DownVerb"
             , "DestroyVerb"
@@ -363,7 +353,7 @@ sourceShapeTests =
             ( \required ->
                 assertBool
                     ("missing canonical ProjectVerb behavior: " ++ Text.unpack required)
-                    (required `Text.isInfixOf` normalized)
+                    (required `has` normalized)
             )
             [ "= TeardownPlan (ProjectVerb verb) Bool Text Text [Text] [[ReverseStep]]"
             , "= TeardownForest (TeardownPlan scope planId frame verb) [Node]"
@@ -375,42 +365,26 @@ sourceShapeTests =
             , "ProjectUp -> Nothing ProjectDown -> Nothing ProjectDestroy -> Just (verifyDestroySettled plan current settled)"
             ]
         assertBool
-            "Command must carry one canonical verb through recursive argv"
-            ("Authority.projectVerbName verb" `Text.isInfixOf` commandSource)
-        assertBool
-            "Command must select cluster teardown only from the canonical verb"
-            ( "clusterEffectFor selected = case selected of Authority.ProjectUp -> False Authority.ProjectDown -> True Authority.ProjectDestroy -> True"
-                `Text.isInfixOf` Text.unwords (Text.words commandSource)
-            )
-        assertBool
-            "Command must not retain parallel command/teardown verb parameters"
-            ( not ("commandVerb" `Text.isInfixOf` commandSource)
-                && not ("teardownVerb" `Text.isInfixOf` commandSource)
-            )
-        assertBool
-            "Command must not accept an external cluster teardown callback"
-            (not ("(ClusterPlan -> IO TeardownOutcome)" `Text.isInfixOf` commandSource))
-        assertBool
             "the exact Harness destroy route must use retained cluster ownership internally"
             ( "releaseRetainedClusterLifecycle cfg (planForRootWithProfile profile root ctx)"
-                `Text.isInfixOf` commandSource
+                `has` commandSource
             )
         assertBool
             "the exact Harness destroy route must derive that profile from its admitted plan"
             ( "profileFromPlanName (ProjectPlan.projectPlanProfileName destroyPlan)"
-                `Text.isInfixOf` commandSource
+                `has` commandSource
             )
         assertBool
             "the recursive child adapter must derive cluster cleanup from its admitted plan profile"
-            ( "profileFromPlanName (ProjectPlan.projectPlanProfileName plan)"
-                `Text.isInfixOf` commandSource
-                && "planForRootWithProfile profile root ctx" `Text.isInfixOf` commandSource
+            ( "profileFromPlanName (projectPlanProfileName plan)"
+                `has` childSource
             )
         assertBool
             "Harness recovery offers compare the canonical signed scope, not the lifecycle journal spelling"
-            ( "Text.stripPrefix \"harness:\" stableScope" `Text.isInfixOf` internalSource
-                && "\"Harness \" <> run" `Text.isInfixOf` internalSource
-                && "handoffScope binding == recoveryHandoffScope" `Text.isInfixOf` internalSource
+            ( "Text.stripPrefix \"harness:\" stableScope" `has` internalSource
+                && "Just (harnessScopeTagFor run)" `has` internalSource
+                && "| otherwise = Nothing" `has` internalSource
+                && "Just (handoffScope binding) == recoveryHandoffScope" `has` internalSource
             )
     ]
 
@@ -633,11 +607,15 @@ projectionTests =
     , testCase "a preserve-on-reverse step is in neither projection" $
         withPlan $ \plan current -> do
             forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            downForest <- openOrFail (teardownPlan plan current ProjectDown)
             assertBool
                 "the preserved provider-ensure step is absent"
                 ( "project:ensure-vm-provider"
                     `notElem` teardownForestOutstanding forest
                 )
+            assertBool
+                "the preserved provider-ensure step is absent from down"
+                ("project:ensure-vm-provider" `notElem` teardownForestOutstanding downForest)
     , testCase "the provider is stopped by down and deleted by destroy" $
         withPlan $ \plan current -> do
             downForest <- openOrFail (teardownPlan plan current ProjectDown)
@@ -719,16 +697,37 @@ projectionTests =
 
 forestTests :: [TestTree]
 forestTests =
-    [ testCase "destroy offers the provider's pre-descent step before any child" $
+    [ testCase "worked demo destroy waits for its child before all parent cleanup" $
+        withExactPlan id workedDemoReversePlan $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            firstWork forest @?= Just (OfferedPreDescent "core:deploy-vm" "host-orchestrator-0")
+            drainOrder forest
+                @?= [ OfferedPreDescent "core:deploy-vm" "host-orchestrator-0"
+                    , OfferedDescent "host-orchestrator-0" "vm-orchestrator-1"
+                    , OfferedLocal "core:copy-source" ReleaseResource
+                    , OfferedLocal "core:build-pb" ReleaseResource
+                    , OfferedLocal "core:deploy-vm" DeleteFrame
+                    ]
+    , testCase "failed worked demo descent blocks every parent cleanup" $
+        withExactPlan id workedDemoReversePlan $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            let reached = attempt forest TeardownReleased
+            firstWork reached @?= Just (OfferedDescent "host-orchestrator-0" "vm-orchestrator-1")
+            let failed = attempt reached (TeardownFailed "child failed")
+            firstWork failed @?= Just (OfferedDescent "host-orchestrator-0" "vm-orchestrator-1")
+            let keys = teardownForestOutstanding failed
+            assertBool "share, build, and provider remain outstanding" $
+                all (`elem` keys) ["core:copy-source", "core:build-pb", "core:deploy-vm"]
+    , testCase "destroy offers the provider's pre-descent step before any child" $
         withDestroyForest $ \forest ->
             firstWork forest
                 @?= Just (OfferedPreDescent "core:deploy-vm" "host-orchestrator-0")
     , testCase "down never offers a pre-descent step" $
-        withDownForest $ \forest ->
-            -- The deepest frame's own step is first, because a down does not
-            -- descend past a stopped provider.
+        withDownForest $ \forest -> do
+            -- A down stops the provider and never reaches across it first.
             firstWork forest
                 @?= Just (OfferedDescent "host-orchestrator-0" "vm-orchestrator-1")
+            [key | OfferedPreDescent key _ <- drainOrder forest] @?= []
     , testCase "the pre-descent step exposes the children, not the provider itself" $
         withDestroyForest $ \forest -> do
             let afterReach = attempt forest TeardownReleased
@@ -879,6 +878,38 @@ forestTests =
                     , ("core:deploy-kind", "helm uninstall timed out")
                     , ("core:build-pb", "helm uninstall timed out")
                     ]
+    , testCase "a failed branch does not starve an independent sibling" $
+        withExactPlan id siblingCleanupPlan $ \plan current -> do
+            forest <- openOrFail (teardownPlan plan current ProjectDestroy)
+            firstWork forest
+                @?= Just (OfferedPreDescent "core:deploy-vm" "host-orchestrator-0")
+            let reached = attempt forest TeardownReleased
+            firstWork reached @?= Just (OfferedLocal "project:cleanup-b" ReleaseResource)
+            let failed = attempt reached (TeardownFailed "boom")
+                siblingReleased = attempt failed TeardownReleased
+                retryFailed = attempt siblingReleased (TeardownFailed "boom")
+            forM_
+                [ ( failed
+                  , ["project:cleanup-b", "project:cleanup-a", "core:deploy-vm"]
+                  , OfferedLocal "project:cleanup-a" ReleaseResource
+                  )
+                , ( siblingReleased
+                  , ["project:cleanup-b", "core:deploy-vm"]
+                  , OfferedLocal "project:cleanup-b" ReleaseResource
+                  )
+                , ( retryFailed
+                  , ["project:cleanup-b", "core:deploy-vm"]
+                  , OfferedLocal "project:cleanup-b" ReleaseResource
+                  )
+                ]
+                ( \(blocked, outstanding, expectedWork) -> do
+                    teardownForestFailures blocked @?= [("project:cleanup-b", "boom")]
+                    teardownForestOutstanding blocked @?= outstanding
+                    eliminateTeardownProgress
+                        (nextTeardownWork blocked)
+                        (\_ -> assertFailure "a failed sibling must keep the parent blocked and the forest incomplete")
+                        (\point -> offeredWork point @?= expectedWork)
+                )
     , testCase "foreign and refused observations settle without being torn down" $
         withExactPlan forestContainerContext demoShapedPlan $ \plan current -> do
             forest <- openOrFail (teardownPlan plan current ProjectDestroy)
@@ -888,12 +919,24 @@ forestTests =
             teardownForestFailures foreignChart @?= []
             firstWork foreignChart
                 @?= Just (OfferedLocal "core:deploy-kind" DeleteCluster)
+            let refusedCluster = attempt foreignChart (TeardownRefused "operator-held cluster")
+            teardownForestForeign refusedCluster
+                @?= [ ("core:deploy-chart", "an operator's release")
+                    , ("core:deploy-kind", "operator-held cluster")
+                    ]
+            teardownForestFailures refusedCluster @?= []
     , testCase "every attempt returns a successor forest, including a failure" $
         withDestroyForest $ \forest -> do
             let reached = attempt forest TeardownReleased
                 failed = attempt reached (TeardownFailed "boom")
+            teardownForestFailures reached @?= []
+            teardownForestFailures failed
+                @?= [ ("core:deploy-chart", "boom")
+                    , ("core:deploy-kind", "boom")
+                    , ("core:build-pb", "boom")
+                    ]
             assertBool
-                "the failed node is no longer outstanding as pending work"
+                "the failed node stays outstanding"
                 ("core:deploy-chart" `elem` teardownForestOutstanding failed)
             length (teardownForestOutstanding failed) @?= 4
     ]
@@ -928,24 +971,27 @@ settlementTests =
         withDestroyForest $ \forest -> do
             let reached = attempt forest TeardownReleased
                 failedChart = attempt reached (TeardownFailed "boom")
-            eliminateTeardownProgress
-                (nextTeardownWork failedChart)
-                (\_ -> assertFailure "a forest with a failing descendant must not complete")
-                ( \point ->
-                    offeredWork point
-                        @?= OfferedDescent "host-orchestrator-0" "vm-orchestrator-1"
-                )
-            teardownForestFailures failedChart
-                @?= [ ("core:deploy-chart", "boom")
-                    , ("core:deploy-kind", "boom")
-                    , ("core:build-pb", "boom")
-                    ]
-            assertBool
-                "the blocked parent chain is still outstanding"
-                ( all
-                    (`elem` teardownForestOutstanding failedChart)
-                    ["core:deploy-chart", "core:build-pb", "core:deploy-vm"]
-                )
+                failedAttempts =
+                    take 4 (iterate (\failed -> attempt failed (TeardownFailed "boom")) failedChart)
+            forM_ failedAttempts $ \failed -> do
+                eliminateTeardownProgress
+                    (nextTeardownWork failed)
+                    (\_ -> assertFailure "a forest with a failing descendant must not complete")
+                    ( \point ->
+                        offeredWork point
+                            @?= OfferedDescent "host-orchestrator-0" "vm-orchestrator-1"
+                    )
+                teardownForestFailures failed
+                    @?= [ ("core:deploy-chart", "boom")
+                        , ("core:deploy-kind", "boom")
+                        , ("core:build-pb", "boom")
+                        ]
+                teardownForestOutstanding failed
+                    @?= [ "core:deploy-chart"
+                        , "core:deploy-kind"
+                        , "core:build-pb"
+                        , "core:deploy-vm"
+                        ]
     , testCase "a pre-descent foreign result cannot hide unobserved child nodes" $
         withPlan $ \plan current -> do
             let projection = teardownPlan plan current ProjectDestroy
@@ -998,6 +1044,13 @@ settlementTests =
                                                 , "core:deploy-kind"
                                                 , "core:build-pb"
                                                 ]
+                                        let foreignChild =
+                                                forgeSubtree ProjectDestroy "foreign-digest" (teardownPlanFrameId childProjection)
+                                                    (subtreeSettledTerminalObservations childSettled)
+                                        case settleDescentWork descent foreignChild of
+                                            Left (TeardownPlanDigestMismatch _ "foreign-digest") -> pure ()
+                                            Left failure -> assertFailure ("wrong child-proof refusal: " ++ show failure)
+                                            Right _ -> assertFailure "foreign child proof was accepted"
                                         joined <-
                                             either
                                                 (assertFailure . teardownErrorMessage)
@@ -1005,6 +1058,7 @@ settlementTests =
                                                 (settleDescentWork descent childSettled)
                                         firstWork joined
                                             @?= Just (OfferedLocal "core:deploy-vm" DeleteFrame)
+                                        teardownForestOutstanding joined @?= ["core:deploy-vm"]
                                 )
                         )
                 )
@@ -1049,6 +1103,21 @@ settlementTests =
                             _ -> exact
                         )
                     ]
+            case verifySubtreeSettled projection (forgeCompleted ProjectDestroy digest frame exact) of
+                Right settled -> subtreeSettledTerminalObservations settled @?= exact
+                Left failure -> assertFailure ("the exact terminal sequence was refused: " ++ show failure)
+            case verifySubtreeSettled projection (unsafeCoerce (forgeCompleted ProjectDown digest frame exact)) of
+                Left (TeardownProjectVerbMismatch "destroy" "down") -> pure ()
+                other -> assertFailure ("wrong-verb completion was accepted: " ++ show other)
+            case verifySubtreeSettled projection (forgeCompleted ProjectDestroy "foreign-digest" frame exact) of
+                Left (TeardownPlanDigestMismatch expected "foreign-digest") -> expected @?= digest
+                other -> assertFailure ("wrong-digest completion was accepted: " ++ show other)
+            case verifySubtreeSettled projection (forgeCompleted ProjectDestroy digest "foreign-frame" exact) of
+                Left (TeardownOpeningFrameMismatch expected "foreign-frame") -> expected @?= frame
+                other -> assertFailure ("wrong-frame completion was accepted: " ++ show other)
+            case verifyDestroySettled plan current (forgeSubtree ProjectDestroy "foreign-digest" frame exact) of
+                Left (TeardownPlanDigestMismatch expected "foreign-digest") -> expected @?= digest
+                other -> assertFailure ("wrong-digest root proof was accepted: " ++ show other)
             forM_ malformed $ \(label, observations) ->
                 case verifySubtreeSettled projection (forgeCompleted ProjectDestroy digest frame observations) of
                     Left (TeardownTerminalObservationsMismatch _ _) -> pure ()
@@ -1091,6 +1160,16 @@ forgeCompleted ::
     [(OperationKey, TeardownOutcome)] ->
     CompletedTeardownForest scope planId frame verb
 forgeCompleted verb digest frame observations =
+    unsafeCoerce (CompletedShape verb digest frame observations)
+
+-- Match the hidden subtree representation to exercise its defensive joins.
+forgeSubtree ::
+    ProjectVerb verb ->
+    Text ->
+    Text ->
+    [(OperationKey, TeardownOutcome)] ->
+    SubtreeSettled scope planId frame verb
+forgeSubtree verb digest frame observations =
     unsafeCoerce (CompletedShape verb digest frame observations)
 
 terminalKeyTexts :: [(OperationKey, TeardownOutcome)] -> [Text]
@@ -1365,6 +1444,16 @@ demoShapedPlan =
         , descendsVia localContext (buildPbStep "build" vmFrame noop)
         , deployKindStep "cluster" containerFrame noop
         , deployChartStep "chart" containerFrame noop
+        ]
+
+-- These local cleanup nodes are siblings under the provider in the reverse
+-- forest, while the forward plan retains its ordered dependency prefixes.
+siblingCleanupPlan :: StepPlan
+siblingCleanupPlan =
+    mkPlan
+        [ deployVMStep "parent" metalFrame noop
+        , projectStep (demoStep "cleanup-a") ProjectManagedReverse "A" metalFrame noop
+        , projectStep (demoStep "cleanup-b") ProjectManagedReverse "B" metalFrame noop
         ]
 
 -- The worked demo has multiple host-local bootstrap nodes before the provider

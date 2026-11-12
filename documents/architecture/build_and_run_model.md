@@ -253,6 +253,12 @@ teardown, printing the policy's intent line once per effect list and a `(skipped
 failure. A consumer supplies only what a library cannot know — the global WSL wall's project-owned
 ownership identity, and where a run's transcript goes.
 
+The provider backend carries the typed host configuration and runs its described commands through
+`interpretHostCommand`. Its import from `Effect.Run` names only `CapturedRun` and its three
+report fields. The provider backend and ownership driver name none of the runner entry points.
+`ProviderBackendSpec` holds that boundary with lexical import and identifier checks, and scans the
+physical `src/` and `internal/` trees for retired executor names through the shared source reader.
+
 The names a consumer uses, all re-exported by `HostBootstrap.Effect`:
 
 | Name | Role |
@@ -268,7 +274,11 @@ The names a consumer uses, all re-exported by `HostBootstrap.Effect`:
 | `BoundedRun` | `BoundedCompleted`, `BoundedTimedOut`, `BoundedOutputLimit`, or `BoundedFailed` |
 
 `runBoundedGroupedWithInput`, the bounded capture that writes a request to the leader's standard input,
-is re-exported by `HostBootstrap.Effect` alongside the same bounded runner.
+is re-exported by `HostBootstrap.Effect` alongside the same bounded runner. Both capture forms
+close the child's input pipe after writing the complete request, including an empty request, before
+waiting for output. The bounded form includes writing, input close, output drain and exit in one wall
+budget. Native process cases read until EOF for both empty and large requests, beside duplex-pipe
+backpressure, unread-input completion, timeout, cancellation and group-reaping cases.
 
 `HostBootstrap.Effect.Run` is the one process runner, and it offers exactly two dispositions because two
 are genuinely distinct. `runCaptured` feeds a stdin string and reads both output streams. `runBoundedGrouped`
@@ -348,14 +358,36 @@ argument vector for a name the guard has already admitted. Anything that differs
 either an explicit typed `Unsupported`/`Conflict` at the point of use, or a second copy of a workflow that
 will drift where no gate looks.
 
+The frame's ownership column declares whose kernel holds the clauses. Production routing
+belongs to the admitted lift context and transport; the column supplies no ship-or-run authority.
+
 The **ownership primitive** is the table's most consequential column, and it has exactly three rows: POSIX,
 Windows, and one that runs a transaction at the frame owning the object. The third is a transport rather
 than a third implementation: what executes at the far side is this binary's own host row for that frame,
 carried by a process of this same binary. Under a one-layer lift context that is a Linux guest, so the
 POSIX row runs there; under an empty context the transaction is a local self-fork and the outer host's own
 row runs — on Darwin a symbolic link is published by `renamex_np(RENAME_EXCL)`, and on Windows the
-symbolic-link acts answer `OwnershipUnsupported`. [Ownership seam](ownership_seam.md) is its canonical
-home.
+symbolic-link acts answer `OwnershipUnsupported`. Authority roots, owned object paths and symbolic-link
+destinations have distinct opaque roles. They use POSIX grammar for a guest and the outer host's native
+absolute grammar for a local self-fork. The receiver checks each path before opening the store, and all
+paths travel as UTF-8 scalar text.
+A repeated file or directory take compares the requested kind and payload with the stored record,
+requires an absent recorded origin, and observes the bound identity again. A missing or replaced
+object produces a conflict while preserving the record and any replacement object.
+An interrupted unbound directory take resumes only while the target is absent; give-back settles
+that same absent state by forgetting the record. Both acts preserve a present object and its record
+and return a conflict with recovery guidance.
+The private frame child uses `HostBootstrap.CLI.interpretFrameTransaction` to route requests
+to their owner interpreters. The suite's real child imports that dispatcher too, so its local
+ownership crossing cases exercise production routing.
+The shipped decoder applies one 4 MiB limit per length-framed field, paths included, and
+validates text as UTF-8. The encoder preserves the input fields; the transport separately
+bounds the complete message. Kernel assertions cover exact conflicts, protected-record
+lifetime and staging cleanup through the actual host row.
+A shipped caller receives distinct crossing, decoding and frame-refusal failure values. Alias
+acquisition and release retain this distinction: a decoded malformed-input frame refusal is permanent,
+while transport and decoding failures require a fresh observation before retry.
+[Ownership seam](ownership_seam.md) is its canonical home.
 
 The lifecycle provider kind, `ProviderKind` in `HostBootstrap.Substrate.Provider`, is a closed, total
 four-way sum: Incus, Lima, WSL2, or Direct. It is distinct from the wider, deliberately open topology
@@ -368,6 +400,16 @@ reports where a marker or identity is expected, preserve structured conflict, an
 `NotReady`. Discovery then becomes a generative, backend-indexed descriptive capability tied to the exact
 opaque managed Running provider; it is not mutation authority and Direct exposes no guest executor.
 
+The pure operation planners retain the same result shapes for Incus, Lima, WSL2, and Direct, including
+structured refusals where a row cannot implement an operation. WSL2 delete orders guarded unregister,
+global-wall release, then `wsl --shutdown`, so the next utility-VM boot reads the restored settings.
+Its cordon probe uses `wsl --list --running --quiet` and parses names rather than a localized state
+column. The Incus share planner derives each disk-device name from the declared host source and guest
+path: `hb-share-` followed by the first 12 lowercase hex digits of SHA-256 over their length-prefixed
+UTF-8 representation. A device for a different source therefore does not satisfy that share's membership
+probe. Guest-alias planning and classification enter only through the prepared alias route described in
+[durable state](durable_state.md).
+
 Provider mutation enters through exact prepared calls. Opaque nominal `ManagedProviderHandle` and
 `ManagedProviderShareHandle` values retain the provider origin and backend realization without exposing a
 generic handle/receipt escape. The Incus backend holds the four ownership clauses around provision,
@@ -378,7 +420,12 @@ constructs no interpreter or locking front end of its own and uses the shared on
 process of its own, which a source guard holds. Direct instead settles a plan-local reservation and identity share without publishing an origin or
 claiming the physical host; its root admission is this binary's own observation of the kernel followed by
 a total decision over it — absolute, unfollowed, a directory, canonical, accessible — and stop, delete,
-guest routing, and guest alias are structured refusals rather than empty effects or a fabricated VM. The
+guest routing, and guest alias are structured refusals rather than empty effects or a fabricated VM.
+Every unavailable root observation contributes a refusing fact. Failed canonicalization is `Nothing`
+and `directRootCanonicalFact` answers false; an unavailable symbolic-link check cannot establish an
+unfollowed directory. A missing directory reports that refusal before the link predicate. A Direct
+share admits exactly that canonical root as its source and refuses a sibling. Readiness runs
+`docker manifest inspect` against the backend's declared image after root admission. The
 demo VM lanes open the exact plan-owned provider and share resources, and the guest alias executes the
 shipped POSIX ownership row inside the admitted guest frame. Native provider evidence is recorded by the
 applicable substrate phase.
@@ -445,7 +492,9 @@ boundary.
   the exact machine, context, directory chain, disk objects, and complete artifact manifest.
 - **Settlement.** Only the matching validated backend result can jointly settle the journal-bound provider
   start and the wall into `LiveColimaWall`; `runLiveColimaDocker` is the sole Docker route through that
-  exact wall.
+  exact wall. Retained toolchain authority fingerprints the observed Colima, Docker, Lima, and helper
+  directory identities. Native discovery emits Python-free reports and settlement refuses the legacy
+  interpreter-bearing report; the obsolete parser shape has been removed.
 - **Teardown order.** Cleanup opens its own current teardown gate, durably enters `releasing`, runs
   `colima delete --force --data`, proves the profile, data, and context absent, then completes the exact
   managed provider `Running` to `Destroyed` transition, and only then conditionally releases its private
@@ -524,6 +573,15 @@ fold rather than from a caller. The command surface and every pre-parser entry a
 [hostbootstrap core library](hostbootstrap_core_library.md); see also
 [the core library's frame-child entry](hostbootstrap_core_library.md#the-frame-child-entry).
 
+The opaque frame transaction has no wall-clock crossing deadline; caller cancellation still invokes its
+existing `ChildGroup` cleanup, whose Windows row currently terminates the direct child only. Private stdio
+duplicates preserve the protocol streams while ordinary stdin is null and stdout is diagnostic stderr.
+Partial acquisition closes earlier duplicates; failed redirection uses the existing best-effort restoration
+of both saved globals. The outer bracket applies it after success, exception or cancellation. Only ordinary
+interpreter `IOException` gets the fixed refusal and same-exception rethrow. Channel and cleanup errors
+retain their existing handling; asynchronous exceptions still propagate. Strict decode failure has no
+trusted request id to answer.
+
 ## Validation
 
 Static unit suites validate the builders, classifiers, ownership rows, authority boundaries, and compile-time
@@ -540,3 +598,10 @@ Status and sequencing belong in [the development-plan index](../../DEVELOPMENT_P
 - [Python/Haskell boundary](python_haskell_boundary.md) — outer bootstrap.
 - [derived Dockerfile](../engineering/derived_dockerfile.md) — image build.
 - [cluster lifecycle](../engineering/cluster_lifecycle.md) — kind/nvkind behavior.
+
+`runLiveColimaDocker` returns `Either String ColimaDockerRun`: a refusal without a completed
+command is `Left`, while a command that ran retains its full `CapturedRun` in `Right`.
+`colimaDockerPostFailure` records a later ownership or toolchain recheck failure beside that
+capture. Both failures remain visible when both checks fail. A nonzero captured exit remains a
+completed run, so a caller can distinguish a safe-to-reprobe refusal from an effect it must not
+blindly repeat.

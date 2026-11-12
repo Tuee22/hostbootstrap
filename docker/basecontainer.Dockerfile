@@ -1,7 +1,14 @@
 # syntax=docker/dockerfile:1.7
 #
-# Rolling, native-architecture hostbootstrap base. Current compatible upstream
-# versions/URLs are resolved by hostbootstrap/base_image.py for each build.
+# Native-architecture hostbootstrap base. Its inputs fall in three classes:
+#
+#   resolved on the host by hostbootstrap/base_image.py for each build: Go, Node,
+#   PureScript, kind, kubectl, Helm, the MinIO client, Pulumi, the AWS CLI URL
+#   and the CUDA parent;
+#   rolling at `docker build` time inside this file: nvkind `@latest`, Cabal
+#   `recommended`, unversioned `fourmolu` and `hlint`, npm globals, Playwright
+#   browsers, pip and Poetry, and Rust `stable`;
+#   pinned: GHC through `GHC_VERSION` and LLVM through `LLVM_MAJOR`.
 
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
@@ -119,6 +126,7 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     LLVM_CONFIG=/opt/llvm/bin/llvm-config \
     LIBRARY_PATH=/opt/llvm/lib \
     BOLT_RT_INSTR_LIB=/opt/llvm/lib/libbolt_rt_instr.a \
+    GHCUP_INSTALL_BASE_PREFIX=/opt/ghcup \
     HASKELL_STYLE_TOOLS_DIR=${HASKELL_STYLE_TOOLS_DIR} \
     CC=clang-${LLVM_MAJOR} \
     CXX=clang++-${LLVM_MAJOR} \
@@ -128,7 +136,7 @@ ENV BASECONTAINER_SOURCE_ROOT=/workspace \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
-ENV PATH=/opt/llvm/bin:/opt/pulumi:/opt/go/bin:/opt/cache/go/bin:/root/.ghcup/bin:/opt/cache/cabal/bin:${HASKELL_STYLE_TOOLS_DIR}:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PATH=/opt/llvm/bin:/opt/pulumi:/opt/go/bin:/opt/cache/go/bin:/opt/ghcup/.ghcup/bin:/opt/cache/cabal/bin:${HASKELL_STYLE_TOOLS_DIR}:/root/.cabal/bin:/opt/cache/cargo/bin:/opt/build/node/global/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN set -eux; \
     tmpdir="$(mktemp -d)"; \
@@ -136,7 +144,8 @@ RUN set -eux; \
     rm -rf /opt/go; \
     tar -xzf "${tmpdir}/go.tar.gz" -C /opt; \
     rm -rf "${tmpdir}"; \
-    /opt/go/bin/go version | grep -F "go${GO_VERSION}"
+    v="$(/opt/go/bin/go version)"; \
+    case "$v" in *"go${GO_VERSION}"*) ;; *) exit 1 ;; esac
 
 RUN set -eux; \
     CGO_ENABLED=1 /opt/go/bin/go install "github.com/NVIDIA/nvkind/cmd/nvkind@latest"; \
@@ -160,7 +169,8 @@ RUN set -eux; \
       > /usr/local/bin/npm; \
     chmod 0755 /usr/local/bin/npm; \
     rm -rf "${tmpdir}"; \
-    node --version | grep -Fx "${NODE_VERSION}"; \
+    v="$(node --version)"; \
+    test "$v" = "${NODE_VERSION}"; \
     NPM_CONFIG_PREFIX=/usr/local npm install -g npm; \
     npm --version
 
@@ -170,7 +180,8 @@ RUN set -eux; \
     tar -xzf "${tmpdir}/purescript.tar.gz" -C "${tmpdir}"; \
     install -m 0755 "${tmpdir}/purescript/purs" /usr/local/bin/purs; \
     rm -rf "${tmpdir}"; \
-    purs --version | grep -Fx "${PURESCRIPT_VERSION#v}"
+    v="$(purs --version)"; \
+    test "$v" = "${PURESCRIPT_VERSION#v}"
 
 RUN set -eux; \
     npm install -g @playwright/test esbuild playwright purs-tidy spago typescript; \
@@ -183,24 +194,29 @@ RUN set -eux; \
     install -m 0755 "${tmpdir}/ghcup" /usr/local/bin/ghcup; \
     curl -fsSL "${KIND_DOWNLOAD_URL}" -o "${tmpdir}/kind"; \
     install -m 0755 "${tmpdir}/kind" /usr/local/bin/kind; \
-    kind version | grep -F "${KIND_VERSION}"; \
+    v="$(kind version)"; \
+    case "$v" in *"${KIND_VERSION}"*) ;; *) exit 1 ;; esac; \
     curl -fsSL "${KUBECTL_DOWNLOAD_URL}" -o "${tmpdir}/kubectl"; \
     install -m 0755 "${tmpdir}/kubectl" /usr/local/bin/kubectl; \
-    kubectl version --client | grep -F "${KUBECTL_VERSION}"; \
+    v="$(kubectl version --client)"; \
+    case "$v" in *"${KUBECTL_VERSION}"*) ;; *) exit 1 ;; esac; \
     curl -fsSL "${HELM_DOWNLOAD_URL}" -o "${tmpdir}/helm.tgz"; \
     tar -xzf "${tmpdir}/helm.tgz" -C "${tmpdir}"; \
     install -m 0755 "${tmpdir}/linux-${TARGETARCH}/helm" /usr/local/bin/helm; \
-    helm version --short | grep -F "${HELM_VERSION}"; \
+    v="$(helm version --short)"; \
+    case "$v" in *"${HELM_VERSION}"*) ;; *) exit 1 ;; esac; \
     curl -fsSL "${MC_DOWNLOAD_URL}" -o "${tmpdir}/mc"; \
     install -m 0755 "${tmpdir}/mc" /usr/local/bin/mc; \
-    mc --version | grep -F "${MC_VERSION}"; \
+    v="$(mc --version)"; \
+    case "$v" in *"${MC_VERSION}"*) ;; *) exit 1 ;; esac; \
     curl -fsSL "${AWS_DOWNLOAD_URL}" -o "${tmpdir}/awscliv2.zip"; \
     unzip -q "${tmpdir}/awscliv2.zip" -d "${tmpdir}"; \
     "${tmpdir}/aws/install" --install-dir /opt/aws-cli --bin-dir /usr/local/bin; \
     aws --version; \
     curl -fsSL "${PULUMI_DOWNLOAD_URL}" -o "${tmpdir}/pulumi.tgz"; \
     tar -xzf "${tmpdir}/pulumi.tgz" -C /opt; \
-    pulumi version | grep -Fx "${PULUMI_VERSION}"; \
+    v="$(pulumi version)"; \
+    test "$v" = "${PULUMI_VERSION}"; \
     rm -rf "${tmpdir}"
 
 # GHC is pinned; Cabal rolls. The compiler is the Cabal store's ABI key — the
@@ -214,7 +230,8 @@ RUN set -eux; \
     ghcup set ghc "${GHC_VERSION}"; \
     ghcup install cabal recommended; \
     ghcup set cabal recommended; \
-    ghc --numeric-version | grep -Fx "${GHC_VERSION}"; \
+    v="$(ghc --numeric-version)"; \
+    test "$v" = "${GHC_VERSION}"; \
     cabal --numeric-version
 
 RUN set -eux; \
@@ -249,6 +266,9 @@ RUN set -eux; \
     cabal update; \
     cabal build all --only-dependencies -j${CABAL_BUILD_JOBS}; \
     cabal build all -j${CABAL_BUILD_JOBS}
+
+COPY fourmolu.yaml /opt/basecontainer/haskell-deps/fourmolu.yaml
+COPY .hlint.yaml /opt/basecontainer/haskell-deps/.hlint.yaml
 
 RUN set -eux; \
     fourmolu --version; \

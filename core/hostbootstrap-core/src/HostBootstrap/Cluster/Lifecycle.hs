@@ -1,19 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
-{- | kind/Helm cluster-lifecycle semantics.
+{- | Plan-owned cluster packages, profile paths, and pure lifecycle decisions.
 
-The cluster lifecycle drives kind/Helm @up@ / @down@ / @delete@, enforces the
-never-delete-@.data@ invariant, and distinguishes the production cluster
-profile (fixed name / @.data@ path) from the test profile (per-case isolated
-paths). The plan resolution and the teardown partition are pure so the
-invariants are unit-tested; the IO drivers run kind/Helm through resolved host
-tools.
+Production and Harness profiles retain their exact durable roots and declared
+node topology. The pure teardown partition preserves durable data. Actual
+creation, readiness, cordoning and conditional release belong to the owned
+cluster backend; this module supplies their plan and rendering vocabulary.
 -}
 module HostBootstrap.Cluster.Lifecycle (
-    ClusterProfile (..),
+    ClusterProfile (Production),
+    mkTestCaseProfile,
+    clusterProfileRunKey,
     ClusterDriver (..),
     ClusterPlan (..),
+    RetainedClusterProjection,
+    retainedClusterProjection,
+    retainedClusterName,
+    retainedClusterNodeNames,
+    retainedClusterStateDirectory,
+    retainedClusterKubeconfigPath,
     ClusterPackageError (..),
     PlanOwnedCluster,
     withPlanOwnedCluster,
@@ -21,6 +27,7 @@ module HostBootstrap.Cluster.Lifecycle (
     PlanOwnedClusterConfig,
     ExposureIntent,
     mkPlanExposureIntent,
+    validExposureService,
     exposureIntentService,
     exposureIntentTargetHost,
     exposureIntentTargetPort,
@@ -36,6 +43,7 @@ module HostBootstrap.Cluster.Lifecycle (
     planOwnedClusterConfigWorkloadSlice,
     withPlanOwnedClusterPreparation,
     planOwnedClusterName,
+    planOwnedClusterDriver,
     planOwnedClusterStateDirectory,
     planOwnedClusterDurableRoot,
     planOwnedClusterConfigPath,
@@ -63,10 +71,6 @@ module HostBootstrap.Cluster.Lifecycle (
     clusterKubeconfigPath,
     resolveAcceleratorPlan,
     clusterDriverForSubstrate,
-    clusterCreate,
-    clusterCreateTool,
-    clusterCreateArgs,
-    deployChart,
     acceleratorIngressPlan,
     nvidiaRuntimeProbeArgs,
     nvidiaRuntimeProbeReady,
@@ -78,28 +82,20 @@ module HostBootstrap.Cluster.Lifecycle (
     nvidiaAllocatableReady,
     NvidiaDevicePluginOps (..),
     ensureNvidiaDevicePluginWith,
-    clusterConfigPresence,
     clusterNodeNames,
     clusterNodeCordonArgs,
     teardown,
-    statusReport,
-    clusterHealthyFromProbe,
-    clusterDown,
-    clusterDelete,
 )
 where
 
-import Control.Exception (SomeException, displayException)
-import Control.Exception.Safe (try)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (unless)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (first)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
-import Data.Char (isAlphaNum)
+import Data.Char (isAlphaNum, isAscii)
 import Data.List (nub)
-import Data.Maybe (catMaybes, maybeToList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
@@ -111,21 +107,14 @@ import HostBootstrap.Cluster.Budget (
  )
 import HostBootstrap.Cluster.Command (ClusterDriver (..))
 import HostBootstrap.Cluster.Cordon (
-    budgetCpu,
     budgetFromResources,
-    budgetMemoryBytes,
-    budgetStorageBytes,
-    kindNodeCordonArgsFor,
-    preflightBudget,
+    clusterNodeBudgetShare,
     renderQuantityError,
-    resolveHostCapacity,
  )
-import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget)
+import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget, kindNodeCordonArgsForBudget)
 import HostBootstrap.Context (ResourceEnvelope (..))
-import HostBootstrap.Ensure (reportedGpu, runTool)
+import HostBootstrap.Ensure (reportedGpu)
 import qualified HostBootstrap.Ensure.Cuda as Cuda
-import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (Docker, Helm, Kind, Kubectl, Nvkind))
 import HostBootstrap.Lifecycle.Execution.Internal (
     StepExecution,
     executionNodeDependencies,
@@ -160,11 +149,10 @@ import HostBootstrap.ProjectPlan (
     topologyParentFrame,
     withPlannedEdge,
  )
-import HostBootstrap.Readiness (ProbeResult (..), nodePoll, pollUntilReady)
-import HostBootstrap.Substrate (Substrate (substrateName), SubstrateName (LinuxGpu), isLinux)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removePathForcibly)
-import System.Exit (ExitCode (..), die)
-import System.FilePath (takeDirectory, (</>))
+import HostBootstrap.Substrate (Substrate (substrateName), SubstrateName (LinuxGpu))
+import System.Directory (createDirectoryIfMissing)
+import System.Exit (ExitCode (..))
+import System.FilePath (dropTrailingPathSeparator, equalFilePath, isAbsolute, normalise, splitDirectories, takeDirectory, (</>))
 
 {- | The cluster profile: production uses fixed names and the canonical @.data@
 path; the test profile isolates each case under its own paths so a
@@ -196,6 +184,36 @@ data ClusterPlan = ClusterPlan
     , clusterNodeSuffixes :: [String]
     }
     deriving (Eq, Show)
+
+{- | The coordinates conditional cluster release may read.
+
+This ordinary data describes one resolved plan and grants no ownership
+capability. The protected transaction still recovers the claim and compares
+bound runtime identities before deletion. The durable root is not retained.
+-}
+data RetainedClusterProjection = RetainedClusterProjection String [String] FilePath FilePath
+    deriving (Eq, Show)
+
+-- | Derive all retained cleanup coordinates from the same resolved plan.
+retainedClusterProjection :: ClusterPlan -> RetainedClusterProjection
+retainedClusterProjection plan =
+    RetainedClusterProjection
+        (clusterName plan)
+        (clusterNodeNames plan)
+        (clusterRuntimeStateDirectory plan)
+        (clusterKubeconfigPath plan)
+
+retainedClusterName :: RetainedClusterProjection -> String
+retainedClusterName (RetainedClusterProjection name _ _ _) = name
+
+retainedClusterNodeNames :: RetainedClusterProjection -> [String]
+retainedClusterNodeNames (RetainedClusterProjection _ nodes _ _) = nodes
+
+retainedClusterStateDirectory :: RetainedClusterProjection -> FilePath
+retainedClusterStateDirectory (RetainedClusterProjection _ _ directory _) = directory
+
+retainedClusterKubeconfigPath :: RetainedClusterProjection -> FilePath
+retainedClusterKubeconfigPath (RetainedClusterProjection _ _ _ kubeconfig) = kubeconfig
 
 -- | Structural refusal while joining an exact plan-owned cluster package.
 data ClusterPackageError
@@ -292,9 +310,16 @@ type role PlanOwnedClusterConfig nominal nominal nominal nominal nominal nominal
 data ExposureIntent = ExposureIntent Text Text Port
     deriving (Eq, Show)
 
+-- | One service grammar for intent construction and managed-record readback.
+validExposureService :: Text -> Bool
+validExposureService service =
+    not (T.null service)
+        && T.length service <= 128
+        && not (T.any (`elem` ['\0', '/', '\\', ':', '\n', '\r', '\t']) service)
+
 mkPlanExposureIntent :: Text -> Text -> Int -> Either ClusterPackageError ExposureIntent
 mkPlanExposureIntent service target port
-    | T.null service || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t']) service = Left (ClusterPackageMismatch "the exposure service identity is invalid")
+    | not (validExposureService service) = Left (ClusterPackageMismatch "the exposure service identity is invalid")
     | T.null target || T.any (`elem` ['/', '\\', ':', '\n', '\r', '\t', ' ']) target = Left (ClusterPackageMismatch "the exposure target host is invalid")
     | otherwise = case mkPort port of
         Nothing -> Left (ClusterPackageMismatch "the exposure target port is outside 1..65535")
@@ -333,6 +358,7 @@ withPlanOwnedCluster ::
         partitionId
         clusterFrame
         clusterId ->
+    ClusterDriver ->
     Either
         ClusterPackageError
         ( PlanOwnedCluster
@@ -352,7 +378,7 @@ withPlanOwnedCluster ::
             workloadSetId
             partitionId
         )
-withPlanOwnedCluster plan cluster provider suppliedTopology slice = do
+withPlanOwnedCluster plan cluster provider suppliedTopology slice driver = do
     requirePackage
         "the supplied topology is not the exact topology projected by the project plan"
         (sameTopology suppliedTopology (topology plan))
@@ -377,7 +403,7 @@ withPlanOwnedCluster plan cluster provider suppliedTopology slice = do
         root = stablePlanSnapshotRoot snapshot
         profileName = projectPlanProfileName plan
     profile <- profileFromPlanName profileName
-    let resolved = absolutizeClusterConfig root (resolvePlan (T.unpack (projectPlanProjectName plan)) root profile)
+    let resolved = absolutizeClusterConfig root (resolvePlanWithDriver (T.unpack (projectPlanProjectName plan)) root profile driver)
         placement = (plannedResourceFrame provider, plannedResourceFrame cluster)
         owner = stablePlanSnapshotDigest snapshot <> ":" <> plannedResourceKey cluster
     Right (PlanOwnedCluster plan cluster provider suppliedTopology slice resolved owner placement)
@@ -400,13 +426,14 @@ withExecutionOwnedCluster ::
     PlannedResource scope planId clusterId ClusterResource clusterFrame ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ResourceSlice scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId clusterFrame clusterId ->
+    ClusterDriver ->
     Either ClusterPackageError (PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId)
-withExecutionOwnedCluster execution cluster provider slice = do
+withExecutionOwnedCluster execution cluster provider slice driver = do
     requirePackage "the executing node is not the exact cluster resource" (plannedResourceKey cluster == operation && plannedResourceFrame cluster == frame)
     requirePackage "the provider is not an exact dependency of the executing cluster node" ((plannedResourceKey provider, plannedResourceFrame provider) `elem` dependencies)
     requirePackage "the supplied budget slice belongs to another cluster resource" (resourceSliceName slice == T.unpack (plannedResourceKey cluster) && resourceSliceFrame slice == T.unpack frame)
     profile <- profileFromPlanName (planExecutionPackageProfile package)
-    let resolved = absolutizeClusterConfig (planExecutionPackageRoot package) (resolvePlan (T.unpack (planExecutionPackageProject package)) (planExecutionPackageRoot package) profile)
+    let resolved = absolutizeClusterConfig (planExecutionPackageRoot package) (resolvePlanWithDriver (T.unpack (planExecutionPackageProject package)) (planExecutionPackageRoot package) profile driver)
         owner = stepExecutionPlanDigest execution <> ":" <> plannedResourceKey cluster
     pure (ExecutionOwnedCluster execution cluster provider slice resolved owner (plannedResourceFrame provider, frame))
   where
@@ -421,13 +448,12 @@ withExecutionOwnedCluster execution cluster provider slice = do
 
 {- | Bind canonical rendered output to an already joined plan-owned cluster.
 
-The binder derives paths and node identities from the base package and closed
-driver. Callers may submit rendered material for checking, but cannot choose an
+The driver is selected when the plan or execution joins its cluster declaration.
+The binder derives that retained driver, paths and node identities from the base package. Callers may submit rendered material for checking, but cannot choose an
 independent cluster name, durable root, or placement.
 -}
 withPlanOwnedClusterConfig ::
     PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
-    ClusterDriver ->
     ByteString ->
     Text ->
     FilePath ->
@@ -437,7 +463,7 @@ withPlanOwnedClusterConfig ::
     [Text] ->
     (PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
     Either ClusterPackageError result
-withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppliedPath intents mappings workload consume = do
+withPlanOwnedClusterConfig base bytes suppliedDigest suppliedState suppliedPath intents mappings workload consume = do
     requireConfig (not (nullBytes bytes)) "the canonical cluster config is empty"
     requireConfig (ByteString.length bytes <= 1048576) "the canonical cluster config exceeds 1 MiB"
     requireConfig (suppliedDigest == digestBytes bytes) "the canonical cluster config digest disagrees with its bytes"
@@ -451,6 +477,7 @@ withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppli
     requireConfig (not (null workload) && unique workload) "the workload slice is empty or contains a duplicate"
     pure (consume (PlanOwnedClusterConfig adjusted driver bytes suppliedDigest suppliedState suppliedPath intents mappings workload))
   where
+    driver = clusterDriver (planOwnedClusterResolvedPlan base)
     durableRoot = planOwnedClusterDurableRoot base
     expectedState = clusterRuntimeStateDirectoryFor driver durableRoot
     expectedPath = takeDirectory expectedState </> "config.yaml"
@@ -458,7 +485,7 @@ withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppli
         [ (T.pack suffix, T.pack (planOwnedClusterName base ++ "-" ++ suffix))
         | suffix <- driverNodeSuffixes driver
         ]
-    adjusted = setPlanOwnedClusterRendering driver suppliedState suppliedPath base
+    adjusted = setPlanOwnedClusterRendering suppliedState suppliedPath base
     unique values = length values == length (nub values)
     nullBytes = ByteString.null
     digestBytes = TextEncoding.decodeUtf8 . convertToBase Base16 . (hash :: ByteString -> Digest SHA256)
@@ -467,12 +494,11 @@ withPlanOwnedClusterConfig base driver bytes suppliedDigest suppliedState suppli
         | otherwise = Left (ClusterPackageMismatch detail)
 
 setPlanOwnedClusterRendering ::
-    ClusterDriver ->
     FilePath ->
     FilePath ->
     PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
     PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
-setPlanOwnedClusterRendering driver statePath configPath (PlanOwnedCluster plan cluster provider topologyProjection slice resolved owner placement) =
+setPlanOwnedClusterRendering statePath configPath (PlanOwnedCluster plan cluster provider topologyProjection slice resolved owner placement) =
     PlanOwnedCluster
         plan
         cluster
@@ -481,14 +507,12 @@ setPlanOwnedClusterRendering driver statePath configPath (PlanOwnedCluster plan 
         slice
         resolved
             { derivedStatePath = statePath
-            , clusterDriver = driver
             , clusterConfigFile = Just configPath
-            , clusterNodeSuffixes = driverNodeSuffixes driver
             }
         owner
         placement
-setPlanOwnedClusterRendering driver statePath configPath (ExecutionOwnedCluster execution cluster provider slice resolved owner placement) =
-    ExecutionOwnedCluster execution cluster provider slice resolved{derivedStatePath = statePath, clusterDriver = driver, clusterConfigFile = Just configPath, clusterNodeSuffixes = driverNodeSuffixes driver} owner placement
+setPlanOwnedClusterRendering statePath configPath (ExecutionOwnedCluster execution cluster provider slice resolved owner placement) =
+    ExecutionOwnedCluster execution cluster provider slice resolved{derivedStatePath = statePath, clusterConfigFile = Just configPath} owner placement
 
 planOwnedClusterConfigBase :: PlanOwnedClusterConfig scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId
 planOwnedClusterConfigBase (PlanOwnedClusterConfig base _ _ _ _ _ _ _ _) = base
@@ -525,27 +549,29 @@ withPlanOwnedClusterPreparation ::
 withPlanOwnedClusterPreparation (PlanOwnedCluster plan cluster _ _ _ _ _ _) fromPlan _ = fromPlan plan cluster
 withPlanOwnedClusterPreparation (ExecutionOwnedCluster execution cluster _ _ _ _ _) _ fromExecution = fromExecution execution cluster
 
+-- | Admit the bounded, path-safe run key used by a Harness profile.
+mkTestCaseProfile :: Text -> Either ClusterPackageError ClusterProfile
+mkTestCaseProfile runKey
+    | validHarnessRunKey runKey = Right (TestCase (T.unpack runKey))
+    | otherwise = Left (ClusterPackageMismatch "the admitted Harness profile carries an invalid run key")
+
+-- | Project a Harness run key without exposing its constructor.
+clusterProfileRunKey :: ClusterProfile -> Maybe Text
+clusterProfileRunKey Production = Nothing
+clusterProfileRunKey (TestCase runKey) = Just (T.pack runKey)
+
+validHarnessRunKey :: Text -> Bool
+validHarnessRunKey runKey =
+    not (T.null runKey)
+        && T.length runKey <= 48
+        && T.all (\character -> isAscii character && (isAlphaNum character || character == '-')) runKey
+
 profileFromPlanName :: Text -> Either ClusterPackageError ClusterProfile
 profileFromPlanName "production" = Right Production
 profileFromPlanName profileName =
     case T.stripPrefix "harness:" profileName of
-        Just runKey
-            | validHarnessRunKey runKey -> Right (TestCase (T.unpack runKey))
-            | otherwise ->
-                Left
-                    ( ClusterPackageMismatch
-                        "the admitted Harness profile carries an invalid run key"
-                    )
-        Nothing ->
-            Left
-                ( ClusterPackageMismatch
-                    "the admitted plan carries an unknown lifecycle profile"
-                )
-  where
-    validHarnessRunKey runKey =
-        not (T.null runKey)
-            && T.length runKey <= 48
-            && T.all (\character -> isAlphaNum character || character == '-') runKey
+        Just runKey -> mkTestCaseProfile runKey
+        Nothing -> Left (ClusterPackageMismatch "the admitted plan carries an unknown lifecycle profile")
 
 absolutizeClusterConfig :: FilePath -> ClusterPlan -> ClusterPlan
 absolutizeClusterConfig root resolved =
@@ -559,6 +585,9 @@ Both constructors hold one, at different positions, and every accessor below
 reads it. Eliminating the two positions once is what keeps an accessor from
 being written twice and the two copies from drifting.
 -}
+planOwnedClusterDriver :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ClusterDriver
+planOwnedClusterDriver = clusterDriver . planOwnedClusterResolvedPlan
+
 planOwnedClusterResolvedPlan :: PlanOwnedCluster scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> ClusterPlan
 planOwnedClusterResolvedPlan (PlanOwnedCluster _ _ _ _ _ resolved _ _) = resolved
 planOwnedClusterResolvedPlan (ExecutionOwnedCluster _ _ _ _ resolved _ _) = resolved
@@ -758,186 +787,23 @@ ensureProfileDataPath profile root = do
 The @.data@ path is preserved under both @down@ and @delete@ — the
 never-delete-@.data@ invariant — so it never appears in the removal set.
 -}
-teardown :: TeardownKind -> ClusterPlan -> ([FilePath], [FilePath])
-teardown Down plan = ([], [dataPath plan, derivedStatePath plan])
-teardown Delete plan = ([derivedStatePath plan], [dataPath plan])
+teardown :: TeardownKind -> ClusterPlan -> Either Text ([FilePath], [FilePath])
+teardown Down plan = Right ([], [dataPath plan, derivedStatePath plan])
+teardown Delete plan
+    | unsafeRemoval (derivedStatePath plan) (dataPath plan) =
+        Left "cluster teardown: derived state may contain the durable root"
+    | otherwise = Right ([derivedStatePath plan], [dataPath plan])
 
-{- | Render a read-only status report for a resolved plan, given whether the kind
-cluster is currently live. Pure, so the report shape is unit-tested. The data
-line states only that cluster teardown omits the path; status does not inspect
-the path and therefore makes no claim that it currently exists or is intact.
--}
-statusReport :: ClusterPlan -> Bool -> String
-statusReport plan live =
-    unlines
-        [ "cluster:    " ++ clusterName plan ++ (if live then " (running)" else " (absent)")
-        , "data:       " ++ dataPath plan ++ " (not removed by cluster teardown)"
-        , "derived:    " ++ derivedStatePath plan
-        ]
-
--- ---------------------------------------------------------------------------
--- IO drivers
--- ---------------------------------------------------------------------------
-
-{- | Bring the cluster up (idempotent): create the cordoned kind cluster, then
-install/upgrade the Helm release. This is 'clusterCreate' followed by
-'deployChart' — the bundled bring-up a single-chart project uses. A project
-that must sequence other steps between cluster creation and the chart (e.g.
-stand up an in-cluster registry and push the image the chart pulls) calls
-'clusterCreate' and 'deployChart' as separate chain steps instead.
--}
-_clusterUp :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
-_clusterUp cfg plan resources = do
-    clusterCreate cfg plan resources
-    deployChart cfg plan []
-
-{- | Create the cordoned kind cluster (idempotent), **without** the chart: run the
-spare-capacity preflight, create the kind cluster if absent (health-checking and
-recreating a listed-but-unhealthy one), apply the budget cordon (fail-closed),
-then gate on real node/CNI readiness before returning. The applied cordon sits
-**after** @kind create@ so workloads never schedule against an un-cordoned node,
-and the readiness gate sits **after** the cordon so the first @kubectl apply@ /
-Helm install a chain runs next cannot race the API server or CNI on a busy host.
-Split out from 'clusterUp' so a chain can interleave registry setup / image push
-before 'deployChart'.
--}
-clusterCreate :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
-clusterCreate cfg plan resources = do
-    resolvedCapacity <- resolveHostCapacity cfg
-    case resolvedCapacity >>= preflightBudget resources of
-        Left err -> die err
-        Right () -> pure ()
-    probeNvidiaRuntime cfg plan
-    ensureCluster cfg plan
-    -- Always export the kubeconfig — whether the cluster was just created or already
-    -- existed (an idempotent re-run, or any container that did not create it) — so
-    -- helm/kubectl reach the cluster instead of the localhost:8080 default.
-    exported <- runTool cfg Kind ["export", "kubeconfig", "--name", clusterName plan]
-    requireStep "kind export kubeconfig" exported
-    applyLinuxCordon cfg plan resources
-    -- Node/CNI readiness gate: @kind create@ defaults to @--wait 0s@, so a chain's
-    -- first @kubectl apply@ / @helm install@ could otherwise hit an API server or CNI
-    -- that is not yet up on a busy host. Block here until the nodes are Ready.
-    waitNodesReady cfg plan
-    ensureNvidiaRuntimeClass cfg plan
-    ensureNvidiaDevicePlugin cfg plan
-
-{- | Ensure a live kind cluster named by the plan exists, creating it if absent and
-**recreating** a listed-but-unhealthy one. @kind get clusters@ only lists names,
-so a cluster whose containers are stopped (e.g. after the VM that hosts it was
-@project down@-stopped and restarted — kind has no reliable stop/restart
-contract) still reads as "present"; trusting the list would then leave the chain
-talking to a dead API server. Instead a listed cluster is health-probed
-('clusterHealthy'); an unhealthy one is deleted and recreated so @project up@
-reconciles a stopped stack back to running.
--}
-ensureCluster :: HostConfig -> ClusterPlan -> IO ()
-ensureCluster cfg plan = do
-    existing <- runTool cfg Kind ["get", "clusters"]
-    case existing of
-        Left err ->
-            die ("cluster up: kind not available; install kind and retry\n" ++ err)
-        Right (ExitSuccess, out, _)
-            | clusterName plan `elem` lines out -> do
-                healthy <- clusterHealthy cfg plan
-                if healthy
-                    then putStrLn ("cluster up: kind cluster " ++ clusterName plan ++ " already exists and is healthy")
-                    else do
-                        putStrLn
-                            ( "cluster up: kind cluster "
-                                ++ clusterName plan
-                                ++ " is listed but unhealthy; deleting and recreating"
-                            )
-                        recreated <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
-                        requireStep "kind delete cluster (unhealthy)" recreated
-                        createCluster cfg plan
-            | otherwise -> createCluster cfg plan
-        Right (code, _, err) ->
-            die ("cluster up: `kind get clusters` failed (" ++ show code ++ "): " ++ err)
-
-{- | Create the kind cluster fresh (fail-closed). Canonical configs contain only
-cluster-internal topology and mounts; runtime exposure owns all local endpoint
-allocation after readiness. An explicitly supplied config is always honored,
-including nvkind topology whose GPU worker needs its label and device mount.
--}
-createCluster :: HostConfig -> ClusterPlan -> IO ()
-createCluster cfg plan = do
-    configExists <- maybe (pure False) doesFileExist (clusterConfigFile plan)
-    hasKindConfig <- either die pure (clusterConfigPresence (clusterConfigFile plan) configExists)
-    created <- runTool cfg (clusterCreateTool plan) (clusterCreateArgs plan hasKindConfig)
-    requireStep (clusterCreateLabel plan) created
-
-{- | Interpret the filesystem probe for an optional cluster config. @Nothing@
-explicitly selects the driver's default template; @Just path@ is a contract
-and therefore fails closed when the file is missing.
--}
-clusterConfigPresence :: Maybe FilePath -> Bool -> Either String Bool
-clusterConfigPresence Nothing _ = Right False
-clusterConfigPresence (Just _) True = Right True
-clusterConfigPresence (Just path) False = Left ("cluster up: required config file is missing: " ++ path)
-
-clusterCreateTool :: ClusterPlan -> HostTool
-clusterCreateTool plan = case clusterDriver plan of
-    KindDriver -> Kind
-    NvkindDriver -> Nvkind
-
-clusterCreateArgs :: ClusterPlan -> Bool -> [String]
-clusterCreateArgs plan hasKindConfig = case clusterDriver plan of
-    KindDriver ->
-        ["create", "cluster", "--name", clusterName plan] ++ configArgs (\path -> ["--config", path])
-    NvkindDriver ->
-        ["cluster", "create", "--name=" ++ clusterName plan] ++ configArgs (\path -> ["--config-template=" ++ path])
+-- Refuse ambiguous lexical paths rather than guessing how their parents resolve.
+unsafeRemoval :: FilePath -> FilePath -> Bool
+unsafeRemoval removal durable =
+    null removal || null durable || isAbsolute removal /= isAbsolute durable
+        || any (== "..") (components removal <> components durable)
+        || isAncestor (components removal) (components durable)
   where
-    -- The named template or none, never a template this library chose. The
-    -- probe already answers 'False' for a plan that names none, so the two
-    -- conditions cannot disagree about which case this is.
-    configArgs render
-        | hasKindConfig = maybe [] render (clusterConfigFile plan)
-        | otherwise = []
-
-clusterCreateLabel :: ClusterPlan -> String
-clusterCreateLabel plan = case clusterDriver plan of
-    KindDriver -> "kind create cluster"
-    NvkindDriver -> "nvkind cluster create"
-
-{- | Health-probe a listed kind cluster: export its kubeconfig (idempotent), then
-ask @kubectl@ for its nodes. A cluster whose containers are stopped exports a
-kubeconfig but cannot answer @kubectl get nodes@, so the probe fails and the
-caller recreates it. Pure classification is 'clusterHealthyFromProbe'.
--}
-clusterHealthy :: HostConfig -> ClusterPlan -> IO Bool
-clusterHealthy cfg plan = do
-    _ <- runTool cfg Kind ["export", "kubeconfig", "--name", clusterName plan]
-    probe <- runTool cfg Kubectl ["get", "nodes", "--no-headers"]
-    pure (clusterHealthyFromProbe probe)
-
-{- | Classify a @kubectl get nodes --no-headers@ probe: healthy iff the command
-succeeded and reported at least one node line. A connection failure (stopped
-cluster) or an empty node list is unhealthy. Pure so the recreate decision is
-unit-tested without a live cluster.
--}
-clusterHealthyFromProbe :: Either String (ExitCode, String, String) -> Bool
-clusterHealthyFromProbe (Right (ExitSuccess, out, _)) =
-    not (null (filter (not . null) (map (dropWhile (== ' ')) (lines out))))
-clusterHealthyFromProbe _ = False
-
-{- | Block until the cluster's nodes reach @Ready@ (the node/CNI readiness gate).
-Each attempt runs @kubectl wait --for=condition=Ready node --all@ with a bounded
-per-attempt timeout, retrying a few times so a slow API server / CNI on a busy
-host is tolerated. Fail-closed: if the nodes never report Ready the step dies so
-a broken cluster is loud rather than racing the first apply.
--}
-waitNodesReady :: HostConfig -> ClusterPlan -> IO ()
-waitNodesReady cfg plan = do
-    outcome <- pollUntilReady nodePoll lbl nodeProbe cfg
-    case outcome of
-        Right () -> putStrLn ("cluster up: nodes Ready for " ++ clusterName plan)
-        Left _ -> die (lbl ++ " did not reach Ready in time")
-  where
-    lbl = "cluster up: nodes for " ++ clusterName plan
-    nodeProbe c = classify <$> runTool c Kubectl ["wait", "--for=condition=Ready", "node", "--all", "--timeout=30s"]
-    classify (Right (ExitSuccess, _, _)) = ProbeReady ()
-    classify _ = NotReady "Kubernetes nodes have not reported Ready"
+    components = filter (/= ".") . map dropTrailingPathSeparator . splitDirectories . normalise
+    isAncestor parent child =
+        length parent <= length child && and (zipWith equalFilePath parent child)
 
 {- | NVIDIA Docker runtime smoke used before the Linux GPU direct @nvkind@ path
 asks Kubernetes to run CUDA daemon pods.
@@ -947,13 +813,6 @@ nvidiaRuntimeProbeArgs = Cuda.nvkindRuntimeProbeArgs
 
 nvidiaRuntimeProbeReady :: Either String (ExitCode, String, String) -> Bool
 nvidiaRuntimeProbeReady = reportedGpu
-
-probeNvidiaRuntime :: HostConfig -> ClusterPlan -> IO ()
-probeNvidiaRuntime cfg plan =
-    when (clusterDriver plan == NvkindDriver) $ do
-        result <- runTool cfg Docker nvidiaRuntimeProbeArgs
-        unless (nvidiaRuntimeProbeReady result) $
-            die ("linux-gpu cluster up: Docker NVIDIA runtime probe failed; expected `docker " ++ unwords nvidiaRuntimeProbeArgs ++ "` to report a GPU")
 
 -- | Read the exact RuntimeClass created by nvkind without making absence an API error.
 nvidiaRuntimeClassProbeArgs :: [String]
@@ -978,13 +837,6 @@ nvidiaRuntimeClassObserved (Right (ExitSuccess, out, _)) =
         "" -> Right False
         "nvidia" -> Right True
         handler -> Left ("NVIDIA RuntimeClass conflict: expected handler nvidia, observed " ++ T.unpack handler)
-
-ensureNvidiaRuntimeClass :: HostConfig -> ClusterPlan -> IO ()
-ensureNvidiaRuntimeClass cfg plan =
-    when (clusterDriver plan == NvkindDriver) $ do
-        observed <- runTool cfg Kubectl nvidiaRuntimeClassProbeArgs >>= either die pure . nvidiaRuntimeClassObserved
-        unless observed $
-            die "linux-gpu cluster up: nvkind returned without its exact nvidia RuntimeClass"
 
 {- | Pinned NVIDIA device-plugin install for an @nvkind@ cluster. The plugin is
 what publishes @nvidia.com/gpu@ into node allocatable resources; creating the
@@ -1060,80 +912,6 @@ ensureNvidiaDevicePluginWith ops = do
         ndpWaitPluginReady ops
         ndpRequireAllocatable ops
 
-ensureNvidiaDevicePlugin :: HostConfig -> ClusterPlan -> IO ()
-ensureNvidiaDevicePlugin cfg plan =
-    when (clusterDriver plan == NvkindDriver) $
-        ensureNvidiaDevicePluginWith
-            NvidiaDevicePluginOps
-                { ndpProbeAllocatable = do
-                    result <- runTool cfg Kubectl nvidiaAllocatableProbeArgs
-                    let positive = nvidiaAllocatableReady result
-                    when positive $
-                        putStrLn "cluster up: nvidia.com/gpu is already allocatable; NVIDIA device plugin is unchanged"
-                    pure positive
-                , ndpReconcilePlugin = do
-                    repo <- runTool cfg Helm ["repo", "add", "nvdp", "https://nvidia.github.io/k8s-device-plugin", "--force-update"]
-                    requireStep "NVIDIA device-plugin helm repository" repo
-                    installed <- runTool cfg Helm nvidiaDevicePluginHelmArgs
-                    requireStep "NVIDIA device-plugin install" installed
-                , ndpWaitPluginReady = do
-                    ready <- runTool cfg Kubectl nvidiaDevicePluginReadyArgs
-                    requireStep "NVIDIA device-plugin DaemonSet rollout" ready
-                , ndpRequireAllocatable = do
-                    outcome <- pollUntilReady nodePoll "NVIDIA GPU allocatable" probe cfg
-                    case outcome of
-                        Right () -> putStrLn "cluster up: NVIDIA device plugin Ready; nvidia.com/gpu is allocatable"
-                        Left _ -> die "cluster up: NVIDIA device plugin became Ready but no node advertised nvidia.com/gpu"
-                }
-  where
-    probe c = classify <$> runTool c Kubectl nvidiaAllocatableProbeArgs
-    classify result
-        | nvidiaAllocatableReady result = ProbeReady ()
-        | otherwise = NotReady "nvidia.com/gpu is not yet allocatable"
-
-{- | Deploy the project's Helm chart if one is present. A project ships its chart
-at @./chart@ (relative to the directory the lifecycle runs in — the project root
-on the host, or @/workspace/\<project\>@ inside the project container); @cluster
-up@ installs it **fail-closed**. A project with no chart (the cluster is the
-workload, or it deploys via another path such as @harbor install@) gets a clean
-kind + cordon bring-up with the deploy skipped — that is "no deploy requested",
-not a swallowed failure.
-
-@extraValues@ is a generic, project-supplied @[(KEY, VALUE)]@ passed to helm as
-one @--set-string KEY=VALUE@ per pair, so a project can template its chart from
-live config (e.g. the served message) without the core knowing the keys. The
-core stays generic: it forwards the pairs verbatim.
--}
-deployChart :: HostConfig -> ClusterPlan -> [(Text, Text)] -> IO ()
-deployChart cfg plan extraValues = do
-    hasChart <- doesDirectoryExist chartPath
-    if hasChart
-        then do
-            -- @--wait@ so the chart's pods are Ready before the step returns — a
-            -- following expose/readiness step (or a lifting parent) then sees a live
-            -- service, not a still-scheduling one.
-            release <-
-                runTool
-                    cfg
-                    Helm
-                    ( ["upgrade", "--install", clusterName plan, chartPath, "--wait", "--timeout", "8m"]
-                        ++ concatMap setStringArg extraValues
-                    )
-            requireStep "helm upgrade --install" release
-        else putStrLn ("cluster up: no chart at ./" ++ chartPath ++ "; skipping deploy (kind + cordon only)")
-  where
-    chartPath = "chart"
-    setStringArg (key, value) = ["--set-string", T.unpack key ++ "=" ++ helmEscape (T.unpack value)]
-    -- helm @--set-string@ treats commas as value separators (and backslash as its
-    -- escape), so a value like "Hello, world!" would split into "Hello" + " world!"
-    -- (a key with no value). Escape each literal comma and backslash so the value
-    -- reaches the chart intact.
-    helmEscape = concatMap esc
-      where
-        esc ',' = "\\,"
-        esc '\\' = "\\\\"
-        esc c = [c]
-
 -- | The node containers the selected cluster driver creates.
 clusterNodeNames :: ClusterPlan -> [String]
 clusterNodeNames plan = map ((clusterName plan ++ "-") ++) (clusterNodeSuffixes plan)
@@ -1147,117 +925,6 @@ clusterNodeCordonArgs :: ClusterPlan -> ResourceEnvelope -> Either String [[Stri
 clusterNodeCordonArgs plan resources = do
     budget <- first renderQuantityError (budgetFromResources resources)
     let names = clusterNodeNames plan
-        count = length names
-        naturalCount = fromIntegral count
-        integerCount = fromIntegral count
-    case () of
-        _ | count == 0 -> Left "cluster node cordon: the plan declares no nodes"
-        _ | budgetCpu budget < naturalCount -> Left "cluster node cordon: CPU slice is smaller than the node count"
-        _ | budgetMemoryBytes budget < integerCount -> Left "cluster node cordon: memory slice is smaller than the node count"
-        _ | budgetStorageBytes budget < integerCount -> Left "cluster node cordon: storage slice is smaller than the node count"
-        _ -> do
-            let perNode =
-                    ResourceEnvelope
-                        (budgetCpu budget `div` naturalCount)
-                        (T.pack (show (budgetMemoryBytes budget `div` integerCount)))
-                        (T.pack (show (budgetStorageBytes budget `div` integerCount)))
-            traverse (`kindNodeCordonArgsFor` perNode) names
+    perNode <- clusterNodeBudgetShare (length names) budget
+    traverse (`kindNodeCordonArgsForBudget` perNode) names
 
-{- | Apply the Linux kind/nvkind node cordon: @docker update@ every node with its
-share of the one cluster slice, fail-closed. On Apple the provider VM is the
-cordon, so there is no host-side kind-node cap.
--}
-applyLinuxCordon :: HostConfig -> ClusterPlan -> ResourceEnvelope -> IO ()
-applyLinuxCordon cfg plan resources
-    | isLinux (hcSubstrate cfg) =
-        case clusterNodeCordonArgs plan resources of
-            Left err -> die ("cordon: " ++ err)
-            Right argSets -> forM_ argSets $ \args -> do
-                result <- runTool cfg Docker args
-                case result of
-                    Right (ExitSuccess, _, _) -> putStrLn ("cordon applied: docker " ++ unwords args)
-                    Right (ExitFailure n, _, e) -> die ("cordon failed (exit " ++ show n ++ "): " ++ e)
-                    Left e -> die ("cordon: " ++ e)
-    | otherwise =
-        putStrLn "cordon: Apple substrate — the prepared per-project provider VM owns the outer wall"
-
--- | Tear the cluster down. The removal set is empty, so no path is removed.
-clusterDown :: HostConfig -> ClusterPlan -> IO ()
-clusterDown = clusterTeardown Down
-
--- | Thoroughly delete derived cluster state, still never removing the plan's @.data@ path.
-clusterDelete :: HostConfig -> ClusterPlan -> IO ()
-clusterDelete = clusterTeardown Delete
-
-{- | Run every independent cluster-cleanup action before reporting failure.
-
-Best-effort teardown means that a failed @kind delete@ cannot prevent derived
-paths from being considered, and one failed path removal cannot prevent the
-remaining removals. It does not mean success: after all actions have been
-attempted, their synchronous failures are raised together so the project
-lifecycle and test harness cannot report a green teardown with leaked state.
--}
-clusterTeardown :: TeardownKind -> HostConfig -> ClusterPlan -> IO ()
-clusterTeardown teardownKind cfg plan = do
-    let (toRemove, _) = teardown teardownKind plan
-        operation = case teardownKind of
-            Down -> "cluster down"
-            Delete -> "cluster delete"
-    deleted <- runTool cfg Kind ["delete", "cluster", "--name", clusterName plan]
-    deleteFailure <- reportStep "kind delete cluster" deleted
-    removalFailures <- removeAll toRemove
-    putStrLn (operation ++ ": did not remove " ++ dataPath plan)
-    let failures = maybeToList deleteFailure ++ removalFailures
-    unless (null failures) $
-        ioError . userError $
-            operation
-                ++ " attempted every cleanup step but failed:\n"
-                ++ unlines (map ("  - " ++) failures)
-
-{- | Report the cluster status (read-only): whether the kind cluster is live, and
-the data / derived paths. The report states the cluster-teardown omission
-contract for the data path without claiming to have inspected it. Never mutates
-state.
--}
-_clusterStatus :: HostConfig -> ClusterPlan -> IO ()
-_clusterStatus cfg plan = do
-    existing <- runTool cfg Kind ["get", "clusters"]
-    let live = case existing of
-            Right (ExitSuccess, out, _) -> clusterName plan `elem` lines out
-            _ -> False
-    putStr (statusReport plan live)
-
-removeAll :: [FilePath] -> IO [String]
-removeAll paths = catMaybes <$> mapM removeOne paths
-  where
-    removeOne path = do
-        outcome <- try $ do
-            exists <- doesDirectoryExist path
-            when exists $ removePathForcibly path >> putStrLn ("removed " ++ path)
-        pure $ case (outcome :: Either SomeException ()) of
-            Right () -> Nothing
-            Left err -> Just ("remove " ++ path ++ ": " ++ displayException err)
-
-reportStep :: String -> Either String (ExitCode, String, String) -> IO (Maybe String)
-reportStep label result = do
-    let failure = case result of
-            Right (ExitSuccess, _, _) -> Nothing
-            Right (ExitFailure n, _, err) -> Just (label ++ ": exit " ++ show n ++ detail err)
-            Left err -> Just (label ++ ": " ++ err)
-        rendered = maybe (label ++ ": ok") id failure
-    putStrLn rendered
-    pure failure
-  where
-    detail "" = ""
-    detail err = " " ++ err
-
-{- | Like 'reportStep' but fail-closed: a non-zero exit or an unresolved tool
-aborts (the @cluster up@ helm/kind steps must match the fail-closed cordon, so
-a broken deploy is loud — never a swallowed @putStrLn@ that lets the caller,
-or a lifting parent process, see success).
--}
-requireStep :: String -> Either String (ExitCode, String, String) -> IO ()
-requireStep label result = case result of
-    Right (ExitSuccess, _, _) -> putStrLn (label ++ ": ok")
-    Right (ExitFailure n, _, err) -> die (label ++ ": exit " ++ show n ++ " " ++ err)
-    Left err -> die (label ++ ": " ++ err)

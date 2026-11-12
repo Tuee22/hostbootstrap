@@ -53,6 +53,8 @@ import HostBootstrapDemo.Config (
     AcceleratorServiceConfig (..),
     DeployConfig (..),
     HaReplicas,
+    HarnessRunKey,
+    RunProfile (HarnessRun),
     Port,
     ProjectConfig (..),
     Resources,
@@ -75,6 +77,7 @@ import HostBootstrapDemo.Config (
     deriveProjectConfigForKind,
     envelopeOfResources,
     mkHaReplicas,
+    mkHarnessRunKey,
     mkPort,
     mkResources,
     mkTimeoutSeconds,
@@ -183,6 +186,15 @@ tests =
         , testCase "Dhall text literal rendering escapes chart-injected strings" $
             renderDhallText "Hello, \"Dhall\"\\world"
                 @?= "\"Hello, \\\"Dhall\\\"\\\\world\""
+        , testCase "Harness run keys are refined at construction and Dhall decode" $ do
+            mapM_ (\key -> assertBool "invalid run key was accepted" (isLeft (mkHarnessRunKey key)))
+                ["", "x/../../..", T.replicate 49 "a", "\x4e00"]
+            valid <- expectRight (mkHarnessRunKey "run-42")
+            let harnessCfg = hostCfg{runProfile = HarnessRun valid}
+            decoded <- decodeProjectConfigText (renderProjectConfig harnessCfg)
+            decoded @?= harnessCfg
+            invalid <- try (Dhall.input Dhall.auto "\"x/../../..\"") :: IO (Either SomeException HarnessRunKey)
+            assertBool "Dhall accepted an invalid run key" (isLeft invalid)
         , testCase "a malformed config fails with a typed error" $ do
             result <-
                 try (decodeProjectConfigText "{ dockerfile = \"x\" }") ::

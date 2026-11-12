@@ -17,8 +17,9 @@ rather than a review comment.
 Two indices ride on every token, both nominal:
 
   * @session@ is the /protected entry's own/ rank-2 variable, not a second brand
-    beside it. A token therefore cannot outlive the entry that authorized it,
-    and there are no two facts about the same entry that could disagree.
+    beside it. Direct values cannot cross entries. Each token also carries the
+    actual session, whose live token and owner thread every effect checks;
+    this also refuses delayed IO closures after entry exit.
   * @object@ names which object the token is about, so evidence gathered for one
     owned object cannot be presented for another.
 
@@ -46,10 +47,17 @@ module HostBootstrap.Ownership.Internal (
     recordedEvidence,
     boundEvidence,
     releasableEvidence,
+
+    -- * The actual entry, private to the clause implementation
+    enteredSession,
+    recordedSession,
+    boundSession,
+    releasableSession,
 )
 where
 
 import HostBootstrap.Ownership.Object (ObjectIdentity, Origin, OriginRecord)
+import HostBootstrap.Protected (ProtectedSession)
 
 {- | Where an owned object lives, as its owner named it.
 
@@ -69,7 +77,7 @@ observed before the entry.
 -}
 type role Entered nominal nominal
 
-data Entered session object = Entered OwnedTargetPath Origin
+data Entered session object = Entered (ProtectedSession session) OwnedTargetPath Origin
 
 {- | Clause 2 held: the origin record is durably published, and the object it
 describes does not exist yet.
@@ -81,7 +89,7 @@ intended to install.
 -}
 type role Recorded nominal nominal
 
-data Recorded session object = Recorded OwnedTargetPath OriginRecord
+data Recorded session object = Recorded (ProtectedSession session) OwnedTargetPath OriginRecord
 
 {- | Clause 3 held: the object exists, its own kernel identity has been read, and
 the durable record now names it.
@@ -93,7 +101,7 @@ never bound.
 -}
 type role Bound nominal nominal
 
-data Bound session object = Bound OwnedTargetPath OriginRecord ObjectIdentity
+data Bound session object = Bound (ProtectedSession session) OwnedTargetPath OriginRecord ObjectIdentity
 
 {- | Clause 4's precondition held: the object at the target has just been
 re-observed and is the identity this transaction bound.
@@ -104,7 +112,7 @@ made earlier.
 -}
 type role Releasable nominal nominal
 
-data Releasable session object = Releasable OwnedTargetPath OriginRecord ObjectIdentity
+data Releasable session object = Releasable (ProtectedSession session) OwnedTargetPath OriginRecord ObjectIdentity
 
 {- | Disclose what clause 1 established.
 
@@ -113,18 +121,34 @@ gains a fact is a compile error at every reader rather than a reader that
 silently keeps looking at the old ones.
 -}
 enteredEvidence :: (OwnedTargetPath -> Origin -> result) -> Entered session object -> result
-enteredEvidence use (Entered target origin) = use target origin
+enteredEvidence use (Entered _ target origin) = use target origin
 
 -- | Disclose the durably published record clause 2 wrote.
 recordedEvidence :: (OwnedTargetPath -> OriginRecord -> result) -> Recorded session object -> result
-recordedEvidence use (Recorded target record) = use target record
+recordedEvidence use (Recorded _ target record) = use target record
 
 -- | Disclose the bound record and the identity clause 3 bound to it.
 boundEvidence ::
     (OwnedTargetPath -> OriginRecord -> ObjectIdentity -> result) -> Bound session object -> result
-boundEvidence use (Bound target record identity) = use target record identity
+boundEvidence use (Bound _ target record identity) = use target record identity
 
 -- | Disclose the record to remove and the identity that was just re-observed.
 releasableEvidence ::
     (OwnedTargetPath -> OriginRecord -> ObjectIdentity -> result) -> Releasable session object -> result
-releasableEvidence use (Releasable target record identity) = use target record identity
+releasableEvidence use (Releasable _ target record identity) = use target record identity
+
+-- | The entry whose operational lifetime authorizes this token.
+enteredSession :: Entered session object -> ProtectedSession session
+enteredSession (Entered session _ _) = session
+
+-- | The entry whose operational lifetime authorizes this token.
+recordedSession :: Recorded session object -> ProtectedSession session
+recordedSession (Recorded session _ _) = session
+
+-- | The entry whose operational lifetime authorizes this token.
+boundSession :: Bound session object -> ProtectedSession session
+boundSession (Bound session _ _ _) = session
+
+-- | The entry whose operational lifetime authorizes this token.
+releasableSession :: Releasable session object -> ProtectedSession session
+releasableSession (Releasable session _ _ _) = session

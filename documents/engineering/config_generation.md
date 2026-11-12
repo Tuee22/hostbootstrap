@@ -46,7 +46,7 @@
 
 ## The `ConfigArtifact` Registry
 
-[`HostBootstrap.Dhall.Gen`](../../core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs) is the
+[`HostBootstrap.Dhall.Gen`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Dhall/Gen.hs) is the
 generation module. An artifact stores three `Text` values behind ordinary readers:
 
 | Reader | Value `artifactOf name codec value` stores |

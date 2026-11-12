@@ -358,3 +358,7 @@ each of them:
   `**Evidence covers**` paths; and likewise fixtures for
   `checkDonePhaseRemainingWork`, `checkActivePhaseOwnsRemainingWork`, and the drift guard's reading of
   the test roots, whose fixture writes numeric citations only under `documents/` and the source tree.
+
+The active-phase work check reads complete sprint labels, including the suffix of a split sprint.
+An active split cannot be cited through its done parent, and an undefined sibling is reported by its
+own full label. The governance phase holds these cases beside the validator's structural controls.

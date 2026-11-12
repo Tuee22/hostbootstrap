@@ -9,9 +9,7 @@ import HostBootstrap.Reconcile (
     AdoptionAuthority,
     DependencyProbe,
     DependencySnapshot,
-    LifecyclePlan,
     OperationDescriptor,
-    OperationPreconditionSet,
     OwnershipReceipt,
     PhaseAdvance,
     PhaseTransition,
@@ -35,8 +33,6 @@ data JournalVersion
 data FromPhase
 data ToPhase
 
-data LifecyclePlanA
-data LifecyclePlanB
 data ReceiptPlanA
 data ReceiptPlanB
 data ForeignOriginPlanA
@@ -45,12 +41,11 @@ data AdoptionPlanA
 data AdoptionPlanB
 data DescriptorPlanA
 data DescriptorPlanB
+data Readiness
 data ProbePlanA
 data ProbePlanB
 data SnapshotPlanA
 data SnapshotPlanB
-data PreconditionsPlanA
-data PreconditionsPlanB
 data PreparedOperationPlanA
 data PreparedOperationPlanB
 data PreparedPreconditionsPlanA
@@ -67,11 +62,6 @@ data VerifiedPhasePlanA
 data VerifiedPhasePlanB
 data AdvancePlanA
 data AdvancePlanB
-
-coerceLifecyclePlan ::
-    LifecyclePlan Scope LifecyclePlanA ->
-    LifecyclePlan Scope LifecyclePlanB
-coerceLifecyclePlan = coerce
 
 coerceReceiptPlan ::
     OwnershipReceipt Scope ReceiptPlanA Identity Resource ->
@@ -94,19 +84,14 @@ coerceDescriptorPlan ::
 coerceDescriptorPlan = coerce
 
 coerceProbePlan ::
-    DependencyProbe Scope ProbePlanA Identity Resource ->
-    DependencyProbe Scope ProbePlanB Identity Resource
+    DependencyProbe Scope ProbePlanA Identity Resource Readiness ->
+    DependencyProbe Scope ProbePlanB Identity Resource Readiness
 coerceProbePlan = coerce
 
 coerceSnapshotPlan ::
     DependencySnapshot Scope SnapshotPlanA ->
     DependencySnapshot Scope SnapshotPlanB
 coerceSnapshotPlan = coerce
-
-coercePreconditionsPlan ::
-    OperationPreconditionSet Scope PreconditionsPlanA Identity Resource ->
-    OperationPreconditionSet Scope PreconditionsPlanB Identity Resource
-coercePreconditionsPlan = coerce
 
 coercePreparedOperationPlan ::
     PreparedOperation

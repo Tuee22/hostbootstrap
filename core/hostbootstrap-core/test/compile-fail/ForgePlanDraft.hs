@@ -6,7 +6,7 @@ data Scope
 data SpecDigest
 data Config
 
--- A draft can be minted only from the exact canonical root and validated
--- configuration supplied to the finalized builder seam.
+-- A draft must be produced through a canonical root and validated configuration;
+-- its opaque constructor is unavailable to callers.
 forgedDraft :: PlanDraft Scope SpecDigest Config
 forgedDraft = PlanDraft

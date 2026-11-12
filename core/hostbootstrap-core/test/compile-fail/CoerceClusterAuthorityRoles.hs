@@ -43,10 +43,6 @@ data ReadinessPlanA
 data ReadinessPlanB
 data ReadinessResultPlanA
 data ReadinessResultPlanB
-data CleanupPlanA
-data CleanupPlanB
-data CleanupResultPlanA
-data CleanupResultPlanB
 data ManagedPlanA
 data ManagedPlanB
 data DependencyPlanA
@@ -194,44 +190,6 @@ type ReadinessResult planId =
         PartitionId
         Phase
 
-type Cleanup planId =
-    PreparedClusterCleanup
-        Scope
-        Spec
-        planId
-        ConfigId
-        Cfg
-        ClusterId
-        ClusterFrame
-        ProviderId
-        ProviderFrame
-        BudgetId
-        Provider
-        CapabilityId
-        WallSpecId
-        WorkloadSetId
-        PartitionId
-        Phase
-
-type CleanupResult planId =
-    ClusterCleanupCallResult
-        Scope
-        Spec
-        planId
-        ConfigId
-        Cfg
-        ClusterId
-        ClusterFrame
-        ProviderId
-        ProviderFrame
-        BudgetId
-        Provider
-        CapabilityId
-        WallSpecId
-        WorkloadSetId
-        PartitionId
-        Phase
-
 type Managed planId = ManagedClusterHandle Scope planId ClusterId Phase
 
 coercePackage :: Package PackagePlanA -> Package PackagePlanB
@@ -260,12 +218,6 @@ coerceReadiness = coerce
 
 coerceReadinessResult :: ReadinessResult ReadinessResultPlanA -> ReadinessResult ReadinessResultPlanB
 coerceReadinessResult = coerce
-
-coerceCleanup :: Cleanup CleanupPlanA -> Cleanup CleanupPlanB
-coerceCleanup = coerce
-
-coerceCleanupResult :: CleanupResult CleanupResultPlanA -> CleanupResult CleanupResultPlanB
-coerceCleanupResult = coerce
 
 coerceManaged :: Managed ManagedPlanA -> Managed ManagedPlanB
 coerceManaged = coerce

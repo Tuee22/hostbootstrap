@@ -68,7 +68,7 @@ reference that holds `TestPlaintext` prints the fixture value.
 
 ## Implemented root-local scope boundary
 
-[`HostBootstrap.Config.Vocab`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs) owns the
+[`HostBootstrap.Config.Vocab`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Vocab.hs) owns the
 re-export of the scope indices `Production` and `Harness` (defined in `HostBootstrap.ProjectScope`), the
 constructor-hidden `SecretRef scope`, and its smart constructors and wire conversions:
 
@@ -86,7 +86,7 @@ opens for one run; neither authority has an exported constructor. `ProjectCodec`
 `ValidatedConfig` are constructor-hidden in `HostBootstrap.Config.Class` and `HostBootstrap.Config.Schema`.
 Core ships no fixed project config type: each project supplies its own `cfg scope`.
 
-[`HostBootstrap.Config.Schema`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs) owns
+[`HostBootstrap.Config.Schema`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs) owns
 `withAssembledHarnessConfig`, whose exact signature lives there. It takes the declared `[ConfigInput]`
 allowlist, the run's `HarnessAuthority`, the matching Harness `ProjectCodec`, a `ConfigAssembly` program
 producing the Harness-scoped config, and a rank-2 continuation over the minted `VerifiedConfigWire` and

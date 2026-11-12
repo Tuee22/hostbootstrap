@@ -24,6 +24,143 @@
 - The root lifecycle `ProtectedStore`, catalog, journals, and receipts live outside the durable root and are
   defined in [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff).
 
+The direct Colima backend uses one pure socket admission predicate before profile mutation.
+The longest derived Darwin socket path must be shorter than 104 UTF-8 bytes; 103 bytes is
+admitted and 104 is refused. Counting bytes also holds for multibyte effective-home names.
+Home acquisition refuses a planted symbolic link. Live use of an owned home that disappears
+refuses before commands and does not recreate that path.
+
+Shared POSIX identity observation, directory/file creation and exclusive opening resolve
+each existing parent component through a retained no-follow directory descriptor. The final
+name is looked up or opened relative to that parent. Identity lookup still observes a final
+symbolic link as its own object, while a symbolic parent refuses before acquisition. The
+file's regular-kind check, whole-file synchronization and kernel-held lock lifetime remain.
+
+Shared POSIX publication retains both source and target parent descriptors and uses
+linkat without replacement. Removal observes the final name and calls unlinkat relative
+to that same held parent; parent synchronization fsyncs its held directory. Path-based
+manifest observation and raw-entry release open their root through the shared no-follow
+parent traversal, then retain the root descriptor for their existing identity checks,
+raw-name walk, synchronization and absence readback. A linked ancestor cannot redirect
+these operations into another directory.
+
+Before acquisition allocates the isolated Docker-config namespace, it lists Docker contexts
+when its retained stage is absent or earlier than ColimaContextStaged. The exact
+colima-<profile> name refuses with a profile conflict before namespace preparation or start;
+unrelated names do not collide. ContextStaged and later resumptions retain their already-owned
+context. The same pure stage-threshold and exact-name decisions drive the actual acquisition
+route. Command/report failures remain typed refusals and cannot reach later acquisition steps.
+
+Context cleanup decides presence from the Docker context listing. An unlisted owned name
+skips inspection and removal. For a listed name, cleanup re-enters the existing context-
+directory origin without acquisition, retains its actual identity and record version across
+inspection, and compares the resulting context fingerprint with the releasing record.
+A missing/replaced binding or different fingerprint refuses without context rm. After rm
+succeeds, a fresh listing must report the name absent before ColimaContextReleased is
+published; a still-listed name keeps the durable stage at ColimaReleasing.
+
+The private releaseManifestRemainder producer consumes the directory's live bound
+ownership token and a retained raw manifest entry. Release and durable-record capability
+checks precede native observation. The bound root must remain present and identical;
+only below that verified root may an absent leaf or intermediate descendant count as
+already released. A different present identity refuses. Exact removal stays descriptor-
+relative, synchronizes the held parent and reads absence back without decoding raw names.
+
+Cleanup captures the parsed retained manifest before the external delete and carries that
+value through settlement. It projects raw docker/ and colima/ entries relative to each
+bound root. Current remainders must match retained identity, kind, mode and any immutable
+content/link evidence; missing retained entries require no removal. New or changed entries
+refuse instead of acquiring release authority from observation. Home cache and tmp exclusions
+cover each complete subtree, and admitted entries release deepest-first through the private
+bound-root producer. A file introduced during delete therefore remains in place.
+
+Before cleanup enters Releasing, a matching Managed lineage may refresh metadata proof
+from the actual, strictly re-entered home, Docker-config, cache and temporary directories.
+The entry retains each binding identity/version across observation and publishes the
+canonical manifest before compare-and-swapping its Managed stage evidence. Unchanged
+proof preserves both record versions. An interruption between those two writes leaves
+Managed; ordinary readers refuse the incoherent proof until the Managed-only refresh
+reconciles it. Missing or malformed proof is never recreated by refresh. Releasing and
+later stages cannot refresh, so new or replacement release entries cannot broaden teardown
+authority. Acquisition still publishes its manifest before first becoming Managed.
+
+A fully Released record admits a later acquisition only with a different acquisition
+invocation and actual absence of home/context objects and every prior artifact origin
+and manifest record. The stage table returns BeginColimaLineage for that observation;
+this is a new Reserved transaction, not a backward advance of the completed stage graph.
+Its write compare-and-swaps the exact retained Released version. A foreign namespace or
+residual record refuses without adoption, and a completed acquisition invocation cannot
+replay. Repeated completed cleanup remains command-free; its old invocation cannot act
+on the new Managed transaction.
+
+Cleanup consumes the same stage table. Only an exact live profile wall/runtime,
+machine identity/epoch and retained profile/disk origin allow Managed to freeze into
+Releasing; its distinct cleanup invocation is durable before the table permits delete.
+Reported profile absence and kernel disk absence feed the subsequent settlement
+decisions. Docker-context absence and exact protected-stage versions remain required.
+Final namespace release first revalidates the retained home/cache/tmp bindings and
+absence of the already-released context and reported-object bindings. Repeating a
+completed cleanup verifies actual root and artifact-record absence before retaining
+Released without a tool command; foreign roots, residual records and incompatible
+partial stages refuse without reacquiring authority.
+
+Acquisition holds one native protected-store entry across namespace preparation,
+start and settlement. A failed start or refused post-start report retains Prepared;
+it does not publish Managed evidence. Prepared re-entry with an already-present
+profile has an unknown start outcome and cannot adopt it. Competing calls on the
+same scope serialize through the real entry lock: only one can create, and the
+other observes exact Managed evidence or receives an entry refusal. Static collector
+cases verify those driver outcomes with real temporary namespaces and protected
+records; the direct-Colima live confirmation remains in Apple Silicon acceptance.
+
+Acquisition namespace preparation, Prepared start, evidence-bearing settlement and exact
+Managed re-entry consume the same total stage decision table. Fresh unclaimed namespaces
+must have no objects or artifact records; staged and Prepared directories re-enter their
+retained identity bindings. An already-present profile under Prepared is outcome-unknown
+and refuses before creation origins, start or machine observation. Only an absent-profile
+start decision permits the call; successful start readbacks and joined artifact/wall proof
+provide the distinct created-profile observation used to publish Managed. Ordinary exact
+Managed re-entry consumes KeepColimaStage after its full observations.
+
+Docker-config parent directories below the protected plan root have shared origin records.
+Preparation creates each missing parent through the shared no-follow row inside the entry;
+an existing unrecorded parent refuses adoption. Later preparation and live start, artifact,
+settlement, Docker and cleanup paths re-enter the retained parent identities. Missing or
+replaced owned parents refuse, even if the context directory itself kept its inode.
+Parent keys derive from the relative component sequence with lossless length-prefixed
+character words, so profiles sharing a parent re-enter one binding. Cleanup checks those
+identities and removes empty created parents child-first, retaining any nonempty directory
+and its record for shared or foreign contents. Repeated completed cleanup does not recreate
+a parent. The prepared driver performs no recursive parent mkdir before ownership entry.
+
+The manifest walk retains its root and parent descriptors. Entry status comes from fstatat
+with AT_SYMLINK_NOFOLLOW, and link-target bytes come from readlinkat against that parent.
+The normal path observer brackets the root open and uses this same descriptor observer.
+Renaming the root and populating its old pathname cannot redirect the retained walk. Each walk
+opens an independent stream relative to its held directory, so read offsets do not leak between
+observations. A failed
+fdopendir closes its fresh descriptor; a successful stream closes the descriptor it owns.
+
+Manifest paths are raw bytes, validated by one POSIX slash grammar on every host. Directory
+names and link targets enter through raw descriptor-relative APIs; rendering hex-encodes the
+same bytes and parsing retains them without UTF-8 decoding. Locale and invalid UTF-8 names
+therefore cannot change the stored path. Diagnostics alone escape non-ASCII name bytes.
+
+Colima remainder cleanup rechecks its protected parent, then passes the retained root identity
+and observed entry to the shared POSIX raw-name primitive. The primitive checks the opened root
+and target identities, traverses raw components no-follow through held descriptors, and refuses
+foreign owners or unsafe entry kinds/modes. unlinkat, parent fsync and authoritative absence
+readback complete each removal. A replaced root, replaced target or symbolic parent refuses.
+
+The shared POSIX ownership manifest observes owned namespace entries without traversing symbolic
+links. It refuses unsafe directory or file permissions, multiply linked regular files, foreign
+owners and unsupported object kinds, and bounds immutable file content to 4 MiB. Its kernel suite
+checks exact entry kinds and refusal reasons. A separate foreign-owner family measures whether
+the gate process can actually change a fixture's owner; unavailable hosts report and assert that
+refusal. Windows keeps the cases and asserts the row's total Unsupported result. These are local
+kernel checks, with the evidence limits in [testing](../engineering/testing.md); they do not establish
+crash-durability acceptance.
+
 ## Current Status
 
 The current demo does create and carry durable state:
@@ -74,6 +211,20 @@ The durable root is not workload-only. The provider, alias, and cluster backends
 records beneath it, so copying, restoring, pruning, or hand-editing the durable root also changes those
 records. The same layout appears under `.test_data/<runId>` for a Harness run.
 
+The provider ownership driver publishes its records through the shared record tape and inherits
+the protected store's durability contract, defined by the [ownership seam](ownership_seam.md).
+A source guard covers the provider facade and its whole module subtree: filesystem imports are
+explicit read-only observations, each record-tape publication is applied, and the tape applies
+the store's compare primitives. The provider boundary adds no second durability window.
+
+A guest-alias take stages its symbolic link beside the alias at
+`<alias>.hostbootstrap-shipped-<record-key>` and binds that inode before publication.
+Recovery retains that exact inode, checks the alias target, and withdraws the staging name.
+Give-back also withdraws the recorded stage before forgetting the record. An unbound intent with
+an absent alias can remove only an exact staging link; an alias occupant or a different staging
+object preserves the record and object for inspection. A record for another target or a non-absent
+origin is malformed and authorizes neither take nor give-back.
+
 | Path under the durable root | Written by | Contents |
 |---|---|---|
 | `web/` | the web workload, through the pod hostPath | workload bytes; no lifecycle authority |
@@ -99,7 +250,10 @@ never that root store.
   identity, so a record either owner writes is readable by the other and a version tag means one thing.
   The record is published before the object exists and the identity binding is a second compare-and-swap
   against the exact version the publication left, so the window between them is a durable state recovery
-  reads rather than a state it has to guess at.
+  reads rather than a state it has to guess at. Generated-config recovery removes matching unbound
+  payload only while the identity observed at entry still matches after its read. Successful recovery
+  withdraws the key-derived staging name before forgetting, and a bound record whose target is already
+  absent settles without a conflict. Refusals retain exact record bytes.
 - WSL2 uses the host drive exposed by drvfs, Incus attaches a disk device, and Lima declares a mount.
 - `HostBootstrap.Substrate.Provider.Reconcile` settles provider shares into an opaque nominal
   `ManagedProviderShareHandle` that retains the exact managed provider origin. A share is an owned object
@@ -107,6 +261,9 @@ never that root store.
   the device is attached and binds the device's identity — a digest of exactly the kind, source, and
   target the declaration names — from what the provider reports afterwards, under the instance standing
   re-taken on both sides of that readback. Direct settles only the canonical already-local identity share.
+  Share preparation requires the exact provider key in its operation descriptor's dependency set before
+  probing or invoking the prepared continuation. Its retained provider reprobe runs afresh; a failed
+  Incus observation or Direct egress refuses preparation without attaching a device.
 - Durability at that boundary is inherited rather than restated: every durable byte a provider transaction
   publishes is the protected store's compare-and-swap, so the partial-write and partial-unlink windows are
   the store's own contract and the provider driver names no mutating filesystem primitive.
@@ -139,6 +296,9 @@ never that root store.
   exposes only the exact immediate topology edge, and branch-specific attempts retain their origin forest.
   The forest itself authorizes nothing; effects are authorized by the root's rooted frame execution and
   receipt-bound release (see [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff)).
+  `nextTeardownWork` searches for schedulable fresh work before retrying failed work, so an independent
+  sibling cleanup can progress while the failed branch stays outstanding. Ordinary parent work remains
+  blocked until its children settle.
 - Project-container, kind/nvkind, and pod configurations carry the directory to the web workload.
 - Cluster teardown never puts the durable root or a workload subtree in its filesystem removal set. Down
   removes nothing and preserves both the data path and the derived state path. Delete removes only the
@@ -149,16 +309,21 @@ never that root store.
   durable root, with `config.yaml` beside it. Component-wise no-follow traversal creates and parent-fsyncs
   only that exact leaf. Self-bound `prepared`/`executing`/`managed` origin records retain the state, lock,
   record, config/kube snapshot, and complete node-container identities needed for crash recovery and
-  conditional cleanup. Cleanup (`releaseRetainedCluster` and the prepared cleanup call) opens only the store
-  at that leaf, derived from the plan, and removes the managed origin only after independently proving every
-  retained node container absent. A copied record, replaced namespace object, or uncertain deletion preserves
+  conditional cleanup. The single retained cleanup (`releaseRetainedCluster`) derives one ordinary
+  `RetainedClusterProjection` containing only name, node names, state directory and kubeconfig path.
+  That view carries no durable root or ownership authority. Release opens only the store at the projected
+  leaf, refuses while its exposure record exists in the same protected entry,
+  and removes the managed origin only after independently proving every retained node container absent. A copied record, replaced namespace object, or uncertain deletion preserves
   origin state and cannot widen the removal set beyond the leaf. Because the leaf sits inside the durable
   root, editing or restoring the durable root edits the records `releaseRetainedCluster` reads.
 - The same removable state leaf carries the cluster-adjacent exposure record. Its pending state precedes
   relay creation and binds the exact plan resource, cluster identity/generation, immutable image, semantic
   targets, owner digest, and fresh operation nonce. Its managed successor adds only the runtime-inspected
   relay identity and complete loopback mapping set. Recovery re-inspects those exact facts; release removes
-  by identity, proves absence, and only then deletes the record. Cluster cleanup refuses while the exposure
+  by identity, proves absence, and only then deletes the record. A stopped relay remains releasable after
+  exact identity and label authentication with an empty port map; forward recovery releases it and creates
+  a fresh operation, identity and mappings. Stopped state cannot produce a resolved endpoint. Malformed
+  canonical records and refused removals leave the ownership evidence in place. Cluster cleanup refuses while the exposure
   record exists, so the durable host root and the release order remain outside caller discretion.
 - The implemented direct-Colima adapter likewise keeps control ownership outside the workload payload. Its
   self-bound origin and isolated `DOCKER_CONFIG` live under the exact plan root's `.hostbootstrap/colima`
@@ -263,10 +428,10 @@ so a sibling such as `project-evil` cannot satisfy confinement under `project`. 
 canonical root, so a link that redirects a relative root outside the anchor is refused. An absolute configured root is exempt
 from relative confinement.
 
-[`withCanonicalProjectRoot`](../../core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs) mints only
+[`withCanonicalProjectRoot`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectRoot.hs) mints only
 the fresh rank-2 `rootId` in `CanonicalProjectRoot scope rootId` and takes no scope witness. The caller's
 consumer fixes `scope` by unification.
-[`withSiblingValidatedProjectConfigRoot`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs)
+[`withSiblingValidatedProjectConfigRoot`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs)
 is the admission that binds that scope to its config codec. The root is the source of direct-host durable
 paths, and its identity cannot escape the continuation that admitted it. Missing roots, wrong-kind
 paths, escapes, and resolution failures, including an embedded NUL, return a typed refusal before the
@@ -284,17 +449,18 @@ host durable root is projected (see [current status](#current-status)).
 Alias reconciliation remains necessary only for provider guests. It is a typed projection operation,
 not root discovery or authority.
 
-[`HostBootstrap.Substrate.Provider`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs)
-exports a total diagnostic classifier. `classifyAlias` maps the probed facts to an `AliasState`, and
-`planAliasEnsure`/`planAliasRemove` turn that state into a pure ensure or removal view. None of the three
-authorizes mutation or cleanup; they name the cases:
+Guest-alias classification belongs to the prepared route in
+[`HostBootstrap.Substrate.Provider.Alias`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs).
+Its sealed `AliasCallResult` is described by the total `aliasCallResultView` projection to
+`AliasCallResultView`: created, repaired, already exact, foreign, conflict, unsupported, or failed.
+This read-only view grants no ownership or cleanup authority. A foreign link remains unmanaged even
+when its pathname and target match the declaration.
 
-| `AliasState` | Ensure view | Removal view |
-|---|---|---|
-| `AliasAbsent` | create the link | keep (already absent) |
-| `AliasLinkedCorrectly` | leave linked | unlink, subject to ownership proof |
-| `AliasLinkedElsewhere` with the observed target | refuse | refuse |
-| `AliasOccupied` with an `AliasNodeKind` | refuse | keep the occupant |
+Prepared give-back also requires the settled managed alias and its exact positive observation
+version. Zero or stale versions return a structured refusal before any guest call. The shipped
+release compares the link with its recorded kernel identity; a replacement and its record remain
+untouched on conflict. Successful release forgets the record after unlinking the alias, while the
+durable target and its `.hostbootstrap-alias-authority-v1` directory remain.
 
 The production entry is `reconcileNodeGuestAlias` in
 [`HostBootstrap.Substrate.Provider.Alias`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs).
@@ -303,11 +469,11 @@ handle, and the planned `DurableShareResource` with its managed `Provisioned` sh
 a `Conflict` when either handle's key differs from its planned resource. Through the plan, it traverses the
 alias node's exact `PlannedEdge` to the durable share, uses the managed mounted-share handle, and runs the
 share's readiness probe at prepare time. The caller cannot supply or omit the edge or substitute a retained
-`Ready`. `withOperationPreconditions` seals that fresh observation into the alias operation's closed
-`OperationPreconditionSet`. `withPreparedOperation` runs no second probe: it checks that the prepare gate,
-the sealed set, and the operation descriptor name the same plan, operation, and call digest, that no sealed
-observation is stale, and that the observed dependency keys are exactly the expected ones, and only then
-returns the only `PreparedOperation`/`PreparedPreconditions` pair the alias backend adapter accepts.
+`Ready`. `withPreparedOperation` checks the gate before it runs the alias's complete dependency snapshot
+itself. Its private matching step binds the fresh observations, exact ordered dependency keys, plan,
+operation and call digest to the descriptor and gate. It runs the required share probe once and returns
+the matching `PreparedOperation`/`PreparedPreconditions` pair only after those checks; the alias caller
+does not pre-seal a set or run a second traversal.
 
 The reconcile kernel (`completeReconcile`, or `completePreparedUnchanged` over a prior commit proof) takes
 an `Unclassified` handle in the `Observed` phase and returns a `ReconcileResult` in the `Provisioned` phase
@@ -328,10 +494,13 @@ release, Ubuntu 24.04, and the same shipped project binary, so the same row serv
 which is why the frame axis has three constructors and the ownership row set has two platforms plus one
 transport, rather than one implementation per provider. Clause support still depends on the filesystem
 behind each share (drvfs on WSL2, the Incus disk device, the Lima mount), which is why
-[validation](#validation) runs the alias gate on every provider guest. Provider discovery executes closed requests, accepts only raw outcomes, and
-privately parses exact one-line tool/marker/identity reports; its fresh capability is indexed to the exact
-opaque managed provider resource/backend/generation. The alias backend narrows that capability without
-accepting an independent executor and also requires the exact opaque managed share authority.
+[validation](#validation) runs the alias gate on every provider guest. Provider discovery runs one
+listing for daemon reachability and permission, the guest's `true` probe, then provisioning egress.
+It accepts only raw outcomes, retains each executed probe's answer, and propagates a blocking observation
+only to the unrun suffix. Its fresh capability is indexed to the exact opaque managed provider
+resource/backend/generation. The alias backend requires the retained daemon and VM observations,
+narrows that capability without an independent executor, and also requires the exact opaque managed share
+authority. It does not repeat the listing under a separate permission slot.
 
 The alias's clauses are the row's, so which lock front end a particular guest happens to carry is not a
 question the protocol asks: a transaction addressed to that frame is carried to a process of this same
@@ -424,7 +593,7 @@ not here.
 | 7 | [test harness and run ownership](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md) |
 | 8 | [recursive lifecycle command](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) |
 
-1. Each provider-guest clean-path test reaches `AliasAbsent`, creates the link (`Created`), and reruns over
+1. Each provider-guest clean-path test observes an absent alias, creates the link (`Created`), and reruns over
    that link: with the first settlement's prior commit proof the rerun settles `ManagedResult` with
    `Unchanged`, and without one it settles `Repaired`. This runs on **every** provider guest —
    WSL2, Lima, and Incus — because one backend serves all three.
@@ -463,3 +632,52 @@ not here.
 - [harness workflow](harness_workflow.md) — current test-profile and DSL mismatch.
 - [gitignore guardrails](../engineering/gitignore_guardrails.md) — keeping `.data/` and `.test_data/`
   outside version control.
+
+Direct-Colima acquisition classifies mutation faults in the private ownership driver. A conflicting
+profile or mismatched ownership origin is a refusal that leaves the namespace untouched. Entry,
+command, report, start and delete failures carry ReprobeBeforeRetry. The public adapter passes the
+complete expected wall description to that pure classification and retains only the closed
+backend's successful ownership observation for settlement.
+
+A committed Colima cleanup invocation remains bound in Releasing and Released records. Retry
+admission reads that retained value before selecting any context or deletion branch. The private
+retry choice is descriptive and grants no mutation authority; the existing protected-store entry
+and exact owner/lineage checks remain prerequisites for the owning driver.
+
+An interrupted Colima profile removal may retain either or both reported origin records after the
+profile and disk are gone. Recovery requires the exact committed Releasing stage/version and release
+invocation, another strict profile-absence readback, kernel disk absence and valid retained bindings.
+Only then does the shared reported-removal primitive forget records at their observed versions.
+Already-forgotten records remain absent; this path issues no second profile delete.
+
+A removed Colima directory can retain its bound origin across the remove-before-forget window.
+Recovery delegates to the shared kernel-removal producer, which rechecks actual absence and syncs
+the parent before forgetting that observed record version. An absent path with no record is an
+idempotent no-op; a present unrecorded path or replaced bound directory is left untouched.
+
+The managed Colima Docker route first reads and admits its retained stage and lineage before
+parent validation, context-directory acquisition or command work. Released, in-progress release,
+missing and mismatched stages therefore cannot recreate a context or origin. Actual protected-store
+cases hold the records unchanged, and source-flow checks connect that admission to the driver.
+Context removal shares the pure delete-completion decision; failure retains the releasing stage
+and context ownership, while successful strict absence readback precedes ContextReleased.
+
+ContextReleased is a committed retry stage for the same cleanup invocation. Fresh completion and
+that retry share one kernel-only context namespace settlement: it checks the exact held stage and
+version, retained manifest evidence and parent bindings, then removes only unchanged retained
+entries and the bound created directory. Already removed directories settle their origins through
+the shared absence/sync boundary. Replacements or added entries preserve their objects and records.
+The durable transition to Released follows successful context settlement. Static cases exercise
+actual temporary kernel objects and protected records; public provider commands remain live evidence.
+
+Fresh Released settlement and exact replay share one kernel-only namespace finisher. It verifies
+the actual held stage/version, committed manifest evidence and every remaining root binding before
+removing retained entries, then settles temporary, cache and home origins child-first. The manifest
+is forgotten only at its retained version, after all owned roots settle. Missing evidence authorizes
+no deletion: only actual complete vacancy can finish without a manifest. Scaffolding is removed
+through retained identity-bearing manifest entries. Empty retained parents release conditionally;
+a removed parent's origin recovers over fresh absence, while shared or replaced parents remain.
+
+Ownership manifest entries expose read-only accessors. Prefixing and namespace projection rebuild
+each entry through the validating constructor, retaining the raw path bytes and refusing an
+over-long or noncanonical result.

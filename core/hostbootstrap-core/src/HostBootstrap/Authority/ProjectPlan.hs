@@ -26,6 +26,8 @@ import HostBootstrap.Authority (
     rootAuthorityVerb,
  )
 import HostBootstrap.Authority.Kernel (
+    CommandFrameName (CommandFrameName),
+    CommandPlanDigest (CommandPlanDigest),
     commandReservationKernel,
     rootAuthorityStoreIdentity,
  )
@@ -150,9 +152,9 @@ authorizeRootProject root verb verified bound binding lease plan journal cursor 
                     cursor
                     ( commandReservationKernel
                         root
-                        canonicalPlanDigest
+                        (CommandPlanDigest canonicalPlanDigest)
                         (lifecycleCursorPhase cursor)
-                        (projectFrameId frame)
+                        (CommandFrameName (projectFrameId frame))
                     )
 
     validateRetainedEvidence frame validated = do
@@ -194,7 +196,7 @@ authorizeRootProject root verb verified bound binding lease plan journal cursor 
         either
             (malformed . Text.pack . lifecycleErrorMessage)
             Right
-            (validateBoundRunLeaseAcquisitionJournal lease journal)
+            (validateBoundRunLeaseAcquisitionJournal verb lease journal)
         requireCondition
             "project frame is outside the admitted topology"
             (topologyContainsFrame (topology plan) frameId)

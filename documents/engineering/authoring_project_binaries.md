@@ -5,14 +5,16 @@
 **Referenced by**: [documents-index](../README.md), [composition_methodology](../architecture/composition_methodology.md), [binary_context_config](../architecture/binary_context_config.md), [derived_project_standards](derived_project_standards.md)
 
 > **Purpose**: A step-by-step guide for a new consumer — author the project's ordered step contribution
-> finalized into its opaque `StepPlan`, supply the step actions, test suite, artifacts, and
+> projected into its opaque `StepPlan`, supply the step actions, test suite, artifacts, and
 > Dhall vocabulary, and declare the budget — extending `hostbootstrap-core` through the `Step` algebra.
 
 ## TL;DR
 
 - **The plan is the project.** A consumer's primary contribution is an ordered additive step fragment,
-  plus the actions for any project-specific `Step` kinds it adds. Finalization validates an opaque
-  `StepPlan`, which exact plan admission turns into the current-frame input to `project up`. The consumer extends the plan and step
+  plus the actions for any project-specific `Step` kinds it adds. Static finalization checks the
+  contributions; projection under a concrete root and configuration validates the opaque `StepPlan`,
+  which exact plan admission turns into the current-frame input to `project up`. The consumer extends
+  the plan and step
   vocabulary; the command surface (`project`, `test`, `service`, `context`, `check-code`) is fixed. The
   foundational model is [composition_methodology](../architecture/composition_methodology.md); the
   reusable shapes are [composition_patterns](composition_patterns.md).
@@ -56,6 +58,10 @@
    `CanonicalProjectRoot scope rootId -> cfg scope -> [Step]` contributions with `addSteps`. The shared
    `scope` is part of the contract: a Production config cannot be paired with a Harness root, or with a
    different Harness run's root.
+   Static finalization requires at least one fragment. A present fragment may still yield an empty list
+   for a concrete configuration; `projectPlanDrafts` then refuses with
+   `InvalidProjectPlan EmptyStepPlan`. Step identities, frames, descent and reverse rules are checked by
+   `mkStepPlan` at that concrete projection boundary.
    `Step`/`StepKind` constructors are hidden, and Production `project up --dry-run` renders the exact
    admitted `ProjectPlan` whose forward projection the interpreter consumes. Validation rejects
    empty/duplicate/conflicting plans,
@@ -105,6 +111,7 @@
 
    `finalizeProjectSpec` returns `Left MissingStepPlan` without a step fragment, `Left MissingForwardChildPlan`
    without a projector, and `Left DuplicateForwardChildPlan` when `addForwardChildPlan` ran more than once.
+   It also checks the test suite, unique case identities, artifacts, assembly inputs and services.
    Pass only the opaque `Right` result to `runHostBootstrapCLI` so the contributions merge into the
    recursive interpreter. The core command surface (`project`/`test`/`service`/`context`/`check-code`) is fixed; the project
    extends the chain and the step vocabulary (the lift-chain stream of the extension-stream contract; see
@@ -112,6 +119,12 @@
    not name an installed-identity marker. At dispatch, `runHostBootstrapCLI` verifies its declared name
    against the actual executable basename before ordinary command parsing and retains the resulting generative identity through codec,
    service, plan, command, and Harness construction.
+
+   The canonical scope-finalization path retains the static builder. Harness finalization reuses that
+   exact Production wrapper's builder with the generative Harness codec; both actual draft streams are
+   admitted before the interpreter consumes their forward projections. The lower
+   `planDraftsFromValidatedBuilder` bridge also accepts caller-supplied builders: its indices come from
+   `ValidatedConfig`. Recovery compares the canonical snapshot bytes to bind the concrete graph.
 4. **Declare the boundaries the interpreter crosses.** Each descent is fractal bootstrap: provision the frame, build
    or install the binary in it, then hand the `project up` work off into the next frame. The consumer
    declares each boundary on the step that owns it with `Step.descendsVia`; that one `LiftContext` names the

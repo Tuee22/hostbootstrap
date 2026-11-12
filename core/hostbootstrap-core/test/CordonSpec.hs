@@ -50,6 +50,7 @@ tests =
         , testGroup "Windows capacity" windowsCapacityCases
         , testGroup "fitsBudget" fitsCases
         , testGroup "sizing + applied cordon" sizingCases
+        , testGroup "cluster node shares" nodeShareCases
         , testGroup "Docker limit bounds" dockerLimitCases
         , testGroup "lower foundation boundary" foundationCases
         ]
@@ -70,8 +71,6 @@ foundationCases =
             @?= Foundation.wsl2SizingArgsForBudget canonical
         kindNodeCordonArgsFor "demo-control-plane" demoResources
             @?= Foundation.kindNodeCordonArgsForBudget "demo-control-plane" canonical
-        kindNodeCordonArgs "demo" demoResources
-            @?= Foundation.kindNodeCordonArgsForBudget "demo-control-plane" canonical
     , testCase "facade parsing preserves exact refusals and field order" $ do
         let malformedMemory = ResourceEnvelope 4 "wat" "also-wat"
             malformedStorage = ResourceEnvelope 4 "8GiB" "wat"
@@ -89,14 +88,14 @@ foundationCases =
             , limaSizingArgs malformedMemory
             , incusSizingArgs malformedMemory
             , wsl2SizingArgs malformedMemory
-            , kindNodeCordonArgs "demo" malformedMemory
+            , kindNodeCordonArgsFor "demo-control-plane" malformedMemory
             ]
             @?= replicate 5 (Left "not a quantity: wat")
         [ colimaSizingArgs "demo" malformedStorage
             , limaSizingArgs malformedStorage
             , incusSizingArgs malformedStorage
             , wsl2SizingArgs malformedStorage
-            , kindNodeCordonArgs "demo" malformedStorage
+            , kindNodeCordonArgsFor "demo-control-plane" malformedStorage
             ]
             @?= replicate 5 (Left "not a quantity: wat")
     , testCase "unknown and inexact quantities retain exact descriptive refusals" $ do
@@ -194,7 +193,7 @@ foundationCases =
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
         let packageRoot = root </> "core" </> "hostbootstrap-core"
-        facadeSource <- TextIO.readFile (packageRoot </> "src" </> "HostBootstrap" </> "Cluster" </> "Cordon.hs")
+        facadeSource <- TextIO.readFile (packageRoot </> "internal" </> "cluster-ownership" </> "HostBootstrap" </> "Cluster" </> "Cordon.hs")
         sort (nub (hostbootstrapImports facadeSource))
             @?= sort
                 [ "HostBootstrap.Cluster.Cordon.Foundation"
@@ -205,7 +204,7 @@ foundationCases =
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
         let packageRoot = root </> "core" </> "hostbootstrap-core"
-        source <- TextIO.readFile (packageRoot </> "src" </> "HostBootstrap" </> "Cluster" </> "Cordon" </> "Foundation.hs")
+        source <- TextIO.readFile (packageRoot </> "internal" </> "cluster-ownership" </> "HostBootstrap" </> "Cluster" </> "Cordon" </> "Foundation.hs")
         cabal <- TextIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
         let importedModules = sort (hostbootstrapImports source)
         importedModules
@@ -225,7 +224,7 @@ foundationCases =
     , testCase "capacity observation uses described commands without interpreter text" $
         -- DEVELOPMENT_PLAN/rationale.md: "A script is a fork of the binary, and it is the fork nothing can check".
         SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
-            source <- readFile (packageRoot </> "src" </> "HostBootstrap" </> "Cluster" </> "Cordon" </> "Foundation.hs")
+            source <- readFile (packageRoot </> "internal" </> "cluster-ownership" </> "HostBootstrap" </> "Cluster" </> "Cordon" </> "Foundation.hs")
             assertBool "Foundation still invokes a PowerShell command" $
                 all ((`notElem` SourceGuard.haskellTokens source) . show) (["-Command", "-NoProfile"] :: [String])
             SourceGuard.countHaskellIdentifier "PowerShell" source @?= 0
@@ -295,10 +294,11 @@ mainLibraryExposedModules :: Text.Text -> Either String [Text.Text]
 mainLibraryExposedModules cabal =
     case SourceGuard.mainLibraryStanza (Text.unpack cabal) of
         Nothing -> Left "hostbootstrap-core.cabal: unnamed main library stanza is missing"
-        Just stanza ->
-            case SourceGuard.fieldModules "exposed-modules:" stanza of
+        Just _ -> do
+            modules <- SourceGuard.effectiveMainExposedModules (Text.unpack cabal)
+            case modules of
                 [] -> Left "hostbootstrap-core.cabal: main library exposed-modules field is missing"
-                modules -> Right (map Text.pack modules)
+                _ -> Right (map Text.pack modules)
 
 quantityCases :: [TestTree]
 quantityCases =
@@ -642,7 +642,7 @@ sizingCases =
         length timeouts @?= 2
         all (\l -> not ("=-" `isInfixOf` l)) timeouts @?= True
     , testCase "applied Linux cordon caps the control-plane with 2x swap headroom" $
-        kindNodeCordonArgs "demo-test-case1" demoResources
+        kindNodeCordonArgsFor "demo-test-case1-control-plane" demoResources
             @?= Right
                 [ "update"
                 , "--cpus"
@@ -655,10 +655,38 @@ sizingCases =
                 ]
     , testCase "the docker update cordon argv omits storage (no docker flag)" $
         assertBool "no storage in docker update argv" $
-            case kindNodeCordonArgs "demo" demoResources of
+            case kindNodeCordonArgsFor "demo-control-plane" demoResources of
                 Right args -> show (20 * gib) `notElem` args
                 Left _ -> False
     ]
+
+nodeShareCases :: [TestTree]
+nodeShareCases =
+    [ testCase "node shares floor every dimension and stay within the envelope" $ do
+        budget <- canonical 7 9 11
+        shared <- either assertFailure pure (clusterNodeBudgetShare 2 budget)
+        (budgetCpu shared, budgetMemoryBytes shared, budgetStorageBytes shared) @?= (3, 4, 5)
+        assertBool "CPU shares exceed the envelope" (2 * budgetCpu shared <= budgetCpu budget)
+        assertBool "memory shares exceed the envelope" (2 * budgetMemoryBytes shared <= budgetMemoryBytes budget)
+        assertBool "storage shares exceed the envelope" (2 * budgetStorageBytes shared <= budgetStorageBytes budget)
+    , testCase "node sharing refuses no declared nodes" $ do
+        budget <- canonical 2 2 2
+        clusterNodeBudgetShare 0 budget @?= Left "cluster node cordon: the plan declares no nodes"
+    , testCase "node sharing refuses a negative node count" $ do
+        budget <- canonical 2 2 2
+        clusterNodeBudgetShare (-1) budget @?= Left "cluster node cordon: the plan declares no nodes"
+    , testCase "node sharing refuses CPU below the node count" $ do
+        budget <- canonical 1 2 2
+        clusterNodeBudgetShare 2 budget @?= Left "cluster node cordon: CPU slice is smaller than the node count"
+    , testCase "node sharing refuses memory below the node count" $ do
+        budget <- canonical 2 1 2
+        clusterNodeBudgetShare 2 budget @?= Left "cluster node cordon: memory slice is smaller than the node count"
+    , testCase "node sharing refuses storage below the node count" $ do
+        budget <- canonical 2 2 1
+        clusterNodeBudgetShare 2 budget @?= Left "cluster node cordon: storage slice is smaller than the node count"
+    ]
+  where
+    canonical cpuCores memoryBytes storageBytes = either (assertFailure . renderQuantityError) pure (mkResourceBudget cpuCores memoryBytes storageBytes)
 
 dockerLimitCases :: [TestTree]
 dockerLimitCases =
@@ -694,7 +722,6 @@ dockerLimitCase label cores memoryBytes expected =
         kindNodeCordonLimits canonical @?= expected
         Foundation.kindNodeCordonArgsForBudget "bounds-control-plane" canonical @?= expectedNamed
         kindNodeCordonArgsFor "bounds-control-plane" resources @?= expectedNamed
-        kindNodeCordonArgs "bounds" resources @?= expectedNamed
 
 leftHas :: String -> Either String a -> IO ()
 leftHas needle e = case e of

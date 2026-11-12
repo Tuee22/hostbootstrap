@@ -270,8 +270,9 @@ service. Execution across its declared frames uses authenticated child admission
 owned by the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md). The lift
 primitive uses provider-backed folds for Incus and Lima (and WSL2 on Windows — see
 [wsl2](wsl2.md)) and a topology-aware binary-context gate. The
-reconcilers (`clusterCreate`, `deployChart`, `clusterDown`, `clusterDelete`) live in
-`HostBootstrap.Cluster.Lifecycle`, invoked by the chain steps and the lifecycle command.
+prepared cluster calls live in `HostBootstrap.Cluster.Backend` and settle through
+`HostBootstrap.Cluster.Reconcile`. The chain consumes those owned packages; reverse traversal uses
+`releaseRetainedCluster` over the exact recorded projection.
 
 The opaque `StepPlan`, admitted `ProjectPlan`, core Step algebra, and workload-contributed step kinds
 compose one exact forward description. Each frame's current-frame Chain executes its authorized segment

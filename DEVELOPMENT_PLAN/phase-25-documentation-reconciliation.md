@@ -915,6 +915,7 @@ shape the rule forbids:
 - a missing phase status filled in by a sprint's, because the header block ends only at a literal `## `;
 - evidence rows and `**Evidence covers**` taken from anywhere in the document;
 - a later phase cited in prose inside a Remaining Work section;
+- a suffixed sprint citation read as its unsuffixed sibling, so the actual owner is never checked;
 - a renamed contracts heading that leaves nothing to check;
 - a malformed ledger row with a missing `Deleted by` cell;
 - a combined substrate declaration that the standard permits, which the check refuses.
@@ -943,6 +944,9 @@ shape the rule forbids:
   and the at-most-one-beyond-`linux-cpu` rule applies to the token set. `linux-cpu, nvidia` passes,
   `nvidia, windows` gives only the over-budget violation, and `linux-cpu, banana` gives one unknown-value
   violation naming `banana`.
+- `sprintCitations` retains the complete sprint label, including a lowercase suffix, in agreement with
+  section parsing. `checkPhaseRemainingWork` checks the cited suffixed sprint's existence and status
+  independently of the unsuffixed sibling.
 
 #### Validation
 
@@ -957,6 +961,9 @@ The sprint closes when `DocValidatorSpec` carries one fixture per deliverable an
 - a standards fixture with the contracts heading renamed;
 - the existing `negativeCase` blank-`Deleted by` regression, plus a ledger row with three cells;
 - the three substrate declarations above.
+- a citation of an existing Active suffixed sprint with a Done unsuffixed sibling, and a citation of a
+  nonexistent suffixed sprint with an existing unsuffixed sibling; only the latter gives the unknown-sprint
+  violation and names the complete suffixed label.
 
 The real plan stays green, and the host static gate passes.
 
@@ -965,7 +972,8 @@ The real plan stays green, and the host static gate passes.
 - Add the missing-section and missing-body-status refusals to `checkSprintStructure`, each with its fixture.
 - Introduce `phaseHeaderBlock`, route the four header readers and `checkGateEvidence` through it, and add the
   two fixtures.
-- Read Remaining Work citations through `referencedPhaseNumbers`, and add the prose and `./` fixtures.
+- Read phase references through `referencedPhaseNumbers` and retain complete suffixed labels in
+  `sprintCitations`; add the prose, `./`, and independent suffixed-ownership fixtures.
 - Refuse the missing or empty contracts section in `checkContractOwnership`, with its fixture.
 - Extend ledger row splitting, tracking and malformed-row arity checks as stated; preserve `negativeCase`'s
   blank-`Deleted by` regression and add the short-row fixture.
@@ -1260,9 +1268,9 @@ resolves under `checkIdentifierResolution`, and the host static gate passes.
 - Convert every refused block among the 15 fences in the eight listed pages.
 - Move the rule from "Rules held by review" into the check table of `documentation_standards.md`.
 
-### Sprint 25.24: Digest is the one SHA-256 and framing definition site [Planned]
+### Sprint 25.24: Digest is the one SHA-256 and framing definition site [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/test/PortabilitySpec.hs`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
@@ -1288,10 +1296,17 @@ The `PortabilitySpec` guard passes on the live tree and, run over a fixture tree
 defines `sha256Hex :: ByteString -> Text`, reports that module. Both run inside
 `cabal test all --ghc-options=-Werror` from `core/`, and the host static gate (§ JJ) passes.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): the duplicate
+`sha256Hex` definitions in `Service`, `RoleLifecycle`, and `Lifecycle.ResourceRecord`, the duplicate `frameWire`
+in `Lifecycle.ResourceRecord`, and the two Colima-backend `sha256Text` wrappers (renamed `hexDigestOfText`) are
+gone, so `HostBootstrap.Digest` is the only module defining a guarded helper. `PortabilitySpec` "HostBootstrap.Digest
+is the only module defining a SHA-256 or framing helper" passes over `src` and `internal`, and "the digest-helper
+scan reports a second definition and exempts HostBootstrap.Digest" reports a fixture module's `sha256Hex ::` at its
+line and exempts `Digest.hs`. The full `cabal test all` from `core/` passed.
+
 #### Remaining Work
 
-- Add the single-definition absence guard and its fixture case described under Validation to
-  `core/hostbootstrap-core/test/PortabilitySpec.hs`.
+None.
 
 ### Sprint 25.25: Interpreter text lives only in the guest bootstrap [Planned]
 
@@ -1411,6 +1426,44 @@ passes only once every lower phase's owed walker deletion has landed.
 
 - Add the walker-absence case and its fixture case to `PortabilitySpec`.
 
+### Sprint 25.28: Source citation policy reads documentation prose [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/DocValidator.hs`,
+`core/hostbootstrap-core/test/DocValidatorSpec.hs`
+**Substrates**: none
+**Docs to update**: `documents/documentation_standards.md`, `DEVELOPMENT_PLAN/rationale.md`
+
+#### Objective
+
+The numbered-phase citation policy applies to documentation prose and source documentation comments.
+Ordinary source identifiers, term applications and runtime string literals retain their code meaning.
+Source classification preserves line positions so a refused comment names its actual location.
+
+#### Deliverables
+
+- The source citation reader classifies documentation comments separately from code and runtime literals;
+  Markdown prose retains the named-phase-link rule.
+- The source path uses that classification before the numbered-reference check, with one owned lexical
+  policy and accurate source-line diagnostics.
+- Positive and negative controls distinguish real prose citations, comment markers inside strings and
+  actual source applications such as `completePreparedPhaseTransition phase 5`.
+
+#### Validation
+
+`DocValidatorSpec` carries cases for an ordinary Haskell term application and runtime literal containing
+the same words, both accepted; a real documentation comment with a bare numbered citation, refused at
+its actual line; a named owning-phase link, accepted; and quoted comment markers, nested Haskell comments
+and Python source comments classified according to the same documentation policy. The real tree and all
+four host static commands pass.
+
+#### Remaining Work
+
+- `phaseReferences` currently scans every source line as prose, so a legal term application whose local
+  binder is named `phase` followed by an integer is rejected as a phase citation. Classify source prose
+  before applying `hasNumberedPhaseReference`, preserve the actual comment refusals and line numbers,
+  add the named controls and rationale, and run the complete host static gate.
+
 ## Remaining Work
 
 - Sprint 25.4: the reachability page counts its three exposure mints.
@@ -1429,12 +1482,12 @@ passes only once every lower phase's owed walker deletion has landed.
 - Sprint 25.22: Done-sprint Validation citations resolve to existing specs and cases.
 - Sprint 25.23: the fenced-`haskell` ban, enforced, with the refused blocks among the 15 existing fences
   converted.
-- Sprint 25.24: a `PortabilitySpec` guard keeps `HostBootstrap.Digest` the only module defining a SHA-256 or
-  framing helper.
 - Sprint 25.25: an `EffectSpec` guard holds interpreter tokens to the guest-bootstrap module and a named
   non-invocation list.
 - Sprint 25.26: a `PortabilitySpec` guard fails when a CPP region in a test source carries a case.
 - Sprint 25.27: a `PortabilitySpec` guard keeps `SourceGuard` the only test module that walks a source tree.
+- Sprint 25.28: source citation checks distinguish documentation comments from code and runtime literals,
+  with correct line diagnostics.
 
 ## Documentation Requirements
 

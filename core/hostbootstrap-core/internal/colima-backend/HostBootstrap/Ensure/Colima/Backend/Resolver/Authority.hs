@@ -2,13 +2,11 @@ module HostBootstrap.Ensure.Colima.Backend.Resolver.Authority (
     TrustedAppleToolchain (..),
     TrustedAppleBrew (..),
     TrustedResolverResult (..),
-    trustedApplePythonPath,
     trustedAppleColimaPath,
     trustedAppleDockerPath,
     trustedAppleLimaPath,
     trustedAppleHelperPath,
     trustedAppleToolchainFingerprint,
-    trustedAppleBrewPythonPath,
     trustedAppleBrewPath,
     trustedAppleBrewHelperPath,
 )
@@ -29,8 +27,6 @@ data TrustedAppleToolchain
         !TrustedToolIdentity
         !FilePath
         !TrustedToolIdentity
-        !FilePath
-        !TrustedToolIdentity
         !String
         ![TrustedDirectoryBinding]
     deriving (Eq, Show)
@@ -38,8 +34,6 @@ data TrustedAppleToolchain
 data TrustedAppleBrew
     = TrustedAppleBrew
         !FilePath
-        !FilePath
-        !TrustedToolIdentity
         !FilePath
         !TrustedToolIdentity
         !String
@@ -52,20 +46,17 @@ data TrustedResolverResult
     | TrustedResolverUnsupported String
     deriving (Eq, Show)
 
-trustedApplePythonPath :: TrustedAppleToolchain -> FilePath
-trustedApplePythonPath (TrustedAppleToolchain _ path _ _ _ _ _ _ _ _ _) = path
-
 trustedAppleColimaPath :: TrustedAppleToolchain -> FilePath
-trustedAppleColimaPath (TrustedAppleToolchain _ _ _ path _ _ _ _ _ _ _) = path
+trustedAppleColimaPath (TrustedAppleToolchain _ path _ _ _ _ _ _ _) = path
 
 trustedAppleDockerPath :: TrustedAppleToolchain -> FilePath
-trustedAppleDockerPath (TrustedAppleToolchain _ _ _ _ _ path _ _ _ _ _) = path
+trustedAppleDockerPath (TrustedAppleToolchain _ _ _ path _ _ _ _ _) = path
 
 trustedAppleLimaPath :: TrustedAppleToolchain -> FilePath
-trustedAppleLimaPath (TrustedAppleToolchain _ _ _ _ _ _ _ path _ _ _) = path
+trustedAppleLimaPath (TrustedAppleToolchain _ _ _ _ _ path _ _ _) = path
 
 trustedAppleHelperPath :: TrustedAppleToolchain -> String
-trustedAppleHelperPath (TrustedAppleToolchain _ _ _ _ _ _ _ _ _ path _) = path
+trustedAppleHelperPath (TrustedAppleToolchain _ _ _ _ _ _ _ path _) = path
 
 -- The netstring-framed fingerprint binds every executable and ordered helper
 -- directory identity into durable origin provenance without exposing either
@@ -74,8 +65,6 @@ trustedAppleToolchainFingerprint :: TrustedAppleToolchain -> String
 trustedAppleToolchainFingerprint
     ( TrustedAppleToolchain
             effectiveHome
-            pythonPath
-            pythonIdentity
             colimaPath
             colimaIdentity
             dockerPath
@@ -87,9 +76,7 @@ trustedAppleToolchainFingerprint
         ) =
         concatMap
             fingerprintField
-            ( ["trusted-apple-toolchain-v1", "effective-home", effectiveHome, "python", pythonPath]
-                ++ identityFields pythonIdentity
-                ++ ["colima", colimaPath]
+            ( ["trusted-apple-toolchain-v2", "effective-home", effectiveHome, "colima", colimaPath]
                 ++ identityFields colimaIdentity
                 ++ ["docker", dockerPath]
                 ++ identityFields dockerIdentity
@@ -103,11 +90,8 @@ trustedAppleToolchainFingerprint
 fingerprintField :: String -> String
 fingerprintField value = show (length value) ++ ":" ++ value ++ ","
 
-trustedAppleBrewPythonPath :: TrustedAppleBrew -> FilePath
-trustedAppleBrewPythonPath (TrustedAppleBrew _ path _ _ _ _ _) = path
-
 trustedAppleBrewPath :: TrustedAppleBrew -> FilePath
-trustedAppleBrewPath (TrustedAppleBrew _ _ _ path _ _ _) = path
+trustedAppleBrewPath (TrustedAppleBrew _ path _ _ _) = path
 
 trustedAppleBrewHelperPath :: TrustedAppleBrew -> String
-trustedAppleBrewHelperPath (TrustedAppleBrew _ _ _ _ _ path _) = path
+trustedAppleBrewHelperPath (TrustedAppleBrew _ _ _ path _) = path

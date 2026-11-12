@@ -17,7 +17,7 @@ import HostBootstrap.Lift (localContext)
 import HostBootstrap.ProjectPlan (PlannedResource, ProviderResource)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Readiness
-import HostBootstrap.Readiness.Kernel (withBackendProbe)
+import HostBootstrap.Readiness.Kernel (BackendProbeKind (..), backendProbeKeyKind, backendProbeKind, withBackendProbe)
 import qualified HostBootstrap.Reconcile as Reconcile
 import HostBootstrap.Step (
     StepFrame (StepFrame),
@@ -41,6 +41,8 @@ tests =
         [ testGroup "validated policies" policyCases
         , testGroup "total pollStep" pollStepCases
         , testGroup "bounded IO polling" pollingCases
+        , testCase "backend keys identify every distinct readiness kind" backendProbeKindsCase
+        , testCase "indexed readiness retains its backend readiness kind" backendProbeRetainsKindCase
         , testCase "indexed readiness retains versions reported at await time" indexedReadinessCase
         , testGroup "zero reported versions" invalidIndexedProbeCases
         , testGroup "managed dependency readiness" dependencyReadinessCases
@@ -159,6 +161,33 @@ runScript observations = do
     remaining <- readIORef script
     pure (result, probeCount, recoveryCount, remaining)
 
+backendProbeKindsCase :: IO ()
+backendProbeKindsCase =
+    [ backendProbeKeyKind ProviderRespondingProbe
+    , backendProbeKeyKind ProviderNetworkProbe
+    , backendProbeKeyKind DurableShareProbe
+    , backendProbeKeyKind DockerDaemonProbe
+    , backendProbeKeyKind ObjectStoreRolloutProbe
+    , backendProbeKeyKind RegistryServingProbe
+    , backendProbeKeyKind ClusterApiProbe
+    , backendProbeKeyKind GpuPluginProbe
+    ]
+        @?= [ ProviderRespondingKind
+            , ProviderNetworkKind
+            , DurableShareKind
+            , DockerDaemonKind
+            , ObjectStoreRolloutKind
+            , RegistryServingKind
+            , ClusterApiKind
+            , GpuPluginKind
+            ]
+
+backendProbeRetainsKindCase :: IO ()
+backendProbeRetainsKindCase =
+    runPlannedProbe $ \planned ->
+        withBackendProbe ProviderRespondingProbe planned (const (pure (ProbeReady (BackendReady 1 2 3 ())))) $ \probe ->
+            backendProbeKind probe @?= ProviderRespondingKind
+
 indexedReadinessCase :: IO ()
 indexedReadinessCase =
     runPlannedProbe $ \planned -> do
@@ -247,8 +276,10 @@ runDependencyProbe observation =
     Fixture.withFixtureProjectPlan dependentTestPlan $ \projectPlan -> do
         providerKey <- requireOperationKey "core:deploy-vm" projectPlan
         shareKey <- requireOperationKey "core:copy-source" projectPlan
-        let plan = Reconcile.lifecyclePlanFromProjectPlan projectPlan
-        providerGate <- gateFor (Reconcile.lifecyclePlanDigest plan) "core:deploy-vm"
+        let plan = projectPlan
+            digest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
+        providerGate <- gateFor digest "core:deploy-vm"
+        shareGate <- gateFor digest "core:copy-source"
         case ProjectPlan.withPlannedResourceOfKind
             projectPlan
             ProjectPlan.ProviderResourceKind
@@ -271,13 +302,26 @@ runDependencyProbe observation =
                                                     provider
                                                     (const (pure observation))
                                                     ( \probe ->
-                                                        fmap (fmap Reconcile.operationPreconditionKeys) $
-                                                            Reconcile.withOperationPreconditions
+                                                        fmap joinReconcile $
+                                                            Reconcile.withPreparedOperation
                                                                 descriptor
                                                                 ( Reconcile.withDependencySnapshotEntry
                                                                     managed
                                                                     (planDependencyProbe zeroDelayPolicy "provider" managed probe fixtureHostConfig)
                                                                     Reconcile.emptyDependencySnapshot
+                                                                )
+                                                                shareGate
+                                                                ( \prepared preconditions -> do
+                                                                    reconciled <-
+                                                                        Reconcile.completeReconcile
+                                                                            shareHandle
+                                                                            prepared
+                                                                            preconditions
+                                                                            (Reconcile.BackendCreated 11)
+                                                                    Reconcile.withReconcileResult
+                                                                        reconciled
+                                                                        (\_ _ _ -> Right (Reconcile.operationDescriptorDependencies descriptor))
+                                                                        (\_ _ -> Left (Reconcile.Failure (Reconcile.FailureDetail "test share" "unexpected foreign share" Reconcile.DoNotRetry)))
                                                                 )
                                                     )
                     )
@@ -288,7 +332,7 @@ runDependencyProbe observation =
 
 withManagedProvider ::
     PreparedGate ->
-    Reconcile.LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     (Reconcile.ResourceHandle scope planId providerId ProviderResource Reconcile.Managed Reconcile.Provisioned -> result) ->
     Either Reconcile.ReconcileError result
@@ -296,9 +340,8 @@ withManagedProvider gate plan planned consume =
     joinReconcile $
         Reconcile.withObservedPlannedResource plan planned 5 7 $ \observed -> do
             descriptor <- Reconcile.plannedOperation plan planned observed "provider:create"
-            preconditionSet <- Reconcile.zeroDependencyPreconditions descriptor
             joinReconcile $
-                Reconcile.withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions -> do
+                Reconcile.withPreparedZeroDependencyOperation descriptor gate $ \prepared preconditions -> do
                     reconciled <- Reconcile.completeReconcile observed prepared preconditions (Reconcile.BackendCreated 5)
                     Reconcile.withReconcileResult
                         reconciled

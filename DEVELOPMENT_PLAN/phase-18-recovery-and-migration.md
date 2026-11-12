@@ -22,7 +22,7 @@ exactly what an operator must resolve rather than deleting on a guess.
 ### Sprint 18.1: The abandoned-run sweep [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`
@@ -85,7 +85,7 @@ that the mode and lease records are unchanged. `cabal test all` from `core/` pas
 ### Sprint 18.2: Reopening a bound abandoned run [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -146,8 +146,8 @@ data-root generation and generated config are gone, and its lease reads `LeaseCl
 ### Sprint 18.3: The durable migration barrier [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -198,7 +198,7 @@ fixture set up; and `cabal test all` from `core/` passes.
 ### Sprint 18.4: Verified resource-record bundles [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
 **Substrates**: linux-cpu
@@ -244,7 +244,7 @@ record frame key is not UTF-8"); and `cabal test all` from `core/` passes.
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -299,9 +299,9 @@ and asserts the out-of-view `Conflict` (not "resource record frame key is empty"
 ### Sprint 18.6: The complete resource-record set [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -380,8 +380,8 @@ and duplicate-member refusal cases for `canonicalPlanResourceMembersKernel` (a s
 ### Sprint 18.7: Broker-bound resource rehydration [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/ResourceRecordSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -446,8 +446,8 @@ and released branches fails it. `cabal test all` from `core/` passes.
 ### Sprint 18.8: Scope-correct prospective migration [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -496,8 +496,8 @@ mismatch case asserts the exact draft/config mismatch reason inside `ModeInvalid
 ### Sprint 18.9: Configful completed-plan reconstruction [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -549,9 +549,9 @@ accepting any `Left`. `withCompletedMigrationProjectPlanKernel` quantifies `plan
 ### Sprint 18.10: Complete-set migration freeze [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -615,8 +615,8 @@ in both the `LeaseBound` and the idempotent `LeaseFrozen` branch; and `cabal tes
 ### Sprint 18.11: Frozen migration recovery [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -708,8 +708,8 @@ case targets the recovery-epoch comparison, which the shared `brokerGeneration` 
 ### Sprint 18.12: Complete-set migration commit [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -781,8 +781,8 @@ runs, as does a lease whose epoch differs from the durable lease's. `cabal test 
 ### Sprint 18.13: Complete-set migrated activation [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -859,9 +859,9 @@ The sprint closes when these cases exist and pass, and `cabal test all` from `co
 ### Sprint 18.14: Snapshot-derived recovery frames [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/RecoverySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -942,9 +942,9 @@ adapter revision, and constructor-forging cases refuse or eliminate as required.
 ### Sprint 18.15: Recovery-wire boundary admission [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs`,
 `core/hostbootstrap-core/test/RecoverySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -1009,8 +1009,8 @@ compile-fail fixtures keep config grants and recovery grants non-interchangeable
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -1106,7 +1106,7 @@ all 2,359 tests on linux-cpu, including governed documentation validation.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -1167,8 +1167,8 @@ asserts `productionInvocationCompletedRun`; and `cabal test all` from `core/` pa
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Closure.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Closure.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: linux-cpu
@@ -1342,7 +1342,7 @@ non-empty or the producer has exited (reporting its exit code), with a longer bu
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
 
@@ -1384,7 +1384,7 @@ prospective record is written. `cabal test all` from `core/` passes.
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -1449,7 +1449,7 @@ revision-kind records unchanged. `cabal test all` from `core/` passes.
 ### Sprint 18.22: Harness recovery admits only harness lease states [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Substrates**: linux-cpu
@@ -1505,7 +1505,7 @@ unchanged. `cabal test all` from `core/` passes.
 ### Sprint 18.23: Invocation dispositions are write-once [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`
 **Substrates**: linux-cpu
@@ -1550,7 +1550,7 @@ its own epoch") reach that state through `authorizeHarnessClose`. `cabal test al
 ### Sprint 18.24: Recorded-session recovery evidence is entry-bound [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu
@@ -1619,9 +1619,9 @@ failing to type-check. `cabal test all` from `core/` passes.
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/test/CompileFailSpec.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Recovery.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 

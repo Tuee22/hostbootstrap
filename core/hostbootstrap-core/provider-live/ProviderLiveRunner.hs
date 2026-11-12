@@ -16,11 +16,13 @@ module ProviderLiveRunner (
 import Control.Exception (
     SomeException,
     displayException,
+    mask,
     try,
  )
 import Control.Monad (unless, when)
 import Data.Char (isAlphaNum, isSpace, toLower)
-import Data.List (dropWhileEnd, isPrefixOf, isSuffixOf, stripPrefix)
+import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.List (dropWhileEnd, isInfixOf, isPrefixOf, isSuffixOf, stripPrefix)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import HostBootstrap.Effect.Interpreter (resolveLaunch)
@@ -35,13 +37,13 @@ import HostBootstrap.HostTool (
     absExePath,
  )
 import HostBootstrap.Incus (IncusVM (IncusVM))
+import HostBootstrap.Lima (LimaVM (LimaVM))
 import HostBootstrap.Ownership.Object (ownershipFaultMessage)
 import HostBootstrap.Ownership.Primitive (
     OwnershipPrimitive (rowCreateFile, rowSyncParent),
     withOwnershipRow,
  )
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
-import HostBootstrap.Lima (LimaVM (LimaVM))
 import HostBootstrap.Reconcile (
     FailureDetail (FailureDetail),
     ReconcileError (Failure),
@@ -82,7 +84,7 @@ import System.Directory (
 import System.Environment (getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess)
 import System.FilePath (takeFileName, (</>))
-import System.IO (hPutStrLn, stderr)
+import System.IO (IOMode (ReadMode), hPutStrLn, stderr, withBinaryFile)
 import System.IO.Temp (createTempDirectory)
 import qualified System.Info as Info
 
@@ -95,6 +97,17 @@ confirmationValue = "incus-direct-host"
 managedPrefix :: String
 managedPrefix = "hostbootstrap-provider-live-"
 
+{- | Where the shipped guest transaction re-invokes this binary inside the VM.
+
+@shipOwnedTransaction@ crosses into the guest frame and runs the project binary
+there, so the alias backend retains an in-VM path alongside the host one. The
+live runner installs its current executable through the admitted provider's
+file API after the exact VM and durable share are ready, and this path names
+that live-only fixture executable in the guest filesystem.
+It is the one value in this fixture that the host build cannot verify — a wrong
+path is observed only as a shipped-transaction failure on a native
+Linux/KVM/Incus host, which is exactly what the owning phase's live gate is for.
+-}
 liveGuestSelfPath :: FilePath
 liveGuestSelfPath = "/usr/local/bin/hostbootstrap-provider-live"
 
@@ -107,20 +120,42 @@ directEgressImage = "docker.io/library/alpine:3.22"
 runProviderLiveGate :: IO ()
 runProviderLiveGate = do
     requirePlatformAndConfirmation
-    root <- createTempDirectory "/var/tmp" managedPrefix
-    let token = liveToken root
-        vmName = managedPrefix ++ token
-    outcome <- try @SomeException (runConfirmedGate root token vmName)
-    case outcome of
-        Right () ->
-            putStrLn
-                "provider-live: PASS — prepared Incus lifecycle/share/alias/restart/delete and mutation-free Direct refusal"
-        Left exception -> do
-            hPutStrLn stderr (cleanupRemedy root vmName (displayException exception))
-            failGate ("provider-live failed: " ++ displayException exception)
+    config <- buildHostConfig (Substrate LinuxCpu Amd64)
+    putStrLn "provider-live: preflight native Linux/x86_64 Incus and KVM"
+    requireIncusPreflight config
+    intentPublished <- newIORef False
+    mask $ \restore -> do
+        root <- createTempDirectory "/var/tmp" managedPrefix
+        let token = liveToken root
+            vmName = managedPrefix ++ token
+        outcome <- try @SomeException (restore (runConfirmedGate config (writeIORef intentPublished True) root token vmName))
+        case outcome of
+            Right () ->
+                putStrLn
+                    "provider-live: PASS — prepared Incus lifecycle/share/alias/restart/delete and mutation-free Direct refusal"
+            Left exception -> do
+                published <- readIORef intentPublished
+                if published
+                    then do
+                        hPutStrLn stderr (cleanupRemedy root vmName (displayException exception))
+                        failGate ("provider-live failed: " ++ displayException exception)
+                    else do
+                        cleanup <- try @SomeException (removePathForcibly root)
+                        case cleanup of
+                            Right () ->
+                                failGate ("provider-live setup failed before durable intent: " ++ displayException exception)
+                            Left cleanupFailure ->
+                                failGate
+                                    ( "provider-live setup failed before durable intent: "
+                                        ++ displayException exception
+                                        ++ "; temporary root cleanup failed for "
+                                        ++ root
+                                        ++ ": "
+                                        ++ displayException cleanupFailure
+                                    )
 
-runConfirmedGate :: FilePath -> String -> String -> IO ()
-runConfirmedGate root token vmName = do
+runConfirmedGate :: HostConfig -> IO () -> FilePath -> String -> String -> IO ()
+runConfirmedGate config publishIntent root token vmName = do
     let shareRoot = root </> "share"
         stateRoot = root </> "provider-state"
         incusPlanRoot = root </> "incus-plan"
@@ -134,18 +169,14 @@ runConfirmedGate root token vmName = do
                 managedPrefix
         incusProvider = selectProviderKind ProviderIncus handles
         directProvider = selectProviderKind ProviderDirectHost handles
+    initiallyPresent <- observeIncusPresence config vmName
+    when initiallyPresent $
+        failGate "collision: the generated Incus VM name is already occupied"
     createDirectoryIfMissing True shareRoot
     createDirectoryIfMissing True stateRoot
     createDirectoryIfMissing True incusPlanRoot
     createDirectoryIfMissing True directPlanRoot
     stagedGuestSelf <- stageGuestSelf shareRoot
-    config <- buildHostConfig (Substrate LinuxCpu Amd64)
-
-    putStrLn "provider-live: preflight native Linux/x86_64 Incus and KVM"
-    requireIncusPreflight config
-    initiallyPresent <- observeIncusPresence config vmName
-    when initiallyPresent $
-        failGate ("collision: generated Incus VM already exists: " ++ vmName)
     writeDurableIntent
         root
         ( unlines
@@ -156,6 +187,7 @@ runConfirmedGate root token vmName = do
             , "preflight=absent"
             ]
         )
+    publishIntent
 
     shareSpec <- expectReconcile "validate Incus share" (mkProviderShareSpec shareRoot shareRoot)
     aliasSpec <- expectReconcile "validate guest alias" (mkGuestAliasSpec aliasPath shareRoot)
@@ -237,10 +269,6 @@ installGuestSelf config vmName staged = do
 
 requireIncusPreflight :: HostConfig -> IO ()
 requireIncusPreflight config = do
-    status <- probeIncusProviderStatus config
-    case incusProviderStatusResult status of
-        Left _ -> failGate ("Incus read-only provider preflight is not ready: " ++ show status)
-        Right () -> pure ()
     kvmPresent <- doesPathExist "/dev/kvm"
     kvmReadWrite <-
         if kvmPresent
@@ -248,12 +276,27 @@ requireIncusPreflight config = do
             else pure False
     unless (kvmPresent && kvmReadWrite) $
         failGate "/dev/kvm is absent or is not readable and writable by the invoking user"
+    opened <- try @SomeException (withBinaryFile "/dev/kvm" ReadMode (\_ -> pure ()))
+    case opened of
+        Left exception -> failGate ("/dev/kvm cannot be opened: " ++ displayException exception)
+        Right () -> pure ()
+    status <- probeIncusProviderStatus config
+    case incusProviderStatusResult status of
+        Left _ -> failGate ("Incus read-only provider preflight is not ready: " ++ show status)
+        Right () -> pure ()
 
 verifyOwnedState :: HostConfig -> String -> FilePath -> IO ()
 verifyOwnedState config vmName shareRoot = do
     verifyIncusSizing config vmName
-    state <- requireCommand config Incus ["list", vmName, "--format", "csv", "-c", "s"]
-    assertEqual "Incus managed state" "RUNNING" (trim state)
+    listing <- requireCommand config Incus ["list", vmName, "--format", "csv", "-c", "ns"]
+    let states =
+            [ trim (drop 1 state)
+            | row <- lines listing
+            , let (name, state) = break (== ',') (trim row)
+            , name == vmName
+            , not (null state)
+            ]
+    assertEqual "Incus managed state" ["RUNNING"] states
     assertAliasOriginState shareRoot 1
 
 verifyIncusSizing :: HostConfig -> String -> IO ()
@@ -325,7 +368,7 @@ assertAliasOriginState shareRoot expected = do
     present <- doesDirectoryExist recordsDirectory
     entries <- if present then listDirectory recordsDirectory else pure []
     let records = filter (".rec" `isSuffixOf`) entries
-        staging = filter (".prepared-" `isInfix`) entries
+        staging = filter (".rec.tmp-" `isInfixOf`) entries
     assertEqual "host-visible alias origin-record count" expected (length records)
     unless (null staging) $
         failGate ("alias origin staging residue remained: " ++ show staging)
@@ -335,7 +378,7 @@ assertProviderRecordForgotten stateRoot vmName = do
     let records = stateRoot </> "records"
     present <- doesDirectoryExist records
     entries <- if present then listDirectory records else pure []
-    let residue = filter ((vmName ++ ".rec") `isPrefixOf`) entries
+    let residue = filter ((vmName ++ ".") `isPrefixOf`) entries
     unless (null residue) $
         failGate ("provider origin or staging metadata remained: " ++ show residue)
 
@@ -447,13 +490,6 @@ firstDiagnostic out err =
 
 trim :: String -> String
 trim = dropWhile isSpace . dropWhileEnd isSpace
-
-isInfix :: String -> String -> Bool
-isInfix needle haystack = any (needle `isPrefixOf`) (tailsOf haystack)
-
-tailsOf :: [value] -> [[value]]
-tailsOf [] = [[]]
-tailsOf whole@(_ : rest) = whole : tailsOf rest
 
 assertEqual :: (Eq value, Show value) => String -> value -> value -> IO ()
 assertEqual label expected actual =

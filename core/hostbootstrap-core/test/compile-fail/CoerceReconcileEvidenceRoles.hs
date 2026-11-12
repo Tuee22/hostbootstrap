@@ -5,17 +5,12 @@ module CoerceReconcileEvidenceRoles where
 
 import Data.Coerce (coerce)
 import HostBootstrap.Reconcile (
-    LifecyclePlan,
     OperationDescriptor,
     OwnershipReceipt,
     PhaseTransition,
     ReconcileResult,
  )
 
-data LifecycleScopeA
-data LifecycleScopeB
-data LifecyclePlanA
-data LifecyclePlanB
 data ReceiptScope
 data ReceiptPlan
 data ReceiptIdentityA
@@ -44,16 +39,6 @@ data ResultIdentity
 data ResultResource
 data ResultPhaseA
 data ResultPhaseB
-
-coerceLifecycleScope ::
-    LifecyclePlan LifecycleScopeA LifecyclePlanA ->
-    LifecyclePlan LifecycleScopeB LifecyclePlanA
-coerceLifecycleScope = coerce
-
-coerceLifecyclePlan ::
-    LifecyclePlan LifecycleScopeA LifecyclePlanA ->
-    LifecyclePlan LifecycleScopeA LifecyclePlanB
-coerceLifecyclePlan = coerce
 
 coerceReceiptIdentity ::
     OwnershipReceipt ReceiptScope ReceiptPlan ReceiptIdentityA ReceiptResourceA ->

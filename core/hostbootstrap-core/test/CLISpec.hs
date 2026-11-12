@@ -7,18 +7,19 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module CLISpec (runIdentityMismatchProbe, runSchemaFixture, tests) where
+module CLISpec (readOnlyRecordsSupported, runIdentityMismatchProbe, runSchemaFixture, tests) where
 
 import ActivationSpec (withBrokerFor)
-import Control.Exception (bracket, finally, throwIO, try)
-import Control.Monad (filterM)
+import ConditionalCase (conditionalCase)
+import Control.Exception (ErrorCall (ErrorCall), IOException, bracket, finally, throwIO, try)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (sort)
+import Control.Monad (forM_, when)
+import Data.List (isInfixOf, isPrefixOf, sort)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
@@ -27,8 +28,9 @@ import Data.Word (Word64)
 import Expect (expectRight)
 import qualified Fixture
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
-import HostBootstrap.Activation (ActivationManifest (..), activationSecretDigestFromBytes, activationVerificationKeyBytes)
+import HostBootstrap.Activation (ActivationManifestInput (..), activationManifest, activationSecretDigestFromBytes, activationVerificationKeyBytes)
 import HostBootstrap.Authority (
+    AuthorityError (AuthorityInvalidIdentity),
     InstalledProjectIdentity,
     authorityErrorMessage,
     installedProjectName,
@@ -52,14 +54,15 @@ import HostBootstrap.CLI (
     projectStepPlan,
  )
 import qualified HostBootstrap.CLI as CLI
+import qualified Dhall
 import HostBootstrap.Command (coreCommandNames)
-import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, ProjectCfg (withProductionProjectCodec), configInput, projectCodecSpecDigest, pureConfigAssembly)
+import HostBootstrap.Config.Class (AssemblyRequest (..), ConfigAssembly, ExistingOutputPolicy (OverwriteExistingOutput), ProjectCfg (withHarnessProjectCodec, withProductionProjectCodec), configInput, projectCodecSpecDigest, pureConfigAssembly)
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope), inspectLocalContext, localCurrentFrame, renderValidatedServiceRequest)
 import qualified HostBootstrap.Config.Schema as Schema
 import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ContextKind (HostOrchestrator))
 import qualified HostBootstrap.Context as Context
-import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactOf, autoCodecWitness, requireCodecWitness)
+import HostBootstrap.Dhall.Gen (ConfigArtifact, artifactName, artifactOf, autoCodecWitness, coreArtifacts, requireCodecWitness)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness (
     AssertionPhase (AfterRestart, BeforeRestart),
@@ -92,6 +95,7 @@ import HostBootstrap.Lifecycle.Mode (
  )
 import HostBootstrap.Lift.Context (IncusVM (IncusVM), emptyVMStack, inVM, vmContext)
 import HostBootstrap.ProjectPlan (
+    PlanError (InvalidProjectPlan),
     ProjectPlan,
     renderSnapshot,
     stablePlanSnapshotBytes,
@@ -134,6 +138,7 @@ import HostBootstrap.Protected (
     recordVersionWord,
     tryProtectedEntry,
     withProtectedEntry,
+    withRunLiveness,
  )
 import HostBootstrap.RoleLifecycle (
     DeclaredEffects (NoEffects, WithEffect),
@@ -167,15 +172,20 @@ import HostBootstrap.Service.Program (
     serve,
     withReadyServiceHandles,
  )
-import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
+import HostBootstrap.Step (ProjectStepId, ReversePolicy (PreserveOnReverse, ProjectManagedReverse), Step, StepFrame (..), StepObservation (..), StepPlanError (DuplicateStepIdentities, EmptyStepPlan), TeardownAction (DeleteFrame, StopFrame), TeardownOutcome (TeardownReleased), deployVMStep, descendsVia, projectStep, projectStepId, reversedBy, stepLabel, stepPlanSteps)
 import SourceGuard (repoRelativePath)
-import System.Directory (doesDirectoryExist, doesFileExist, doesPathExist, getCurrentDirectory, listDirectory, removeFile, withCurrentDirectory)
+import qualified SourceGuard
+import System.Directory (Permissions (writable), createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getFileSize, doesPathExist, getCurrentDirectory, getPermissions, listDirectory, removeFile, setPermissions, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
+import qualified System.Environment.Blank as BlankEnvironment
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die)
-import System.FilePath (takeExtension, (</>))
-import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hSeek, stderr)
+import System.FilePath (takeDirectory, (</>))
+import System.Info (os)
+import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hGetLine, hSeek, openBinaryTempFile, stderr, stdout)
 import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
-import System.Process (readProcessWithExitCode)
+import System.IO.Unsafe (unsafePerformIO)
+import System.IO.Error (isPermissionError)
+import System.Process (CreateProcess (std_in, std_out), StdStream (CreatePipe), createProcess, proc, readProcessWithExitCode, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -296,6 +306,38 @@ tests =
                 (addSteps sampleChain (builderWith emptySuiteFixture (pure ()) [])) of
                 Left EmptyProjectTestSuite -> pure ()
                 other -> assertFailure ("expected EmptyProjectTestSuite, got " ++ either show (const "Right ProjectSpec") other)
+        , testCase "project specs reject duplicate test case ids exactly" $ do
+            let duplicateId = fixtureCaseId "duplicate"
+                suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ _ -> pure ())
+                        [Case duplicateId AssertOnce, Case duplicateId AssertOnce]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+            (() <$ finalizeProjectSpec (addSteps sampleChain (builderWith suite (pure ()) [])))
+                @?= Left (DuplicateProjectCaseIds ["duplicate"])
+        , testCase "project artifacts cannot shadow a genuine core artifact" $
+            case coreArtifacts of
+                coreArtifact : _ -> do
+                    let builder =
+                            addArtifacts [coreArtifact] $
+                                addSteps sampleChain $
+                                    builderWith passingSuite (pure ()) []
+                    (() <$ finalizeProjectSpec builder)
+                        @?= Left (CoreArtifactShadowing [T.unpack (artifactName coreArtifact)])
+                [] -> assertFailure "the core artifact registry must supply the shadowing subject"
+        , testCase "project specs reject duplicate project artifact names exactly" $ do
+            let budgetCodec = requireCodecWitness "CLISpec.DuplicateBudget" (autoCodecWitness @V.Budget)
+                firstArtifact = artifactOf "duplicate-project-artifact" budgetCodec (V.Budget 1 2 3)
+                secondArtifact = artifactOf "duplicate-project-artifact" budgetCodec (V.Budget 2 3 4)
+                builder =
+                    addArtifacts [secondArtifact] $
+                        addArtifacts [firstArtifact] $
+                            addSteps sampleChain $
+                                builderWith passingSuite (pure ()) []
+            (() <$ finalizeProjectSpec builder)
+                @?= Left (DuplicateProjectArtifacts ["duplicate-project-artifact"])
         , testCase "real project specs reject a missing forward-child projector" $
             case finalizeProjectSpec
                 ( addSteps sampleChain $
@@ -391,6 +433,40 @@ tests =
             case finalizeProjectSpec (builderWith passingSuite (pure ()) []) of
                 Left MissingStepPlan -> pure ()
                 other -> assertFailure ("expected MissingStepPlan, got " ++ either show (const "Right ProjectSpec") other)
+        , testCase "a config-dependent fragment that yields no step refuses concrete projection" $ do
+            let fragment :: FixtureFragment
+                fragment root cfg
+                    | Fixture.cpu (Fixture.resources cfg) == 4 = []
+                    | otherwise = sampleChain root cfg
+            spec <- expectRight (finalizeProjectSpec (addSteps fragment (builderWith passingSuite (pure ()) [])))
+            withProductionProjectCodec @Fixture.ProjectConfig @Fixture.FixtureProject $ \baseCodec ->
+                withFinalizedProjectSpec
+                    ProductionScope
+                    baseCodec
+                    emptyServiceRegistry
+                    (projectStepPlan spec)
+                    Fixture.refusingForwardChildPlan
+                    ( \finalizedSpec ->
+                        withSystemTempDirectory "hostbootstrap-cli-empty-fragment" $ \directory -> do
+                            let value = Fixture.defaultProjectConfig "cli-empty-fragment" (T.pack directory) HostOrchestrator
+                            Fixture.cpu (Fixture.resources value) @?= 4
+                            rooted <-
+                                withCanonicalProjectRoot (directory </> "fixture.dhall") directory $ \root -> do
+                                    validated <-
+                                        Schema.withValidatedConfig
+                                            (finalizedProjectCodec finalizedSpec)
+                                            value
+                                            ( \_wire config ->
+                                                (() <$ projectPlanDrafts finalizedSpec root config)
+                                                    @?= Left (InvalidProjectPlan EmptyStepPlan)
+                                            )
+                                    either assertFailure pure validated
+                                    nonempty <-
+                                        expectRight $
+                                            projectStepPlan spec root value{Fixture.resources = Fixture.Resources 5 "8GiB" "20GiB"}
+                                    map stepLabel (NonEmpty.toList (stepPlanSteps nonempty)) @?= ["launch the VM"]
+                            either (assertFailure . show) pure rooted
+                    )
         , testCase "independent step fragments append in exact declaration order" $ do
             let first :: FixtureFragment
                 first _ _ =
@@ -482,20 +558,37 @@ tests =
                     try (withArgs ["check-code"] (runHostBootstrapCLI (specWith passingSuite (die "seeded check failure") []))) ::
                         IO (Either ExitCode ())
                 result @?= Left (ExitFailure 1)
-        , testCase "test run fails fast without a test.dhall" $
-            withIsolatedHarnessState $ withProjectConfig $ do
-                result <-
-                    try (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
-                        IO (Either ExitCode ())
-                result @?= Left (ExitFailure 1)
+        , testCase "test run fails fast without a test.dhall" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            -- No sibling project config and no test config: the documented first state.
+            forM_ [cfgPath, testPath] $ \stale -> doesFileExist stale >>= \present -> when present (removeFile stale)
+            let storeRoot = stateRoot </> ".hostbootstrap" </> "authority" </> T.unpack projectName
+            before <- snapshotTree storeRoot
+            (result, diagnostic) <-
+                captureCLIExitStderr
+                    (withArgs ["test", "run", "all"] (runHostBootstrapCLI (specWithHarnessContext stateRoot projectName passingSuite (pure ()) [])))
+            result @?= Left (ExitFailure 1)
+            assertBool
+                ("the refusal names the missing test config, saw " ++ T.unpack diagnostic)
+                (T.pack ("test run: missing " ++ testPath) `T.isInfixOf` diagnostic && T.pack "test init` first" `T.isInfixOf` diagnostic)
+            snapshotTree storeRoot >>= (@?= before)
         , testCase "test init writes a test config without a pre-existing project config" $ do
             projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
+            doesFileExist cfgPath >>= \present -> when present (removeFile cfgPath)
+            doesFileExist cfgPath >>= (@?= False)
             ( do
                     result <-
                         try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
                             IO (Either ExitCode ())
                     result @?= Right ()
+                    -- test init writes only the test config; it neither reads nor creates the sibling.
+                    doesFileExist testPath >>= (@?= True)
+                    doesFileExist cfgPath >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "test init refuses an existing test config unless replacement is requested" $ do
@@ -505,18 +598,22 @@ tests =
                 initWith args =
                     try (withArgs ("test" : "init" : args) (runHostBootstrapCLI spec)) ::
                         IO (Either ExitCode ())
+                refusedInit = do
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs ["test", "init"] (runHostBootstrapCLI spec))
+                    result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the file and the flag, saw " ++ T.unpack diagnostic)
+                        (T.pack (testPath ++ " already exists; pass --replace to overwrite it") `T.isInfixOf` diagnostic)
             ( do
                     first <- initWith []
                     first @?= Right ()
                     original <- TIO.readFile testPath
                     -- A second plain `init` must not silently replace what the
                     -- operator may have edited.
-                    refused <- initWith []
-                    refused @?= Left (ExitFailure 1)
+                    refusedInit
                     TIO.writeFile testPath (original <> "-- operator edit\n")
                     edited <- TIO.readFile testPath
-                    stillThere <- initWith []
-                    stillThere @?= Left (ExitFailure 1)
+                    refusedInit
                     TIO.readFile testPath >>= (@?= edited)
                     -- Explicit replacement is the only route that overwrites.
                     replaced <- initWith ["--replace"]
@@ -524,26 +621,91 @@ tests =
                     TIO.readFile testPath >>= (@?= original)
                 )
                 `finally` removeFile testPath
+        , testCase "test config writer resolves only the installed project's sibling" $ do
+            projectName <- executableProjectName
+            expected <- Schema.siblingTestConfigPath projectName
+            executable <- getExecutablePath
+            written <-
+                withInstalledProjectIdentity projectName $ \project ->
+                    Schema.testConfigWriteFor project Fixture.testConfigCodec (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB"))
+            request <- either (assertFailure . show) pure written
+            Schema.testConfigWritePath request @?= expected
+            takeDirectory (Schema.testConfigWritePath request) @?= takeDirectory executable
+            rejected <- withInstalledProjectIdentity "../escape" (\_ -> pure ())
+            case rejected of
+                Left (AuthorityInvalidIdentity _) -> pure ()
+                other -> assertFailure ("an escaping name was not refused: " ++ show other)
+        , testCase "test config replace leaves the prior file intact when rendering fails" $ do
+            projectName <- executableProjectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            let spec = specWith passingSuite (pure ()) []
+                aborted = (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")){Fixture.testResources = error "render aborted"}
+            ( do
+                    initialized <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    original <- ByteString.readFile testPath
+                    written <-
+                        withInstalledProjectIdentity projectName $ \project ->
+                            Schema.testConfigWriteFor project Fixture.testConfigCodec aborted
+                    request <- either (assertFailure . show) pure written
+                    thrown <- try (Schema.installTestConfig Schema.ReplaceExistingTestConfig request)
+                    case thrown of
+                        Left (ErrorCall message) -> message @?= "render aborted"
+                        Right outcome -> assertFailure ("a failing render was published: " ++ show outcome)
+                    ByteString.readFile testPath >>= (@?= original)
+                    siblings <- listDirectory (takeDirectory testPath)
+                    filter (".hostbootstrap-config.tmp" `isPrefixOf`) siblings @?= []
+                )
+                `finally` removeFile testPath
+        , testCase "test config refuse creates nothing when rendering fails" $ do
+            projectName <- executableProjectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            doesFileExist testPath >>= \present -> when present (removeFile testPath)
+            let aborted = (Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")){Fixture.testResources = error "render aborted"}
+            written <-
+                withInstalledProjectIdentity projectName $ \project ->
+                    Schema.testConfigWriteFor project Fixture.testConfigCodec aborted
+            request <- either (assertFailure . show) pure written
+            thrown <- try (Schema.installTestConfig Schema.RefuseExistingTestConfig request)
+            case thrown of
+                Left (ErrorCall message) -> message @?= "render aborted"
+                Right outcome -> assertFailure ("a failing render was published: " ++ show outcome)
+            doesPathExist testPath >>= (@?= False)
+            siblings <- listDirectory (takeDirectory testPath)
+            filter (".hostbootstrap-config.tmp" `isPrefixOf`) siblings @?= []
         , testCase "test init then test run exits non-zero when a case fails (config is generated then removed)" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
             stateRoot <- getCurrentDirectory
-            let spec =
+            presentWhileOpened <- newIORef ([] :: [Bool])
+            assertions <- newIORef (0 :: Int)
+            let observingSuite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ _ -> doesFileExist cfgPath >>= \present -> modifyIORef' presentWhileOpened (<> [present]))
+                        [Case (fixtureCaseId "fails") AssertOnce]
+                        (\_ _ -> modifyIORef' assertions (+ 1) >> pure (Fail "the case asserts a failure"))
+                        (pure ())
+                spec =
                     specWithHarnessContext
                         stateRoot
                         projectName
-                        failingSuite
+                        observingSuite
                         (pure ())
                         []
             ( do
-                    _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
-                            IO (Either ExitCode ())
+                    initialized <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    initialized @?= Right ()
                     result <-
                         try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
                             IO (Either ExitCode ())
                     result @?= Left (ExitFailure 1)
+                    -- The generated config is present each time an assertion environment
+                    -- opens (one per planned variant: default and alternate), the failing
+                    -- assertion ran once per variant, and the config is gone afterwards.
+                    readIORef presentWhileOpened >>= (@?= [True, True])
+                    readIORef assertions >>= (@?= 2)
                     doesFileExist cfgPath >>= (@?= False)
                     -- No sidecar of any shape survives: ownership is the
                     -- protected record the run settles, not a lock directory
@@ -594,7 +756,7 @@ tests =
                             modifyIORef' observed (++ [(generatedConfigPresent, records)])
                             pure ()
                         )
-                        [Case (fixtureCaseId "ok") 1 False AssertOnce]
+                        [Case (fixtureCaseId "ok") AssertOnce]
                         (\_ _ -> pure Pass)
                         ( do
                             generatedConfigPresent <- doesFileExist cfgPath
@@ -718,7 +880,7 @@ tests =
                     TestSuite
                         (pure (Right ()))
                         (\phase _ -> modifyIORef' openedPhases (++ [phase]) >> pure phase)
-                        [Case (fixtureCaseId "survives-restart") 1 False AssertAcrossRestart]
+                        [Case (fixtureCaseId "survives-restart") AssertAcrossRestart]
                         (\phase _ -> modifyIORef' assertedPhases (++ [phase]) >> pure Pass)
                         (pure ())
                 spec =
@@ -872,7 +1034,7 @@ tests =
                     TestSuite
                         (pure (Right ()))
                         (\_ _ -> pure ())
-                        [Case (fixtureCaseId "ok") 1 False AssertOnce]
+                        [Case (fixtureCaseId "ok") AssertOnce]
                         (\_ _ -> pure Pass)
                         (modifyIORef' postReverseChecks (+ 1))
                 spec =
@@ -908,19 +1070,204 @@ tests =
             projectName <- executableProjectName
             cfgPath <- Schema.siblingProjectConfigPath projectName
             testPath <- Schema.siblingTestConfigPath projectName
-            let spec = specWith passingSuite (pure ()) []
+            stateRoot <- getCurrentDirectory
+            opened <- newIORef False
+            let suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ _ -> writeIORef opened True)
+                        [Case (fixtureCaseId "ok") AssertOnce]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+                -- A run that would otherwise succeed, so the refusal is the existing config.
+                spec = specWithHarnessContext stateRoot projectName suite (pure ()) []
             ( do
-                    _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) ::
-                            IO (Either ExitCode ())
+                    initialized <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    initialized @?= Right ()
                     Schema.writeProjectConfigFile
                         Fixture.projectConfigCodec
                         cfgPath
                         (Fixture.defaultProjectConfig projectName "/workspace/demo" HostOrchestrator)
-                    result <-
-                        try (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec)) ::
-                            IO (Either ExitCode ())
+                    before <- ByteString.readFile cfgPath
+                    (result, diagnostic) <- captureCLIExitOutput (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec))
                     result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the existing config, saw " ++ T.unpack diagnostic)
+                        (T.pack ("a production config already exists at " ++ cfgPath ++ "; refusing to overwrite it") `T.isInfixOf` diagnostic)
+                    ByteString.readFile cfgPath >>= (@?= before)
+                    readIORef opened >>= (@?= False)
+                )
+                `finally` (removeFile testPath >> removeFile cfgPath)
+        , testCase "context inspect and context show render the sibling composition and write nothing" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            let cfg = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+                spec = specWith passingSuite (pure ()) []
+                expected = Context.renderComposition (Fixture.context cfg)
+                -- The executable's own directory holds the binary, so its tree is compared by file size.
+                siblingDirectory = takeDirectory cfgPath
+                siblings = do
+                    names <- sort <$> listDirectory siblingDirectory
+                    traverse
+                        ( \name -> do
+                            isFile <- doesFileExist (siblingDirectory </> name)
+                            size <- if isFile then getFileSize (siblingDirectory </> name) else pure (-1)
+                            pure (name, size)
+                        )
+                        names
+            ( do
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec cfgPath cfg
+                    siblingsBefore <- siblings
+                    stateBefore <- snapshotTree (stateRoot </> ".hostbootstrap")
+                    (inspected, inspectedOut) <- captureCLIExitStdout (withArgs ["context", "inspect"] (runHostBootstrapCLI spec))
+                    (shown, shownOut) <- captureCLIExitStdout (withArgs ["context", "show", cfgPath] (runHostBootstrapCLI spec))
+                    inspected @?= Right ()
+                    shown @?= Right ()
+                    -- In-process stdout also carries the test runner's progress line, so the
+                    -- command's output is the exact rendering ending the capture, printed once.
+                    forM_ [("context inspect", inspectedOut), ("context show", shownOut)] $ \(label, output) -> do
+                        assertBool (label ++ " ends with the exact composition, saw " ++ T.unpack output) (T.pack expected `T.isSuffixOf` output)
+                        T.count (T.pack expected) output @?= 1
+                    siblings >>= (@?= siblingsBefore)
+                    snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= stateBefore)
+                )
+                `finally` removeFile cfgPath
+        , testCase "context refuses a service role wire before decoding it" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            let spec = specWith passingSuite (pure ()) []
+                refusal = "holds a service role wire; context renders a full project config"
+                expectRefusal arguments = do
+                    before <- snapshotTree (stateRoot </> ".hostbootstrap")
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs arguments (runHostBootstrapCLI spec))
+                    result @?= Left (ExitFailure 1)
+                    assertBool ("the refusal names the role wire, saw " ++ T.unpack diagnostic) (refusal `T.isInfixOf` diagnostic)
+                    assertBool ("no decoder ran, saw " ++ T.unpack diagnostic) (not ("failed to decode" `T.isInfixOf` diagnostic))
+                    snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= before)
+            withSystemTempDirectory "hostbootstrap-context-role-wire" $ \directory -> do
+                let shown = directory </> "role.dhall"
+                TIO.writeFile shown serviceRoleWireFixture
+                expectRefusal ["context", "show", shown]
+            ( do
+                    TIO.writeFile cfgPath serviceRoleWireFixture
+                    expectRefusal ["context", "inspect"]
+                )
+                `finally` removeFile cfgPath
+        , testCase "context show renders a Harness-written fixture config and asserts no scope" $ withIsolatedHarnessState $ do
+            stateRoot <- getCurrentDirectory
+            Fixture.withFixtureHarnessAuthority $ \project authority ->
+                withSystemTempDirectory "hostbootstrap-context-harness" $ \directory -> do
+                    let file = directory </> "harness.dhall"
+                        cfg = Fixture.defaultProjectConfig (installedProjectName project) "." HostOrchestrator
+                    published <-
+                        withHarnessProjectCodec @Fixture.ProjectConfig
+                            (V.harnessConfigAuthority authority)
+                            (\codec -> Schema.publishScopedProjectConfigFile OverwriteExistingOutput codec file cfg)
+                    published @?= Schema.ConfigPublished
+                    before <- snapshotTree (stateRoot </> ".hostbootstrap")
+                    (result, output) <- captureCLIExitStdout (withArgs ["context", "show", file] (runHostBootstrapCLI (specWith passingSuite (pure ()) [])))
+                    result @?= Right ()
+                    -- Whichever scope's codec wrote the file, the Production reader renders its context.
+                    assertBool
+                        ("context show ends with the written config's composition, saw " ++ T.unpack output)
+                        (T.pack (Context.renderComposition (Fixture.context cfg)) `T.isSuffixOf` output)
+                    snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= before)
+        , testCase "context show names the Production codec when a file does not decode" $ withIsolatedHarnessState $ do
+            stateRoot <- getCurrentDirectory
+            withSystemTempDirectory "hostbootstrap-context-undecodable" $ \directory -> do
+                let file = directory </> "broken.dhall"
+                TIO.writeFile file "{ notAProjectConfig = 1 }"
+                before <- snapshotTree (stateRoot </> ".hostbootstrap")
+                (result, diagnostic) <- captureCLIExitStderr (withArgs ["context", "show", file] (runHostBootstrapCLI (specWith passingSuite (pure ()) [])))
+                result @?= Left (ExitFailure 1)
+                assertBool
+                    ("the refusal names the Production codec, saw " ++ T.unpack diagnostic)
+                    (T.pack ("context: failed to decode " ++ file ++ " with the Production project codec: ") `T.isInfixOf` diagnostic)
+                snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= before)
+        , testCase "context inspect refuses a missing sibling config and writes nothing" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            present <- doesFileExist cfgPath
+            when present (removeFile cfgPath)
+            stateBefore <- snapshotTree (stateRoot </> ".hostbootstrap")
+            (result, diagnostic) <- captureCLIExitStderr (withArgs ["context", "inspect"] (runHostBootstrapCLI (specWith passingSuite (pure ()) [])))
+            result @?= Left (ExitFailure 1)
+            assertBool
+                ("the refusal names the missing config, saw " ++ T.unpack diagnostic)
+                (T.pack ("context: no config at " ++ cfgPath) `T.isInfixOf` diagnostic)
+            snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= stateBefore)
+            doesFileExist cfgPath >>= (@?= False)
+        , testCase "test init refuses an off-root invocation and writes nothing" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            let spec = specWith passingSuite (pure ()) []
+            ( do
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec cfgPath (offRootProjectConfig projectName)
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs ["test", "init"] (runHostBootstrapCLI spec))
+                    result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the current frame, saw " ++ T.unpack diagnostic)
+                        ("test: refusing a non-root invocation: current frame " `T.isInfixOf` diagnostic)
+                    doesFileExist testPath >>= (@?= False)
+                )
+                `finally` (removeFile cfgPath)
+        , testCase "test run refuses an off-root invocation before any lifecycle read" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            stateRoot <- getCurrentDirectory
+            opened <- newIORef False
+            let suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ _ -> writeIORef opened True)
+                        [Case (fixtureCaseId "ok") AssertOnce]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+                spec = specWith suite (pure ()) []
+            ( do
+                    initialized <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec cfgPath (offRootProjectConfig projectName)
+                    before <- snapshotTree (stateRoot </> ".hostbootstrap")
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs ["test", "run", "all"] (runHostBootstrapCLI spec))
+                    result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the current frame, saw " ++ T.unpack diagnostic)
+                        ("test: refusing a non-root invocation: current frame " `T.isInfixOf` diagnostic)
+                    snapshotTree (stateRoot </> ".hostbootstrap") >>= (@?= before)
+                    readIORef opened >>= (@?= False)
+                )
+                `finally` (removeFile testPath >> removeFile cfgPath)
+        , testCase "test init refuses an undecodable sibling config instead of treating it as root" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            ( do
+                    writeFile cfgPath "not a dhall project config"
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs ["test", "init"] (runHostBootstrapCLI (specWith passingSuite (pure ()) [])))
+                    result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the undecodable config, saw " ++ T.unpack diagnostic)
+                        (T.pack ("test: failed to decode " ++ cfgPath) `T.isInfixOf` diagnostic)
+                    doesFileExist testPath >>= (@?= False)
+                )
+                `finally` (removeFile cfgPath)
+        , testCase "test init admits the root frame and the absent config" $ withIsolatedHarnessState $ do
+            projectName <- executableProjectName
+            cfgPath <- Schema.siblingProjectConfigPath projectName
+            testPath <- Schema.siblingTestConfigPath projectName
+            let spec = specWith passingSuite (pure ()) []
+            ( do
+                    absent <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    absent @?= Right ()
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec cfgPath (Fixture.defaultProjectConfig projectName "." HostOrchestrator)
+                    rooted <- try (withArgs ["test", "init", "--replace"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    rooted @?= Right ()
                 )
                 `finally` (removeFile testPath >> removeFile cfgPath)
         , testCase "service schema lists variants without a config" $ do
@@ -929,6 +1276,18 @@ tests =
                 try (withArgs ["service", "schema"] (runHostBootstrapCLI spec)) ::
                     IO (Either ExitCode ())
             result @?= Right ()
+        , testCase "bare init refuses zero CPU without publishing config" $ bareBudgetRefusal ["--cpu", "0"]
+        , testCase "bare init refuses malformed memory without publishing config" $ bareBudgetRefusal ["--memory", "many"]
+        , testCase "bare init retains explicit cluster resources" $
+            withSystemTempDirectory "hostbootstrap-bare-resources" $ \directory ->
+                withCurrentDirectory directory $
+                    withPreservedInitSiblings $ \projectName _ -> do
+                        let output = directory </> "bare.dhall"
+                        (result, _) <- captureCLIExitStderr $ withArgs ["project", "init", "--cpu", "3", "--memory", "3GiB", "--storage", "10GiB", "--output", output] $ CLI.runBareHostBootstrapCLI (T.unpack projectName)
+                        result @?= Right ()
+                        bytes <- ByteString.readFile output
+                        resources <- Dhall.input Dhall.auto ("(" <> TextEncoding.decodeUtf8 bytes <> ").bareResources")
+                        resources @?= Context.ResourceEnvelope 3 "3GiB" "10GiB"
         , testCase "bare context schema command output matches its exact snapshot" $ do
             output <- schemaFixtureOutput "bare"
             assertGolden "context_schema_core.txt" output
@@ -959,6 +1318,8 @@ tests =
                         result @?= Right ()
                         bytes <- ByteString.readFile output
                         assertBool "successful bare init wrote an empty config" (not (ByteString.null bytes))
+                        resources <- Dhall.input Dhall.auto ("(" <> TextEncoding.decodeUtf8 bytes <> ").bareResources")
+                        resources @?= Context.ResourceEnvelope 2 "2GiB" "8GiB"
                         listDirectory directory >>= (@?= ["bare.dhall"])
                         after <- traverse (snapshotInitFile . fst) before
                         assertBool "alternate-output bare init changed an executable sibling or identity file" (after == before)
@@ -973,23 +1334,38 @@ tests =
             assertBool
                 ("the metavariable names a case id, saw " ++ T.unpack output)
                 ("CASE-ID" `T.isInfixOf` output)
+            -- The bare token `all` is a substring of `.dhall`, so pin the exact phrases.
+            assertBool
+                ("the help names the every-case selector, saw " ++ T.unpack output)
+                (T.pack ("or `" ++ allCasesSelector ++ "` for every compiled case") `T.isInfixOf` output)
             assertBool
                 ("the help names the whole-matrix selector, saw " ++ T.unpack output)
-                (T.pack allCasesSelector `T.isInfixOf` output)
+                (T.pack ("or `" ++ allCasesSelector ++ "` for the whole matrix") `T.isInfixOf` output)
             assertBool
                 ("no surface text names a suite, saw " ++ T.unpack output)
                 (not ("SUITE" `T.isInfixOf` output) && not ("suite" `T.isInfixOf` output))
         , testCase "test run refuses an unknown case by naming the compiled set" $ withIsolatedHarnessState $ do
             projectName <- executableProjectName
             testPath <- Schema.siblingTestConfigPath projectName
+            opened <- newIORef False
+            let suite =
+                    TestSuite
+                        (pure (Right ()))
+                        (\_ _ -> writeIORef opened True)
+                        [Case (fixtureCaseId "ok") AssertOnce]
+                        (\_ _ -> pure Pass)
+                        (pure ())
+                spec = specWith suite (pure ()) []
             ( do
-                    _ <-
-                        try (withArgs ["test", "init"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
-                            IO (Either ExitCode ())
-                    result <-
-                        try (withArgs ["test", "run", "no-such-case"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
-                            IO (Either ExitCode ())
+                    initialized <- try (withArgs ["test", "init"] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                    initialized @?= Right ()
+                    (result, diagnostic) <- captureCLIExitStderr (withArgs ["test", "run", "no-such-case"] (runHostBootstrapCLI spec))
                     result @?= Left (ExitFailure 1)
+                    assertBool
+                        ("the refusal names the compiled set, saw " ++ T.unpack diagnostic)
+                        ("unknown test case \"no-such-case\"; available: ok, all" `T.isInfixOf` diagnostic)
+                    -- The refusal precedes any assertion environment.
+                    readIORef opened >>= (@?= False)
                 )
                 `finally` removeFile testPath
         , testCase "service run fails fast on a non-service-role config" $
@@ -1015,6 +1391,20 @@ tests =
                 withArgs ["service", "run"] (runHostBootstrapCLI spec)
             readIORef webRan >>= (@?= False)
             readIORef acceleratorRan >>= (@?= True)
+        , testCase "service run refuses an empty Kubernetes UID before revision files" $
+            assertMeasuredServiceInstanceRefused
+                [ ("HOSTBOOTSTRAP_POD_UID", Just "")
+                , ("HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT", Just "0")
+                , ("HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE", Nothing)
+                ]
+                "service run: activation: the measured Kubernetes pod UID is empty\n"
+        , testCase "service run refuses an empty host nonce before revision files" $
+            assertMeasuredServiceInstanceRefused
+                [ ("HOSTBOOTSTRAP_POD_UID", Nothing)
+                , ("HOSTBOOTSTRAP_CONTAINER_RESTART_COUNT", Nothing)
+                , ("HOSTBOOTSTRAP_SERVICE_INVOCATION_NONCE", Just "")
+                ]
+                "service run: activation: the measured host invocation nonce is empty\n"
         , testCase "service run rejects a legacy positional variant" $
             withServiceProjectConfig $ do
                 let spec = specWithServices (Just "web") [("web", pure ())]
@@ -1082,6 +1472,89 @@ tests =
                 assertRecordCount "acquisition." 0 image
                 assertRecordCount "cursor." 0 image
                 assertRecordCount "invocation." 0 image
+        , testCase "project down on a never-brought-up project names the absent Production mode, not a reverse intent" $
+            withIsolatedProjectConfig $ \paths -> do
+                let spec = finalized (builderWith passingSuite (pure ()) [])
+                (result, diagnostic) <- captureCLIExitStderr (withArgs ["project", "down"] (runHostBootstrapCLI spec))
+                result @?= Left (ExitFailure 1)
+                assertBool ("the refusal names the absent Production mode: " <> T.unpack diagnostic) ("observed absent" `T.isInfixOf` diagnostic)
+                assertBool "the refusal does not claim a reverse intent" (not ("reverse-root intent" `T.isInfixOf` diagnostic))
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                assertRecordCount "reverse-root." 0 image
+        , testCase "project down reports a typed liveness failure while an in-process holder owns the lock file" $
+            withIsolatedProjectConfig $ \paths -> do
+                observed <- newIORef ([] :: [TeardownAction])
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = captureCLIExitStderr (withArgs ["project", verb] (runHostBootstrapCLI spec))
+                _ <- run "up"
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                livenessName <- either (assertFailure . show) pure (mkRecordName (isolatedProjectName paths))
+                store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+                held <- withRunLiveness store livenessName $ run "down"
+                (result, diagnostic) <- either (assertFailure . show) (maybe (assertFailure "the test holder was refused its own liveness") pure) held
+                result @?= Left (ExitFailure 1)
+                assertBool ("the refusal is the typed liveness failure naming the busy lock: " <> T.unpack diagnostic) ("SnapshotLivenessFailure" `T.isInfixOf` diagnostic && "take the run liveness lock" `T.isInfixOf` diagnostic)
+                readIORef observed >>= (@?= [])
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
+        , testCase "project down reports contended liveness while a peer process holds the lock and writes no reverse-root row" $
+            withIsolatedProjectConfig $ \paths -> do
+                observed <- newIORef ([] :: [TeardownAction])
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = captureCLIExitStderr (withArgs ["project", verb] (runHostBootstrapCLI spec))
+                _ <- run "up"
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                self <- getExecutablePath
+                (Just peerInput, Just peerOutput, _, peer) <-
+                    createProcess
+                        (proc self ["--hostbootstrap-liveness-hold-probe", isolatedStoreRoot paths, T.unpack (isolatedProjectName paths)])
+                            { std_in = CreatePipe
+                            , std_out = CreatePipe
+                            }
+                (result, diagnostic) <-
+                    ( do
+                        announced <- hGetLine peerOutput
+                        announced @?= "held"
+                        run "down"
+                    )
+                        `finally` hClose peerInput
+                _ <- waitForProcess peer
+                result @?= Left (ExitFailure 1)
+                assertBool ("the refusal is contended liveness: " <> T.unpack diagnostic) ("SnapshotLivenessContended" `T.isInfixOf` diagnostic)
+                readIORef observed >>= (@?= [])
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
+        , testCase "project down reports a liveness store failure and writes no reverse-root row" $
+            withIsolatedProjectConfig $ \paths -> do
+                observed <- newIORef ([] :: [TeardownAction])
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = captureCLIExitStderr (withArgs ["project", verb] (runHostBootstrapCLI spec))
+                _ <- run "up"
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                livenessName <- either (assertFailure . show) pure (mkRecordName (isolatedProjectName paths))
+                -- A directory where the lock file belongs cannot be opened as a lock.
+                createDirectoryIfMissing True (isolatedStoreRoot paths </> "liveness" </> T.unpack livenessName <> ".lock")
+                (result, diagnostic) <- run "down"
+                result @?= Left (ExitFailure 1)
+                assertBool ("the refusal is the liveness store failure: " <> T.unpack diagnostic) ("SnapshotLivenessFailure" `T.isInfixOf` diagnostic)
+                readIORef observed >>= (@?= [])
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
         , testCase "project up safety refusal skips automatic project teardown" $
             withIsolatedProjectConfig $ \_paths -> do
                 teardownCalls <- newIORef (0 :: Int)
@@ -1562,6 +2035,52 @@ tests =
                 restarted @?= Right ()
                 readIORef acquired >>= (@?= 2)
                 try (withArgs ["project", "destroy"] (runHostBootstrapCLI spec)) >>= (@?= (Right () :: Either ExitCode ()))
+        , testCase "project down after a terminal destroy reports the terminal outcome without an effect" $
+            withIsolatedProjectConfig $ \paths -> do
+                observed <- newIORef ([] :: [TeardownAction])
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ action -> modifyIORef' observed (action :) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = try (withArgs ["project", verb] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                run "up" >>= (@?= Right ())
+                run "destroy" >>= (@?= Right ())
+                effects <- readIORef observed
+                destroyed <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (_, destroyVersion, _) <- expectSingleRecord "reverse-root." destroyed
+                destroyVersion @?= 3
+                run "down" >>= (@?= Right ())
+                readIORef observed >>= (@?= effects)
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= destroyed)
+        , testCase "a repeated destroy refuses a recreated Production mode after its terminal closure" $
+            withIsolatedProjectConfig $ \paths -> do
+                destroyed <- newIORef (0 :: Int)
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ action -> (case action of DeleteFrame -> modifyIORef' destroyed (+ 1); _ -> pure ()) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = try (withArgs ["project", verb] (runHostBootstrapCLI spec)) :: IO (Either ExitCode ())
+                run "up" >>= (@?= Right ())
+                run "destroy" >>= (@?= Right ())
+                readIORef destroyed >>= (@?= 1)
+                encodedProject <- either (assertFailure . show) pure (mkRecordName (isolatedProjectName paths))
+                modeKey <- either (assertFailure . show) pure (mkRecordKey ("mode." <> encodedProject))
+                store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+                -- The terminal receipt requires an absent mode; a live one means the
+                -- closure it records is no longer the current state.
+                written <- withProtectedEntry store $ \session ->
+                    compareAndSwapProtectedRecord session modeKey ExpectAbsent "production\t1"
+                either (assertFailure . show) (const (pure ())) written
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                run "destroy" >>= (@?= Left (ExitFailure 1))
+                readIORef destroyed >>= (@?= 1)
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
         , testCase "Destroy resumes the retained Pending continuation after Down" $
             withIsolatedProjectConfig $ \paths -> do
                 acquired <- newIORef (0 :: Int)
@@ -1601,6 +2120,46 @@ tests =
                 run "destroy" >>= (@?= Right ())
                 readIORef destroyed >>= (@?= 1)
                 readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= terminal)
+        , testCase "project down refuses while a Destroy Pending intent is retained, leaving the store unchanged" $
+            withIsolatedProjectConfig $ \paths -> do
+                effects <- newIORef (0 :: Int)
+                let chain :: FixtureFragment
+                    chain _ _ =
+                        [ reversedBy
+                            (\_ _ -> modifyIORef' effects (+ 1) >> pure TeardownReleased)
+                            (deployVMStep "launch the VM" (StepFrame "host-orchestrator-0" "metal") (\_ -> pure StepChanged))
+                        ]
+                    spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                    run verb = captureCLIExitStderr (withArgs ["project", verb] (runHostBootstrapCLI spec))
+                _ <- run "up"
+                _ <- run "down"
+                readIORef effects >>= (@?= 1)
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (keyText, _, bytes) <- expectSingleRecord "reverse-root." image
+                pending <- pendingDestroyAfterDown bytes
+                key <- either (assertFailure . show) pure (mkRecordKey keyText)
+                store <- openProtectedStore (isolatedStoreRoot paths) >>= either (assertFailure . show) pure
+                written <- withProtectedEntry store $ \session -> do
+                    found <- readProtectedRecord session key >>= either (assertFailure . show) pure
+                    record <- maybe (assertFailure "terminal Down disappeared") pure found
+                    compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) pending
+                either (assertFailure . show) (const (pure ())) written
+                before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                (result, diagnostic) <- run "down"
+                result @?= Left (ExitFailure 1)
+                assertBool
+                    ("the refusal names the retained reverse-root intent: " <> T.unpack diagnostic)
+                    ("a durable reverse-root intent owns ordinary lifecycle admission" `T.isInfixOf` diagnostic)
+                readIORef effects >>= (@?= 1)
+                readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
+        , testCase "project destroy on a never-brought-up project names the absent Production mode" $
+            withIsolatedProjectConfig $ \paths -> do
+                let spec = finalized (builderWith passingSuite (pure ()) [])
+                (result, diagnostic) <- captureCLIExitStderr (withArgs ["project", "destroy"] (runHostBootstrapCLI spec))
+                result @?= Left (ExitFailure 1)
+                assertBool ("the refusal names the absent Production mode: " <> T.unpack diagnostic) ("observed absent" `T.isInfixOf` diagnostic)
+                image <- readProtectedStoreImage (isolatedStoreRoot paths)
+                assertRecordCount "reverse-root." 0 image
         , testGroup "Destroy after Down refuses stale predecessor evidence" $
             [ testCase (T.unpack prefix) $
                 withIsolatedProjectConfig $ \paths -> do
@@ -1689,35 +2248,48 @@ tests =
             repoRoot <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
             let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
                 sourceRoot = packageRoot </> "src" </> "HostBootstrap"
-            commandSource <- TIO.readFile (sourceRoot </> "Command.hs")
-            entrySource <-
-                TIO.readFile
-                    (sourceRoot </> "Command" </> "LifecycleEntry.hs")
-            reconcileSource <- TIO.readFile (sourceRoot </> "Reconcile.hs")
-            teardownSource <- TIO.readFile (sourceRoot </> "Teardown.hs")
-            cabalSource <- TIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
-            sources <- lifecycleHaskellSources sourceRoot
-            entryImporters <-
-                filterM
-                    (fmap (T.isInfixOf "import HostBootstrap.Command.LifecycleEntry") . TIO.readFile)
-                    sources
-            let projectStart = "projectCommandGroup ::"
-                projectEnd = "-- | Whether the current binary frame owns"
-                fromProject = snd (T.breakOn projectStart commandSource)
-                productionSlice = fst (T.breakOn projectEnd fromProject)
-                normalized = T.unwords (T.words productionSlice)
+            description <- SourceGuard.readPackageDescription
+            commandPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command"
+            entryPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command.LifecycleEntry"
+            reconcilePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Reconcile"
+            teardownPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Teardown"
+            commandSource <- TIO.readFile commandPath
+            entrySource <- TIO.readFile entryPath
+            reconcileSource <- TIO.readFile reconcilePath
+            teardownSource <- TIO.readFile teardownPath
+            mainLibrary <- maybe (assertFailure "main library stanza missing") pure (SourceGuard.mainLibraryStanza description)
+            mainComponent <- case [component | component <- SourceGuard.componentStanzas description, SourceGuard.componentHeader component == "library"] of
+                [component] -> pure component
+                _ -> assertFailure "main library component is missing or ambiguous"
+            sources <- concat <$> traverse (SourceGuard.listHaskellSources . (packageRoot </>)) (SourceGuard.componentSourceDirs mainComponent)
+            sourceContents <- traverse (\path -> (,) path <$> readFile path) sources
+            let entryImporters = [path | (path, body) <- sourceContents, SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" body]
+            assertBool "qualified imports count as lifecycle entry imports" $
+                SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" "import qualified HostBootstrap.Command.LifecycleEntry as E"
+            assertBool "commented imports do not count" $
+                not (SourceGuard.importsModule "HostBootstrap.Command.LifecycleEntry" "-- import HostBootstrap.Command.LifecycleEntry")
+            productionTokens <- concat <$> traverse
+                (\name -> either assertFailure pure (SourceGuard.haskellDefinitionTokens name (T.unpack commandSource)))
+                ["projectCommandGroup", "runExactProjectUp", "runExactHarnessDestroyProjection"]
+            let entryTokens = SourceGuard.haskellTokens (T.unpack entrySource)
+                contains fragment tokens = SourceGuard.haskellTokens (T.unpack fragment) `isInfixOf` tokens
                 require fragment =
                     assertBool
                         ("Production command lost its exact route: " ++ T.unpack fragment)
-                        (fragment `T.isInfixOf` normalized)
+                        (contains fragment productionTokens)
                 forbid label source fragment =
                     assertBool
                         (label ++ " still contains compatibility shape " ++ T.unpack fragment)
-                        (not (fragment `T.isInfixOf` source))
-            assertBool "could not isolate projectCommandGroup" (not (T.null fromProject) && projectEnd `T.isInfixOf` fromProject)
-            sort (map (repoRelativePath sourceRoot) entryImporters)
-                @?= [ "Command.hs"
-                    ]
+                        (not (contains fragment (SourceGuard.haskellTokens (T.unpack source))))
+                count fragment = SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens fragment) (unwords productionTokens)
+            sort (map (repoRelativePath packageRoot) entryImporters)
+                @?= ["src/HostBootstrap/Command.hs"]
+            assertBool "the lifecycle entry must be a main-library other-module" $
+                "HostBootstrap.Command.LifecycleEntry" `elem` SourceGuard.fieldModules "other-modules" mainLibrary
+            mapM_
+                (\component -> assertBool "the lifecycle entry must never be exposed" $
+                    "HostBootstrap.Command.LifecycleEntry" `notElem` SourceGuard.fieldModules "exposed-modules" (SourceGuard.componentBody component))
+                (SourceGuard.componentStanzas description)
             mapM_
                 require
                 [ "withProjectPlan profile root validated drafts"
@@ -1731,15 +2303,15 @@ tests =
                 , "runRootProjectUpLifecycleEntry"
                 , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext project (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
                 , "withBoundProjectDestroyLifecycleEntry exactSpec rootAuthority verified bound binding lease plan lifecycleContext project ( \\entry current -> runRootProjectReverseLifecycleEntry"
-                , "Teardown.teardownPlan plan currentFrame verb"
                 ]
             mapM_
                 ( \fragment ->
                     assertBool
                         ("hidden lifecycle entry lost its exact route: " ++ T.unpack fragment)
-                        (fragment `T.isInfixOf` T.unwords (T.words entrySource))
+                        (contains fragment entryTokens)
                 )
                 [ "withValidatedRootLifecycleContext"
+                , "teardownPlan plan current verb"
                 , "withAcquisitionJournal"
                 , "withCurrentLifecycleCursor journal frame verb"
                 , "withRootedPlanCatalogKernel finalized rootAuthority plan current lifecycleContext"
@@ -1751,11 +2323,11 @@ tests =
                 , "runChainFromFrameWithDescentFailure cfg self store plan authority cursor"
                 , "withTeardownLifecycleCursor cursor"
                 ]
-            T.count "withProjectPlan profile root validated drafts" normalized @?= 1
-            T.count "withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts" normalized @?= 1
-            T.count "withRootProjectUpLifecycleEntry" normalized @?= 1
+            count "withProjectPlan profile root validated drafts" @?= 1
+            count "withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts" @?= 1
+            count "withRootProjectUpLifecycleEntry" @?= 1
             mapM_
-                (forbid "Production command" productionSlice)
+                (\fragment -> assertBool ("Production command retains compatibility shape " ++ T.unpack fragment) (not (contains fragment productionTokens)))
                 [ "projectPlanStepPlan"
                 , "withLifecyclePlan"
                 , "LifecyclePlan"
@@ -1767,21 +2339,92 @@ tests =
                 , "runChainFromFrame cfg self store plan"
                 , "withCurrentLifecycleCursor"
                 ]
-            assertBool "Command must import the public Chain facade" ("import HostBootstrap.Chain (" `T.isInfixOf` commandSource)
+            assertBool "Command must import the public Chain facade" (SourceGuard.importsModule "HostBootstrap.Chain" (T.unpack commandSource))
             forbid "Command" commandSource "HostBootstrap.Chain.Compatibility"
             forbid "Reconcile" reconcileSource "compatibilityStepExecutionFor"
             forbid "Teardown" teardownSource "withCompatibilityTeardownPlan"
             forbid "Teardown" teardownSource "compatibilityReverseStepFor"
-            forbid "Cabal" cabalSource "HostBootstrap.Chain.Compatibility"
-            assertBool
-                "the lifecycle entry implementation must remain Cabal-hidden"
-                (T.count "HostBootstrap.Command.LifecycleEntry" cabalSource == 1)
+            mapM_
+                (\component -> assertBool "Cabal retains the Chain compatibility module" $
+                    "HostBootstrap.Chain.Compatibility" `notElem` concatMap (\field -> SourceGuard.fieldModules field (SourceGuard.componentBody component)) ["exposed-modules", "other-modules", "reexported-modules"])
+                (SourceGuard.componentStanzas description)
             doesFileExist (sourceRoot </> "Chain" </> "Compatibility.hs") >>= (@?= False)
-        , testCase "project up fails fast without a sibling context" $ do
-            result <-
-                try (withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))) ::
-                    IO (Either ExitCode ())
-            result @?= Left (ExitFailure 1)
+        , testGroup
+            "operator refusal precedes lifecycle work"
+            [ conditionalCase ["CLISpec", "operator refusal precedes lifecycle work"] readOnlyRecordsSupported verb
+                ( withIsolatedProjectConfig $ \paths -> do
+                    effects <- newIORef (0 :: Int)
+                    let chain :: FixtureFragment
+                        chain _ _ =
+                            [ reversedBy
+                                (\_ _ -> modifyIORef' effects (+ 1) >> pure TeardownReleased)
+                                (deployVMStep "count effects" (StepFrame "host-orchestrator-0" "metal") (\_ -> modifyIORef' effects (+ 1) >> pure StepChanged))
+                            ]
+                        spec = finalized (addSteps chain (builderWith passingSuite (pure ()) []))
+                        run action = captureCLIExitStderr $ withArgs ["project", action] (runHostBootstrapCLI spec)
+                    if verb == "up" then pure () else fst <$> run "up" >>= (@?= Right ())
+                    before <- readProtectedStoreImage (isolatedStoreRoot paths)
+                    countBefore <- readIORef effects
+                    let records = isolatedStoreRoot paths </> "records"
+                    permissions <- getPermissions records
+                    (result, diagnostic) <-
+                        bracket
+                            (setPermissions records permissions{writable = False})
+                            (const (setPermissions records permissions))
+                            (const (run verb))
+                    result @?= Left (ExitFailure 1)
+                    assertBool ("reports operator authorization refusal: " ++ T.unpack diagnostic) ("operator authorization refused:" `T.isInfixOf` diagnostic)
+                    readProtectedStoreImage (isolatedStoreRoot paths) >>= (@?= before)
+                    readIORef effects >>= (@?= countBefore)
+                )
+                (probeReadOnlyRecords >>= (@?= False))
+            | verb <- ["up", "down", "destroy"]
+            ]
+        , testCase "parentless VM orchestrator cannot enter project up or down" $
+            withIsolatedProjectConfig $ \paths -> do
+                let config =
+                        Fixture.defaultProjectConfig
+                            (isolatedProjectName paths)
+                            (T.pack (isolatedCanonicalRoot paths))
+                            Context.VMOrchestrator
+                    run verb =
+                        captureCLIExitStderr $
+                            withArgs ["project", verb] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))
+                Schema.writeProjectConfigFile Fixture.projectConfigCodec (isolatedConfigPath paths) config
+                (upResult, upDiagnostic) <- run "up"
+                (downResult, downDiagnostic) <- run "down"
+                upResult @?= Left (ExitFailure 1)
+                downResult @?= Left (ExitFailure 1)
+                upDiagnostic @?= downDiagnostic
+                assertBool "refusal identifies the host orchestrator command" ("HostOrchestratorCommand" `T.isInfixOf` upDiagnostic)
+                doesPathExist (isolatedStoreRoot paths) >>= (@?= False)
+        , testGroup
+            "child frame refuses operator entry"
+            [ testCase verb $
+                withIsolatedProjectConfig $ \paths -> do
+                    let root = T.pack (isolatedCanonicalRoot paths)
+                        parent = Fixture.defaultProjectConfig (isolatedProjectName paths) root HostOrchestrator
+                    child <- either assertFailure pure (Fixture.deriveProjectConfigForKind Context.VMOrchestrator parent root)
+                    Schema.writeProjectConfigFile Fixture.projectConfigCodec (isolatedConfigPath paths) child
+                    (result, diagnostic) <-
+                        captureCLIExitStderr $
+                            withArgs ["project", verb] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))
+                    result @?= Left (ExitFailure 1)
+                    assertBool "context gate refuses the operator command" ("HostOrchestratorCommand" `T.isInfixOf` diagnostic)
+                    doesPathExist (isolatedStoreRoot paths) >>= (@?= False)
+            | verb <- ["up", "down", "destroy"]
+            ]
+        , testCase "project up fails fast without a sibling context" $
+            withPreservedInitSiblings $ \projectName _ -> do
+                cfgPath <- Schema.siblingProjectConfigPath projectName
+                present <- doesFileExist cfgPath
+                if present then removeFile cfgPath else pure ()
+                doesFileExist cfgPath >>= (@?= False)
+                (result, diagnostic) <-
+                    captureCLIExitStderr $
+                        withArgs ["project", "up", "--dry-run"] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))
+                result @?= Left (ExitFailure 1)
+                assertBool "reports the missing sibling configuration" (T.pack ("missing " ++ cfgPath) `T.isInfixOf` diagnostic)
         ]
 
 specWithServices ::
@@ -1857,21 +2500,24 @@ withVerifiedServiceRuntime selected handlers use =
                                     cfg
                                     finalizedRegistry
                                     (\_ roleCodec selectedRequest _ _ _ _ -> renderValidatedServiceRequest roleCodec selectedRequest)
-                    manifest =
-                        ActivationManifest
-                            { manifestScope = "Production"
-                            , manifestPlanDigest = "cli-service-plan"
-                            , manifestSpecDigest = projectCodecSpecDigest codec
-                            , manifestBinaryDigest = binaryDigest
-                            , manifestFrame = localCurrentFrame (inspectLocalContext (Fixture.context cfg))
-                            , manifestRevision = "cli-service-revision"
-                            , manifestConfigDigest = digestBytes roleWire
-                            , manifestSecretDigest = activationSecretDigestFromBytes ByteString.empty
-                            , manifestService = T.pack selected
-                            , manifestRolePlanDigest = rolePlanDraftDigest draft
-                            , manifestPermittedEffects = ["network-listen"]
-                            , manifestSecretChannel = "/run/hostbootstrap/empty"
-                            }
+                manifest <-
+                    expectRight $
+                        activationManifest
+                            ( ActivationManifestInput
+                                { manifestInputScope = "Production"
+                                , manifestInputPlanDigest = "cli-service-plan"
+                                , manifestInputSpecDigest = projectCodecSpecDigest codec
+                                , manifestInputBinaryDigest = binaryDigest
+                                , manifestInputFrame = localCurrentFrame (inspectLocalContext (Fixture.context cfg))
+                                , manifestInputRevision = "cli-service-revision"
+                                , manifestInputConfigDigest = digestBytes roleWire
+                                , manifestInputSecretDigest = activationSecretDigestFromBytes ByteString.empty
+                                , manifestInputService = T.pack selected
+                                , manifestInputRolePlanDigest = rolePlanDraftDigest draft
+                                , manifestInputPermittedEffects = ["network-listen"]
+                                , manifestInputSecretChannel = "/run/hostbootstrap/empty"
+                                }
+                            )
                 withBrokerFor [manifest] $ \broker store key -> do
                     revision <-
                         expectRight
@@ -1912,6 +2558,43 @@ cliServiceBackend =
         , backendWork = \_ _ -> pure (Right ())
         }
 
+assertMeasuredServiceInstanceRefused :: [(String, Maybe String)] -> T.Text -> IO ()
+assertMeasuredServiceInstanceRefused instanceBindings expectedDiagnostic = do
+    callbackRuns <- newIORef (0 :: Int)
+    withVerifiedServiceRuntime "accelerator" [("accelerator", modifyIORef' callbackRuns (+ 1))] $ \spec -> do
+        selectedRevision <- lookupEnv "HOSTBOOTSTRAP_SERVICE_ACTIVATION" >>= maybe (assertFailure "the genuine activation revision is absent") pure
+        let missingRevision = selectedRevision </> replicate 64 '0'
+        doesPathExist missingRevision >>= (@?= False)
+        withEnvironmentBindings [("HOSTBOOTSTRAP_SERVICE_ACTIVATION", missingRevision)] $
+            withMeasuredServiceInstanceEnvironment instanceBindings $ do
+                (result, diagnostic) <- captureCLIExitStderr (withArgs ["service", "run"] (runHostBootstrapCLI spec))
+                result @?= Left (ExitFailure 1)
+                let observedDiagnostic =
+                        if os == "mingw32"
+                            then "service run: supply exactly Kubernetes pod UID plus restart count, or one host-service invocation nonce\n"
+                            else expectedDiagnostic
+                diagnostic @?= observedDiagnostic
+    readIORef callbackRuns >>= (@?= 0)
+
+withMeasuredServiceInstanceEnvironment :: [(String, Maybe String)] -> IO result -> IO result
+withMeasuredServiceInstanceEnvironment bindings action =
+    bracket
+        (traverse (\(name, _) -> do old <- BlankEnvironment.getEnv name; pure (name, old)) bindings)
+        (mapM_ restore)
+        (\_ -> do
+            mapM_ restore bindings
+            rawValues <- traverse (\(name, _) -> do value <- BlankEnvironment.getEnv name; pure (name, value)) bindings
+            rawValues @?= bindings
+            ordinaryValues <- traverse (\(name, _) -> do value <- lookupEnv name; pure (name, value)) bindings
+            let expectedOrdinaryValues =
+                    [(name, if os == "mingw32" && value == Just "" then Nothing else value) | (name, value) <- bindings]
+            ordinaryValues @?= expectedOrdinaryValues
+            action
+        )
+  where
+    restore (name, Just value) = BlankEnvironment.setEnv name value True
+    restore (name, Nothing) = unsetEnv name
+
 withEnvironmentBindings :: [(String, String)] -> IO result -> IO result
 withEnvironmentBindings bindings action = do
     previous <- traverse (\(name, _) -> do old <- lookupEnv name; pure (name, old)) bindings
@@ -1945,14 +2628,6 @@ sampleChain _ _ =
 fixtureProjectStepId :: String -> ProjectStepId
 fixtureProjectStepId = either error id . projectStepId
 
-lifecycleHaskellSources :: FilePath -> IO [FilePath]
-lifecycleHaskellSources directory = do
-    entries <- listDirectory directory
-    let paths = map (directory </>) entries
-    directories <- filterM doesDirectoryExist paths
-    nested <- concat <$> mapM lifecycleHaskellSources directories
-    pure ([path | path <- paths, takeExtension path == ".hs"] <> nested)
-
 -- Harness derives its authority store from the working directory. A runtime
 -- case therefore owns a fresh working directory, and leaves any operator store
 -- under the suite's original directory untouched.
@@ -1972,6 +2647,34 @@ data IsolatedProductionPaths = IsolatedProductionPaths
     , isolatedCanonicalRoot :: FilePath
     , isolatedStoreRoot :: FilePath
     }
+
+-- Probe the same temporary filesystem used by the cases, including effective
+-- principal and ACL behavior; a permissions bit alone is not sufficient.
+{-# NOINLINE readOnlyRecordsSupported #-}
+readOnlyRecordsSupported :: Bool
+readOnlyRecordsSupported = unsafePerformIO probeReadOnlyRecords
+
+probeReadOnlyRecords :: IO Bool
+probeReadOnlyRecords =
+    withSystemTempDirectory "hostbootstrap-readonly-capability" $ \directory -> do
+        permissions <- getPermissions directory
+        changed <- try @IOException (setPermissions directory permissions{writable = False})
+        case changed of
+            Left failure
+                | isPermissionError failure -> pure False
+                | otherwise -> ioError failure
+            Right () ->
+                ( do
+                    probe <- try @IOException $ bracket
+                        (openBinaryTempFile directory ".write-probe")
+                        (\(path, handle) -> hClose handle `finally` removeFile path)
+                        (const (pure ()))
+                    case probe of
+                        Left failure
+                            | isPermissionError failure -> pure True
+                            | otherwise -> ioError failure
+                        Right () -> pure False
+                ) `finally` setPermissions directory permissions
 
 withIsolatedProjectConfig :: (IsolatedProductionPaths -> IO result) -> IO result
 withIsolatedProjectConfig use =
@@ -2442,18 +3145,8 @@ passingSuite =
     TestSuite
         (pure (Right ()))
         (\_ _ -> pure ())
-        [Case (fixtureCaseId "ok") 1 False AssertOnce]
+        [Case (fixtureCaseId "ok") AssertOnce]
         (\_ _ -> pure Pass)
-        (pure ())
-
--- | A stack-driven suite whose single case asserts a failure.
-failingSuite :: TestSuite
-failingSuite =
-    TestSuite
-        (pure (Right ()))
-        (\_ _ -> pure ())
-        [Case (fixtureCaseId "fails") 1 False AssertOnce]
-        (\_ _ -> pure (Fail "seeded case failure"))
         (pure ())
 
 -- | A suite with no cases (rejected by the project-spec validator).
@@ -2539,6 +3232,90 @@ snapshotInitFile path = do
     present <- doesFileExist path
     contents <- if present then Just <$> ByteString.readFile path else pure Nothing
     pure (path, contents)
+
+-- | Run a command with stdout and stderr both captured, for refusals the report card prints
+-- on one stream and a parser prints on the other.
+captureCLIExitOutput :: IO () -> IO (Either ExitCode (), T.Text)
+captureCLIExitOutput action =
+    withSystemTempFile "hostbootstrap-cli-output" $ \_ captured -> do
+        hFlush stdout
+        hFlush stderr
+        result <-
+            bracket
+                ((,) <$> hDuplicate stdout <*> hDuplicate stderr)
+                ( \(savedOut, savedErr) -> do
+                    hFlush stdout
+                    hFlush stderr
+                    hDuplicateTo savedOut stdout
+                    hDuplicateTo savedErr stderr
+                    hClose savedOut
+                    hClose savedErr
+                )
+                (\_ -> hDuplicateTo captured stdout >> hDuplicateTo captured stderr >> try action)
+        hSeek captured AbsoluteSeek 0
+        output <- TIO.hGetContents captured
+        pure (result, output)
+
+-- | Run a command with only stdout captured, for output compared exactly.
+captureCLIExitStdout :: IO () -> IO (Either ExitCode (), T.Text)
+captureCLIExitStdout action =
+    withSystemTempFile "hostbootstrap-cli-stdout" $ \_ captured -> do
+        hFlush stdout
+        result <-
+            bracket
+                (hDuplicate stdout)
+                (\saved -> hFlush stdout `finally` (hDuplicateTo saved stdout `finally` hClose saved))
+                (\_ -> hDuplicateTo captured stdout >> try action)
+        hSeek captured AbsoluteSeek 0
+        output <- TIO.hGetContents captured
+        pure (result, output)
+
+-- | A directory's regular files as sorted (relative path, bytes), recursively; absent is empty.
+snapshotTree :: FilePath -> IO [(FilePath, ByteString.ByteString)]
+snapshotTree root = do
+    present <- doesDirectoryExist root
+    if present then walk "" else pure []
+  where
+    walk relative = do
+        entries <- sort <$> listDirectory (root </> relative)
+        concat
+            <$> traverse
+                ( \entry -> do
+                    let path = relative </> entry
+                    isDirectory <- doesDirectoryExist (root </> path)
+                    if isDirectory
+                        then walk path
+                        else (\bytes -> [(path, bytes)]) <$> ByteString.readFile (root </> path)
+                )
+                entries
+
+-- | A project config whose current frame is a VM orchestrator under the host root, so it is off-root.
+offRootProjectConfig :: T.Text -> Fixture.ProjectConfig scope
+offRootProjectConfig projectName =
+    base{Fixture.context = Context.deriveVMContext (Fixture.context base) "."}
+  where
+    base = Fixture.defaultProjectConfig projectName "." HostOrchestrator
+
+-- | A service role wire's framework envelope, enough for the first-stage wire-kind check.
+serviceRoleWireFixture :: T.Text
+serviceRoleWireFixture =
+    T.unlines
+        [ "{ roleFrameworkValidation ="
+        , "    { frameworkWireKind = < FullProjectWire | ServiceRoleWire >.ServiceRoleWire"
+        , "    , frameworkScopeKind = < ProductionScope | HarnessScope >.ProductionScope"
+        , "    , frameworkSpecDigest = \"digest\""
+        , "    , frameworkLocalContext ="
+        , "        { localProject = \"demo\""
+        , "        , localBinary = \"demo\""
+        , "        , localSourceRoot = \".\""
+        , "        , localContextKind = < HostOrchestrator | VMOrchestrator | VMProjectContainer | ImageBuildContainer | ClusterService | Daemon | OneShotJob | TestHarness >.ClusterService"
+        , "        , localRoleName = \"web\""
+        , "        , localCurrentFrame = \"cluster-service-0\""
+        , "        }"
+        , "    }"
+        , ", roleServiceFields = {=}"
+        , "}"
+        ]
 
 captureCLIExitStderr :: IO () -> IO (Either ExitCode (), T.Text)
 captureCLIExitStderr action =
@@ -2636,3 +3413,14 @@ serviceSchemaOutline =
                     ]
             )
         . T.lines
+
+
+bareBudgetRefusal :: [String] -> IO ()
+bareBudgetRefusal arguments =
+    withSystemTempDirectory "hostbootstrap-bare-budget-refusal" $ \directory ->
+        withCurrentDirectory directory $
+            withPreservedInitSiblings $ \projectName _ -> do
+                let output = directory </> "bare.dhall"
+                (result, _) <- captureCLIExitStderr $ withArgs (["project", "init", "--output", output] <> arguments) $ CLI.runBareHostBootstrapCLI (T.unpack projectName)
+                result @?= Left (ExitFailure 1)
+                listDirectory directory >>= (@?= [])

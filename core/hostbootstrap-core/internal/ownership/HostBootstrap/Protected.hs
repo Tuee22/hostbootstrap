@@ -1,4 +1,3 @@
-{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -54,6 +53,7 @@ module HostBootstrap.Protected (
     ProtectedSession,
     withProtectedEntry,
     tryProtectedEntry,
+    verifyProtectedSession,
 
     -- * Run liveness
     withRunLiveness,
@@ -81,11 +81,12 @@ module HostBootstrap.Protected (
     -- * Failures
     ProtectedError (..),
     protectedErrorMessage,
+    classifyProtectedException,
 ) where
 
 import Control.Concurrent (ThreadId, myThreadId)
 import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar, withMVar)
-import Control.Exception (bracket, finally, mask, onException)
+import Control.Exception (Handler (Handler), IOException, SomeException, bracket, catches, displayException, finally, fromException, mask, onException, toException)
 import Control.Exception.Safe (try)
 import qualified Control.Exception.Safe as Safe
 import Data.ByteString (ByteString)
@@ -98,8 +99,10 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
+import HostBootstrap.Protected.Publication (syncPublishedFile, renamePublishedFile, syncPublishedParent)
 import GHC.Clock (getMonotonicTimeNSec)
-import GHC.IO.Handle.Lock (LockMode (ExclusiveLock), hLock, hTryLock)
+import GHC.IO.Handle.Lock (FileLockingNotSupported, LockMode (ExclusiveLock), hLock, hTryLock)
+import GHC.IO.Exception (IOErrorType (UnsupportedOperation))
 import System.Directory (
     createDirectoryIfMissing,
     doesFileExist,
@@ -118,45 +121,15 @@ import System.IO (
     withFile,
  )
 import qualified System.IO as IO
-import System.IO.Error (isDoesNotExistError)
+import System.IO.Error (ioeGetErrorType, isDoesNotExistError, isPermissionError)
 #if !defined(mingw32_HOST_OS)
-import System.Directory (renameFile)
-import System.FilePath (takeDirectory)
 import System.Posix.IO (
     FdOption (CloseOnExec),
-    OpenFileFlags (cloexec),
-    OpenMode (ReadOnly, ReadWrite),
     closeFd,
-    defaultFileFlags,
     fdToHandle,
     handleToFd,
-    openFd,
     setFdOption,
  )
-import System.Posix.Unistd (fileSynchronise)
-#if defined(darwin_HOST_OS)
-import Foreign.C.Error (throwErrnoIfMinus1_)
-import Foreign.C.Types (CInt (..))
-import System.Posix.Types (Fd (Fd))
-#else
-import System.Posix.Types (Fd)
-#endif
-#else
-import Data.Bits ((.|.))
-import Data.List (isPrefixOf)
-import System.Win32.File (
-    MoveFileFlag,
-    closeHandle,
-    createFile,
-    fILE_ATTRIBUTE_NORMAL,
-    fILE_SHARE_READ,
-    flushFileBuffers,
-    gENERIC_WRITE,
-    mOVEFILE_REPLACE_EXISTING,
-    moveFileEx,
-    oPEN_EXISTING,
- )
-import System.Win32.Info (getFullPathName)
 #endif
 
 -- The store --------------------------------------------------------------------
@@ -199,14 +172,14 @@ openProtectedStore :: FilePath -> IO (Either ProtectedError ProtectedStore)
 openProtectedStore rawRoot
     | null rawRoot = pure (Left (ProtectedInvalid "the protected store root must not be empty"))
     | otherwise = do
-        outcome <- try $ do
+        outcome <- tryProtectedIO $ do
             root <- makeAbsolute rawRoot
             createDirectoryIfMissing True (root </> recordsDirectory)
             mutex <- newMVar ()
             holder <- newIORef Nothing
             identity <- establishIdentity root mutex holder
             pure (fmap (\value -> ProtectedStore root value mutex holder) identity)
-        pure (either (Left . ioFailure "open the protected store") id outcome)
+        pure (either (Left . classifyProtectedException "open the protected store") id outcome)
 
 recordsDirectory :: FilePath
 recordsDirectory = "records"
@@ -316,6 +289,11 @@ withFreshProtectedSession store action = mask $ \restore -> do
     restore (action (ProtectedSession store owner live))
         `finally` writeIORef live False
 
+-- | Check this entry's existing live token and owner thread, without filesystem effects.
+verifyProtectedSession :: ProtectedSession session -> IO (Either ProtectedError ())
+verifyProtectedSession session =
+    withActiveProtectedSession session (const (pure (Right ())))
+
 withActiveProtectedSession ::
     ProtectedSession session ->
     (ProtectedStore -> IO (Either ProtectedError result)) ->
@@ -350,7 +328,7 @@ verifyProtectedStoreWritable session = withActiveProtectedSession session $ \sto
                 (IO.openBinaryTempFile recordsRoot ".hostbootstrap-write-probe")
                 (\(path, handle) -> hClose handle `finally` removeFile path)
                 (const (pure ()))
-    pure (either (Left . ioFailure "verify write access to the protected record store") Right outcome)
+    pure (either (Left . mutationFailure "verify write access to the protected record store") Right outcome)
 
 {- | Run an action under the store's OS-released exclusive lock (clause 1). The
 lock spans the whole observe/mutate/settle bracket, and the kernel releases it
@@ -375,14 +353,14 @@ withProtectedEntry store action = do
                 )
         else do
             outcome <-
-                try
+                tryProtectedIO
                     ( withStoreLock
                         (storeRoot store)
                         (storeMutex store)
                         (storeHolder store)
                         (withFreshProtectedSession store action)
                     )
-            pure (either (Left . ioFailure "enter the protected store") id outcome)
+            pure (either (Left . classifyProtectedException "enter the protected store") id outcome)
 
 {- | Attempt the exclusive entry without blocking. 'Nothing' means another
 process (or another thread of this one) holds it right now; the caller decides
@@ -408,7 +386,7 @@ tryProtectedEntry store action = do
                 )
         else do
             outcome <-
-                try
+                tryProtectedIO
                     ( tryStoreLock
                         (storeRoot store)
                         (storeMutex store)
@@ -416,7 +394,7 @@ tryProtectedEntry store action = do
                         (withFreshProtectedSession store action)
                     )
             pure $ case outcome of
-                Left failure -> Left (ioFailure "enter the protected store" failure)
+                Left failure -> Left (classifyProtectedException "enter the protected store" failure)
                 Right Nothing -> Right Nothing
                 Right (Just inner) -> fmap Just inner
 
@@ -474,11 +452,11 @@ withRunLiveness ::
 withRunLiveness store name body = case mkRecordKey name of
     Left refusal -> pure (Left refusal)
     Right key -> mask $ \restore -> do
-        -- Only acquisition's IOError becomes a typed store refusal. Body
+        -- Only supported acquisition failures become a typed store refusal. Body
         -- exceptions propagate, with the handle closed even at the handoff.
-        prepared <- try (acquire key)
+        prepared <- tryProtectedIO (acquire key)
         case prepared of
-            Left failure -> pure (Left (ioFailure "take the run liveness lock" failure))
+            Left failure -> pure (Left (classifyProtectedException "take the run liveness lock" failure))
             Right (handle, False) -> do
                 hClose handle
                 pure (Right Nothing)
@@ -509,8 +487,8 @@ withStoreLock root mutex holder action =
   where
     acquire = do
         handle <- openLockHandle (root </> lockFileName)
-        hSetBuffering handle NoBuffering
-        hLock handle ExclusiveLock `onException` hClose handle
+        (hSetBuffering handle NoBuffering >> hLock handle ExclusiveLock)
+            `onException` hClose handle
         self <- myThreadId
         writeIORef holder (Just self)
         pure handle
@@ -800,7 +778,7 @@ compareAndSwapProtectedRecord session key expectation bytes = withActiveProtecte
                         )
                 pure
                     ( either
-                        (Left . ioFailure "publish a protected record")
+                        (Left . mutationFailure "publish a protected record")
                         (const (Right next))
                         outcome
                     )
@@ -823,7 +801,7 @@ compareAndDeleteProtectedRecord session key expectation = withActiveProtectedSes
                     outcome <- try (removeFile (recordPath store key))
                     pure
                         ( either
-                            (Left . ioFailure "delete a protected record")
+                            (Left . mutationFailure "delete a protected record")
                             Right
                             outcome
                         )
@@ -916,81 +894,6 @@ publishBytes destination bytes = do
         )
         `onException` Safe.catchIO (removeFile temporary) (const (pure ()))
 
--- | Reopen the closed temporary, sync its data, and close the native handle.
-syncPublishedFile :: FilePath -> IO ()
-#if defined(mingw32_HOST_OS)
-syncPublishedFile path = do
-    nativePath <- windowsPublishedPath path
-    bracket
-        (createFile nativePath gENERIC_WRITE fILE_SHARE_READ Nothing oPEN_EXISTING fILE_ATTRIBUTE_NORMAL Nothing)
-        closeHandle
-        flushFileBuffers
-#else
-syncPublishedFile path =
-    bracket (openFd path ReadWrite defaultFileFlags{cloexec = True}) closeFd syncPublishedDescriptor
-#endif
-
--- | Replace in the same directory, without a cross-volume copy fallback.
-renamePublishedFile :: FilePath -> FilePath -> IO ()
-#if defined(mingw32_HOST_OS)
-renamePublishedFile source destination = do
-    nativeSource <- windowsPublishedPath source
-    nativeDestination <- windowsPublishedPath destination
-    moveFileEx nativeSource (Just nativeDestination) (mOVEFILE_REPLACE_EXISTING .|. moveFileWriteThrough)
-
--- Native Win32 wrappers encode strings without furnishing long paths. Preserve
--- explicit namespaces, and normalize ordinary absolute local/UNC paths before
--- adding their extended prefix, independently of the host's registry policy.
-windowsPublishedPath :: FilePath -> IO FilePath
-windowsPublishedPath path
-    | isPrefixOf "\\\\?\\" path || isPrefixOf "\\\\.\\" path = pure path
-    | otherwise = do
-        absolute <- getFullPathName path
-        pure $
-            if isPrefixOf "\\\\" absolute
-                then "\\\\?\\UNC\\" <> drop 2 absolute
-                else "\\\\?\\" <> absolute
-
--- Win32 exposes moveFileEx but omits this SDK constant from its public module.
-foreign import capi unsafe "windows.h value MOVEFILE_WRITE_THROUGH"
-    moveFileWriteThrough :: MoveFileFlag
-#else
-renamePublishedFile = renameFile
-#endif
-
--- | Sync the POSIX directory after rename. Darwin then requests the drive-wide
--- flush through the published regular file, after the directory's changes,
--- without assuming F_FULLFSYNC accepts directory descriptors.
-syncPublishedParent :: FilePath -> IO ()
-#if defined(mingw32_HOST_OS)
-syncPublishedParent _destination = pure ()
-#else
-syncPublishedParent destination = do
-    bracket (openFd (takeDirectory destination) ReadOnly defaultFileFlags{cloexec = True}) closeFd fileSynchronise
-#if defined(darwin_HOST_OS)
-    syncPublishedFile destination
-#endif
-#endif
-
-#if !defined(mingw32_HOST_OS)
--- Darwin's stronger operation includes fsync and asks the drive to flush its
--- cache too. Failure propagates; falling back would weaken the acknowledged
--- publication's guarantee. Other POSIX kernels use their file sync primitive.
-syncPublishedDescriptor :: Fd -> IO ()
-#if defined(darwin_HOST_OS)
-syncPublishedDescriptor (Fd descriptor) =
-    throwErrnoIfMinus1_ "fcntl(F_FULLFSYNC)" (c_fcntlFullSync descriptor fullFsyncCommand)
-
-foreign import capi safe "fcntl.h fcntl"
-    c_fcntlFullSync :: CInt -> CInt -> IO CInt
-
-foreign import capi unsafe "fcntl.h value F_FULLFSYNC"
-    fullFsyncCommand :: CInt
-#else
-syncPublishedDescriptor = fileSynchronise
-#endif
-#endif
-
 -- Failures --------------------------------------------------------------------------
 
 data ProtectedError
@@ -1000,6 +903,8 @@ data ProtectedError
       ProtectedVersionMismatch Text (Maybe RecordVersion) (Maybe RecordVersion)
     | -- | A record exists but could not be decoded. Never silently ignored.
       ProtectedMalformedRecord Text Text
+    | -- | The host cannot supply the required lock or accessible durable store.
+      ProtectedUnsupported Text Text
     | -- | The underlying filesystem operation failed.
       ProtectedIOFailure Text Text
     deriving (Eq, Show)
@@ -1017,12 +922,46 @@ protectedErrorMessage failure = case failure of
             <> ")"
     ProtectedMalformedRecord key reason ->
         "protected record " <> key <> " is malformed: " <> reason
+    ProtectedUnsupported operation reason ->
+        "cannot " <> operation <> ": " <> reason
     ProtectedIOFailure operation reason ->
         "could not " <> operation <> ": " <> reason
   where
     renderVersion Nothing = "absent"
     renderVersion (Just version) = Text.pack (show (recordVersionWord version))
 
+{- | Classify a supported store failure without collapsing an unavailable clause
+into an ordinary probe failure. This function is pure; catching is restricted
+separately to IO errors and the lock implementation's unsupported exception.
+-}
+classifyProtectedException :: Text -> SomeException -> ProtectedError
+classifyProtectedException operation failure =
+    case fromException failure :: Maybe FileLockingNotSupported of
+        Just _ -> unsupported
+        Nothing -> case fromException failure :: Maybe IOError of
+            Just ioFailureValue
+                | isPermissionError ioFailureValue || ioeGetErrorType ioFailureValue == UnsupportedOperation -> unsupported
+            _ -> ProtectedIOFailure operation reason
+  where
+    reason = Text.pack (displayException failure)
+    unsupported = ProtectedUnsupported operation reason
+
+-- | Catch only the two synchronous failure families the store classifies.
+-- Unrelated exceptions and asynchronous cancellation retain their propagation.
+tryProtectedIO :: IO result -> IO (Either SomeException result)
+tryProtectedIO action =
+    catches
+        (Right <$> action)
+        [ Handler (\failure -> pure (Left (toException (failure :: IOException))))
+        , Handler (\failure -> pure (Left (toException (failure :: FileLockingNotSupported))))
+        ]
+
+-- | Ordinary read/list failures remain probes. In particular, Windows can
+-- report a non-file record path as permission denied rather than a type error.
 ioFailure :: Text -> IOError -> ProtectedError
 ioFailure operation failure =
     ProtectedIOFailure operation (Text.pack (show failure))
+
+-- | Permission denial makes a required store mutation unavailable.
+mutationFailure :: Text -> IOError -> ProtectedError
+mutationFailure operation = classifyProtectedException operation . toException

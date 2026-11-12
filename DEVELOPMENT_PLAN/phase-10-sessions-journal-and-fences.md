@@ -26,7 +26,7 @@ survives a second crash.
 ### Sprint 10.1: Indexed journal permits and versioned session refusals [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -113,7 +113,7 @@ None.
 ### Sprint 10.2: Canonical Session numeric fields [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`,
@@ -170,7 +170,7 @@ None.
 ### Sprint 10.3: Observed Released-origin admission [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/SealedExportInventory.hs`,
@@ -257,7 +257,7 @@ None.
 ### Sprint 10.4: Durable fence creation and rotation [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/CoerceFenceEpochScope.hs`,
@@ -355,7 +355,7 @@ None.
 ### Sprint 10.5: Closed recorded-operation phase classification [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/SourceGuard.hs`
 **Substrates**: linux-cpu
@@ -447,7 +447,7 @@ None.
 ### Sprint 10.6: Exact recorded-operation numeric fields [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -540,7 +540,7 @@ None.
 ### Sprint 10.7: Live prepare and acknowledgement admission [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -663,7 +663,7 @@ None.
 ### Sprint 10.8: Complete session operation membership [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/ChainSpec.hs`,
@@ -786,8 +786,8 @@ None.
 ### Sprint 10.9: Canonical transaction wire admission [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
@@ -917,8 +917,8 @@ None.
 ### Sprint 10.10: Faithful plan-bound transaction redo [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/PortabilitySpec.hs`,
@@ -1046,7 +1046,7 @@ None.
 ### Sprint 10.11: Recover complete namespaced operation identities [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -1114,7 +1114,7 @@ None.
 ### Sprint 10.12: The session journal hashes through Digest [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`,
 `DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md`
@@ -1184,7 +1184,7 @@ None.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session/Testing.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ImportTransactionRunnerFromTestingUnit.hs`

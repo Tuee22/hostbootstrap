@@ -369,8 +369,8 @@ followed by the demo host-static gate.
 ### Sprint 24.5: Authored provider resources and exact direct-parent join [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
@@ -456,8 +456,8 @@ gates.
 ### Sprint 24.6: Neutral exact-plan execution package [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Lifecycle.Execution.Internal`, `HostBootstrap.Lifecycle.Plan`,
@@ -594,8 +594,8 @@ gate passed 128/128 together with the nested core gate at 2,389/2,389. Closure r
 ### Sprint 24.8: Domain-separated runtime dependency package [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Lifecycle.Dependency.Internal`,
@@ -685,7 +685,7 @@ production lines, within the declared budgets.
 ### Sprint 24.9: Provider-domain package producer [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/test/ProviderBackendSpec.hs`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`
@@ -749,7 +749,7 @@ this producer introduces no promotion or consumer path.
 ### Sprint 24.9a: Exact carried ownership evidence [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.Execution.Internal`, `HostBootstrap.Reconcile` (2; cap 3)
@@ -767,13 +767,13 @@ execution carrier.
 
 #### Deliverables
 
-- The existing `CarriedResource` keeps the already-validated ownership operation independently from its optional
+- The existing `CarriedResource` requires the already-validated ownership operation independently from its optional
   local settlement bytes; no receipt, managed handle, provider witness, or new named type enters the carrier.
 - Authenticated child seeding transfers exact package resource/generation/operation evidence without attaching
   the parent frame's settlement, so the child can rebind ownership but cannot publish foreign settlement bytes.
 - `Reconcile` alone can open one exact plan-admitted carried resource as a fresh lexical generic managed handle
   and matching `OwnershipReceipt`, binding key, generation, observation version, and ownership operation.
-- Missing ownership evidence, a resource outside the node's exact dependency prefix, or an empty ownership
+- A missing carried resource, a resource outside the node's exact dependency prefix, or an empty ownership
   operation refuses before the continuation. `pushCarriedResource` keeps at most one entry per key, so
   duplicate carriage cannot arise.
 - Existing reporting and Chain publication APIs retain their prior shapes; stable bytes remain the canonical
@@ -782,8 +782,9 @@ execution carrier.
 #### Validation
 
 `ReconcileSpec` (`assertExactResourceCarrier`) covers exact lexical opening, the foreign-key `Conflict`
-(`outside:resource`), and the fresh-carrier `Failure`. Closure requires the two cases named under Remaining
-Work to exist and pass in `ReconcileSpec`, then the existing Chain and resource-record suites and the full core
+(`outside:resource`), and the fresh-carrier `Failure`. The ownership operation is required by the carrier's
+representation; no missing-operation constructor or test-only mint exists. Closure requires the empty-operation
+case named under Remaining Work to exist and pass in `ReconcileSpec`, then the existing Chain and resource-record suites and the full core
 host-static gate. The no-type/two-module/300-line budgets are checked before implementation.
 
 Dated evidence, 2026-08-22: the focused reconciliation gate passed 66/66, including exact receipt
@@ -793,17 +794,13 @@ call-site was added, and the two-module implementation remains well below the 30
 
 #### Remaining Work
 
-- Add a `ReconcileSpec` case that pushes `mintCarriedResource key 5 7` (no ownership operation) for a key in the
-  node's prefix and asserts `withCarriedManagedResourceReceipt` returns `Left (Failure _)` whose detail begins
-  `the carried managed resource has no ownership settlement`. Import `mintCarriedResource` from
-  `HostBootstrap.Lifecycle.Execution.Internal` alongside the existing carrier helpers.
 - Add a `ReconcileSpec` case that pushes `mintTransferredCarriedResource key 5 7 ""` and asserts `Left (Failure
   _)` whose detail begins `the carried ownership operation is empty`.
 
 ### Sprint 24.10: Fresh provider dependency recovery [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs`,
 `core/hostbootstrap-core/test/ProviderBackendSpec.hs`,
@@ -1198,9 +1195,9 @@ None.
 ### Sprint 24.15: Canonical provider-package wire vocabulary [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Protocol.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`
 **Production modules**: `HostBootstrap.Handoff`, `HostBootstrap.Handoff.Protocol`,
@@ -1275,9 +1272,9 @@ host-static gate passed all 2,399 tests under `-Werror` on `linux-cpu`.
 ### Sprint 24.16: Caller-free provider reprobe service kernel [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Protocol.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Protocol.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`
 **Production modules**: `HostBootstrap.Handoff`, `HostBootstrap.Handoff.Protocol`,
@@ -1342,8 +1339,8 @@ well below 400 production lines. The complete core host-static gate passed all 2
 ### Sprint 24.17: Keyless multi-hop reprobe relay and child client [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Receiver.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`
@@ -1738,7 +1735,7 @@ the complete core gate passed 2,428/2,428 under `--ghc-options=-Werror`.
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Cluster.Backend`, `HostBootstrap.Cluster.Reconcile`,
@@ -1889,9 +1886,9 @@ demo gates passed 2,428/2,428 and 142/142 under `--ghc-options=-Werror`.
 ### Sprint 24.24: Planned chart/workload resource [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/ProjectPlan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
 `HostBootstrap.ProjectPlan` (3; cap 3)
@@ -1965,7 +1962,7 @@ production modules, adopted no call site, and stayed below 400 added production 
 ### Sprint 24.25a: Exact workload/partition declaration binding [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload/Binding.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/BudgetSpec.hs`
@@ -2226,9 +2223,9 @@ Haskell lines.
 ### Sprint 24.25d: Successor-local chart and readiness recovery [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`,
@@ -2302,12 +2299,12 @@ live service returns a nonce-bound fresh readiness version and owns the exact ch
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff/Relay.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Identity/Install.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`
 **Production modules**: one demo adopter, the thin Python builder, and twelve existing core boundary modules;
@@ -2417,9 +2414,9 @@ retains the separate live activation evidence.
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/ResourceRecord.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/ResourceRecord.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `demo/test/CommandsSpec.hs`
 **Production modules**: `HostBootstrap.Command`, `HostBootstrap.Command.LifecycleEntry`,
 `HostBootstrap.Cluster.Backend`, `HostBootstrap.Lifecycle.ResourceRecord`, `HostBootstrap.Reconcile`,
@@ -2778,8 +2775,8 @@ unchanged. Root-only `project destroy` then deleted the provider while preservin
 ### Sprint 24.32: Chart-declared service activation frame [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
 `HostBootstrapDemo.Commands` (3; cap 3)
@@ -2998,8 +2995,8 @@ linux-cpu run using Helm 4.2.3 settled the first-install status record without s
 ### Sprint 24.36: Plan-authored standalone service activation placements [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/LifecycleEntry.hs`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`,
 `HostBootstrap.Command.LifecycleEntry` (3; cap 3)
@@ -3633,7 +3630,7 @@ passed 151/151.
 
 **Status**: Active
 **Implementation**: `demo/kind.yaml`, `demo/nvkind-in-cluster.yaml`, `demo/src/HostBootstrapDemo/Commands.hs`,
-`demo/test/CommandsSpec.hs`, `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
+`demo/test/CommandsSpec.hs`, `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/derived_project_standards.md`
@@ -3685,7 +3682,7 @@ before any check runs; and a scoped `CommandsSpec` guard that `demoCheckCode` an
   pinned in the base image" with the tools resolved by name on `PATH`, which in the image are whatever versions
   the base image's unpinned `cabal install fourmolu hlint` and `ghcup set cabal recommended` selected when it
   was built, so a republished base can change the check's verdict on unchanged source.
-- `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`: add `Fourmolu`, `Hlint`, and `Cabal` to `HostTool`
+- `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`: add `Fourmolu`, `Hlint`, and `Cabal` to `HostTool`
   with their `toolCommandName`s, and update the membership pin in `HostToolSpec`.
   `demo/src/HostBootstrapDemo/Commands.hs`: replace `resolveCheckTool`'s `findExecutable` with
   `HostTool.discover` and invoke each check through the admitted `AbsExe`; factor the three lookups into a pure
@@ -5634,8 +5631,8 @@ host-static gate.
 ### Sprint 24.59: Runtime-dependency packages are minted for the plan they bind [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
@@ -5693,8 +5690,8 @@ Then the core host-static gate.
 ### Sprint 24.60: Carried runtime-dependency packages are rebound before use [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs`,
 `core/hostbootstrap-core/test/LifecycleDependencySpec.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.Dependency.Internal`, `HostBootstrap.Handoff`,
@@ -5738,8 +5735,8 @@ binding (`Right`) and under a binding for another plan digest or scope (each `Le
 ### Sprint 24.61: Chart workload and service activation declarations carry role types [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/StepSpec.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Step`, `HostBootstrap.Lifecycle.Plan`, `HostBootstrapDemo.Commands`
@@ -5790,7 +5787,7 @@ Then the core and demo host-static gates.
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Workload.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`,
 `core/hostbootstrap-core/test/ClusterWorkloadSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Cluster.Workload`, `HostBootstrap.Cluster.Backend`,
 `HostBootstrap.Lifecycle.Dependency.Internal` (3; cap 3)
@@ -5827,9 +5824,9 @@ passes the namespace field where the release is expected in the chart request is
 ### Sprint 24.63: The execution package and carried resource carry role types [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Execution/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Execution/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/test/ReconcileSpec.hs`, `core/hostbootstrap-core/test/compile-fail/`
 **Production modules**: `HostBootstrap.Lifecycle.Execution.Internal`, `HostBootstrap.Reconcile`,
 `HostBootstrap.Lifecycle.Plan` (3; cap 3)
@@ -6400,9 +6397,9 @@ seed whose DACL grants Authenticated Users read is refused.
 ### Sprint 24.75: Harness scope spellings are one projection pair [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child/Reverse.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Internal.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`,
 `core/hostbootstrap-core/test/TeardownSpec.hs`
 **Production modules**: `HostBootstrap.Handoff`, `HostBootstrap.Command.Child.Reverse`,
 `HostBootstrap.Teardown.Internal` (3; cap 3)
@@ -6712,7 +6709,7 @@ The sprint closes when these cases exist and pass in `cabal test hostbootstrap-d
   admission.
 - Sprint 24.8: route-unique live services, behavioural registry refusal cases, `openPackage` over
   `openCoordinates`, and import-set and cross-domain opener guards.
-- Sprint 24.9a: `ReconcileSpec` no-ownership and empty-operation refusal cases.
+- Sprint 24.9a: the `ReconcileSpec` empty-operation refusal case.
 - Sprint 24.10: `ProviderBackendSpec` fresh-recovery refusal cases, child-side carried-recovery cases, and `LifecycleDependencySpec` mismatch and expiry tables for both carried coordinate openers.
 - Sprint 24.13: bound the share-carriage guard to `runExactVmShare` with single-carriage assertions, and route all
   four dependency-package lifetimes through one checked `dependencyLifetime`.

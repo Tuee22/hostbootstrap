@@ -98,8 +98,8 @@ selectInstance _ = pure ()
 escapeScope ::
     ActivationVerificationKey ->
     ProtectedStore ->
-    ActivationManifest ->
-    ActivationManifest ->
+    SelectedActivationManifest ->
+    ReceivedActivationManifest ->
     ActivationGrant ->
     RuntimeMeasurement ->
     IO (Either ActivationError ())

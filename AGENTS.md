@@ -221,6 +221,16 @@ this project (§ KK); the repository carries no script. **On macOS/Linux, run th
 of this applies. Full mechanism, root cause, and how to install the two files on a fresh Windows
 machine: [documents/engineering/durable_windows_runs.md](documents/engineering/durable_windows_runs.md).
 
+## WSL2 for Kubernetes work on Windows
+
+When doing Kubernetes work on Windows (Kind clusters, Docker, Helm, the Linux substrate's live gates), assistants
+have **total freedom to configure WSL2 to do what the work needs** — starting and stopping services, running them as
+root through `wsl -u root`, installing or reconfiguring packages, and changing that distribution's own settings —
+**provided it is done in a dedicated WSL2 instance for hostbootstrap** (for example `hostbootstrap-linux-d`). Never
+configure, start, stop, or write into a distribution that belongs to the user or to another project; leave their
+state exactly as found. Record what was configured in the dated evidence of the sprint it served, and put a service
+back (for example, stop Docker) when the run is done unless the work needs it left running.
+
 ## Base image: rebuild → republish → pull
 
 The published rolling `docker.io/tuee22/hostbootstrap:basecontainer-<flavor>-<arch>` tags are the

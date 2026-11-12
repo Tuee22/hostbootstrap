@@ -43,6 +43,7 @@ executable basecontainer-core-deps
     , containers
     , cookie
     , criterion
+    , crypton
     , cryptohash-sha1
     , cryptohash-sha256
     , cryptonite

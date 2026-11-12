@@ -51,7 +51,8 @@ import HostBootstrap.Ownership.Object (
     ownerClaimText,
  )
 import HostBootstrap.Substrate.Provider.Report (
-    ProviderConfigValue (ProviderConfigUnset, ProviderConfigValue),
+    ProviderConfigValue,
+    providerConfigValueText,
  )
 
 -- ---------------------------------------------------------------------------
@@ -206,18 +207,17 @@ priorlessRecord record = case originRecordOrigin record of
 
 -- | Require that the instance carries exactly this record's claim.
 sameClaim :: OwnerClaim -> ProviderConfigValue -> Either ProviderStandingConflict ()
-sameClaim claim carried = case carried of
-    ProviderConfigValue observed
+sameClaim claim carried = case providerConfigValueText carried of
+    Just observed
         | observed == ownerClaimText claim -> Right ()
         | otherwise -> Left (InstanceUnderAnotherClaim (ownerClaimText claim) observed)
-    ProviderConfigUnset ->
+    Nothing ->
         Left (InstanceUnderAnotherClaim (ownerClaimText claim) unclaimedInstance)
 
 {- | What a conflict reads when the instance carries no claim at all.
 
-A distinct word rather than an empty one, because "carries nothing" and "carries
-the empty string" are different reports and an operator reading the refusal
-needs to know which.
+The provider gives the same empty-line answer for an absent key and a key set
+to the empty string. Both are unset, and the refusal names that lack of a claim.
 -}
 unclaimedInstance :: Text
 unclaimedInstance = "no claim at all"

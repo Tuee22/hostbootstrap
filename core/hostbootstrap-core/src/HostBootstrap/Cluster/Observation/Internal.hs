@@ -1,4 +1,6 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RoleAnnotations #-}
 
 {- | Package-private representation of settled cluster ownership.  The generic
@@ -15,8 +17,10 @@ module HostBootstrap.Cluster.Observation.Internal (
     ClusterCordonCallResult (..),
     ClusterReadinessObservation (..),
     ClusterReadinessCallResult (..),
-    ClusterCleanupObservation (..),
-    ClusterCleanupCallResult (..),
+    ClusterReadiness (..),
+    VerifiedClusterProbeResponse,
+    verifyClusterProbeResponse,
+    withRecoveredClusterReadiness,
     ManagedClusterHandle (..),
     managedClusterResourceHandle,
     managedClusterReceipt,
@@ -25,15 +29,21 @@ module HostBootstrap.Cluster.Observation.Internal (
 )
 where
 
+import Data.ByteString (ByteString)
 import Data.Kind (Type)
 import Data.Text (Text)
 import Data.Word (Word64)
+import HostBootstrap.Lifecycle.Dependency.Internal (RuntimeDependencyPackage, runtimeDependencyPackageGeneration, runtimeDependencyPackageKey, verifyRuntimeDependencyProbeResponse)
 import HostBootstrap.ProjectPlan (ClusterResource)
 import HostBootstrap.Reconcile (
+    FailureDetail (..),
     Managed,
     OwnershipReceipt,
-    ReconcileError,
+    ReconcileError (Failure),
+    RecoveryDisposition (ReprobeBeforeRetry),
     ResourceHandle,
+    resourceHandleGeneration,
+    resourceHandleKey,
  )
 
 -- | Plan-independent report parsed inside the strong reconcile backend.
@@ -87,6 +97,7 @@ type role ClusterCordonCallResult nominal nominal nominal nominal nominal nomina
 data ClusterReadinessObservation
     = ClusterReady Text
     | ClusterNotReady Text
+    | ClusterApiNotReady Text Text
     | ClusterReadinessProbeFailed Text
     deriving (Eq, Show)
 
@@ -123,20 +134,6 @@ data ClusterReadinessCallResult scope specDigest planId configId (cfg :: Type ->
 
 type role ClusterReadinessCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
--- | Plan-independent report parsed inside the strong cleanup backend.
-data ClusterCleanupObservation
-    = ClusterCleanupRemoved
-    | ClusterCleanupReplaced Text
-    | ClusterCleanupFailed ReconcileError
-    deriving (Eq, Show)
-
--- | Proof that the strong backend executed one exact prepared cleanup call.
-newtype ClusterCleanupCallResult scope specDigest planId configId (cfg :: Type -> Type) clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase
-    = ClusterCleanupCallResult ClusterCleanupObservation
-    deriving (Eq, Show)
-
-type role ClusterCleanupCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
-
 data ManagedClusterHandle scope planId clusterId phase
     = ManagedClusterHandle
         (ResourceHandle scope planId clusterId ClusterResource Managed phase)
@@ -155,6 +152,8 @@ managedClusterReceipt ::
     OwnershipReceipt scope planId clusterId ClusterResource
 managedClusterReceipt (ManagedClusterHandle _ receipt _) = receipt
 
+-- | The retained runtime identity, independently of the journal generation.
+-- This ordinary text projection grants no ownership or mutation authority.
 managedClusterBackendIdentity ::
     ManagedClusterHandle scope planId clusterId phase ->
     Text
@@ -165,3 +164,70 @@ managedClusterBackendBinding ::
     ManagedClusterHandle scope planId clusterId phase ->
     ClusterBackendBinding
 managedClusterBackendBinding (ManagedClusterHandle _ _ binding) = binding
+
+-- | Readiness evidence for the exact managed cluster generation.
+data ClusterReadiness scope planId clusterId phase where
+    ClusterReadiness ::
+        ManagedClusterHandle scope planId clusterId phase ->
+        IO
+            ( ClusterReadinessCallResult
+                scope
+                specDigest
+                planId
+                configId
+                cfg
+                clusterId
+                clusterFrame
+                providerId
+                providerFrame
+                budgetId
+                provider
+                capabilityId
+                wallSpecId
+                workloadSetId
+                partitionId
+                phase
+            ) ->
+        ClusterReadiness scope planId clusterId phase
+    RecoveredClusterReadiness ::
+        ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
+        IO (Either ReconcileError Word64) ->
+        ClusterReadiness scope planId clusterId phase
+
+type role ClusterReadiness nominal nominal nominal nominal
+
+-- | A positive response verified for this exact carried resource and package.
+newtype VerifiedClusterProbeResponse scope planId clusterId = VerifiedClusterProbeResponse Word64
+
+type role VerifiedClusterProbeResponse nominal nominal nominal
+
+verifyClusterProbeResponse ::
+    ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
+    RuntimeDependencyPackage scope planId ->
+    Text ->
+    ByteString ->
+    Either ReconcileError (VerifiedClusterProbeResponse scope planId clusterId)
+verifyClusterProbeResponse handle package nonce bytes
+    | runtimeDependencyPackageKey package /= "cluster:" <> resourceHandleKey handle =
+        clusterProbeFailure "the verified probe package names another cluster resource"
+    | runtimeDependencyPackageGeneration package /= resourceHandleGeneration handle =
+        clusterProbeFailure "the verified probe package names another cluster generation"
+    | otherwise = case verifyRuntimeDependencyProbeResponse package nonce bytes of
+        Left refusal -> clusterProbeFailure refusal
+        Right version -> Right (VerifiedClusterProbeResponse version)
+
+withRecoveredClusterReadiness ::
+    ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
+    VerifiedClusterProbeResponse scope planId clusterId ->
+    IO (Either ReconcileError (VerifiedClusterProbeResponse scope planId clusterId)) ->
+    (ClusterReadiness scope planId clusterId phase -> result) ->
+    IO (Either ReconcileError result)
+withRecoveredClusterReadiness handle (VerifiedClusterProbeResponse initialVersion) reprobe consume
+    | initialVersion == 0 = pure (clusterProbeFailure "the verified initial observation has no positive version")
+    | otherwise =
+        pure (Right (consume (RecoveredClusterReadiness handle (fmap (fmap responseVersion) reprobe))))
+  where
+    responseVersion (VerifiedClusterProbeResponse version) = version
+
+clusterProbeFailure :: Text -> Either ReconcileError result
+clusterProbeFailure reason = Left (Failure (FailureDetail "recover cluster readiness probe" reason ReprobeBeforeRetry))

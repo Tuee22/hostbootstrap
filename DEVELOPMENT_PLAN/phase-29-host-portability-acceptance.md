@@ -1110,10 +1110,22 @@ Run the complete phase gate on all four declared gate hosts, including the `demo
 legs of § JJ. Record the source digest before and after each run to confirm it names the tested tree.
 This sprint has no current-tree gate-host runs.
 
+A supplementary focused Windows run on 2026-11-06 is interrupted during an executable-identity
+copy case: Microsoft Defender classifies the generated test program as
+`Program:Win32/Contebrew.A!ml` (threat 251873) and quarantines the binary and its temporary copy.
+The executable is absent afterwards. The interrupted process returns 0 without a completed
+case total, so it establishes no passing runtime or acceptance evidence. Both inherited-input
+and null-input control launches then fail before process creation because the binary is absent.
+Windows security settings are unchanged. This is an environment interruption; it is not a
+replacement gate or a passing native-host result.
+
 #### Remaining Work
 
 - Run `cabal build all` from `core/` and the complete host static gate (§ JJ) on Windows, macOS,
   x86_64 Linux, and arm64 Linux gate hosts.
+- Review the generated test-program quarantine in Windows Security before the native Windows
+  runtime gate. The interrupted focused attempt is not passing evidence; the complete phase
+  gate still has to run after the final covered-source changes.
 - Record each actual dated result and measured covers digest before marking the sprint and phase `Done`.
 
 ## Remaining Work

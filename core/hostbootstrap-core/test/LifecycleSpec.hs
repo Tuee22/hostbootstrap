@@ -1,4 +1,6 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ImpredicativeTypes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -6,10 +8,7 @@
 
 module LifecycleSpec (tests) where
 
-import Control.Exception (SomeException, displayException, try)
-#ifndef mingw32_HOST_OS
-import Control.Exception (bracket_)
-#endif
+import Control.Exception (SomeException, bracket_, displayException, evaluate, try)
 import Data.Bits ((.&.), shiftR)
 import qualified Crypto.Hash as Hash
 import qualified Data.ByteArray as ByteArray
@@ -18,8 +17,9 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (ord)
-import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (isInfixOf)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.List (findIndex, isInfixOf, isPrefixOf, sort, tails)
+import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -32,19 +32,27 @@ import HostBootstrap.Authority
     , RootInvocationAuthority
     , VerbUp
     , brokerEpochWord
+    , commandAuthorityEpoch
+    , commandAuthorityFrame
     , installedProjectName
     , rootAuthorityEpoch
     , rootAuthorityVerb
     , rootScopeAuthority
     )
+import qualified HostBootstrap.Authority as Authority
+import qualified HostBootstrap.Authority.Testing as AuthorityFixture
+import qualified HostBootstrap.Chain as Chain
 import HostBootstrap.Cluster.Lifecycle
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Schema (ValidatedConfig, withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
+import qualified HostBootstrap.Config.Vocab as V
 import HostBootstrap.Context (ResourceEnvelope (..))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.HostConfig (HostConfig (..))
-import HostBootstrap.HostTool (HostTool (..), mkAbsExe)
+import HostBootstrap.Lift (ContainerLift (..), ContainerPlacement (ProviderGuestContainer), InVMSelfPath (InVMSelfPath), currentSelfRef, emptyVMStack, inContainer, localContext)
+import qualified HostBootstrap.Lifecycle.Execution as Execution
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore
 import HostBootstrap.Lifecycle.Mode
     ( BoundInvocationRecovery
     , BoundRunLease
@@ -57,6 +65,7 @@ import HostBootstrap.Lifecycle.Mode
     , ProjectModeLease
     , UnboundRunLease
     , VerifiedPlanSnapshot
+    , bindRunLease
     , bindRunLeaseWithPlanRecovery
     , boundInvocationRecoveryRevisionKind
     , boundInvocationRecoveryRunText
@@ -65,7 +74,9 @@ import HostBootstrap.Lifecycle.Mode
     , boundRunLeaseSpecDigest
     , normalActiveRecoveryRunText
     , invocationCloseKeyText
+    , leaseConflictMessage
     , mkInvocationCloseKey
+    , modeErrorMessage
     , planSnapshotCanonicalBytes
     , planSnapshotPlanDigest
     , planSnapshotRevision
@@ -95,10 +106,14 @@ import HostBootstrap.Lifecycle.Mode
     , withResumedExistingBoundReverseRootKernel
     , withRecoveredProductionLifecycleProfile
     )
+import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields, preparedGateJournalVersion)
+import qualified HostBootstrap.Lifecycle.Session as Session
+import qualified HostBootstrap.Lifecycle.Session.Testing as Transaction
 import HostBootstrap.ProjectPlan
     ( ProjectPlan
     , StablePlanSnapshot
     , planDraftsFromValidatedBuilder
+    , forward
     , renderSnapshot
     , stablePlanSnapshotBytes
     , stablePlanSnapshotConfigDigest
@@ -123,6 +138,7 @@ import HostBootstrap.ProjectRoot
     )
 import HostBootstrap.Protected
     ( Expectation (ExpectAbsent, ExpectVersion)
+    , ProtectedError (ProtectedIOFailure)
     , ProtectedRecord (protectedRecordBytes, protectedRecordVersion)
     , ProtectedStore
     , RecordKey
@@ -132,6 +148,8 @@ import HostBootstrap.Protected
     , mkRecordKey
     , mkRecordName
     , openProtectedStore
+    , protectedStoreIdentity
+    , protectedStoreIdentityText
     , protectedStoreRoot
     , readProtectedRecord
     , recordKeyText
@@ -145,21 +163,26 @@ import HostBootstrap.Step
     , StepObservation (StepChanged)
     , StepPlan
     , contextInitStep
+    , ensureStep
+    , declaresProviderResource
+    , deployVMStep
+    , descendsVia
     , mkStepPlan
+    , providerResourceAtCurrentFrame
     )
+import HostBootstrap.Reconcile (stepExecutionFor)
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import qualified SourceGuard
 import System.Directory
     ( createDirectory
-    , createDirectoryIfMissing
     , doesDirectoryExist
-    , findExecutable
-#ifndef mingw32_HOST_OS
+    , removeDirectory
     , removeFile
     , renameDirectory
-#endif
+    , renameFile
     )
 import System.Exit (ExitCode (..))
-import System.FilePath ((<.>), (</>))
+import System.FilePath (takeDirectory, (<.>), (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -179,7 +202,10 @@ prod :: ClusterPlan
 prod = resolvePlan "demo" rootPath Production
 
 test1 :: ClusterPlan
-test1 = resolvePlan "demo" rootPath (TestCase "case1")
+test1 = resolvePlan "demo" rootPath (fixtureHarnessProfile "case1")
+
+fixtureHarnessProfile :: String -> ClusterProfile
+fixtureHarnessProfile = either (error . show) id . mkTestCaseProfile . Text.pack
 
 tests :: TestTree
 tests =
@@ -193,29 +219,350 @@ tests =
         , testGroup "NVIDIA device plugin" nvidiaDevicePluginCases
         , testGroup "multi-node cordon" nodeCordonCases
         , testGroup "never-delete-.data" dataInvariantCases
-        , testGroup "teardown failure propagation" teardownFailureCases
-        , testGroup "status report" statusCases
-        , testGroup "health-check-and-recreate" healthProbeCases
         , testGroup "persisted project snapshots" snapshotPersistenceCases
         , testGroup "existing bound Production snapshots" existingBoundSnapshotCases
         , testGroup "recovered Production lifecycle profile" recoveredProductionProfileCases
+        , testGroup "recovery journal bookkeeping" recoveryJournalBookkeepingCases
+        , testGroup "live lifecycle prepare" livePrepareCases
         ]
 
--- The pure classification behind clusterCreate's health-check-and-recreate: a
--- listed kind cluster is only trusted when @kubectl get nodes@ actually answers
--- with a node line; a stopped cluster (connection refused) or an empty listing is
--- unhealthy so the caller deletes and recreates it.
-healthProbeCases :: [TestTree]
-healthProbeCases =
-    [ testCase "a node listing is healthy" $
-        clusterHealthyFromProbe (Right (ExitSuccess, "demo-control-plane   Ready   control-plane   2m   v1.29\n", "")) @?= True
-    , testCase "a stopped cluster (connection refused) is unhealthy" $
-        clusterHealthyFromProbe (Left "could not exec kubectl: connection refused") @?= False
-    , testCase "a non-zero kubectl exit is unhealthy" $
-        clusterHealthyFromProbe (Right (ExitFailure 1, "", "The connection to the server was refused")) @?= False
-    , testCase "an empty node listing is unhealthy" $
-        clusterHealthyFromProbe (Right (ExitSuccess, "   \n", "")) @?= False
+livePrepareCases :: [TestTree]
+livePrepareCases =
+    [ testCase "matching retained lifecycle evidence permits an actual journal prepare" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan _authority _cursor _execution callbacks prepare -> do
+            prepared <- prepare
+            version <- either (assertFailure . show) pure prepared
+            readIORef callbacks >>= (@?= 1)
+            (key, physicalVersion, _) <- solePrepareRecord store "op."
+            physicalVersion @?= version
+            observed <- withProtectedEntry store $ \session -> Right <$> Transaction.readTransactionRecord session key
+            durable <- either (fail . show) (either (fail . show) (maybe (assertFailure "the prepared operation disappeared") pure)) observed
+            recordVersionWord (Transaction.transactionRecordVersion durable) @?= version
+            decodeFields (Transaction.transactionRecordPayload durable) @?= ["EffectOutcomeUnknown", "live-prepare", "1", "1"]
+    , testCase "prepare refuses a changed project mode epoch before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan authority _cursor _execution callbacks prepare -> do
+            expected <- changePrepareModeEpoch store authority
+            assertPrepareRefusal store callbacks prepare expected
+    , testCase "prepare refuses a real broker allocation rotation before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan authority _cursor _execution callbacks prepare -> do
+            Fixture.withFixtureInstalledProject $ \project -> do
+                allocated <- withProtectedEntry store $ \session -> fmap Right $ do
+                    fresh <- AuthorityFixture.withFreshBrokerEpochKernel session project $ \epoch -> do
+                        brokerEpochWord epoch @?= brokerEpochWord (commandAuthorityEpoch authority) + 1
+                        pure (Right ())
+                    either (fail . show) pure fresh
+                either (fail . show) pure allocated
+            assertPrepareRefusal store callbacks prepare
+                (Session.SessionAuthorityFailure (AuthorityInvalidIdentity "the recorded broker generation does not match the allocated counter"))
+    , testCase "prepare refuses a missing bound lease before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan _authority _cursor _execution callbacks prepare -> do
+            (key, _, _) <- solePrepareRecord store "lease."
+            deleteRecord store key
+            assertPrepareRefusal store callbacks prepare
+                (Session.SessionAcquisitionBindingMismatch "live lease record" (recordKeyText key) "absent")
+    , testCase "prepare refuses a newer same-byte bound lease before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan _authority _cursor _execution callbacks prepare -> do
+            (key, originalVersion, originalBytes) <- solePrepareRecord store "lease."
+            advanceRecordVersion store key
+            changed <- requireRecord store key
+            protectedRecordBytes changed @?= originalBytes
+            let observedVersion = recordVersionWord (protectedRecordVersion changed)
+            observedVersion @?= originalVersion + 1
+            assertPrepareRefusal store callbacks prepare
+                (Session.SessionAcquisitionBindingMismatch "live lease record version" (Text.pack (show originalVersion)) (Text.pack (show observedVersion)))
+    , testCase "prepare refuses observed frozen lease data before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store _plan _authority _cursor _execution callbacks prepare -> do
+            (key, _, bytes) <- solePrepareRecord store "lease."
+            frozen <- case decodeFields bytes of
+                ["bound", epoch, spec, digest] ->
+                    pure (encodeFields ["frozen", epoch, "observed-freeze", "observed-resource-set", spec, digest, spec, digest])
+                fields -> assertFailure ("expected the genuine bound lease, got " <> show fields)
+            replaceRawRecord store key frozen
+            assertPrepareRefusal store callbacks prepare
+                (Session.SessionAcquisitionBindingMismatch "live lease state" "bound" "frozen")
+    , testCase "prepare refuses a changed real snapshot binding before registration" $
+        withLivePrepareFixture livePrepareGraph 0 $ \store plan _authority _cursor _execution callbacks prepare ->
+            Fixture.withFixtureRootChainEvidence livePrepareGraph $ \otherStore otherPlan _otherAuthority _otherCursor -> do
+                let retained = renderSnapshot plan
+                    replacement = renderSnapshot otherPlan
+                stablePlanSnapshotSpecDigest replacement @?= stablePlanSnapshotSpecDigest retained
+                assertBool "the independently persisted plan really differs" (stablePlanSnapshotDigest replacement /= stablePlanSnapshotDigest retained)
+                (key, _, _) <- solePrepareRecord store "snapshot."
+                (_, _, replacementBytes) <- solePrepareRecord otherStore "snapshot."
+                replaceRawRecord store key replacementBytes
+                assertPrepareRefusal store callbacks prepare
+                    (Session.SessionAcquisitionBindingMismatch "live snapshot plan digest" (stablePlanSnapshotDigest retained) (stablePlanSnapshotDigest replacement))
+    , testCase "prepare refuses another actual descriptor frame in the same plan before registration" $
+        withLivePrepareFixture livePrepareTwoFrameGraph 1 $ \store _plan authority _cursor execution callbacks prepare -> do
+            let retainedFrame = commandAuthorityFrame authority
+                observedFrame = Execution.stepExecutionFrame execution
+            assertBool "the real descriptor belongs to the other admitted frame" (observedFrame /= retainedFrame)
+            assertPrepareRefusal store callbacks prepare
+                (Session.SessionCursorBindingMismatch "descriptor frame" retainedFrame observedFrame)
+    , testCase "an initially stale Chain request creates no journal bookkeeping" $ do
+        callbacks <- newIORef (0 :: Int)
+        let graph _store frame = either (error . show) id $ mkStepPlan
+                [contextInitStep "stale entry" frame (\_ -> modifyIORef' callbacks (+ 1) >> pure StepChanged)]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            expected <- changePrepareModeEpoch store authority
+            before <- protectedRecordImage store
+            self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            result <- fmap (either (\(reason, _, _) -> Left reason) Right) (Chain.runChainFromFrameWithDescentFailure livePrepareHost self store plan authority cursor (\_ _ _ _ -> pure (Right ())))
+            result @?= Left (Session.sessionErrorMessage expected)
+            readIORef callbacks >>= (@?= 0)
+            protectedRecordImage store >>= (@?= before)
+    , testCase "prepare entry validates before journal and operation writes" $
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            -- DEVELOPMENT_PLAN/rationale.md#prepare-admission-rechecks-the-retained-live-binding
+            description <- SourceGuard.readPackageDescription
+            let readModule name = do
+                    path <- SourceGuard.libraryModulePath packageRoot description name
+                    Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile path
+                body name source = either assertFailure pure (SourceGuard.haskellDefinitionTokens name source)
+                retains label fragment tokens = assertBool label (SourceGuard.haskellTokens fragment `isInfixOf` tokens)
+            session <- readModule "HostBootstrap.Lifecycle.Session"
+            mode <- readModule "HostBootstrap.Lifecycle.Mode"
+            chain <- readModule "HostBootstrap.Chain"
+            sessionExports <- maybe (assertFailure "Session has no explicit export list") pure (SourceGuard.moduleExportTokens "HostBootstrap.Lifecycle.Session" session)
+            modeExports <- maybe (assertFailure "Mode has no explicit export list") pure (SourceGuard.moduleExportTokens "HostBootstrap.Lifecycle.Mode" mode)
+            retains "Session exports the fixed entry" "withLifecyclePrepareEntry" sessionExports
+            retains "Mode reexports the same fixed entry" "withLifecyclePrepareEntry" modeExports
+            retains "the cursor stays abstract" "LifecycleCursor ," sessionExports
+            assertBool "no cursor constructor is public" (not (SourceGuard.haskellTokens "LifecycleCursor (" `isInfixOf` sessionExports))
+            definitions <- either assertFailure pure (SourceGuard.haskellDefinitionNames mode)
+            assertBool "Mode owns no duplicate entry" ("withLifecyclePrepareEntry" `notElem` definitions)
+            retains "Mode imports the actual fixed Session entry" "withLifecyclePrepareEntry" =<< maybe (assertFailure "Mode has no explicit Session import") pure (SourceGuard.moduleImportTokens "HostBootstrap.Lifecycle.Session" mode)
+            let sessionTokens = SourceGuard.haskellTokens session
+            retains "the fixed entry links authority and cursor indices"
+                "withLifecyclePrepareEntry :: ProtectedSession session -> CommandAuthority scope planId frame brokerGeneration verb ExecutePhase -> LifecycleCursor scope planId frame brokerGeneration verb ExecutePhase -> Text -> IO (Either SessionError result) -> IO (Either SessionError result)"
+                sessionTokens
+            retains "the private cursor retains the rank-2 original validator"
+                "LifecyclePhase phase -> (forall session. ProtectedSession session -> IO (Either SessionError ())) -> LifecycleCursor scope planId frame brokerGeneration verb phase"
+                sessionTokens
+            admission <- body "withAcquisitionJournal" mode
+            retains "acquisition admission retains its actual Mode validator"
+                "openAcquisitionJournalKernel admission store session validateLiveBinding coordinates" admission
+            retains "the retained validator checks the actual allocated broker"
+                "allocated <- validateAllocatedBrokerEpochKernel session epoch" admission
+            entry <- body "withLifecyclePrepareEntry" session
+            retains "live checks refuse before the continuation"
+                "live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- validateCurrentLifecycleCursor session cursor case current of Left failure -> pure (Left failure) Right () -> action" entry
+            mapM_
+                ( \(name, fragment) -> do
+                    tokens <- body name session
+                    retains (name <> " retains the original validator") fragment tokens
+                )
+                [ ("openCurrentLifecycleCursorInEntry", "binding verb sourcePhase validateLive")
+                , ("openLifecycleCursorInEntry", "binding recordedVerb requestedPhase validateLive")
+                , ("resumeCurrentLifecycleCursor", "recorded verb recordedPhase validateLive")
+                , ("advanceLifecycleCursorInEntry", "binding verb successorPhase validateLive")
+                ]
+            interpreter <- body "runChainFromFrameWithDescentObserved" chain
+            retains "the opening validates before recovery or bookkeeping"
+                "openChainJournal = inPrepareEntry current $ \\protected -> do swept <- recoverAbandonedSessions" interpreter
+            retains "each node validates its actual descriptor before registration"
+                "runNode session fence permit planned execution runtime = do prepared <- inPrepareEntry (stepExecutionFrame execution) $ \\protected -> do registered <- registerAll" interpreter
+            retains "the shared entry stays inside the same protected action"
+                "inPrepareEntry frame action = inEntry $ \\protected -> withLifecyclePrepareEntry protected authority cursor frame (action protected)" interpreter
+            length (filter (== "withStepPreparedGate") interpreter) @?= 1
+            length (filter (== "withPreparedGate") interpreter) @?= 1
+            retains "the projected prepare remains under the checked node entry"
+                "Right afterRegistration -> openProjections protected session commandEpoch fence runtime afterRegistration" interpreter
     ]
+
+withLivePrepareFixture ::
+    (ProtectedStore -> StepFrame -> StepPlan) ->
+    Int ->
+    ( forall projectId specDigest planId configId frame brokerGeneration.
+      ProtectedStore ->
+      ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      Authority.CommandAuthority (Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      Session.LifecycleCursor (Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      Execution.StepExecution (Production projectId) planId ->
+      IORef Int ->
+      IO (Either Session.SessionError Word64) ->
+      IO result
+    ) ->
+    IO result
+withLivePrepareFixture graph selected use =
+    Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+        callbacks <- newIORef (0 :: Int)
+        carrier <- ExecutionCore.newResourceCarrierCore
+        runtime <- ExecutionCore.newStepRuntimeCore carrier
+        planned <- case drop selected (NonEmpty.toList (forward plan)) of
+            first : _ -> pure first
+            [] -> assertFailure "the selected genuine plan node is absent"
+        let execution = stepExecutionFor plan livePrepareHost runtime planned
+            digest = stablePlanSnapshotDigest (renderSnapshot plan)
+            epoch = commandAuthorityEpoch authority
+        opened <- withProtectedEntry store $ \session -> do
+            permit <- either (fail . show) pure =<< Session.openProjectJournal session digest
+            (operationSession, afterOpen) <- either (fail . show) pure =<< Session.openOperationSession session epoch digest "live-prepare" permit
+            fence <- either (fail . show) pure =<< Session.establishInitialFence session afterOpen 1
+            pure (Right (operationSession, fence, afterOpen))
+        (operationSession, fence, permit) <- either (fail . show) pure opened
+        let prepare = do
+                entered <- withProtectedEntry store $ \session ->
+                    fmap Right $
+                        Session.withLifecyclePrepareEntry session authority cursor (Execution.stepExecutionFrame execution) $ do
+                            registered <- Session.registerOperationIntent session operationSession (Execution.stepExecutionOperationKey execution) Session.NoHistory permit
+                            case registered of
+                                Left failure -> pure (Left failure)
+                                Right afterIntent ->
+                                    Session.withStepPreparedGate session operationSession epoch fence execution "EffectOutcomeUnknown" afterIntent $ \gate _next -> do
+                                        modifyIORef' callbacks (+ 1)
+                                        pure (Right (preparedGateJournalVersion gate))
+                either (fail . show) pure entered
+        use store plan authority cursor execution callbacks prepare
+
+livePrepareHost :: HostConfig
+livePrepareHost = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+
+livePrepareGraph :: ProtectedStore -> StepFrame -> StepPlan
+livePrepareGraph _store frame = either (error . show) id $ mkStepPlan
+    [contextInitStep "live prepare" frame (const (pure StepChanged))]
+
+livePrepareTwoFrameGraph :: ProtectedStore -> StepFrame -> StepPlan
+livePrepareTwoFrameGraph _store frame = either (error . show) id $ mkStepPlan
+    [ descendsVia localContext (contextInitStep "live prepare root" frame (const (pure StepChanged)))
+    , ensureStep "live-prepare-child" "live prepare child" (StepFrame "live-prepare-child" "Child") (const (pure StepChanged))
+    ]
+
+assertPrepareRefusal :: ProtectedStore -> IORef Int -> IO (Either Session.SessionError Word64) -> Session.SessionError -> IO ()
+assertPrepareRefusal store callbacks prepare expected = do
+    before <- protectedRecordImage store
+    prepare >>= (@?= Left expected)
+    readIORef callbacks >>= (@?= 0)
+    protectedRecordImage store >>= (@?= before)
+
+solePrepareRecord :: ProtectedStore -> Text.Text -> IO (RecordKey, Word64, ByteString.ByteString)
+solePrepareRecord store prefix = do
+    image <- protectedRecordImage store
+    case [(exactRecordKey key, version, bytes) | (key, version, bytes) <- image, prefix `Text.isPrefixOf` key] of
+        [row] -> pure row
+        rows -> assertFailure ("expected exactly one " <> Text.unpack prefix <> " record, got " <> show rows)
+
+changePrepareModeEpoch :: ProtectedStore -> Authority.CommandAuthority scope planId frame brokerGeneration verb phase -> IO Session.SessionError
+changePrepareModeEpoch store authority = do
+    (key, _, bytes) <- solePrepareRecord store "mode."
+    let held = brokerEpochWord (commandAuthorityEpoch authority)
+        changed = held + 1
+    decodeFields bytes @?= ["production", Text.pack (show held)]
+    replaceRawRecord store key (encodeFields ["production", Text.pack (show changed)])
+    pure (Session.SessionAcquisitionBindingMismatch "live mode broker epoch" (Text.pack (show held)) (Text.pack (show changed)))
+
+-- These exercise the public journal kernel. The source check below holds its
+-- adoption by Mode; no later migration or abandoned-run API is invoked here.
+recoveryJournalBookkeepingCases :: [TestTree]
+recoveryJournalBookkeepingCases =
+    [ testCase "journal bookkeeping creates only the coordinator and project once" $
+        withRecoveryJournalStore $ \store -> do
+            let coordinate = "recovery-journal-coordinate"
+                projectKey = exactRecordKey ("project." <> fixtureRecordName coordinate)
+            coordinator <- either (fail . show) pure (Transaction.coordinatorKey coordinate)
+            readRecord store projectKey >>= (@?= Nothing)
+            readRecord store coordinator >>= (@?= Nothing)
+            opened <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            permit <- either (fail . show) (either (fail . show) pure) opened
+            project <- requireRecord store projectKey
+            committed <- requireRecord store coordinator
+            protectedRecordBytes project @?= Transaction.stampTarget 1 (encodeFields ["open"])
+            recordVersionWord (protectedRecordVersion project) @?= 1
+            Transaction.decodeCoordinator (protectedRecordBytes committed) @?= Right (Transaction.CoordinatorIdle 1)
+            recordVersionWord (protectedRecordVersion committed) @?= 3
+            Session.projectPermitVersion permit @?= recordVersionWord (protectedRecordVersion committed)
+            before <- protectedRecordImage store
+            sort [key | (key, _, _) <- before] @?= sort (map recordKeyText [coordinator, projectKey])
+            reopened <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            fmap (fmap Session.projectPermitVersion) reopened @?= Right (Right (Session.projectPermitVersion permit))
+            protectedRecordImage store >>= (@?= before)
+    , testCase "journal bookkeeping replays a published project-open transaction once" $
+        withRecoveryJournalStore $ \store -> do
+            let coordinate = "recovery-journal-coordinate"
+                projectKey = exactRecordKey ("project." <> fixtureRecordName coordinate)
+                descriptor =
+                    Transaction.TransactionDescriptor
+                        { Transaction.descriptorSequence = 1
+                        , Transaction.descriptorPlan = coordinate
+                        , Transaction.descriptorKind = Transaction.TxnOpenProject
+                        , Transaction.descriptorTargets =
+                            [Transaction.projectTransactionTarget projectKey Nothing (encodeFields ["open"])]
+                        }
+            coordinator <- either (fail . show) pure (Transaction.coordinatorKey coordinate)
+            writeRawRecord store coordinator (Transaction.encodeCoordinator (Transaction.CoordinatorApplying descriptor))
+            published <- requireRecord store coordinator
+            readRecord store projectKey >>= (@?= Nothing)
+            opened <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            permit <- either (fail . show) (either (fail . show) pure) opened
+            project <- requireRecord store projectKey
+            committed <- requireRecord store coordinator
+            protectedRecordBytes project @?= Transaction.stampTarget 1 (encodeFields ["open"])
+            recordVersionWord (protectedRecordVersion project) @?= 1
+            Transaction.decodeCoordinator (protectedRecordBytes committed) @?= Right (Transaction.CoordinatorIdle 1)
+            recordVersionWord (protectedRecordVersion committed)
+                @?= recordVersionWord (protectedRecordVersion published) + 1
+            Session.projectPermitVersion permit @?= recordVersionWord (protectedRecordVersion committed)
+            before <- protectedRecordImage store
+            sort [key | (key, _, _) <- before] @?= sort (map recordKeyText [coordinator, projectKey])
+            reopened <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            fmap (fmap Session.projectPermitVersion) reopened @?= Right (Right (Session.projectPermitVersion permit))
+            protectedRecordImage store >>= (@?= before)
+    , testCase "a Closing journal refuses bookkeeping without changing an existing fence" $
+        withRecoveryJournalStore $ \store -> do
+            let coordinate = "recovery-journal-coordinate"
+                fenceKey = exactRecordKey ("fence." <> fixtureRecordName coordinate)
+            opened <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            permit <- either (fail . show) (either (fail . show) pure) opened
+            closing <- withProtectedEntry store (\session -> Right <$> Session.beginClosingProject session coordinate 7 permit)
+            either (fail . show) (either (fail . show) (const (pure ()))) closing
+            writeRawRecord store fenceKey (encodeFields ["FenceObserved", "18446744073709551615"])
+            before <- protectedRecordImage store
+            refused <- withProtectedEntry store (\session -> Right <$> Session.openProjectJournal session coordinate)
+            fmap (fmap Session.projectPermitVersion) refused @?= Right (Left (Session.SessionProjectClosing coordinate))
+            protectedRecordImage store >>= (@?= before)
+    , testCase "Mode obtains its internal fence witness before the recovery protocol" $
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            -- DEVELOPMENT_PLAN/rationale.md#fence-producers-follow-the-held-permit
+            description <- SourceGuard.readPackageDescription
+            path <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Mode"
+            source <- Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile path
+            mapM_
+                ( \name -> do
+                    body <- either assertFailure pure (SourceGuard.haskellDefinitionTokens name source)
+                    let opening =
+                            SourceGuard.haskellTokens
+                                "journalForFence <- openProjectJournal session planDigest fenced <- case journalForFence of Left failure -> pure (Left failure) Right permit -> fenceOldPermits session permit"
+                        markers =
+                            map
+                                SourceGuard.haskellTokens
+                                [ "journalForFence <- openProjectJournal session planDigest"
+                                , "fenced <- case journalForFence"
+                                , "manifested <- verifySessionManifest session planDigest"
+                                , "journal <- openProjectJournal session planDigest"
+                                , "interpretRecordedSessions session epoch manifest fencedPermits permit"
+                                , "admitCurrentBroker session epoch manifest fencedPermits interpreted"
+                                ]
+                    assertBool (name <> " lost early journal refusal propagation") (opening `isInfixOf` body)
+                    positions <-
+                        mapM
+                            ( \marker ->
+                                maybe
+                                    (assertFailure (name <> " lost recovery stage " <> show marker))
+                                    pure
+                                    (findIndex (isPrefixOf marker) (tails body))
+                            )
+                            markers
+                    assertBool (name <> " changed recovery protocol order") (and (zipWith (<) positions (drop 1 positions)))
+                )
+                ["settleAndAdmit", "withAbandonedHarnessRun"]
+    ]
+
+withRecoveryJournalStore :: (ProtectedStore -> IO ()) -> IO ()
+withRecoveryJournalStore use =
+    withSystemTempDirectory "hostbootstrap-recovery-journal" $ \directory -> do
+        opened <- openProtectedStore (directory </> "protected")
+        store <- either (fail . show) pure opened
+        use store
 
 planCases :: [TestTree]
 planCases =
@@ -246,35 +593,14 @@ driverCases =
     [ testCase "Linux GPU accelerator plan selects nvkind" $ do
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxGpu Amd64)
         clusterDriver plan @?= NvkindDriver
-        clusterCreateTool plan @?= Nvkind
         clusterConfigFile plan @?= Nothing
         clusterNodeSuffixes plan @?= ["control-plane", "worker"]
-        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo"]
     , testCase "Linux CPU accelerator plan keeps kind" $ do
         let plan = resolveAcceleratorPlan "demo" rootPath Production (Substrate LinuxCpu Amd64)
         clusterDriver plan @?= KindDriver
-        clusterCreateTool plan @?= Kind
-        clusterCreateArgs plan True @?= ["create", "cluster", "--name", "demo"]
     , testCase "a resolved plan names no template, so the library chooses none" $ do
-        -- The one owner of the choice is the project that ships the templates.
-        -- A resolved plan that named one would fail closed here on any project
-        -- whose source root does not carry that exact file.
         clusterConfigFile (resolvePlanWithDriver "demo" rootPath Production KindDriver) @?= Nothing
         clusterConfigFile (resolvePlanWithDriver "demo" rootPath Production NvkindDriver) @?= Nothing
-    , testCase "a placement-specific cluster config is passed to kind/nvkind" $ do
-        let kindPlan = prod{clusterConfigFile = Just "kind-in-cluster.yaml"}
-            nvkindPlan = (resolvePlanWithDriver "demo" rootPath Production NvkindDriver){clusterConfigFile = Just "nvkind-in-cluster.yaml"}
-        clusterCreateArgs kindPlan True @?= ["create", "cluster", "--name", "demo", "--config", "kind-in-cluster.yaml"]
-        clusterCreateArgs nvkindPlan True @?= ["cluster", "create", "--name=demo", "--config-template=nvkind-in-cluster.yaml"]
-    , testCase "test clusters do not publish fixed kind host ports" $
-        clusterCreateArgs test1 True @?= ["create", "cluster", "--name", "demo-test-case1"]
-    , testCase "an explicit non-publishing nvkind topology is still honored" $ do
-        let plan = (resolvePlanWithDriver "demo" rootPath (TestCase "gpu") NvkindDriver){clusterConfigFile = Just "nvkind-test.yaml"}
-        clusterCreateArgs plan True @?= ["cluster", "create", "--name=demo-test-gpu", "--config-template=nvkind-test.yaml"]
-    , testCase "an explicit cluster config is required and an intentional default is not" $ do
-        clusterConfigPresence Nothing False @?= Right False
-        clusterConfigPresence (Just "nvkind.yaml") True @?= Right True
-        clusterConfigPresence (Just "nvkind.yaml") False @?= Left "cluster up: required config file is missing: nvkind.yaml"
     ]
 
 profileCases :: [TestTree]
@@ -411,23 +737,37 @@ nodeCordonCases =
                 , ["update", "--cpus", "3", "--memory", perNodeMemory, "--memory-swap", perNodeSwap, "demo-worker"]
                 ]
     , testCase "multi-node cordon refuses a CPU slice smaller than its node count" $
-        assertBool "expected an undersized cordon to fail" $
-            case clusterNodeCordonArgs (resolvePlanWithDriver "demo" rootPath Production NvkindDriver) (ResourceEnvelope 1 "8GiB" "20GiB") of
-                Left _ -> True
-                Right _ -> False
+        clusterNodeCordonArgs (resolvePlanWithDriver "demo" rootPath Production NvkindDriver) (ResourceEnvelope 1 "8GiB" "20GiB")
+            @?= Left "cluster node cordon: CPU slice is smaller than the node count"
     , testCase "the plan owns node topology instead of inferring it from the driver" $ do
         let plan = prod{clusterNodeSuffixes = ["control-plane", "worker", "worker2"]}
         clusterNodeNames plan @?= ["demo-control-plane", "demo-worker", "demo-worker2"]
     , testCase "cordoning rejects an empty declared topology" $
-        assertBool "expected an empty topology to fail" $
-            case clusterNodeCordonArgs (prod{clusterNodeSuffixes = []}) (ResourceEnvelope 6 "8GiB" "20GiB") of
-                Left _ -> True
-                Right _ -> False
+        clusterNodeCordonArgs (prod{clusterNodeSuffixes = []}) (ResourceEnvelope 6 "8GiB" "20GiB")
+            @?= Left "cluster node cordon: the plan declares no nodes"
     ]
 
 dataInvariantCases :: [TestTree]
 dataInvariantCases =
-    [ testCase "ensuring the durable root is idempotent and leaves existing content intact" $
+    [ testCase "unchecked Harness profile construction is not exported" $
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            let path = packageRoot </> "src" </> "HostBootstrap" </> "Cluster" </> "Lifecycle.hs"
+            source <- Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile path
+            exports <- maybe (assertFailure "cluster lifecycle exports are missing") pure
+                (SourceGuard.moduleExportTokens "HostBootstrap.Cluster.Lifecycle" source)
+            assertBool "Harness constructor is exported" ("TestCase" `notElem` exports)
+            assertBool "validated constructor is missing" ("mkTestCaseProfile" `elem` exports)
+    , testCase "Harness profiles admit only bounded ASCII run keys" $ do
+        let invalid = ClusterPackageMismatch "the admitted Harness profile carries an invalid run key"
+        mapM_ (\key -> do
+            mkTestCaseProfile key @?= Left invalid
+            profileFromPlanName ("harness:" <> key) @?= Left invalid)
+            ["", "x/../../..", Text.replicate 49 "a", "\x4e00", "bad_key"]
+        profile <- either (assertFailure . show) pure (mkTestCaseProfile "run-42")
+        clusterProfileRunKey profile @?= Just "run-42"
+        clusterProfileRunKey Production @?= Nothing
+        profileFromPlanName "harness:run-42" @?= Right profile
+    , testCase "ensuring the durable root is idempotent and leaves existing content intact" $
         withSystemTempDirectory "hostbootstrap-durable-root" $ \root -> do
             first <- ensureDurableDataPath root
             first @?= root </> ".data"
@@ -438,92 +778,30 @@ dataInvariantCases =
             second @?= first
             readFile marker >>= (@?= "durable-content")
     , testCase "down removes nothing on disk and preserves .data" $ do
-        let (remove, preserve) = teardown Down prod
+        (remove, preserve) <- either (assertFailure . show) pure (teardown Down prod)
         remove @?= []
         assertBool ".data preserved" (dataPath prod `elem` preserve)
     , testCase "delete removes derived state but never .data" $ do
-        let (remove, preserve) = teardown Delete prod
+        (remove, preserve) <- either (assertFailure . show) pure (teardown Delete prod)
         assertBool ".data not in removal set" (dataPath prod `notElem` remove)
         assertBool "derived state removed" ([derivedStatePath prod] == remove)
         assertBool ".data preserved" (dataPath prod `elem` preserve)
     , testCase "test profile also never deletes its .data" $ do
-        let (removeDown, _) = teardown Down test1
-            (removeDel, _) = teardown Delete test1
+        (removeDown, _) <- either (assertFailure . show) pure (teardown Down test1)
+        (removeDel, _) <- either (assertFailure . show) pure (teardown Delete test1)
         assertBool "down keeps test .data" (dataPath test1 `notElem` removeDown)
         assertBool "delete keeps test .data" (dataPath test1 `notElem` removeDel)
-    ]
-
-teardownFailureCases :: [TestTree]
-teardownFailureCases =
-    [ testCase "cluster down turns an unresolved kind cleanup into a reported failure" $
-        withSystemTempDirectory "hostbootstrap-cluster-down" $ \root -> do
-            let durable = root </> ".data"
-                derived = root </> ".cluster" </> "demo"
-                plan = (resolvePlan "demo" root Production){dataPath = durable, derivedStatePath = derived}
-                cfg = HostConfig (Substrate LinuxCpu Amd64) Map.empty
-            createDirectoryIfMissing True durable
-            createDirectoryIfMissing True derived
-            outcome <- try (clusterDown cfg plan) :: IO (Either SomeException ())
-            case outcome of
-                Right () -> assertFailure "cluster down reported success after kind could not be resolved"
-                Left err -> do
-                    let message = displayException err
-                    assertBool "names the aggregate teardown failure" ("cluster down attempted every cleanup step but failed" `isInfixOf` message)
-                    assertBool "reports the unresolved kind tool" ("kind delete cluster: kind not found on this host" `isInfixOf` message)
-            doesDirectoryExist durable >>= (@?= True)
-            doesDirectoryExist derived >>= (@?= True)
-    , testCase "cluster delete attempts every cleanup step after a non-zero kind cleanup and then fails" $
-        withSystemTempDirectory "hostbootstrap-cluster-delete" $ \root -> do
-            failingProgram <- findExecutable teardownFailureProgram
-            case failingProgram >>= either (const Nothing) Just . mkAbsExe of
-                Nothing -> assertFailure ("could not resolve teardown failure fixture: " ++ teardownFailureProgram)
-                Just failingExe -> do
-                    let durable = root </> ".data"
-                        derived = root </> ".cluster" </> "demo-a"
-                        plan =
-                            (resolvePlan "demo" root Production)
-                                { dataPath = durable
-                                , derivedStatePath = derived
-                                }
-                        cfg =
-                            HostConfig
-                                (Substrate LinuxCpu Amd64)
-                                (Map.singleton Kind failingExe)
-                    createDirectoryIfMissing True durable
-                    createDirectoryIfMissing True derived
-                    outcome <- try (clusterDelete cfg plan) :: IO (Either SomeException ())
-                    case outcome of
-                        Right () -> assertFailure "cluster delete reported success after kind exited non-zero"
-                        Left err -> do
-                            let message = displayException err
-                            assertBool "names the aggregate teardown failure" ("cluster delete attempted every cleanup step but failed" `isInfixOf` message)
-                            assertBool "reports the non-zero kind exit" ("kind delete cluster: exit" `isInfixOf` message)
-                    doesDirectoryExist durable >>= (@?= True)
-                    doesDirectoryExist derived >>= (@?= False)
-    ]
-
-teardownFailureProgram :: String
-#ifdef mingw32_HOST_OS
-teardownFailureProgram = "where.exe"
-#else
-teardownFailureProgram = "false"
-#endif
-
-statusCases :: [TestTree]
-statusCases =
-    [ testCase "running cluster reports only the data-path teardown omission contract" $ do
-        let report = statusReport prod True
-        assertBool "names the cluster" ("demo" `isInfixOf` report)
-        assertBool "marks it running" ("(running)" `isInfixOf` report)
-        assertBool
-            "states that cluster teardown does not remove .data"
-            (((rootPath </> ".data") ++ " (not removed by cluster teardown)") `isInfixOf` report)
-        assertBool "does not claim the uninspected path is preserved" (not ("(preserved)" `isInfixOf` report))
-    , testCase "absent cluster reports (absent) without claiming data was inspected" $ do
-        let report = statusReport prod False
-        assertBool "marks it absent" ("(absent)" `isInfixOf` report)
-        assertBool "still states the teardown contract" ("(not removed by cluster teardown)" `isInfixOf` report)
-        assertBool "does not claim the uninspected path is preserved" (not ("(preserved)" `isInfixOf` report))
+    , testCase "delete refuses the durable root and its ancestors" $ do
+        let durable = dataPath prod
+            refusal = Left "cluster teardown: derived state may contain the durable root"
+        teardown Delete (prod{derivedStatePath = durable}) @?= refusal
+        teardown Delete (prod{derivedStatePath = takeDirectory durable}) @?= refusal
+        teardown Delete (prod{derivedStatePath = takeDirectory durable </> "."}) @?= refusal
+        teardown Delete (prod{derivedStatePath = durable </> ".."}) @?= refusal
+    , testCase "delete refuses ambiguous relative and absolute roots" $ do
+        let refusal = Left "cluster teardown: derived state may contain the durable root"
+        teardown Delete (prod{derivedStatePath = "relative", dataPath = rootPath </> ".data"}) @?= refusal
+        teardown Delete (prod{derivedStatePath = ""}) @?= refusal
     ]
 
 snapshotPersistenceCases :: [TestTree]
@@ -675,9 +953,51 @@ snapshotPersistenceCases =
                 withPersistedPlanSnapshot root unbound plan $ \_ _ _ _ _ ->
                     modifyIORef' continued (+ 1)
             case outcome of
-                Left (SnapshotVerificationError (ModeStoreFailure _)) -> pure ()
+                Left (SnapshotVerificationError (ModeStoreFailure (ProtectedIOFailure "read a protected record" diagnostic))) ->
+                    assertBool
+                        "the read failure names the obstructed snapshot record"
+                        (recordKeyText (snapshotKey project unbound) `Text.isInfixOf` diagnostic)
                 other -> assertFailure ("expected protected read failure, observed " <> show other)
             readIORef continued >>= (@?= 0)
+            assertLeaseVersion store project unbound 1
+            assertNoPreparedOrEffectRecords store
+    , testCase "a real public fresh-binding read failure preserves the verified snapshot and unbound lease" $
+        withPersistedSnapshotPlan $ \store project _root unbound plan -> do
+            let stable = renderSnapshot plan
+            writeStableSnapshot store project unbound stable
+            snapshot <- requireRecord store (snapshotKey project unbound)
+            lease <- requireRecord store (leaseKey project unbound)
+            verifiedEntries <- newIORef (0 :: Int)
+            continued <- newIORef (0 :: Int)
+            outcome <-
+                withPlanDigestBinding unbound plan $ \verified _binding -> do
+                    modifyIORef' verifiedEntries (+ 1)
+                    planSnapshotCanonicalBytes verified @?= Just (stablePlanSnapshotBytes stable)
+                    withBlockedRecordPath store (leaseKey project unbound) $ do
+                        observed <-
+                            withProtectedEntry store $ \session ->
+                                readProtectedRecord session (leaseKey project unbound)
+                        readFailure <- case observed of
+                            Left failure@(ProtectedIOFailure "read a protected record" diagnostic) -> do
+                                assertBool
+                                    "the read failure names the obstructed lease record"
+                                    (recordKeyText (leaseKey project unbound) `Text.isInfixOf` diagnostic)
+                                pure failure
+                            other -> assertFailure ("expected the obstructed lease read to fail, observed " <> show other)
+                        bound <-
+                            bindRunLease
+                                unbound
+                                verified
+                                (\_ -> modifyIORef' continued (+ 1))
+                        case bound of
+                            Left conflict ->
+                                leaseConflictMessage conflict @?= modeErrorMessage (ModeStoreFailure readFailure)
+                            Right () -> assertFailure "the binding read failure yielded a bound lease"
+            outcome @?= Right ()
+            readIORef verifiedEntries >>= (@?= 1)
+            readIORef continued >>= (@?= 0)
+            requireRecord store (snapshotKey project unbound) >>= (@?= snapshot)
+            requireRecord store (leaseKey project unbound) >>= (@?= lease)
             assertLeaseVersion store project unbound 1
             assertNoPreparedOrEffectRecords store
     , testCase "same project and epoch in another store is rejected before any snapshot write" $
@@ -805,7 +1125,7 @@ existingBoundSnapshotCases =
                     , NormalRevision
                     )
             mapM (readRecord store) keys >>= (@?= before)
-    , testCase "two Open admissions preserve durable bytes and mint isolated local identities" $
+    , testCase "two Open admissions preserve durable bytes and are re-enterable" $
         withExistingBoundSnapshotFixture $ \store project unbound _bound _stable -> do
             let keys = productionAdmissionKeys project unbound
             before <- mapM (readRecord store) keys
@@ -870,6 +1190,26 @@ existingBoundSnapshotCases =
             readIORef terminalCount >>= (@?= 0)
             readIORef openCount >>= (@?= 0)
             mapM (readRecord store) keys >>= (@?= before)
+    , testCase "the reverse-root wrappers force their hidden token when only it is applied" $ do
+        let assertForced :: String -> Either SomeException () -> IO ()
+            assertForced label attempted = case attempted of
+                Left failure ->
+                    assertBool
+                        (label <> " forced its admission before returning the remaining function")
+                        (("bottom " <> label) `isInfixOf` displayException failure)
+                Right () -> assertFailure (label <> " returned its remaining function without forcing the admission")
+        resumed <-
+            try @SomeException
+                (evaluate (case withResumedExistingBoundReverseRootKernel (error "bottom partial resume admission") of !_ -> ()))
+        assertForced "partial resume admission" resumed
+        fresh <-
+            try @SomeException
+                (evaluate (case withFreshExistingBoundReverseRootKernel (error "bottom partial fresh admission") of !_ -> ()))
+        assertForced "partial fresh admission" fresh
+        reauthorized <-
+            try @SomeException
+                (evaluate (case withReauthorizedBoundPlanSnapshotKernel (error "bottom partial Snapshot admission") of !_ -> ()))
+        assertForced "partial Snapshot admission" reauthorized
     , testCase "reverse-root resume forces its hidden admission on partial application" $ do
         attempted <-
             try @SomeException
@@ -933,15 +1273,26 @@ existingBoundSnapshotCases =
                     "the Snapshot admission token was forced before the remaining function"
                     ("bottom reverse-root Snapshot admission" `isInfixOf` displayException failure)
             Right _ -> assertFailure "the reverse-root Snapshot facade accepted a bottom admission"
-    , testCase "the shared compatibility sentinel passes structural snapshot admission" $ do
-        admitted <- admitCanonicalRootMutation "<hostbootstrap:unrooted-lifecycle-plan>"
-        assertBool "the compatibility snapshot lost its canonical bytes" (not (ByteString.null admitted))
-    , testCase "canonical-root code points preserve surrogate and replacement-character identity" $ do
-        surrogate <- admitCanonicalRootMutation (rootDir </> ['\xD800'])
-        replacement <- admitCanonicalRootMutation (rootDir </> ['\xFFFD'])
-        assertBool
-            "a surrogate code point collapsed into the Unicode replacement character"
-            (surrogate /= replacement)
+    , refusalCase
+        "a recomputed digest cannot bless the reserved non-absolute root"
+        ( \store project unbound stable ->
+            replaceRehashedCanonicalSnapshot store project unbound stable
+                (replaceCanonicalRoot "<hostbootstrap:unrooted-lifecycle-plan>" (stablePlanSnapshotBytes stable))
+        )
+        ( \project unbound failure ->
+            failure
+                == ModeMalformedCanonicalSnapshot
+                    (recordKeyText (snapshotKey project unbound))
+                    "the canonical project root is not absolute"
+        )
+    , testCase "a canonical root holding a lone surrogate code point is admitted" $ do
+        _ <- admitCanonicalRootMutation (rootDir </> ['\xD800'])
+        pure ()
+    , testCase "a canonical root at the 131072-byte boundary is admitted" $ do
+        let root = canonicalRootAtPayloadSize 131072
+        ByteString.length (encodedRootPayload root) @?= 131072
+        _ <- admitCanonicalRootMutation root
+        pure ()
     ]
         <> existingOpenRevisionCases
         <> existingBoundRefusalCases
@@ -972,7 +1323,13 @@ admitCanonicalRootMutation root =
                 project
                 (\_ -> assertFailure "the mutated Open snapshot entered the terminal callback")
                 (\_ _ _ _ boundSnapshot _ _ -> pure (boundPlanSnapshotBytes boundSnapshot))
-        either (fail . show) pure outcome
+        admitted <- either (fail . show) pure outcome
+        admitted @?= changedBytes
+        pure admitted
+
+canonicalRootAtPayloadSize :: Int -> FilePath
+canonicalRootAtPayloadSize byteCount =
+    rootDir <> replicate (byteCount `div` 4 - length rootDir) 'a'
 
 existingOpenRevisionCases :: [TestTree]
 existingOpenRevisionCases =
@@ -1032,7 +1389,7 @@ existingBoundRefusalCases =
     [ refusalCase
         "an advanced broker counter is exact-generation drift"
         (\store project _ _ -> replaceRawRecord store (brokerGenerationKey project) "2")
-        (\failure -> case failure of ModeAuthorityFailure (AuthorityInvalidIdentity _) -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeAuthorityFailure (AuthorityInvalidIdentity _) -> True; _ -> False)
     , brokerCounterRefusalCase
         "broker counter deleted"
         deleteRecord
@@ -1044,19 +1401,19 @@ existingBoundRefusalCases =
     , refusalCase
         "a missing authority binding is refused read-only"
         (\store _ _ _ -> deleteRecord store authorityBindingKey)
-        (\failure -> case failure of ModeAuthorityFailure (AuthorityMalformedBinding _) -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeAuthorityFailure (AuthorityMalformedBinding _) -> True; _ -> False)
     , refusalCase
         "a missing Production mode is refused"
         (\store project _ _ -> deleteRecord store (productionModeKey project))
-        (\failure -> case failure of ModeWrongMode "production" "absent" -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeWrongMode "production" "absent" -> True; _ -> False)
     , refusalCase
         "a missing bound lease is refused"
         (\store project unbound _ -> deleteRecord store (leaseKey project unbound))
-        (\failure -> case failure of ModeLeaseMissing "production" -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeLeaseMissing "production" -> True; _ -> False)
     , refusalCase
         "a missing immutable snapshot is refused"
         (\store project unbound _ -> deleteRecord store (snapshotKey project unbound))
-        (\failure -> case failure of ModeSnapshotMissing "production" -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeSnapshotMissing "production" -> True; _ -> False)
     , refusalCase
         "bound lease epoch drift is refused"
         ( \store project unbound stable ->
@@ -1071,7 +1428,7 @@ existingBoundRefusalCases =
                     ]
                 )
         )
-        (\failure -> case failure of ModeEpochMismatch 2 1 -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeEpochMismatch 2 1 -> True; _ -> False)
     , refusalCase
         "empty bound lease digests are malformed"
         ( \store project unbound stable ->
@@ -1080,7 +1437,7 @@ existingBoundRefusalCases =
                 (leaseKey project unbound)
                 (encodeExactFields ["bound", "1", "", stablePlanSnapshotDigest stable])
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project unbound failure -> failure == ModeMalformedRecord (recordKeyText (leaseKey project unbound)))
     , refusalCase
         "lease and snapshot digest drift is refused"
         ( \store project unbound stable ->
@@ -1095,7 +1452,7 @@ existingBoundRefusalCases =
                     ]
                 )
         )
-        (\failure -> case failure of ModeSnapshotMismatch _ _ -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeSnapshotMismatch _ _ -> True; _ -> False)
     , refusalCase
         "an unsupported snapshot envelope version is refused"
         ( \store project unbound stable ->
@@ -1104,16 +1461,14 @@ existingBoundRefusalCases =
                 (snapshotKey project unbound)
                 (rawPlanSnapshotPayload 2 stable (stablePlanSnapshotBytes stable))
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project unbound failure -> failure == ModeMalformedRecord (recordKeyText (snapshotKey project unbound)))
     , refusalCase
         "the rootless version-2 canonical plan is refused"
         ( \store project unbound stable ->
-            replaceRawRecord
-                store
-                (snapshotKey project unbound)
-                (rawPlanSnapshotPayload 1 stable (replaceCanonicalVersion 2 (stablePlanSnapshotBytes stable)))
+            replaceRehashedCanonicalSnapshot store project unbound stable
+                (replaceCanonicalVersion 2 (stablePlanSnapshotBytes stable))
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical plan version is unsupported")
     , refusalCase
         "malformed canonical plan bytes are refused"
         ( \store project unbound stable ->
@@ -1122,20 +1477,23 @@ existingBoundRefusalCases =
                 (snapshotKey project unbound)
                 (rawPlanSnapshotPayload 1 stable "not-a-canonical-plan")
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical plan header is malformed")
     , refusalCase
         "canonical content-digest drift is refused"
-        ( \store project unbound stable ->
+        ( \store project unbound stable -> do
+            let original = stablePlanSnapshotBytes stable
+            changed <-
+                replaceUniqueCanonicalFragment
+                    (canonicalTextFrame "label" <> canonicalTextFrame "context")
+                    (canonicalTextFrame "label" <> canonicalTextFrame "Context")
+                    original
+            ByteString.length changed @?= ByteString.length original
             replaceRawRecord
                 store
                 (snapshotKey project unbound)
-                ( rawPlanSnapshotPayload
-                    1
-                    stable
-                    (stablePlanSnapshotBytes stable <> ByteString.singleton 0)
-                )
+                (rawPlanSnapshotPayload 1 stable changed)
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical plan digest does not match its bytes")
     , refusalCase
         "a recomputed digest cannot bless a relative canonical root"
         ( \store project unbound stable -> do
@@ -1157,7 +1515,7 @@ existingBoundRefusalCases =
                     changedBytes
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical project root is not absolute")
     , refusalCase
         "the outer and embedded canonical configuration digests must agree"
         ( \store project unbound stable ->
@@ -1172,7 +1530,7 @@ existingBoundRefusalCases =
                     (stablePlanSnapshotBytes stable)
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical config-digest value does not match")
     , refusalCase
         "coordinated lease/envelope drift cannot relabel the embedded specification"
         ( \store project unbound stable -> do
@@ -1194,7 +1552,7 @@ existingBoundRefusalCases =
                     (stablePlanSnapshotBytes stable)
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical spec-digest value does not match")
     , refusalCase
         "a recomputed digest cannot bless a structurally corrupt canonical step stream"
         ( \store project unbound stable -> do
@@ -1216,7 +1574,7 @@ existingBoundRefusalCases =
                     changedBytes
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (canonicalRefusalReason "the canonical step stream is truncated")
     , refusalCase
         "a legacy digest-only snapshot cannot mint bound plan evidence"
         ( \store project unbound stable ->
@@ -1230,11 +1588,11 @@ existingBoundRefusalCases =
                     ]
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project unbound failure -> failure == ModeMalformedRecord (recordKeyText (snapshotKey project unbound)))
     , refusalCase
         "an invalid terminal close key is never normalized or surfaced"
         (\store project _ _ -> writeRawRecord store (productionInvocationKey project) "ack\tbad/key")
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project _ failure -> failure == ModeMalformedRecord (recordKeyText (productionInvocationKey project)))
     , malformedBoundTextRecordCase
         "invalid UTF-8 in a terminal close key refuses its exact invocation record"
         productionInvocationKey
@@ -1242,41 +1600,170 @@ existingBoundRefusalCases =
     , refusalCase
         "terminal close-key whitespace is never stripped"
         (\store project _ _ -> writeRawRecord store (productionInvocationKey project) "ack\tvalid-key ")
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project _ failure -> failure == ModeMalformedRecord (recordKeyText (productionInvocationKey project)))
     , refusalCase
         "a Harness Closing disposition cannot enter Production recovery"
         (\store project _ _ -> writeRawRecord store (productionInvocationKey project) "closing\t1")
-        (\failure -> case failure of ModeWrongRecoveryScope "production" _ -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeWrongRecoveryScope "production" _ -> True; _ -> False)
     , refusalCase
         "malformed Open revision state is refused before the callback"
         (\store project _ _ -> writeRawRecord store (migrationKey project) "incomplete\t")
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\project _ failure -> failure == ModeMalformedRecord (recordKeyText (migrationKey project)))
     , malformedBoundTextRecordCase
         "invalid UTF-8 in an incomplete migration refuses its exact migration record"
         migrationKey
         ("incomplete\t" <> ByteString.singleton 0xff)
     ]
         <> canonicalRootParserRefusalCases
+        <> intraStepRefusalCases
+
+canonicalRefusalReason ::
+    Text.Text ->
+    InstalledProjectIdentity projectId ->
+    UnboundRunLease scope brokerGeneration ->
+    ModeError ->
+    Bool
+canonicalRefusalReason expectedReason _ _ failure = case failure of
+    ModeMalformedCanonicalSnapshot _ reason -> reason == expectedReason
+    _ -> False
+
+intraStepRefusalCases :: [TestTree]
+intraStepRefusalCases =
+    [ intraStepRefusalCase
+        "a recomputed digest cannot bless an unknown first-step reverse policy"
+        "the canonical reverse policy is malformed"
+        ( replaceUniqueCanonicalFragment
+            (canonicalTextFrame "reverse-policy" <> canonicalTextFrame "project-managed")
+            (canonicalTextFrame "reverse-policy" <> canonicalTextFrame "unknown-policy")
+        )
+    , intraStepRefusalCase
+        "a recomputed digest cannot bless a first-step mount boolean of two"
+        "the canonical read-only boolean is malformed"
+        ( replaceUniqueCanonicalFragment
+            (canonicalTextFrame "read-only" <> ByteString.singleton 1)
+            (canonicalTextFrame "read-only" <> ByteString.singleton 2)
+        )
+    , intraStepRefusalCase
+        "a recomputed digest cannot bless a zero first-step implementation revision"
+        "the canonical revision value is malformed"
+        ( \step -> do
+            let (implementation, operation) = ByteString.breakSubstring (canonicalTextFrame "operation") step
+            assertBool "the first step has no operation after its implementation" (not (ByteString.null operation))
+            changed <-
+                replaceUniqueCanonicalFragment
+                    (canonicalTextFrame "revision" <> encodedWord 1)
+                    (canonicalTextFrame "revision" <> encodedWord 0)
+                    implementation
+            pure (changed <> operation)
+        )
+    , intraStepRefusalCase
+        "a recomputed digest cannot bless an unknown first-step lift kind"
+        "the canonical lift layer is malformed"
+        ( replaceUniqueCanonicalFragment
+            (canonicalTextFrame "container" <> encodedWord 5)
+            (canonicalTextFrame "unknown-layer" <> encodedWord 5)
+        )
+    , intraStepRefusalCase
+        "a recomputed digest cannot bless an unknown first-step provider target"
+        "the provider-resource target is malformed"
+        ( replaceUniqueCanonicalFragment
+            (canonicalTextFrame "provider-resources" <> encodedWord 1 <> canonicalTextFrame "current-frame")
+            (canonicalTextFrame "provider-resources" <> encodedWord 1 <> canonicalTextFrame "unknown-target")
+        )
+    ]
+
+intraStepRefusalCase ::
+    String ->
+    Text.Text ->
+    (ByteString.ByteString -> IO ByteString.ByteString) ->
+    TestTree
+intraStepRefusalCase label reason mutate =
+    refusalCaseWithPlan richSnapshotPlan label
+        ( \store project unbound stable -> do
+            original <-
+                withBoundPlanSnapshot store project
+                    (\_ -> assertFailure "the original rich fixture entered the terminal callback")
+                    (\_ _ _ _ bound _ _ -> pure (boundPlanSnapshotBytes bound))
+            original @?= Right (stablePlanSnapshotBytes stable)
+            changed <- mutateFirstCanonicalStep mutate (stablePlanSnapshotBytes stable)
+            replaceRehashedCanonicalSnapshot store project unbound stable changed
+        )
+        (canonicalRefusalReason reason)
+
+-- The rich fixture has exactly two steps. Scope each mutation before the
+-- second outer step header so a later step cannot supply its target field.
+mutateFirstCanonicalStep ::
+    (ByteString.ByteString -> IO ByteString.ByteString) ->
+    ByteString.ByteString ->
+    IO ByteString.ByteString
+mutateFirstCanonicalStep mutate bytes = do
+    countOffset <- maybe (assertFailure "the canonical step count is absent") pure (canonicalStepCountOffset bytes)
+    canonicalWordAt bytes countOffset @?= Just 2
+    let firstOffset = countOffset + 8
+        secondHeader = canonicalTextFrame "step" <> encodedWord 14 <> canonicalTextFrame "ordinal" <> encodedWord 2
+        firstHeader = canonicalTextFrame "step" <> encodedWord 14 <> canonicalTextFrame "ordinal" <> encodedWord 1
+        (first, remainder) = ByteString.breakSubstring secondHeader (ByteString.drop firstOffset bytes)
+    assertBool "the rich fixture's first step header changed" (firstHeader `ByteString.isPrefixOf` first)
+    assertBool "the rich fixture has no second outer step" (not (ByteString.null remainder))
+    assertBool "the second step header is not unique" (not (secondHeader `ByteString.isInfixOf` ByteString.drop (ByteString.length secondHeader) remainder))
+    changed <- mutate first
+    assertBool "the intra-step mutation changed no bytes" (changed /= first)
+    pure (ByteString.take firstOffset bytes <> changed <> remainder)
+
+replaceUniqueCanonicalFragment ::
+    ByteString.ByteString ->
+    ByteString.ByteString ->
+    ByteString.ByteString ->
+    IO ByteString.ByteString
+replaceUniqueCanonicalFragment old new bytes =
+    case ByteString.breakSubstring old bytes of
+        (_, remainder) | ByteString.null remainder -> assertFailure "the canonical mutation target is absent"
+        (prefix, remainder) -> do
+            let suffix = ByteString.drop (ByteString.length old) remainder
+            assertBool "the canonical mutation target is not unique" (not (old `ByteString.isInfixOf` suffix))
+            pure (prefix <> new <> suffix)
+
+replaceRehashedCanonicalSnapshot ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    UnboundRunLease scope brokerGeneration ->
+    StablePlanSnapshot ->
+    ByteString.ByteString ->
+    IO ()
+replaceRehashedCanonicalSnapshot store project unbound stable changedBytes = do
+    assertBool "the canonical mutation changed no bytes" (changedBytes /= stablePlanSnapshotBytes stable)
+    let specDigest = stablePlanSnapshotSpecDigest stable
+        changedPlan = canonicalPlanDigestForTest specDigest changedBytes
+    replaceRawRecord store (leaseKey project unbound) (encodeExactFields ["bound", "1", specDigest, changedPlan])
+    replaceRawRecord store (snapshotKey project unbound)
+        (rawPlanSnapshotPayloadWithConfig 1 specDigest changedPlan (stablePlanSnapshotConfigDigest stable) changedBytes)
 
 canonicalRootParserRefusalCases :: [TestTree]
 canonicalRootParserRefusalCases =
-    [ canonicalRootParserRefusalCase "an empty canonical root is refused" ByteString.empty
+    [ canonicalRootParserRefusalCase
+        "an empty canonical root is refused"
+        ByteString.empty
+        "the canonical project root is empty"
     , canonicalRootParserRefusalCase
         "a partial canonical-root code point is refused"
         (ByteString.singleton 0)
+        "the canonical project root has a partial code point"
     , canonicalRootParserRefusalCase
         "an out-of-range canonical-root code point is refused"
         (ByteString.pack [0, 17, 0, 0])
+        "the canonical project root code point is out of range"
     , canonicalRootParserRefusalCase
         "a NUL canonical-root code point is refused"
         (ByteString.replicate 4 0)
+        "the canonical project root contains NUL"
     , canonicalRootParserRefusalCase
         "an oversized canonical root is refused"
-        (ByteString.replicate 131076 0)
+        (encodedRootPayload (canonicalRootAtPayloadSize 131076))
+        "the canonical project root exceeds the size limit"
     ]
 
-canonicalRootParserRefusalCase :: String -> ByteString.ByteString -> TestTree
-canonicalRootParserRefusalCase label rootPayload =
+canonicalRootParserRefusalCase :: String -> ByteString.ByteString -> Text.Text -> TestTree
+canonicalRootParserRefusalCase label rootPayload expectedReason =
     refusalCase
         label
         ( \store project unbound stable -> do
@@ -1299,7 +1786,7 @@ canonicalRootParserRefusalCase label rootPayload =
                     changedBytes
                 )
         )
-        (\failure -> case failure of ModeMalformedRecord _ -> True; _ -> False)
+        (\_ _ failure -> case failure of ModeMalformedCanonicalSnapshot _ reason -> reason == expectedReason; _ -> False)
 
 recoveredProductionProfileCases :: [TestTree]
 recoveredProductionProfileCases =
@@ -1341,7 +1828,7 @@ recoveredProductionProfileCases =
                         ) -> do
                             run @?= "production"
                             profileProject @?= installedProjectName project
-                            assertBool "the recovered profile retains a protected-store identity" (not (Text.null profileStore))
+                            profileStore @?= protectedStoreIdentityText (protectedStoreIdentity store)
                             revision @?= 1
                             specDigest @?= stablePlanSnapshotSpecDigest stable
                             planDigest @?= stablePlanSnapshotDigest stable
@@ -1350,30 +1837,6 @@ recoveredProductionProfileCases =
                             epoch @?= 1
                             revisionKind @?= NormalRevision
                 other -> assertFailure ("expected exact recovered profile, observed " <> show other)
-            mapM (readRecord store) keys >>= (@?= before)
-    , testCase "pure profile refinement is repeatable and leaves every protected record unchanged" $
-        withExistingBoundSnapshotFixture $ \store project unbound _bound _stable -> do
-            let keys = productionAdmissionKeys project unbound
-            before <- mapM (readRecord store) keys
-            outcome <-
-                withBoundPlanSnapshot
-                    store
-                    project
-                    (\_ -> assertFailure "the Open profile fixture entered the terminal callback")
-                    (\root modeLease boundLease verified boundSnapshot binding recovery -> do
-                        let refine =
-                                withRecoveredProductionLifecycleProfile
-                                    root
-                                    modeLease
-                                    boundLease
-                                    verified
-                                    boundSnapshot
-                                    binding
-                                    recovery
-                                    recoveredProductionProfileRevisionKind
-                        pure (refine, refine)
-                    )
-            outcome @?= Right (Right NormalRevision, Right NormalRevision)
             mapM (readRecord store) keys >>= (@?= before)
     , testCase "a fresh-bound lease cannot substitute for the exact existing binding" $
         withExistingBoundSnapshotFixture $ \store project unbound freshBound _stable -> do
@@ -1462,7 +1925,9 @@ data RecoveredProductionProfileDrift
     | RecoveredBoundSnapshotDrift
     | RecoveredDigestBindingDrift
     | RecoveredRecoveryDrift
-    | RecoveredBrokerDrift
+    | RecoveredRecoveryEpochDrift
+    | RecoveredRootEpochDrift
+    | RecoveredModeEpochDrift
 
 recoveredProductionProfileDriftCases :: [TestTree]
 recoveredProductionProfileDriftCases =
@@ -1497,15 +1962,45 @@ recoveredProductionProfileDriftCases =
         Nothing
         (\failure -> case failure of ModeEvidenceMismatch "digest binding" _ _ -> True; _ -> False)
     , mismatchCase
-        "broker generation drift is refused"
-        RecoveredBrokerDrift
+        "recovery broker generation drift is refused"
+        RecoveredRecoveryEpochDrift
         (Just 1)
         (\failure -> case failure of ModeEpochMismatch 1 2 -> True; _ -> False)
+    , mismatchCase
+        "root broker generation drift is refused"
+        RecoveredRootEpochDrift
+        (Just 1)
+        (== ModeEpochMismatch 1 2)
+    , mismatchCase
+        "Production mode broker generation drift is refused"
+        RecoveredModeEpochDrift
+        (Just 1)
+        (== ModeEpochMismatch 1 2)
     , mismatchCase
         "bound-invocation recovery origin drift is refused"
         RecoveredRecoveryDrift
         Nothing
         (\failure -> case failure of ModeEvidenceMismatch "recovery store" _ _ -> True; _ -> False)
+    , testCase "root project-name drift is refused" $
+        withExistingBoundOpenPackage Nothing $ \_outerStore outerProject outer -> do
+            let foreignName =
+                    if installedProjectName outerProject == "foreign-project"
+                        then "another-project"
+                        else "foreign-project"
+            -- The existing private name validator supplies a foreign identity
+            -- for this pure compatibility-kernel backstop. The Mode, plan,
+            -- persistence, and Open producers mint its complete real package.
+            case AuthorityFixture.withInstalledProjectKernel foreignName $ \foreignProject ->
+                withExistingBoundOpenPackageForProject foreignProject Nothing $ \_foreignStore _ foreignPackage ->
+                    refineRecoveredProductionProfileWithDrift RecoveredRootDrift outer foreignPackage
+                        @?= Left
+                            ( ModeEvidenceMismatch
+                                "root project"
+                                (installedProjectName outerProject)
+                                (installedProjectName foreignProject)
+                            ) of
+                Left failure -> assertFailure (show failure)
+                Right action -> action
     ]
   where
     mismatchCase label drift initialForeignCounter accepts =
@@ -1589,11 +2084,35 @@ refusalCase ::
       StablePlanSnapshot ->
       IO ()
     ) ->
-    (ModeError -> Bool) ->
+    ( forall projectId brokerGeneration.
+      InstalledProjectIdentity projectId ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      ModeError ->
+      Bool
+    ) ->
     TestTree
-refusalCase label mutate accepts =
+refusalCase = refusalCaseWithPlan (const snapshotStepPlan)
+
+refusalCaseWithPlan ::
+    (FilePath -> StepPlan) ->
+    String ->
+    ( forall projectId brokerGeneration.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      StablePlanSnapshot ->
+      IO ()
+    ) ->
+    ( forall projectId brokerGeneration.
+      InstalledProjectIdentity projectId ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      ModeError ->
+      Bool
+    ) ->
+    TestTree
+refusalCaseWithPlan planBuilder label mutate accepts =
     testCase label $
-        withExistingBoundSnapshotFixture $ \store project unbound _bound stable -> do
+        withExistingBoundSnapshotFixtureUsing Nothing planBuilder $ \store project unbound _bound stable -> do
             mutate store project unbound stable
             let keys = productionAdmissionKeys project unbound
             before <- mapM (readRecord store) keys
@@ -1607,49 +2126,65 @@ refusalCase label mutate accepts =
                     (\_ _ _ _ _ _ _ -> modifyIORef' openCount (+ 1))
             case outcome of
                 Left (SnapshotVerificationError failure)
-                    | accepts failure -> pure ()
+                    | accepts project unbound failure -> case failure of
+                        ModeMalformedCanonicalSnapshot key reason -> do
+                            key @?= recordKeyText (snapshotKey project unbound)
+                            let diagnostic = modeErrorMessage failure
+                            assertBool
+                                "the canonical snapshot diagnostic retains its key and reason"
+                                (key `Text.isInfixOf` diagnostic && reason `Text.isInfixOf` diagnostic)
+                        _ -> pure ()
                 other -> assertFailure ("expected existing-bound refusal, observed " <> show other)
             readIORef terminalCount >>= (@?= 0)
             readIORef openCount >>= (@?= 0)
             mapM (readRecord store) keys >>= (@?= before)
 
-#ifdef mingw32_HOST_OS
-snapshotFilesystemFailureCases :: [TestTree]
-snapshotFilesystemFailureCases = []
-#else
 snapshotFilesystemFailureCases :: [TestTree]
 snapshotFilesystemFailureCases =
-    [ testCase "a blocked protected snapshot path leaves the lease unbound" $
+    [ testCase "an unavailable records directory before the snapshot write leaves the lease unbound" $
         withPersistedSnapshotPlan $ \store project root unbound plan -> do
+            lease <- requireRecord store (leaseKey project unbound)
             continued <- newIORef (0 :: Int)
             outcome <-
                 withBlockedRecordsPath store $
                     withPersistedPlanSnapshot root unbound plan $ \_ _ _ _ _ ->
                         modifyIORef' continued (+ 1)
-            case outcome of
-                Left (SnapshotVerificationError (ModeStoreFailure _)) -> pure ()
-                other -> assertFailure ("expected protected filesystem failure, observed " <> show other)
+            assertUnavailableRecordsFailure store outcome
             readIORef continued >>= (@?= 0)
             readRecord store (snapshotKey project unbound) >>= (@?= Nothing)
+            requireRecord store (leaseKey project unbound) >>= (@?= lease)
             assertLeaseVersion store project unbound 1
             assertNoPreparedOrEffectRecords store
-    , testCase "an unavailable records directory preserves the verified snapshot and unbound lease" $
+    , testCase "an unavailable records directory before re-verification preserves the snapshot and unbound lease" $
         withPersistedSnapshotPlan $ \store project root unbound plan -> do
             continued <- newIORef (0 :: Int)
             writeStableSnapshot store project unbound (renderSnapshot plan)
             snapshot <- requireRecord store (snapshotKey project unbound)
+            lease <- requireRecord store (leaseKey project unbound)
             outcome <-
                 withBlockedRecordsPath store $
                     withPersistedPlanSnapshot root unbound plan $ \_ _ _ _ _ ->
                         modifyIORef' continued (+ 1)
-            case outcome of
-                Left (SnapshotVerificationError (ModeStoreFailure _)) -> pure ()
-                other -> assertFailure ("expected protected read/write failure, observed " <> show other)
+            assertUnavailableRecordsFailure store outcome
             requireRecord store (snapshotKey project unbound) >>= (@?= snapshot)
+            requireRecord store (leaseKey project unbound) >>= (@?= lease)
             assertLeaseVersion store project unbound 1
             readIORef continued >>= (@?= 0)
             assertNoPreparedOrEffectRecords store
     ]
+
+assertUnavailableRecordsFailure :: ProtectedStore -> Either SnapshotError () -> IO ()
+#ifdef mingw32_HOST_OS
+assertUnavailableRecordsFailure _ outcome =
+    outcome @?= Left (SnapshotVerificationError (ModeLeaseMissing "production"))
+#else
+assertUnavailableRecordsFailure store outcome = case outcome of
+    Left (SnapshotVerificationError (ModeStoreFailure (ProtectedIOFailure "read a protected record" diagnostic))) ->
+        assertBool
+            "the read failure names the unavailable records directory"
+            (Text.pack (protectedStoreRoot store </> "records") `Text.isInfixOf` diagnostic)
+    other -> assertFailure ("expected the unavailable-records read to fail, observed " <> show other)
+#endif
 
 withBlockedRecordsPath :: ProtectedStore -> IO result -> IO result
 withBlockedRecordsPath store action =
@@ -1660,7 +2195,16 @@ withBlockedRecordsPath store action =
   where
     records = protectedStoreRoot store </> "records"
     unavailable = records <> ".filesystem-refusal"
-#endif
+
+withBlockedRecordPath :: ProtectedStore -> RecordKey -> IO result -> IO result
+withBlockedRecordPath store key action =
+    bracket_
+        (renameFile path unavailable)
+        (renameFile unavailable path)
+        (bracket_ (createDirectory path) (removeDirectory path) action)
+  where
+    path = recordPath store key
+    unavailable = path <> ".filesystem-refusal"
 
 exactPersistedEvidence ::
     VerifiedPlanSnapshot scope specDigest planDigest ->
@@ -1826,8 +2370,10 @@ refineRecoveredProductionProfileWithDrift
                 apply root modeLease lease verified bound (unsafeCoerce otherBinding) recovery
             RecoveredRecoveryDrift ->
                 apply root modeLease lease verified bound binding (unsafeCoerce otherRecovery)
-            RecoveredBrokerDrift ->
+            RecoveredRecoveryEpochDrift ->
                 apply root modeLease lease verified bound binding (unsafeCoerce otherRecovery)
+            RecoveredRootEpochDrift -> apply (unsafeCoerce otherRoot) modeLease lease verified bound binding recovery
+            RecoveredModeEpochDrift -> apply root (unsafeCoerce otherModeLease) lease verified bound binding recovery
   where
     apply ::
         RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
@@ -1865,7 +2411,25 @@ withExistingBoundOpenPackage ::
     ) ->
     IO result
 withExistingBoundOpenPackage initialCounter use =
-    withExistingBoundSnapshotFixtureAtCounter initialCounter $ \store project _unbound _bound _stable -> do
+    Fixture.withFixtureInstalledProject $ \project ->
+        withExistingBoundOpenPackageForProject project initialCounter use
+
+withExistingBoundOpenPackageForProject ::
+    forall projectId result.
+    InstalledProjectIdentity projectId ->
+    Maybe Word64 ->
+    ( forall specDigest planDigest planId brokerGeneration.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      RecoveredProductionProfileInputs
+        projectId specDigest planDigest planId brokerGeneration ->
+      IO result
+    ) ->
+    IO result
+withExistingBoundOpenPackageForProject project initialCounter use =
+    withPersistedSnapshotPlanForProject project initialCounter (const snapshotStepPlan) $ \store _ freshRoot unbound plan -> do
+        persisted <- withPersistedPlanSnapshot freshRoot unbound plan (\_ _ _ _ _ -> pure ())
+        either (fail . show) pure persisted
         admitted <-
             withBoundPlanSnapshot
                 store
@@ -1920,7 +2484,22 @@ withExistingBoundSnapshotFixtureAtCounter ::
     ) ->
     IO result
 withExistingBoundSnapshotFixtureAtCounter initialCounter use =
-    withPersistedSnapshotPlanAtCounter initialCounter $ \store project root unbound plan -> do
+    withExistingBoundSnapshotFixtureUsing initialCounter (const snapshotStepPlan) use
+
+withExistingBoundSnapshotFixtureUsing ::
+    Maybe Word64 ->
+    (FilePath -> StepPlan) ->
+    ( forall projectId brokerGeneration specDigest planDigest.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      BoundRunLease (Production projectId) specDigest planDigest brokerGeneration ->
+      StablePlanSnapshot ->
+      IO result
+    ) ->
+    IO result
+withExistingBoundSnapshotFixtureUsing initialCounter planBuilder use =
+    withPersistedSnapshotPlanUsing initialCounter planBuilder $ \store project root unbound plan -> do
         let stable = renderSnapshot plan
         admitted <-
             withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ ->
@@ -2080,6 +2659,9 @@ canonicalWordAt bytes offset =
 encodedWord :: Word64 -> ByteString.ByteString
 encodedWord = LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64BE
 
+canonicalTextFrame :: Text.Text -> ByteString.ByteString
+canonicalTextFrame = LazyByteString.toStrict . Builder.toLazyByteString . encodeSnapshotText
+
 canonicalPlanDigestForTest :: Text.Text -> ByteString.ByteString -> Text.Text
 canonicalPlanDigestForTest specDigest bytes = specDigest <> ":" <> sha256HexForTest bytes
 
@@ -2124,66 +2706,100 @@ withPersistedSnapshotPlanAtCounter ::
     ) ->
     IO result
 withPersistedSnapshotPlanAtCounter initialCounter use =
+    withPersistedSnapshotPlanUsing initialCounter (const snapshotStepPlan) use
+
+withPersistedSnapshotPlanUsing ::
+    Maybe Word64 ->
+    (FilePath -> StepPlan) ->
+    ( forall projectId brokerGeneration specDigest configId planId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withPersistedSnapshotPlanUsing initialCounter planBuilder use =
+    Fixture.withFixtureInstalledProject $ \project ->
+        withPersistedSnapshotPlanForProject project initialCounter planBuilder use
+
+withPersistedSnapshotPlanForProject ::
+    forall projectId result.
+    InstalledProjectIdentity projectId ->
+    Maybe Word64 ->
+    (FilePath -> StepPlan) ->
+    ( forall brokerGeneration specDigest configId planId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      RootInvocationAuthority (Production projectId) brokerGeneration VerbUp ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withPersistedSnapshotPlanForProject project initialCounter planBuilder use =
     withSystemTempDirectory "hostbootstrap-persisted-project-plan" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
-        Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
-            case initialCounter of
-                Nothing -> pure ()
-                Just counter ->
-                    writeRawRecord
-                        store
-                        (brokerGenerationKey project)
-                        (ByteStringChar8.pack (show counter))
-            rooted <-
-                withCanonicalProjectRoot
-                    (directory </> "fixture.dhall")
-                    "."
-                    ( \(canonicalRoot :: CanonicalProjectRoot (Production projectId) rootId) ->
-                        withProductionRoot store project ProjectUp $ \productionRoot -> do
-                            let unbound = productionRootUnboundLease productionRoot
-                            opened <-
-                                withProductionLifecycleProfile
-                                    (rootScopeAuthority (productionRootAuthority productionRoot))
-                                    (productionActiveMode (productionRootModeLease productionRoot))
-                                    unbound
-                                    ( \profile ->
-                                        withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \codec -> do
-                                            let value =
-                                                    Fixture.defaultProjectConfig
-                                                        (installedProjectName project)
-                                                        (Text.pack (canonicalProjectRootPath canonicalRoot))
-                                                        Context.HostOrchestrator
-                                            validated <-
-                                                withValidatedConfig codec value $ \_wire config ->
-                                                    withAdmittedSnapshotPlan
-                                                        profile
-                                                        canonicalRoot
-                                                        config
-                                                        ( use
-                                                            store
-                                                            project
-                                                            (productionRootAuthority productionRoot)
-                                                            unbound
-                                                        )
-                                            either fail pure validated
-                                    )
-                            case opened of
-                                Left failure -> pure (Left (ModeAuthorityFailure failure))
-                                Right action -> Right <$> action
-                    )
-            admitted <- either (fail . show) pure rooted
-            either (fail . show) pure admitted
+        case initialCounter of
+            Nothing -> pure ()
+            Just counter ->
+                writeRawRecord
+                    store
+                    (brokerGenerationKey project)
+                    (ByteStringChar8.pack (show counter))
+        rooted <-
+            withCanonicalProjectRoot
+                (directory </> "fixture.dhall")
+                "."
+                ( \(canonicalRoot :: CanonicalProjectRoot (Production projectId) rootId) ->
+                    withProductionRoot store project ProjectUp $ \productionRoot -> do
+                        let unbound = productionRootUnboundLease productionRoot
+                        opened <-
+                            withProductionLifecycleProfile
+                                (rootScopeAuthority (productionRootAuthority productionRoot))
+                                (productionActiveMode (productionRootModeLease productionRoot))
+                                unbound
+                                ( \profile ->
+                                    withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \codec -> do
+                                        let value =
+                                                Fixture.defaultProjectConfig
+                                                    (installedProjectName project)
+                                                    (Text.pack (canonicalProjectRootPath canonicalRoot))
+                                                    Context.HostOrchestrator
+                                        validated <-
+                                            withValidatedConfig codec value $ \_wire config ->
+                                                withAdmittedSnapshotPlan
+                                                    (planBuilder (canonicalProjectRootPath canonicalRoot))
+                                                    profile
+                                                    canonicalRoot
+                                                    config
+                                                    ( use
+                                                        store
+                                                        project
+                                                        (productionRootAuthority productionRoot)
+                                                        unbound
+                                                    )
+                                        either fail pure validated
+                                )
+                        case opened of
+                            Left failure -> pure (Left (ModeAuthorityFailure failure))
+                            Right action -> Right <$> action
+                )
+        admitted <- either (fail . show) pure rooted
+        either (fail . show) pure admitted
 
 withAdmittedSnapshotPlan ::
+    StepPlan ->
     LifecycleProfile scope ->
     CanonicalProjectRoot scope rootId ->
     ValidatedConfig scope specDigest configId (cfg scope) ->
     (forall planId. ProjectPlan scope specDigest planId configId cfg -> IO result) ->
     IO result
-withAdmittedSnapshotPlan profile canonicalRoot config use = do
+withAdmittedSnapshotPlan steps profile canonicalRoot config use = do
     drafts <-
         either (fail . show) pure
-            (planDraftsFromValidatedBuilder canonicalRoot config (\_ _ -> Right snapshotStepPlan))
+            (planDraftsFromValidatedBuilder canonicalRoot config (\_ _ -> Right steps))
     action <- either (fail . show) pure (withProjectPlan profile canonicalRoot config drafts use)
     action
 
@@ -2199,6 +2815,26 @@ snapshotStepPlan =
     of
         Left failure -> error (show failure)
         Right plan -> plan
+
+richSnapshotPlan :: FilePath -> StepPlan
+richSnapshotPlan parentRoot =
+    either (error . show) id $
+        mkStepPlan
+            [ declaresProviderResource providerResourceAtCurrentFrame $
+                descendsVia (inContainer container emptyVMStack) $
+                    deployVMStep "provider with a mounted child" (StepFrame "host" "Host") (const (pure StepChanged))
+            , contextInitStep "child" (StepFrame "container" "Container") (const (pure StepChanged))
+            ]
+  where
+    container =
+        ContainerLift
+            { clImage = "snapshot-fixture:latest"
+            , clPlacement = ProviderGuestContainer
+            , clMounts = [V.Mount{V.source = Text.pack parentRoot, V.target = "/snapshot-fixture", V.readOnly = True}]
+            , clExtraArgs = []
+            , clRemoveAfter = True
+            , clConfigDelivery = Nothing
+            }
 
 snapshotKey ::
     InstalledProjectIdentity projectId ->

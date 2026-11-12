@@ -18,14 +18,17 @@ module SourceGuard (
     firstPartyImportItems,
     haskellDefinitionNames,
     haskellDefinitionTokens,
+    haskellDefinitionClauseTokens,
     nullaryDataConstructorNames,
     recordFieldNames,
     haskellTokens,
+    stripHaskellComments,
     importsModule,
     moduleImportTokens,
     moduleExportTokens,
     countHaskellIdentifier,
     countHaskellTokenSequence,
+    ownershipComputationViolations,
     unproducedAuthorityErrorConstructors,
     countPosixAbsoluteLiteralApplications,
     repoRelativePath,
@@ -39,6 +42,11 @@ module SourceGuard (
     librarySourceDirs,
     libraryModulePath,
     readLibrarySources,
+    mainImplementationSources,
+    mainImplementationOwners,
+    mainImplementationModuleNames,
+    mainImplementationHiddenModules,
+    effectiveMainExposedModules,
     transitiveHostBootstrapImports,
     ComponentStanza (..),
     componentStanzas,
@@ -183,11 +191,27 @@ sourceTextBlocks = map unlines . blocks . lines . maskHaskellComments
         | token `elem` [")", "]", "}"] = max 0 (depth - 1)
         | otherwise = depth
 
+{- | Mask ordinary comments while retaining source layout and literal contents.
+
+Pragmas remain source tokens, as in 'haskellTokens'. Strings and characters are
+consumed by the standard lexer, so comment delimiters inside them stay intact.
+Comment characters become spaces while newlines remain in place, keeping
+neighbouring tokens separated even when the original comment had no whitespace.
+-}
+stripHaskellComments :: String -> String
+stripHaskellComments = maskHaskellCommentsWithPragmas True
+
+-- Definition readers also remove pragmas before splitting declaration blocks.
 maskHaskellComments :: String -> String
-maskHaskellComments = mask
+maskHaskellComments = maskHaskellCommentsWithPragmas False
+
+maskHaskellCommentsWithPragmas :: Bool -> String -> String
+maskHaskellCommentsWithPragmas keepPragmas = mask
   where
     mask [] = []
     mask ('-' : '-' : remaining) = "  " <> lineComment remaining
+    mask ('{' : '-' : '#' : remaining)
+        | keepPragmas = "{-#" <> mask remaining
     mask ('{' : '-' : remaining) = "  " <> blockComment 1 remaining
     mask source@(character : remaining)
         | isSpace character = character : mask remaining
@@ -196,13 +220,13 @@ maskHaskellComments = mask
     blank '\n' = '\n'
     blank _ = ' '
     lineComment [] = []
-    lineComment ('\n' : remaining) = '\n' : maskHaskellComments remaining
+    lineComment ('\n' : remaining) = '\n' : mask remaining
     lineComment (_ : remaining) = ' ' : lineComment remaining
     blockComment :: Int -> String -> String
     blockComment _ [] = []
     blockComment depth ('{' : '-' : remaining) = "  " <> blockComment (depth + 1) remaining
     blockComment depth ('-' : '}' : remaining)
-        | depth == 1 = "  " <> maskHaskellComments remaining
+        | depth == 1 = "  " <> mask remaining
         | otherwise = "  " <> blockComment (depth - 1) remaining
     blockComment depth (character : remaining) = blank character : blockComment depth remaining
 
@@ -298,6 +322,92 @@ readLibrarySources packageRoot description = do
         case declaredModuleName source of
             Just name -> pure (name, path, source)
             Nothing -> assertFailure ("library source has no module declaration: " <> path)
+
+-- | Registered Main modules and its one named successor owner, excluding other private and DATA units.
+-- This component-scoped registration inventory is not an independent physical-file census.
+mainImplementationSources :: FilePath -> String -> IO [(String, FilePath, String)]
+mainImplementationSources packageRoot description = do
+    registrations <- either assertFailure pure (mainImplementationOwners description)
+    let names = map fst registrations
+    inventory <- readLibrarySources packageRoot description
+    forM_ registrations $ \(name, owner) -> do
+        component <- case [entry | entry <- componentStanzas description, componentHeader entry == owner] of
+            [entry] -> pure entry
+            _ -> assertFailure ("implementation owner component is missing or ambiguous: " <> owner)
+        case [path | (observed, path, _) <- inventory, observed == name] of
+            [path] ->
+                if normalise path `elem`
+                    [ normalise (packageRoot </> directory </> moduleSourcePath name)
+                    | directory <- componentSourceDirs component
+                    ]
+                    then pure ()
+                    else assertFailure ("implementation module source is outside its owner's roots: " <> name <> " (" <> owner <> "): " <> path)
+            [] -> assertFailure ("implementation module source missing: " <> name)
+            _ -> assertFailure ("implementation module source ambiguous: " <> name)
+    pure [entry | entry@(name, _, _) <- inventory, name `elem` names]
+
+-- | The actual production registration owner of each Main implementation module.
+mainImplementationOwners :: String -> Either String [(String, String)]
+mainImplementationOwners description = do
+    mainBody <- maybe (Left "the main library stanza is absent") Right (mainLibraryStanza description)
+    let owners = ("library", mainBody) :
+            maybe [] (\body -> [("library handoff-implementation-internal", body)])
+                (namedStanza "library handoff-implementation-internal" description)
+    registrations <- concat <$> traverse
+        ( \(owner, body) -> do
+            names <- moduleFieldsWithCommon description ["exposed-modules", "other-modules"] body
+            pure [(name, owner) | name <- nub names]
+        ) owners
+    let names = map fst registrations
+        duplicates = sort [name | name <- nub names, length (filter (== name) names) > 1]
+    if null duplicates
+        then Right registrations
+        else Left ("implementation modules have multiple owners: " <> show duplicates)
+
+-- | Registered production modules, excluding unrelated lower and DATA components.
+mainImplementationModuleNames :: String -> Either String [String]
+mainImplementationModuleNames = fmap (map fst) . mainImplementationOwners
+
+-- | Production modules hidden from Main's consumers, including selectively visible test owners.
+mainImplementationHiddenModules :: String -> Either String [String]
+mainImplementationHiddenModules description = do
+    names <- mainImplementationModuleNames description
+    exposed <- effectiveMainExposedModules description
+    pure (filter (`notElem` exposed) names)
+
+-- | The public Main surface supports bare, unrenamed module names only.
+effectiveMainExposedModules :: String -> Either String [String]
+effectiveMainExposedModules description = do
+    body <- maybe (Left "the main library stanza is absent") Right (mainLibraryStanza description)
+    nub <$> moduleFieldsWithCommon description ["exposed-modules", "reexported-modules"] body
+
+moduleFieldsWithCommon :: String -> [String] -> String -> Either String [String]
+moduleFieldsWithCommon description fields = go [] Nothing
+  where
+    go visited commonName body = do
+        forM_ ["exposed-modules", "reexported-modules"] $ \field ->
+            case commonName of
+                Just name | not (null (fieldValues field body)) ->
+                    Left ("library module field " <> field <> " appears in common stanza: " <> name)
+                _ -> Right ()
+        local <- concat <$> traverse (`bareModuleField` body) fields
+        imported <- concat <$> traverse
+            ( \name ->
+                if name `elem` visited
+                    then Left ("cyclic common stanza in module fields: " <> name)
+                    else case namedStanza ("common " <> name) description of
+                        Nothing -> Left ("common stanza for module fields is absent: " <> name)
+                        Just common -> go (name : visited) (Just name) common
+            ) (fieldValues "import" body)
+        pure (local <> imported)
+
+bareModuleField :: String -> String -> Either String [String]
+bareModuleField field body =
+    let values = fieldValues field body
+        modules = fieldModules field body
+     in if values == modules
+            then Right modules
+            else Left ("unsupported module syntax in " <> field <> ": " <> show values)
 
 {- | The sorted strict HostBootstrap dependency closure of one library module.
 
@@ -688,14 +798,26 @@ block reader retains guards and local bindings while excluding neighbouring
 definitions. Missing, ambiguous, and unsupported bindings refuse.
 -}
 haskellDefinitionTokens :: String -> String -> Either String [String]
-haskellDefinitionTokens wanted source
+haskellDefinitionTokens wanted source = do
+    clauses <- haskellDefinitionClauseTokens wanted source
+    case clauses of
+        [tokens] -> Right tokens
+        _ -> Left ("value definition is ambiguous: " <> wanted)
+
+{- | Tokens of every complete value clause for one named prefix binding.
+
+This uses the same declaration and block readers as the strict single-binding
+view. Signatures alone do not supply a clause; missing and unsupported bindings
+still refuse. Multiple genuine pattern equations retain their source order.
+-}
+haskellDefinitionClauseTokens :: String -> String -> Either String [[String]]
+haskellDefinitionClauseTokens wanted source
     | not (valueIdentifier wanted) = Left ("unsupported value name: " <> wanted)
     | otherwise = do
         definitions <- traverse inspect candidates
         case [tokens | (names, tokens) <- definitions, wanted `elem` names] of
-            [tokens] -> Right tokens
             [] -> Left ("value definition missing: " <> wanted)
-            _ -> Left ("value definition is ambiguous: " <> wanted)
+            clauses -> Right clauses
   where
     candidates =
         [ block
@@ -1055,3 +1177,82 @@ isModuleSegment segment =
             isUpper firstCharacter
                 && all (\character -> isAlphaNum character || character == '_' || character == '\'') remaining
         [] -> False
+
+
+{- | Physical ownership computation homes, checked with lexical identifiers and
+prefix-definition clauses. Ordinary stat metadata is not ownership identity:
+the kernel encoder is confined to its vocabulary definition and declared rows.
+Foreign API names are read only from actual foreign-import declarations, never
+from unrelated string literals. The diagnostics describe this source policy,
+not a whole-program proof of effects hidden behind arbitrary aliases.
+-}
+ownershipComputationViolations :: [(FilePath, String)] -> Either String [String]
+ownershipComputationViolations = fmap concat . traverse check
+  where
+    primitive = "internal/ownership/HostBootstrap/Ownership/Primitive.hs"
+    object = "internal/ownership/HostBootstrap/Ownership/Object.hs"
+    tape = "internal/ownership/HostBootstrap/Ownership/Tape.hs"
+    posix = "internal/ownership/HostBootstrap/Ownership/Posix.hs"
+    windows = "internal/ownership/HostBootstrap/Ownership/Windows.hs"
+    shipped = "src/HostBootstrap/Ownership/Shipped.hs"
+    config = "internal/handoff-implementation/HostBootstrap/Config/Install/Native.hs"
+
+    check (rawPath, source) = do
+        let path = map (\character -> if character == '\\' then '/' else character) rawPath
+            tokens = haskellTokens source
+            present name = elem name tokens
+            at reason = path <> ": " <> reason
+            declaredHomes =
+                [ ("resumeOwnedRemoval", primitive)
+                , ("reobserveOwnedIdentity", primitive)
+                , ("withReobservedIdentity", primitive)
+                , ("readWholeObject", primitive)
+                , ("renderOriginRecord", object)
+                , ("parseOriginRecord", object)
+                ]
+        definitions <- fmap concat $ traverse
+            (\(name, home) ->
+                case haskellDefinitionClauseTokens name source of
+                    Right _ -> Right [at ("shared definition outside its home: " <> name) | path /= home]
+                    Left reason
+                        | reason == "value definition missing: " <> name -> Right []
+                        | otherwise -> Left (at reason))
+            declaredHomes
+        let identity =
+                [at "kernel identity encoding outside the declared rows/vocabulary"
+                | present "mkKernelObjectIdentity", not (elem path [object, posix, windows, shipped])]
+            linking =
+                [at "no-replace link outside the declared primitive sites"
+                | any present ["createLink", "createHardLink", "rawCreateHardLinkW", "CreateHardLinkW"]
+                    || any (elem "CreateHardLinkW" . words) (foreignImports source)
+                    || any (elem "link" . words) (foreignImports source)
+                    || any (elem "linkat" . words) (foreignImports source)
+                , not (elem path [posix, windows, shipped, config])]
+            codec =
+                [at "origin record codec outside Object/Tape"
+                | any present ["renderOriginRecord", "parseOriginRecord"], not (elem path [object, tape])]
+            acts =
+                [at ("identity-conditional act copied into " <> name)
+                | block <- sourceTextBlocks (unlines (filter (not . isPrefixOf "#" . dropWhile isSpace) (lines source)))
+                , body@(name : _) <- [haskellTokens block]
+                , valueIdentifier name
+                , path /= primitive
+                , applies "rowObserveIdentity" body
+                , any (\mutation -> applies mutation body) ["rowRemoveObject", "rowLinkNoReplace"]]
+        pure (definitions <> identity <> linking <> codec <> acts)
+
+    -- A row field declaration is not an invocation of its selector.
+    applies wanted (name : next : remaining)
+        | name == wanted && elem next ["=", "::"] = applies wanted remaining
+        | name == wanted = True
+        | otherwise = applies wanted (next : remaining)
+    applies wanted [name] = name == wanted
+    applies _ [] = False
+
+    foreignImports source =
+        [ value
+        | block <- sourceTextBlocks source
+        , "foreign" : "import" : remaining <- [haskellTokens block]
+        , token <- remaining
+        , [(value, "")] <- [reads token :: [(String, String)]]
+        ]

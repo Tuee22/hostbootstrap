@@ -6,8 +6,10 @@
 -- It has to match the base, because the compiler keys the warm Cabal store --
 -- a base on another compiler would ship a store this workspace cannot read and
 -- could not configure this project at all. The optimisation level matches that
--- store for the same reason, so derived project builds reuse the pre-built
--- dependency unfoldings. That store is built from the warm-store project at
+-- store's plan for the same reason. `optimization: 2` below reaches only the
+-- local package, hostbootstrap-core; dependencies on both sides take Cabal's
+-- per-package defaults, so no dependency-level alignment is claimed. That store
+-- is built from the warm-store project at
 -- core/warm-deps/ in this repository (../documents/engineering/warm_store.md).
 
 packages:
@@ -26,3 +28,6 @@ jobs: 1
 
 package *
   ghc-options: +RTS -M6144M -xr18432M -RTS
+
+package hostbootstrap-core
+  build-info: True

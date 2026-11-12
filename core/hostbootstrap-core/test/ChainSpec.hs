@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module ChainSpec (interpretExactSteps, tests) where
+module ChainSpec (tests) where
 
 import Control.Exception (throwIO)
 import qualified Control.Exception as Exception
@@ -14,6 +14,8 @@ import qualified Data.ByteString as ByteString
 import Data.Char (isAlphaNum)
 import Data.Foldable (toList)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.List (isInfixOf)
+import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
 import qualified Data.Text.IO as TIO
@@ -21,11 +23,14 @@ import Data.Word (Word64)
 import qualified Fixture
 import GHC.IO.Handle (hDuplicate, hDuplicateTo)
 import HostBootstrap.Authority (
+    ExecutePhase,
     InstalledProjectIdentity,
+    VerbUp,
     installedProjectName,
  )
 import qualified HostBootstrap.CLI as CLI
 import HostBootstrap.Chain
+import HostBootstrap.Chain.EntryPolicy (validateCurrentFrameEntry)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -36,8 +41,7 @@ import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.DocValidator (findRepoRoot)
 import qualified HostBootstrap.Harness as Harness
-import HostBootstrap.HostConfig (HostConfig)
-import HostBootstrap.HostTool (HostTool (Docker, Incus))
+import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Incus (IncusVM (..))
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
@@ -49,6 +53,16 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionProjectedOperations,
     stepExecutionTakeProjectedGate,
  )
+import HostBootstrap.Lifecycle.Mode (
+    LifecycleCursor,
+    PlanSnapshotView,
+    inspectPlanSnapshot,
+    lifecycleCursorFrame,
+    lifecycleCursorMatchesCommandAuthority,
+    planSnapshotViewConfigDigest,
+    planSnapshotViewPlanDigest,
+    planSnapshotViewSpecDigest,
+ )
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     decodeFields,
@@ -56,6 +70,7 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGatePlan,
  )
 import HostBootstrap.Lifecycle.Session (
+    SessionError (SessionStoreFailure),
     allSessionsClosedCount,
     sessionErrorMessage,
     verifyAllSessionsClosed,
@@ -64,12 +79,9 @@ import HostBootstrap.Lift (
     ContainerLift (..),
     ContainerPlacement (ProviderGuestContainer),
     InVMSelfPath (InVMSelfPath),
-    LiftDispatch (DispatchTool),
-    LocalSelfPath (LocalSelfPath),
-    SelfRef,
     inContainer,
     inVM,
-    mkSelfRef,
+    currentSelfRef,
  )
 import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.ProjectPlan (
@@ -78,6 +90,9 @@ import HostBootstrap.ProjectPlan (
     plannedStepFrameId,
     plannedStepLabel,
     topology,
+    topologyFrameOrder,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
  )
 import HostBootstrap.ProjectRoot (
     canonicalProjectRootPath,
@@ -85,17 +100,21 @@ import HostBootstrap.ProjectRoot (
  )
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent),
-    ProtectedError,
-    ProtectedRecord (protectedRecordBytes),
+    ProtectedError (ProtectedIOFailure),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     ProtectedStore,
+    ProtectedStoreIdentity,
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
     openProtectedStore,
+    protectedStoreIdentity,
     protectedStoreRoot,
     readProtectedRecord,
     recordKeyText,
+    recordVersionWord,
+    tryProtectedEntry,
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (
@@ -103,46 +122,51 @@ import HostBootstrap.Reconcile (
     FailureDetail (FailureDetail),
     PlannedResourceKind (ClusterResourceKind),
     ReconcileError (Conflict, Failure, SafetyRefusal, Unsupported),
-    RecoveryDisposition (DoNotRetry),
+    RecoveryDisposition (DoNotRetry, ReprobeBeforeRetry),
     carryManagedResourcePhaseSettlement,
     carryManagedResourceSettlement,
     carryReleasedResourceSettlement,
+    completePreparedPhaseTransition,
     completeReconcile,
+    emptyDependencySnapshot,
     planMarkReady,
     plannedNodeOperation,
+    plannedNodePhaseOperation,
     resourceHandleGeneration,
     resourceHandleKey,
     resourceHandleObservationVersion,
     resourceRecordKey,
-    verifyPhaseTransition,
     withCarriedManagedResource,
     withNodeObservedResource,
     withNodeResourceOfKind,
     withPhaseAdvance,
-    withPreparedOperation,
+    withPreparedPhaseTransition,
+    withPreparedZeroDependencyOperation,
     withReconcileResult,
-    zeroDependencyPreconditions,
  )
 import HostBootstrap.Step
-import System.Directory (doesFileExist, getCurrentDirectory, removeFile)
+import qualified HostBootstrap.Substrate as Substrate
+import qualified SourceGuard
+import System.Directory (createDirectory, doesDirectoryExist, doesFileExist, getCurrentDirectory, removeDirectory, removeFile, removePathForcibly, renameFile)
 import System.Environment (withArgs)
-import System.Exit (ExitCode)
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath (takeDirectory, (</>))
 import System.IO (SeekMode (AbsoluteSeek), hClose, hFlush, hSeek, stderr)
 import System.IO.Temp (withSystemTempDirectory, withSystemTempFile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Unsafe.Coerce (unsafeCoerce)
 
 tests :: TestTree
 tests =
     testGroup
         "ChainSpec"
         [ testGroup "nextFrameAfter (descent order)" nextFrameCases
-        , testGroup "handoffDispatch (recursive `project up` handoff)" handoffCases
         , testGroup "renderChain is the single representation" renderCases
         , testGroup "exact plan admission" admissionCases
         , testGroup "the plan mints each step's execution descriptor (§ U)" descriptorCases
         , testGroup "the interpreter converts each node's observation" observationCases
+        , testGroup "current-frame entry policy" entryPolicyCases
         , testGroup "the interpreter's durable transaction" transactionCases
         , testGroup "a node's projected operations (§ CC)" projectionCases
         , testGroup "carried managed handles (§ EE)" carrierCases
@@ -190,9 +214,6 @@ acceleratorPlan =
         demoSteps
             ++ [postHandoffStep "start-accelerator-daemon" "start the host accelerator daemon" metal noop]
 
-self :: SelfRef
-self = mkSelfRef (LocalSelfPath "/proc/self/exe") (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
-
 vm :: IncusVM
 vm = IncusVM "demo-vm" "images:ubuntu/24.04"
 
@@ -226,46 +247,7 @@ nextFrameCases =
     , testCase "a frame the plan never enters has no next frame" $
         withAdmittedPlan demoPlan $ \plan ->
             nextFrameAfter (topology plan) "no-such-frame" @?= Nothing
-    , -- The descent the interpreter dispatches is read off the exact plan's
-      -- topology, not from a separately supplied per-frame resolver (§ W).
-      testCase "each handoff context is projected by the same exact plan" $
-        withAdmittedPlan demoPlan $ \plan -> do
-            fmap (handoffDispatch self . snd) (nextFrameAfter (topology plan) "host-orchestrator-0")
-                @?= Just (DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "project", "up"])
-            fmap (handoffDispatch self . snd) (nextFrameAfter (topology plan) "vm-orchestrator-1")
-                @?= Just
-                    ( DispatchTool
-                        Docker
-                        [ "run"
-                        , "--rm"
-                        , "-v"
-                        , "/var/run/docker.sock:/var/run/docker.sock"
-                        , "--network=host"
-                        , "demo:local"
-                        , "project"
-                        , "up"
-                        ]
-                    )
-    ]
 
-handoffCases :: [TestTree]
-handoffCases =
-    [ testCase "into a VM: incus exec -- <in-vm pb> project up" $
-        handoffDispatch self (vmContext (inVM vm emptyVMStack))
-            @?= DispatchTool Incus ["exec", "demo-vm", "--", "/usr/local/bin/hostbootstrap-demo", "project", "up"]
-    , testCase "into a container: docker run --rm img project up (ENTRYPOINT is the pb)" $
-        handoffDispatch self (inContainer container emptyVMStack)
-            @?= DispatchTool
-                Docker
-                [ "run"
-                , "--rm"
-                , "-v"
-                , "/var/run/docker.sock:/var/run/docker.sock"
-                , "--network=host"
-                , "demo:local"
-                , "project"
-                , "up"
-                ]
     ]
 
 renderCases :: [TestTree]
@@ -420,7 +402,7 @@ admissionCases =
                 , "withTeardownLifecycleCursor cursor"
                 ]
             requiredFacade =
-                [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, lifecycleEntryVerbName, )"
+                [ "module HostBootstrap.Command ( coreCommands, coreCommandNames, allReconcilers, LifecycleEntry, lifecycleEntryFrameName, )"
                 , "runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec rootAuthority lease verified bound binding plan lifecycleContext project = withRootProjectUpLifecycleEntry"
                 , "withRootProjectUpLifecycleEntry exactSpec rootAuthority Authority.ProjectUp verified bound binding lease plan lifecycleContext project (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)"
                 , "runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec rootAuthority lease verified bound binding plan root ctx lifecycleContext project = do"
@@ -463,14 +445,26 @@ descriptorCases =
                 , ["core:deploy-kind"]
                 , ["core:deploy-kind", "project:deploy-harbor"]
                 ]
-    , testCase "a different plan mints a different digest for the same step kind" $ do
-        (oneDigest, oneObserved) <- runInnermost descriptorSteps
-        (otherDigest, otherObserved) <- runInnermost otherDescriptorSteps
-        map (\(key, _, _, _) -> key) otherObserved @?= ["core:deploy-kind"]
-        [dependencies | (_, _, _, dependencies) <- otherObserved] @?= [[]]
-        (oneDigest == otherDigest) @?= False
-        -- the shared first step still reports its own plan's digest, not the other's
-        [digest | (_, _, digest, _) <- take 1 oneObserved] @?= [oneDigest]
+    , testCase "different graphs at the same root and configuration have different digests" $
+        withSystemTempDirectory "hostbootstrap-chain-digests" $ \directory -> do
+            let root = directory </> "root"
+            one <- runFreshInnermostAtRoot root descriptorSteps
+            other <- runFreshInnermostAtRoot root otherDescriptorSteps
+            assertMatchingDescriptorInputs one other
+            assertDescriptorCallbacks ["core:deploy-kind", "project:deploy-harbor", "core:expose-port"] one
+            assertDescriptorCallbacks ["core:deploy-kind"] other
+            [dependencies | (_, _, _, dependencies) <- descriptorRunObserved other] @?= [[]]
+            (descriptorRunPlanDigest one == descriptorRunPlanDigest other) @?= False
+    , testCase "equal graphs at the same root and configuration retain equal digests" $
+        withSystemTempDirectory "hostbootstrap-chain-digests" $ \directory -> do
+            let root = directory </> "root"
+            one <- runFreshInnermostAtRoot root descriptorSteps
+            other <- runFreshInnermostAtRoot root descriptorSteps
+            assertMatchingDescriptorInputs one other
+            let expected = ["core:deploy-kind", "project:deploy-harbor", "core:expose-port"]
+            assertDescriptorCallbacks expected one
+            assertDescriptorCallbacks expected other
+            descriptorRunPlanDigest other @?= descriptorRunPlanDigest one
     ]
 
 {- | The interpreter turns each node's observation into that node's own outcome
@@ -486,14 +480,14 @@ observationCases =
         outcome @?= Right ()
         readIORef ran >>= (@?= 2)
     , testCase "each non-success observation stops before the later node" $ do
-        let expectRow observation = do
+        let expectRow marker observation = do
                 ran <- newIORef (0 :: Int)
                 outcome <- runInnermostWith [countingStep "deploy-kind-probe" ran observation, countingStep "later" ran StepChanged]
-                assertLeft "expected the public command to stop at the observed node" outcome
+                assertFailureContains marker outcome
                 readIORef ran >>= (@?= 1)
-        expectRow (StepConflict "the run's cluster" "a foreign cluster" "delete it")
-        expectRow (StepUnsupported "no kube toolchain in this frame")
-        expectRow (StepRefused "the cluster holds state this run does not own")
+        expectRow "conflict:" (StepConflict "the run's cluster" "a foreign cluster" "delete it")
+        expectRow "unsupported:" (StepUnsupported "no kube toolchain in this frame")
+        expectRow "refused:" (StepRefused "the cluster holds state this run does not own")
     ]
 
 {- | The durable half of the interpreter's transaction (§ EE).
@@ -502,19 +496,256 @@ These are the properties the unit-level prepare tests cannot show, because they
 are about *when* the record is written relative to the effect and *whether* the
 store is locked while the effect runs.
 -}
+entryPolicyCases :: [TestTree]
+entryPolicyCases =
+    [ testCase "a two-frame descent runs between pre and post handoff nodes" $ do
+        observed <- newIORef ([] :: [T.Text])
+        let record :: T.Text -> StepAction
+            record label _ = modifyIORef' observed (++ [label]) >> pure StepChanged
+            graph _ frame = expectPlan
+                [ deployVMStep "launch" frame noop
+                , copySourceStep "copy" frame noop
+                , descendsVia (vmContext (inVM vm emptyVMStack)) (buildPbStep "pre" frame (record "pre"))
+                , contextInitStep "child" vmFrame noop
+                , postHandoffStep "post" "post" frame (record "post")
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            outcome <- runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor $ \_ parent child descent -> do
+                parent @?= "host-orchestrator-0"
+                child @?= "vm-orchestrator-1"
+                descent @?= vmContext (inVM vm emptyVMStack)
+                modifyIORef' observed (++ ["child"])
+                pure (Right ())
+            outcome @?= Right ()
+            readIORef observed >>= (@?= ["pre", "child", "post"])
+    , testCase "a foreign supplied store refuses before opening the chain journal" $ do
+        callbacks <- newIORef (0 :: Int)
+        let graph = entryPolicyGraph callbacks
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor ->
+            Fixture.withFixtureRootChainEvidence graph $ \foreignStore _foreignPlan _foreignAuthority _foreignCursor -> do
+                assertBool "the supplied store actually differs" (protectedStoreIdentity store /= protectedStoreIdentity foreignStore)
+                lifecycleCursorMatchesCommandAuthority authority cursor @?= True
+                host <- directChainHostConfig
+                exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+                assertEntryRefusal [store, foreignStore] callbacks
+                    "project up: command authority does not belong to the supplied protected store"
+                    (fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf foreignStore plan authority cursor (\_ _ _ _ -> pure (Right ()))))
+    , testCase "a foreign cursor origin refuses before opening the chain journal" $ do
+        callbacks <- newIORef (0 :: Int)
+        let graph = entryPolicyGraph callbacks
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority _cursor ->
+            Fixture.withFixtureRootChainEvidence graph $ \foreignStore _foreignPlan _foreignAuthority foreignCursor -> do
+                assertBool "the cursor's store actually differs" (protectedStoreIdentity store /= protectedStoreIdentity foreignStore)
+                -- Substitute only the indices of an actually admitted foreign
+                -- cursor. Its retained store, acquisition and broker remain B's.
+                let substituted = alignForeignEntryCursor foreignCursor
+                lifecycleCursorMatchesCommandAuthority authority substituted @?= False
+                host <- directChainHostConfig
+                exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+                assertEntryRefusal [store, foreignStore] callbacks
+                    "project up: command authority and lifecycle cursor origins do not match"
+                    (fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority substituted (\_ _ _ _ -> pure (Right ()))))
+    , testCase "a second frame in the same acquisition refuses before opening the chain journal" $ do
+        callbacks <- newIORef (0 :: Int)
+        Fixture.withFixtureRootChainEvidenceVariants (entryPolicyGraph callbacks) $ \store plan authority cursor childCursor _alternatePlan -> do
+            lifecycleCursorFrame cursor @?= "host-orchestrator-0"
+            lifecycleCursorFrame childCursor @?= "test-harness-1"
+            -- The genuine child cursor already shares A's plan and broker.
+            -- Only its fresh frame index is aligned for this negative control.
+            let substituted = alignEntryCursorFrame childCursor
+            lifecycleCursorMatchesCommandAuthority authority substituted @?= True
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            assertEntryRefusal [store] callbacks
+                "project up: command authority frame host-orchestrator-0 does not match lifecycle cursor frame test-harness-1"
+                (fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority substituted (\_ _ _ _ -> pure (Right ()))))
+    , testCase "an admitted alternative topology refuses before opening the chain journal" $ do
+        callbacks <- newIORef (0 :: Int)
+        Fixture.withFixtureRootChainEvidenceVariants (entryPolicyGraph callbacks) $ \store _plan authority cursor _childCursor alternatePlan -> do
+            lifecycleCursorFrame cursor @?= "host-orchestrator-0"
+            map fst (NonEmpty.toList (topologyFrameOrder (topology alternatePlan))) @?= ["host-orchestrator-0-alternate"]
+            lifecycleCursorMatchesCommandAuthority authority cursor @?= True
+            -- This is the genuinely admitted alternative plan. Only planId
+            -- changes; its actual configuration and topology remain intact.
+            let substituted = alignEntryPlanId alternatePlan
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            assertEntryRefusal [store] callbacks
+                "project up: current frame host-orchestrator-0 is not a frame of the admitted plan (frames: host-orchestrator-0-alternate)"
+                (fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store substituted authority cursor (\_ _ _ _ -> pure (Right ()))))
+    , testCase "matching evidence shares the private policy and completes the actual chain" $ do
+        callbacks <- newIORef (0 :: Int)
+        Fixture.withFixtureRootChainEvidence (entryPolicyGraph callbacks) $ \store plan authority cursor -> do
+            validateCurrentFrameEntry authority store
+                (lifecycleCursorMatchesCommandAuthority authority cursor)
+                (lifecycleCursorFrame cursor)
+                (fmap fst (topologyFrameOrder (topology plan))) @?= Right ()
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            outcome <- fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor (\_ _ _ _ -> pure (Right ())))
+            outcome @?= Right ()
+            readIORef callbacks >>= (@?= 1)
+            phases <- expectSuccess =<< withProtectedEntry store readOperationPhases
+            phases @?= ["Committed"]
+            assertExactlyOneClosedSession store (stablePlanSnapshotDigest (renderSnapshot plan))
+    ]
+
+entryPolicyGraph :: IORef Int -> ProtectedStore -> StepFrame -> StepPlan
+entryPolicyGraph callbacks _store frame =
+    expectPlan
+        [ projectStep (fixtureProjectStepId "entry-policy") PreserveOnReverse "entry policy probe" frame
+            (\_ -> modifyIORef' callbacks (+ 1) >> pure StepChanged)
+        ]
+
+assertEntryRefusal :: [ProtectedStore] -> IORef Int -> String -> IO (Either String ()) -> IO ()
+assertEntryRefusal stores callbacks expected attempt = do
+    before <- traverse protectedRecordImage stores
+    outcome <- attempt
+    outcome @?= Left expected
+    readIORef callbacks >>= (@?= 0)
+    traverse protectedRecordImage stores >>= (@?= before)
+
+-- Defensive substitutions retain real admitted terms and fixed up/execute
+-- indices. No authority, acquisition journal or cursor is manufactured here.
+alignForeignEntryCursor ::
+    LifecycleCursor foreignScope foreignPlan foreignFrame foreignBroker VerbUp ExecutePhase ->
+    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase
+alignForeignEntryCursor = unsafeCoerce
+
+alignEntryCursorFrame ::
+    LifecycleCursor scope planId sourceFrame brokerGeneration verb phase ->
+    LifecycleCursor scope planId targetFrame brokerGeneration verb phase
+alignEntryCursorFrame = unsafeCoerce
+
+alignEntryPlanId ::
+    ProjectPlan scope specDigest sourcePlanId configId cfg ->
+    ProjectPlan scope specDigest targetPlanId configId cfg
+alignEntryPlanId = unsafeCoerce
+
 transactionCases :: [TestTree]
 transactionCases =
-    [ testCase "the unknown phase is durable before the effect, and the entry is free while it runs" $
+    [ testCase "the interpreter rethrows the original safety refusal after terminal settlement and session close" $ do
+        callbacks <- newIORef (0 :: Int)
+        later <- newIORef (0 :: Int)
+        let original = Harness.SafetyRefusal "x"
+            graph _store frame = expectPlan
+                [ projectsOperation "project:typed-refusal/relation" $
+                    projectStep (fixtureProjectStepId "typed-refusal") PreserveOnReverse "typed refusal" frame
+                        (\_ -> modifyIORef' callbacks (+ 1) >> throwIO original)
+                , projectStep (fixtureProjectStepId "later") PreserveOnReverse "later" frame
+                    (\_ -> modifyIORef' later (+ 1) >> pure StepChanged)
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            attempted <- Exception.try @Exception.SomeException (fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor (\_ _ _ _ -> pure (Right ()))))
+            case attempted of
+                Left failure -> Exception.fromException @Harness.SafetyRefusal failure @?= Just original
+                Right outcome -> assertFailure ("the original callback exception did not escape: " ++ show outcome)
+            readIORef callbacks >>= (@?= 1)
+            readIORef later >>= (@?= 0)
+            phases <- expectSuccess =<< withProtectedEntry store readOperationPhases
+            phases @?= replicate 2 "StepObservedTerminal"
+            assertExactlyOneClosedSession store (stablePlanSnapshotDigest (renderSnapshot plan))
+    , testCase "a returned refusal terminalizes its untaken projection before session close" $ do
+        callbacks <- newIORef (0 :: Int)
+        later <- newIORef (0 :: Int)
+        let graph _store frame = expectPlan
+                [ projectsOperation "project:returned-projection/relation" $
+                    projectStep (fixtureProjectStepId "returned-projection") PreserveOnReverse "returned refusal" frame
+                        (\_ -> modifyIORef' callbacks (+ 1) >> pure (StepRefused "operator-owned state"))
+                , projectStep (fixtureProjectStepId "later") PreserveOnReverse "later" frame
+                    (\_ -> modifyIORef' later (+ 1) >> pure StepChanged)
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            outcome <- fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor (\_ _ _ _ -> pure (Right ())))
+            assertFailureContains "refused: operator-owned state" outcome
+            readIORef callbacks >>= (@?= 1)
+            readIORef later >>= (@?= 0)
+            phases <- expectSuccess =<< withProtectedEntry store readOperationPhases
+            phases @?= replicate 2 "StepObservedTerminal"
+            assertExactlyOneClosedSession store (stablePlanSnapshotDigest (renderSnapshot plan))
+    , testCase "a terminal settlement obstruction retains the original refusal and its secondary failure" $ do
+        callbacks <- newIORef (0 :: Int)
+        later <- newIORef (0 :: Int)
+        blocked <- newIORef Nothing
+        secondary <- newIORef Nothing
+        let original = Harness.SafetyRefusal "secondary original"
+            obstruct :: ProtectedStore -> StepAction
+            obstruct store _execution = do
+                modifyIORef' callbacks (+ 1)
+                keys <- expectSuccess =<< withProtectedEntry store listProtectedRecords
+                key <- case filter (T.isPrefixOf "op." . recordKeyText) keys of
+                    [one] -> pure one
+                    other -> assertFailure ("expected one prepared operation before the effect, got " ++ show other)
+                observed <- expectSuccess =<< withProtectedEntry store (\session -> readProtectedRecord session key)
+                retained <- maybe (assertFailure "the prepared operation disappeared before obstruction") pure observed
+                recordedPhase (protectedRecordBytes retained) @?= "EffectOutcomeUnknown"
+                let path = protectedStoreRoot store </> "records" </> T.unpack (recordKeyText key) ++ ".rec"
+                    saved = protectedStoreRoot store </> "terminal-settlement-original"
+                Exception.mask_ $ do
+                    renameFile path saved
+                    writeIORef blocked (Just (key, retained, path, saved))
+                    createDirectory path
+                failedRead <- withProtectedEntry store (\session -> readProtectedRecord session key)
+                case failedRead of
+                    Left failure@(ProtectedIOFailure "read a protected record" diagnostic) -> do
+                        assertBool "the kernel failure does not name the obstructed operation" (recordKeyText key `T.isInfixOf` diagnostic)
+                        writeIORef secondary (Just (sessionErrorMessage (SessionStoreFailure failure)))
+                    other -> assertFailure ("expected the actual operation read to fail, got " ++ show other)
+                throwIO original
+            restore = do
+                obstruction <- readIORef blocked
+                case obstruction of
+                    Nothing -> pure ()
+                    Just (_, _, path, saved) -> do
+                        directory <- doesDirectoryExist path
+                        if directory then removeDirectory path else pure ()
+                        renameFile saved path
+            graph store frame = expectPlan
+                [ projectStep (fixtureProjectStepId "secondary-failure") PreserveOnReverse "secondary failure" frame (obstruct store)
+                , projectStep (fixtureProjectStepId "later") PreserveOnReverse "later" frame
+                    (\_ -> modifyIORef' later (+ 1) >> pure StepChanged)
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            outcome <- fmap (either (\(reason, _, _) -> Left reason) Right) (runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor (\_ _ _ _ -> pure (Right ()))) `Exception.finally` restore
+            expected <- readIORef secondary >>= maybe (assertFailure "the callback never observed the kernel read failure") pure
+            outcome @?= Left
+                ( "prepared project step callback for project:secondary-failure raised an exception: "
+                    ++ Exception.displayException original
+                    ++ "; terminal settlement failed: "
+                    ++ expected
+                )
+            readIORef callbacks >>= (@?= 1)
+            readIORef later >>= (@?= 0)
+            obstruction <- readIORef blocked
+            case obstruction of
+                Nothing -> assertFailure "the real operation was never obstructed"
+                Just (key, retained, _, _) -> do
+                    restored <- expectSuccess =<< withProtectedEntry store (\session -> readProtectedRecord session key)
+                    restored @?= Just retained
+            phases <- expectSuccess =<< withProtectedEntry store readOperationPhases
+            phases @?= ["EffectOutcomeUnknown"]
+    , testCase "the unknown phase is durable before the effect, and the entry is free while it runs" $
         withChainStore $ \store project -> do
             observed <- newIORef ([] :: [T.Text])
             let probe :: forall scope planId. StepExecution scope planId -> IO StepObservation
                 probe _ = do
-                    -- Taking the exclusive entry here is itself the assertion
+                    -- Trying the exclusive entry here is itself the assertion
                     -- that the interpreter is not holding it: a provider call
                     -- or a cluster bring-up can take minutes, and the store
                     -- must stay available to a peer for that whole time.
-                    phases <- withProtectedEntry store (readOperationPhases)
-                    either (assertFailure . show) (writeIORef observed) phases
+                    phases <- tryProtectedEntry store readOperationPhases
+                    case phases of
+                        Left failure -> assertFailure (show failure)
+                        Right Nothing -> assertFailure "the interpreter held the protected entry during the effect"
+                        Right (Just recorded) -> writeIORef observed recorded
                     pure StepChanged
             outcome <-
                 runFrom store project [countingProbe "probe-node" probe]
@@ -562,6 +793,7 @@ transactionCases =
             either (assertFailure . show) (@?= ["Committed"]) settled
     , testCase "a conflicting stable member refuses the journal commit" $
         withChainStore $ \store project -> do
+            retained <- newIORef Nothing
             outcome <-
                 runFrom
                     store
@@ -572,10 +804,13 @@ transactionCases =
                         ( \execution -> do
                             carryClusterHandle execution
                             prewriteSettlementBytes store execution "conflicting-member"
+                            readOnlyResourceRecord store >>= writeIORef retained . Just
                             pure StepChanged
                         )
                     ]
-            assertLeft "a conflicting resource member was accepted" outcome
+            assertFailureContains "conflicting resource settlement" outcome
+            expected <- readIORef retained >>= maybe (assertFailure "the callback never wrote its conflicting member") pure
+            readOnlyResourceRecord store >>= (@?= expected)
             phases <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["EffectOutcomeUnknown"]) phases
     , testCase "a fresh ownership generation replaces the prior released tombstone" $
@@ -599,6 +834,7 @@ transactionCases =
             fields !! 10 @?= "owned"
     , testCase "a released tombstone refuses a non-advancing ownership generation" $
         withChainStore $ \store project -> do
+            retained <- newIORef Nothing
             outcome <-
                 runFrom
                     store
@@ -609,10 +845,13 @@ transactionCases =
                         ( \execution -> do
                             carryClusterHandleAt 5 execution
                             prewriteReleasedClusterRecordAt 5 store execution
+                            readOnlyResourceRecord store >>= writeIORef retained . Just
                             pure StepChanged
                         )
                     ]
-            assertLeft "a non-advancing resource generation replaced a tombstone" outcome
+            assertFailureContains "conflicting resource settlement" outcome
+            expected <- readIORef retained >>= maybe (assertFailure "the callback never wrote its released tombstone") pure
+            readOnlyResourceRecord store >>= (@?= expected)
             phases <- withProtectedEntry store readOperationPhases
             either (assertFailure . show) (@?= ["EffectOutcomeUnknown"]) phases
     , testCase "release keeps the stable member and advances it to a tombstone" $
@@ -656,6 +895,29 @@ transactionCases =
             fields !! 7 @?= "8"
             fields !! 8 @?= "ready"
             fields !! 10 @?= "owned"
+    , testCase "a phase settlement with no durable predecessor refuses the journal commit" $
+        withChainStore $ \store project -> do
+            callbacks <- newIORef (0 :: Int)
+            outcome <-
+                runFrom
+                    store
+                    project
+                    [ deployKindStep
+                        "missing cluster predecessor"
+                        executionFrame
+                        ( \execution -> do
+                            modifyIORef' callbacks (+ 1)
+                            carryReadyClusterHandle execution
+                            pure StepChanged
+                        )
+                    ]
+            assertFailureContains "missing resource settlement predecessor" outcome
+            readIORef callbacks >>= (@?= 1)
+            phases <- expectSuccess =<< withProtectedEntry store readOperationPhases
+            phases @?= ["EffectOutcomeUnknown"]
+            invocationRecordCount store >>= (@?= 1)
+            keys <- protectedKeyImage store
+            filter ("resource." `T.isPrefixOf`) keys @?= []
     , testCase "a node that did not reach it settles terminally, not as unknown" $
         withChainStore $ \store project -> do
             outcome <-
@@ -1015,7 +1277,7 @@ carrierCases =
         outcome @?= Right ()
         readIORef adopted >>= (@?= [Left "conflict"])
     , testCase "a dependency nobody carried is a reprobe failure, not an empty success" $ do
-        adopted <- newIORef ([] :: [Either T.Text (T.Text, Word64, Word64)])
+        adopted <- newIORef ([] :: [Either ReconcileError (T.Text, Word64, Word64)])
         outcome <-
             runInnermostWith
                 [ deployKindStep "acquire nothing" executionFrame (const (pure StepChanged))
@@ -1031,12 +1293,15 @@ carrierCases =
                                 , resourceHandleGeneration handle
                                 , resourceHandleObservationVersion handle
                                 )
-                        modifyIORef' adopted (++ [either (Left . summarizeError) Right result])
+                        modifyIORef' adopted (++ [result])
                         pure StepChanged
                     )
                 ]
         outcome @?= Right ()
-        readIORef adopted >>= (@?= [Left "failure"])
+        captured <- readIORef adopted
+        case captured of
+            [Left (Failure (FailureDetail "adopt carried dependency" _ ReprobeBeforeRetry))] -> pure ()
+            other -> assertFailure ("expected one missing-dependency reprobe refusal, got " ++ show other)
     ]
 
 {- | Acquire this node's own cluster resource through the real prepared path and
@@ -1062,9 +1327,8 @@ carryClusterHandleAt generation execution = do
                 joinReconcile $
                     withNodeObservedResource execution planned generation 7 $ \observed -> do
                         descriptor <- plannedNodeOperation execution planned observed "cluster:create"
-                        preconditionSet <- zeroDependencyPreconditions descriptor
                         joinReconcile $
-                            withPreparedOperation descriptor preconditionSet opened $
+                            withPreparedZeroDependencyOperation descriptor opened $
                                 \prepared preconditions -> do
                                     reconciled <-
                                         completeReconcile observed prepared preconditions (BackendCreated generation)
@@ -1100,9 +1364,8 @@ carryReleasedClusterHandle execution = do
                 joinReconcile $
                     withNodeObservedResource execution planned 5 7 $ \observed -> do
                         descriptor <- plannedNodeOperation execution planned observed "cluster:create"
-                        preconditionSet <- zeroDependencyPreconditions descriptor
                         joinReconcile $
-                            withPreparedOperation descriptor preconditionSet opened $
+                            withPreparedZeroDependencyOperation descriptor opened $
                                 \prepared preconditions -> do
                                     reconciled <-
                                         completeReconcile observed prepared preconditions (BackendCreated 5)
@@ -1139,9 +1402,8 @@ carryReadyClusterHandle execution = do
                 joinReconcile $
                     withNodeObservedResource execution planned 5 7 $ \observed -> do
                         descriptor <- plannedNodeOperation execution planned observed "cluster:create"
-                        preconditionSet <- zeroDependencyPreconditions descriptor
                         joinReconcile $
-                            withPreparedOperation descriptor preconditionSet opened $
+                            withPreparedZeroDependencyOperation descriptor opened $
                                 \prepared preconditions -> do
                                     reconciled <-
                                         completeReconcile observed prepared preconditions (BackendCreated 5)
@@ -1149,18 +1411,26 @@ carryReadyClusterHandle execution = do
                                         reconciled
                                         ( \managed receipt _ -> do
                                             transition <- planMarkReady managed
-                                            advance <- verifyPhaseTransition managed receipt transition 5
-                                            pure $
-                                                withPhaseAdvance advance $ \ready readyReceipt _ -> do
-                                                    carried <-
-                                                        carryManagedResourcePhaseSettlement
-                                                            execution
-                                                            ready
-                                                            readyReceipt
-                                                            "provisioned"
-                                                            "ready"
-                                                            "cluster-adapter-1"
-                                                    either (assertFailure . show) pure carried
+                                            phaseDescriptor <-
+                                                plannedNodePhaseOperation execution planned managed receipt transition "cluster:ready"
+                                            pure $ do
+                                                preparedPhase <-
+                                                    withPreparedPhaseTransition managed receipt transition phaseDescriptor emptyDependencySnapshot opened $ \preparedTransition -> do
+                                                        advance <- completePreparedPhaseTransition preparedTransition 5
+                                                        pure $
+                                                            withPhaseAdvance advance $ \ready readyReceipt _ -> do
+                                                                carried <-
+                                                                    carryManagedResourcePhaseSettlement
+                                                                        execution
+                                                                        ready
+                                                                        readyReceipt
+                                                                        "provisioned"
+                                                                        "ready"
+                                                                        "cluster-adapter-1"
+                                                                either (assertFailure . show) pure carried
+                                                case joinReconcile preparedPhase of
+                                                    Left err -> assertFailure ("preparing the phase fixture failed: " ++ show err)
+                                                    Right carry -> carry
                                         )
                                         (\_ _ -> Left unexpectedForeign)
     unexpectedForeign =
@@ -1241,7 +1511,10 @@ resourceBundleBytes plan frame resource generation operation version phase adapt
     framed value = ByteString.pack [fromIntegral (shiftR (fromIntegral (ByteString.length value) :: Word64) shift) | shift <- [56, 48 .. 0]] <> value
 
 readOnlyResourceFields :: ProtectedStore -> IO [ByteString]
-readOnlyResourceFields store = do
+readOnlyResourceFields store = resourceFrames . protectedRecordBytes . snd <$> readOnlyResourceRecord store
+
+readOnlyResourceRecord :: ProtectedStore -> IO (T.Text, ProtectedRecord)
+readOnlyResourceRecord store = do
     result <- withProtectedEntry store $ \session -> do
         listed <- listProtectedRecords session
         case listed of
@@ -1252,7 +1525,7 @@ readOnlyResourceFields store = do
                     pure $ case observed of
                         Left failure -> Left failure
                         Right Nothing -> error "listed resource record disappeared"
-                        Right (Just record) -> Right (resourceFrames (protectedRecordBytes record))
+                        Right (Just record) -> Right (recordKeyText key, record)
                 _ -> error "expected exactly one resource record"
     either (assertFailure . show) pure result
 
@@ -1301,6 +1574,23 @@ protectedKeyImage :: ProtectedStore -> IO [T.Text]
 protectedKeyImage store =
     map recordKeyText
         <$> (withProtectedEntry store listProtectedRecords >>= expectSuccess)
+
+protectedRecordImage :: ProtectedStore -> IO [(T.Text, Word64, ByteString)]
+protectedRecordImage store = do
+    image <- withProtectedEntry store $ \session -> do
+        listed <- listProtectedRecords session
+        case listed of
+            Left failure -> pure (Left failure)
+            Right keys -> do
+                records <- traverse (readProtectedRecord session) keys
+                pure $ do
+                    observed <- sequence records
+                    traverse retain (zip keys observed)
+    expectSuccess image
+  where
+    retain (key, Just record) =
+        Right (recordKeyText key, recordVersionWord (protectedRecordVersion record), protectedRecordBytes record)
+    retain (_key, Nothing) = Left (ProtectedIOFailure "read the complete fixture store" "a listed record disappeared")
 
 -- | The recorded phase of every operation record in the store, in key order.
 readOperationPhases :: ProtectedSession session -> IO (Either ProtectedError [T.Text])
@@ -1362,7 +1652,10 @@ runFrom store project steps = do
                 CLI.runHostBootstrapCLI
                     (T.unpack (installedProjectName project))
                     (chainProjectSpec authorityRoot steps)
-    pure (either (\exitCode -> Left (show exitCode ++ if T.null diagnostic then "" else ": " ++ T.unpack diagnostic)) Right attempted)
+    case attempted of
+        Left ExitSuccess -> assertFailure "project up threw ExitSuccess instead of returning its outcome"
+        Left exitCode -> pure (Left (show exitCode ++ if T.null diagnostic then "" else ": " ++ T.unpack diagnostic))
+        Right () -> pure (Right ())
 
 captureCLIExitStderr :: IO () -> IO (Either ExitCode (), T.Text)
 captureCLIExitStderr action =
@@ -1406,36 +1699,43 @@ withChainStore ::
     (forall projectId. ProtectedStore -> InstalledProjectIdentity projectId -> IO result) ->
     IO result
 withChainStore use =
-    withSystemTempDirectory "hostbootstrap-chain" $ \directory -> do
-        Fixture.withFixtureInstalledProject $ \project -> do
-            let projectName = installedProjectName project
-            configPath <- Schema.siblingProjectConfigPath projectName
-            rooted <-
-                withCanonicalProjectRoot
-                    configPath
-                    directory
-                    (pure . canonicalProjectRootPath)
-            canonicalRoot <- expectSuccess rooted
-            let config =
-                    Fixture.defaultProjectConfig
-                        projectName
-                        (T.pack canonicalRoot)
-                        Context.HostOrchestrator
-                storeRoot =
-                    canonicalRoot
-                        </> ".hostbootstrap"
-                        </> "authority"
-                        </> T.unpack projectName
-                cleanup = do
-                    present <- doesFileExist configPath
-                    if present then removeFile configPath else pure ()
-            ( do
-                    Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
-                    opened <- openProtectedStore storeRoot
-                    store <- either (assertFailure . show) pure opened
-                    use store project
-                )
-                `Exception.finally` cleanup
+    withSystemTempDirectory "hostbootstrap-chain" $ \directory ->
+        withChainStoreAtRoot directory (\_root store project -> use store project)
+
+withChainStoreAtRoot ::
+    FilePath ->
+    (forall projectId. FilePath -> ProtectedStore -> InstalledProjectIdentity projectId -> IO result) ->
+    IO result
+withChainStoreAtRoot directory use =
+    Fixture.withFixtureInstalledProject $ \project -> do
+        let projectName = installedProjectName project
+        configPath <- Schema.siblingProjectConfigPath projectName
+        rooted <-
+            withCanonicalProjectRoot
+                configPath
+                directory
+                (pure . canonicalProjectRootPath)
+        canonicalRoot <- expectSuccess rooted
+        let config =
+                Fixture.defaultProjectConfig
+                    projectName
+                    (T.pack canonicalRoot)
+                    Context.HostOrchestrator
+            storeRoot =
+                canonicalRoot
+                    </> ".hostbootstrap"
+                    </> "authority"
+                    </> T.unpack projectName
+            cleanup = do
+                present <- doesFileExist configPath
+                if present then removeFile configPath else pure ()
+        ( do
+                Schema.writeProjectConfigFile Fixture.projectConfigCodec configPath config
+                opened <- openProtectedStore storeRoot
+                store <- either (assertFailure . show) pure opened
+                use canonicalRoot store project
+            )
+            `Exception.finally` cleanup
 
 chainProjectSpec :: FilePath -> [Step] -> CLI.ProjectSpec Fixture.ProjectConfig Fixture.TestConfig
 chainProjectSpec root steps =
@@ -1456,7 +1756,7 @@ chainSuite =
     Harness.TestSuite
         (pure (Right ()))
         (\_ _ -> pure ())
-        [Harness.Case chainCaseId 1 False Harness.AssertOnce]
+        [Harness.Case chainCaseId Harness.AssertOnce]
         (\_ _ -> pure Harness.Pass)
         (pure ())
 
@@ -1501,6 +1801,14 @@ assertLeft :: String -> Either failure result -> IO ()
 assertLeft _ (Left _) = pure ()
 assertLeft message (Right _) = assertFailure message
 
+assertFailureContains :: String -> Either String result -> IO ()
+assertFailureContains marker outcome = case outcome of
+    Left failure -> assertBool ("missing failure marker " ++ show marker ++ " in " ++ show failure) (marker `isInfixOf` failure)
+    Right _ -> assertFailure ("expected failure containing " ++ show marker)
+
+directChainHostConfig :: IO HostConfig
+directChainHostConfig = Substrate.detect >>= expectSuccess >>= buildHostConfig
+
 readRequiredPlanDigest :: IORef (Maybe T.Text) -> IO T.Text
 readRequiredPlanDigest sink = do
     observed <- readIORef sink
@@ -1524,20 +1832,83 @@ observing sink execution = do
         )
     pure StepChanged
 
-{- | Interpret the exact one-frame plan through the public root entry.  The
-digest comes from the StepExecution minted for that same admitted entry, not a
-second independently opened plan.
+{- | Interpret the exact one-frame plan through the public root entry and read
+its independently persisted snapshot digest beside the callback observations.
 -}
 runInnermost :: [IORef [ObservedExecution] -> Step] -> IO (T.Text, [ObservedExecution])
-runInnermost build = do
+runInnermost build =
+    withChainStore $ \store project -> do
+        (snapshot, observed) <- runInnermostInStore store project build
+        pure (planSnapshotViewPlanDigest snapshot, observed)
+
+runInnermostInStore ::
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    [IORef [ObservedExecution] -> Step] ->
+    IO (PlanSnapshotView, [ObservedExecution])
+runInnermostInStore store project build = do
     sink <- newIORef []
-    outcome <- runInnermostWith (map ($ sink) build)
+    outcome <- runFrom store project (map ($ sink) build)
     outcome @?= Right ()
     observed <- readIORef sink
-    planDigest <- case observed of
-        (_, _, digest, _) : _ -> pure digest
-        [] -> assertFailure "the exact root entry ran no descriptor action"
-    pure (planDigest, observed)
+    assertBool "the exact root entry ran no descriptor action" (not (null observed))
+    entered <- withProtectedEntry store $ \session ->
+        Right <$> inspectPlanSnapshot session project "production"
+    snapshot <- expectSuccess entered >>= expectSuccess
+    pure (snapshot, observed)
+
+data DescriptorRun = DescriptorRun
+    { descriptorRunRoot :: FilePath
+    , descriptorRunConfigBytes :: ByteString
+    , descriptorRunConfigDigest :: T.Text
+    , descriptorRunSpecDigest :: T.Text
+    , descriptorRunPlanDigest :: T.Text
+    , descriptorRunStoreIdentity :: ProtectedStoreIdentity
+    , descriptorRunObserved :: [ObservedExecution]
+    }
+
+{- | Each call owns a new disposable directory at the same supplied pathname.
+The public command gets a fresh store and invocation lineage, while its exact
+canonical root and serialized configuration can be held fixed across calls.
+-}
+runFreshInnermostAtRoot :: FilePath -> [IORef [ObservedExecution] -> Step] -> IO DescriptorRun
+runFreshInnermostAtRoot directory build =
+    Exception.bracket_ (createDirectory directory) (removePathForcibly directory) $
+        withChainStoreAtRoot directory $ \canonicalRoot store project -> do
+            configPath <- Schema.siblingProjectConfigPath (installedProjectName project)
+            configBytes <- ByteString.readFile configPath
+            takeDirectory (takeDirectory (takeDirectory (protectedStoreRoot store))) @?= canonicalRoot
+            (snapshot, observed) <- runInnermostInStore store project build
+            configDigest <- maybe (assertFailure "the admitted snapshot has no config digest") pure (planSnapshotViewConfigDigest snapshot)
+            let specDigest = planSnapshotViewSpecDigest snapshot
+                planDigest = planSnapshotViewPlanDigest snapshot
+            assertBool "the admitted config digest is empty" (not (T.null configDigest))
+            assertBool "the admitted specification digest is empty" (not (T.null specDigest))
+            assertBool "the admitted plan digest is empty" (not (T.null planDigest))
+            pure
+                DescriptorRun
+                    { descriptorRunRoot = canonicalRoot
+                    , descriptorRunConfigBytes = configBytes
+                    , descriptorRunConfigDigest = configDigest
+                    , descriptorRunSpecDigest = specDigest
+                    , descriptorRunPlanDigest = planDigest
+                    , descriptorRunStoreIdentity = protectedStoreIdentity store
+                    , descriptorRunObserved = observed
+                    }
+
+assertMatchingDescriptorInputs :: DescriptorRun -> DescriptorRun -> IO ()
+assertMatchingDescriptorInputs one other = do
+    descriptorRunRoot other @?= descriptorRunRoot one
+    descriptorRunConfigBytes other @?= descriptorRunConfigBytes one
+    descriptorRunConfigDigest other @?= descriptorRunConfigDigest one
+    descriptorRunSpecDigest other @?= descriptorRunSpecDigest one
+    assertBool "the second invocation reused the first protected store" (descriptorRunStoreIdentity one /= descriptorRunStoreIdentity other)
+
+assertDescriptorCallbacks :: [T.Text] -> DescriptorRun -> IO ()
+assertDescriptorCallbacks expected run = do
+    let observed = descriptorRunObserved run
+    [key | (key, _, _, _) <- observed] @?= expected
+    [digest | (_, _, digest, _) <- observed] @?= replicate (length expected) (descriptorRunPlanDigest run)
 
 descriptorSteps :: [IORef [ObservedExecution] -> Step]
 descriptorSteps =
@@ -1553,19 +1924,27 @@ descriptorSteps =
     ]
 
 otherDescriptorSteps :: [IORef [ObservedExecution] -> Step]
-otherDescriptorSteps =
-    [\sink -> deployKindStep "bring up a different cluster" executionFrame (observing sink)]
+otherDescriptorSteps = take 1 descriptorSteps
 
 -- | Mechanically pin the exact public interpreter boundary.
 sourceShapeCases :: [TestTree]
 sourceShapeCases =
-    [ testCase "the exact entry joins ProjectPlan, CommandAuthority, and Execute cursor indices" $ do
+    [ testCase "lifecycle descent has no argv command route" $ do
+        chain <- chainSource
+        command <- commandSource
+        let exports = fst (T.breakOn ")\nwhere" chain)
+        mapM_
+            (\name -> assertBool ("legacy export remains: " ++ T.unpack name) (not (name `T.isInfixOf` exports)))
+            ["    runChainFromFrame,", "    runChainFromFrameWithDescent,", "    handoffDispatch,"]
+        assertBool "Chain cannot launch an argv descent" (not ("liftSubcommandWithStdin" `T.isInfixOf` chain))
+        assertBool "Command cannot launch an argv descent" (not ("liftSubcommandWithStdin" `T.isInfixOf` command))
+    , testCase "the exact entry joins ProjectPlan, CommandAuthority, and Execute cursor indices" $ do
         source <- chainSource
         let normalized = T.unwords (T.words source)
             signatures =
                 [ "renderChain :: ProjectPlan scope specDigest planId configId cfg -> String"
                 , "nextFrameAfter :: DerivedTopology scope planId -> Text -> Maybe (Text, LiftContext)"
-                , "runChainFromFrame :: forall scope specDigest planId configId cfg frame brokerGeneration. HostConfig -> SelfRef -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg -> CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase -> LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase -> IO (Either String ())"
+                , "runChainFromFrameWithDescentFailure :: forall scope specDigest planId configId cfg frame brokerGeneration. HostConfig -> SelfRef -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg -> CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase -> LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase -> (ResourceCarrier scope planId -> Text -> Text -> LiftContext -> IO (Either String ())) -> IO (Either (String, [Text], [Text]) ())"
                 ]
         mapM_
             ( \signature ->
@@ -1581,7 +1960,7 @@ sourceShapeCases =
                 , "stepExecutionFor plan cfg runtime planned"
                 , "runPlannedStep planned execution"
                 , "nextFrameAfter derivedTopology current"
-                , "commandAuthorityMatchesStore authority store"
+                , "validateCurrentFrameEntry"
                 , "lifecycleCursorMatchesCommandAuthority authority cursor"
                 , "validateCurrentLifecycleCursor protected cursor"
                 ]
@@ -1619,7 +1998,6 @@ sourceShapeCases =
                 [ "type role PlannedStepObservation nominal nominal nominal"
                 , "plannedStepObservationSucceeded :: PlannedStepObservation scope planId configId -> Bool"
                 , "plannedStepObservationDetail :: PlannedStepObservation scope planId configId -> Text"
-                , "plannedStepRefusalObservation :: PlannedStep scope planId configId config -> Text -> PlannedStepObservation scope planId configId"
                 , "runPlannedStep :: PlannedStep scope planId configId config -> StepExecution scope planId -> IO (PlannedStepObservation scope planId configId)"
                 ]
             interpreterRoute =
@@ -1694,7 +2072,10 @@ chainSource :: IO T.Text
 chainSource = publicModuleSource "Chain.hs"
 
 projectPlanSource :: IO T.Text
-projectPlanSource = publicModuleSource "ProjectPlan.hs"
+projectPlanSource = SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+    description <- SourceGuard.readPackageDescription
+    path <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.ProjectPlan"
+    TIO.readFile path
 
 commandSource :: IO T.Text
 commandSource = publicModuleSource "Command.hs"
@@ -1722,7 +2103,3 @@ fixtureProjectStepId = either error id . projectStepId
 
 expectPlan :: [Step] -> StepPlan
 expectPlan = either (error . show) id . mkStepPlan
-
--- | Shared exact-chain fixture for an adjacent integration spec.
-interpretExactSteps :: HostConfig -> SelfRef -> [Step] -> IO (Either String ())
-interpretExactSteps _cfg _exactSelf = runInnermostWith

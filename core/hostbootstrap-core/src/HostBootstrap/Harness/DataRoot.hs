@@ -27,8 +27,9 @@ That policy is three rules:
 * a generation's **content is this run's own**, so release empties the directory
   after clause 4's re-observation has confirmed the identity and before the seam
   removes it. The order matters: the identity-conditional act stays in the seam,
-  and nothing inside the directory is touched until the kernel has confirmed
-  that the directory is the one this run created.
+  and the kernel identity is checked again immediately before listing its
+  content. A non-cooperating replacement between that check and the per-entry
+  removals remains possible; the protected entry excludes cooperating runs.
 
 Clause 1 is the caller's 'ProtectedSession': every entry point demands one, so
 the whole transaction cannot straddle another run's, and the kernel releases the
@@ -64,13 +65,13 @@ import Control.Exception.Safe (try)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Harness (selfCreatedTestDataRemoval)
-import HostBootstrap.Ownership.Clause (boundEvidence, recordedEvidence)
+import HostBootstrap.Ownership.Clause (boundEvidence, enteredEvidence, recordedEvidence)
 import HostBootstrap.Ownership.Object (
-    ConflictReport (conflictExpected, conflictObserved, conflictSubject),
+    ConflictReport (..),
     ObjectIdentity,
     ObjectKind (OwnedDirectory),
     Origin (..),
-    OwnershipFault (OwnershipProbeFailed),
+    OwnershipFault (OwnershipConflict, OwnershipOccupied, OwnershipProbeFailed),
     objectIdentityText,
     originRecordBinding,
     originRecordOrigin,
@@ -82,28 +83,32 @@ import HostBootstrap.Ownership.Primitive (
     createOwnedDirectory,
     enterOwnedObject,
     recordOwnedOrigin,
-    reenterOwnedObject,
+    reenterStoredOwnedObject,
     releaseOwnedObject,
     reobserveOwnedIdentity,
+    rowObserveIdentity,
+    rowRemoveObject,
+    rowSyncParent,
+    withOwnershipRow,
  )
 import HostBootstrap.Ownership.Tape (
     OwnershipCarrier (fromClauseFault, fromStoreFault),
     RecordSubject (..),
     RecordTape,
-    carryStore,
+    carryClauseFault,
     forgetRecord,
     publishBoundRecord,
     publishFreshRecord,
-    readRecordUnder,
+    readStoredRecordUnder,
+    storedOriginRecord,
+    readRawRecordUnder,
     recordTape,
  )
 import HostBootstrap.Protected (
     ProtectedError,
-    ProtectedRecord,
     ProtectedSession,
     RecordKey,
     protectedErrorMessage,
-    readProtectedRecord,
     recordKeyText,
  )
 import System.Directory (
@@ -117,8 +122,9 @@ import System.FilePath (takeDirectory, (</>))
 
 {- | The receipt for one acquired data root. Its constructor is private, so it
 exists only where 'acquireDataRoot' bound an identity (or proved the directory
-pre-existed). 'releaseDataRoot' revalidates the path and record key it names, so
-a receipt for one run's root cannot release another's.
+pre-existed). 'releaseDataRoot' compares the supplied record key with the
+receipt's key, then uses the receipt's path and the stored record for release.
+It does not separately compare a caller-supplied path.
 -}
 data DataRootOwnership = DataRootOwnership
     { ownershipPath :: FilePath
@@ -213,7 +219,7 @@ acquireDataRoot ::
     FilePath ->
     IO (Either DataRootError DataRootOwnership)
 acquireDataRoot row session key path = do
-    existing <- readRecord session key
+    existing <- readRawRecordUnder (dataRootTape session) key
     case existing of
         Left failure -> pure (Left failure)
         Right (Just _) ->
@@ -254,6 +260,9 @@ acquireDataRoot row session key path = do
     createUnderRecordedAbsence token = do
         created <- createOwnedDirectory row token
         case created of
+            Left fault@(OwnershipOccupied _) -> do
+                forgotten <- forgetRecord (dataRootTape session) key
+                pure (either Left (const (Left fault)) forgotten)
             Left fault -> pure (Left fault)
             Right identity -> do
                 bound <- bindOwnedIdentity row token identity publishBinding
@@ -306,13 +315,13 @@ releaseDataRoot row session key owned
         ([], _) -> dropRecord DataRootPreserved
         (_, Nothing) -> dropRecord DataRootPreserved
         (target : _, Just _) -> do
-            stored <- readRecordUnder (dataRootTape session) key
+            stored <- readStoredRecordUnder (dataRootTape session) key
             case stored of
                 Left failure -> pure (Left failure)
                 Right Nothing -> dropRecord DataRootPreserved
                 Right (Just record) -> do
                     outcome <-
-                        reenterOwnedObject row session target record $ \bound -> do
+                        reenterStoredOwnedObject row session target record $ \bound -> do
                             releasable <- reobserveOwnedIdentity row bound
                             case releasable of
                                 Left fault -> pure (Left fault)
@@ -321,7 +330,10 @@ releaseDataRoot row session key owned
                                     -- this run created, so its content is this run's
                                     -- own and is cleared before the seam removes the
                                     -- directory itself.
-                                    emptied <- emptyGeneration target
+                                    emptied <-
+                                        boundEvidence
+                                            (\_ _ identity -> emptyGeneration row target identity)
+                                            bound
                                     case emptied of
                                         Left fault -> pure (Left fault)
                                         Right () -> releaseOwnedObject row token forget
@@ -332,11 +344,9 @@ releaseDataRoot row session key owned
         OriginPresent _ -> True
         OriginAbsent -> False
     dropRecord outcome = do
-        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
+        deleted <- carryClauseFault <$> forgetRecord (dataRootTape session) key
         pure (fmap (const outcome) deleted)
-    forget _record = do
-        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
-        pure (either (Left . forgetFailure) Right deleted)
+    forget _record = forgetRecord (dataRootTape session) key
 
 {- | What recovery restored for an abandoned run's data root. Recovery never
 adopts: it either restores the recorded absence or leaves the recorded
@@ -345,7 +355,8 @@ pre-existing object alone.
 data RecoveredDataRoot
     = -- | The origin said absent and generated content was removed.
       DataRootAbsenceRestored
-    | -- | The origin said absent and the path was already gone.
+    | -- | No record remained, or its directory was authoritatively absent.
+      -- The path is not inspected when no record exists.
       DataRootAlreadyAbsent
     | -- | The origin named a pre-existing object, which was left intact.
       DataRootFoundStatePreserved
@@ -360,9 +371,10 @@ remove only on an exact match, so a replacement is refused and left intact.
 
 When it says absent and **no** identity was ever bound, the run died inside the
 crash window between clause 2 and clause 3. There is no identity to be
-conditional on — that is what the window means — but the record proves that
-anything now at the path was generated inside that transaction, so recovery
-restores absence rather than adopting the content.
+conditional on. Recovery removes only an empty directory, through the row's
+non-recursive removal; content cannot be attributed to this run and is a
+conflict left intact. An authoritatively absent directory settles either an
+unbound or a bound absent-origin record.
 
 When the record says the path was __present__, the object was an operator's and
 is never removed, whatever it looks like now.
@@ -374,48 +386,85 @@ recoverDataRoot ::
     FilePath ->
     IO (Either DataRootError RecoveredDataRoot)
 recoverDataRoot row session key path = do
-    stored <- readRecordUnder (dataRootTape session) key
+    stored <- readStoredRecordUnder (dataRootTape session) key
     case stored of
         Left failure -> pure (Left failure)
         Right Nothing -> pure (Right DataRootAlreadyAbsent)
-        Right (Just record) -> case originRecordOrigin record of
-            OriginPresent _ -> settle DataRootFoundStatePreserved
-            OriginAbsent -> case originRecordBinding record of
-                Just _ -> reclaimBoundGeneration record
-                Nothing -> restoreRecordedAbsence
+        Right (Just storedRecord) ->
+            let record = storedOriginRecord storedRecord
+             in case originRecordOrigin record of
+                    OriginPresent _ -> settle DataRootFoundStatePreserved
+                    OriginAbsent -> case originRecordBinding record of
+                        Just _ -> reclaimBoundGeneration storedRecord
+                        Nothing -> restoreRecordedAbsence
   where
     reclaimBoundGeneration record = do
-        outcome <-
-            reenterOwnedObject row session path record $ \bound ->
-                boundEvidence
-                    ( \target _record _identity -> do
-                        releasable <- reobserveOwnedIdentity row bound
-                        case releasable of
-                            Left fault -> pure (Left fault)
-                            Right token -> do
-                                emptied <- emptyGeneration target
-                                case emptied of
+        observed <- enterOwnedObject row session path $ \entered ->
+            enteredEvidence
+                (\_ origin -> pure (Right origin))
+                entered
+        case observed of
+            Left fault -> pure (Left (ownershipError fault))
+            Right OriginAbsent -> settle DataRootAlreadyAbsent
+            Right (OriginPresent _) -> do
+                outcome <-
+                    reenterStoredOwnedObject row session path record $ \bound ->
+                        boundEvidence
+                            ( \target _record identity -> do
+                                releasable <- reobserveOwnedIdentity row bound
+                                case releasable of
                                     Left fault -> pure (Left fault)
-                                    Right () -> releaseOwnedObject row token forget
-                    )
-                    bound
-        pure (fmap (const DataRootAbsenceRestored) (either (Left . ownershipError) Right outcome))
+                                    Right token -> do
+                                        emptied <- emptyGeneration row target identity
+                                        case emptied of
+                                            Left fault -> pure (Left fault)
+                                            Right () -> releaseOwnedObject row token forget
+                            )
+                            bound
+                pure (fmap (const DataRootAbsenceRestored) (either (Left . ownershipError) Right outcome))
 
     restoreRecordedAbsence = do
-        removed <-
-            ioAttempt
-                "restore the recorded absence of the data root"
-                (removePathForcibly path)
-        case removed of
-            Left failure -> pure (Left failure)
-            Right () -> settle DataRootAbsenceRestored
+        outcome <-
+            enterOwnedObject row session path $ \entered ->
+                enteredEvidence
+                    ( \target origin -> case origin of
+                        OriginAbsent -> pure (Right DataRootAlreadyAbsent)
+                        OriginPresent _ -> do
+                            listed <- try (listDirectory target)
+                            case listed of
+                                Left failure ->
+                                    pure
+                                        ( Left
+                                            ( OwnershipProbeFailed
+                                                "inspect the unbound data-root directory"
+                                                (Text.pack (show (failure :: IOError)))
+                                            )
+                                        )
+                                Right [] ->
+                                    withOwnershipRow row $ \primitives -> do
+                                        removed <- rowRemoveObject primitives target
+                                        case removed of
+                                            Left fault -> pure (Left fault)
+                                            Right () -> do
+                                                synced <- rowSyncParent primitives target
+                                                pure (fmap (const DataRootAbsenceRestored) synced)
+                                Right _ ->
+                                    pure
+                                        ( Left
+                                            ( OwnershipConflict
+                                                (ConflictReport (Text.pack target) OriginAbsent origin)
+                                            )
+                                        )
+                    )
+                    entered
+        case outcome of
+            Left fault -> pure (Left (ownershipError fault))
+            Right restored -> settle restored
 
-    forget _record = do
-        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
-        pure (either (Left . forgetFailure) Right deleted)
+    forget _record = forgetRecord (dataRootTape session) key
 
     settle outcome = do
-        deleted <- carryStore <$> forgetRecord (dataRootTape session) key
+        deleted <- carryClauseFault <$> forgetRecord (dataRootTape session) key
         pure (fmap (const outcome) deleted)
 
 -- Shared plumbing -----------------------------------------------------------------
@@ -439,46 +488,44 @@ instance OwnershipCarrier DataRootError where
     fromClauseFault = ownershipError
     fromStoreFault = DataRootStoreFailure
 
-readRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either DataRootError (Maybe ProtectedRecord))
-readRecord session key = do
-    observed <- readProtectedRecord session key
-    pure (either (Left . DataRootStoreFailure) Right observed)
-
 {- | Clear a confirmed generation's own content.
 
-Called only after clause 4 has re-observed the identity, so what is emptied is
-the directory this run created and never one it found. The seam removes exactly
-the named object, which is what keeps it from ever deleting more than it was
-asked to; a generation's content is the run's own, so clearing it is this
-owner's policy rather than the seam's.
+Called after clause 4's re-observation, and checks that same identity again
+immediately before listing. A mismatch or disappearance leaves content and
+record intact. The check and the per-entry pathname removals are separate
+kernel acts: a non-cooperating replacement between them remains possible.
+The seam removes the directory itself; clearing its content is owner policy.
 -}
-emptyGeneration :: FilePath -> IO (Either OwnershipFault ())
-emptyGeneration target = do
-    outcome <- try $ do
-        entries <- listDirectory target
-        mapM_ (removePathForcibly . (target </>)) entries
-    pure $ case outcome of
-        Left failure ->
-            Left
-                ( OwnershipProbeFailed
-                    "clear the data root's own content"
-                    (Text.pack (show (failure :: IOError)))
-                )
-        Right () -> Right ()
-
-{- | Carry a store failure into the seam's fault vocabulary.
-
-The seam's publication is a continuation, so a caller's own failure has to be
-reported in the seam's terms while it is inside one. The store's exact message
-survives; what does not is the structured 'ProtectedError', which no caller of
-this module matches on for a publication.
--}
-forgetFailure :: DataRootError -> OwnershipFault
-forgetFailure failure =
-    OwnershipProbeFailed "forget the data-root ownership record" (dataRootErrorMessage failure)
+emptyGeneration :: OwnershipRow -> FilePath -> ObjectIdentity -> IO (Either OwnershipFault ())
+emptyGeneration row target expected =
+    withOwnershipRow row $ \primitives -> do
+        observed <- rowObserveIdentity primitives target
+        case observed of
+            Left fault -> pure (Left fault)
+            Right current
+                | current /= Just expected ->
+                    pure
+                        ( Left
+                            ( OwnershipConflict
+                                ( ConflictReport
+                                    (Text.pack target)
+                                    (OriginPresent expected)
+                                    (maybe OriginAbsent OriginPresent current)
+                                )
+                            )
+                        )
+                | otherwise -> do
+                    outcome <- try $ do
+                        entries <- listDirectory target
+                        mapM_ (removePathForcibly . (target </>)) entries
+                    pure $ case outcome of
+                        Left failure ->
+                            Left
+                                ( OwnershipProbeFailed
+                                    "clear the data root's own content"
+                                    (Text.pack (show (failure :: IOError)))
+                                )
+                        Right () -> Right ()
 
 {- | Create the data root's parent, which is ordinary project scaffolding and
 not the owned object itself.

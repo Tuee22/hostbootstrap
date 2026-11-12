@@ -224,6 +224,25 @@ The plan therefore mints the descriptor: an action is `forall scope planId. Step
 IO result`, carrying the plan digest, the step's own operation key and frame, and its exact ordered edge
 set. A step names its node instead of deriving it.
 
+### Preparation owns fresh dependency observations
+
+A retained sealed observation says what was ready when it was collected. It cannot establish that
+the same resource is ready when a later effect prepares. Preparation therefore validates its gate,
+reads the descriptor's complete ordered dependency set, and runs the registered probes itself before
+returning the matching operation/preconditions pair. Missing or duplicate required members and failed
+observations yield no pair. A snapshot carries managed handles and probes, not earlier sealed results.
+
+The generic operation and phase entries own that IO boundary. The pure zero-edge entries enforce a
+different lawful shape: a descriptor with no dependency to observe. They need no probe IO and refuse
+every edge-bearing descriptor. One shared matching policy binds either family to the exact plan,
+operation, call digest and journal coordinates.
+
+The sealed set is an internal representation. A second public fresh entry adds no capability, and a
+public set type or reader with no public producer or consumer adds no usable contract. The scoped
+definition/export guard in ReconcileSpec holds the two entry families and their private representation;
+the compiler fixtures independently hold private-set import and snapshot-constructor boundaries.
+The [lifecycle state model](../documents/architecture/lifecycle_state_model.md) owns the contract.
+
 ### One plan, not three views of one
 
 Forward ordering, per-frame descent, and reverse teardown are the same resource set seen three ways. Held as
@@ -233,6 +252,364 @@ did.
 
 So a step declares its own frame boundary and its own reversing effect, and both teardown verbs are
 *projections* of that one validated plan. The row that announces a child config is the node that carries it.
+
+### Reconciliation takes the admitted plan
+
+An independent `LifecyclePlan` over raw steps can mint a local plan identity and canonical material
+without the admitted root and configuration. The rejected `withLifecyclePlan`, `withLifecyclePlanForConfig`
+and `lifecyclePlanFromProjectPlan` family supplies a second route where one exact `ProjectPlan` suffices.
+Its snapshot/digest/frame/step readers and `configFreeDigest` add no contract. The reserved
+`compatibilityLifecyclePlanRoot` is non-absolute and cannot stand in for a canonical filesystem root.
+Reconciliation therefore consumes the admitted plan directly, and structural snapshot admission requires
+an absolute root. The real `canonicalPlanSnapshot` encoder remains a private implementation of admitted
+plan construction, with no kernel export for another caller to bypass that construction boundary.
+
+Settlement-free `carryManagedResource` establishes no durable membership. Chain requires settlement
+evidence before recording a carried managed resource, so that entry and its sole-support private
+`mintCarriedResource` have no place on the admitted route. The settlement-backed carrying functions remain.
+Every carried identity retains an ownership operation, including authenticated transfers that omit the
+parent frame's local settlement. An optional operation admits an unconstructible state once the free
+mint is absent; the carrier requires the operation directly. An empty transferred operation remains a
+real runtime refusal. Tests do not add a constructor merely to exercise a missing-operation branch.
+Scoped lexical definition/export guards and the public reference refusal hold these boundaries without
+banning unrelated live module aliases or node-projection helpers that contain similar words.
+
+### Settlement publication belongs to the declaring node
+
+A dependency prefix grants access to a managed handle and its matching receipt. It does not transfer
+the dependency's settlement responsibility: Chain publishes only members for the current node's own
+and projected gates. Allowing a dependent to replace another node's carried member reports a settlement
+with no corresponding publication route. One receipt-first own-or-projected check therefore selects
+the declaring frame for both predecessor encoding and final carrying. A projection needs that actual
+frame as well; an empty-frame fallback cannot encode a canonical resource record.
+
+`ReconcileSpec` holds the boundary with a real dependency phase-carry refusal and complete carrier-entry
+comparison, plus genuine projected alias preparation and public canonical-record verification.
+`ChainSpec` checks exact publication failures and preserves the conflicting member's bytes and version.
+
+### Interpreter state has one private production representation
+
+An allocator on a public interpreter-state facade lets a caller assemble the state needed by a
+descriptor producer. Carrier allocation therefore belongs to the package interpreter boundary.
+Production and tests share one compiled private representation and its real allocation function;
+copying the datatype into a testing component creates another identity, while injected allocators
+or cast-based bridges test a different route. The carrier leaf is generic only in its dependency
+payload; the runtime additionally parameterizes its retained gate type. Main specializes these to its
+own runtime-dependency package and actual prepared gate, keeping registry, service and gate policy in
+main and avoiding a dependency cycle or a separately compiled testing identity. All scope, plan, gate
+and payload roles are nominal, including representationally equal gate and payload newtypes.
+
+### A definite callback outcome closes its opened gates
+
+A still-live interpreter knows when its callback has returned a refusal or raised a synchronous
+exception. Leaving an untaken projected gate unknown in that case confuses a definite node outcome
+with an interrupted effect and prevents the node's own report from surviving session close. Chain
+therefore terminalizes all gates that node opened. Successful callbacks settle only taken projections,
+so a declared effect that never ran still fails closed. Terminal settlement and exact session close
+precede rethrow of the original exception value; wrapping its text in a new `userError` erases the
+type that a caller needs. A secondary cleanup failure retains both causes instead of replacing the
+callback exception. Typed exception tests invoke the actual Chain below the root entry's intentional
+operator rendering boundary, with genuine root-gate evidence rather than a fabricated authority.
+
+### Budget admission reads the retained configuration
+
+An independent envelope argument lets one admitted plan produce differently sized budgets, so nominal
+plan indices alone do not establish a single resource declaration. `withValidatedBudget` instead reads
+the existing retained validated configuration through the optional `BudgetCfg` domain projection.
+Configuration families that use no budget need no resource field or instance, and the universal
+`ProjectCfg` codec/context contract stays unchanged. No new public plan-config getter or duplicated
+canonical budget representation is needed.
+
+Quantity and arithmetic controls admit their resource text before plan creation. Each overflow isolates
+one dimension, uses replicas whose multiplier decides the result, and asserts the complete typed error;
+an exact-capacity partition checks the other side of the boundary. A provider-package refusal keeps
+every witness from plan A and substitutes only plan B's genuinely admitted topology with a narrow
+negative plan-index alignment. Its exact first refusal isolates the backstop without depending on a
+later provider-declaration extension or constructing a forged topology. Colima's incompatible-budget
+control admits both configurations under one real root/profile and prepares both matching gates before
+mutation, preserving the same profile identity while retaining each distinct plan digest.
+
+### Object-store vocabulary shares one tag
+
+Core's S3 resource family names the object-store role through `ObjectStoreResource` and
+`ObjectStoreResourceKind`, with the exact authored key `project:deploy-object-store`.
+`HostBootstrap.Plan.Resource` owns the one actual datatype; plan and readiness kernels import it
+directly, and public facades re-export the same identity. `ObjectStoreRolloutProbe` retains the closed
+relation to `ObjectStoreRolloutReady` without a conversion or another resource producer.
+
+A local tag alias or copied datatype obscures that single definition, while an old product-name
+compatibility alias exposes an additional surface. The source guard pins the actual definition owner,
+direct imports, exact rollout relation and automatic public constructor re-export. It also rejects
+every library lexical token containing `Minio`; comments are ignored, while a quoted literal containing
+that exact substring is still a token. Product addresses in registry/network documentation belong to
+their composition topic rather than this identifier vocabulary.
+
+### Handoff freezes cover owned declarations
+
+The Handoff facade contains several independent contracts. Freezing the whole shared source would
+make an unrelated binding or key-read change fail every rooted-transport guard. Each guard instead
+freezes its named entry definitions or its existing owned response-authentication section. The
+expected digests come from saved pre-change source, with current-source equality checked separately;
+they are fixed expectations rather than values derived from the source under test.
+
+Named definitions use the existing multi-clause SourceGuard reader and an unambiguous ordered
+name/clause/token data structure serialized directly to bytes before hashing. Owned source sections
+are sliced from the original file bytes. Missing or unsupported definitions fail. Import, export,
+producer, role and ordering assertions remain independent, and other owners retain their own freezes.
+
+The private signing-admission owner also carries a separate pure reread policy over ordinary DATA.
+Signing guards freeze the retained capability's typed declarations and three complete function clauses;
+they do not freeze that unrelated policy's result type or classifier. The fixed baseline bundle retains
+the abstract capability, sole producer and opaque consumers. Independent import, export, producer,
+user and strictness checks still protect its boundary. A descriptive policy result cannot mint that
+capability, a grant or a durable permission.
+
+The historical response attribution measures thirteen ordinary binding readers as 26 significant
+declaration lines and checks their exact names. Earlier shared-file subtraction and the whole private
+owner's 25-line count are dated attribution, not live completion evidence. The owned response bytes,
+reader inventory, capability declarations and independent checks retain their fixed subjects without
+rebasing a whole shared file, subtracting unrelated additions or increasing another owner's allowance.
+
+
+The adoption of receiver progress separates the rooted transport owner's two Receiver.Internal path
+folds from the shared ReceivedEdge carrier. Their pre-edit typed signatures and complete SourceGuard
+clauses form one fixed ordered Aeson bundle. The rooted transport sprint owned no Receiver.hs declaration, so its
+unchanged whole-file observation is dated evidence, not a replacement freeze over another owner's code.
+The inherited Relay/shared-Internal budget arithmetic is removed rather than rebased; three actual raw
+Relay transport sections and the independent API, role, import, producer and ordering controls remain.
+
+### Handoff bindings retain their admitted fields
+
+A `HandoffBinding` retains the exact coordinates admitted by its broker or checked wire decoder.
+Thirteen private record fields store them, and the existing public names are ordinary read-only
+functions. Exporting record selectors would permit field replacement despite a hidden constructor;
+it would also permit a type-changing update of the phantom broker generation. Private labels and
+same-name plain readers preserve observation while closing both construction paths.
+
+The field order, equality, nominal roles and canonical rendering stay unchanged. Actual public parser
+tables and challenge/grant controls hold their bytes and refusals. The two public-only update subjects
+compile before sealing and receive measured, field-specific GHC record-field refusals afterward on
+Windows and Linux. Neither subject uses a constructor, cast or artificial authority.
+
+Installed signing and verification key reads catch only `IOException`. Missing, unreadable and malformed
+keys retain their typed refusals; asynchronous exceptions propagate. The guard inspects the actual read
+definitions and rejects `SomeException` identifiers. Per-value redaction controls check the actual offer
+token, fixture signing seed and installed verification bytes in raw, hexadecimal and shown forms,
+alongside each value's existing opaque marker.
+
+### Forward-child freezes cover owned declarations
+
+The finalized forward-child projector consumes five public forwarding declarations and the private
+projector kernel. A fixed bundle of those declarations' typed tokens and complete clauses protects
+that interface without freezing unrelated child-admission logic in the same Construct module. Its
+reader verifies the complete five-name inventory and every genuine clause before hashing.
+
+The independent private-owner, export, constructor, importer, caller, type, projector-order and CLI
+installation controls remain separate. Whole shared-file size sums and sibling allowances describe
+dated attribution; they are not evidence that an unrelated implementation must stay unchanged.
+Source controls establish the retained interface and ownership. Actual installed-projector invocation
+and the bare CLI's default refusal need their own runtime observations.
+
+### Child-plan admission retains authenticated origin
+
+A refined config handoff supplies the closed verb and the jointly admitted configuration identity and
+canonical digest. The child-plan facade consumes that evidence and retains the supplied verb and wire
+as evaluated witnesses; a second comparison of the same signed coordinates adds no admissible case.
+
+A plan draft carries its canonical root, specification/configuration evidence and steps. It has no
+independent installed-project, protected-store or broker-generation origin to compare with a signed
+handoff. The admission kernel derives those profile fields from the authenticated binding, validates
+the actual drafts and rebuilt plan, and compares the resulting stable digest with the signed revision.
+This yields local admission evidence, not an execution capability or coordinator authority.
+
+A pure admission callback returns ordinary observed values. Assertions over those values run after all
+outer admissions return, within the lifetime of the broker/run indices they compare. Production and
+owned Harness fixtures use the real binding and configuration producers; a fabricated draft origin or
+new authority accessor would test a shape the boundary does not expose.
+
+### Phase advances complete a prepared pair
+
+The public phase-advance producer consumes an opaque `PreparedPhaseTransition`. That package retains
+the matched managed handle, ownership receipt, transition and prepared operation. Its completion
+checks the observed generation and derives the target-phase handle from those retained values.
+The generation-check helper stays private to `HostBootstrap.Reconcile`; exposing it would let a
+caller reach the advance without any prepared package.
+
+The generic IO preparation route and pure zero-dependency route both produce the same checked
+package. Completion is pure and replayable; the journal admission belongs to the supplied gate's
+producer. Gate phase/call binding and the exposed lower gate-producer gap remain separately owned
+by the [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md). Sealing this helper establishes the required package
+boundary without claiming a fresh durable transition at completion.
+
+`ImportVerifyPhaseTransition.hs` names the actual public function in a fully typed live use. Its
+unchanged bytes compile before sealing and receive the measured missing-export refusal afterward
+through the public Main package alone. The existing reconciliation and Chain cases use actual
+planned descriptors and the canonical preparation route, retaining generation, receipt and
+settlement-version assertions.
+
+### Prepare admission rechecks the retained live binding
+
+A cursor retains the original acquisition journal's Mode-owned live validator through fresh opening,
+resume and phase succession. Its constructor and validator field stay private. The fixed
+`withLifecyclePrepareEntry` invokes that validator and checks the command, cursor and actual descriptor
+frame before running its accepted action. Callers provide no replacement validator and receive no
+validator selector.
+
+Chain uses this boundary before initial journal recovery/opening and before each node's registration,
+projected preparation and own preparation, under the same protected entry as those writes. A check
+outside the lock would leave a revocation race; a check only at the final gate would leave intent
+records on refusal. The shared private Chain entry keeps both actual call paths tied to this policy.
+Settlement and cleanup retain their existing checks so already-prepared work can finish.
+
+Live admission checks Mode, the private broker allocation, exact bound-lease state/version and the
+retained snapshot's specification, plan, configuration and canonical bytes. Snapshot identity follows
+that binding. Observed frozen lease data refuses as frozen before a version comparison can mask its
+state. The tests make a data observation, rather than manufacturing migration authority. Command and
+cursor verb/phase indices remain unified, with existing public opener and compiler proofs; a descriptor
+from another actual frame remains a reachable runtime refusal.
+
+### Broker allocation remains owned by its kernel
+
+A held `BrokerEpoch` retains its project, store and allocated generation. The private authority kernel
+checks that origin against the actual protected session before reading the live allocation counter.
+It shares the counter key and decoder with allocation and recorded-generation recovery, so a caller
+does not reconstruct either durable protocol or mint another epoch just to check liveness.
+
+The check is read-only. A matching counter succeeds; a missing, malformed, changed or foreign-store
+allocation returns the existing typed authority error. Allocation retains its physical-version CAS,
+increment and encoding, and recovery retains its existing validation order and byte grammar. The new
+check stays outside the public authority and testing facades. It supplies the read-only primitive for
+the composite prepare entry's protected boundary.
+
+`AuthoritySpec` uses actual allocated epochs, a second real allocation, physical counter deletion and
+corruption, and two real stores with equal generation counters. It compares complete key, byte and
+version images after each attempted validation. Its named ownership guard pins the private export,
+shared protocol calls and read-only closure without expanding the testing producer surface.
+
+### Fence producers follow the held permit
+
+The four public fence operations take an actual `ProjectPermit scope planId` and derive their plan
+coordinate from its private payload. Their output uses that witness's indices. The permit retains the
+coordinate of the journal transaction that produced it alongside the transaction permit; its existing
+version view and display remain unchanged. Nominal fence roles already prevent re-indexing held values.
+Witness-index binding does not authenticate an admitted `ProjectPlan` or make permit indices generative.
+
+Recovery opens its internal project journal before fencing so it holds that coordinate witness. An
+Open/Idle journal is observed read-only; absent state creates bookkeeping, and a published Applying
+transaction replays its decided targets before fencing enumerates them. Closing, corrupt or unreadable
+state can therefore refuse earlier. That preliminary administrative work has its own effects and is
+measured after legitimate fixture setup. It invokes no session-allocation or prepare API, interpreter or
+backend; redo can materialize the operation/session targets already published by a transaction. Fencing, complete manifest verification, recorded-session interpretation and current-broker
+readmission keep their order; the post-manifest journal open obtains a fresh permit version.
+
+Actual kernel cases hold bookkeeping and redo behavior, while scoped source checks hold the two Mode
+consumer orders. Delayed-process controls retain the real fence across entries and obtain actual
+permits at those entries. Existing role proofs remain distinct from the new producer and prepared-gate
+index subjects, whose complete diagnostics are measured through the real public package context.
+
+### Envelope scope tags follow their codec
+
+`frameworkEnvelopeCodec` derives its descriptive scope tag from `KnownScopeKind scope` at the retained
+codec's index. It takes the codec alone, so no independent scope argument can disagree with it.
+The actual Harness and Production codec cases hold both answers. Role-wire controls decode a matching
+service wire first, then mutate exactly one descriptive validation field and assert the exact refusal
+for its kind, scope or specification digest. Full-project validation differs from its matching service
+validation only in wire kind, so that refusal cannot be supplied by another mismatch or a setup failure.
+These tags remain descriptive and grant no authority.
+
+### Command reservations retain distinct coordinate types
+
+The private command-reservation boundary carries plan, frame, project and store roles as distinct
+`CommandPlanDigest`, `CommandFrameName`, `CommandProjectName` and `CommandStoreIdentity` newtypes.
+Callers wrap each actual value at its read point. Reservation fields, retained-origin comparison and
+canonical identity framing retain those distinctions, so a positional transposition requires an
+explicit conversion instead of passing ordinary type checking.
+
+These are descriptive coordinates, not authority producers. Their constructors stay in the private
+kernel and are absent from public Main facades. Unwrapping for the existing equality checks and
+UTF-8 framing preserves the seven encoded fields, decimal byte lengths, invocation hash, replay policy
+and protected CAS behavior. Signature/field/export guards hold the type boundary; the independent
+golden bytes and key and the real reservation cases hold its durable behavior.
+
+### Plan digests share one byte hash
+
+The canonical plan encoder, decoder and delivery projection use `HostBootstrap.Digest.sha256Hex`
+from the private ownership unit. One byte-hash implementation keeps their lowercase SHA-256 encoding
+consistent. A byte-identical local copy is still independent logic that can drift at the next edit.
+The scoped plan guard holds the shared import and rejects a local hash definition or independent
+crypto imports; independent snapshot-byte and delivery-field assertions hold the digest behavior.
+Other consumers' hash adoptions remain owned by their own plan scopes and ledger rows.
+
+### Reconciliation guards inspect actual producers
+
+Execution totality demands every exported descriptor projection for every admitted node. A list length
+does not force those values. Nominal-role coverage discovers each parameterized data/newtype declaration
+and its arity, then checks its complete role annotation; a fixed list can omit the next indexed type.
+Unsupported declaration syntax refuses so an unfamiliar header cannot disappear from the inventory.
+
+The neutral execution package's producer is checked in actual value clauses throughout the main source
+tree. Imports, exports, comments and strings supply no production call. The plan-import boundary uses
+the same lexical import reader for ordinary, qualified and SOURCE imports. Regression controls hold
+these distinctions independently of the current production spelling.
+
+Journal verification receives the original projected resource alongside its indexed handle because a
+key can name different resource families with different placements. A successful matching record and
+a mutation of only its frame distinguish the required conflict from a fixture-setup failure. The exact
+digest conflict likewise preserves the actual admitted digest and fails on setup refusal.
+
+### Source guards read live declarations
+
+Comments document code and cannot establish that a declaration exists. Fragment checks therefore
+remove comments before normalizing whitespace; doing it afterward lets a line comment consume the
+collapsed remainder. The shared lexer preserves quoted data, pragma tokens and token separation, and
+section boundaries name actual declarations rather than explanatory comments. Definition readers
+retain their existing pragma-removing mode instead of changing unrelated structural scans.
+
+An imported runner name alone proves no caller, and a count of an absent name proves nothing about
+the production route. Caller audits inspect actual definition bodies and require an exact nonempty
+owner set. Discovery covers all effective library source directories, including private and backend
+roots. Semantic self-checks exercise these distinctions; real compiler refusals independently hold
+nominal roles rather than relying on a textual example.
+
+### Current-frame entry joins actual evidence
+
+A separately supplied protected store has no scope index, and retained acquisition origins and frame
+names remain runtime facts even when phantom indices agree. One pure production policy therefore
+checks store origin, cursor origin, frame agreement and topology membership in that order before any
+journal entry. It consumes the real lower authority/store types and descriptive data projected by Main;
+copying Main's cursor or topology into a test unit creates another identity, while injected selectors
+and test-only authority mints exercise a different route. Main and tests share one compiled private
+policy and keep actual effectful Chain controls around it.
+
+Verb and phase already have fixed nominal types at this entry. Comparing their terms again introduces
+unreachable runtime alternatives. The existing actual entry-call compiler fixtures hold both constraints;
+the four runtime controls use genuine admitted values, with explicit negative-only index alignment for
+defensive substitutions. Frame/topology controls preserve the actual participating store image; foreign
+store/cursor controls preserve both stores. Unrelated store snapshots add no evidence to a pure predicate.
+
+### Planned observations come from dispatch
+
+A raw backend observation describes a callback result. Its indexed planned wrapper retains the plan
+and configuration of the node selected by `runPlannedStep`, whose checked dispatch also reports a
+descriptor refusal before invoking the callback. A separate public
+`plannedStepRefusalObservation` producer can pair an arbitrary refusal with a node without executing
+that node's checked dispatch, so it establishes no dispatch outcome and has no place on the public surface. Lexical
+definition/export absence guards and the real public compiler reference hold that boundary.
+
+Post-handoff classification likewise has one owner: `Step.isPostHandoffStep` names every core and
+project kind explicitly, and the facade delegates through the retained raw step. A wildcard silently
+classifies a new kind, while the exhaustive match makes that decision part of the warning-clean build.
+The constructor behavior matrix checks the current decisions independently of their spelling.
+
+### Each projected node checks its descriptor
+
+One admitted plan contains many operations and frames, so matching nominal scope and plan indices
+does not establish that a descriptor belongs to the selected node. Dispatch compares both operation
+and frame before running the node's callback and reports both coordinate pairs on refusal. The node
+constructor remains private even at the kernel export boundary; existing facade and child projections
+read the retained raw step through a kernel accessor. A caller cannot assemble a replacement projected
+node around an independently selected callback. Operation-only and frame-only controls isolate these
+runtime checks using genuinely admitted values, with any defensive index substitution named explicitly.
 
 ### `deploy-kind` deletes under both verbs
 
@@ -352,6 +729,54 @@ missing, ambiguous or unsupported declarations refuse the check. Its semantic fi
 closed grammar instead of relying on token occurrence. Enum-derived exact decoding and named exhaustive
 unresolved arms also receive source review: public `UnknownDisposition` results alone cannot distinguish
 successful private decoding from fallback. No testing authority seam is needed for this vocabulary check.
+
+### Opaque snapshot views retain the actual canonical value
+
+A stable reporting view and a canonical writer input are distinct opaque wrappers, not interchangeable
+byte strings. Tests need not open a public reader or cast between them. One production private unit can
+own both representations while the plan encoder and public facade keep their existing interfaces. A
+package test then opens the private stable wrapper returned by a genuine admitted plan and receives the
+same retained canonical value, with its root, bytes and digest intact. It constructs no snapshot from raw
+step vocabulary or arbitrary digest text. Main and tests depend on that single compiled unit; separate
+source copies would create different nominal identities and would prove no interoperability.
+
+### Shared runtime state has one nominal identity
+
+Carrier and runtime representations can live in a common production private unit without moving the
+host configuration, prepared-gate algorithms or dependency registry. Parametric payload slots let main
+specialize the shared types to its actual gate and dependency-package types. Core parameters stay nominal;
+the aliases inherit those roles. The fixed interpreter and package tests then allocate the same real
+state. A second compiled copy, a cast, or an injected operation/dependency accessor would lose that proof.
+
+The dependency-testing unit and main currently compile different dependency-package identities. A shared
+core therefore imports neither identity; its main alias selects main's actual package. Algorithms that
+compare dependency commitments or inspect a prepared operation remain beside those genuine types in main.
+
+### Lifecycle context retains jointly admitted frame evidence
+
+The public lifecycle-context join gets its current frame, project frame and validated context together
+from `withCurrentFrame`. That boundary proves that their semantic frame identities agree and belong to
+the admitted plan. The admitted topology is a nonempty chain, so its first frame is its unique root.
+The private context constructor retains these established facts and derives root membership from that
+first frame; it needs no independent failure vocabulary for evidence its only caller already admitted.
+
+`LifecycleContextFrameEvidenceMismatch`, `LifecycleContextFrameOutsidePlan` and `LifecycleContextPlanRootCount`
+are rejected alternatives for that private constructor: reaching them through the public join requires
+forged private input. Their lexical absence guard belongs with the context foundation. The earlier public
+binary-context topology refusal remains live, and the root-only borrower still refuses a genuinely nested
+context when a public root command gate consumes it. Neither proof requires a test-only constructor or
+private-module access seam.
+
+### Acquisition admission has one live route
+
+The plan-bound opener joins the root, bound lease, snapshot and exact plan before the acquisition journal
+exists. Cursor recovery then uses that admitted journal and its immutable source record. Independent
+reopeners duplicate the authority boundary without a production consumer: the rejected
+`reopenExistingAcquisitionCursorKernel` and `reopenExistingReverseAcquisitionJournalKernel` surfaces and
+their `reopenExistingAcquisitionJournalInEntry`, `requireChildCursorPresence` and `childAcquisitionKey`
+helpers supply no additional lifecycle contract. A lexical definition/export guard holds their absence
+on the single acquisition route. The live acquisition key still validates and encodes its
+project/run/broker coordinates directly from the immutable binding.
 
 ### Recovery runs on a fresh broker generation
 
@@ -477,11 +902,31 @@ to preserve its `sudo -H` behavior, while a direct renderer call with `foldPlace
 Lifecycle placement requests `/`, non-interactivity and elevation. Sharing its renderer does not
 merge the authenticated lifecycle authority channel with ordinary command execution.
 
+The ownership column declares whose kernel holds the clauses. Production chooses its route
+through the lift transport, so a public `frameOwnsLocally` decision would invite a second
+choice beside that route. The descriptive column supplies no authority to ship or run.
+
 *Absence and value guards:* `LiftSpec` rejects `insideLifecycleVM` and placement argument literals in
 the generic Lift module. Independent literal vectors in
 `LiftContextSpec` cover every combination of the three placement fields and preserve the ordinary
 wrappers. Lift cases cover single and nested lifecycle crossings and unchanged metacharacter arguments.
+OwnershipShippedSpec's "the ownership column offers no second routing decision" guards
+the absent routing helper while its host and crossing cases retain the descriptive column.
 These pure and source controls establish no live provider execution.
+
+### Frame transactions share their production dispatcher
+
+A frame transaction selects its owner interpreter through one production dispatcher,
+`HostBootstrap.CLI.interpretFrameTransaction`. Project and suite child entries use that same
+route. A routing copy in a test executable can pass while the production dispatcher fails,
+so the suite imports the production function and keeps no direct owner-interpreter routing.
+
+*Absence and value guards:* OwnershipShippedSpec's "the crossing child uses the production
+frame transaction dispatcher" checks the actual suite entry's import and absence of direct
+owner-interpreter calls. Its empty-context take/give-back and frame-refusal cases cross a real
+process boundary through the shared dispatcher. The child-tree fixture wrapper recognizes its
+own process-group probe and delegates ordinary transactions to that production route.
+These cases establish the shared local route; live provider confirmation is a separate gate.
 
 ### Reverse routes are reconstructed from retained plan edges
 
@@ -671,6 +1116,23 @@ host path.
 *Absence guard:* the suite asserts that no host tool-path fixture bypasses the fixture-path constructor,
 and that repo-relative module allow-lists are compared separator-neutrally (§ JJ).
 
+### A root encoder is tested through a real filesystem root
+
+A test that splices its own encoded root bytes observes its own encoder. The production encoder must
+instead consume two actual canonical filesystem roots, one containing a lone surrogate and one the
+replacement character, under the same profile, configuration and step graph. The test inspects the
+root frame itself, including the big-endian surrogate code point, as well as the distinct snapshot
+bytes and digests. A configuration difference cannot stand in for preservation of the root.
+
+Some host filename APIs refuse the surrogate name. One fixed conditional family records the actual
+`createDirectory` filename or encoding refusal after an ASCII control proves its parent writable.
+The case and manifest share one cached capability observation. Permission, resource and cleanup errors
+fail; a successful create requires the complete canonical-root encoder proof. Later canonicalization
+or assertion failures cannot become an unsupported result.
+
+*Value and completion guards:* the case remains present on every host and completes either the real
+encoder row or its observed filename-refusal branch through the existing conditional-case accounting.
+
 ### Outer-host portability is not a substrate, and a static gate is not a substrate gate
 
 *Substrate* in this entry means the plan's hardware-context declaration — the `**Substrates**:` header
@@ -721,13 +1183,20 @@ passes and the number at the bottom of the run is unchanged. A seam whose only p
 in an opt-in component has the same shape: the ordinary gate exercises the substitute, and the thing it
 claims to cover is covered somewhere nobody runs.
 
-*Absence guard:* `PortabilitySpec` holds that no spec sets or unsets the suite process's own `PATH`, and
-that no production module names a transaction crash point. Neither guard covers a fault token or an
-execution override, which § NN also excludes from evidence, and the tree carries one execution override:
-the Colima toolchain resolver consults a thread-local fixture override before running the real resolver
-([the cluster-lifecycle phase](phase-16-cluster-lifecycle-and-cordoning.md), Sprint 16.20). Only a
-Cabal-private test component can install it, but it sits in the operator binary's link path, which is the
-shape this entry argues against, and no guard names it.
+*Absence guard:* `PortabilitySpec` confines PATH bindings to the recursive process-transport fixture's
+named environment and the native resolver's single bracketed ambient-state probe. The latter plants
+hostile executable candidates and saves, sets, checks and restores PATH/HOME and the current directory
+while calling the real in-process observer; it proves that ambient discovery cannot select a tool.
+The guard requires exactly one PATH write inside that named probe and no additional PATH binding
+elsewhere in its spec. No production module names a transaction crash point.
+
+A process-global or thread-local `ResolverOverride` in the production resolver lets a fixture
+supply the home, bootstrap identity and command result before actual host admission. Making its
+installer Cabal-private does not remove that alternate producer from the operator binary.
+Fixture observation and pure settlement/revalidation views keep the test inputs descriptive;
+they cannot redirect production discovery or mint a backend capability. ColimaSpec's source
+absence guard scans every Haskell module in the Colima backend and the ensure source tree for
+`ResolverOverride` and `currentTrustedResolverOverrideHomeForTesting`, with nonempty roots.
 
 ### A skipped case is worse than a failing one, because the total does not change
 
@@ -1068,3 +1537,21 @@ target, and step constructors opaque. GuestBootstrapSpec checks ordinary reader 
 admission, presentation, and the existing complete argument vectors and driver journals. Role controls
 pin each coordinate's intended rendering positions; the final binary-role fixture rejects direct
 transposition. Static validation makes no claim of bootstrapping a live guest.
+
+## Why a tool supervisor retains its PID outside the tool group
+
+A supervisor in the tool's process group cannot kill every remaining member and then return the
+leader's status: its own fatal group signal prevents that return. Leaving the group while keeping
+its PID live reserves the original group identifier. The tool and its descendants remain in that
+group, so the supervisor can kill and observe them before it exits. An unreaped launcher child
+similarly reserves its identifier while timeout or cancellation may still send a later group
+signal. Reaping before final escalation permits identifier reuse between observation and signal.
+After the last kill, bounded reaping cannot direct a later signal at an unrelated group.
+A completed process handle has released the leader's identifier, so a later exception's cleanup
+cannot send another group signal through it. Reader threads can hold Handle locks while waiting
+for pipe input; stopping those threads before closing the handles makes capture cleanup bounded
+even when a writer has left the retained process group.
+
+Closed stdin is an absent descriptor, so a child can fail a read rather than observe end of file.
+A binary null device opened read-only supplies actual EOF without inheriting the owner's input.
+The shipped tool has no reason to inherit any other supervisor descriptor.

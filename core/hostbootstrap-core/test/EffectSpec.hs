@@ -22,7 +22,7 @@ import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (AsyncException (ThreadKilled), IOException, SomeException, bracket, fromException, try)
 import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isSuffixOf, sort, tails)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -30,6 +30,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IO.Encoding (getLocaleEncoding, mkTextEncoding, setLocaleEncoding)
 import HostBootstrap.DocValidator (findRepoRoot)
+import HostBootstrap.Effect.ChildGroup (ChildGroup, askChildGroupToStop, withChildGroupProcess)
 import HostBootstrap.Effect (
     BoundedRun (..),
     CapturedRun (..),
@@ -76,6 +77,7 @@ import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
 import HostBootstrap.Ownership.Posix (posixOwnershipSupported)
 import PlatformPath (hostFixturePath)
 import qualified SourceGuard
+import SealedExportInventory (pinnedExportLists)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory)
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (..), exitWith)
@@ -83,6 +85,9 @@ import System.FilePath ((</>))
 import System.IO (IOMode (ReadMode), hFlush, hPutStr, stderr, stdin, stdout, withBinaryFile)
 import System.IO.Error (ioeGetErrorString)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Process (CreateProcess (close_fds, env, std_err, std_in, std_out), ProcessHandle, StdStream (NoStream), getPid, proc, waitForProcess)
+import qualified System.Process as Process
+import System.Timeout (timeout)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Text.Read (readMaybe)
@@ -90,15 +95,47 @@ import Text.Read (readMaybe)
 import Control.Monad (forever)
 import System.IO (hClose)
 import System.IO.Error (isDoesNotExistError)
-import System.Posix.Process (forkProcess, getProcessID)
-import System.Posix.Signals (Handler (Ignore), installHandler, nullSignal, sigTERM, signalProcess)
+import System.Posix.Process (forkProcess, getProcessGroupIDOf, getProcessID)
+import System.Posix.Signals (Handler (Ignore), installHandler, nullSignal, sigKILL, sigTERM, signalProcess, signalProcessGroup)
 #endif
 
 tests :: TestTree
 tests =
     testGroup
         "EffectSpec"
-        [ testCase "the shell quoter has exactly one definition site" $ do
+        [ testCase "command vocabulary has one private owner and the same public surface" $
+            SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+                description <- SourceGuard.readPackageDescription
+                let vocabularyModule = "HostBootstrap.Effect.Vocabulary"
+                    privatePath = packageRoot </> "internal" </> "effect-command" </> "HostBootstrap" </> "Effect" </> "Vocabulary.hs"
+                    oldPath = packageRoot </> "src" </> "HostBootstrap" </> "Effect" </> "Vocabulary.hs"
+                doesFileExist oldPath >>= (@?= False)
+                rawVocabulary <- ByteString.readFile privatePath
+                vocabulary <- either (assertFailure . show) (pure . Text.unpack) (TextEncoding.decodeUtf8' rawVocabulary)
+                private <- maybe (assertFailure "the private command vocabulary unit is absent") pure
+                    (SourceGuard.namedStanza "library effect-command-internal" description)
+                SourceGuard.fieldValues "visibility" private @?= ["private"]
+                SourceGuard.fieldValues "hs-source-dirs" private @?= ["internal/effect-command"]
+                SourceGuard.fieldModules "exposed-modules" private @?= [vocabularyModule]
+                SourceGuard.fieldValues "build-depends" private
+                    @?= ["base", ">=4.18", "&&", "<5", "hostbootstrap-core:handoff-implementation-internal"]
+                public <- maybe (assertFailure "the public library stanza is absent") pure
+                    (SourceGuard.mainLibraryStanza description)
+                assertBool "the public library imports the shared command unit"
+                    (elem "hostbootstrap-core:effect-command-internal" (SourceGuard.fieldValues "build-depends" public))
+                assertBool "the main library has no second declaration owner"
+                    (notElem vocabularyModule (SourceGuard.fieldModules "exposed-modules" public))
+                length (filter (== vocabularyModule) (SourceGuard.fieldModules "reexported-modules" public)) @?= 1
+                effective <- either assertFailure pure (SourceGuard.effectiveMainExposedModules description)
+                assertBool "the existing module remains public through its reexport" (elem vocabularyModule effective)
+                expected <- maybe (assertFailure "the public vocabulary export pin is absent") pure
+                    (lookup vocabularyModule pinnedExportLists)
+                SourceGuard.moduleExportTokens vocabularyModule vocabulary @?= Just (SourceGuard.haskellTokens expected)
+                testComponent <- maybe (assertFailure "the core test component is absent") pure
+                    (SourceGuard.namedStanza "test-suite hostbootstrap-core-test" description)
+                assertBool "effect consumers compile through the public package"
+                    (notElem "hostbootstrap-core:effect-command-internal" (SourceGuard.fieldValues "build-depends" testComponent))
+        , testCase "the shell quoter has exactly one definition site" $ do
             sources <- commandComposingSources
             let definitions =
                     [ (path, count)
@@ -267,6 +304,7 @@ tests =
             foldLeafCommand localContext (RawCmd executable [])
                 @?= Left ("local executable is not a registered host tool: " <> executable)
         , testGroup "bounded POSIX behavior" boundedPosixCases
+        , testGroup "scoped POSIX child groups" scopedPosixChildGroupCases
         , testGroup "captured and bounded behavior" portableProcessCases
         , testGroup "effect failure policies" effectPolicyCases
         , testCase "script ignores apply only to directories at their declared scope" scriptIgnoreCase
@@ -292,8 +330,8 @@ boundary rather than a copy of another.
   * the one runner owns the captured and the bounded group-leading shapes;
   * "HostBootstrap.Detached" owns a child that outlives its launcher (§ HH),
     whose disposition is fixed rather than parameterised;
-  * the handoff process route owns a child holding an inherited descriptor pair,
-    which is the one shape neither of the others can express;
+  * the shared child-group owner launches the bracketed handoff shapes for both
+    transports, which retain their protocol and pipe ownership;
   * the demo's accelerator daemon owns a long-lived worker session whose two
     pipes stay open across many requests, which is a session rather than a run.
 
@@ -305,30 +343,11 @@ launchBoundaries =
     [ runnerPath
     , colimaRunnerPath
     , "core/hostbootstrap-core/src/HostBootstrap/Detached.hs"
-    , handoffProcessPath
-    , handoffTransactionPath
+    , childGroupPath
     , "demo/src/HostBootstrapDemo/Accelerator/Daemon.hs"
     ]
 
-{- | The bracketed POSIX owner of one child, its group, and its descriptors for
-exactly one authenticated edge. It signals a group for the same reason the
-runner does — a leader's descendants must not survive it — and it is a separate
-boundary because its child holds an inherited descriptor pair the runner's two
-dispositions cannot express.
--}
-handoffProcessPath :: FilePath
-handoffProcessPath = "core/hostbootstrap-core/src/HostBootstrap/Handoff/Process.hs"
-
-{- | The bracketed owner of one child, its group, and its descriptors for
-exactly one frame crossing. It is a separate boundary from the edge owner above
-because what it holds is one transaction rather than an authenticated
-admission, and it is compiled on every host with only its signal call sites
-conditionalized, so no host family loses the far side of a crossing (§ JJ).
--}
-handoffTransactionPath :: FilePath
-handoffTransactionPath = "core/hostbootstrap-core/src/HostBootstrap/Handoff/Transaction.hs"
-
-{- | The one module the handoff transports share for ending a child group.
+{- | The one module the handoff transports share for launching and ending a child group.
 
 Both of them held byte-identical copies of the escalation and its three
 timeouts. Sharing it means the group teardown they perform is the same
@@ -354,7 +373,7 @@ colimaRunnerPath = "core/hostbootstrap-core/internal/colima-backend/HostBootstra
 
 -- | The one interpreter for the closed effect vocabulary (§ KK).
 interpreterPath :: FilePath
-interpreterPath = "core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs"
+interpreterPath = "core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Effect/Interpreter.hs"
 
 -- | The extensions § KK names as scripts.
 scriptExtensions :: [String]
@@ -493,6 +512,7 @@ runEffectProbe arguments = case arguments of
         ByteString.hPut stderr (ByteString.pack [255])
     ["flood"] -> ByteString.hPut stdout (ByteString.replicate (256 * 1024) 120)
     ["exit-unread"] -> exitWith (ExitFailure 7)
+    ["read-to-eof"] -> ByteString.hGetContents stdin >>= ByteString.hPut stdout
     ["duplex"] -> do
         ByteString.hPut stdout (ByteString.replicate (128 * 1024) 120)
         hFlush stdout
@@ -521,9 +541,18 @@ runPosixEffectProbe mode path = do
             child <- forkProcess linger
             writeFile path (show process ++ " " ++ show child)
             linger
+        "fork-then-exit" -> do
+            _ <- installHandler sigTERM Ignore Nothing
+            child <- forkProcess (threadDelay (60 * 1000000))
+            writeFile path (show process ++ " " ++ show child ++ "\n")
+            awaitRelease (600 :: Int)
         _ -> ioError (userError ("unknown POSIX effect probe: " ++ mode))
   where
     linger = forever (threadDelay 1000000)
+    awaitRelease 0 = ioError (userError "the scoped process probe was never released")
+    awaitRelease remaining = do
+        released <- doesFileExist (path ++ ".release")
+        if released then pure () else threadDelay 100000 >> awaitRelease (remaining - 1)
 #endif
 
 probeArguments :: [String] -> [String]
@@ -603,6 +632,130 @@ boundedPosixCases =
                     assertBool "the native cwd entry asserts its actual platform refusal" ("native cwd-and-exec is unavailable on Windows" `isInfixOf` capturedStderr run)
                 Left failure -> assertFailure ("the entry did not run: " ++ show failure)
 
+scopedPosixChildGroupCases :: [TestTree]
+scopedPosixChildGroupCases =
+    [ rowCase "an explicitly reaped leader leaves its descendant owned until scoped exit" $
+        withScopedPosixProbe $ \path child group leader descendant -> do
+            writeFile (path ++ ".release") "release\n"
+            waitForProcess child >>= (@?= ExitSuccess)
+            processAlive leader >>= (@?= False)
+            processAlive descendant >>= (@?= True)
+            scopedProbeGroupAlive leader >>= (@?= True)
+            askChildGroupToStop group
+            threadDelay 100000
+            processAlive descendant >>= (@?= True)
+            scopedProbeGroupAlive leader >>= (@?= True)
+    , rowCase "a TERM-ignoring leader and descendant are gone when the scope returns" $
+        withScopedPosixProbe $ \_ _ group leader descendant -> do
+            askChildGroupToStop group
+            threadDelay 100000
+            processAlive leader >>= (@?= True)
+            processAlive descendant >>= (@?= True)
+            scopedProbeGroupAlive leader >>= (@?= True)
+    ]
+  where
+    rowCase name action = conditionalCase ["EffectSpec", "scoped POSIX child groups"] posixOwnershipSupported name action $ do
+        outcome <- try (processAlive 0) :: IO (Either IOException Bool)
+        case outcome of
+            Left failure -> ioeGetErrorString failure @?= "POSIX liveness probing is unavailable on Windows"
+            Right value -> assertFailure ("expected unavailable POSIX liveness instrumentation, got " ++ show value)
+
+withScopedPosixProbe :: (FilePath -> ProcessHandle -> ChildGroup -> Int -> Int -> IO ()) -> IO ()
+withScopedPosixProbe use = withRunFixture $ \namespace executable path -> do
+    observed <- newIORef ([], Nothing)
+    let cleanup = do
+            (known, group) <- readIORef observed
+            published <- readScopedProbePids path
+            killScopedProbe (known ++ maybe [] (\(leader, descendant) -> [leader, descendant]) published) group
+        action = do
+            withChildGroupProcess
+                (proc executable (probeArguments ["fork-then-exit", path]))
+                    { Process.cwd = Just (runWorkingDirectory namespace)
+                    , env = Just (runEnvironment namespace)
+                    , std_in = NoStream
+                    , std_out = NoStream
+                    , std_err = NoStream
+                    , close_fds = True
+                    }
+                $ \_ _ _ child group -> do
+                    identity <- getPid child >>= maybe (assertFailure "the acquired leader has no pid") pure
+                    let leader = fromIntegral identity
+                    writeIORef observed ([leader], Nothing)
+                    actualGroup <- scopedProbeGroup leader
+                    actualGroup @?= leader
+                    writeIORef observed ([leader], Just actualGroup)
+                    (publishedLeader, descendant) <- awaitScopedProbePids path
+                    publishedLeader @?= leader
+                    writeIORef observed ([leader, descendant], Just actualGroup)
+                    scopedProbeGroup descendant >>= (@?= actualGroup)
+                    processAlive leader >>= (@?= True)
+                    processAlive descendant >>= (@?= True)
+                    scopedProbeGroupAlive actualGroup >>= (@?= True)
+                    use path child group leader descendant
+            (processes, retainedGroup) <- readIORef observed
+            forM_ processes $ \process -> awaitScopedProbeGone (processAlive process) ("process " ++ show process)
+            forM_ retainedGroup $ \group -> awaitScopedProbeGone (scopedProbeGroupAlive group) ("group " ++ show group)
+    completed <- bracket (pure ()) (const cleanup) $ \_ -> timeout (30 * 1000000) action
+    completed @?= Just ()
+
+readScopedProbePids :: FilePath -> IO (Maybe (Int, Int))
+readScopedProbePids path = do
+    exists <- doesFileExist path
+    bytes <- if exists then ByteString.readFile path else pure ByteString.empty
+    pure $ if ByteString.null bytes || ByteString.last bytes /= 10
+        then Nothing
+        else case traverse readMaybe (words (Text.unpack (TextEncoding.decodeUtf8 bytes))) of
+            Just [leader, descendant] | leader > 0 && descendant > 0 -> Just (leader, descendant)
+            _ -> Nothing
+
+awaitScopedProbePids :: FilePath -> IO (Int, Int)
+awaitScopedProbePids path = go (200 :: Int)
+  where
+    go 0 = assertFailure "the scoped probe never published two complete pids"
+    go remaining = do
+        observed <- readScopedProbePids path
+        case observed of
+            Just processes -> pure processes
+            Nothing -> threadDelay 25000 >> go (remaining - 1)
+
+awaitScopedProbeGone :: IO Bool -> String -> IO ()
+awaitScopedProbeGone alive subject = go (100 :: Int)
+  where
+    go remaining = do
+        present <- alive
+        if not present then pure () else
+            if remaining == 0 then assertFailure (subject ++ " survived scoped teardown")
+            else threadDelay 25000 >> go (remaining - 1)
+
+scopedProbeGroup :: Int -> IO Int
+scopedProbeGroupAlive :: Int -> IO Bool
+killScopedProbe :: [Int] -> Maybe Int -> IO ()
+#if defined(mingw32_HOST_OS)
+scopedProbeGroup _ = ioError (userError "POSIX group observation is unavailable on Windows")
+scopedProbeGroupAlive _ = ioError (userError "POSIX group observation is unavailable on Windows")
+killScopedProbe _ _ = ioError (userError "POSIX group cleanup is unavailable on Windows")
+#else
+scopedProbeGroup process = fromIntegral <$> getProcessGroupIDOf (fromIntegral process)
+scopedProbeGroupAlive group = do
+    outcome <- try (signalProcessGroup nullSignal (fromIntegral group)) :: IO (Either IOException ())
+    case outcome of
+        Right () -> pure True
+        Left failure | isDoesNotExistError failure -> pure False
+        Left failure -> ioError failure
+killScopedProbe processes group = do
+    forM_ group $ \identity -> signalIfPresent (signalProcessGroup sigKILL (fromIntegral identity))
+    forM_ processes $ \identity -> signalIfPresent (signalProcess sigKILL (fromIntegral identity))
+    forM_ processes $ \identity -> awaitScopedProbeGone (processAlive identity) ("cleanup process " ++ show identity)
+    forM_ group $ \identity -> awaitScopedProbeGone (scopedProbeGroupAlive identity) ("cleanup group " ++ show identity)
+  where
+    signalIfPresent action = do
+        outcome <- try action :: IO (Either IOException ())
+        case outcome of
+            Right () -> pure ()
+            Left failure | isDoesNotExistError failure -> pure ()
+            Left failure -> ioError failure
+#endif
+
 portableProcessCases :: [TestTree]
 portableProcessCases =
     [ testCase "output beyond the per-stream ceiling is refused" $
@@ -618,6 +771,16 @@ portableProcessCases =
             case missingDirectory of
                 BoundedFailed _ -> pure ()
                 other -> assertFailure ("expected cwd launch failure, got " ++ show other)
+    , testCase "an empty bounded request signals EOF to the child" $
+        withRunFixture $ \namespace executable _ -> do
+            outcome <- runBoundedGrouped smallBounds namespace executable (probeArguments ["read-to-eof"])
+            outcome @?= BoundedCompleted (CapturedRun ExitSuccess "" "")
+    , testCase "an EOF-delimited request completes after every byte reaches the child" $
+        withRunFixture $ \namespace executable _ -> do
+            let request = ByteString.replicate (128 * 1024) 120
+                bounds = smallBounds{boundWallMicros = 3000000, boundOutputBytes = 256 * 1024}
+            outcome <- runBoundedGroupedWithInput bounds namespace executable (probeArguments ["read-to-eof"]) request
+            outcome @?= BoundedCompleted (CapturedRun ExitSuccess (replicate (128 * 1024) 'x') "")
     , testCase "an unread large request preserves the child's completed exit" $
         withRunFixture $ \namespace executable _ -> do
             outcome <- runBoundedGroupedWithInput smallBounds namespace executable (probeArguments ["exit-unread"]) (ByteString.replicate (256 * 1024) 120)

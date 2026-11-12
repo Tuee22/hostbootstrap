@@ -1,8 +1,10 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 {- | Every provider effect this project performs, as a described command.
 
 § KK admits one closed effect vocabulary and one interpreter for it, and this
 module is where a host provider's operations enter that vocabulary. Each
-function returns a 'HostCommand' value: the tool the frame table names, the
+function returns a 'HostCommand' value for a closed provider host tool: the
 exact argument vector, the stdio disposition, and the frame whose process reads
 it. None of them can run anything, which is the property that makes an argument
 vector comparable by application rather than only observable by launching it.
@@ -17,7 +19,7 @@ __Objective boundary.__ Every command here is interpreted by a process of the
 __outer host__ — the provider's own client, run where the binary is running. A
 command whose argument vector /crosses into/ the instance is not rendered here:
 § LL admits one crossing renderer and it is the lift's own fold, which the
-[composition-and-network-algebra phase](../../../../DEVELOPMENT_PLAN/phase-21-composition-and-network-algebra.md)
+[ensure-reconcilers phase](../../../../../../DEVELOPMENT_PLAN/phase-8-ensure-reconcilers.md)
 owns. Adding a second one here would be exactly the duplication the rule exists
 to prevent.
 
@@ -48,12 +50,25 @@ module HostBootstrap.Substrate.Provider.Command (
     restartInstanceCommand,
     deleteInstanceCommand,
     attachShareDeviceCommand,
+
+    -- * Guest-VM creation and observation
+    limaOwnerEnvironmentKey,
+    listLimaInstanceCommand,
+    createLimaInstanceCommand,
+    startLimaInstanceCommand,
+    installWslInstanceCommand,
 )
 where
 
+import qualified Data.Aeson as Aeson
+import Data.Aeson ((.=))
+import qualified Data.ByteString.Lazy as LazyBytes
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
-import HostBootstrap.HostTool (HostTool (Incus))
+import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand, withCommandStdin)
+import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
+import HostBootstrap.Ownership.Object (OwnerClaim, ownerClaimText)
 import HostBootstrap.Substrate.Frame (FrameNoun (IncusInstance), guardedDeleteArgs)
 
 -- ---------------------------------------------------------------------------
@@ -164,9 +179,10 @@ startInstanceCommand instanceName = hostCommand Incus ["start", instanceName]
 
 {- | Stop an instance the provider already names.
 
-Carries no guard, because stopping is not destructive: an instance stopped by
-mistake is an instance that can be started again.  The forced provider action
-does not wait indefinitely on an unresponsive guest agent.
+The @--force@ action powers the VM off without a clean guest shutdown, so
+unflushed guest writes can be lost. It carries no name guard: the calling
+ownership transaction re-observes the exact owned instance before and after
+the stop. The forced action does not wait on an unresponsive guest agent.
 -}
 stopInstanceCommand :: String -> HostCommand
 stopInstanceCommand instanceName = hostCommand Incus ["stop", instanceName, "--force"]
@@ -177,6 +193,10 @@ Incus records a disk device on a running VM before its @virtiofs@ mount is
 necessarily visible in the guest.  The share transaction therefore makes the
 provider cross the one boot boundary that activates the declared device before
 the share can be bound and published.
+
+The @--force@ restart powers the VM off without a clean guest shutdown and can
+lose unflushed guest writes. Its calling share transaction re-observes the
+exact owned instance around this name-addressed action.
 -}
 restartInstanceCommand :: String -> HostCommand
 restartInstanceCommand instanceName = hostCommand Incus ["restart", instanceName, "--force"]
@@ -232,4 +252,51 @@ attachShareDeviceCommand instanceName device source target =
         , "disk"
         , "source=" <> source
         , "path=" <> target
+        ]
+
+-- | Ordinary creation metadata, present before a Lima instance can be started.
+limaOwnerEnvironmentKey :: String
+limaOwnerEnvironmentKey = "HOSTBOOTSTRAP_OWNER"
+
+-- | JSON preserves the exact directory and claim, beside the instance state.
+listLimaInstanceCommand :: String -> HostCommand
+listLimaInstanceCommand name =
+    hostCommand Lima (limaQuietArguments <> ["list", "--format", "json", name])
+
+{- | Create only, carrying the record's claim as structured configuration.
+
+The image base contributes no default host-home mount. The one declared mount
+therefore has exactly the supplied source, target and write policy. This is
+data on stdin, with no provisioning script, shell or template program.
+-}
+createLimaInstanceCommand :: String -> ProviderSizing -> FilePath -> FilePath -> OwnerClaim -> HostCommand
+createLimaInstanceCommand name sizing source target claim =
+    withCommandStdin (Text.unpack (TextEncoding.decodeUtf8 (LazyBytes.toStrict (Aeson.encode configuration)))) $
+        hostCommand Lima (limaQuietArguments <> ["create", "--name", name, "-"])
+  where
+    configuration = Aeson.object
+        [ "base" .= (["template:_images/ubuntu-24.04"] :: [String])
+        , "vmType" .= ("vz" :: String)
+        , "cpus" .= sizingCpu sizing
+        , "memory" .= sizingMemory sizing
+        , "disk" .= sizingStorage sizing
+        , "containerd" .= Aeson.object ["system" .= False, "user" .= False]
+        , "mounts" .= [Aeson.object ["location" .= source, "mountPoint" .= target, "writable" .= True]]
+        , "env" .= Aeson.object ["HOSTBOOTSTRAP_OWNER" .= ownerClaimText claim]
+        ]
+
+-- | Start without editing the existing instance's configuration or claim.
+startLimaInstanceCommand :: String -> HostCommand
+startLimaInstanceCommand name =
+    hostCommand Lima (limaQuietArguments <> ["start", "--timeout", "15m", name])
+
+limaQuietArguments :: [String]
+limaQuietArguments = ["--log-level=error", "--tty=false"]
+
+-- | Install under the recorded owned namespace, without launching the guest.
+installWslInstanceCommand :: String -> FilePath -> String -> HostCommand
+installWslInstanceCommand name location disk =
+    hostCommand Wsl
+        [ "--install", "-d", "Ubuntu-24.04", "--name", name, "--location", location
+        , "--no-launch", "--vhd-size", disk
         ]

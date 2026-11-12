@@ -8,7 +8,7 @@ module PortabilitySpec (tests) where
 
 import Control.Monad (forM_, unless)
 import Data.Char (isAlpha, toLower)
-import Data.List (isInfixOf, isPrefixOf, nub, tails)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf, nub, tails)
 import PlatformPath (hostFixturePath)
 import qualified SourceGuard as Source
 import System.Environment (getExecutablePath)
@@ -96,11 +96,17 @@ tests =
                 (\(source, expected) -> assertEqual skippedRationale expected (hostConditionalFields source))
         , testCase "no spec binds PATH outside the allow-list" $ do
             allowedSource <- readTestSource "RecursiveLifecycleSpec.hs"
+            resolverSource <- readTestSource "ColimaSpec.hs"
             let allowedBody = bindingBody "recursiveFixtureEnvironment" allowedSource
+                resolverBody = bindingBody "runHostileResolverFixture" resolverSource
                 allowedCount = pathBindingCount allowedBody
             assertBool (fakeRationale <> ": the process-transport fixture allow-list entry is stale") (allowedCount > 0)
+            assertEqual (fakeRationale <> ": the native resolver ambient probe binds PATH exactly once") 1 (pathBindingCount resolverBody)
             Source.forEachTestSourceBut "" $ \name source -> do
-                let excused = if name == "test/RecursiveLifecycleSpec.hs" then allowedCount else 0
+                let excused = case name of
+                        "test/RecursiveLifecycleSpec.hs" -> allowedCount
+                        "test/ColimaSpec.hs" -> 1
+                        _ -> 0
                 assertEqual (fakeRationale <> ": " <> name) excused (pathBindingCount source)
         , testCase "PATH binding detection distinguishes writes and tuple bindings from lookup" $ do
             forM_
@@ -112,6 +118,17 @@ tests =
                 ]
                 (\source -> assertEqual fakeRationale 1 (pathBindingCount source))
             assertEqual fakeRationale 0 (pathBindingCount "lookup \"PATH\" inherited")
+        , testCase "HostBootstrap.Digest is the only module defining a SHA-256 or framing helper" $
+            Source.withPackageSourceIn [] $ \packageRoot _ -> do
+                sources <- concat <$> traverse (Source.readHaskellSources . (packageRoot </>)) ["src", "internal"]
+                assertEqual "a second digest or framing helper definition" [] (digestHelperDefinitions sources)
+        , testCase "the digest-helper scan reports a second definition and exempts HostBootstrap.Digest" $ do
+            let extra = "module Extra where\nimport Data.ByteString (ByteString)\nsha256Hex :: ByteString -> Text\n"
+                owner = "sha256Hex :: ByteString -> Text\nframeWire :: ByteString -> ByteString\n"
+            assertEqual "the extra module is reported at its line" [("fixture/Extra.hs", 3)] $
+                digestHelperDefinitions [("fixture/Extra.hs", extra), ("internal/ownership/HostBootstrap/Digest.hs", owner)]
+            assertEqual "an import or call is not a definition" [] $
+                digestHelperDefinitions [("fixture/Use.hs", "import HostBootstrap.Digest (sha256Hex)\nx = sha256Hex y\n")]
         , testCase "no lifecycle module installs a thread-local crash point" $
             Source.withPackageSourceIn [] $ \packageRoot _ -> do
                 sources <- concat <$> traverse (Source.readHaskellSources . (packageRoot </>)) ["src", "app", "internal"]
@@ -301,3 +318,13 @@ hostConditionalFields = go . filter (not . null . snd) . map (\line -> (Source.i
     fieldName text = case break (== ':') text of
         (name, ':' : _) | not (null name), all (\character -> isAlpha character || character == '-') name -> name
         _ -> ""
+
+-- | Top-level SHA-256 or length-framing helper signatures outside the one module that owns them.
+digestHelperDefinitions :: [(FilePath, String)] -> [(FilePath, Int)]
+digestHelperDefinitions sources =
+    [ (path, number)
+    | (path, source) <- sources
+    , not ("internal/ownership/HostBootstrap/Digest.hs" `isSuffixOf` Source.repoRelativePath "" path)
+    , (number, line) <- zip [1 ..] (lines source)
+    , any (`isPrefixOf` line) ["sha256Hex ::", "sha256Text ::", "digestBytes ::", "frameWire ::"]
+    ]

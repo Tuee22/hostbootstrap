@@ -121,6 +121,7 @@ data ManagedProviderShareHandle scope planId backendId providerId shareId phase
         (ProviderOriginBinding scope planId backendId providerId)
         (ResourceHandle scope planId shareId DurableShareResource Managed phase)
         (OwnershipReceipt scope planId shareId DurableShareResource)
+        Text
 
 type role ManagedProviderShareHandle nominal nominal nominal nominal nominal nominal
 
@@ -142,6 +143,14 @@ data ProviderProvisionCallResult scope planId backendId providerId operationKey 
 
 type role ProviderProvisionCallResult nominal nominal nominal nominal nominal nominal nominal nominal
 
+{- | Total observation of the provider-side share primitive.
+
+For a VM provider, attached/repaired means the clause-holding backend observed
+the exact provider generation and made the declared share ready.  For Direct,
+settlement records only that the already-local source and target projection was
+admitted; it performs no host mutation and claims no ownership of the
+directory.
+-}
 data ProviderShareObservation
     = ProviderShareAttached Word64
     | ProviderShareRepaired Word64

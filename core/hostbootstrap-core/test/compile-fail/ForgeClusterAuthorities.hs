@@ -29,10 +29,6 @@ badClusterReadiness = ClusterReadiness
 
 badClusterReadinessCallResult = ClusterReadinessCallResult
 
-badPreparedClusterCleanup = PreparedClusterCleanup
-
-badClusterCleanupCallResult = ClusterCleanupCallResult
-
 badManagedClusterHandle = ManagedClusterHandle
 
 badRunningProviderDependency = RunningProviderDependency

@@ -50,29 +50,41 @@ module Fixture (
     withFixtureInstalledProject,
     withFixtureProjectRoot,
     withFixtureProjectPlan,
+    withFixtureProjectPlanPair,
+    withFixtureProjectPlanConfigPair,
+    withFixtureRootChainEvidence,
+    withFixtureRootChainPasses,
+    withFixtureRootChainEvidenceVariants,
+    canonicalSnapshotFromProjectPlan,
+    withFixtureCanonicalSnapshotVariants,
+    withFixtureProjectPlanConfig,
     withFixtureProjectPlanContext,
     withFixtureProjectPlanRoot,
     withFixtureHarnessProjectPlan,
+    withFixtureHarnessProjectPlanConfig,
     withFixtureHarnessAuthority,
     newFakeTool,
     newExhaustingFakeTool,
     newRecordingFakeTool,
-    newRefusingFakeTool,
 )
 where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, forM_, unless, when)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Dhall (FromDhall, ToDhall)
+import Expect (expectRight)
 import GHC.Generics (Generic)
 import HostBootstrap.Authority (InstalledProjectIdentity, VerbUp)
 import qualified HostBootstrap.Authority as Authority
+import qualified HostBootstrap.Authority.ProjectPlan as ProjectAuthority
+import HostBootstrap.Cluster.Budget (BudgetCfg (..))
 import HostBootstrap.Config.Class (
     ExistingOutputPolicy (..),
     InitArgs (..),
     ProjectCfg (..),
+    ProjectCodec,
     TestCfg (..),
     withMappedProjectCodec,
     withProjectCodec,
@@ -96,35 +108,65 @@ import HostBootstrap.Harness.Ownership (
     protectedProjectRunOwnership,
     withOwnedHarnessRoot,
  )
+import qualified HostBootstrap.Lifecycle.Context as LifecycleContext
 import HostBootstrap.Lifecycle.Mode (
+    AcquisitionJournal,
+    LifecycleCursor,
+    LifecycleProfile,
     ProductionRoot,
+    ProductionInvocationClose (..),
+    completeProductionInvocation,
+    closeCompletedProductionInvocation,
+    mkInvocationCloseKey,
     harnessActiveMode,
     harnessRootAuthority,
     harnessRootHarnessAuthority,
     harnessRootModeLease,
     harnessRootRunId,
     harnessRootUnboundLease,
+    lifecycleCursorFrame,
     productionActiveMode,
     productionRootAuthority,
     productionRootModeLease,
     productionRootUnboundLease,
     withHarnessLifecycleProfile,
+    withAcquisitionJournal,
+    withExecuteLifecycleCursor,
+    withLifecycleCursor,
     withProductionLifecycleProfile,
     withProductionRoot,
  )
-import HostBootstrap.Lift.Context (LiftContext)
+import HostBootstrap.Lifecycle.Session (verifyAllSessionsClosed)
+import qualified HostBootstrap.Lifecycle.Snapshot.Core as SnapshotCore (StablePlanSnapshot (StablePlanSnapshot))
+import HostBootstrap.Lift.Context (LiftContext, localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     planDraftsFromValidatedBuilder,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
+    topology,
+    topologyContainsFrame,
  )
 import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
+import HostBootstrap.ProjectPlan.Frame (ProjectFrame, projectFrameId, withCurrentFrame)
+import HostBootstrap.ProjectPlan.Snapshot (withPersistedPlanSnapshot)
 import HostBootstrap.ProjectRoot (
     CanonicalProjectRoot,
     canonicalProjectRootPath,
     withCanonicalProjectRoot,
  )
-import HostBootstrap.Protected (ProtectedStore, openProtectedStore)
-import HostBootstrap.Step (Step, StepPlan, mkStepPlan)
+import HostBootstrap.Protected (ProtectedStore, openProtectedStore, withProtectedEntry)
+import HostBootstrap.Reconcile (CanonicalPlanSnapshot)
+import HostBootstrap.Step (
+    Step,
+    StepFrame (StepFrame),
+    StepObservation (StepChanged),
+    StepPlan,
+    contextInitStep,
+    descendsVia,
+    ensureStep,
+    mkStepPlan,
+ )
 import Numeric.Natural (Natural)
 #if !defined(mingw32_HOST_OS)
 import System.Directory (getPermissions, setOwnerExecutable, setPermissions)
@@ -132,6 +174,7 @@ import System.Directory (getPermissions, setOwnerExecutable, setPermissions)
 import System.Environment (getExecutablePath)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
+import Unsafe.Coerce (unsafeCoerce)
 
 {- | Acquire a real protected generative Harness root for authority-sensitive
 tests. The helper fails if acquisition or finalization does not settle; it never
@@ -204,6 +247,417 @@ withFixtureProjectPlan ::
 withFixtureProjectPlan stepPlan use =
     withFixtureProjectPlanContext id stepPlan (\plan _context -> use plan)
 
+{- | Admit one real root command and Execute cursor before a direct Chain call.
+
+The protected store occupies the public lifecycle-context path. Every protocol
+result is forced while its root, profile and frame evidence remain in scope.
+-}
+withFixtureRootChainEvidence ::
+    (ProtectedStore -> StepFrame -> StepPlan) ->
+    ( forall projectId specDigest planId configId frame brokerGeneration.
+      ProtectedStore ->
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      Authority.CommandAuthority (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      LifecycleCursor (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      IO result
+    ) ->
+    IO result
+withFixtureRootChainEvidence build use =
+    withFixtureRootChainEvidenceScope build $ \store _root _profile _codec _value plan _journal authority cursor ->
+        use store plan authority cursor
+
+withFixtureRootChainEvidenceScope ::
+    (ProtectedStore -> StepFrame -> StepPlan) ->
+    ( forall projectId rootId specDigest planId configId frame brokerGeneration.
+      ProtectedStore ->
+      CanonicalProjectRoot (V.Production projectId) rootId ->
+      LifecycleProfile (V.Production projectId) ->
+      ProjectCodec (V.Production projectId) specDigest ProjectConfig ->
+      ProjectConfig (V.Production projectId) ->
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      AcquisitionJournal (V.Production projectId) planId brokerGeneration ->
+      Authority.CommandAuthority (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      LifecycleCursor (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      IO result
+    ) ->
+    IO result
+withFixtureRootChainEvidenceScope build use =
+    withFixtureInstalledProject $ \project ->
+        withSystemTempDirectory "hostbootstrap-fixture-root-chain" $ \directory -> do
+            rooted <- withCanonicalProjectRoot (directory </> "fixture.dhall") directory $ \root -> do
+                let rootPath = canonicalProjectRootPath root
+                    projectName = Authority.installedProjectName project
+                    value = defaultProjectConfig projectName (T.pack rootPath) Context.HostOrchestrator
+                    exactContext = value.context
+                    frameId = Context.currentFrame exactContext
+                store <- expectRight =<< openProtectedStore (rootPath </> ".hostbootstrap" </> "authority" </> T.unpack projectName)
+                opened <- withProductionRoot store project Authority.ProjectUp $ \production -> do
+                    let rootAuthority = productionRootAuthority production
+                        unbound = productionRootUnboundLease production
+                        graph = build store (StepFrame (T.unpack frameId) "Host orchestrator")
+                    profileAction <- expectRight =<< withProductionLifecycleProfile
+                        (Authority.rootScopeAuthority rootAuthority)
+                        (productionActiveMode (productionRootModeLease production))
+                        unbound
+                        ( \profile -> withProductionProjectCodec @ProjectConfig $ \codec -> do
+                            validated <- withValidatedConfig codec value $ \_wire config -> do
+                                drafts <- expectRight (planDraftsFromValidatedBuilder root config (\_ _ -> Right graph))
+                                planAction <- expectRight $ withProjectPlan profile root config drafts $ \plan -> do
+                                    persisted <- withPersistedPlanSnapshot rootAuthority unbound plan $ \verified bound binding lease _ -> do
+                                        contextual <- LifecycleContext.withValidatedLifecycleContext root store plan exactContext $ \lifecycleContext -> do
+                                            frameAction <- expectRight $ withCurrentFrame plan exactContext $ \_ frame _ -> do
+                                                unless (projectFrameId frame == frameId) (fail "the public root frame changed its semantic identity")
+                                                journaled <- withAcquisitionJournal rootAuthority lease bound binding plan $ \journal -> do
+                                                    cursored <- withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
+                                                        executed <- withExecuteLifecycleCursor prepareCursor $ \cursor -> do
+                                                            -- The public frame openers have equal checked semantic
+                                                            -- identity and fresh skolems. Align only that phantom;
+                                                            -- the real root gate revalidates every retained value.
+                                                            let aligned = alignFixtureRootCursorFrame cursor
+                                                            authority <- expectRight =<< ProjectAuthority.authorizeRootProject
+                                                                rootAuthority Authority.ProjectUp verified bound binding lease plan journal aligned lifecycleContext project
+                                                            use store root profile codec value plan journal authority aligned
+                                                        expectRight executed
+                                                    expectRight cursored
+                                                expectRight journaled
+                                            frameAction
+                                        expectRight contextual
+                                    expectRight persisted
+                                planAction
+                            expectRight validated
+                        )
+                    result <- profileAction
+                    pure (Right result)
+                expectRight opened
+            expectRight rooted
+
+{- | Run fresh, publicly admitted root invocations over one unchanged root.
+Each pass must close its independently enumerated sessions and acknowledge its
+lease close before the next broker epoch is acquired. No consumed authority or
+cursor is replayed.
+-}
+withFixtureRootChainPasses ::
+    Int ->
+    (ProtectedStore -> StepFrame -> StepPlan) ->
+    ( forall projectId specDigest planId configId frame brokerGeneration.
+      ProtectedStore ->
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      Authority.CommandAuthority (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      LifecycleCursor (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      IO ()
+    ) ->
+    IO ()
+withFixtureRootChainPasses passes build use =
+    withFixtureInstalledProject $ \project ->
+        withSystemTempDirectory "hostbootstrap-fixture-root-chain" $ \directory -> do
+            rooted <- withCanonicalProjectRoot (directory </> "fixture.dhall") directory $ \root -> do
+                let rootPath = canonicalProjectRootPath root
+                    projectName = Authority.installedProjectName project
+                    value = defaultProjectConfig projectName (T.pack rootPath) Context.HostOrchestrator
+                    exactContext = value.context
+                    frameId = Context.currentFrame exactContext
+                store <- expectRight =<< openProtectedStore (rootPath </> ".hostbootstrap" </> "authority" </> T.unpack projectName)
+                forM_ [1 .. passes] $ \pass -> do
+                    opened <- withProductionRoot store project Authority.ProjectUp $ \production -> do
+                        let rootAuthority = productionRootAuthority production
+                            unbound = productionRootUnboundLease production
+                            graph = build store (StepFrame (T.unpack frameId) "Host orchestrator")
+                        profileAction <- expectRight =<< withProductionLifecycleProfile
+                            (Authority.rootScopeAuthority rootAuthority)
+                            (productionActiveMode (productionRootModeLease production))
+                            unbound
+                            ( \profile -> withProductionProjectCodec @ProjectConfig $ \codec -> do
+                                validated <- withValidatedConfig codec value $ \_wire config -> do
+                                    drafts <- expectRight (planDraftsFromValidatedBuilder root config (\_ _ -> Right graph))
+                                    planAction <- expectRight $ withProjectPlan profile root config drafts $ \plan -> do
+                                        persisted <- withPersistedPlanSnapshot rootAuthority unbound plan $ \verified bound binding lease _ -> do
+                                            contextual <- LifecycleContext.withValidatedLifecycleContext root store plan exactContext $ \lifecycleContext -> do
+                                                frameAction <- expectRight $ withCurrentFrame plan exactContext $ \_ frame _ -> do
+                                                    unless (projectFrameId frame == frameId) (fail "the public root frame changed its semantic identity")
+                                                    journaled <- withAcquisitionJournal rootAuthority lease bound binding plan $ \journal -> do
+                                                        cursored <- withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
+                                                            executed <- withExecuteLifecycleCursor prepareCursor $ \cursor -> do
+                                                                -- The public frame openers have equal checked semantic
+                                                                -- identity and fresh skolems. Align only that phantom;
+                                                                -- the real root gate revalidates every retained value.
+                                                                let aligned = alignFixtureRootCursorFrame cursor
+                                                                authority <- expectRight =<< ProjectAuthority.authorizeRootProject
+                                                                    rootAuthority Authority.ProjectUp verified bound binding lease plan journal aligned lifecycleContext project
+                                                                use store plan authority aligned
+                                                                checked <- withProtectedEntry store $ \session ->
+                                                                    Right <$> verifyAllSessionsClosed session (stablePlanSnapshotDigest (renderSnapshot plan))
+                                                                closed <- expectRight checked >>= expectRight
+                                                                completed <- expectRight (completeProductionInvocation lease closed)
+                                                                key <- expectRight (mkInvocationCloseKey ("fixture-chain-pass-" <> T.pack (show pass)))
+                                                                ended <- withProtectedEntry store $ \session ->
+                                                                    Right <$> closeCompletedProductionInvocation session project (productionRootModeLease production) completed key
+                                                                closure <- expectRight ended >>= expectRight
+                                                                case closure of
+                                                                    ProductionInvocationCloseCommitted _ -> pure ()
+                                                                    ProductionInvocationCloseUnknown _ -> fail "the fixture invocation close was not acknowledged"
+                                                            expectRight executed
+                                                        expectRight cursored
+                                                    expectRight journaled
+                                                frameAction
+                                            expectRight contextual
+                                        expectRight persisted
+                                    planAction
+                                expectRight validated
+                            )
+                        result <- profileAction
+                        pure (Right result)
+                    expectRight opened
+            expectRight rooted
+
+{- | Supply genuine alternative cursor and topology evidence for entry refusals.
+
+The child frame comes from a second admitted plan, but its cursor is opened on
+the original acquisition journal. The renamed-root plan is admitted without
+replacing the original persisted snapshot or bound lease. Only Chain's negative
+controls align the delivered cursor-frame and alternate-plan indices.
+-}
+withFixtureRootChainEvidenceVariants ::
+    (ProtectedStore -> StepFrame -> StepPlan) ->
+    ( forall projectId specDigest planId configId frame brokerGeneration childFrame alternatePlanId alternateConfigId.
+      ProtectedStore ->
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      Authority.CommandAuthority (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      LifecycleCursor (V.Production projectId) planId frame brokerGeneration VerbUp Authority.ExecutePhase ->
+      LifecycleCursor (V.Production projectId) planId childFrame brokerGeneration VerbUp Authority.ExecutePhase ->
+      ProjectPlan (V.Production projectId) specDigest alternatePlanId alternateConfigId ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFixtureRootChainEvidenceVariants build use =
+    withFixtureRootChainEvidenceScope build $ \store root profile codec value plan journal authority cursor -> do
+        let rootContext = value.context
+            childContext = Context.deriveTestHarnessContext rootContext (Context.sourceRoot rootContext)
+            childValue = value{context = childContext}
+            rootFrameId = Context.currentFrame rootContext
+            childFrameId = Context.currentFrame childContext
+            alternateFrameId = rootFrameId <> "-alternate"
+            alternateValue = value{context = renameFixtureRootFrame alternateFrameId rootContext}
+            rootStep = contextInitStep "entry policy root" (StepFrame (T.unpack rootFrameId) "Host orchestrator") (const (pure StepChanged))
+            alternateGraph = build store (StepFrame (T.unpack alternateFrameId) "Host orchestrator")
+        childGraph <- expectRight $ mkStepPlan
+            [ descendsVia localContext rootStep
+            , ensureStep "entry-policy-child" "entry policy child" (StepFrame (T.unpack childFrameId) "Harness") (const (pure StepChanged))
+            ]
+        childValidated <- withValidatedConfig codec childValue $ \_ childConfig -> do
+            childDrafts <- expectRight (planDraftsFromValidatedBuilder root childConfig (\_ _ -> Right childGraph))
+            childPlanAction <- expectRight $ withProjectPlan profile root childConfig childDrafts $ \childPlan -> do
+                childFrameAction <- expectRight $ withCurrentFrame childPlan childContext $ \_ childFrame _ -> do
+                    unless (projectFrameId childFrame == childFrameId && childFrameId /= rootFrameId) $
+                        fail "the genuine child plan did not retain a distinct child frame"
+                    -- Only the adversarial frame's plan index changes. Its
+                    -- actual semantic frame enters the ORIGINAL journal.
+                    childOpened <- withLifecycleCursor journal (alignFixtureFramePlanForRefusal childFrame) Authority.ProjectUp Authority.Prepare $ \childPrepare -> do
+                        childExecuted <- withExecuteLifecycleCursor childPrepare $ \childCursor -> do
+                            unless (lifecycleCursorFrame childCursor == childFrameId) $
+                                fail "the child cursor did not retain the genuine child frame"
+                            alternateValidated <- withValidatedConfig codec alternateValue $ \_ alternateConfig -> do
+                                alternateDrafts <- expectRight (planDraftsFromValidatedBuilder root alternateConfig (\_ _ -> Right alternateGraph))
+                                alternatePlanAction <- expectRight $ withProjectPlan profile root alternateConfig alternateDrafts $ \alternatePlan -> do
+                                    alternateFrameAction <- expectRight $ withCurrentFrame alternatePlan alternateValue.context $ \_ alternateFrame _ -> do
+                                        unless (projectFrameId alternateFrame == alternateFrameId) $
+                                            fail "the alternate plan did not admit its actual configured frame"
+                                        when (topologyContainsFrame (topology alternatePlan) rootFrameId) $
+                                            fail "the alternate topology still contains the original authority frame"
+                                        use store plan authority cursor childCursor alternatePlan
+                                    alternateFrameAction
+                                alternatePlanAction
+                            expectRight alternateValidated
+                        expectRight childExecuted
+                    expectRight childOpened
+                childFrameAction
+            childPlanAction
+        expectRight childValidated
+
+renameFixtureRootFrame :: Text -> BinaryContext -> BinaryContext
+renameFixtureRootFrame target base =
+    base
+        { Context.topologyFrames = map renameTopologyFrame (Context.topologyFrames base)
+        , Context.currentFrame = target
+        , Context.runtimeWitnesses = map renameFrameWitness (Context.runtimeWitnesses base)
+        }
+  where
+    renameId value
+        | value == Context.currentFrame base = target
+        | otherwise = value
+    renameTopologyFrame frame =
+        frame
+            { Context.topologyFrameId = renameId (Context.topologyFrameId frame)
+            , Context.topologyParentId = renameId (Context.topologyParentId frame)
+            }
+    renameFrameWitness witness
+        | Context.witnessKind witness == Context.WitnessEnvEquals
+            && Context.witnessName witness == "HOSTBOOTSTRAP_CURRENT_FRAME" =
+            witness{Context.witnessValue = target}
+        | otherwise = witness
+
+alignFixtureFramePlanForRefusal ::
+    ProjectFrame scope specDigest sourcePlanId configId frame ->
+    ProjectFrame scope specDigest targetPlanId configId frame
+alignFixtureFramePlanForRefusal = unsafeCoerce
+
+-- The scope, plan, broker, verb, phase and all retained values remain unchanged.
+alignFixtureRootCursorFrame ::
+    LifecycleCursor scope planId sourceFrame brokerGeneration verb phase ->
+    LifecycleCursor scope planId targetFrame brokerGeneration verb phase
+alignFixtureRootCursorFrame = unsafeCoerce
+
+-- | Admit two generative plans under one actual root, profile and validated configuration.
+withFixtureProjectPlanPair ::
+    StepPlan ->
+    StepPlan ->
+    ( forall projectId specDigest firstPlanId secondPlanId configId.
+      ProjectPlan (V.Production projectId) specDigest firstPlanId configId ProjectConfig ->
+      ProjectPlan (V.Production projectId) specDigest secondPlanId configId ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlanPair firstGraph secondGraph use =
+    withSystemTempDirectory "hostbootstrap-fixture-project-plan-pair" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
+        withFixtureInstalledProject $ \project -> do
+            rooted <-
+                withCanonicalProjectRoot (directory </> "fixture.dhall") "." $ \root ->
+                    withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                        opened <-
+                            withProductionLifecycleProfile
+                                (Authority.rootScopeAuthority (productionRootAuthority productionRoot))
+                                (productionActiveMode (productionRootModeLease productionRoot))
+                                (productionRootUnboundLease productionRoot)
+                                ( \profile ->
+                                    withProductionProjectCodec @ProjectConfig $ \codec -> do
+                                        let value =
+                                                defaultProjectConfig
+                                                    (Authority.installedProjectName project)
+                                                    (T.pack (canonicalProjectRootPath root))
+                                                    Context.HostOrchestrator
+                                        validated <-
+                                            withValidatedConfig codec value $ \_wire config -> do
+                                                firstDrafts <- either (fail . show) pure $
+                                                    planDraftsFromValidatedBuilder root config (\_ _ -> Right firstGraph)
+                                                secondDrafts <- either (fail . show) pure $
+                                                    planDraftsFromValidatedBuilder root config (\_ _ -> Right secondGraph)
+                                                firstAction <- either (fail . show) pure $
+                                                    withProjectPlan profile root config firstDrafts $ \first -> do
+                                                        secondAction <- either (fail . show) pure $
+                                                            withProjectPlan profile root config secondDrafts (use first)
+                                                        secondAction
+                                                firstAction
+                                        either fail pure validated
+                                )
+                        result <- either (fail . show) id opened
+                        pure (Right result)
+            modeResult <- either (fail . show) pure rooted
+            either (fail . show) pure modeResult
+
+-- | Admit two configuration alternatives under one actual root, profile and codec.
+withFixtureProjectPlanConfigPair ::
+    (forall scope. ProjectConfig scope -> ProjectConfig scope) ->
+    (forall scope. ProjectConfig scope -> ProjectConfig scope) ->
+    StepPlan ->
+    ( forall projectId specDigest firstPlanId firstConfigId secondPlanId secondConfigId.
+      ProjectPlan (V.Production projectId) specDigest firstPlanId firstConfigId ProjectConfig ->
+      ProjectConfig (V.Production projectId) ->
+      ProjectPlan (V.Production projectId) specDigest secondPlanId secondConfigId ProjectConfig ->
+      ProjectConfig (V.Production projectId) ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlanConfigPair firstTransform secondTransform stepPlan use =
+    withSystemTempDirectory "hostbootstrap-fixture-config-pair" $ \directory -> do
+        store <- expectRight =<< openProtectedStore (directory </> "protected")
+        withFixtureInstalledProject $ \project -> do
+            rooted <- withCanonicalProjectRoot (directory </> "fixture.dhall") "." $ \root -> do
+                opened <- withProductionRoot store project Authority.ProjectUp $ \production -> do
+                    profileAction <- expectRight =<< withProductionLifecycleProfile
+                        (Authority.rootScopeAuthority (productionRootAuthority production))
+                        (productionActiveMode (productionRootModeLease production))
+                        (productionRootUnboundLease production)
+                        ( \profile -> withProductionProjectCodec @ProjectConfig $ \codec -> do
+                            let base = defaultProjectConfig
+                                    (Authority.installedProjectName project)
+                                    (T.pack (canonicalProjectRootPath root))
+                                    Context.HostOrchestrator
+                                firstValue = firstTransform base
+                                secondValue = secondTransform base
+                            firstValidated <- withValidatedConfig codec firstValue $ \_ firstConfig -> do
+                                firstDrafts <- expectRight (planDraftsFromValidatedBuilder root firstConfig (\_ _ -> Right stepPlan))
+                                firstAction <- expectRight $ withProjectPlan profile root firstConfig firstDrafts $ \firstPlan -> do
+                                    secondValidated <- withValidatedConfig codec secondValue $ \_ secondConfig -> do
+                                        secondDrafts <- expectRight (planDraftsFromValidatedBuilder root secondConfig (\_ _ -> Right stepPlan))
+                                        secondAction <- expectRight $ withProjectPlan profile root secondConfig secondDrafts $ \secondPlan ->
+                                            use firstPlan firstValue secondPlan secondValue
+                                        secondAction
+                                    expectRight secondValidated
+                                firstAction
+                            expectRight firstValidated
+                        )
+                    result <- profileAction
+                    pure (Right result)
+                expectRight opened
+            expectRight rooted
+
+-- | Open only the reporting wrapper of a genuinely admitted project plan.
+canonicalSnapshotFromProjectPlan :: ProjectPlan scope specDigest planId configId cfg -> CanonicalPlanSnapshot
+canonicalSnapshotFromProjectPlan plan =
+    case renderSnapshot plan of
+        SnapshotCore.StablePlanSnapshot snapshot -> snapshot
+
+{- | Admit graph and configuration alternatives under one real root, profile,
+and codec. The callback receives the base graph, alternate graph, and base graph
+with the transformed validated configuration, in that order.
+-}
+withFixtureCanonicalSnapshotVariants ::
+    StepPlan ->
+    StepPlan ->
+    (forall scope. ProjectConfig scope -> ProjectConfig scope) ->
+    (CanonicalPlanSnapshot -> CanonicalPlanSnapshot -> CanonicalPlanSnapshot -> IO result) ->
+    IO result
+withFixtureCanonicalSnapshotVariants firstGraph secondGraph changeConfig use =
+    withSystemTempDirectory "hostbootstrap-fixture-snapshot-variants" $ \directory -> do
+        store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
+        withFixtureInstalledProject $ \project -> do
+            rooted <-
+                withCanonicalProjectRoot (directory </> "fixture.dhall") "." $ \root ->
+                    withProductionRoot store project Authority.ProjectUp $ \productionRoot -> do
+                        opened <-
+                            withProductionLifecycleProfile
+                                (Authority.rootScopeAuthority (productionRootAuthority productionRoot))
+                                (productionActiveMode (productionRootModeLease productionRoot))
+                                (productionRootUnboundLease productionRoot)
+                                ( \profile ->
+                                    withProductionProjectCodec @ProjectConfig $ \codec -> do
+                                        let value =
+                                                defaultProjectConfig
+                                                    (Authority.installedProjectName project)
+                                                    (T.pack (canonicalProjectRootPath root))
+                                                    Context.HostOrchestrator
+                                            admit config graph = do
+                                                drafts <-
+                                                    either (fail . show) pure $
+                                                        planDraftsFromValidatedBuilder root config (\_ _ -> Right graph)
+                                                either (fail . show) pure $
+                                                    withProjectPlan profile root config drafts canonicalSnapshotFromProjectPlan
+                                        validated <-
+                                            withValidatedConfig codec value $ \_wire config -> do
+                                                first <- admit config firstGraph
+                                                second <- admit config secondGraph
+                                                changed <-
+                                                    withValidatedConfig codec (changeConfig value) $ \_changedWire changedConfig -> do
+                                                        third <- admit changedConfig firstGraph
+                                                        use first second third
+                                                either fail pure changed
+                                        either fail pure validated
+                                )
+                        result <- either (fail . show) id opened
+                        pure (Right result)
+            modeResult <- either (fail . show) pure rooted
+            either (fail . show) pure modeResult
+
 {- | Admit one real generative Harness project plan.  This follows the same
 protected ownership/profile/config/plan path as the command rather than
 relabeling a Production fixture.
@@ -221,6 +675,18 @@ withFixtureHarnessProjectPlan ::
     ) ->
     IO result
 withFixtureHarnessProjectPlan stepPlan use =
+    withFixtureHarnessProjectPlanConfig id stepPlan (\plan _value -> use plan)
+
+withFixtureHarnessProjectPlanConfig ::
+    (forall scope. ProjectConfig scope -> ProjectConfig scope) ->
+    StepPlan ->
+    ( forall projectId runId specDigest planId configId.
+      ProjectPlan (V.Harness projectId runId) specDigest planId configId ProjectConfig ->
+      ProjectConfig (V.Harness projectId runId) ->
+      IO result
+    ) ->
+    IO result
+withFixtureHarnessProjectPlanConfig transform stepPlan use =
     withFixtureInstalledProject $ \project ->
         withSystemTempDirectory "hostbootstrap-fixture-harness-plan" $ \directory -> do
             rooted <-
@@ -248,7 +714,7 @@ withFixtureHarnessProjectPlan stepPlan use =
                                                     withHarnessProjectCodec @ProjectConfig
                                                         (V.harnessConfigAuthority authority)
                                                         ( \codec -> do
-                                                            let value =
+                                                            let value = transform $
                                                                     defaultProjectConfig
                                                                         (Authority.installedProjectName project)
                                                                         (T.pack (canonicalProjectRootPath runRoot))
@@ -268,7 +734,7 @@ withFixtureHarnessProjectPlan stepPlan use =
                                                                         either
                                                                             (fail . show)
                                                                             pure
-                                                                            (withProjectPlan profile runRoot config drafts (pure . use))
+                                                                            (withProjectPlan profile runRoot config drafts (\plan -> pure (use plan value)))
                                                                     action
                                                             either fail pure validated
                                                         )
@@ -305,6 +771,22 @@ withFixtureProjectPlanContext ::
     ) ->
     IO result
 withFixtureProjectPlanContext selectContext stepPlan use =
+    withFixtureProjectPlanConfig
+        (\value -> value{context = selectContext value.context})
+        stepPlan
+        (\plan value -> use plan value.context)
+
+-- | Transform the real scoped configuration before canonical validation and admission.
+withFixtureProjectPlanConfig ::
+    (forall scope. ProjectConfig scope -> ProjectConfig scope) ->
+    StepPlan ->
+    ( forall projectId specDigest planId configId.
+      ProjectPlan (V.Production projectId) specDigest planId configId ProjectConfig ->
+      ProjectConfig (V.Production projectId) ->
+      IO result
+    ) ->
+    IO result
+withFixtureProjectPlanConfig transform stepPlan use =
     withSystemTempDirectory "hostbootstrap-fixture-project-plan" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
         withFixtureInstalledProject $ \project -> do
@@ -326,8 +808,7 @@ withFixtureProjectPlanContext selectContext stepPlan use =
                                                         (Authority.installedProjectName project)
                                                         (T.pack (canonicalProjectRootPath root))
                                                         Context.HostOrchestrator
-                                                exactContext = selectContext rootValue.context
-                                                value = rootValue{context = exactContext}
+                                                value = transform rootValue
                                             validated <-
                                                 withValidatedConfig codec value $ \_wire config -> do
                                                     drafts <-
@@ -348,7 +829,7 @@ withFixtureProjectPlanContext selectContext stepPlan use =
                                                                 root
                                                                 config
                                                                 drafts
-                                                                (\plan -> use plan exactContext)
+                                                                (\plan -> use plan value)
                                                             )
                                                     action
                                             either fail pure validated
@@ -459,6 +940,11 @@ instance ProjectCfg ProjectConfig where
     withHarnessProjectCodec _ =
         withProjectCodec "fixture/Harness" projectConfigCodec
     cfgContext = context
+
+instance BudgetCfg ProjectConfig where
+    budgetResourceEnvelope value =
+        let declared = value.resources
+         in Context.ResourceEnvelope declared.cpu declared.memory declared.storage
 
 {- | A secrets-strict project-owned config family. The secret field carries the
 same scope index as the whole config and the type itself has no direct Dhall
@@ -738,19 +1224,14 @@ withFixtureProjectRoot action =
         either (fail . show) pure outcome
 
 -- ---------------------------------------------------------------------------
--- Real tools a described command can be interpreted against
+-- Spec-chosen stand-in executables launched by the command interpreter
 
-{- | Write one real executable that reports exactly the given text and exits zero.
+{- | Write a stand-in executable whose output a spec chooses.
 
-A described command reaches a process by launching the tool the host
-configuration resolves (§ KK), so a suite that wants a provider to have said a
-particular thing gives the interpreter a real program to launch rather than a
-stand-in for launching it (§ NN). The program is a shell script on a POSIX host
-and a batch file on a Windows one, because those are the two things those hosts'
-own process creation runs, and the returned path is absolute on both.
-
-An empty report is a tool that says nothing at all, which is what a probe
-answering only through its exit status looks like.
+Production resolves it through @hcToolPaths@ and launches it through the normal
+interpreter. A case using this helper proves the code's reaction to that raw
+output and exit status; it establishes no real Docker or Incus behaviour.
+The returned path is absolute. An empty report prints nothing.
 -}
 newFakeTool ::
     -- | the directory the tool is written into
@@ -772,22 +1253,22 @@ makeFakeToolExecutable :: FilePath -> IO ()
 #if defined(mingw32_HOST_OS)
 fakeToolFileName name = name <> ".bat"
 fakeToolProgram "" = "@echo off\n"
-fakeToolProgram reported = "@echo off\necho " <> reported <> "\n"
+fakeToolProgram reported = unlines ("@echo off" : map (("echo(" <>) . escapeCmdEcho) (lines reported))
 makeFakeToolExecutable _ = pure ()
 #else
 fakeToolFileName = id
 fakeToolProgram "" = "#!/bin/sh\nexit 0\n"
-fakeToolProgram reported = "#!/bin/sh\nprintf '%s\\n' " <> show reported <> "\n"
+fakeToolProgram reported = "#!/bin/sh\nprintf '%s\\n' " <> quotePosix reported <> "\n"
 makeFakeToolExecutable path =
     getPermissions path >>= setPermissions path . setOwnerExecutable True
 #endif
 
-{- | Write one real executable that answers once and refuses every call after.
+{- | Write a spec-chosen stand-in that answers once and then exits non-zero.
 
-Some contracts are about what happens when a probe that answered a moment ago
-stops answering. A tool that decides that from its own durable state needs no
-substitution point in the code under test: the first call is the readiness
-observation and the second is the reprobe, and both are real processes (§ NN).
+Its temporary calls marker controls only the scripted raw process response.
+Production still resolves the tool through @hcToolPaths@. These observations
+test the code's reaction to the supplied status and streams, not real provider
+readiness or availability.
 -}
 newExhaustingFakeTool ::
     -- | the directory the tool is written into
@@ -809,34 +1290,34 @@ exhaustingToolProgram :: String -> String -> String
 #if defined(mingw32_HOST_OS)
 exhaustingToolProgram reported diagnostic =
     unlines
-        [ "@echo off"
-        , "if exist \"%~f0.calls\" ("
-        , "  echo " <> diagnostic <> " 1>&2"
-        , "  exit /b 1"
-        , ")"
-        , "type nul > \"%~f0.calls\""
-        , "echo " <> reported
-        ]
+        ( [ "@echo off"
+          , "if exist \"%~f0.calls\" goto exhausted"
+          , "type nul > \"%~f0.calls\""
+          ]
+            <> map (("echo(" <>) . escapeCmdEcho) (lines reported)
+            <> ["exit /b 0", ":exhausted"]
+            <> map (("1>&2 echo(" <>) . escapeCmdEcho) (lines diagnostic)
+            <> ["exit /b 1"]
+        )
 #else
 exhaustingToolProgram reported diagnostic =
     unlines
         [ "#!/bin/sh"
         , "calls=\"$0.calls\""
         , "if [ -f \"$calls\" ]; then"
-        , "  printf '%s\\n' " <> show diagnostic <> " >&2"
+        , "  printf '%s\\n' " <> quotePosix diagnostic <> " >&2"
         , "  exit 1"
         , "fi"
         , ": > \"$calls\""
-        , "printf '%s\\n' " <> show reported
+        , "printf '%s\\n' " <> quotePosix reported
         ]
 #endif
 
-{- | Write one real executable that records that it ran, then answers as told.
+{- | Write a spec-chosen stand-in that records its invocation and answers.
 
-Ordering is a contract: a readiness observation that reaches the provisioning
-egress before it has admitted the root has taken a step it was not entitled to.
-The tool writing its own name into a shared log makes that order an observation
-of real processes rather than of a counter beside them (§ NN).
+The temporary invocation file lets a case inspect process order. Production
+resolves this tool through @hcToolPaths@; the selected status and streams establish
+the code's reaction to those inputs and no real Docker or Incus behaviour.
 -}
 newRecordingFakeTool ::
     -- | the directory the tool is written into
@@ -866,69 +1347,35 @@ recordingToolProgram name reported status logPath =
             <> map ("echo(" <>) (map escapeCmdEcho (lines reported))
             <> ["exit /b " <> show status]
         )
+#else
+recordingToolProgram name reported status logPath =
+    unlines
+        ( [ "#!/bin/sh"
+          , "printf '%s\\n' " <> quotePosix name <> " >> " <> quotePosix logPath
+          ]
+            <> ["printf '%s\\n' " <> quotePosix reported | not (null reported)]
+            <> ["exit " <> show status]
+        )
+#endif
+
+#if defined(mingw32_HOST_OS)
+escapeCmdEcho :: String -> String
+escapeCmdEcho = concatMap escape
   where
-    escapeCmdEcho = concatMap escape
     escape '^' = "^^"
     escape '%' = "%%"
     escape '&' = "^&"
     escape '|' = "^|"
     escape '<' = "^<"
     escape '>' = "^>"
+    escape '"' = "^\""
+    escape '(' = "^("
+    escape ')' = "^)"
     escape character = [character]
 #else
-recordingToolProgram name reported status logPath =
-    unlines
-        ( [ "#!/bin/sh"
-          , "printf '%s\\n' " <> show name <> " >> " <> show logPath
-          ]
-            <> ["printf '%s\\n' " <> show reported | not (null reported)]
-            <> ["exit " <> show status]
-        )
-#endif
-
-{- | Write one real executable that answers every verb but the named one.
-
-A client whose provisioning egress is unavailable and one whose daemon has
-stopped answering are different contracts, and both are properties of the
-program the interpreter launches rather than of a seam beside it (§ NN). The
-verb is matched against the first argument, which is where every command in this
-project's provider vocabulary carries it.
--}
-newRefusingFakeTool ::
-    -- | the directory the tool is written into
-    FilePath ->
-    -- | its base name, without a host-specific extension
-    String ->
-    -- | the first argument it refuses
-    String ->
-    -- | the diagnostic it writes to standard error when it refuses
-    String ->
-    IO FilePath
-newRefusingFakeTool directory name refused diagnostic = do
-    let path = directory </> fakeToolFileName name
-    writeFile path (refusingToolProgram refused diagnostic)
-    makeFakeToolExecutable path
-    pure path
-
-refusingToolProgram :: String -> String -> String
-#if defined(mingw32_HOST_OS)
-refusingToolProgram refused diagnostic =
-    unlines
-        [ "@echo off"
-        , "if \"%1\"==\"" <> refused <> "\" ("
-        , "  echo " <> diagnostic <> " 1>&2"
-        , "  exit /b 1"
-        , ")"
-        , "exit /b 0"
-        ]
-#else
-refusingToolProgram refused diagnostic =
-    unlines
-        [ "#!/bin/sh"
-        , "if [ \"$1\" = " <> show refused <> " ]; then"
-        , "  printf '%s\\n' " <> show diagnostic <> " >&2"
-        , "  exit 1"
-        , "fi"
-        , "exit 0"
-        ]
+quotePosix :: String -> String
+quotePosix value = "'" <> concatMap quote value <> "'"
+  where
+    quote '\'' = "'\\''"
+    quote character = [character]
 #endif

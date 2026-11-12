@@ -1,5 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE RankNTypes #-}
 
 {- | Package-private bridge from the provider's clause-holding backend to
 dependent exact consumers.  Public callers can retain the abstract package,
@@ -10,14 +11,20 @@ module HostBootstrap.Substrate.Provider.Dependency.Internal (
     RunningProviderDependency (..),
     runningProviderDependencyHandle,
     runningProviderDependencyReprobe,
+    runningProviderDependencyProbe,
     ProviderShareDependency (..),
     providerShareDependencyHandle,
+    withLocalProviderShareDependency,
     providerShareDependencyReprobe,
+    providerShareDependencyProbe,
 )
 where
 
 import Data.Word (Word64)
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
 import HostBootstrap.Reconcile (
+    DependencyProbe,
     DurableShareResource,
     Managed,
     ProviderResource,
@@ -28,6 +35,7 @@ import HostBootstrap.Reconcile (
  )
 import HostBootstrap.Substrate.Provider.Observation.Internal (
     ManagedProviderHandle (..),
+    ManagedProviderShareHandle (..),
  )
 
 {- | A Running provider authority paired with the real backend reprobe that
@@ -57,12 +65,22 @@ runningProviderDependencyReprobe ::
 runningProviderDependencyReprobe (RunningProviderDependency _ reprobe) = reprobe
 runningProviderDependencyReprobe (RecoveredRunningProviderDependency _ reprobe) = reprobe
 
+-- | Reobserve the exact backend-owned running provider during preparation.
+runningProviderDependencyProbe ::
+    RunningProviderDependency scope planId providerId ->
+    DependencyProbe scope planId providerId ProviderResource ProbeKernel.ProviderResponding
+runningProviderDependencyProbe = Dependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind . runningProviderDependencyReprobe
+
 {- | A carried provider-derived share paired with the owner-serviced fresh
 reprobe that admitted its exact generation. The constructor remains
 package-private so cluster callers cannot substitute a generic share handle or
 caller-authored observation.
 -}
 data ProviderShareDependency scope planId shareId where
+    LocalProviderShareDependency ::
+        ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+        IO (Either ReconcileError Word64) ->
+        ProviderShareDependency scope planId shareId
     RecoveredProviderShareDependency ::
         ResourceHandle scope planId shareId DurableShareResource Managed Provisioned ->
         IO (Either ReconcileError Word64) ->
@@ -73,9 +91,26 @@ type role ProviderShareDependency nominal nominal nominal
 providerShareDependencyHandle ::
     ProviderShareDependency scope planId shareId ->
     ResourceHandle scope planId shareId DurableShareResource Managed Provisioned
+providerShareDependencyHandle (LocalProviderShareDependency (ManagedProviderShareHandle _ handle _ _) _) = handle
 providerShareDependencyHandle (RecoveredProviderShareDependency handle _) = handle
+
+-- | Inspect a local dependency without exposing its constructor to callers.
+withLocalProviderShareDependency ::
+    ProviderShareDependency scope planId shareId ->
+    (forall backendId providerId. ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned -> result) ->
+    Maybe result
+withLocalProviderShareDependency (LocalProviderShareDependency managed _) consume = Just (consume managed)
+withLocalProviderShareDependency (RecoveredProviderShareDependency _ _) _ = Nothing
 
 providerShareDependencyReprobe ::
     ProviderShareDependency scope planId shareId ->
     IO (Either ReconcileError Word64)
+providerShareDependencyReprobe (LocalProviderShareDependency _ reprobe) = reprobe
 providerShareDependencyReprobe (RecoveredProviderShareDependency _ reprobe) = reprobe
+
+
+-- | Reobserve the exact backend-owned durable share during preparation.
+providerShareDependencyProbe ::
+    ProviderShareDependency scope planId shareId ->
+    DependencyProbe scope planId shareId DurableShareResource ProbeKernel.DurableShareReady
+providerShareDependencyProbe = Dependency.dependencyProbeWithKind ProbeKernel.DurableShareKind . providerShareDependencyReprobe

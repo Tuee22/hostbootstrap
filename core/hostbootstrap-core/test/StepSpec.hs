@@ -2,11 +2,12 @@
 
 module StepSpec (tests) where
 
-import Data.List (isInfixOf, nub)
+import Data.List (isPrefixOf, nub)
 import qualified Data.List.NonEmpty as NonEmpty
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lift (localContext)
 import HostBootstrap.Step
+import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import Test.Tasty (TestTree, testGroup)
@@ -17,6 +18,8 @@ tests =
     testGroup
         "StepSpec"
         [ testGroup "stepKindName" kindNameCases
+        , testGroup "project step identities" projectIdentityCases
+        , testGroup "named core step identities" namedCoreIdentityCases
         , testGroup "renderStep / renderChainPlan" renderCases
         , testGroup "frame segmentation" frameCases
         , testGroup "stable implementation identities" implementationIdentityCases
@@ -56,7 +59,11 @@ requires the claim to be unique across the plan.
 -}
 projectionCases :: [TestTree]
 projectionCases =
-    [ testCase "a step declares nothing by default and keeps what it declares, in order" $ do
+    [ testCase "a core tool name cannot extend another operation key" $
+        assertPlanRefusal
+            (InvalidCoreStepName (CoreStepIdentity (EnsureToolId "z/core:copy-source")))
+            [ensureStep "z/core:copy-source" "ensure" metal noop]
+    , testCase "a step declares nothing by default and keeps what it declares, in order" $ do
         map operationKeyText (stepProjectedOperations (copySourceStep "b" metal noop)) @?= []
         let declared =
                 projectsOperation "core:deploy-vm/core:copy-source/guest-alias" $
@@ -121,18 +128,19 @@ projectionCases =
             ] of
             Left err -> err @?= DuplicateProjectedOperation "core:copy-source/alias"
             Right _ -> assertFailure "one node claiming a projection twice was validated"
-    , testCase "a projection may not collide with a node's own operation key" $
-        -- An ensure step's tool name is free text, so its key can be spelled to
-        -- land exactly where another node projects. Both would then register,
-        -- gate, and settle the one durable operation record.
-        case mkStepPlan
-            [ projectsOperation
-                "core:ensure-docker/warm"
-                (ensureStep "docker" "ensure docker" metal noop)
+    , testCase "a suffixed tool name cannot impersonate its valid projected operation" $ do
+        let declared =
+                projectsOperation
+                    "core:ensure-docker/warm"
+                    (ensureStep "docker" "ensure docker" metal noop)
+        valid <- either (assertFailure . show) pure (mkStepPlan [declared])
+        map (map operationKeyText . stepProjectedOperations) (NonEmpty.toList (stepPlanSteps valid))
+            @?= [["core:ensure-docker/warm"]]
+        assertPlanRefusal
+            (InvalidCoreStepName (CoreStepIdentity (EnsureToolId "docker/warm")))
+            [ declared
             , ensureStep "docker/warm" "ensure the warm store" metal noop
-            ] of
-            Left err -> err @?= DuplicateProjectedOperation "core:ensure-docker/warm"
-            Right _ -> assertFailure "a projection over a node's own operation key was validated"
+            ]
     ]
 
 {- | The shape the guest alias needs: the provider, then the durable share that
@@ -185,24 +193,22 @@ observationCases =
         root <-
             findRepoRoot cwd
                 >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-        source <-
-            readFile
-                ( root
-                    </> "core"
-                    </> "hostbootstrap-core"
-                    </> "src"
-                    </> "HostBootstrap"
-                    </> "Step.hs"
-                )
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        sourcePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Step"
+        source <- readFile sourcePath
+        -- Token-level: a qualified, aliased, or SOURCE import is still an import, and a
+        -- commented or quoted mention is not one.
+        let harnessImports = [name | name <- SourceGuard.haskellImports source, isHarnessModule name]
+            isHarnessModule name = name == "HostBootstrap.Harness" || "HostBootstrap.Harness." `isPrefixOf` name
+        harnessImports @?= []
+        SourceGuard.haskellImports "import qualified HostBootstrap.Harness.GeneratedConfig as G\n"
+            @?= ["HostBootstrap.Harness.GeneratedConfig"]
+        SourceGuard.haskellImports "import {-# SOURCE #-} HostBootstrap.Harness\n"
+            @?= ["HostBootstrap.Harness"]
         assertBool
             "the lower Step module imports the higher Harness module"
-            (not ("import HostBootstrap.Harness" `isInfixOf` source))
-    , testCase "an action's observation is what runStep returns" $ do
-        -- The plan mints the descriptor, so the only way to observe this is
-        -- through a real interpretation; ChainSpec drives that. Here the point
-        -- is that the value survives the step's own wrapper.
-        let step = deployKindStep "cluster" metal (const (pure (StepUnsupported "no kube toolchain")))
-        stepLabel step @?= "cluster"
+            (not (any isHarnessModule (SourceGuard.haskellImports source)))
     ]
 
 -- Fixtures: frames and a representative chain interleaving host and project steps.
@@ -220,16 +226,51 @@ noop _ = pure StepChanged
 
 implementationIdentityCases :: [TestTree]
 implementationIdentityCases =
-    [ testCase "every constructor starts at explicit revision one" $ do
-        let step = deployKindStep "cluster" metal noop
-        stepImplementationRevisionNumber (stepImplementationRevision step) @?= 1
-        stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step) @?= 1
+    [ testCase "every constructor starts at explicit revision one" $
+        map
+            ( \step ->
+                ( stepImplementationRevisionNumber (stepImplementationRevision step)
+                , stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step)
+                )
+            )
+            [ deployVMStep "provider" metal noop
+            , ensureStep "ghc" "tool" metal noop
+            , copySourceStep "source" metal noop
+            , buildPbStep "binary" metal noop
+            , buildImageStep "image" metal noop
+            , contextInitStep "context" metal noop
+            , deployKindStep "cluster" metal noop
+            , deployChartStep "chart" metal noop
+            , exposePortStep "port" metal noop
+            , postHandoffStep "hook" "hook" metal noop
+            , projectStep (fixtureProjectStepId "project-node") ProjectManagedReverse "project" metal noop
+            ]
+            @?= replicate 11 (1, 1)
     , testCase "forward and reverse revisions are independently replaceable" $ do
         let implementation = either error id (mkStepImplementationRevision 2)
             reverseAdapter = either error id (mkStepReverseAdapterRevision 3)
             step = reverseAdapterAt reverseAdapter (implementedAt implementation (deployKindStep "cluster" metal noop))
         stepImplementationRevisionNumber (stepImplementationRevision step) @?= 2
         stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step) @?= 3
+    , testCase "attaching a reverse effect preserves an already declared adapter revision" $ do
+        let revision = either error id (mkStepReverseAdapterRevision 3)
+            noReverse _ _ = pure TeardownReleased
+            step = deployVMStep "provider" metal noop
+            decorated =
+                [ reversedBy noReverse (reverseAdapterAt revision step)
+                , reverseAdapterAt revision (reversedBy noReverse step)
+                ]
+        map (stepReverseAdapterRevisionNumber . stepReverseAdapterRevision) decorated @?= [3, 3]
+        map (length . stepReverses) decorated @?= [1, 1]
+    , testCase "an explicitly named reverse-effect revision replaces the existing revision" $ do
+        let initialRevision = either error id (mkStepReverseAdapterRevision 3)
+            replacementRevision = either error id (mkStepReverseAdapterRevision 5)
+            noReverse _ _ = pure TeardownReleased
+            step =
+                reversedByAt replacementRevision noReverse $
+                    reverseAdapterAt initialRevision (deployVMStep "provider" metal noop)
+        stepReverseAdapterRevisionNumber (stepReverseAdapterRevision step) @?= 5
+        length (stepReverses step) @?= 1
     , testCase "revision zero is outside the closed vocabulary" $ do
         case mkStepImplementationRevision 0 of
             Left _ -> pure ()
@@ -238,6 +279,82 @@ implementationIdentityCases =
             Left _ -> pure ()
             Right _ -> assertFailure "accepted reverse-adapter revision zero"
     ]
+
+projectIdentityCases :: [TestTree]
+projectIdentityCases =
+    [ testCase "an empty project identity is refused" $
+        projectStepId "" @?= Left "project step identity must not be empty"
+    , testCase "a path separator is outside a project identity" $
+        projectStepId "a/b" @?= Left ("project step identity is not a stable token: " ++ show ("a/b" :: String))
+    , testCase "a namespace separator is outside a project identity" $
+        projectStepId "a:b" @?= Left ("project step identity is not a stable token: " ++ show ("a:b" :: String))
+    , testCase "a non-ASCII character is outside a project identity" $
+        projectStepId "é" @?= Left ("project step identity is not a stable token: " ++ show ("é" :: String))
+    ]
+
+namedCoreIdentityCases :: [TestTree]
+namedCoreIdentityCases =
+    [ testCase "an empty core tool name is refused" $
+        assertPlanRefusal
+            (InvalidCoreStepName (CoreStepIdentity (EnsureToolId "")))
+            [ensureStep "" "ensure" metal noop]
+    , testCase "an empty post-handoff name is refused after a valid normal node" $
+        assertPlanRefusal
+            (InvalidCoreStepName (CoreStepIdentity (PostHandoffId "")))
+            [ deployVMStep "provider" metal noop
+            , postHandoffStep "" "hook" metal noop
+            ]
+    , testCase "a ghc tool name still validates" $ do
+        plan <- either (assertFailure . show) pure (mkStepPlan [ensureStep "ghc" "ensure" metal noop])
+        map (operationKeyText . stepOperationKey) (NonEmpty.toList (stepPlanSteps plan)) @?= ["core:ensure-ghc"]
+    , testCase "tool and post-handoff names share the project identity ASCII alphabet" $
+        mapM_ checkCharacter tokenCharacters
+    , testCase "existing frame and label refusals precede core name validation" $ do
+        assertPlanRefusal
+            (EmptyFrameId 1)
+            [ensureStep "bad/name" "ensure" (StepFrame "" "empty") noop]
+        assertPlanRefusal
+            (EmptyStepLabel 1)
+            [ensureStep "bad/name" "" metal noop]
+        assertPlanRefusal
+            (ConflictingFrameLabels "host-orchestrator-0" ["metal", "other"])
+            [ ensureStep "bad/name" "ensure" metal noop
+            , copySourceStep "source" (metal{frameLabel = "other"}) noop
+            ]
+    ]
+  where
+    tokenCharacters =
+        [ ('-', True)
+        , ('_', True)
+        , ('.', True)
+        , ('0', True)
+        , ('9', True)
+        , ('A', True)
+        , ('Z', True)
+        , ('a', True)
+        , ('z', True)
+        , ('/', False)
+        , (':', False)
+        , (' ', False)
+        , ('\t', False)
+        , ('\n', False)
+        , ('é', False)
+        ]
+    checkCharacter (character, admitted) = do
+        let name = ['a', character, 'b']
+            tool = ensureStep name "ensure" metal noop
+            hook = postHandoffStep name "hook" metal noop
+        if admitted
+            then do
+                toolPlan <- either (assertFailure . show) pure (mkStepPlan [tool])
+                map (operationKeyText . stepOperationKey) (NonEmpty.toList (stepPlanSteps toolPlan)) @?= ["core:ensure-" ++ name]
+                hookPlan <- either (assertFailure . show) pure (mkStepPlan [deployVMStep "provider" metal noop, hook])
+                map (operationKeyText . stepOperationKey) (NonEmpty.toList (stepPlanSteps hookPlan)) @?= ["core:deploy-vm", "core:post-handoff-" ++ name]
+            else do
+                assertPlanRefusal (InvalidCoreStepName (CoreStepIdentity (EnsureToolId name))) [tool]
+                assertPlanRefusal
+                    (InvalidCoreStepName (CoreStepIdentity (PostHandoffId name)))
+                    [deployVMStep "provider" metal noop, hook]
 
 -- A small demo-shaped chain: metal provisions and builds, then the container
 -- frame deploys the cluster, a project step (harbor), and exposes the port.
@@ -328,6 +445,33 @@ frameCases =
             @?= ["launch the VM", "stage source into the VM", "ensure GHC in the VM", "build the binary in the VM"]
         map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" demoPlan)
             @?= ["start the host accelerator daemon"]
+    , testCase "the post-handoff classifier covers every core and project constructor" $
+        map
+            (\step -> (stepIdentity step, isPostHandoffStep step))
+            [ deployVMStep "provider" metal noop
+            , ensureStep "ghc" "tool" metal noop
+            , copySourceStep "source" metal noop
+            , buildPbStep "binary" metal noop
+            , buildImageStep "image" metal noop
+            , contextInitStep "context" metal noop
+            , deployKindStep "cluster" metal noop
+            , deployChartStep "chart" metal noop
+            , exposePortStep "port" metal noop
+            , postHandoffStep "hook" "hook" metal noop
+            , projectStep (fixtureProjectStepId "project-node") ProjectManagedReverse "project" metal noop
+            ]
+            @?= [ (CoreStepIdentity DeployVMId, False)
+                , (CoreStepIdentity (EnsureToolId "ghc"), False)
+                , (CoreStepIdentity CopySourceId, False)
+                , (CoreStepIdentity BuildPbId, False)
+                , (CoreStepIdentity BuildImageId, False)
+                , (CoreStepIdentity ContextInitId, False)
+                , (CoreStepIdentity DeployKindId, False)
+                , (CoreStepIdentity DeployChartId, False)
+                , (CoreStepIdentity ExposePortId, False)
+                , (CoreStepIdentity (PostHandoffId "hook"), True)
+                , (ProjectStepIdentity (fixtureProjectStepId "project-node"), False)
+                ]
     , testCase "stepsForFrame is empty for a frame the chain never enters" $
         map stepLabel (stepsForFrame "no-such-frame" demoPlan) @?= []
     , testCase "a non-contiguous frame return is rejected without reordering" $
@@ -348,6 +492,24 @@ validationCases :: [TestTree]
 validationCases =
     [ testCase "generated frame sequences preserve exact order or reject a closed-frame return" $
         mapM_ validateSequence generatedFrameSequences
+    , testCase "an empty frame identity reports its exact step position" $
+        assertPlanRefusal
+            (EmptyFrameId 1)
+            [deployVMStep "provider" (StepFrame "" "empty frame") noop]
+    , testCase "an empty step label reports its exact step position" $
+        assertPlanRefusal (EmptyStepLabel 1) [deployVMStep "" metal noop]
+    , testCase "one semantic frame cannot carry conflicting presentation labels" $
+        assertPlanRefusal
+            (ConflictingFrameLabels "host-orchestrator-0" ["metal", "other"])
+            [ deployVMStep "provider" metal noop
+            , copySourceStep "source" (metal{frameLabel = "other"}) noop
+            ]
+    , testCase "a post-handoff hook reports an undeclared frame and its exact position" $
+        assertPlanRefusal
+            (PostHandoffForUnknownFrame 2 "vm-orchestrator-1")
+            [ deployVMStep "provider" metal noop
+            , postHandoffStep "unknown-frame" "late hook" vmFrame noop
+            ]
     , testCase "duplicate typed identities are rejected" $
         case mkStepPlan
             [ projectStep duplicateId ProjectManagedReverse "first" metal noop
@@ -382,7 +544,7 @@ validationCases =
             [ postHandoffStep "late" "late hook" metal noop
             , projectStep (fixtureProjectStepId "after-hook") ProjectManagedReverse "normal" metal noop
             ] of
-            Left (PostHandoffBeforeDescentComplete _) -> pure ()
+            Left err -> err @?= PostHandoffBeforeDescentComplete 2
             other -> assertFailure ("expected post-handoff ordering rejection, got " ++ either show (const "validated") other)
     , testCase "post-handoff hooks unwind from deeper frames toward the root" $ do
         let normal =
@@ -415,9 +577,28 @@ validationCases =
             stepReversePolicy
             [ ensureStep "ghc" "ensure" metal noop
             , deployVMStep "deploy" vmFrame noop
+            , copySourceStep "source" vmFrame noop
+            , buildPbStep "binary" vmFrame noop
+            , buildImageStep "image" vmFrame noop
+            , contextInitStep "context" vmFrame noop
+            , deployKindStep "cluster" ctrFrame noop
+            , deployChartStep "chart" ctrFrame noop
+            , exposePortStep "port" ctrFrame noop
+            , postHandoffStep "hook" "hook" metal noop
             , projectStep (fixtureProjectStepId "mutate") ProjectManagedReverse "mutate" ctrFrame noop
             ]
-            @?= [PreserveOnReverse, ProjectManagedReverse, ProjectManagedReverse]
+            @?= [ PreserveOnReverse
+                , ProjectManagedReverse
+                , ProjectManagedReverse
+                , ProjectManagedReverse
+                , ProjectManagedReverse
+                , ProjectManagedReverse
+                , CoreManagedReverse
+                , CoreManagedReverse
+                , CoreManagedReverse
+                , ProjectManagedReverse
+                , ProjectManagedReverse
+                ]
     , testCase "a frame that descends into another must declare exactly one descent" $ do
         case mkStepPlan [deployVMStep "a" metal noop, contextInitStep "b" vmFrame noop] of
             Left err -> err @?= MissingFrameDescent "host-orchestrator-0"
@@ -462,6 +643,11 @@ validationCases =
         case mkStepPlan [reversedBy noReverse (deployKindStep "cluster" metal noop)] of
             Left err -> assertFailure ("a core-managed override was rejected: " ++ show err)
             Right _ -> pure ()
+    , testCase "a project-managed node may declare no reverse effect" $ do
+        plan <- either (assertFailure . show) pure (mkStepPlan [deployVMStep "a" metal noop])
+        let steps = NonEmpty.toList (stepPlanSteps plan)
+        map stepReversePolicy steps @?= [ProjectManagedReverse]
+        map (length . stepReverses) steps @?= [0]
     , testCase "validated plans derive one operation key and exact dependency prefix per step" $ do
         let steps = NonEmpty.toList (stepPlanSteps demoPlan)
             keys = map (operationKeyText . stepOperationKey) steps
@@ -472,6 +658,11 @@ validationCases =
     ]
   where
     duplicateId = fixtureProjectStepId "duplicate"
+
+assertPlanRefusal :: StepPlanError -> [Step] -> IO ()
+assertPlanRefusal expected steps = case mkStepPlan steps of
+    Left failure -> failure @?= expected
+    Right _ -> assertFailure ("expected plan refusal " ++ show expected ++ ", got a validated plan")
 
 generatedFrameSequences :: [[String]]
 generatedFrameSequences =

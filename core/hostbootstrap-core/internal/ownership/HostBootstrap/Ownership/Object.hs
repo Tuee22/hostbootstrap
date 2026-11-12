@@ -8,7 +8,7 @@ record published before the object exists, the created object's own identity
 bound to that record, and release conditional on re-observing that identity.
 
 Those clauses are one transaction, and a transaction needs nouns. This module is
-the nouns: the kernel's answer for an object's identity, what kind of object is
+the nouns: a well-formed owning-authority identity, what kind of object is
 owned and what bytes this run intends to install, what was there before, the
 durable record that says so, and the closed set of ways any of it can fail. Every
 owner speaks these — a run's data root, its generated sibling config, the host
@@ -22,15 +22,15 @@ for rather than inside it.
 
 Three shapes are deliberately unrepresentable rather than validated:
 
-  * an identity that is empty, over-long, or supplied by a caller — the
-    constructor is private and admits only what a kernel answered;
+  * an identity that is empty or over-long — the constructor is private and
+    the exported producer validates those bounds;
   * a file record with no payload, or a directory record with one — the payload
     is a field of the file's own case rather than a @Maybe@ beside both;
   * a record that claims an identity binding it never made — the binding is
     attached by its own producer and the record carries no updatable field.
 -}
 module HostBootstrap.Ownership.Object (
-    -- * The kernel's answer
+    -- * Stable object identities
     storeFault,
     ObjectIdentity,
     mkObjectIdentity,
@@ -89,19 +89,17 @@ import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64, Word8)
-import HostBootstrap.Protected (ProtectedError, protectedErrorMessage)
+import HostBootstrap.Protected (ProtectedError (ProtectedMalformedRecord, ProtectedUnsupported), protectedErrorMessage)
 
 -- ---------------------------------------------------------------------------
--- The kernel's answer
+-- Stable object identities
 
-{- | A filesystem object's stable kernel identity: @device:inode@ on a POSIX
-host, the volume serial number plus file index on a Windows one.
+{- | A validated non-empty identity of at most 64 bytes.
 
-Clause 3 binds ownership to the object the kernel knows, never to the pathname
-that currently reaches it, so this is the kernel's answer and nothing else. The
-constructor is private: an 'ObjectIdentity' exists only where a row read a
-non-empty identity out of a kernel, so an empty or fabricated value can never be
-compared as though it were one.
+'mkObjectIdentity' admits kernel, provider, container and digest-derived
+identities. The rows use 'mkKernelObjectIdentity' for a volume word and object bytes.
+The private constructor proves the byte bounds, not kernel provenance or
+mutation authority; the owning backend supplies that evidence.
 -}
 newtype ObjectIdentity = ObjectIdentity ByteString
     deriving (Eq, Ord)
@@ -123,7 +121,7 @@ mkObjectIdentity raw
         Left (OwnershipUnsupported "the host reported an over-long object identity")
     | otherwise = Right (ObjectIdentity raw)
 
-{- | The widest identity any supported row reports.
+{- | The ceiling for a validated identity.
 
 A ceiling rather than a fixed width, because the two rows encode different
 kernel facts; wide enough for both and narrow enough that a host answering
@@ -134,22 +132,22 @@ identityByteCeiling = 64
 
 {- | The one encoding every platform row writes.
 
-The volume word first, then the object word, both little-endian. The rows read
-different kernel facts — @(st_dev, st_ino)@ on a POSIX host, the volume serial
-number and file index on a Windows one — but they encode them the same way and
-through this one producer, so an identity a driver compares means the same thing
-whichever kernel answered. Written once per row it would be two encodings that
-agree until one of them is changed, and nothing would ask them the same question
-together.
+The 64-bit volume word is little-endian and comes first. The object identifier
+is the kernel's little-endian bytes: eight bytes for a POSIX inode, sixteen for
+Windows FILE_ID_128. Both widths enter the same encoder; neither row constructs
+an ObjectIdentity itself. This validates the kernel shape, not provenance.
 -}
-mkKernelObjectIdentity :: Word64 -> Word64 -> Either OwnershipFault ObjectIdentity
-mkKernelObjectIdentity volume object =
-    mkObjectIdentity
-        ( LazyByteString.toStrict
-            ( Builder.toLazyByteString
-                (Builder.word64LE volume <> Builder.word64LE object)
+mkKernelObjectIdentity :: Word64 -> ByteString -> Either OwnershipFault ObjectIdentity
+mkKernelObjectIdentity volume object
+    | ByteString.length object /= 8 && ByteString.length object /= 16 =
+        Left (OwnershipMalformed "a kernel object identifier is neither 8 nor 16 bytes")
+    | otherwise =
+        mkObjectIdentity
+            ( LazyByteString.toStrict
+                ( Builder.toLazyByteString
+                    (Builder.word64LE volume <> Builder.byteString object)
+                )
             )
-        )
 
 objectIdentityBytes :: ObjectIdentity -> ByteString
 objectIdentityBytes (ObjectIdentity raw) = raw
@@ -335,8 +333,8 @@ originIdentity (OriginPresent identity) = Just identity
 
 {- | The durable record clause 2 publishes before the object exists.
 
-The constructor is private and there is one producer, so a record always names
-what was actually observed. The identity binding is attached by its own producer
+The constructor is private and one producer records the supplied kind and origin.
+The value does not prove that an observation occurred. Its binding is attached by its own producer
 and the type carries no updatable field, so a record cannot claim a binding it
 never made and a bound record cannot be silently rebound to a different object.
 -}
@@ -457,7 +455,10 @@ parseOriginRecord raw = do
                 kind <- parseKind kindRaw payloadRaw
                 origin <- parseOrigin originRaw
                 binding <- parseBinding bindingRaw
-                pure (OriginRecord kind origin binding)
+                let parsed = OriginRecord kind origin binding
+                if renderOriginRecord parsed == raw
+                    then Right parsed
+                    else Left (OwnershipMalformed "ownership record is not in its canonical encoding")
         observed ->
             Left
                 ( OwnershipMalformed
@@ -474,11 +475,11 @@ parseKind kindRaw payloadRaw = case kindRaw of
         | otherwise -> Left (OwnershipMalformed "a directory record carries no payload digest")
     "file"
         | payloadRaw == absentToken ->
-            Left (OwnershipMalformed "a file record carries a payload digest")
+            Left (OwnershipMalformed "a file record is missing its payload digest")
         | otherwise -> OwnedFile <$> parsePayloadDigestHex payloadRaw
     "reported"
         | payloadRaw == absentToken ->
-            Left (OwnershipMalformed "a reported-object record carries an owner claim")
+            Left (OwnershipMalformed "a reported-object record is missing its owner claim")
         | otherwise -> ReportedObject <$> parseOwnerClaimHex payloadRaw
     other -> Left (OwnershipMalformed ("ownership record names kind " <> other))
 
@@ -636,6 +637,12 @@ provider instance, the harness data root and its generated config, and the
 shipped guest transaction. They agreed, but nothing made them agree --- and a
 store failure classified differently by one owner would be an ownership answer
 that depends on who asked, which is what the four clauses exist to rule out.
+A malformed envelope is uninterpretable durable state, not a probe to retry.
+An unavailable store clause remains unsupported; ordinary store failures retain
+the attempted operation and their diagnostic.
 -}
 storeFault :: Text -> ProtectedError -> OwnershipFault
-storeFault operation failure = OwnershipProbeFailed operation (protectedErrorMessage failure)
+storeFault operation failure = case failure of
+    ProtectedMalformedRecord _ _ -> OwnershipMalformed (protectedErrorMessage failure)
+    ProtectedUnsupported _ _ -> OwnershipUnsupported (protectedErrorMessage failure)
+    _ -> OwnershipProbeFailed operation (protectedErrorMessage failure)

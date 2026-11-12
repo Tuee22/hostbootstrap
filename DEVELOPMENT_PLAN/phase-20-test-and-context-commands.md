@@ -6,16 +6,14 @@
 **Gate**: `cabal test all` from `core/`, plus the focused `CLISpec` and `ContextSpec`
 groups inside a realized linux-cpu host
 **Gate kind**: deferred
-**Gate evidence**: 2026-09-13 ; full suite on x86_64 Ubuntu 24.04.4 LTS (Linux 7.0.0-28-generic, GHC
-9.12.4, Cabal 3.16.1.0), focused legs in an x86_64 Linux container from the published
-`basecontainer-cpu-amd64` base with no accelerator device visible, built and run there with that same
-pinned toolchain mounted in ;
-`cabal test all --ghc-options=-Werror --test-show-details=direct --test-options=--hide-successes` from
-`core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
---test-show-details=direct --test-options="--pattern CLISpec"` and the same command with
-`--pattern ContextSpec`, both from `core/` in that container ; pass ;
-covers 893814d13438030a1b058ab5fcefb836048ee69887611031a5d4d24d79d1c175
-**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs` `core/hostbootstrap-core/src/HostBootstrap/Context.hs` `core/hostbootstrap-core/test/CLISpec.hs` `core/hostbootstrap-core/test/ContextSpec.hs`
+**Gate evidence**: 2026-11-10 ; x86_64 Ubuntu 24.04.5 LTS under WSL2 (Linux 6.18.54.1-microsoft-standard-WSL2), GHC
+9.12.4, Cabal 3.16.1.0, the package's own `-Werror` warning stanza ;
+`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` (5336 tests, 6787 seconds),
+then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --test-show-details=direct
+--test-options="--pattern CLISpec"` (103 tests) and the same command with `--pattern ContextSpec`, both from `core/` ;
+pass ;
+covers d7709835dd5e73ccdde3df5309fc0db72f62bc527d72d872c9435614b8119bc5
+**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs` `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs` `core/hostbootstrap-core/test/CLISpec.hs` `core/hostbootstrap-core/test/ContextSpec.hs`
 
 > **Purpose**: Fix the exact grammar and side-effect boundary of `test init`, `test run <case-id>|all`,
 > `context`, and `check-code`.
@@ -29,10 +27,10 @@ exactly what its name implies — `context` reads and never writes, `test init` 
 
 ## Sprints
 
-### Sprint 20.1: `test init` and its overwrite policy [Active]
+### Sprint 20.1: `test init` and its overwrite policy [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`
@@ -95,55 +93,29 @@ The sprint closes when these `CLISpec` cases exist and pass under `cabal test al
   RefuseExistingTestConfig` with the same throwing value and no existing test config rethrows, leaves the
   destination absent, and leaves no temporary file in its directory.
 
+Closing evidence, 2026-11-10, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0):
+`Schema.testConfigWriteFor` takes the `InstalledProjectIdentity` that `testCommand` holds and resolves
+`siblingTestConfigPath (installedProjectName project)`, and `runTestInit` passes `project`.
+`Schema.installTestConfig` forces `renderProjectConfigBytes` into a same-directory `.hostbootstrap-config.tmp` file,
+flushes and closes it before touching the destination, publishes `RefuseExistingTestConfig` through `linkNoReplace`
+(a taken name or dangling symlink yields `TestConfigExists`) and `ReplaceExistingTestConfig` through `renameFile`, and
+removes the temporary on every exit path. `CLISpec` asserts the exact `<testPath> already exists; pass --replace to
+overwrite it` refusal for each refused `init`, that `test init` leaves the sibling `<project>.dhall` absent before and
+after, that `test run` without a test config and without a sibling config exits `ExitFailure 1` naming
+`test run: missing <testPath>` and ``test init` first`` with the protected-store tree unchanged, that the writer
+resolves only the installed project's sibling and `withInstalledProjectIdentity "../escape"` returns
+`Left (AuthorityInvalidIdentity _)`, and that a failing render leaves the prior file byte-identical under replace and
+creates nothing under refuse, with no temporary behind. The cases run in-process with captured stderr rather than
+through the plan's `cliFixtureResult` subprocess runner. The warning-clean `cabal test all` from `core/` and from
+`demo/` passed (5336 tests, and the demo suite's 169).
+
 #### Remaining Work
 
-- Add a subprocess runner `cliFixtureResult :: String -> IO (ExitCode, T.Text, T.Text)` in `CLISpec.hs`
-  beside `schemaFixtureOutput`. It invokes the test executable with
-  `--hostbootstrap-schema-fixture <name>` and returns the exit code, stdout, and stderr without failing on a
-  non-zero exit. Sprints 20.2 and 20.3 reuse it.
-- Overwrite refusal message: add a `runSchemaFixture` entry `"test-init"` that runs `withArgs ["test", "init"]`
-  under `specWith passingSuite (pure ()) []`. In "test init refuses an existing test config unless replacement is
-  requested", run each of the two refused `init` calls through `cliFixtureResult "test-init"` and assert
-  `ExitFailure 1` plus stderr containing `testPath ++ " already exists; pass --replace to overwrite it"`.
-  Keep the existing byte-identity and `--replace` assertions.
-- Test-init side-effect boundary: in "test init writes a test config without a pre-existing project config",
-  remove any stale `cfgPath` (`Schema.siblingProjectConfigPath projectName`) first, then assert
-  `doesFileExist cfgPath == False` before the call, `doesFileExist testPath == True` after it, and
-  `doesFileExist cfgPath == False` after it.
-- Missing-test-config refusal: rewrite "test run fails fast without a test.dhall" so it no longer wraps the
-  run in `withProjectConfig`. Add a `runSchemaFixture` entry `"test-run-all"` that runs
-  `withArgs ["test", "run", "all"]` under `specWithHarnessContext stateRoot projectName passingSuite (pure ()) []`,
-  with `stateRoot` taken from `getCurrentDirectory`. In the case, remove any stale test config and sibling
-  config first, record the sorted recursive listing of the store root
-  `stateRoot </> ".hostbootstrap" </> "authority" </> T.unpack projectName` (absent counts as empty), run
-  `cliFixtureResult "test-run-all"`, and assert `ExitFailure 1`, stderr containing
-  `"test run: missing " ++ testPath` and ``test init` first``, and an identical store listing afterwards.
-- Identity-bound destination: in `Config/Schema.hs`, change `testConfigWriteFor` to
-  `InstalledProjectIdentity projectId -> CodecWitness tcfg -> tcfg -> IO (TestConfigWrite tcfg)`, resolving the
-  path with `siblingTestConfigPath (installedProjectName project)`; in `Command.hs`, `runTestInit` passes
-  `testCommand`'s `project` in place of `T.pack progName`. In `CLISpec.hs`, add "test config writer resolves
-  only the installed project's sibling": under `withInstalledProjectIdentity projectName` (with `projectName`
-  from `executableProjectName`), build the request with `Fixture.testConfigCodec` and
-  `Fixture.defaultTestConfig (Fixture.Resources 4 "8GiB" "20GiB")`, and assert its `Schema.testConfigWritePath` equals
-  `Schema.siblingTestConfigPath projectName` and its `takeDirectory` equals `takeDirectory` of
-  `getExecutablePath`; then assert `withInstalledProjectIdentity "../escape" (\_ -> pure ())` returns
-  `Left (AuthorityInvalidIdentity _)`.
-- Atomic test-config publication: rewrite `installTestConfig` in `Config/Schema.hs` so it forces
-  `renderProjectConfigBytes codec value`, writes it with `openBinaryTempFile (takeDirectory path)
-  ".hostbootstrap-config.tmp"` plus `hPut` and `hFlush`, and closes the handle before touching the destination,
-  removing the temporary on every exit path as `createSiblingConfig` does. `RefuseExistingTestConfig` publishes
-  with `linkNoReplace temporary path` and maps a link failure on a taken name to `TestConfigExists path`;
-  `ReplaceExistingTestConfig` publishes with `renameFile temporary path`. In `CLISpec.hs`, add "test config
-  replace leaves the prior file intact when rendering fails": run `test init`, read the test config's bytes, call
-  `Schema.installTestConfig Schema.ReplaceExistingTestConfig` on a request whose value is
-  `Fixture.TestConfig{testResources = error "render aborted"}`, assert it throws `ErrorCall`, the bytes are
-  unchanged, and the directory listing has no `.hostbootstrap-config.tmp`-prefixed entry. Add "test config
-  refuse creates nothing when rendering fails": with no test config present, the same call under
-  `RefuseExistingTestConfig` throws, `doesPathExist testPath` is `False`, and no temporary remains.
+None.
 
-### Sprint 20.2: `test run <case-id>|all` [Active]
+### Sprint 20.2: `test run <case-id>|all` [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -182,37 +154,27 @@ The sprint closes when these `CLISpec` cases exist and pass under `cabal test al
   generated config present while the case asserts, the failing case's assertion invoked, and the config absent
   afterwards.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): the four `CLISpec` cases
+run in-process with captured output rather than through subprocess fixtures. "test run refuses an unknown case by
+naming the compiled set" asserts `ExitFailure 1`, the exact `unknown test case "no-such-case"; available: ok, all`
+line, and that the assertion environment never opened. "test run names a compiled case, not a suite, in its surface
+text" pins the exact ``or `all` for every compiled case`` and ``or `all` for the whole matrix`` phrases. "test run
+refuses to overwrite an existing sibling project config" runs a spec whose run would otherwise succeed and asserts
+`ExitFailure 1`, the production-config refusal naming the path (captured from stdout and stderr by the new
+`captureCLIExitOutput`), the config bytes unchanged, and no assertion environment opened. "test init then test run
+exits non-zero when a case fails (config is generated then removed)" observes the generated config present each time
+an assertion environment opens, the failing assertion invoked, and the config absent afterwards; the fixture plans
+two variants (default and alternate), so the observations are `[True, True]` and two invocations, not the single
+observation the plan text assumed. The warning-clean `cabal test all` from `core/` and from `demo/` passed.
+
 #### Remaining Work
 
-- Unknown-case refusal: add a `runSchemaFixture` entry `"test-run-unknown-case"` that runs
-  `withArgs ["test", "run", "no-such-case"]` under `specWithHarnessContext stateRoot projectName suite (pure ()) []`,
-  where `suite` is `passingSuite` with its assertion opener writing the file named by a
-  `HOSTBOOTSTRAP_CLI_CASE_MARKER` environment variable (the `"project-dry-run"` fixture's marker pattern). In
-  the case, run `test init` first and assert its result is `Right ()`, then run
-  `cliFixtureResult "test-run-unknown-case"` (Sprint 20.1) with the marker variable set to a fresh temporary
-  path, and assert `ExitFailure 1`, stderr containing `unknown test case "no-such-case"; available: ok, all`,
-  and the marker file absent.
-- Whole-matrix selector in help: in "test run names a compiled case, not a suite, in its surface text",
-  replace the `allCasesSelector` infix check with two checks for
-  ``"or `" ++ allCasesSelector ++ "` for every compiled case"`` and
-  ``"or `" ++ allCasesSelector ++ "` for the whole matrix"``; the bare token `all` is a substring of `.dhall`.
-- Existing-config refusal: rewrite "test run refuses to overwrite an existing sibling project config" on
-  `specWithHarnessContext stateRoot projectName` with the marker-writing suite above, through a fixture entry
-  `"test-run-all-marked"`. Assert `test init` returns `Right ()`, write the sibling config with
-  `Schema.writeProjectConfigFile`, read its bytes, run `cliFixtureResult "test-run-all-marked"`, and assert
-  `ExitFailure 1`, stdout or stderr containing
-  `"a production config already exists at " ++ cfgPath ++ "; refusing to overwrite it"`, the config bytes
-  unchanged, and the marker file absent.
-- Generated-config observation: in "test init then test run exits non-zero when a case fails (config is generated
-  then removed)", assert `test init` returns `Right ()`; give `failingSuite`'s assertion opener a
-  `doesFileExist cfgPath` probe recorded in an `IORef` and its case assertion a call counter, as "test run
-  interprets one exact Harness plan through forward and reverse" does; assert the recorded presence is `[True]`
-  and the counter is 1, beside the existing exit and absence assertions.
+None.
 
-### Sprint 20.3: Read-only `context` introspection [Active]
+### Sprint 20.3: Read-only `context` introspection [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
@@ -251,22 +213,21 @@ The sprint closes when these cases exist and pass under `cabal test all` from `c
 - `CLISpec` "context inspect refuses a missing sibling config and writes nothing": `ExitFailure 1`, stderr
   containing `context: no config at <cfgPath>`, and both trees byte-identical.
 
+Closing evidence, 2026-11-10, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): `ContextSpec`
+"renderComposition marks only the host frame when it is current" and "... only the VM frame when it is current" build
+`sampleContext { currentFrame = ... }` and assert the full rendered string, marking exactly one line with `  -> ` and
+every other with `   . `. `CLISpec` "context inspect and context show render the sibling composition and write
+nothing" writes the sibling config, runs both verbs through the real parser, and asserts `Right ()`, the exact
+`Context.renderComposition` of the config's context ending the captured stdout and printed once (in-process stdout also
+carries the test runner's progress line, so this replaces the plan's exact-equality subprocess check), the executable's
+sibling directory unchanged by file size (it holds the test binary), and the `.hostbootstrap` tree byte-identical.
+"context inspect refuses a missing sibling config and writes nothing" asserts `ExitFailure 1`, stderr containing
+`context: no config at <cfgPath>`, and the `.hostbootstrap` tree byte-identical. The warning-clean `cabal test all` from
+`core/` and from `demo/` passed.
+
 #### Remaining Work
 
-- Add the two `renderComposition` cases to `ContextSpec.hs`, built as `sampleContext { currentFrame = ... }`,
-  each asserting the full rendered string.
-- Add `runSchemaFixture` entries `"context-inspect"` (`withArgs ["context", "inspect"]`) and `"context-show"`
-  (`withArgs ["context", "show", cfgPath]`) under `specWith passingSuite (pure ()) []`. Add a `CLISpec` helper
-  that snapshots a directory tree as a sorted list of (relative path, file bytes).
-- Add "context inspect and context show render the sibling composition and write nothing": write the sibling
-  config with `Schema.writeProjectConfigFile Fixture.projectConfigCodec cfgPath
-  (Fixture.defaultProjectConfig projectName "." HostOrchestrator)`, snapshot `takeDirectory cfgPath` and
-  `stateRoot </> ".hostbootstrap"`, run `cliFixtureResult "context-inspect"` and
-  `cliFixtureResult "context-show"` (Sprint 20.1), and assert `ExitSuccess` with stdout equal to
-  `Context.renderComposition (cfgContext cfg)` for each, then equal snapshots; remove the config in `finally`.
-- Add "context inspect refuses a missing sibling config and writes nothing": remove any stale sibling config
-  first, snapshot both trees, run `cliFixtureResult "context-inspect"`, and assert `ExitFailure 1`, stderr
-  containing `"context: no config at " ++ cfgPath`, and equal snapshots.
+None.
 
 ### Sprint 20.4: Realized-Linux verb-sequence acceptance [Done]
 
@@ -389,9 +350,9 @@ row records both legs and the re-measured covers digest.
 
 None.
 
-### Sprint 20.7: The `test` surface refuses an off-root invocation [Active]
+### Sprint 20.7: The `test` surface refuses an off-root invocation [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
@@ -431,22 +392,25 @@ The sprint closes when these `CLISpec` cases exist and pass under `cabal test al
 - "test init admits the root frame and the absent config": `test init` succeeds with no sibling config and
   with a sibling config whose current frame is the root frame.
 
+Closing evidence, 2026-11-10, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): `Command.hs` carries one
+`rootGate`, the first action of both `runTestInit` and `runTestRun`. With a sibling `<project>.dhall` present it decodes
+the file with the binary's Production `ProjectCodec`, runs `Context.validateTopology`, and dies with
+`test: refusing a non-root invocation: current frame <frame> is not the root frame` unless `Context.isRootFrame` holds;
+an undecodable file dies with `test: failed to decode <path>: ...`; with no sibling config it admits the invocation.
+The `test` command's help no longer claims "(root-only)". `CLISpec` pins "test init refuses an off-root invocation and
+writes nothing" (a sibling config built with `Context.deriveVMContext`, so its current frame has a parent),
+"test run refuses an off-root invocation before any lifecycle read" (the `.hostbootstrap` tree unchanged and the
+assertion opener never called), "test init refuses an undecodable sibling config instead of treating it as root", and
+"test init admits the root frame and the absent config". The cases run in-process with captured stderr rather than
+through the plan's subprocess runner. The warning-clean `cabal test all` from `core/` and from `demo/` passed.
+
 #### Remaining Work
 
-- In `Command.hs`, add a root gate helper used as the first action of `runTestInit` and `runTestRun`: it
-  checks `siblingProjectConfigPath`, decodes an existing file with the binary's Production `ProjectCodec`,
-  runs `Context.validateTopology`, and dies with
-  `test: refusing a non-root invocation: current frame <frame> is not the root frame` unless
-  `Context.isRootFrame` holds; an undecodable file dies with `test: failed to decode <path>: ...`. Replace the
-  "(root-only)" `progDesc` claim with text the gate makes true.
-- Add the three `CLISpec` cases above through `cliFixtureResult` (Sprint 20.1), building the non-root sibling
-  config with `Fixture.defaultProjectConfig projectName "." VMOrchestrator` (or any role whose current frame
-  has a parent) and the root one with `HostOrchestrator`; record the store listing and an assertion-opener
-  marker as Sprint 20.2's marker-writing suite does.
+None.
 
-### Sprint 20.8: `context` refuses a role wire and names the codec it decodes with [Planned]
+### Sprint 20.8: `context` refuses a role wire and names the codec it decodes with [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
@@ -503,34 +467,88 @@ The sprint closes when these cases exist and pass under `cabal test all` from `c
   and the trees are byte-identical.
 - The cases of Sprint 20.3 pass unchanged.
 
+Closing evidence, 2026-11-10, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): `readContextConfig`
+(`Command.hs`) reads the file's bytes (a non-UTF-8 file is refused with the Production-codec line), runs the first-stage
+`inspectConfigWireKind` with settings rooted at the file's own directory, refuses a `ServiceRoleWire` with
+`context: <path> holds a service role wire; context renders a full project config` before any decoder runs, and
+otherwise decodes through `decodeProjectCodecWithSettings` with the same file-rooted settings, mapping a failure to
+`context: failed to decode <path> with the Production project codec: <first line>`. `CLISpec` pins "context refuses a
+service role wire before decoding it" (both verbs, no "failed to decode", the `.hostbootstrap` tree unchanged),
+"context show renders a Harness-written fixture config and asserts no scope" (a config written through
+`withHarnessProjectCodec` renders its composition with the tree unchanged), and "context show names the Production
+codec when a file does not decode". The cases run in-process with captured output rather than through the plan's
+subprocess runner. The warning-clean `cabal test all` from `core/` and from `demo/` passed.
+
 #### Remaining Work
 
-- In `Command.hs`, rewrite `readContextConfig` to read the file's text, run Sprint 7.15's first-stage
-  envelope check, refuse a `ServiceRoleWire` with the role-wire line, and otherwise decode through
-  `decodeProjectCodecWithSettings codec (setInputRootDirectory (takeDirectory path)
-  Dhall.defaultInputSettings)`, as the sibling-config read in `Config/Schema.hs` does, mapping a decode
-  failure to the Production-codec line.
-- In `CLISpec.hs`, add the `runSchemaFixture` entry `"context-show-file"`, which reads the path from
-  `HOSTBOOTSTRAP_CLI_CONTEXT_FILE` through `lookupEnv` (dying when it is unset) and runs
-  `withArgs ["context", "show", file] (runHostBootstrapCLI (specWith passingSuite (pure ()) []))`; the parent
-  sets and restores the variable around `cliFixtureResult` as the `project-dry-run` case does with its marker.
-- Add the three `CLISpec` cases above through `cliFixtureResult` (Sprint 20.1) and the tree-snapshot helper
-  (Sprint 20.3).
+None.
+
+
+### Sprint 20.9: Re-run the phase gate on a realized linux-cpu host [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the phase's declared gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore the completion evidence that Sprints 20.1, 20.7, and 20.8 expired by editing `Command.hs`, `Config/Schema.hs`,
+`CLISpec.hs`, and `ContextSpec.hs`, paths in this phase's `**Evidence covers**` set. This is evidence expiry under
+§ C, not a design-error reopening.
+
+#### Deliverables
+
+- Run the declared gate: `cabal test all` from `core/`, then the focused `CLISpec` and `ContextSpec` groups, on a
+  realized linux-cpu host.
+- Re-record `**Gate evidence**` with the new `**Evidence covers**` digest and set the phase `Done`.
+
+#### Validation
+
+2026-11-10, x86_64 Ubuntu 24.04.5 LTS under WSL2 (the `hostbootstrap-linux-d` distribution; Linux
+6.18.54.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0). The first full run passed 5334 of 5336: the
+`RecoveryInterruptionSpec` case "destroy-settled survives a real process death with terminal lease and mode" timed out
+at its fixed five-second subprocess-sentinel wait, and `CoverageManifest` failed on that row's missing completion. With
+the wait widened the case passes alone in 44.9 seconds, so the failure was the test's timing bound on a slow
+virtualized host, not a regression; `awaitFile` now waits up to a minute. The rerun of `cabal test all` from `core/`
+passed 5336 of 5336 in 6787 seconds with the `recovery-interruption` row completing (1,0), the focused `CLISpec` group
+passed 103 of 103, and the focused `ContextSpec` group passed. The provider-live component reported its declared
+no-request Unsupported outcome and exited successfully.
+
+#### Remaining Work
+
+None.
+
+### Sprint 20.10: Re-run the phase gate after the contended-liveness case [Active]
+
+**Status**: Active
+**Implementation**: none; this sprint reruns the phase's declared gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore the completion evidence that the contended-liveness case added to `CLISpec.hs` expired, a path in this
+phase's `**Evidence covers**` set. This is evidence expiry under § C, not a design-error reopening.
+
+#### Deliverables
+
+- Run the declared gate: `cabal test all` from `core/`, then the focused `CLISpec` and `ContextSpec` groups, on a
+  realized linux-cpu host.
+- Re-record `**Gate evidence**` with the new `**Evidence covers**` digest and set the phase `Done`.
+
+#### Validation
+
+Not yet run.
+
+#### Remaining Work
+
+- Run the declared gate on the Linux gate host and record the `**Gate evidence**` row.
 
 ## Remaining Work
 
-- Sprint 20.1: assert the `test init` overwrite-refusal and `test run` missing-test-config messages through a
-  subprocess runner, and that `test init` leaves the sibling `<project>.dhall` absent; bind
-  `testConfigWriteFor` to `InstalledProjectIdentity`; publish the test config atomically (temporary file plus
-  `linkNoReplace` to refuse, rename to replace).
-- Sprint 20.2: pin the unknown-case refusal text, the help's exact `all` phrases, the existing-config refusal on
-  a run that would otherwise succeed, and the generated config's presence during the case.
-- Sprint 20.3: drive `context inspect` and `context show` through the real parser, assert their output and a
-  byte-identical tree, and render the current-frame marker at each frame position.
-- Sprint 20.7: add the root gate `test init` and `test run` pass first, refusing a non-root sibling config
-  before any test-config or protected-store access, and pin both refusals.
-- Sprint 20.8: refuse a role wire in `context inspect`/`context show` through the first-stage envelope check
-  before any decode, and name the Production codec in the decode-failure line.
+Evidence expiry, not a design-error reopening (§ C): the contended-liveness case added to `CLISpec.hs` changed this
+phase's `**Evidence covers**` digest. Sprint 20.10 owes the re-run of the declared gate.
 
 ## Documentation Requirements
 

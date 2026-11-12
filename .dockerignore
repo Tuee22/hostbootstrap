@@ -5,7 +5,9 @@
 # where `nul` is an ordinary filename. Keep it out of the build context.
 nul
 
-dist-newstyle/
+# Docker ignore patterns are anchored at the context root, unlike .gitignore: a bare
+# `dist-newstyle/` only matches the top level, so build state is excluded at every depth.
+**/dist-newstyle/
 .cabal-sandbox/
 .venv/
 node_modules/
@@ -17,9 +19,10 @@ playwright-report/
 test-results/
 target/
 build/
-.build/
-.data/
-.hostbootstrap/
+**/.build/
+**/.data/
+**/.hostbootstrap/
+**/.test_data/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
@@ -34,8 +37,9 @@ npm-shrinkwrap.json
 yarn.lock
 pnpm-lock.yaml
 spago.lock
-# Accidental local Cabal solver output is not sent in build context.
-cabal.project.freeze
+# Accidental local Cabal solver output is not sent in build context. Patterns are
+# context-root-anchored (unlike .gitignore), so the `**/` prefix covers every package.
+**/cabal.project.freeze
 # demo web build artifacts — regenerated in-container by spago / esbuild.
 # NOTE: demo/web/src/Generated/ (the purescript-bridge output) is intentionally
 # NOT excluded: the build-image chain step now generates it host-side before the

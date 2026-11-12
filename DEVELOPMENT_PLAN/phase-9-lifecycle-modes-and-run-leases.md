@@ -32,7 +32,7 @@ match. Retaining ordinary Haskell values therefore cannot open a second profile 
 ### Sprint 9.1: Indexed `ProjectModeLease` [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/OpenGenericProjectModeMutation.hs`,
@@ -105,7 +105,7 @@ None.
 ### Sprint 9.2: Generative `RunId runId` [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`,
@@ -210,7 +210,7 @@ None.
 ### Sprint 9.3: Scope-indexed lease binding and canonical snapshots [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`,
@@ -311,7 +311,7 @@ None.
 ### Sprint 9.4: Production lease admission before fresh allocation [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/LifecycleSpec.hs`
 **Substrates**: linux-cpu
@@ -391,7 +391,7 @@ None.
 ### Sprint 9.5: `ActiveProjectMode` narrowing [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeActiveProjectMode.hs`
 **Substrates**: linux-cpu
@@ -446,7 +446,7 @@ None.
 ### Sprint 9.6: Protected one-use lifecycle profiles [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeLifecycleProfile.hs`,
@@ -561,7 +561,7 @@ None.
 ### Sprint 9.7: Protected one-use Harness `LifecycleProfile` slot [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Substrates**: linux-cpu

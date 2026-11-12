@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 #if defined(mingw32_HOST_OS)
 {-# LANGUAGE EmptyCase #-}
@@ -25,7 +26,9 @@ than through a front-end process:
   * the exclusive open is @open(2)@ with @O_NOFOLLOW@ and @O_CLOEXEC@ followed
     by an @fcntl@ write lock over the whole file, so the exclusion is one the
     kernel releases when the holding process dies rather than a pathname a
-    survivor has to clean up;
+    survivor has to clean up. This classic lock belongs to the (process, inode)
+    pair, and closing any descriptor for that inode releases it, so callers
+    never hold two handles to one inode in a process;
   * a directory is created with @mkdir(2)@ and a file with @O_CREAT|O_EXCL@ plus
     @fsync@, so neither adopts an object that is already there;
   * publication is @link(2)@, which refuses rather than replaces, followed by
@@ -49,10 +52,13 @@ module HostBootstrap.Ownership.Posix (
     posixOwnershipCapabilities,
     posixOwnershipSupported,
     posixObserveOwnershipManifest,
+    posixObserveOwnershipManifestAt,
+    posixReleaseManifestEntry,
 )
 where
 
-import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
+import System.Posix.Types (Fd (..))
+import HostBootstrap.Ownership.Object (ObjectIdentity, OwnershipFault (OwnershipUnsupported))
 import HostBootstrap.Ownership.Primitive (
     OwnershipCapabilities (..),
     OwnershipPrimitive (..),
@@ -62,10 +68,16 @@ import HostBootstrap.Ownership.Primitive (
  )
 
 #if !defined(mingw32_HOST_OS)
-import Control.Exception (bracket)
+import Control.Exception (bracket, mask, onException)
 import Control.Monad (void)
 import HostBootstrap.Ownership.Manifest
     ( OwnershipManifest
+    , OwnershipManifestEntry
+    , ManifestEntryKind (..)
+    , manifestEntryPath
+    , manifestEntryIdentity
+    , manifestEntryMode
+    , manifestEntryKind
     , directoryManifestEntry
     , immutableManifestEntry
     , mkOwnershipManifest
@@ -74,19 +86,21 @@ import HostBootstrap.Ownership.Manifest
     , symbolicLinkManifestEntry
     )
 import HostBootstrap.Ownership.Object
-    ( ObjectIdentity
-    , OwnershipFault (OwnershipOccupied, OwnershipProbeFailed)
+    ( OwnershipFault (OwnershipOccupied, OwnershipProbeFailed)
     , mkKernelObjectIdentity
     , mkPayload
     , payloadDigest
     )
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word32)
 import Data.List (sortOn)
-import qualified Data.Text.Encoding as Text.Encoding
+import Data.Char (chr)
+import Numeric (showHex)
 import Foreign.C.Error
     ( Errno (Errno)
     , eACCES
@@ -100,23 +114,30 @@ import Foreign.C.Error
     , eNOTSUP
     , ePERM
     , eXDEV
+    , throwErrnoIfMinus1Retry
+    , throwErrnoIfMinus1Retry_
     )
+import Foreign.C.String (CString)
+import Foreign.C.Types (CChar, CInt (..), CSize (..))
+import Foreign.ForeignPtr (mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Alloc (allocaBytes)
-import Foreign.Ptr (castPtr, plusPtr)
+import Foreign.Ptr (Ptr, castPtr, plusPtr)
 import GHC.IO.Exception (IOException (ioe_errno))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (dropTrailingPathSeparator, isAbsolute, isPathSeparator, splitDirectories, takeDirectory, takeFileName, (</>))
 import System.IO (SeekMode (AbsoluteSeek))
 import System.IO.Error (isDoesNotExistError, tryIOError)
-import System.Posix.Directory (closeDirStream, createDirectory, readDirStreamMaybe, removeDirectory)
+import System.Posix.Directory (closeDirStream)
+import qualified System.Posix.Directory.ByteString as RawDirectory
+import qualified System.Posix.IO.ByteString as RawIO
 import System.Posix.Directory.Fd (unsafeOpenDirStreamFd)
 import System.Posix.Files
-    ( deviceID
+    ( FileStatus (..)
+    , deviceID
     , fileMode
     , fileID
     , fileOwner
     , fileSize
     , getFdStatus
-    , getSymbolicLinkStatus
     , isDirectory
     , isRegularFile
     , isSocket
@@ -126,13 +147,10 @@ import System.Posix.Files
     , otherWriteMode
     , intersectFileModes
     , unionFileModes
-    , createLink
-    , removeLink
-    , readSymbolicLink
     )
 import System.Posix.IO
     ( LockRequest (Unlock, WriteLock)
-    , OpenFileFlags (cloexec, creat, directory, exclusive, nofollow)
+    , OpenFileFlags (cloexec, creat, directory, exclusive, nofollow, nonBlock)
     , OpenMode (ReadOnly, ReadWrite)
     , closeFd
     , defaultFileFlags
@@ -140,15 +158,15 @@ import System.Posix.IO
     , fdWriteBuf
     , openFd
     , openFdAt
-    , dup
     , setLock
     )
-import System.Posix.Types (Fd)
+import System.Posix.Types (CMode (..), CSsize (..), UserID)
+import System.Posix.Internals (CStat, sizeof_stat, withFilePath)
 import System.Posix.Unistd (fileSynchronise)
 import System.Posix.User (getEffectiveUserID)
 #else
 import qualified Data.Text as Text
-import HostBootstrap.Ownership.Manifest (OwnershipManifest)
+import HostBootstrap.Ownership.Manifest (OwnershipManifest, OwnershipManifestEntry)
 #endif
 
 {- | What this row declares it can hold, read off the row itself.
@@ -175,22 +193,29 @@ posixOwnershipSupported = holdsStableIdentity posixOwnershipCapabilities
 -- ambient path traversal, drive recursive opens and listings.
 posixObserveOwnershipManifest :: Bool -> FilePath -> IO (Either OwnershipFault OwnershipManifest)
 posixObserveOwnershipManifest mutable root = do
-    effectiveUser <- getEffectiveUserID
     attempted <-
         tryIOError
-            ( bracket
-                (openFd root ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True})
+            ( withPathParent root $ \parent name -> bracket
+                (openFdAt (Just parent) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True})
                 closeFd
-                (\rootFd -> do
-                    rootStatus <- getFdStatus rootFd
-                    validRoot <- validateDirectoryStatus effectiveUser root rootStatus
-                    case validRoot of
-                        Left fault -> pure (Left fault)
-                        Right () -> do
-                            walked <- walk effectiveUser rootFd root ""
-                            pure (walked >>= mkOwnershipManifest)
-                )
+                (posixObserveOwnershipManifestAt mutable root)
             )
+    pure $ case attempted of
+        Left failure -> Left (posixFault "observe the ownership manifest below" root failure)
+        Right outcome -> outcome
+
+-- | Observe the namespace held by the descriptor. The path is diagnostic only;
+-- neither metadata nor link-target lookup resolves it again during the walk.
+posixObserveOwnershipManifestAt :: Bool -> FilePath -> Fd -> IO (Either OwnershipFault OwnershipManifest)
+posixObserveOwnershipManifestAt mutable root rootFd = do
+    effectiveUser <- getEffectiveUserID
+    attempted <- tryIOError $ do
+        rootStatus <- getFdStatus rootFd
+        case validateDirectoryStatus effectiveUser root rootStatus of
+            Left fault -> pure (Left fault)
+            Right () -> do
+                walked <- walk effectiveUser rootFd root ""
+                pure (walked >>= mkOwnershipManifest)
     pure $ case attempted of
         Left failure -> Left (posixFault "observe the ownership manifest below" root failure)
         Right outcome -> outcome
@@ -201,9 +226,9 @@ posixObserveOwnershipManifest mutable root = do
         pure (concat <$> sequence observed)
 
     observeEntry effectiveUser parentFd absolute prefix name = do
-        let target = absolute </> name
-            relative = if null prefix then name else prefix ++ "/" ++ name
-        before <- getSymbolicLinkStatus target
+        let target = absolute </> displayManifestName name
+            relative = if ByteString.null prefix then name else prefix <> "/" <> name
+        before <- manifestEntryStatusAt parentFd name
         identityResult <- pure (identityOfStatus before)
         case identityResult of
             Left fault -> pure (Left fault)
@@ -211,12 +236,11 @@ posixObserveOwnershipManifest mutable root = do
                 | fileOwner before /= effectiveUser -> pure (Left (OwnershipOccupied (Text.pack target <> " has a foreign owner")))
                 | isDirectory before ->
                     bracket
-                        (openFdAt (Just parentFd) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True})
+                        (RawIO.openFdAt (Just parentFd) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True})
                         closeFd
                         (\childFd -> do
                             opened <- getFdStatus childFd
-                            valid <- validateDirectoryStatus effectiveUser target opened
-                            case (valid, identityOfStatus opened) of
+                            case (validateDirectoryStatus effectiveUser target opened, identityOfStatus opened) of
                                 (Left fault, _) -> pure (Left fault)
                                 (_, Left fault) -> pure (Left fault)
                                 (Right (), Right openedIdentity)
@@ -230,7 +254,7 @@ posixObserveOwnershipManifest mutable root = do
                         )
                 | isRegularFile before ->
                     bracket
-                        (openFdAt (Just parentFd) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True})
+                        (RawIO.openFdAt (Just parentFd) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, nonBlock = True})
                         closeFd
                         (\childFd -> do
                             opened <- getFdStatus childFd
@@ -246,54 +270,180 @@ posixObserveOwnershipManifest mutable root = do
                                         pure (fmap (: []) (immutableManifestEntry relative identity (permissionMode opened) (payloadDigest (mkPayload bytes))))
                         )
                 | isSymbolicLink before -> do
-                    linkTarget <- readSymbolicLink target
-                    after <- getSymbolicLinkStatus target
+                    linkTarget <- manifestLinkTargetAt parentFd name
+                    after <- manifestEntryStatusAt parentFd name
                     case identityOfStatus after of
                         Right afterIdentity | afterIdentity == identity ->
-                            pure (fmap (: []) (symbolicLinkManifestEntry relative identity (permissionMode before) (Text.Encoding.encodeUtf8 (Text.pack linkTarget))))
+                            pure (fmap (: []) (symbolicLinkManifestEntry relative identity (permissionMode before) linkTarget))
                         _ -> pure (Left (OwnershipOccupied (Text.pack target <> " changed during link observation")))
                 | isSocket before -> pure (fmap (: []) (socketManifestEntry relative identity (permissionMode before)))
                 | otherwise -> pure (Left (OwnershipOccupied (Text.pack target <> " has an unsupported manifest object kind")))
 
     directoryNames fd =
         bracket
-            (dup fd >>= unsafeOpenDirStreamFd)
+            (do
+                -- dup shares the directory offset with its source. A fresh
+                -- open of dot keeps repeated walks independent of that offset.
+                streamFd <- openFdAt (Just fd) "." ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True}
+                unsafeOpenDirStreamFd streamFd `onException` closeFd streamFd
+            )
             closeDirStream
             (\stream -> collect stream [])
       where
         collect stream accumulated = do
-            next <- readDirStreamMaybe stream
+            next <- RawDirectory.readDirStreamMaybe stream
             case next of
                 Nothing -> pure (sortOn id accumulated)
                 Just name
                     | name == "." || name == ".." -> collect stream accumulated
                     | otherwise -> collect stream (name : accumulated)
 
-    validateDirectoryStatus effectiveUser target status
-        | not (isDirectory status) = pure (Left (OwnershipOccupied (Text.pack target <> " is not a directory")))
-        | fileOwner status /= effectiveUser = pure (Left (OwnershipOccupied (Text.pack target <> " has a foreign owner")))
-        | writableByOthers status = pure (Left (OwnershipOccupied (Text.pack target <> " is group/other writable")))
-        | otherwise = pure (Right ())
-
-    writableByOthers status =
-        intersectFileModes (fileMode status) (unionFileModes groupWriteMode otherWriteMode) /= 0
     permissionMode = fromIntegral . (`intersectFileModes` 0o7777) . fileMode
 
     manifestPayloadCeiling = 4 * 1024 * 1024
 
-    identityOfStatus status =
-        mkKernelObjectIdentity
-            (fromIntegral (deviceID status))
-            (fromIntegral (fileID status))
+
+-- Only diagnostics decode a name; namespace operations and manifests keep bytes.
+displayManifestName :: ByteString -> String
+displayManifestName = concatMap byteLabel . ByteString.unpack
+  where
+    byteLabel byte
+        | byte >= 32 && byte < 127 && byte /= 92 = [chr (fromIntegral byte)]
+        | otherwise = let hex = showHex byte "" in "\\x" <> replicate (2 - length hex) '0' <> hex
+
+validateDirectoryStatus :: UserID -> FilePath -> FileStatus -> Either OwnershipFault ()
+validateDirectoryStatus effectiveUser target status
+    | not (isDirectory status) = Left (OwnershipOccupied (Text.pack target <> " is not a directory"))
+    | fileOwner status /= effectiveUser = Left (OwnershipOccupied (Text.pack target <> " has a foreign owner"))
+    | writableByOthers status = Left (OwnershipOccupied (Text.pack target <> " is group/other writable"))
+    | otherwise = Right ()
+
+writableByOthers :: FileStatus -> Bool
+writableByOthers status =
+    intersectFileModes (fileMode status) (unionFileModes groupWriteMode otherWriteMode) /= 0
+
+-- | Release one observed entry through its bound root and raw components.
+-- The expected root identity comes from the caller's retained ownership binding.
+posixReleaseManifestEntry :: FilePath -> ObjectIdentity -> OwnershipManifestEntry -> IO (Either OwnershipFault ())
+posixReleaseManifestEntry root expectedRoot entry =
+    case mutableManifestEntry path (manifestEntryIdentity entry) (manifestEntryMode entry) of
+        Left fault -> pure (Left fault)
+        Right _ -> do
+            effectiveUser <- getEffectiveUserID
+            attempted <- tryIOError $
+                withPathParent root $ \parent name -> bracket
+                    (openFdAt (Just parent) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True})
+                    closeFd $ \rootFd -> do
+                        status <- getFdStatus rootFd
+                        case (validateDirectoryStatus effectiveUser root status, identityOfStatus status) of
+                            (Left fault, _) -> pure (Left fault)
+                            (_, Left fault) -> pure (Left fault)
+                            (Right (), Right identity)
+                                | identity /= expectedRoot -> pure (occupied " changed before manifest removal")
+                                | otherwise -> descend effectiveUser rootFd (ByteString.split 47 path)
+            pure $ either (Left . posixFault "remove the manifest entry below" root) id attempted
+  where
+    path = manifestEntryPath entry
+    label = Text.pack (root </> displayManifestName path)
+    occupied reason = Left (OwnershipOccupied (label <> reason))
+    descend effectiveUser parentFd [name] = do
+        present <- tryIOError (manifestEntryStatusAt parentFd name)
+        case present of
+            Left failure | isDoesNotExistError failure -> pure (Right ())
+            Left failure -> pure (Left (posixFault "observe the manifest remainder below" root failure))
+            Right status -> removePresent effectiveUser parentFd name status
+    descend effectiveUser parentFd (name : rest) =
+        bracket
+            (tryIOError (RawIO.openFdAt (Just parentFd) name ReadOnly defaultFileFlags{cloexec = True, nofollow = True, directory = True}))
+            (either (const (pure ())) closeFd) $ \opened ->
+                case opened of
+                    Left failure | isDoesNotExistError failure -> pure (Right ())
+                    Left failure -> pure (Left (posixFault "open the manifest remainder parent below" root failure))
+                    Right childFd -> do
+                        status <- getFdStatus childFd
+                        case validateDirectoryStatus effectiveUser (root </> displayManifestName name) status of
+                            Left fault -> pure (Left fault)
+                            Right () -> descend effectiveUser childFd rest
+    descend _ _ [] = pure (occupied " has no relative component")
+    removePresent effectiveUser parentFd name status =
+        case identityOfStatus status of
+            Left fault -> pure (Left fault)
+            Right identity
+                | identity /= manifestEntryIdentity entry || not (kindMatches status) ->
+                    pure (occupied " changed before manifest removal")
+                | fileOwner status /= effectiveUser -> pure (occupied " has a foreign owner")
+                | (isDirectory status || isRegularFile status) && writableByOthers status ->
+                    pure (occupied " is group/other writable")
+                | otherwise -> do
+                    let Fd descriptor = parentFd
+                        flags = if isDirectory status then c_manifestRemoveDirectory else 0
+                    ByteString.useAsCString name $ \nativeName ->
+                        throwErrnoIfMinus1Retry_ "unlinkat ownership manifest entry" $
+                            c_manifestUnlinkAt descriptor nativeName flags
+                    fileSynchronise parentFd
+                    after <- tryIOError (manifestEntryStatusAt parentFd name)
+                    pure $ case after of
+                        Left failure | isDoesNotExistError failure -> Right ()
+                        Left failure -> Left (posixFault "read back the removed manifest entry below" root failure)
+                        Right _ -> occupied " is present after manifest removal"
+    kindMatches status = case manifestEntryKind entry of
+        ManifestMutableFile -> isRegularFile status
+        ManifestImmutableFile _ -> isRegularFile status
+        ManifestDirectory -> isDirectory status
+        ManifestSymbolicLink _ -> isSymbolicLink status
+        ManifestSocket -> isSocket status
+
+-- The unix FileStatus storage and the C header agree on this gate host's
+-- struct stat layout. Both lookups name an entry relative to its held parent.
+manifestEntryStatusAt :: Fd -> ByteString -> IO FileStatus
+manifestEntryStatusAt (Fd descriptor) name = do
+    storage <- mallocForeignPtrBytes sizeof_stat
+    withForeignPtr storage $ \status ->
+        ByteString.useAsCString name $ \path ->
+            throwErrnoIfMinus1Retry_ "fstatat ownership manifest entry" $
+                c_manifestFstatAt descriptor path status c_manifestNoFollow
+    pure (FileStatus storage)
+
+manifestLinkTargetAt :: Fd -> ByteString -> IO ByteString
+manifestLinkTargetAt (Fd descriptor) name =
+    -- One byte beyond the manifest bound prevents accepting a truncated target.
+    allocaBytes 4097 $ \buffer ->
+        ByteString.useAsCString name $ \path -> do
+            count <- throwErrnoIfMinus1Retry "readlinkat ownership manifest entry" $
+                c_manifestReadlinkAt descriptor path buffer 4097
+            ByteString.packCStringLen (buffer, fromIntegral count)
+
+foreign import capi unsafe "unistd.h unlinkat"
+    c_manifestUnlinkAt :: CInt -> CString -> CInt -> IO CInt
+
+foreign import capi unsafe "fcntl.h value AT_REMOVEDIR"
+    c_manifestRemoveDirectory :: CInt
+
+foreign import capi unsafe "sys/stat.h fstatat"
+    c_manifestFstatAt :: CInt -> CString -> Ptr CStat -> CInt -> IO CInt
+
+foreign import capi unsafe "fcntl.h value AT_SYMLINK_NOFOLLOW"
+    c_manifestNoFollow :: CInt
+
+foreign import capi unsafe "unistd.h readlinkat"
+    c_manifestReadlinkAt :: CInt -> CString -> Ptr CChar -> CSize -> IO CSsize
+
+-- | Encode one POSIX status through the shared kernel-identity contract.
+identityOfStatus :: FileStatus -> Either OwnershipFault ObjectIdentity
+identityOfStatus status =
+    mkKernelObjectIdentity
+        (fromIntegral (deviceID status))
+        (LazyByteString.toStrict (Builder.toLazyByteString (Builder.word64LE (fromIntegral (fileID status)))))
 
 -- ---------------------------------------------------------------------------
 -- The row
 
 {- | One object this row holds open, exclusively.
 
-The descriptor is the whole representation: the lock is on the open file
-description, so releasing the handle is releasing the exclusion, and a process
-that dies never leaves one behind.
+The descriptor is the representation, but the classic fcntl lock belongs to the
+(process, inode) pair. Closing any descriptor for that inode releases the lock,
+so a caller never holds two handles to one inode at once. Process death releases
+it as well.
 -}
 newtype PosixOwnedHandle = PosixOwnedHandle Fd
 
@@ -309,7 +459,6 @@ posixOwnershipRow =
             { rowCapabilities =
                 OwnershipCapabilities
                     { holdsStableIdentity = True
-                    , holdsExclusiveOpen = True
                     , holdsNoReplacePublication = True
                     , holdsDurableParentSync = True
                     }
@@ -327,6 +476,51 @@ posixOwnershipRow =
 -- ---------------------------------------------------------------------------
 -- The primitives
 
+-- Hold the actual ancestor chain until the primitive finishes. Opening each
+-- component relative to its already-held parent prevents an intermediate link
+-- from selecting another namespace; dot/dot-dot retain their kernel meaning.
+withPathParent :: FilePath -> (Fd -> FilePath -> IO value) -> IO value
+withPathParent target action =
+    bracket (openFd anchor ReadOnly parentFlags) closeFd $ \anchorFd ->
+        descend anchorFd components
+  where
+    stripped = dropTrailingPathSeparator target
+    parent = takeDirectory stripped
+    anchor = if isAbsolute parent then "/" else "."
+    name = if not (null stripped) && all isPathSeparator stripped then "." else takeFileName stripped
+    components = filter (not . all isPathSeparator) (splitDirectories parent)
+    parentFlags = defaultFileFlags{cloexec = True, nofollow = True, directory = True}
+    descend parentFd [] = action parentFd name
+    descend parentFd (component : rest) =
+        bracket
+            (openFdAt (Just parentFd) component ReadOnly parentFlags)
+            closeFd
+            (\childFd -> descend childFd rest)
+
+withPathParentResult ::
+    Text ->
+    FilePath ->
+    (Fd -> FilePath -> IO (Either OwnershipFault value)) ->
+    IO (Either OwnershipFault value)
+withPathParentResult operation target action = do
+    attempted <- tryIOError (withPathParent target action)
+    pure (either (Left . posixFault operation target) id attempted)
+
+pathStatusAt :: Fd -> FilePath -> IO FileStatus
+pathStatusAt (Fd descriptor) name = do
+    storage <- mallocForeignPtrBytes sizeof_stat
+    withForeignPtr storage $ \status ->
+        withFilePath name $ \nativeName ->
+            throwErrnoIfMinus1Retry_ "fstatat owned path" $
+                c_manifestFstatAt descriptor nativeName status c_manifestNoFollow
+    pure (FileStatus storage)
+
+foreign import capi unsafe "unistd.h linkat"
+    c_parentLinkAt :: CInt -> CString -> CInt -> CString -> CInt -> IO CInt
+
+foreign import capi unsafe "sys/stat.h mkdirat"
+    c_parentMkdirAt :: CInt -> CString -> CMode -> IO CInt
+
 {- | @lstat@'s @(st_dev, st_ino)@, without following a link.
 
 An authoritative absence is @Right Nothing@; every other failure is a fault, so
@@ -334,21 +528,13 @@ a probe that could not answer is never read as "nothing is there" (§ CC).
 -}
 posixObserveIdentity :: FilePath -> IO (Either OwnershipFault (Maybe ObjectIdentity))
 posixObserveIdentity target = do
-    observed <- tryIOError (getSymbolicLinkStatus target)
+    observed <- tryIOError (withPathParent target pathStatusAt)
     case observed of
         Left failure
             | isDoesNotExistError failure -> pure (Right Nothing)
             | otherwise ->
                 pure (Left (posixFault "observe the identity of" target failure))
-        Right status ->
-            pure
-                ( fmap
-                    Just
-                    ( mkKernelObjectIdentity
-                        (fromIntegral (deviceID status))
-                        (fromIntegral (fileID status))
-                    )
-                )
+        Right status -> pure (Just <$> identityOfStatus status)
 
 {- | Open one already-existing named object exclusively.
 
@@ -358,14 +544,14 @@ occupied rather than shared. The lock is taken through @fcntl@, so the kernel
 releases it when this process ends however it ends.
 -}
 posixOpenExclusive :: FilePath -> IO (Either OwnershipFault PosixOwnedHandle)
-posixOpenExclusive target = do
+posixOpenExclusive target = withPathParentResult "open" target $ \parent name -> mask $ \restore -> do
     opened <-
         tryIOError
-            (openFd target ReadWrite defaultFileFlags{nofollow = True, cloexec = True})
+            (openFdAt (Just parent) name ReadWrite defaultFileFlags{nofollow = True, cloexec = True})
     case opened of
         Left failure -> pure (Left (posixFault "open" target failure))
         Right fd -> do
-            described <- tryIOError (getFdStatus fd)
+            described <- onException (tryIOError (restore (getFdStatus fd))) (closeFd fd)
             case described of
                 Left failure ->
                     closingFd fd (posixFault "describe" target failure)
@@ -377,16 +563,20 @@ posixOpenExclusive target = do
                                 (subjectOf target <> " is not a regular file")
                             )
                     | otherwise -> do
-                        locked <- tryIOError (setLock fd (WriteLock, AbsoluteSeek, 0, 0))
+                        locked <- onException (tryIOError (restore (setLock fd (WriteLock, AbsoluteSeek, 0, 0)))) (closeFd fd)
                         case locked of
                             Left failure ->
-                                closingFd fd (posixFault "exclusively hold" target failure)
+                                closingFd fd (posixLockFault target failure)
                             Right () -> pure (Right (PosixOwnedHandle fd))
 
 -- | @mkdir(2)@, which refuses an object that is already there.
 posixCreateDirectory :: FilePath -> IO (Either OwnershipFault ())
 posixCreateDirectory target =
-    faultOr "create the directory" target <$> tryIOError (createDirectory target 0o700)
+    faultOr "create the directory" target <$> tryIOError
+        (withPathParent target $ \(Fd parent) name ->
+            withFilePath name $ \nativeName ->
+                throwErrnoIfMinus1Retry_ "mkdirat owned directory" $
+                    c_parentMkdirAt parent nativeName 0o700)
 
 {- | Write one whole file at a name nothing else holds, and sync it.
 
@@ -394,11 +584,12 @@ posixCreateDirectory target =
 link — is refused rather than truncated.
 -}
 posixCreateFile :: FilePath -> ByteString -> IO (Either OwnershipFault ())
-posixCreateFile target bytes = do
+posixCreateFile target bytes = withPathParentResult "create the file" target $ \parent name -> mask $ \restore -> do
     opened <-
         tryIOError
-            ( openFd
-                target
+            ( openFdAt
+                (Just parent)
+                name
                 ReadWrite
                 defaultFileFlags
                     { creat = Just 0o600
@@ -410,14 +601,14 @@ posixCreateFile target bytes = do
     case opened of
         Left failure -> pure (Left (posixFault "create the file" target failure))
         Right fd -> do
-            written <- tryIOError (writeWholeFd fd bytes)
+            written <- onException (tryIOError (restore (writeWholeFd fd bytes))) (closeFd fd)
             closed <- tryIOError (closeFd fd)
             pure $ case (written, closed) of
                 (Left failure, _) -> Left (posixFault "write" target failure)
                 (_, Left failure) -> Left (posixFault "close" target failure)
                 _ -> Right ()
 
-{- | @link(2)@, which is the atomic no-replace publication.
+{- | @linkat(2)@, which is the atomic no-replace publication.
 
 A filesystem that cannot hard-link at all is a host that cannot hold clause 3's
 publication, so it is 'OwnershipUnsupported' rather than a probe failure. The
@@ -427,7 +618,13 @@ to exist keeps both.
 -}
 posixLinkNoReplace :: FilePath -> FilePath -> IO (Either OwnershipFault ())
 posixLinkNoReplace source target = do
-    linked <- tryIOError (createLink source target)
+    linked <- tryIOError $
+        withPathParent source $ \(Fd sourceParent) sourceName ->
+            withPathParent target $ \(Fd targetParent) targetName ->
+                withFilePath sourceName $ \nativeSource ->
+                    withFilePath targetName $ \nativeTarget ->
+                        throwErrnoIfMinus1Retry_ "linkat owned publication" $
+                            c_parentLinkAt sourceParent nativeSource targetParent nativeTarget 0
     pure $ case linked of
         Left failure
             | unsupportedLink failure ->
@@ -438,6 +635,10 @@ posixLinkNoReplace source target = do
                             <> " without replacing it: it supplies no hard link"
                         )
                     )
+            | isErrno (nativeErrno failure) eXDEV ->
+                Left (OwnershipProbeFailed ("publish " <> subjectOf target) "staging and target are on different mounts")
+            | isErrno (nativeErrno failure) eMLINK ->
+                Left (OwnershipProbeFailed ("publish " <> subjectOf target) "the filesystem link-count limit was reached")
             | otherwise -> Left (posixFault "publish" target failure)
         Right () -> Right ()
 
@@ -455,13 +656,13 @@ posixReadObject (PosixOwnedHandle fd) = do
 
 {- | Remove exactly the named object.
 
-The kind is read from @lstat@ rather than assumed, and a symbolic link is
+The kind is read through the retained parent rather than assumed, and a symbolic link is
 refused: the object this transaction bound was one it created, so a link at the
 target is something else standing where it used to be.
 -}
 posixRemoveObject :: FilePath -> IO (Either OwnershipFault ())
-posixRemoveObject target = do
-    observed <- tryIOError (getSymbolicLinkStatus target)
+posixRemoveObject target = withPathParentResult "remove" target $ \parent@(Fd descriptor) name -> do
+    observed <- tryIOError (pathStatusAt parent name)
     case observed of
         Left failure -> pure (Left (posixFault "observe" target failure))
         Right status
@@ -472,10 +673,12 @@ posixRemoveObject target = do
                             (subjectOf target <> " is a symbolic link, which is a different object")
                         )
                     )
-            | isDirectory status ->
-                faultOr "remove the directory" target <$> tryIOError (removeDirectory target)
             | otherwise ->
-                faultOr "remove" target <$> tryIOError (removeLink target)
+                faultOr "remove" target <$> tryIOError
+                    (withFilePath name $ \nativeName ->
+                        throwErrnoIfMinus1Retry_ "unlinkat owned object" $
+                            c_manifestUnlinkAt descriptor nativeName
+                                (if isDirectory status then c_manifestRemoveDirectory else 0))
 
 -- | Release one handle, and with it the exclusion the kernel was holding.
 posixCloseHandle :: PosixOwnedHandle -> IO (Either OwnershipFault ())
@@ -494,18 +697,9 @@ directory entry that never reached the disk, which is exactly the window clause
 2's record exists to make resolvable.
 -}
 posixSyncParent :: FilePath -> IO (Either OwnershipFault ())
-posixSyncParent target = do
-    let parent = takeDirectory target
-    opened <- tryIOError (openFd parent ReadOnly defaultFileFlags{cloexec = True})
-    case opened of
-        Left failure -> pure (Left (posixFault "open the parent of" target failure))
-        Right fd -> do
-            synced <- tryIOError (fileSynchronise fd)
-            closed <- tryIOError (closeFd fd)
-            pure $ case (synced, closed) of
-                (Left failure, _) -> Left (posixFault "sync the parent of" target failure)
-                (_, Left failure) -> Left (posixFault "close the parent of" target failure)
-                _ -> Right ()
+posixSyncParent target =
+    faultOr "sync the parent of" target <$> tryIOError
+        (withPathParent target $ \parent _name -> fileSynchronise parent)
 
 -- ---------------------------------------------------------------------------
 -- Identity, faults, and raw descriptors
@@ -523,7 +717,6 @@ posixFault operation target failure
     | matches [eEXIST] = occupied "is already there"
     | matches [eLOOP] = occupied "is a symbolic link, which is a different object"
     | matches [eNOTDIR, eISDIR] = occupied "is not the kind of object this clause names"
-    | matches [eACCES, eAGAIN, eBUSY] = occupied "is held by another owner"
     | otherwise =
         OwnershipProbeFailed
             (operation <> " " <> subjectOf target)
@@ -532,10 +725,17 @@ posixFault operation target failure
     matches = any (isErrno (nativeErrno failure))
     occupied reason = OwnershipOccupied (subjectOf target <> " " <> reason)
 
+-- | Only a lock request can report that another owner holds the object.
+posixLockFault :: FilePath -> IOException -> OwnershipFault
+posixLockFault target failure
+    | any (isErrno (nativeErrno failure)) [eACCES, eAGAIN, eBUSY] =
+        OwnershipOccupied (subjectOf target <> " is held by another owner")
+    | otherwise = posixFault "exclusively hold" target failure
+
 -- | A filesystem that cannot hard-link cannot hold the no-replace publication.
 unsupportedLink :: IOException -> Bool
 unsupportedLink failure =
-    any (isErrno (nativeErrno failure)) [ePERM, eXDEV, eMLINK, eNOTSUP]
+    any (isErrno (nativeErrno failure)) [ePERM, eNOTSUP]
 
 faultOr :: Text -> FilePath -> Either IOException () -> Either OwnershipFault ()
 faultOr operation target = either (Left . posixFault operation target) Right
@@ -592,6 +792,14 @@ posixObserveOwnershipManifest :: Bool -> FilePath -> IO (Either OwnershipFault O
 posixObserveOwnershipManifest _mutable _root =
     pure (Left (OwnershipUnsupported "the POSIX ownership manifest row is unavailable on this host"))
 
+posixObserveOwnershipManifestAt :: Bool -> FilePath -> Fd -> IO (Either OwnershipFault OwnershipManifest)
+posixObserveOwnershipManifestAt _mutable _root _descriptor =
+    pure (Left (OwnershipUnsupported "the POSIX ownership manifest row is unavailable on this host"))
+
+posixReleaseManifestEntry :: FilePath -> ObjectIdentity -> OwnershipManifestEntry -> IO (Either OwnershipFault ())
+posixReleaseManifestEntry _root _expectedRoot _entry =
+    pure (Left (OwnershipUnsupported "the POSIX ownership manifest row is unavailable on this host"))
+
 {- | The row in its refusing form.
 
 Every field answers 'OwnershipUnsupported', including the identity read, so the
@@ -616,7 +824,6 @@ refusingPrimitives =
         { rowCapabilities =
             OwnershipCapabilities
                 { holdsStableIdentity = False
-                , holdsExclusiveOpen = False
                 , holdsNoReplacePublication = False
                 , holdsDurableParentSync = False
                 }

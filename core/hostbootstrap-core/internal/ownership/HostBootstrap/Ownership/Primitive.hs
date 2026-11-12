@@ -61,6 +61,7 @@ module HostBootstrap.Ownership.Primitive (
     OwnershipRow,
     ownershipRow,
     withOwnershipRow,
+    readWholeObject,
 
     -- * What a row can hold
     OwnershipCapabilities (..),
@@ -69,23 +70,29 @@ module HostBootstrap.Ownership.Primitive (
 
     -- * The clause producers, over an object a kernel answers for
     enterOwnedObject,
-    reenterOwnedObject,
+    StoredOriginRecord,
+    reenterStoredOwnedObject,
     recordOwnedOrigin,
     createOwnedDirectory,
     publishOwnedFile,
     bindOwnedIdentity,
     reobserveOwnedIdentity,
+    withReobservedIdentity,
     releaseOwnedObject,
+    resumeOwnedRemoval,
 
     -- * The clause producers, over an object an authority reports on
     enterReportedObject,
+    reenterStoredReportedObject,
     recordReportedOrigin,
     bindReportedIdentity,
     reobserveReportedIdentity,
     releaseReportedObject,
+    resumeReportedRemoval,
 )
 where
 
+import Control.Exception (SomeException, mask, throwIO, try)
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import qualified Data.Text as Text
@@ -99,10 +106,15 @@ import HostBootstrap.Ownership.Internal (
     enteredEvidence,
     recordedEvidence,
     releasableEvidence,
+    enteredSession,
+    recordedSession,
+    boundSession,
+    releasableSession,
  )
 import HostBootstrap.Ownership.Object (
     ConflictReport (..),
     ObjectIdentity,
+    OwnerClaim,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
     Origin (OriginAbsent, OriginPresent),
     OriginRecord,
@@ -117,10 +129,13 @@ import HostBootstrap.Ownership.Object (
     originRecord,
     originRecordBinding,
     originRecordKind,
+    originRecordOrigin,
     payloadBytes,
     payloadDigest,
+    storeFault,
  )
-import HostBootstrap.Protected (ProtectedSession)
+import HostBootstrap.Ownership.Tape (StoredOriginRecord, storedOriginRecord)
+import HostBootstrap.Protected (ProtectedSession, verifyProtectedSession)
 
 -- ---------------------------------------------------------------------------
 -- The seam
@@ -186,6 +201,35 @@ withOwnershipRow ::
     result
 withOwnershipRow (OwnershipRow row) use = use row
 
+{- | Read one whole object inside the scope of its exclusive kernel handle.
+
+Acquisition and the transfer to cleanup are masked; payload reading restores the
+caller's masking state. Every opened handle is closed before return or throw.
+A thrown read exception wins even if close also throws. For typed results, a
+read fault wins a typed close fault; a successful read reports a failed close.
+This raw-row transaction carries no origin authority and returns no handle.
+-}
+readWholeObject :: OwnershipRow -> OwnedTargetPath -> IO (Either OwnershipFault ByteString)
+readWholeObject row target =
+    withOwnershipRow row $ \primitives ->
+        mask $ \restore -> do
+            opened <- rowOpenExclusive primitives target
+            case opened of
+                Left fault -> pure (Left fault)
+                Right handle -> do
+                    readResult <- attempt (restore (rowReadObject primitives handle))
+                    closeResult <- attempt (rowCloseHandle primitives handle)
+                    case readResult of
+                        Left failure -> throwIO failure
+                        Right response -> case closeResult of
+                            Left failure -> throwIO failure
+                            Right closed -> pure $ case response of
+                                Left fault -> Left fault
+                                Right bytes -> bytes <$ closed
+  where
+    attempt :: IO value -> IO (Either SomeException value)
+    attempt = try
+
 -- ---------------------------------------------------------------------------
 -- What a row can hold
 
@@ -199,8 +243,6 @@ combination.
 data OwnershipCapabilities = OwnershipCapabilities
     { holdsStableIdentity :: Bool
     -- ^ The kernel answers a stable identity for an object.
-    , holdsExclusiveOpen :: Bool
-    -- ^ One named object can be opened exclusively, without following a link.
     , holdsNoReplacePublication :: Bool
     -- ^ A name can be published atomically, refusing rather than replacing.
     , holdsDurableParentSync :: Bool
@@ -218,9 +260,12 @@ data OwnershipClause
 
 {- | The refusal a row owes for a clause it cannot hold, or 'Nothing'.
 
-Total, and a function of the declaration alone. Every producer below applies it
-before it touches a kernel, so a row that cannot hold a clause reaches no
-mutation and mints no token.
+Total, and a function of the declaration alone. Kernel-face producers apply it
+before a primitive: entry uses ClauseEnter; recording, directory creation and
+object removal use ClauseRecord; binding uses ClauseBind; file publication uses
+both ClauseRecord and ClauseBind; re-observation uses ClauseRelease. Publication
+needs no-replace linking and parent sync, and removal needs parent sync as well
+as the identity already re-observed. The reported face has no kernel row.
 
 Which capability each clause needs is the whole content:
 
@@ -269,7 +314,7 @@ clauseName ClauseBind = "3 (identity binding)"
 clauseName ClauseRelease = "4 (conditional release)"
 
 -- ---------------------------------------------------------------------------
--- The seven clause producers, over an object a kernel answers for
+-- The kernel clause producers, over an object a kernel answers for
 
 {- | Clause 1: observe the target inside the entry that protects it.
 
@@ -285,60 +330,87 @@ enterOwnedObject ::
     OwnedTargetPath ->
     (forall object. Entered session object -> IO (Either OwnershipFault result)) ->
     IO (Either OwnershipFault result)
-enterOwnedObject row _session target use =
+enterOwnedObject row session target use =
     withOwnershipRow row $ \primitives ->
         case clauseRefusal (rowCapabilities primitives) ClauseEnter of
             Just refusal -> pure (Left refusal)
-            Nothing -> do
+            Nothing -> withLiveOwnershipEntry session $ do
                 observed <- rowObserveIdentity primitives target
                 case observed of
                     Left fault -> pure (Left fault)
-                    Right prior -> use (Entered target (originOf prior))
+                    Right prior -> use (Entered session target (originOf prior))
 
 originOf :: Maybe ObjectIdentity -> Origin
 originOf Nothing = OriginAbsent
 originOf (Just identity) = OriginPresent identity
 
-{- | Clause 4 from a later entry: re-enter an object this project already owns.
+{- | Re-enter ownership only from evidence read under this protected entry.
 
-The four clauses are one transaction, but they are not one process. An owner
-binds an identity now and releases it later — after its own bracket, after a
-restart, or from a successor's recovery path — so clause 4 has to be reachable
-from the durable record and not only from the token the binding minted. Without
-this producer a release would be written outside the clause order, which is the
-one thing the tokens exist to prevent.
-
-What re-entry does not do is manufacture evidence. The record must already carry
-a binding: an unbound record describes a transaction that never got past clause
-2, so it authorizes no removal and mints no token. And the record itself is the
-caller's, read through the store that published it, so the seam still holds no
-durable state of its own.
-
-The object index is introduced here, fresh, exactly as clause 1 introduces it,
-so re-entered evidence is about this object and cannot be presented for another.
+The stored wrapper has the entry's nominal index and no public constructor.
+Only the protected tape reader mints it. The release-capability check happens
+before the body is projected, and a record without a binding is malformed;
+neither refusal reaches a kernel primitive or the caller's continuation.
+A fresh object index keeps the bound evidence tied to this target. The shared
+projection publishes nothing and admits every bound origin kind; owners retain
+their exact subject, claim and origin policy checks.
 -}
-reenterOwnedObject ::
+reenterStoredOwnedObject ::
     OwnershipRow ->
+    ProtectedSession session ->
+    OwnedTargetPath ->
+    StoredOriginRecord session ->
+    (forall object. Bound session object -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+reenterStoredOwnedObject row session target stored use =
+    withOwnershipRow row $ \primitives ->
+        case clauseRefusal (rowCapabilities primitives) ClauseRelease of
+            Just refusal -> pure (Left refusal)
+            Nothing -> withLiveOwnershipEntry session $
+                reenterBoundRecord session target (storedOriginRecord stored) use
+
+{- | Re-enter reported ownership from the same entry's protected tape read.
+
+The nominal stored wrapper cannot be supplied by an in-memory origin record.
+This face takes no row, publishes nothing and reaches no kernel primitive.
+A kernel kind is unsupported; an unbound reported record is malformed. Both
+refusals happen before the continuation. Owners validate the exact stored
+subject and claim before presenting this read evidence.
+-}
+reenterStoredReportedObject ::
+    ProtectedSession session ->
+    OwnedTargetPath ->
+    StoredOriginRecord session ->
+    (forall object. Bound session object -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+reenterStoredReportedObject session target stored use =
+    withLiveOwnershipEntry session $
+        case originRecordKind record of
+            ReportedObject _ -> reenterBoundRecord session target record use
+            _ ->
+                pure
+                    (Left (OwnershipUnsupported "this record describes a kernel object, not a reported object"))
+  where
+    record = storedOriginRecord stored
+
+-- | Project the one bound-record fact both re-entry faces require.
+reenterBoundRecord ::
     ProtectedSession session ->
     OwnedTargetPath ->
     OriginRecord ->
     (forall object. Bound session object -> IO (Either OwnershipFault result)) ->
     IO (Either OwnershipFault result)
-reenterOwnedObject row _session target record use =
-    withOwnershipRow row $ \primitives ->
-        case clauseRefusal (rowCapabilities primitives) ClauseRelease of
-            Just refusal -> pure (Left refusal)
-            Nothing -> case originRecordBinding record of
-                Nothing ->
-                    pure
-                        ( Left
-                            ( OwnershipMalformed
-                                ( "this record names no identity binding, so it authorizes"
-                                    <> " no release"
-                                )
-                            )
+reenterBoundRecord session target record use =
+    case originRecordBinding record of
+        Nothing ->
+            pure
+                ( Left
+                    ( OwnershipMalformed
+                        ( "this record names no identity binding, so it authorizes"
+                            <> " no release"
                         )
-                Just identity -> use (Bound target record identity)
+                    )
+                )
+        Just identity -> use (Bound session target record identity)
 
 {- | Clause 2: publish the origin record before the object exists.
 
@@ -358,7 +430,7 @@ recordOwnedOrigin row entered kind publish =
     withOwnershipRow row $ \primitives ->
         case clauseRefusal (rowCapabilities primitives) ClauseRecord of
             Just refusal -> pure (Left refusal)
-            Nothing -> recordReportedOrigin entered kind publish
+            Nothing -> recordOrigin entered kind publish
 
 {- | Create the owned directory the record describes, and read its identity.
 
@@ -371,22 +443,35 @@ createOwnedDirectory ::
     IO (Either OwnershipFault ObjectIdentity)
 createOwnedDirectory row recorded =
     withOwnershipRow row $ \primitives ->
-        recordedEvidenceOf recorded $ \target record ->
-            case originRecordKind record of
-                OwnedFile _ ->
-                    pure (Left (OwnershipUnsupported "this record describes a file, not a directory"))
-                ReportedObject _ -> pure (Left (reportedRecordRefusal "a directory"))
-                OwnedDirectory -> do
-                    created <- rowCreateDirectory primitives target
-                    case created of
-                        Left fault -> pure (Left fault)
-                        Right () -> do
-                            synced <- rowSyncParent primitives target
-                            case synced of
-                                Left fault -> pure (Left fault)
-                                Right () -> identityOfCreated primitives target
+        case clauseRefusal (rowCapabilities primitives) ClauseRecord of
+            Just refusal -> pure (Left refusal)
+            Nothing ->
+                recordedEvidenceOf recorded $ \target record ->
+                    case originRecordOrigin record of
+                        OriginPresent _ ->
+                            pure (Left (OwnershipOccupied "the recorded origin was occupied before this run"))
+                        OriginAbsent ->
+                            case originRecordKind record of
+                                OwnedFile _ ->
+                                    pure (Left (OwnershipUnsupported "this record describes a file, not a directory"))
+                                ReportedObject _ -> pure (Left (reportedRecordRefusal "a directory"))
+                                OwnedDirectory -> do
+                                    created <- rowCreateDirectory primitives target
+                                    case created of
+                                        Left fault -> pure (Left fault)
+                                        Right () -> do
+                                            synced <- rowSyncParent primitives target
+                                            case synced of
+                                                Left fault -> pure (Left fault)
+                                                Right () -> identityOfCreated primitives target
 
 {- | Publish the owned file the record describes, and read its identity.
+
+Both creating producers require a recorded absence before inspecting the kind.
+A present origin is occupied and reaches no primitive. Failed staging creation
+preserves its fault without removal: it may have refused another object's name.
+After successful staging creation, a failed link attempts staging withdrawal
+best-effort and preserves the link's fault.
 
 The payload is written, linked under a name nothing else holds, and the staging
 name is then withdrawn, so a target that already exists is refused rather than
@@ -404,36 +489,48 @@ publishOwnedFile ::
     IO (Either OwnershipFault ObjectIdentity)
 publishOwnedFile row recorded payload staging =
     withOwnershipRow row $ \primitives ->
-        recordedEvidenceOf recorded $ \target record ->
-            case originRecordKind record of
-                OwnedDirectory ->
-                    pure (Left (OwnershipUnsupported "this record describes a directory, not a file"))
-                ReportedObject _ -> pure (Left (reportedRecordRefusal "a file"))
-                OwnedFile digest
-                    | digest /= payloadDigest payload ->
-                        pure
-                            ( Left
-                                ( OwnershipUnsupported
-                                    "the payload offered is not the payload the origin record names"
-                                )
-                            )
-                    | otherwise -> do
-                        written <- rowCreateFile primitives staging (payloadBytes payload)
-                        case written of
-                            Left fault -> pure (Left fault)
-                            Right () -> do
-                                published <- rowLinkNoReplace primitives staging target
-                                case published of
-                                    Left fault -> pure (Left fault)
-                                    Right () -> do
-                                        withdrawn <- rowRemoveObject primitives staging
-                                        case withdrawn of
-                                            Left fault -> pure (Left fault)
-                                            Right () -> do
-                                                synced <- rowSyncParent primitives target
-                                                case synced of
+        case clauseRefusal (rowCapabilities primitives) ClauseRecord of
+            Just refusal -> pure (Left refusal)
+            Nothing ->
+                case clauseRefusal (rowCapabilities primitives) ClauseBind of
+                    Just refusal -> pure (Left refusal)
+                    Nothing ->
+                        recordedEvidenceOf recorded $ \target record ->
+                            case originRecordOrigin record of
+                                OriginPresent _ ->
+                                    pure (Left (OwnershipOccupied "the recorded origin was occupied before this run"))
+                                OriginAbsent ->
+                                    case originRecordKind record of
+                                        OwnedDirectory ->
+                                            pure (Left (OwnershipUnsupported "this record describes a directory, not a file"))
+                                        ReportedObject _ -> pure (Left (reportedRecordRefusal "a file"))
+                                        OwnedFile digest
+                                            | digest /= payloadDigest payload ->
+                                                pure
+                                                    ( Left
+                                                        ( OwnershipUnsupported
+                                                            "the payload offered is not the payload the origin record names"
+                                                        )
+                                                    )
+                                            | otherwise -> do
+                                                written <- rowCreateFile primitives staging (payloadBytes payload)
+                                                case written of
                                                     Left fault -> pure (Left fault)
-                                                    Right () -> identityOfCreated primitives target
+                                                    Right () -> do
+                                                        published <- rowLinkNoReplace primitives staging target
+                                                        case published of
+                                                            Left fault -> do
+                                                                _ <- rowRemoveObject primitives staging
+                                                                pure (Left fault)
+                                                            Right () -> do
+                                                                withdrawn <- rowRemoveObject primitives staging
+                                                                case withdrawn of
+                                                                    Left fault -> pure (Left fault)
+                                                                    Right () -> do
+                                                                        synced <- rowSyncParent primitives target
+                                                                        case synced of
+                                                                            Left fault -> pure (Left fault)
+                                                                            Right () -> identityOfCreated primitives target
 
 {- | Clause 3: bind the created object's own identity to the record.
 
@@ -469,12 +566,37 @@ reobserveOwnedIdentity row bound =
     withOwnershipRow row $ \primitives ->
         case clauseRefusal (rowCapabilities primitives) ClauseRelease of
             Just refusal -> pure (Left refusal)
-            Nothing ->
+            Nothing -> withLiveOwnershipEntry (boundSession bound) $
                 boundEvidenceOf bound $ \target _record _identity -> do
                     observed <- rowObserveIdentity primitives target
                     pure $ case observed of
                         Left fault -> Left fault
                         Right current -> reobserveReportedIdentity bound (originOf current)
+
+{- | Act through this row only while the target still has the expected identity.
+
+The clause declaration is checked before observing. The identity comparison is
+the same one reported and kernel re-observation use. Observation and act are
+separate kernel operations; a non-cooperating replacement in between remains
+possible.
+-}
+withReobservedIdentity ::
+    OwnershipRow ->
+    OwnedTargetPath ->
+    ObjectIdentity ->
+    (forall handle. OwnershipPrimitive handle -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+withReobservedIdentity row target identity act =
+    withOwnershipRow row $ \primitives ->
+        case clauseRefusal (rowCapabilities primitives) ClauseRelease of
+            Just refusal -> pure (Left refusal)
+            Nothing -> do
+                observed <- rowObserveIdentity primitives target
+                case observed of
+                    Left fault -> pure (Left fault)
+                    Right current -> case requireObservedIdentity target identity (originOf current) of
+                        Left fault -> pure (Left fault)
+                        Right () -> act primitives
 
 {- | Clause 4: remove the object, then forget the record.
 
@@ -489,15 +611,55 @@ releaseOwnedObject ::
     IO (Either OwnershipFault ())
 releaseOwnedObject row releasable forget =
     withOwnershipRow row $ \primitives ->
-        releasableEvidenceOf releasable $ \target record _identity -> do
-            removed <- rowRemoveObject primitives target
-            case removed of
-                Left fault -> pure (Left fault)
-                Right () -> do
-                    synced <- rowSyncParent primitives target
-                    case synced of
-                        Left fault -> pure (Left fault)
-                        Right () -> forget record
+        case clauseRefusal (rowCapabilities primitives) ClauseRecord of
+            Just refusal -> pure (Left refusal)
+            Nothing ->
+                releasableEvidenceOf releasable $ \target record _identity ->
+                    case originRecordKind record of
+                        ReportedObject _ -> pure (Left (OwnershipMalformed "a reported object cannot use kernel removal"))
+                        _ -> do
+                            removed <- rowRemoveObject primitives target
+                            case removed of
+                                Left fault -> pure (Left fault)
+                                Right () -> do
+                                    synced <- rowSyncParent primitives target
+                                    case synced of
+                                        Left fault -> pure (Left fault)
+                                        Right () -> forget record
+
+{- | Finish a kernel removal whose object is already absent.
+
+The retained binding, live entry, declared clauses and fresh kernel absence are
+required. A present object, including the old identity, is never removed here.
+The parent is synchronized before the caller forgets the retained record.
+-}
+resumeOwnedRemoval ::
+    OwnershipRow ->
+    Bound session object ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault ())
+resumeOwnedRemoval row bound forget =
+    withOwnershipRow row $ \primitives ->
+        case clauseRefusal (rowCapabilities primitives) ClauseRelease of
+            Just refusal -> pure (Left refusal)
+            Nothing -> case clauseRefusal (rowCapabilities primitives) ClauseRecord of
+                Just refusal -> pure (Left refusal)
+                Nothing -> withLiveOwnershipEntry (boundSession bound) $
+                    boundEvidenceOf bound $ \target record _identity ->
+                        case originRecordKind record of
+                            ReportedObject _ -> pure (Left (OwnershipUnsupported "a reported object cannot use kernel removal recovery"))
+                            _ | originRecordOrigin record /= OriginAbsent ->
+                                    pure (Left (OwnershipOccupied "the kernel removal record does not name a created object"))
+                              | otherwise -> do
+                                    observed <- rowObserveIdentity primitives target
+                                    case observed of
+                                        Left fault -> pure (Left fault)
+                                        Right (Just identity) -> pure (Left (releaseConflict target OriginAbsent (OriginPresent identity)))
+                                        Right Nothing -> do
+                                            synced <- rowSyncParent primitives target
+                                            case synced of
+                                                Left fault -> pure (Left fault)
+                                                Right () -> forget record
 
 -- ---------------------------------------------------------------------------
 -- The five clause producers, over an object an authority reports on
@@ -522,7 +684,8 @@ enterReportedObject ::
     Origin ->
     (forall object. Entered session object -> IO (Either OwnershipFault result)) ->
     IO (Either OwnershipFault result)
-enterReportedObject _session target observed use = use (Entered target observed)
+enterReportedObject session target observed use =
+    withLiveOwnershipEntry session (use (Entered session target observed))
 
 {- | Clause 2, written once and used by both faces.
 
@@ -537,14 +700,21 @@ reaches it directly, because there is no row for that gate to ask.
 -}
 recordReportedOrigin ::
     Entered session object ->
+    OwnerClaim ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault (Recorded session object))
+recordReportedOrigin entered claim publish = recordOrigin entered (ReportedObject claim) publish
+
+recordOrigin ::
+    Entered session object ->
     ObjectKind ->
     (OriginRecord -> IO (Either OwnershipFault ())) ->
     IO (Either OwnershipFault (Recorded session object))
-recordReportedOrigin entered kind publish =
+recordOrigin entered kind publish =
     enteredEvidenceOf entered $ \target origin -> do
         let record = originRecord kind origin
         published <- publish record
-        pure (fmap (const (Recorded target record)) published)
+        pure (fmap (const (Recorded (enteredSession entered) target record)) published)
 
 {- | Clause 3, written once and used by both faces.
 
@@ -565,7 +735,7 @@ bindReportedIdentity recorded identity publish =
             Left fault -> pure (Left fault)
             Right bound -> do
                 published <- publish bound
-                pure (fmap (const (Bound target bound identity)) published)
+                pure (fmap (const (Bound (recordedSession recorded) target bound identity)) published)
 
 {- | Clause 4's precondition, written once and used by both faces.
 
@@ -582,11 +752,17 @@ reobserveReportedIdentity ::
     Origin ->
     Either OwnershipFault (Releasable session object)
 reobserveReportedIdentity bound observed =
-    boundEvidenceOf bound $ \target record identity ->
-        case observed of
-            OriginPresent current
-                | current == identity -> Right (Releasable target record identity)
-            _ -> Left (releaseConflict target (OriginPresent identity) observed)
+    boundEvidenceOf bound $ \target record identity -> do
+        requireObservedIdentity target identity observed
+        pure (Releasable (boundSession bound) target record identity)
+
+-- | One identity comparison for both re-observation faces and conditional acts.
+requireObservedIdentity :: OwnedTargetPath -> ObjectIdentity -> Origin -> Either OwnershipFault ()
+requireObservedIdentity target identity observed =
+    case observed of
+        OriginPresent current
+            | current == identity -> Right ()
+        _ -> Left (releaseConflict target (OriginPresent identity) observed)
 
 {- | Clause 4, where the removal was a described command.
 
@@ -613,6 +789,30 @@ releaseReportedObject releasable observed forget =
         case observed of
             OriginAbsent -> forget record
             OriginPresent _ -> pure (Left (releaseConflict target OriginAbsent observed))
+
+{- | Finish an interrupted reported removal from its retained binding.
+
+A fresh absence admits only the record cleanup; a present object is refused,
+including the formerly bound identity. Ordinary re-observation still requires
+that exact identity before issuing a removal. This recovery consumes the same
+live protected-entry floor and clause-4 cleanup as the ordinary reported act.
+-}
+resumeReportedRemoval ::
+    Bound session object ->
+    Origin ->
+    (OriginRecord -> IO (Either OwnershipFault ())) ->
+    IO (Either OwnershipFault ())
+resumeReportedRemoval bound observed forget =
+    withLiveOwnershipEntry (boundSession bound) $
+        boundEvidenceOf bound $ \target record identity ->
+            case observed of
+                OriginAbsent ->
+                    releaseReportedObject
+                        (Releasable (boundSession bound) target record identity)
+                        OriginAbsent
+                        forget
+                OriginPresent _ ->
+                    pure (Left (releaseConflict target OriginAbsent observed))
 
 {- | The refusal a kernel producer owes a record about an object it does not
 answer for.
@@ -642,18 +842,25 @@ releaseConflict target expected observed =
 -- ---------------------------------------------------------------------------
 -- Shared steps
 
-{- | The token eliminators, applied to the token first.
+{- | Project evidence only inside the token's actual live entry.
 
-The disclosure order is the only difference: a producer reads its predecessor
-before it decides anything, so writing the token first is what lets the decision
-read as one continuation rather than as a partially applied one.
+The effectful projections check the shared runtime floor before the callback.
+The bound projection remains pure for reported identity comparison; its successor
+retains the same session and the next effect checks it again.
 -}
-enteredEvidenceOf :: Entered session object -> (OwnedTargetPath -> Origin -> result) -> result
-enteredEvidenceOf = flip enteredEvidence
+enteredEvidenceOf ::
+    Entered session object ->
+    (OwnedTargetPath -> Origin -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+enteredEvidenceOf token use =
+    withLiveOwnershipEntry (enteredSession token) (enteredEvidence use token)
 
 recordedEvidenceOf ::
-    Recorded session object -> (OwnedTargetPath -> OriginRecord -> result) -> result
-recordedEvidenceOf = flip recordedEvidence
+    Recorded session object ->
+    (OwnedTargetPath -> OriginRecord -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+recordedEvidenceOf token use =
+    withLiveOwnershipEntry (recordedSession token) (recordedEvidence use token)
 
 boundEvidenceOf ::
     Bound session object -> (OwnedTargetPath -> OriginRecord -> ObjectIdentity -> result) -> result
@@ -661,9 +868,21 @@ boundEvidenceOf = flip boundEvidence
 
 releasableEvidenceOf ::
     Releasable session object ->
-    (OwnedTargetPath -> OriginRecord -> ObjectIdentity -> result) ->
-    result
-releasableEvidenceOf = flip releasableEvidence
+    (OwnedTargetPath -> OriginRecord -> ObjectIdentity -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+releasableEvidenceOf token use =
+    withLiveOwnershipEntry (releasableSession token) (releasableEvidence use token)
+
+-- | Consume the same live-entry floor as protected-store effects.
+withLiveOwnershipEntry ::
+    ProtectedSession session ->
+    IO (Either OwnershipFault result) ->
+    IO (Either OwnershipFault result)
+withLiveOwnershipEntry session action = do
+    checked <- verifyProtectedSession session
+    case checked of
+        Left failure -> pure (Left (storeFault "use the ownership entry" failure))
+        Right () -> action
 
 {- | Read the identity of an object this transaction has just created.
 

@@ -26,7 +26,7 @@ that distinguishes what we own from what we merely found.
 ### Sprint 6.1: Canonical quantities and the provider-neutral cordon foundation [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`,
 `core/hostbootstrap-core/test/CordonSpec.hs`, `core/hostbootstrap-core/test/BudgetSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -210,8 +210,8 @@ None.
 ### Sprint 6.4: The budget path answers with a closed result [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs`
 **Substrates**: none
 **Docs to update**: `documents/engineering/resource_budgeting.md`
@@ -250,8 +250,8 @@ step-algebra phase (phase 12) owns.
 ### Sprint 6.5: Host capacity is read through typed host effects and a Win32 binding [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/internal/capacity/HostBootstrap/Cluster/Cordon/WindowsCapacity.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/test/CordonSpec.hs`,
@@ -315,7 +315,7 @@ None.
 ### Sprint 6.6: A shared private kernel owns planned resource identities [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Plan.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs`,
 `core/hostbootstrap-core/internal/plan-resource/HostBootstrap/Plan/Resource.hs`,
 `core/hostbootstrap-core/hostbootstrap-core.cabal`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -421,9 +421,9 @@ None.
 ### Sprint 6.8: Docker limits refuse values outside the runtime representation [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Ownership.hs`,
 `core/hostbootstrap-core/test/CordonSpec.hs`,
 `core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`
 **Substrates**: none

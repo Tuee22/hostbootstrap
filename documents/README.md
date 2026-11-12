@@ -196,7 +196,7 @@ which sense it means.
 
 | Vocabulary | Where it lives | Members |
 |---|---|---|
-| the detected outer host | `SubstrateName` in [`HostBootstrap.Substrate`](../core/hostbootstrap-core/src/HostBootstrap/Substrate.hs) | `AppleSilicon`, `LinuxCpu`, `LinuxGpu`, `WindowsCpu`, `WindowsGpu`, each paired with an `Arch` |
+| the detected outer host | `SubstrateName` in [`HostBootstrap.Substrate`](../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Substrate.hs) | `AppleSilicon`, `LinuxCpu`, `LinuxGpu`, `WindowsCpu`, `WindowsGpu`, each paired with an `Arch` |
 | the plan's hardware-context declaration | the `**Substrates**:` phase-header field ([§ II](../DEVELOPMENT_PLAN/development_plan_standards.md)) | `linux-cpu`, plus at most one of `apple-silicon`, `nvidia`, `windows` |
 | the universal baseline | this corpus and the plan | `linux-cpu` alone |
 
@@ -211,8 +211,8 @@ host-frame sense of **Frame** below).
 
 | Sense | What a frame is | Where it lives |
 |---|---|---|
-| **topology** (the default) | one process's place in the composed topology. The closed *kind* of place is `ContextKind`, with eight constructors — `HostOrchestrator`, `VMOrchestrator`, `VMProjectContainer`, `ImageBuildContainer`, `ClusterService`, `Daemon`, `OneShotJob`, `TestHarness`; one node of the descriptive topology is a `TopologyFrame`; one node of an admitted plan is a `ProjectFrame`, an *identity* carried as opaque text | [`HostBootstrap.Context`](../core/hostbootstrap-core/src/HostBootstrap/Context.hs), [`HostBootstrap.ProjectPlan.Frame`](../core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Frame.hs) |
-| **host frame** (the host-frame axis) | the outer-host family a behaviour is written once per. `HostFrame` has three constructors — `LinuxFrame`, `AppleFrame`, `WindowsFrame` — and `substrateFrame` is the one place the five `SubstrateName` tags collapse to them: `LinuxCpu` and `LinuxGpu` are both `LinuxFrame`, `WindowsCpu` and `WindowsGpu` both `WindowsFrame`, because an accelerator is a capability *of* a frame rather than a frame of its own. `isLinux`, `isWindows` and `isAppleSilicon` are derived from it | [`HostBootstrap.Substrate`](../core/hostbootstrap-core/src/HostBootstrap/Substrate.hs) |
+| **topology** (the default) | one process's place in the composed topology. The closed *kind* of place is `ContextKind`, with eight constructors — `HostOrchestrator`, `VMOrchestrator`, `VMProjectContainer`, `ImageBuildContainer`, `ClusterService`, `Daemon`, `OneShotJob`, `TestHarness`; one node of the descriptive topology is a `TopologyFrame`; one node of an admitted plan is a `ProjectFrame`, an *identity* carried as opaque text | [`HostBootstrap.Context`](../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs), [`HostBootstrap.ProjectPlan.Frame`](../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Frame.hs) |
+| **host frame** (the host-frame axis) | the outer-host family a behaviour is written once per. `HostFrame` has three constructors — `LinuxFrame`, `AppleFrame`, `WindowsFrame` — and `substrateFrame` is the one place the five `SubstrateName` tags collapse to them: `LinuxCpu` and `LinuxGpu` are both `LinuxFrame`, `WindowsCpu` and `WindowsGpu` both `WindowsFrame`, because an accelerator is a capability *of* a frame rather than a frame of its own. `isLinux`, `isWindows` and `isAppleSilicon` are derived from it | [`HostBootstrap.Substrate`](../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Substrate.hs) |
 | **frame table** (a provider's frame) | a way to reach a context (the machine a `LiftContext` addresses, whose kernel answers for the objects there) plus the closed table of facts that context differs by: the host tool and its argument shape, the path grammar, the sizing renderer, the ownership-primitive row, and the file-transfer and share primitives. A provider adds a *row* to this table, never a copy of a workflow. "The frame that interprets a path" is this sense: a host path is read by the current machine's own grammar, a guest path by the POSIX grammar of the frame it is handed to | [§ LL](../DEVELOPMENT_PLAN/development_plan_standards.md#ll-the-frame-table-the-substrate-axis-is-a-lift-not-a-fork) and [§ MM](../DEVELOPMENT_PLAN/development_plan_standards.md#mm-a-path-belongs-to-the-frame-that-interprets-it) |
 
 In a plan or lifecycle context, an unqualified "frame" means the `ProjectFrame` identity rather than the
@@ -242,10 +242,12 @@ sentence in [cluster lifecycle](engineering/cluster_lifecycle.md) backwards.
 The fixed core command surface is exactly five user-facing verbs: `project`, `test`, `service`, `context`,
 and `check-code`. `ensure` is a reconciler library, not a command, and a project adds no verb. The
 canonical statement is [architecture/hostbootstrap_core_library.md](architecture/hostbootstrap_core_library.md).
-It includes the six core entries `runCLI` tests before the parser runs (installed identity, exposure
+It includes the six ordered core entries `runCLI` tests before the parser runs (installed identity, exposure
 relay, native working-directory entry, Colima command transaction, lifecycle child, frame child), none of which is in the command tree,
 and which of them stay within the bounds of an internal marker; that list is
 [Entries before the parser](architecture/hostbootstrap_core_library.md#entries-before-the-parser).
+Real subprocess cases exercise the opaque frame-transaction child body; source guards hold its complete
+six-entry CLI routing separately from the recursive lifecycle owner's joined execution.
 `project up` recursively interprets one opaque validated plan. The root owns all durable lifecycle state
 and launches each declared child through the fixed authenticated lifecycle-child entry; the child executes
 only root-selected grants. `project down` and `project destroy` traverse the same plan child-first using

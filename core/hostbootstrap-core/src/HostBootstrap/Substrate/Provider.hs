@@ -20,7 +20,7 @@ running a host tool. The one place the substrates genuinely differ — Lima/Incu
 launch with a single sized argv, whereas WSL2's only memory/CPU wall is the
 /global/ @.wslconfig@ utility-VM ceiling that must be applied and made effective
 with @wsl --shutdown@ before the distro boots — is captured by
-'planProviderProvision' returning a /list/ of effects: an
+'planProviderProvision' returning an effect list and a wall decision: an
 'ApplyGlobalWslWall' for the WSL2 case, and no wall effect for the others. See
 @documents/engineering/applied_cordon.md@ and
 @documents/engineering/wsl2.md@.
@@ -65,21 +65,24 @@ module HostBootstrap.Substrate.Provider (
     DirectProbe (..),
     RawProviderOutcome (..),
     providerProbeRequestView,
-    ProviderGuestExecutor,
+    classifyProviderProbe,
+    providerConflictMarker,
+    validConflictToken,
     ProviderCapability,
     discoverProvider,
     providerCapabilityKind,
     providerCapabilityDiscovery,
     providerCapabilityGeneration,
     providerCapabilityLiftContext,
-    providerCapabilityGuestExecutor,
     RebootReadyPlan (..),
+    ProviderWallDimension (..),
+    ProviderWallDecision (..),
+    ProviderProvisionPlan (..),
     planProviderProvision,
     planProviderRebootReady,
     planProviderStop,
     planProviderDelete,
     planProviderShare,
-    planProviderAlias,
 
     -- * Pure interpreters over the provider's data
     foldExistsProbe,
@@ -90,47 +93,30 @@ module HostBootstrap.Substrate.Provider (
     vmShellArgs,
     windowsPathToWslMount,
 
-    -- * Guest-side durable alias (one pure state machine, § DD)
-    AliasNodeKind (..),
-    AliasState (..),
-    AliasFacts (..),
-    classifyAlias,
-    AliasAction (..),
-    planAliasEnsure,
-    AliasRemoval (..),
-    planAliasRemove,
 )
 where
 
 import Control.Exception (IOException, catch, displayException)
+import Crypto.Hash (Digest, SHA256, hash)
 import Data.Bifunctor (first)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.Char (isAsciiUpper)
-import Data.List (dropWhileEnd, isPrefixOf)
+import Data.List (isPrefixOf)
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Cluster.Cordon (
     budgetFromResources,
-    budgetStorageBytes,
-    gibibytes,
-    incusSizingArgs,
     limaSizingArgs,
     renderQuantityError,
     wsl2SizingArgs,
  )
+import HostBootstrap.Cluster.Cordon.Foundation (wsl2VhdSizeArgForBudget)
 import HostBootstrap.Context (ResourceEnvelope)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Effect.Vocabulary
 import HostBootstrap.HostTool (HostTool (Incus, Lima, Wsl))
-import HostBootstrap.Incus (
-    IncusVM (..),
-    addDiskDeviceArgs,
-    createVMArgs,
-    destroyVMArgs,
-    deviceListArgs,
-    execVMArgs,
-    pushFileArgs,
-    startVMArgs,
-    stopVMArgs,
- )
+import HostBootstrap.Incus (IncusVM (..), execVMArgs, pushFileArgs)
 import HostBootstrap.Lift (
     LiftContext,
     LiftDispatch (..),
@@ -159,15 +145,14 @@ import HostBootstrap.Readiness (
  )
 import HostBootstrap.Reconcile (Running)
 import HostBootstrap.Substrate (Substrate, SubstrateName (..), substrateName)
+import qualified HostBootstrap.Substrate.Provider.Command as ProviderCommand
 import HostBootstrap.Substrate.Provider.Internal (
     DirectProbe (..),
     ProviderBoundExec,
     ProviderBoundRoute (..),
-    ProviderGuestExecutor,
     ProviderProbeRequest,
     ProviderProbeRequestView (..),
     RawProviderOutcome (..),
-    bindProviderGuestExecutor,
     directProbeRequest,
     guestProbeRequest,
     hostToolRequest,
@@ -223,8 +208,6 @@ data Membership
       LinesMember
     | -- | the name is a whitespace token of the NUL-stripped output (@wsl --list --quiet@)
       WslQuietMember
-    | -- | the name is a RUNNING distro per @wsl --list --verbose@ (the STATE column)
-      WslRunningMember
     deriving (Eq, Show)
 
 {- | An idempotency probe: list with @tool args@, then test a caller-owned
@@ -307,7 +290,7 @@ data VMHandles = VMHandles
 on the active 'ResourceEnvelope' and an optional host-path share; share
 planning projects a caller-supplied absolute host path into the
 provider-specific pure share plan. A provision 'Left' carries a budget-parse
-error. Delete planning returns 'Left' when the guard prefix refuses the VM name.
+error or requires the prepared ownership route. Delete planning returns 'Left' when the guard prefix refuses the VM name.
 -}
 data SubstrateProvider = SubstrateProvider
     { spVmId :: String
@@ -315,7 +298,7 @@ data SubstrateProvider = SubstrateProvider
     , spLiftContext :: LiftContext
     -- ^ one guest boundary for VM providers; 'localContext' for direct host
     , spExists :: ExistsProbe
-    , spLaunch :: ResourceEnvelope -> Maybe HostPathShare -> Either String [HostEffect]
+    , spLaunch :: ResourceEnvelope -> Maybe HostPathShare -> Either String ProviderProvisionPlan
     , spShare :: FilePath -> HostPathShare
     , spStartExisting :: [HostEffect]
     , spReconcileCordon :: Maybe (ExistsProbe, [HostEffect])
@@ -392,10 +375,9 @@ data ProviderObservation value
     | ProviderObservedFailure ProbeFailure
     deriving (Eq, Show)
 
--- | The four provider observations that exist only for a real guest provider.
+-- | The three provider observations that exist only for a real guest provider.
 data GuestProviderDiscovery = GuestProviderDiscovery
     { discoveryDaemon :: ProviderObservation ()
-    , discoveryPermissions :: ProviderObservation ()
     , discoveryVmCapability :: ProviderObservation ()
     , discoveryEgress :: ProviderObservation ()
     }
@@ -417,16 +399,16 @@ data ProviderDiscovery
 
 {- | Post-management discovery evidence for one exact provider resource.
 
-It is deliberately not a mutation-backend argument.  It retains the exact raw
-executor only so a narrower package-owned guest backend can stay on the same
-provider route; public code cannot project an arbitrary argv runner from it.
+It retains the managed Running handle, selected provider and complete discovery
+report. Its read-only accessors expose kind, generation, lift context and observed
+facts. It carries no guest executor and is not a mutation-backend argument; the
+narrow strong alias backend uses its retained lift context.
 -}
 data ProviderCapability scope planId providerId backendId capabilityId
     = ProviderCapability
         (ManagedProviderHandle scope planId backendId providerId Running)
         SubstrateProvider
         ProviderDiscovery
-        (Maybe (ProviderGuestExecutor scope planId providerId Running backendId capabilityId))
 
 type role ProviderCapability nominal nominal nominal nominal nominal
 
@@ -438,7 +420,6 @@ data ProbePlan value
 
 data ProviderDiscoveryPlan
     = GuestDiscoveryPlan
-        (ProbePlan ())
         (ProbePlan ())
         (ProbePlan ())
         (ProbePlan ())
@@ -463,14 +444,7 @@ discoverProvider managed provider exec consume =
         Left failure -> pure (Left failure)
         Right () -> do
             discovery <- runDiscoveryPlan exec (providerDiscoveryPlan provider)
-            case discovery of
-                ProviderDirectDiscovery _ ->
-                    Right <$> consume (ProviderCapability managed provider discovery Nothing)
-                ProviderGuestDiscovery _ -> do
-                    let guestExecutor =
-                            bindProviderGuestExecutor $ \argv ->
-                                executeRaw exec (guestProbeRequest argv)
-                    Right <$> consume (ProviderCapability managed provider discovery (Just guestExecutor))
+            Right <$> consume (ProviderCapability managed provider discovery)
 
 validateBoundProviderRoute :: SubstrateProvider -> ProviderBoundRoute -> Either ProviderError ()
 validateBoundProviderRoute provider boundRoute =
@@ -500,24 +474,16 @@ validateBoundProviderRoute provider boundRoute =
                 }
 
 providerCapabilityKind :: ProviderCapability scope planId providerId backendId capabilityId -> ProviderKind
-providerCapabilityKind (ProviderCapability _ provider _ _) = spProviderKind provider
+providerCapabilityKind (ProviderCapability _ provider _) = spProviderKind provider
 
 providerCapabilityDiscovery :: ProviderCapability scope planId providerId backendId capabilityId -> ProviderDiscovery
-providerCapabilityDiscovery (ProviderCapability _ _ discovery _) = discovery
+providerCapabilityDiscovery (ProviderCapability _ _ discovery) = discovery
 
 providerCapabilityGeneration :: ProviderCapability scope planId providerId backendId capabilityId -> Word64
-providerCapabilityGeneration (ProviderCapability managed _ _ _) = managedProviderGeneration managed
+providerCapabilityGeneration (ProviderCapability managed _ _) = managedProviderGeneration managed
 
 providerCapabilityLiftContext :: ProviderCapability scope planId providerId backendId capabilityId -> LiftContext
-providerCapabilityLiftContext (ProviderCapability _ provider _ _) = providerLiftContext provider
-
-providerCapabilityGuestExecutor ::
-    ProviderCapability scope planId providerId backendId capabilityId ->
-    Either ProviderError (ProviderGuestExecutor scope planId providerId Running backendId capabilityId)
-providerCapabilityGuestExecutor capability@(ProviderCapability _ _ _ guestExecutor) =
-    case guestExecutor of
-        Just executor -> Right executor
-        Nothing -> unsupported ProviderAlias capability "the direct host has no guest execution route"
+providerCapabilityLiftContext (ProviderCapability _ provider _) = providerLiftContext provider
 
 providerDiscoveryPlan :: SubstrateProvider -> ProviderDiscoveryPlan
 providerDiscoveryPlan provider =
@@ -529,7 +495,6 @@ providerDiscoveryPlan provider =
         _ ->
             GuestDiscoveryPlan
                 (unitPlan "provider daemon" (existsRequest provider))
-                (unitPlan "provider permissions" (existsRequest provider))
                 (unitPlan "provider VM capability" (guestRequest provider ["true"]))
                 (unitPlan "provider provisioning egress" (egressRequest provider))
 
@@ -537,97 +502,55 @@ runDiscoveryPlan :: ProviderBoundExec scope planId providerId phase backendId ->
 runDiscoveryPlan exec plan = case plan of
     DirectDiscoveryPlan permissions egress ->
         ProviderDirectDiscovery
-            <$> (DirectProviderDiscovery <$> runProbePlan exec permissions <*> runProbePlan exec egress)
-    GuestDiscoveryPlan daemon permissions vm egress -> do
+            <$> (DirectProviderDiscovery <$> observe permissions <*> observe egress)
+    GuestDiscoveryPlan daemon vm egress -> do
         retainedDaemon <- runProbePlan exec daemon
         case retainedDaemon of
-            ProviderObservedReady () -> do
-                retainedPermissions <- runProbePlan exec permissions
-                case retainedPermissions of
-                    ProviderObservedReady () -> do
-                        retainedVm <- runProbePlan exec vm
-                        case retainedVm of
-                            ProviderObservedReady () -> do
-                                retainedEgress <- runProbePlan exec egress
-                                pure
-                                    ( ProviderGuestDiscovery
-                                        ( GuestProviderDiscovery
-                                            retainedDaemon
-                                            retainedPermissions
-                                            retainedVm
-                                            retainedEgress
-                                        )
-                                    )
-                            notReadyVm ->
-                                pure
-                                    ( ProviderGuestDiscovery
-                                        ( blockedGuestDiscovery
-                                            retainedDaemon
-                                            retainedPermissions
-                                            notReadyVm
-                                            notReadyVm
-                                        )
-                                    )
-                    unavailablePermissions ->
+            Left blocked ->
+                pure (ProviderGuestDiscovery (blockedGuestDiscovery (propagateObservation blocked) blocked))
+            Right () -> do
+                retainedVm <- runProbePlan exec vm
+                case retainedVm of
+                    Left blocked ->
+                        pure (ProviderGuestDiscovery (blockedGuestDiscovery (ProviderObservedReady ()) blocked))
+                    Right () -> do
+                        retainedEgress <- observe egress
                         pure
                             ( ProviderGuestDiscovery
-                                ( blockedGuestDiscovery
-                                    retainedDaemon
-                                    unavailablePermissions
-                                    unavailablePermissions
-                                    unavailablePermissions
-                                )
+                                (GuestProviderDiscovery (ProviderObservedReady ()) (ProviderObservedReady ()) retainedEgress)
                             )
-            unavailableDaemon ->
-                pure
-                    ( ProviderGuestDiscovery
-                        ( blockedGuestDiscovery
-                            unavailableDaemon
-                            unavailableDaemon
-                            unavailableDaemon
-                            unavailableDaemon
-                        )
-                    )
+  where
+    observe probe = either propagateObservation ProviderObservedReady <$> runProbePlan exec probe
 
-blockedGuestDiscovery ::
-    ProviderObservation daemon ->
-    ProviderObservation permissions ->
-    ProviderObservation vm ->
-    ProviderObservation egress ->
-    GuestProviderDiscovery
-blockedGuestDiscovery daemon permissions vm egress =
-    GuestProviderDiscovery
-        (propagateObservation daemon)
-        (propagateObservation permissions)
-        (propagateObservation vm)
-        (propagateObservation egress)
+-- | Keep the daemon's own answer; only the unrun suffix inherits the refusal.
+blockedGuestDiscovery :: ProviderObservation () -> PollError -> GuestProviderDiscovery
+blockedGuestDiscovery daemon blocked =
+    GuestProviderDiscovery daemon (propagateObservation blocked) (propagateObservation blocked)
 
-propagateObservation :: ProviderObservation source -> ProviderObservation target
-propagateObservation observed = case observed of
-    ProviderObservedReady _ ->
+-- | A completed unsuccessful poll cannot carry a Ready observation.
+propagateObservation :: PollError -> ProviderObservation value
+propagateObservation pollError = case pollError of
+    PollTimeout _ observation -> ProviderObservedNotReady observation
+    PollUnavailable _ reason -> ProviderObservedUnavailable reason
+    PollConflict _ conflict -> ProviderObservedConflict conflict
+    PollFailed _ failure -> ProviderObservedFailure failure
+    PollInvalidReady _ _ ->
         ProviderObservedFailure
-            ProbeFailure
-                { failedOperation = "propagate provider discovery observation"
-                , failureCause = "an unexpected ready observation lacked its dependent probe"
-                }
-    ProviderObservedNotReady reason -> ProviderObservedNotReady reason
-    ProviderObservedUnavailable reason -> ProviderObservedUnavailable reason
-    ProviderObservedConflict conflict -> ProviderObservedConflict conflict
-    ProviderObservedFailure failure -> ProviderObservedFailure failure
+            (ProbeFailure "validate backend readiness" (renderPollError pollError))
 
-runProbePlan :: ProviderBoundExec scope planId providerId phase backendId -> ProbePlan value -> IO (ProviderObservation value)
-runProbePlan _ (ProbePlan _ (Left reason) _) = pure (ProviderObservedUnavailable reason)
+runProbePlan :: ProviderBoundExec scope planId providerId phase backendId -> ProbePlan value -> IO (Either PollError value)
+runProbePlan _ (ProbePlan label (Left reason) _) = pure (Left (PollUnavailable label reason))
 runProbePlan exec (ProbePlan label (Right request) parse) =
     case providerDiscoveryPoll of
-        Left failure -> pure (ProviderObservedFailure failure)
+        Left failure -> pure (Left (PollFailed label failure))
         Right policy -> go policy (0 :: Natural)
   where
     go policy attempt = do
         raw <- executeRaw exec request
         case pollStep policy label attempt (parse raw) of
-            Yield value -> pure (ProviderObservedReady value)
+            Yield value -> pure (Right value)
             Retry delay -> waitProviderBoundExec exec delay >> go policy (attempt + 1)
-            GiveUp pollError -> pure (observationFromPollError pollError)
+            GiveUp pollError -> pure (Left pollError)
 
 executeRaw :: ProviderBoundExec scope planId providerId phase backendId -> ProviderProbeRequest -> IO RawProviderOutcome
 executeRaw exec request =
@@ -647,18 +570,8 @@ providerDiscoveryPoll =
                     , failureCause = "invalid closed provider discovery policy: " ++ show failure
                     }
 
-observationFromPollError :: PollError -> ProviderObservation value
-observationFromPollError pollError = case pollError of
-    PollTimeout _ observation -> ProviderObservedNotReady observation
-    PollUnavailable _ reason -> ProviderObservedUnavailable reason
-    PollConflict _ conflict -> ProviderObservedConflict conflict
-    PollFailed _ failure -> ProviderObservedFailure failure
-    PollInvalidReady _ _ ->
-        ProviderObservedFailure
-            (ProbeFailure "validate backend readiness" (renderPollError pollError))
-
 unitPlan :: String -> Either String ProviderProbeRequest -> ProbePlan ()
-unitPlan label request = ProbePlan label request parseUnit
+unitPlan label request = ProbePlan label request classifyProviderProbe
 
 rawExecutionFailure :: String -> String -> ProbeResult value
 rawExecutionFailure label reason = case providerConflictMarker reason of
@@ -683,6 +596,7 @@ providerConflictMarker raw = case words raw of
                     }
     _ -> Nothing
 
+-- | The bounded ASCII token grammar shared by conflict emitters and readers.
 validConflictToken :: String -> Bool
 validConflictToken value =
     not (null value)
@@ -696,8 +610,9 @@ validConflictToken value =
             )
             value
 
-parseUnit :: RawProviderOutcome -> ProbeResult ()
-parseUnit raw = case raw of
+-- | Classify one raw unit probe; a successful exit needs no output marker.
+classifyProviderProbe :: RawProviderOutcome -> ProbeResult ()
+classifyProviderProbe raw = case raw of
     RawProviderExit ExitSuccess _ _ -> ProbeReady ()
     _ -> classifyRawFailure "provider probe" raw
 
@@ -706,6 +621,8 @@ classifyRawFailure label raw = case raw of
     RawProviderFailure reason -> rawExecutionFailure label reason
     RawProviderExit ExitSuccess out _ -> malformed label ("unexpected successful output " ++ show (firstLine out))
     RawProviderExit (ExitFailure code) out err
+        | code == 255 && null out && firstLine lower == "error: vm agent isn't currently running" ->
+            NotReady (firstLine combined)
         | any (`isPrefixOf` lower) ["not ready", "starting", "connection refused", "daemon is not running"] ->
             NotReady (firstLine combined)
         | any (`isPrefixOf` lower) ["not found", "unsupported", "no such file"] ->
@@ -752,10 +669,28 @@ data RebootReadyPlan = RebootReadyPlan
     }
     deriving (Eq, Show)
 
+-- | Dimensions for which a provider may be unable to enforce a host wall.
+data ProviderWallDimension = ProviderCpuWall | ProviderMemoryWall | ProviderStorageWall
+    deriving (Eq, Show)
+
+-- | A direct host reports its unsupported walls for the requested envelope;
+-- other providers delegate wall application to their described effects.
+data ProviderWallDecision
+    = ProviderWallsDelegated
+    | DirectHostWallsUnsupported ResourceEnvelope [ProviderWallDimension]
+    deriving (Eq, Show)
+
+-- | Description only: neither the effects nor the wall decision authorize mutation.
+data ProviderProvisionPlan = ProviderProvisionPlan
+    { provisionEffects :: [HostEffect]
+    , provisionWallDecision :: ProviderWallDecision
+    }
+    deriving (Eq, Show)
+
 {- | Pure, non-authorizing provision plan. The prepared provider adapter owns
 mutation and consumes no discovery capability.
 -}
-planProviderProvision :: SubstrateProvider -> ResourceEnvelope -> Maybe HostPathShare -> Either ProviderError [HostEffect]
+planProviderProvision :: SubstrateProvider -> ResourceEnvelope -> Maybe HostPathShare -> Either ProviderError ProviderProvisionPlan
 planProviderProvision provider resources share =
     mapProviderFailure ProviderProvision provider (spLaunch provider resources share)
 
@@ -783,29 +718,6 @@ planProviderDelete provider resources =
 planProviderShare :: SubstrateProvider -> FilePath -> Either ProviderError HostPathShare
 planProviderShare provider source = Right (spShare provider source)
 
-{- | Plan the common guest alias transition. A direct host has no guest boundary,
-so asking it to mint or consume a guest alias is a structured refusal rather
-than an apparent success.
--}
-planProviderAlias :: SubstrateProvider -> FilePath -> FilePath -> AliasState -> Either ProviderError AliasAction
-planProviderAlias provider aliasPath target state = do
-    case spProviderKind provider of
-        ProviderDirectHost ->
-            unsupportedProvider
-                ProviderAlias
-                provider
-                "the direct host has no guest boundary and must not create or consume a guest alias"
-        _ -> pure ()
-    mapProviderFailure ProviderAlias provider (planAliasEnsure aliasPath target state)
-
-unsupported :: ProviderOperation -> ProviderCapability scope planId providerId backendId capabilityId -> String -> Either ProviderError a
-unsupported operation capability cause =
-    Left
-        ProviderUnsupported
-            { providerErrorKind = providerCapabilityKind capability
-            , providerErrorOperation = operation
-            , providerErrorCause = cause
-            }
 
 unsupportedProvider :: ProviderOperation -> SubstrateProvider -> String -> Either ProviderError a
 unsupportedProvider operation provider cause =
@@ -860,7 +772,7 @@ selectProviderKind kind h = case kind of
                 , spLaunch = \env share -> do
                     sizing <- limaSizingArgs env
                     let mount = maybe [] (Lima.writableMountArgs . hpsHostPath) share
-                    pure [hostToolEffect Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"] ++ mount))]
+                    pure (ProviderProvisionPlan [hostToolEffect Lima (Lima.startVMArgs vm (sizing ++ ["--vm-type", "vz"] ++ mount))] ProviderWallsDelegated)
                 , spShare = \source -> HostPathShare source source Nothing
                 , spStartExisting = [hostToolEffect Lima ["start", limaName vm]]
                 , spReconcileCordon = Nothing
@@ -878,30 +790,29 @@ selectProviderKind kind h = case kind of
                 , spProviderKind = ProviderIncus
                 , spLiftContext = vmContext (inVM vm emptyVMStack)
                 , spExists = ExistsProbe Incus ["list", "--format", "csv", "-c", "n"] LinesMember
-                , spLaunch = \env _ -> do
-                    sizing <- incusSizingArgs env
-                    pure [hostToolEffect Incus (createVMArgs vm (concatMap toLaunchFlag sizing))]
+                , spLaunch = \_ _ -> Left "Incus provisioning requires the prepared provision call"
                 , spShare = \source ->
-                    let device = "durable-data"
-                        target = source
+                    let target = source
+                        device = incusShareDeviceName source target
+                        listing = ProviderCommand.listShareDevicesCommand (vmName vm)
                      in HostPathShare
                             { hpsHostPath = source
                             , hpsGuestPath = target
                             , hpsReconcile =
                                 Just
                                     ShareReconcile
-                                        { srProbe = ExistsProbe Incus (deviceListArgs vm) LinesMember
+                                        { srProbe = ExistsProbe Incus (commandArguments listing) LinesMember
                                         , srMember = device
-                                        , srWhenMissing = [hostToolEffect Incus (addDiskDeviceArgs vm device source target)]
+                                        , srWhenMissing = [RunHostCommand (ProviderCommand.attachShareDeviceCommand (vmName vm) device source target)]
                                         }
                             }
-                , spStartExisting = [hostToolEffect Incus (startVMArgs vm)]
+                , spStartExisting = [RunHostCommand (ProviderCommand.startInstanceCommand (vmName vm))]
                 , spReconcileCordon = Nothing
                 , spWait = WaitProbe Incus (execVMArgs vm ["true"])
                 , spTransfer = IncusFileTransfer vm
-                , spStop = \_ -> Right [hostToolEffect Incus (stopVMArgs vm)]
+                , spStop = \_ -> Right [RunHostCommand (ProviderCommand.stopInstanceCommand (vmName vm))]
                 , spDestroy =
-                    \_ -> (\argv -> [hostToolEffect Incus argv]) <$> destroyVMArgs prefix vm
+                    \_ -> (\command -> [RunHostCommand command]) <$> ProviderCommand.deleteInstanceCommand prefix (vmName vm)
                 }
 
     windows =
@@ -915,12 +826,14 @@ selectProviderKind kind h = case kind of
                 , spLaunch = \env _ -> do
                     body <- wsl2SizingArgs env
                     budget <- first renderQuantityError (budgetFromResources env)
-                    let vhd = show (gibibytes (budgetStorageBytes budget)) ++ "GB"
-                    pure
-                        [ ApplyGlobalWslWall body
-                        , hostToolEffect Wsl Wsl2.wslShutdownArgs
-                        , hostToolEffect Wsl (Wsl2.wslInstallArgs distro vhd)
-                        ]
+                    vhd <- wsl2VhdSizeArgForBudget budget
+                    pure $
+                        ProviderProvisionPlan
+                            [ ApplyGlobalWslWall body
+                            , hostToolEffect Wsl Wsl2.wslShutdownArgs
+                            , hostToolEffect Wsl (Wsl2.wslInstallArgs distro vhd)
+                            ]
+                            ProviderWallsDelegated
                 , spShare = \source ->
                     HostPathShare
                         { hpsHostPath = source
@@ -936,7 +849,7 @@ selectProviderKind kind h = case kind of
                   -- utility VM re-reads @vmIdleTimeout=21600000@ on its next cold boot.
                   spReconcileCordon =
                     Just
-                        ( ExistsProbe Wsl ["--list", "--verbose"] WslRunningMember
+                        ( ExistsProbe Wsl ["--list", "--running", "--quiet"] WslQuietMember
                         , [hostToolEffect Wsl Wsl2.wslShutdownArgs]
                         )
                 , spWait = WaitProbe Wsl (Wsl2.wslExecArgs distro ["true"])
@@ -962,7 +875,7 @@ selectProviderKind kind h = case kind of
                 , spDestroy = \env -> do
                     body <- wsl2SizingArgs env
                     argv <- Wsl2.wslUnregisterArgs prefix distro
-                    pure [hostToolEffect Wsl argv, ReleaseGlobalWslWall body]
+                    pure [hostToolEffect Wsl argv, ReleaseGlobalWslWall body, hostToolEffect Wsl Wsl2.wslShutdownArgs]
                 }
 
     direct =
@@ -971,7 +884,7 @@ selectProviderKind kind h = case kind of
             , spProviderKind = ProviderDirectHost
             , spLiftContext = localContext
             , spExists = DirectHostExistsProbe
-            , spLaunch = \_ _ -> Right [RunDirectHost RealizeDirectHost]
+            , spLaunch = \env _ -> Right (ProviderProvisionPlan [RunDirectHost RealizeDirectHost] (DirectHostWallsUnsupported env [ProviderCpuWall, ProviderMemoryWall, ProviderStorageWall]))
             , spShare = \source -> HostPathShare source source Nothing
             , spStartExisting = [RunDirectHost ReconcileDirectHostReady]
             , spReconcileCordon = Nothing
@@ -981,11 +894,14 @@ selectProviderKind kind h = case kind of
             , spDestroy = \_ -> Left "the direct host cannot be deleted by a project lifecycle"
             }
 
-    -- incus sizing args are key=value pairs; @root,size=…@ is a device override
-    -- (@-d@), the rest are config keys (@-c@).
-    toLaunchFlag a
-        | "root," `isPrefixOf` a = ["-d", a]
-        | otherwise = ["-c", a]
+-- | Name the disk by the exact host-source/guest-path pair, with character framing.
+incusShareDeviceName :: FilePath -> FilePath -> String
+incusShareDeviceName source target =
+    "hb-share-" ++ take 12 (Text.unpack (TextEncoding.decodeUtf8 (convertToBase Base16 digest)))
+  where
+    sized value = show (length value) ++ ":" ++ value
+    bytes = TextEncoding.encodeUtf8 (Text.pack (sized source ++ sized target))
+    digest = hash bytes :: Digest SHA256
 
 {- | Total eliminator for existence probes. The first branch is the already-local
 direct host; the second receives one resolved-tool probe description. Consumers
@@ -1010,7 +926,6 @@ foldWaitProbe directResult runTool probe =
 membersOf :: Membership -> String -> [String]
 membersOf LinesMember = lines
 membersOf WslQuietMember = Wsl2.wslListDistros
-membersOf WslRunningMember = Wsl2.wslRunningDistros
 
 {- | Classify a successful share-presence probe into the effects still needed.
 No post-create plan means no effects. For an Incus plan, an output containing
@@ -1060,116 +975,6 @@ vmShellArgs layer (exe : arguments) = do
     layerIsVM (ViaLimaVM _) = True
     layerIsVM (ViaWsl2VM _) = True
     layerIsVM (ViaContainer _) = False
-
--- ---------------------------------------------------------------------------
--- Guest-side durable alias: one pure state machine (§ DD).
---
--- A host-backed durable share is only usable at the Docker boundary through a
--- stable Docker-visible alias — a symlink from a fixed path to the share. The
--- alias is minted by the VM-shell lane (trivial guest probes:
--- @test -L@, @readlink@, @test -e@ — no compound @set -eu@, no nested @"$(…)"@,
--- so it survives the Windows PowerShell→@wsl@→@bash@ quoting path, § CC).
--- Direct host has no guest boundary and supplies the canonical host projection
--- directly, so it never calls this state machine. Every guest step is
--- readiness-gated by the consumer (§ CC): the alias cannot
--- be minted before a @Ready DurableShareMounted@ witness proves the share is a
--- writable directory.
--- ---------------------------------------------------------------------------
-
-{- | The observed state of the stable Docker-visible alias that points at a
-host-backed durable share (§ DD).
--}
-data AliasNodeKind
-    = AliasRegularFile
-    | AliasDirectory
-    | AliasOtherNode
-    | AliasNodeKindUnknown
-    deriving (Eq, Show)
-
-data AliasState
-    = -- | nothing exists at the alias path
-      AliasAbsent
-    | -- | a symlink already pointing at the expected share target (idempotent no-op)
-      AliasLinkedCorrectly
-    | -- | a symlink pointing somewhere else — a stale/foreign link (a collision)
-      AliasLinkedElsewhere FilePath
-    | -- | a non-symlink node occupies the path (a collision)
-      AliasOccupied AliasNodeKind
-    deriving (Eq, Show)
-
-{- | The raw facts a lane's probes gather about the alias path, classified the same
-way by 'classifyAlias'. 'afSymlinkTarget' is @Just t@ only when the path is a
-symlink and its target was read successfully. Probe failures are structured
-backend failures and must not be encoded as an empty target. 'afExists' is
-whether the path exists as anything at all.
--}
-data AliasFacts = AliasFacts
-    { afSymlinkTarget :: Maybe FilePath
-    , afExists :: Bool
-    }
-    deriving (Eq, Show)
-
-{- | Classify the alias path against the expected share target. Total. Trailing
-slashes are trimmed before comparison; a backend that creates the link uses the exact
-expected target string, so a correctly-linked alias compares equal.
--}
-classifyAlias :: FilePath -> AliasFacts -> AliasState
-classifyAlias expected facts = case afSymlinkTarget facts of
-    Just t
-        | trimTrailingSlash t == trimTrailingSlash expected -> AliasLinkedCorrectly
-        | otherwise -> AliasLinkedElsewhere t
-    Nothing
-        | afExists facts -> AliasOccupied AliasNodeKindUnknown
-        | otherwise -> AliasAbsent
-
-trimTrailingSlash :: FilePath -> FilePath
-trimTrailingSlash = dropWhileEnd (`elem` ("/\\" :: String))
-
-{- | The action a lane takes to make the alias correct, from its 'AliasState'. An
-idempotent correct link is 'AliasLeaveLinked'; an absent path is 'AliasCreateLink';
-a collision ('AliasLinkedElsewhere' / 'AliasOccupied') is a 'Left' message — a
-deterministic @Failed@ condition (§ CC), surfaced legibly, never a bare exit code.
-Pure and diagnostic only: this view does not authorize mutation or cleanup.
--}
-data AliasAction = AliasLeaveLinked | AliasCreateLink
-    deriving (Eq, Show)
-
-planAliasEnsure :: FilePath -> FilePath -> AliasState -> Either String AliasAction
-planAliasEnsure aliasPath target state = case state of
-    AliasAbsent -> Right AliasCreateLink
-    AliasLinkedCorrectly -> Right AliasLeaveLinked
-    AliasLinkedElsewhere other ->
-        Left ("durable alias " ++ aliasPath ++ " points to " ++ other ++ ", expected " ++ target)
-    AliasOccupied nodeKind ->
-        Left
-            ( "durable alias collision: "
-                ++ aliasPath
-                ++ " already exists as "
-                ++ show nodeKind
-                ++ " and is not a symbolic link to "
-                ++ target
-            )
-
-{- | The teardown action: remove the alias **only** when it is still the exact link
-this project owns ('AliasLinkedCorrectly' → 'AliasUnlink'); an absent path or a
-foreign non-symlink occupant is left in place with a reason ('AliasKeep'); a
-retargeted link is a 'Left' refusal (never silently clobbered). Pure. Mirrors the
-never-delete-@.data@ discipline (§ Y): the host target itself is never removed here.
-This diagnostic view is not ownership proof; effectful teardown additionally
-requires the matching managed handle, receipt, and an identity-bound conditional
-backend operation.
--}
-data AliasRemoval = AliasKeep String | AliasUnlink
-    deriving (Eq, Show)
-
-planAliasRemove :: FilePath -> FilePath -> AliasState -> Either String AliasRemoval
-planAliasRemove aliasPath target state = case state of
-    AliasAbsent -> Right (AliasKeep ("durable alias " ++ aliasPath ++ " is already absent"))
-    AliasLinkedCorrectly -> Right AliasUnlink
-    AliasLinkedElsewhere other ->
-        Left ("refusing to remove durable alias " ++ aliasPath ++ ": it points to " ++ other ++ ", expected " ++ target)
-    AliasOccupied _ ->
-        Right (AliasKeep ("durable alias path " ++ aliasPath ++ " is occupied by a non-symlink; leaving it untouched"))
 
 {- | Rewrite a Windows path (@C:\\…@) to its WSL2 drive mount (@/mnt/c/…@), so a
 distro reads a host file in place without a copy tool. Pure.

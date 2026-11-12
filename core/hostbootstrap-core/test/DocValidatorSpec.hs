@@ -12,6 +12,7 @@ import qualified Data.Text.IO as TextIO
 import HostBootstrap.Digest (DigestError (..), frameWire, measurePathSetDigest, sha256Hex)
 import HostBootstrap.DocValidator (
     checkAcceptanceTerminal,
+    checkActivePhaseOwnsRemainingWork,
     checkArchitectureDrift,
     checkEntryDocAgreement,
     checkGateEvidence,
@@ -56,6 +57,7 @@ tests = do
             "DocValidatorSpec"
             [ testCase "governed documentation conforms to the standard" (realRepoCase cwd mroot)
             , testCase "validator flags missing metadata, links, and sections" negativeCase
+            , testGroup "split sprint citations" splitSprintCitationCases
             , testCase "architecture drift guards reject obsolete authority and numeric citations" architectureCase
             , testGroup
                 "architecture boundary source homes"
@@ -75,6 +77,42 @@ tests = do
             , testCase "covers digests refuse unavailable paths and detect source drift" digestCase
             , testCase "SHA-256 and wire framing match known-answer vectors" digestVectorCase
             ]
+
+splitSprintCitationCases :: [TestTree]
+splitSprintCitationCases =
+    [ testCase label $
+        withSystemTempDirectory "hb-docval-split-sprint" $ \root -> do
+            let path = root </> "phase-15-fixture.md"
+                document =
+                    unlines
+                        [ "# Phase 15"
+                        , "**Status**: Active"
+                        , "## Sprints"
+                        , "### Sprint 15.42: Parent [Done]"
+                        , "**Status**: Done"
+                        , "### Sprint 15.42a: First split [Active]"
+                        , "**Status**: Active"
+                        , "### Sprint 15.42aa: Nested split [Active]"
+                        , "**Status**: Active"
+                        , "## Remaining Work"
+                        , citation
+                        ]
+            writeUtf8 path document
+            messages <- map renderViolation <$> checkActivePhaseOwnsRemainingWork root path
+            length messages @?= length expected
+            forM_ expected $ \fragment ->
+                assertBool ("missing exact citation refusal: " <> unlines messages)
+                    (any (fragment `isInfixOf`) messages)
+    | (label, citation, expected) <-
+        [ ("an active split is distinct from its done parent", "- Sprint 15.42a: owed.", [])
+        , ("a done parent does not borrow its active split", "- Sprint 15.42: owed.",
+            ["cites only Done sprints"])
+        , ("an unknown split does not borrow its parent's definition", "- Sprint 15.42b: owed.",
+            ["cites Sprint 15.42b, which this phase does not define", "cites only Done sprints"])
+        , ("multiple citations preserve every complete label", "- Sprint 15.42 and Sprint 15.42a: owed.", [])
+        , ("a longer suffix and possessive punctuation keep the full label", "- Sprint 15.42aa's validation is owed.", [])
+        ]
+    ]
 
 realRepoCase :: FilePath -> Maybe FilePath -> IO ()
 realRepoCase cwd mroot = case mroot of

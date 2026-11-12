@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RoleAnnotations #-}
 
 {- | One owner's durable origin-record operations, over one session and one subject.
 
@@ -15,7 +16,8 @@ deliberately. The key parameter is gone, because a parameter no message reads is
 one a caller cannot get right or wrong; and the refusal names the /subject/,
 which is the distinction the longer wording was reaching for. Every owner's
 refusal therefore reads "the durable record under this key is not <its own
-subject> this transaction publishes".
+subject> this transaction publishes". A well-formed foreign record is occupied;
+an uninterpretable envelope or origin body is malformed and stays intact.
 
 The tape is not the clause algebra and grants nothing: it reads and writes one
 key inside an exclusive entry a caller already holds. Which records may be
@@ -28,22 +30,31 @@ module HostBootstrap.Ownership.Tape (
     -- * The tape
     RecordTape,
     recordTape,
+    StoredOriginRecord,
+    storedOriginRecord,
+    storedRecordVersion,
+    readStoredRecordUnder,
     publishFreshRecord,
     publishBoundRecord,
     forgetRecord,
+    forgetRecordAtVersion,
     readRecordUnder,
+    readVersionedRecordUnder,
+    readRawRecordUnder,
+    publishAbsentRawRecord,
 
-    -- * Carrying the two faults into a domain's own sum
+    -- * Carrying clause results into a domain's own sum
     OwnershipCarrier (..),
     carryClause,
-    carryStore,
+    carryClauseFault,
 ) where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
 import HostBootstrap.Ownership.Object (
     OriginRecord,
-    OwnershipFault (OwnershipMalformed, OwnershipProbeFailed),
+    OwnershipFault (OwnershipOccupied, OwnershipProbeFailed),
+    originRecord,
     originRecordKind,
     originRecordOrigin,
     parseOriginRecord,
@@ -56,6 +67,7 @@ import HostBootstrap.Protected (
     ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
     RecordKey,
+    RecordVersion,
     compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
     readProtectedRecord,
@@ -82,12 +94,45 @@ data RecordTape session = RecordTape (ProtectedSession session) RecordSubject
 recordTape :: ProtectedSession session -> RecordSubject -> RecordTape session
 recordTape = RecordTape
 
+{- | An origin body and its exact version, returned by this entry's store read.
+
+Only readStoredRecordUnder mints this evidence. The nominal session index
+prevents both passing it into another protected entry and coercing that index.
+Plain decoded origin data remains useful for inspection, but carries no such
+store-read provenance.
+-}
+type role StoredOriginRecord nominal
+
+data StoredOriginRecord session = StoredOriginRecord RecordVersion OriginRecord
+    deriving (Eq, Show)
+
+-- These are ordinary functions: exported record selectors would allow a
+-- caller to update a sealed read into an in-memory record or version.
+storedRecordVersion :: StoredOriginRecord session -> RecordVersion
+storedRecordVersion (StoredOriginRecord version _) = version
+
+storedOriginRecord :: StoredOriginRecord session -> OriginRecord
+storedOriginRecord (StoredOriginRecord _ record) = record
+
+{- | Read the existing versioned decoder and seal its result to this entry.
+
+Absence and both existing error layers are preserved. There is no second
+decoder and no producer from a caller-supplied body or version.
+-}
+readStoredRecordUnder ::
+    (OwnershipCarrier fault) =>
+    RecordTape session ->
+    RecordKey ->
+    IO (Either fault (Maybe (StoredOriginRecord session)))
+readStoredRecordUnder tape key =
+    fmap (fmap (fmap (uncurry StoredOriginRecord))) (readVersionedRecordUnder tape key)
+
 {- | Publish this transaction's record under a key nothing else holds.
 
-Idempotent within the transaction: a record already present whose kind and
-origin are this one's is this transaction's own earlier write, because the
-binding is the single field a later step adds. Anything else under the key
-belongs to someone else and is refused rather than overwritten.
+Idempotent only over the exact bytes this write would publish. Even a record
+with this kind and origin belongs to another transaction when it already
+carries a binding; no fresh publication adopts that binding. A foreign record
+is occupied and an uninterpretable body is malformed, both left intact.
 -}
 publishFreshRecord ::
     RecordTape session ->
@@ -108,15 +153,16 @@ publishFreshRecord (RecordTape session subject) key record = do
                 )
         Right (Just stored)
             | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> pure (extendsThisRecord subject record (protectedRecordBytes stored))
+            | otherwise -> pure (refuseOtherRecord subject (protectedRecordBytes stored))
   where
     bytes = renderOriginRecord record
 
 {- | Publish the bound record against the exact version the store now holds.
 
 Read back inside the same exclusive entry rather than carried out of the
-publication continuation, so the store stays the one place a record version
-lives.
+publication continuation. Swap only over this record's exact unbound form;
+identical bound bytes are already settled and keep their version. Any other
+stored binding belongs to another transaction and is left intact.
 -}
 publishBoundRecord ::
     RecordTape session ->
@@ -137,7 +183,7 @@ publishBoundRecord (RecordTape session subject) key record = do
                 )
         Right (Just stored)
             | protectedRecordBytes stored == bytes -> pure (Right ())
-            | otherwise -> do
+            | protectedRecordBytes stored == unboundBytes -> do
                 written <-
                     compareAndSwapProtectedRecord
                         session
@@ -150,74 +196,134 @@ publishBoundRecord (RecordTape session subject) key record = do
                         (const (Right ()))
                         written
                     )
+            | otherwise -> pure (refuseOtherRecord subject (protectedRecordBytes stored))
   where
     bytes = renderOriginRecord record
+    unboundBytes = renderOriginRecord (originRecord (originRecordKind record) (originRecordOrigin record))
 
 {- | Remove the record under this key, if one is there.
 
 An absent record is the settled state this asks for, so it is success rather
 than a refusal: a release that ran twice reports the same thing both times.
+An uninterpretable origin body is refused before deletion, preserving its bytes.
 -}
 forgetRecord ::
     RecordTape session ->
     RecordKey ->
     IO (Either OwnershipFault ())
-forgetRecord (RecordTape session subject) key = do
+forgetRecord tape key = forgetMatchingRecord tape key Nothing
+
+{- | Forget only the version a caller read before its intervening work.
+
+Absence is a version conflict here, rather than the settled state ordinary
+forget accepts. Malformed envelopes and bodies are preserved on either route.
+-}
+forgetRecordAtVersion ::
+    RecordTape session ->
+    RecordKey ->
+    RecordVersion ->
+    IO (Either OwnershipFault ())
+forgetRecordAtVersion tape key version = forgetMatchingRecord tape key (Just version)
+
+-- | One read, origin validation and version-conditional delete for both forget routes.
+forgetMatchingRecord ::
+    RecordTape session ->
+    RecordKey ->
+    Maybe RecordVersion ->
+    IO (Either OwnershipFault ())
+forgetMatchingRecord (RecordTape session subject) key requested = do
     current <- readProtectedRecord session key
     case current of
         Left failure -> pure (Left (storeFault ("read " <> subjectRecord subject) failure))
-        Right Nothing -> pure (Right ())
-        Right (Just stored) -> do
-            forgotten <-
-                compareAndDeleteProtectedRecord
-                    session
-                    key
-                    (ExpectVersion (protectedRecordVersion stored))
-            pure
-                ( either
-                    (Left . storeFault ("forget " <> subjectRecord subject))
-                    (const (Right ()))
-                    forgotten
-                )
+        Right Nothing -> maybe (pure (Right ())) deleteExpected requested
+        Right (Just stored) -> case parseOriginRecord (protectedRecordBytes stored) of
+            Left fault -> pure (Left fault)
+            Right _ -> deleteExpected (maybe (protectedRecordVersion stored) id requested)
+  where
+    deleteExpected version = do
+        forgotten <- compareAndDeleteProtectedRecord session key (ExpectVersion version)
+        pure
+            ( either
+                (Left . storeFault ("forget " <> subjectRecord subject))
+                (const (Right ()))
+                forgotten
+            )
+
+{- | Read the protected envelope without interpreting its origin body.
+
+Acquisition uses presence alone to refuse an unsettled key. The store error
+retains its domain constructor through 'fromStoreFault', just as decoded
+read-back does; malformed origin bodies are interpreted only by the decoder.
+-}
+readRawRecordUnder ::
+    (OwnershipCarrier fault) =>
+    RecordTape session ->
+    RecordKey ->
+    IO (Either fault (Maybe ProtectedRecord))
+readRawRecordUnder (RecordTape session _subject) key = do
+    stored <- readProtectedRecord session key
+    pure (either (Left . fromStoreFault) Right stored)
+
+{- | Publish an ordinary metadata body only where no protected record exists.
+
+The caller already holds this tape's exclusive entry. This operation grants no
+origin or native-identity evidence and never replaces an existing record. Store
+refusals retain the owner's error constructor, as raw reads do.
+-}
+publishAbsentRawRecord ::
+    (OwnershipCarrier fault) =>
+    RecordTape session ->
+    RecordKey ->
+    ByteString ->
+    IO (Either fault ())
+publishAbsentRawRecord (RecordTape session _subject) key bytes =
+    fmap (either (Left . fromStoreFault) (const (Right ())))
+        (compareAndSwapProtectedRecord session key ExpectAbsent bytes)
 
 {- | Read the record under this key back, decoded, in the owner's own error sum.
 
-A store failure and a malformed record are different answers and stay so: the
-first says the store could not be read, the second that what it held is not a
-record. Collapsing them would lose the distinction every caller's refusal makes.
+A store failure is carried through fromStoreFault; an origin-body parse fault
+through fromClauseFault. Publish and forget already deliver OwnershipFault,
+including store failures classified by storeFault, so their bare carrier uses
+fromClauseFault. The carrier preserves these declared domain error layers.
 -}
 readRecordUnder ::
     (OwnershipCarrier fault) =>
     RecordTape session ->
     RecordKey ->
     IO (Either fault (Maybe OriginRecord))
-readRecordUnder (RecordTape session _subject) key = do
-    stored <- readProtectedRecord session key
+readRecordUnder tape key =
+    fmap (fmap (fmap snd)) (readVersionedRecordUnder tape key)
+
+{- | Decode the origin and retain the exact protected version from the same read.
+
+A caller can carry this version across an external act and require it at forget,
+without reading a second envelope or owning a second origin decoder.
+-}
+readVersionedRecordUnder ::
+    (OwnershipCarrier fault) =>
+    RecordTape session ->
+    RecordKey ->
+    IO (Either fault (Maybe (RecordVersion, OriginRecord)))
+readVersionedRecordUnder tape key = do
+    stored <- readRawRecordUnder tape key
     pure $ case stored of
-        Left failure -> Left (fromStoreFault failure)
+        Left failure -> Left failure
         Right Nothing -> Right Nothing
         Right (Just record) ->
             case parseOriginRecord (protectedRecordBytes record) of
                 Left fault -> Left (fromClauseFault fault)
-                Right decoded -> Right (Just decoded)
+                Right decoded -> Right (Just (protectedRecordVersion record, decoded))
 
-{- | Whether the record already under this key is this transaction's own.
-
-The binding is the one field a later step of the same transaction adds, so it is
-the one field this comparison ignores.
--}
-extendsThisRecord :: RecordSubject -> OriginRecord -> ByteString -> Either OwnershipFault ()
-extendsThisRecord subject record stored = case parseOriginRecord stored of
-    Left _ -> Left (foreignRecord subject)
-    Right held
-        | originRecordKind held == originRecordKind record
-        , originRecordOrigin held == originRecordOrigin record ->
-            Right ()
-        | otherwise -> Left (foreignRecord subject)
+-- | Refuse a different stored record without confusing occupancy with corruption.
+refuseOtherRecord :: RecordSubject -> ByteString -> Either OwnershipFault ()
+refuseOtherRecord subject stored = do
+    _ <- parseOriginRecord stored
+    Left (foreignRecord subject)
 
 foreignRecord :: RecordSubject -> OwnershipFault
 foreignRecord subject =
-    OwnershipMalformed
+    OwnershipOccupied
         ( "the durable record under this key is not "
             <> subjectRecord subject
             <> " this transaction publishes"
@@ -228,7 +334,7 @@ foreignRecord subject =
 The clause producers answer in 'OwnershipFault' and the store answers in
 'ProtectedError', while each owner's continuations answer in its own richer sum.
 Ten modules were writing both liftings out; one class per domain replaces them,
-and 'carryClause' and 'carryStore' are then written once rather than per owner.
+and 'carryClause' and 'carryClauseFault' are then written once rather than per owner.
 -}
 class OwnershipCarrier fault where
     fromClauseFault :: OwnershipFault -> fault
@@ -259,5 +365,5 @@ carryClause (Left fault) = Left (fromClauseFault fault)
 carryClause (Right inner) = inner
 
 -- | Carry a clause refusal alone into the domain's sum.
-carryStore :: (OwnershipCarrier fault) => Either OwnershipFault result -> Either fault result
-carryStore = either (Left . fromClauseFault) Right
+carryClauseFault :: (OwnershipCarrier fault) => Either OwnershipFault result -> Either fault result
+carryClauseFault = either (Left . fromClauseFault) Right

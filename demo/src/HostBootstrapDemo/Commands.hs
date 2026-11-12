@@ -74,6 +74,7 @@ module HostBootstrapDemo.Commands (
     clusterReadinessProbeResult,
     nvidiaAllocatableProbeResult,
     directClusterPresence,
+    renderDirectProviderWallDecision,
     directContainerCandidates,
     directDurableMountSource,
     directHarnessDataRootPermissionArgs,
@@ -122,8 +123,9 @@ import Dhall (FromDhall, ToDhall)
 import qualified Dhall
 import GHC.Generics (Generic)
 import HostBootstrap.Activation (
-    ActivationManifest (..),
+    ActivationManifestInput (..),
     activationErrorMessage,
+    activationManifest,
     activationSecretDigestFromBytes,
     activationVerificationKeyBytes,
     activationVerificationKeyFromBytes,
@@ -133,7 +135,15 @@ import HostBootstrap.Activation (
 import HostBootstrap.Build (
     BuildBinding (..),
     BuildChannel (..),
+    buildConfigDigestFromText,
     buildErrorMessage,
+    buildIdentifierFromText,
+    buildSourceDigestFromText,
+    coordinatorDigestFromText,
+    builderDigestFromText,
+    buildFrameNameFromText,
+    buildProjectNameFromText,
+    buildSpecDigestFromText,
     buildSigningVerificationKey,
     buildVerificationKeyBytes,
     installedBuildSigningKey,
@@ -173,7 +183,8 @@ import HostBootstrap.Cluster.Cordon (
 import HostBootstrap.Cluster.Lifecycle (
     ClusterDriver (KindDriver, NvkindDriver),
     ClusterPlan (..),
-    ClusterProfile (Production, TestCase),
+    ClusterProfile (Production),
+    clusterProfileRunKey,
     NvidiaDevicePluginOps (..),
     acceleratorIngressPlan,
     clusterKubeconfigPath,
@@ -378,7 +389,6 @@ import HostBootstrap.Readiness (
 import HostBootstrap.Reconcile (
     ConflictDetail (conflictExpected, conflictObserved, conflictRemedy),
     ReconcileError (Conflict),
-    dependencyProbe,
     withNodeChartWorkloadResource,
     withNodeObservedResource,
     withNodeResourceOfKind,
@@ -465,6 +475,9 @@ import HostBootstrap.Substrate.Provider (
     HostEffect (..),
     HostPathShare (..),
     ProviderKind (..),
+    ProviderProvisionPlan (..),
+    ProviderWallDecision (..),
+    ProviderWallDimension (..),
     RebootReadyPlan (..),
     ShareReconcile (..),
     StagedFile (..),
@@ -494,6 +507,7 @@ import HostBootstrap.Substrate.Provider (
  )
 import HostBootstrap.Substrate.Provider.Alias (
     discoverStrongAliasBackend,
+    guestAliasLinkTarget,
     guestAliasOwnershipTransaction,
     mkGuestAliasSpec,
     reconcileNodeGuestAlias,
@@ -506,6 +520,7 @@ import HostBootstrap.Substrate.Provider.Backend (
     mkWsl2BackendSpec,
     providerBackendBinding,
     registerProviderShareDependencyPackage,
+    withProviderShareDependency,
     registerRunningProviderDependencyPackage,
     runProviderProvisionCall,
     runProviderReadyCall,
@@ -519,7 +534,6 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     ProviderShareDependency,
     carryCreatedRunningProviderSettlement,
     carryProviderShareSettlement,
-    managedProviderShareGeneration,
     mkProviderShareSpec,
     providerStartableAfterProvision,
     settleProviderProvision,
@@ -539,12 +553,10 @@ import HostBootstrap.Wsl2.GlobalWall (PersistedWallRecord (persistedFenceValue))
 import HostBootstrap.Wsl2.GlobalWall.Host (
     AppliedWslConfigFile,
     CurrentUserWallRequest,
-    HostWallError (HostWallNoActiveRecord),
+    HostWallError (HostWallJournalFailure, HostWallNoActiveRecord),
     appliedWslConfigRecord,
-    hostWallActiveRecordKey,
-    hostWallProtectedStore,
+    hostWallOwnershipPresent,
     mkCurrentUserWallRequest,
-    openHostWallLocation,
  )
 import HostBootstrap.Wsl2.GlobalWall.Windows (applyCurrentUserGlobalWall, restoreCurrentUserGlobalWall)
 import HostBootstrapDemo.Accelerator (backendName)
@@ -704,11 +716,11 @@ drives it). The headline @pristine-bootstrap@ case plus the web/e2e cases.
 -}
 demoCases :: [Case]
 demoCases =
-    [ Case (literalCaseId "pristine-bootstrap") 1 False AssertOnce
-    , Case (literalCaseId "web-build") 1 False AssertOnce
-    , Case (literalCaseId "e2e-tabs") 1 False AssertOnce
-    , Case (literalCaseId "registry-persistence") 1 False AssertOnce
-    , Case (literalCaseId "durable-readback") 1 False AssertAcrossRestart
+    [ Case (literalCaseId "pristine-bootstrap") AssertOnce
+    , Case (literalCaseId "web-build") AssertOnce
+    , Case (literalCaseId "e2e-tabs") AssertOnce
+    , Case (literalCaseId "registry-persistence") AssertOnce
+    , Case (literalCaseId "durable-readback") AssertAcrossRestart
     ]
 
 literalCaseId :: T.Text -> CaseId
@@ -1439,9 +1451,9 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
         providerRoute = if direct then "runtime://provider/demo-direct-readiness" else "runtime://provider/demo-vm-readiness"
         shareRoute = "runtime://provider-share/demo-vm-share-readiness"
         clusterRoute = "runtime://cluster/demo-cluster-readiness"
-        scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+        scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
         now = preparedGateJournalVersion gate
         nonce = "deploy-cluster-" <> T.pack (show now)
         clusterSlice = [(stepExecutionConfigDigest execution, stepExecutionFrame execution)]
@@ -1460,10 +1472,10 @@ deployKindAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLi
                 reconcileCluster providerShare =
                     case withNodeResourceOfKind execution ClusterResourceKind (stepExecutionOperationKey execution) $ \plannedCluster ->
                         withActionResourceSlice plannedCluster sliceBudget $ \resourceSlice ->
-                            case withExecutionOwnedCluster execution plannedCluster plannedProvider resourceSlice of
+                            case withExecutionOwnedCluster execution plannedCluster plannedProvider resourceSlice driver of
                                 Left refusal -> failLifecycle (show refusal)
                                 Right base ->
-                                    case withExactPlanOwnedClusterConfig base driver dockerHostDataPath (stepExecutionConfigDigest execution) projectCfg clusterSlice workload $ \configured -> do
+                                    case withExactPlanOwnedClusterConfig base dockerHostDataPath (stepExecutionConfigDigest execution) projectCfg clusterSlice workload $ \configured -> do
                                         createDirectoryIfMissing True (takeDirectory (planOwnedRenderedConfigPath configured))
                                         BS.writeFile (planOwnedRenderedConfigPath configured) (planOwnedClusterConfigBytes configured)
                                         discovered <- discoverStrongClusterBackend cfg configured
@@ -2477,9 +2489,9 @@ deployChartAction :: ProjectConfig configScope -> StepExecution scope planId -> 
 deployChartAction stepCfg execution = demoConfigContext stepCfg Context.ClusterLifecycleCommand [] $ \projectCfg _ctx -> do
     either die pure (validateAcceleratorReplicaCount (haReplicasNat (haReplicas (deploy projectCfg))))
     gate <- stepExecutionPreparedGate execution >>= maybe (die "chart reconcile: the exact gate is absent") pure
-    let scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+    let scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
         route = "runtime://cluster/demo-cluster-readiness"
         now = preparedGateJournalVersion gate
         nonce = "deploy-chart-" <> T.pack (show now)
@@ -2536,21 +2548,25 @@ prepareDemoServiceActivationFor projectCfg execution binaryDigest rolloutRevisio
                         )
             (serviceName, roleWireText, permittedEffects, roleDraftDigest) <- either die pure selected
             let roleWire = TextEncoding.encodeUtf8 roleWireText
-                manifest =
-                    ActivationManifest
-                        { manifestScope = "Production"
-                        , manifestPlanDigest = stepExecutionPlanDigest execution
-                        , manifestSpecDigest = projectCodecSpecDigest codec
-                        , manifestBinaryDigest = binaryDigest
-                        , manifestFrame = localCurrentFrame (inspectLocalContext (context serviceCfg))
-                        , manifestRevision = rolloutRevision
-                        , manifestConfigDigest = sha256HexBytes roleWire
-                        , manifestSecretDigest = activationSecretDigestFromBytes BS.empty
-                        , manifestService = serviceName
-                        , manifestRolePlanDigest = roleDraftDigest
-                        , manifestPermittedEffects = permittedEffects
-                        , manifestSecretChannel = "/run/hostbootstrap/activation/secret.bundle"
-                        }
+            manifest <-
+                either (die . activationErrorMessage) pure
+                    ( activationManifest
+                        ( ActivationManifestInput
+                            { manifestInputScope = "Production"
+                            , manifestInputPlanDigest = stepExecutionPlanDigest execution
+                            , manifestInputSpecDigest = projectCodecSpecDigest codec
+                            , manifestInputBinaryDigest = binaryDigest
+                            , manifestInputFrame = localCurrentFrame (inspectLocalContext (context serviceCfg))
+                            , manifestInputRevision = rolloutRevision
+                            , manifestInputConfigDigest = sha256HexBytes roleWire
+                            , manifestInputSecretDigest = activationSecretDigestFromBytes BS.empty
+                            , manifestInputService = serviceName
+                            , manifestInputRolePlanDigest = roleDraftDigest
+                            , manifestInputPermittedEffects = permittedEffects
+                            , manifestInputSecretChannel = "/run/hostbootstrap/activation/secret.bundle"
+                            }
+                        )
+                    )
             signature <- stepExecutionSignActivationManifest execution (renderActivationManifest manifest) >>= either (die . T.unpack) pure
             installed <-
                 installRelayedServiceActivationRevision
@@ -2607,9 +2623,9 @@ withDemoServiceExposure ::
     IO result
 withDemoServiceExposure projectCfg execution noncePrefix service consume = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die (T.unpack noncePrefix ++ ": the exact cluster dependency gate is absent")) pure
-    let scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+    let scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
         route = "runtime://cluster/demo-cluster-readiness"
         now = preparedGateJournalVersion gate
         nonce = noncePrefix <> "-" <> T.pack (show now)
@@ -2823,9 +2839,9 @@ withHostAcceleratorExposure projectCfg execution consume = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "accelerator-daemon: the exact provider dependency gate is absent") pure
     let cfg = stepExecutionHostConfig execution
         configured = resources projectCfg
-        scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+        scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
         route = "runtime://provider/demo-vm-readiness"
         now = preparedGateJournalVersion gate
         nonce = "accelerator-daemon-provider-" <> T.pack (show now)
@@ -3800,11 +3816,21 @@ verifyHarnessHostArtifacts root windowsHome = do
             let stateDirectory = home </> ".hostbootstrap" </> "global-wall"
             wallStorePresent <- pathPresent stateDirectory
             when wallStorePresent $ do
-                opened <- openHostWallLocation (home </> ".wslconfig") stateDirectory
-                location <- either (die . ("test teardown: cannot inspect the global WSL2 wall: " ++) . show) pure opened
-                assertReleased "global WSL2 wall" (hostWallProtectedStore location) $ \session -> do
-                    observed <- readProtectedRecord session (hostWallActiveRecordKey location)
-                    either (die . T.unpack . protectedErrorMessage) (pure . isJust) observed
+                opened <- openProtectedStore stateDirectory
+                store <-
+                    either
+                        ( die
+                            . ("test teardown: cannot inspect the global WSL2 wall: " ++)
+                            . show
+                            . HostWallJournalFailure
+                            . T.unpack
+                            . protectedErrorMessage
+                        )
+                        pure
+                        opened
+                assertReleased "global WSL2 wall" store $ \session -> do
+                    observed <- hostWallOwnershipPresent session
+                    either (die . T.unpack . protectedErrorMessage) pure observed
   where
     pathPresent path = do
         observed <- tryIOError (getPermissions path)
@@ -4348,7 +4374,7 @@ reconcileShippedDurableAlias _mounted cfg provider share = do
     self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
     let shareTarget = hpsGuestPath share
     spec <- either (throwIO . LifecycleFailure . show) pure (mkGuestAliasSpec durableDockerHostPath shareTarget)
-    let transaction = guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink shareTarget)
+    let transaction = guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink (guestAliasLinkTarget spec))
     outcome <- shipOwnedTransaction cfg self (providerLiftContext provider) transaction
     putStrLn ("copy-source: durable alias transaction returned " ++ show outcome)
     case outcome of
@@ -4781,8 +4807,8 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
         ProviderIncus -> runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
         ProviderLima -> do
             exists <- substrateExists cfg sp
-            case clusterProfileOf projectCfg of
-                TestCase _ ->
+            case clusterProfileRunKey (clusterProfileOf projectCfg) of
+                Just _ ->
                     when exists $
                         throwIO
                             ( SafetyRefusal
@@ -4790,7 +4816,7 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                                     ++ providerVmId sp
                                 )
                             )
-                Production -> pure ()
+                Nothing -> pure ()
             runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
         _ -> do
             exists <- substrateExists cfg sp
@@ -4798,7 +4824,7 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                 then do
                     putStrLn ("vm up: " ++ providerVmId sp ++ " already exists; re-applying the cordon + ensuring it is started (idempotent)")
                     reCordon <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
-                    runEffects cfg (wallEffectsOnly reCordon)
+                    runEffects cfg (wallEffectsOnly (provisionEffects reCordon))
                     applyReconcileCordon cfg sp
                     reboot <- either (die . show) pure (planProviderRebootReady sp)
                     runEffectsBestEffort cfg ("vm up: starting existing " ++ providerVmId sp) (rebootStartEffects reboot)
@@ -4806,7 +4832,7 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                     launch <- either (die . show) pure (planProviderProvision sp envelope (Just durableShare))
                     when (isWindows (hcSubstrate cfg)) discloseWslShutdown
                     putStrLn ("vm up: launching " ++ providerVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
-                    runEffects cfg launch
+                    runEffects cfg (provisionEffects launch)
             when (providerKind sp == ProviderWsl2) $
                 runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
     putStrLn ("vm up: " ++ providerVmId sp ++ " is up")
@@ -4864,9 +4890,9 @@ runExactVmShare projectCfg cfg execution durableShare = do
         IncusVM name image = demoVM
         cpuNatural = cpu configured
         stateRoot = hpsHostPath durableShare </> ".provider-state"
-        scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+        scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
         route = "runtime://provider/demo-vm-readiness"
         now = preparedGateJournalVersion gate
         nonce = "copy-source-" <> T.pack (show now)
@@ -4905,7 +4931,7 @@ runExactVmShare projectCfg cfg execution durableShare = do
                         now
                         nonce
                         ( \plannedProvider managedProvider reprobe ->
-                            withPreparedProviderShare execution plannedShare shareHandle managedProvider (dependencyProbe reprobe) shareSpec gate $ \preparedShare -> do
+                            withPreparedProviderShare execution plannedShare shareHandle managedProvider reprobe shareSpec gate $ \preparedShare -> do
                                 shareCall <- runProviderShareCall backend preparedShare
                                 case settleProviderShare Nothing preparedShare shareCall of
                                     Left failure -> pure (Left failure)
@@ -4915,45 +4941,45 @@ runExactVmShare projectCfg cfg execution durableShare = do
                                             ( \managedShare _ -> do
                                                 vmReady <- substrateWait cfg sp
                                                 netReady <- waitVMNetwork vmReady cfg sp
-                                                let shareProbe = do
-                                                        _ <- awaitDurableShareMounted netReady cfg sp durableShare
-                                                        pure (Right (managedProviderShareGeneration managedShare))
-                                                case withProviderBoundExec backend managedProvider $ \bound ->
-                                                    discoverProvider managedProvider sp bound $ \capability ->
-                                                        case discoverStrongAliasBackend cfg self capability of
-                                                            Left failure -> pure (Left failure)
-                                                            Right aliasBackend ->
-                                                                reconcileNodeGuestAlias
-                                                                    execution
-                                                                    aliasBackend
-                                                                    plannedProvider
-                                                                    managedProvider
-                                                                    plannedShare
-                                                                    managedShare
-                                                                    aliasSpec
-                                                                    (preparedGateFence gate, preparedGateJournalVersion gate)
-                                                                    shareProbe of
+                                                _ <- awaitDurableShareMounted netReady cfg sp durableShare
+                                                case withProviderShareDependency backend preparedShare managedShare id of
                                                     Left failure -> pure (Left failure)
-                                                    Right discoverAction -> do
-                                                        aliasResult <- discoverAction
-                                                        case aliasResult of
-                                                            Left providerFailure -> failLifecycle (show providerFailure)
-                                                            Right _settledAlias ->
-                                                                do
-                                                                    carried <- carryProviderShareSettlement execution managedShare "demo-provider-share-v1"
-                                                                    case carried of
-                                                                        Left failure -> pure (Left failure)
-                                                                        Right () ->
-                                                                            void
-                                                                                <$> registerProviderShareDependencyPackage
-                                                                                    backend
-                                                                                    execution
-                                                                                    scopeCommitment
-                                                                                    gate
-                                                                                    preparedShare
-                                                                                    managedShare
-                                                                                    "runtime://provider-share/demo-vm-share-readiness"
-                                                                                    (now + 1024)
+                                                    Right shareDependency -> case withProviderBoundExec backend managedProvider $ \bound ->
+                                                        discoverProvider managedProvider sp bound $ \capability ->
+                                                            case discoverStrongAliasBackend cfg self capability of
+                                                                Left failure -> pure (Left failure)
+                                                                Right aliasBackend ->
+                                                                    reconcileNodeGuestAlias
+                                                                        execution
+                                                                        aliasBackend
+                                                                        plannedProvider
+                                                                        managedProvider
+                                                                        plannedShare
+                                                                        managedShare
+                                                                        aliasSpec
+                                                                        (preparedGateFence gate, preparedGateJournalVersion gate)
+                                                                        shareDependency of
+                                                        Left failure -> pure (Left failure)
+                                                        Right discoverAction -> do
+                                                            aliasResult <- discoverAction
+                                                            case aliasResult of
+                                                                Left providerFailure -> failLifecycle (show providerFailure)
+                                                                Right _settledAlias ->
+                                                                    do
+                                                                        carried <- carryProviderShareSettlement execution managedShare "demo-provider-share-v1"
+                                                                        case carried of
+                                                                            Left failure -> pure (Left failure)
+                                                                            Right () ->
+                                                                                void
+                                                                                    <$> registerProviderShareDependencyPackage
+                                                                                        backend
+                                                                                        execution
+                                                                                        scopeCommitment
+                                                                                        gate
+                                                                                        preparedShare
+                                                                                        managedShare
+                                                                                        "runtime://provider-share/demo-vm-share-readiness"
+                                                                                        (now + 1024)
                                             )
                                             (\_ _ _ _ -> failLifecycle "copy-source reconcile: the share remains foreign")
                         )
@@ -4987,9 +5013,9 @@ runExactVmProvider projectCfg cfg execution provider envelope durableShare durab
         IncusVM name image = demoVM
         cpuNatural = cpu configured
         stateRoot = durableRoot </> ".provider-state"
-        scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+        scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
     when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "VM provider reconcile: CPU quantity exceeds Word64")
     when (preparedGateJournalVersion gate > maxBound - 1024) (die "VM provider reconcile: dependency lifetime overflows")
     (backendSpec, adapterVersion) <- case providerKind provider of
@@ -5254,21 +5280,21 @@ runAuthenticatedDirectImageBuild parentCfg cfg repoRoot repoRootCfg pinnedBase h
             buildId = sha256Bytes nonce
             binding =
                 BuildBinding
-                    { buildProjectName = T.pack demoProject
-                    , buildSpecDigest = specDigest
-                    , buildConfigDigest = configDigest
-                    , buildIdentifier = buildId
-                    , buildSourceDigest = sourceDigest
-                    , buildCoordinatorDigest = coordinatorDigest
-                    , buildBuilderDigest = coordinatorDigest
-                    , buildFrameName = "image-build-container"
+                    { buildProjectName = buildProjectNameFromText (T.pack demoProject)
+                    , buildSpecDigest = buildSpecDigestFromText specDigest
+                    , buildConfigDigest = buildConfigDigestFromText configDigest
+                    , buildIdentifier = buildIdentifierFromText buildId
+                    , buildSourceDigest = buildSourceDigestFromText sourceDigest
+                    , buildCoordinatorDigest = coordinatorDigestFromText coordinatorDigest
+                    , buildBuilderDigest = builderDigestFromText coordinatorDigest
+                    , buildFrameName = buildFrameNameFromText "image-build-container"
                     }
             channelPath = secrets </> "channel"
             verificationPath = secrets </> "verification"
             coordinatorPath = secrets </> "coordinator"
             configPath = secrets </> "config"
         channel <-
-            withBuildCoordinator signing coordinatorDigest $ \coordinator -> do
+            withBuildCoordinator signing (coordinatorDigestFromText coordinatorDigest) $ \coordinator -> do
                 grant <- signBuildGrant coordinator binding >>= either (die . buildErrorMessage) pure
                 pure (BuildChannel binding grant)
         BS.writeFile channelPath (renderBuildChannel channel)
@@ -5331,14 +5357,14 @@ withAuthenticatedVmBuildSecrets parentCfg cfg provider repoRoot use =
             imageConfig = renderProjectConfig imageCfg
             binding =
                 BuildBinding
-                    { buildProjectName = T.pack demoProject
-                    , buildSpecDigest = demoImageBuildSpecDigest
-                    , buildConfigDigest = childConfigDigest (TextEncoding.encodeUtf8 (imageConfig <> "\n"))
-                    , buildIdentifier = sha256Bytes nonce
-                    , buildSourceDigest = sourceDigest
-                    , buildCoordinatorDigest = coordinatorDigest
-                    , buildBuilderDigest = remoteDigest
-                    , buildFrameName = "image-build-container"
+                    { buildProjectName = buildProjectNameFromText (T.pack demoProject)
+                    , buildSpecDigest = buildSpecDigestFromText demoImageBuildSpecDigest
+                    , buildConfigDigest = buildConfigDigestFromText (childConfigDigest (TextEncoding.encodeUtf8 (imageConfig <> "\n")))
+                    , buildIdentifier = buildIdentifierFromText (sha256Bytes nonce)
+                    , buildSourceDigest = buildSourceDigestFromText sourceDigest
+                    , buildCoordinatorDigest = coordinatorDigestFromText coordinatorDigest
+                    , buildBuilderDigest = builderDigestFromText remoteDigest
+                    , buildFrameName = buildFrameNameFromText "image-build-container"
                     }
             localFiles =
                 [ ("hostbootstrap-build-channel", secrets </> "channel", "/tmp/hostbootstrap-build-channel")
@@ -5347,7 +5373,7 @@ withAuthenticatedVmBuildSecrets parentCfg cfg provider repoRoot use =
                 , ("hostbootstrap-build-config", secrets </> "config", "/tmp/hostbootstrap-build-config")
                 ]
         channel <-
-            withBuildCoordinator signing coordinatorDigest $ \coordinator -> do
+            withBuildCoordinator signing (coordinatorDigestFromText coordinatorDigest) $ \coordinator -> do
                 grant <- signBuildGrant coordinator binding >>= either (die . buildErrorMessage) pure
                 pure (BuildChannel binding grant)
         BS.writeFile (secrets </> "channel") (renderBuildChannel channel)
@@ -5659,15 +5685,35 @@ runDirectProviderReservation stepCfg execution = demoConfigContext stepCfg Conte
     let root = T.unpack (Context.sourceRoot ctx)
     _hostDurableRoot <- ensureProfileDataPath (clusterProfileOf parentCfg) root
     let directPlan = resolvePlanWithDriver demoProject root (clusterProfileOf parentCfg) NvkindDriver
-    case clusterProfileOf parentCfg of
-        TestCase _ -> do
+    case clusterProfileRunKey (clusterProfileOf parentCfg) of
+        Just _ -> do
             exists <- directClusterExists cfgAfterDocker directPlan
             when exists $
                 throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
-        Production -> pure ()
+        Nothing -> pure ()
     absoluteRoot <- makeAbsolute root
+    let directProvider = selectProviderKind ProviderDirectHost demoVMHandles
+        envelope = envelopeOfResources (resources parentCfg)
+    provision <- either (die . show) pure (planProviderProvision directProvider envelope Nothing)
+    wallReport <- maybe (die "direct provider did not report its unsupported walls") pure $
+        renderDirectProviderWallDecision (provisionWallDecision provision)
     runExactDirectProvider parentCfg cfgAfterDocker execution absoluteRoot
+    putStrLn wallReport
     putStrLn "direct-linux-gpu-bootstrap: exact Direct provider reservation is ready"
+
+-- | Explain the direct-host wall decision alongside the reservation it describes.
+renderDirectProviderWallDecision :: ProviderWallDecision -> Maybe String
+renderDirectProviderWallDecision ProviderWallsDelegated = Nothing
+renderDirectProviderWallDecision (DirectHostWallsUnsupported envelope dimensions) =
+    Just $
+        "direct-linux-gpu-bootstrap: outer build and project container run uncapped for "
+            ++ intercalate ", " (map dimensionName dimensions)
+            ++ "; requested envelope: "
+            ++ show envelope
+  where
+    dimensionName ProviderCpuWall = "CPU"
+    dimensionName ProviderMemoryWall = "memory"
+    dimensionName ProviderStorageWall = "storage"
 
 runDirectHostBootstrap :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 runDirectHostBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
@@ -5709,9 +5755,9 @@ runExactDirectProvider ::
 runExactDirectProvider projectCfg cfg execution canonicalRoot = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "Direct provider reconcile: the exact producer gate is absent") pure
     when (preparedGateJournalVersion gate > maxBound - 1024) (die "Direct provider reconcile: dependency lifetime overflows")
-    let scopeCommitment = case clusterProfileOf projectCfg of
-            Production -> "production"
-            TestCase runKey -> "harness:" <> T.pack runKey
+    let scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+            Nothing -> "production"
+            Just runKey -> "harness:" <> runKey
     backendSpec <- either (die . show) pure (mkDirectHostBackendSpec cfg canonicalRoot (demoBaseImage cfg))
     discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
         case withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned ->
@@ -5953,8 +5999,8 @@ demoGuestAliasReverse projectCfg cfg _action = do
                     -- operation even though its descendants are mutable.
                     -- Production durable state is deliberately never normalized
                     -- this way, and symlinks are skipped rather than followed.
-                    case clusterProfileOf projectCfg of
-                        TestCase _ ->
+                    case clusterProfileRunKey (clusterProfileOf projectCfg) of
+                        Just _ ->
                             runInDemoVM
                                 cfg
                                 provider
@@ -5965,7 +6011,7 @@ demoGuestAliasReverse projectCfg cfg _action = do
                                     ++ shellQuoteArg (durableDockerHostPath ++ "/")
                                     ++ " -mindepth 1 ! -type l -exec chmod a+rwX -- {} +"
                                 )
-                        Production -> pure ()
+                        Nothing -> pure ()
                     self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
                     case mkGuestAliasSpec durableDockerHostPath (hpsGuestPath durableShare) of
                         Left failure -> pure (Step.TeardownFailed (show failure))
@@ -5975,7 +6021,7 @@ demoGuestAliasReverse projectCfg cfg _action = do
                                     cfg
                                     self
                                     (providerLiftContext provider)
-                                    (guestAliasOwnershipTransaction spec (ShipGiveBackSymbolicLink (hpsGuestPath durableShare)))
+                                    (guestAliasOwnershipTransaction spec (ShipGiveBackSymbolicLink (guestAliasLinkTarget spec)))
                             pure $ case outcome of
                                 Right ShippedObjectGivenBack -> Step.TeardownReleased
                                 other -> Step.TeardownFailed ("guest alias release refused: " <> show other)
@@ -6123,9 +6169,9 @@ demoDirectClusterReverseAt profile root cfg _action
         if remaining
             then pure (Step.TeardownFailed "direct nvkind node containers remain after deletion")
             else do
-                case profile of
-                    Production -> pure ()
-                    TestCase _ -> do
+                case clusterProfileRunKey profile of
+                    Nothing -> pure ()
+                    Just _ -> do
                         let durableRoot = dataPath directPlan
                         rootExists <- doesDirectoryExist durableRoot
                         when rootExists $ do
@@ -6178,8 +6224,9 @@ directClusterReleaseArgs dockerHostDataPath childDataPath profile =
     ]
 
 clusterProfileArgument :: ClusterProfile -> String
-clusterProfileArgument Production = "production"
-clusterProfileArgument (TestCase runKey) = "harness:" ++ runKey
+clusterProfileArgument profile = case clusterProfileRunKey profile of
+    Nothing -> "production"
+    Just runKey -> "harness:" ++ T.unpack runKey
 
 {- | Fixed internal entry used only by 'directClusterReleaseArgs'.
 

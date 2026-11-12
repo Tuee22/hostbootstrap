@@ -12,7 +12,8 @@ import HostBootstrap.ProjectRoot (
     canonicalDurableHostPath,
     withCanonicalProjectRoot,
  )
-import SourceGuard (fieldModules, haskellImports, mainLibraryStanza)
+import SourceGuard (haskellImports)
+import qualified SourceGuard
 import System.Directory (canonicalizePath, createDirectory, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
@@ -98,20 +99,19 @@ tests =
         , testCase "the pure context has exactly its lower imports and is public" $ do
             root <- repositoryRoot
             let packageRoot = root </> "core" </> "hostbootstrap-core"
-            contextSource <- readFile (packageRoot </> "src" </> "HostBootstrap" </> "Lift" </> "Context.hs")
+            description <- SourceGuard.readPackageDescription
+            contextPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lift.Context"
+            contextSource <- readFile contextPath
             hostBootstrapImports contextSource
                 @?= [ "HostBootstrap.Config.Vocab"
                     , "HostBootstrap.ProjectRoot"
                     ]
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-            librarySource <-
-                maybe
-                    (assertFailure "hostbootstrap-core.cabal has no main library stanza")
-                    pure
-                    (mainLibraryStanza cabalSource)
+            publicModules <-
+                either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
             assertBool
                 "HostBootstrap.Lift.Context is not exposed by the main library"
-                ("HostBootstrap.Lift.Context" `elem` fieldModules "exposed-modules:" librarySource)
+                ("HostBootstrap.Lift.Context" `elem` publicModules)
         ]
 
 placementCases :: [TestTree]

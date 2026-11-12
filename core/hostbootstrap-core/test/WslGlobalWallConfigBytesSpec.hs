@@ -2,6 +2,7 @@
 
 module WslGlobalWallConfigBytesSpec (tests) where
 
+import Control.Monad (forM_)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.Word (Word16)
@@ -30,7 +31,7 @@ tests :: TestTree
 tests =
     testGroup
         "WslGlobalWallConfigBytesSpec"
-        [ testCase "absent and present-empty files produce the exact CRLF body" $ do
+        [ testCase "an empty file produces the exact CRLF body" $ do
             spec <- expectRight (mkManagedWslConfigSpec managedBody)
             let expected =
                     "[general]\r\ninstanceIdleTimeout=21600000\r\n[wsl2]\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n"
@@ -51,6 +52,11 @@ tests =
                 expected =
                     "[general]\ninstanceIdleTimeout=21600000\n[experimental]\ninstanceIdleTimeout=keep-me\n[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=21600000\n"
             mergeManagedWslConfig original spec @?= Right expected
+        , testCase "an unrelated section preceding the managed section stays byte-exact" $ do
+            spec <- expectRight (mkManagedWslConfigSpec managedBody)
+            let original = "[experimental]\n  memory = leave-this ; exact comment\n[wsl2]\nmemory=2GB\n"
+                expected = "[experimental]\n  memory = leave-this ; exact comment\n[wsl2]\nprocessors=6\nmemory=10GB\nswap=10GB\nvmIdleTimeout=21600000\n[general]\ninstanceIdleTimeout=21600000\n"
+            assertExactIdempotent spec original expected
         , testCase "UTF-8 Unicode values cannot hide controlled keys" $ do
             spec <- expectRight (mkManagedWslConfigSpec managedBody)
             let four = ByteString.pack [0xE5, 0x9B, 0x9B]
@@ -172,6 +178,9 @@ tests =
                 (mergeManagedWslConfig "[general]\na=1\n[general]\nb=2\n" spec)
             assertLeftKind
                 isAmbiguous
+                (mergeManagedWslConfig "[wsl2]\na=1\n[wsl2]\nb=2\n" spec)
+            assertLeftKind
+                isAmbiguous
                 ( mergeManagedWslConfig
                     "[general]\ninstanceIdleTimeout=1\ninstanceIdleTimeout=2\n"
                     spec
@@ -201,14 +210,29 @@ tests =
             spec <- expectRight (mkManagedWslConfigSpec managedBody)
             let source =
                     "[general]\r\ncustom=yes\r\ninstanceIdleTimeout=2\r\n[wsl2]\r\nunknown=yes\r\nprocessors=2\r\n"
+                expected =
+                    "[general]\r\ncustom=yes\r\ninstanceIdleTimeout=21600000\r\n[wsl2]\r\nunknown=yes\r\nprocessors=6\r\nmemory=10GB\r\nswap=10GB\r\nvmIdleTimeout=21600000\r\n"
             mapM_
-                (assertUtf16Idempotent spec source)
+                (assertUtf16Idempotent spec source expected)
                 [utf16LittleEndian, utf16BigEndian]
+        , testCase "both UTF-16 decoders refuse odd payloads, NUL, invalid surrogates and lone CR" $ do
+            spec <- expectRight (mkManagedWslConfigSpec managedBody)
+            forM_ [utf16LittleEndianUnits, utf16BigEndianUnits] $ \encode -> do
+                assertLeftKind isInvalidBytes
+                    (mergeManagedWslConfig (encode [] <> ByteString.singleton 0x61) spec)
+                forM_ [[0x61, 0x0000], [0xD800, 0x61], [0xDC00], [0x000D]] $ \units ->
+                    assertLeftKind isInvalidBytes (mergeManagedWslConfig (encode units) spec)
         , testCase "strict decoder rejects invalid UTF, NUL, lone CR, mixed newlines, and UTF-32" $ do
             spec <- expectRight (mkManagedWslConfigSpec managedBody)
             mapM_
                 (assertLeftKind isInvalidBytes . (`mergeManagedWslConfig` spec))
                 [ ByteString.pack [0xC0, 0xAF]
+                , ByteString.pack [0xE0, 0x80, 0x80]
+                , ByteString.pack [0xED, 0xA0, 0x80]
+                , ByteString.pack [0xF0, 0x80, 0x80, 0x80]
+                , ByteString.pack [0xF4, 0x90, 0x80, 0x80]
+                , ByteString.pack [0xE2, 0x82]
+                , ByteString.pack [0xE2, 0x28, 0xA1]
                 , "a\0b"
                 , "a\rb"
                 , "a\nb\r\n"
@@ -216,15 +240,20 @@ tests =
             assertLeftKind
                 isUnsupported
                 (mergeManagedWslConfig "\xFF\xFE\x00\x00" spec)
+            assertLeftKind
+                isUnsupported
+                (mergeManagedWslConfig (ByteString.pack [0x00, 0x00, 0xFE, 0xFF]) spec)
         ]
 
 assertUtf16Idempotent ::
     ManagedWslConfigSpec ->
     String ->
+    String ->
     (ByteString -> ByteString) ->
     Assertion
-assertUtf16Idempotent spec source encode = do
+assertUtf16Idempotent spec source expected encode = do
     desired <- expectRight (mergeManagedWslConfig (encodeAscii source) spec)
+    desired @?= encodeAscii expected
     ByteString.take 2 desired @?= ByteString.take 2 (encode ByteString.empty)
     mergeManagedWslConfig desired spec @?= Right desired
   where

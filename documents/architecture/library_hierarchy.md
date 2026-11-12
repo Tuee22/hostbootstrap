@@ -36,6 +36,13 @@
   [composition_methodology](composition_methodology.md); this document defers to it for the current-frame
   Chain and recursive `project up` interpreter and describes only how the streams layer.
 
+The one closed command vocabulary is declared in the private effect-command-internal
+unit and reexported unchanged by the public core library. Its physical source home
+is internal/effect-command; the interpreter and Effect facade consume that same
+module. Private backend components can depend on the vocabulary and its HostTool
+declaration owner without depending back on the public library. This is packaging
+within L0, not another application-level library or another effect representation.
+
 ## The Three Library Levels
 
 The hierarchy is a chain of pinned Cabal libraries, each importing the one below:

@@ -35,6 +35,8 @@ import HostBootstrap.ProjectPlan (
     plannedResourceFrame,
     plannedResourceKey,
     plannedStepOperationKey,
+    renderSnapshot,
+    stablePlanSnapshotDigest,
     withPlannedResourceOfKind,
  )
 import HostBootstrap.ProjectPlan.Snapshot (BoundPlanSnapshot, withPersistedPlanSnapshot)
@@ -169,7 +171,7 @@ extraSet =
             [(key, bytes)] -> do
                 writeRecord store key bytes
                 let extraBytes = replaceFrame 4 "project:extra-resource" bytes
-                extraKey <- resourceKey (lifecyclePlanDigest (lifecyclePlanFromProjectPlan plan)) "host" "project:extra-resource"
+                extraKey <- resourceKey (stablePlanSnapshotDigest (renderSnapshot plan)) "host" "project:extra-resource"
                 writeRecord store extraKey extraBytes
             _ -> assertFailure "the singleton resource fixture changed"
         withSetSession store $ \session ->
@@ -184,7 +186,7 @@ withCanonicalResourceFixture ::
 withCanonicalResourceFixture use =
     Fixture.withFixtureProjectPlan resourcePlan $ \plan -> do
         records <- resourceRecords plan
-        use (lifecyclePlanSnapshot (lifecyclePlanFromProjectPlan plan)) records
+        use (Fixture.canonicalSnapshotFromProjectPlan plan) records
 
 withCanonicalReleasedResourceFixture ::
     (CanonicalPlanSnapshot -> [(Text, ByteString.ByteString)] -> IO result) ->
@@ -274,15 +276,14 @@ resourceRecords ::
     ProjectPlan scope specDigest planId configId cfg ->
     IO [(Text, ByteString.ByteString)]
 resourceRecords projectPlan = do
-    let lifecycle = lifecyclePlanFromProjectPlan projectPlan
     provider <- case findOperation "core:deploy-vm" of
         Nothing -> pure Nothing
-        Just operation -> case withPlannedResourceOfKind projectPlan ProviderResourceKind operation (renderOne lifecycle "core:deploy-vm") of
+        Just operation -> case withPlannedResourceOfKind projectPlan ProviderResourceKind operation (renderOne projectPlan "core:deploy-vm") of
             Left _ -> pure Nothing
             Right action -> Just <$> action
     cluster <- case findOperation "core:deploy-kind" of
         Nothing -> pure Nothing
-        Just operation -> case withPlannedResourceOfKind projectPlan ClusterResourceKind operation (renderOne lifecycle "core:deploy-kind") of
+        Just operation -> case withPlannedResourceOfKind projectPlan ClusterResourceKind operation (renderOne projectPlan "core:deploy-kind") of
             Left _ -> pure Nothing
             Right action -> Just <$> action
     pure [value | Just value <- [provider, cluster]]
@@ -291,9 +292,9 @@ resourceRecords projectPlan = do
         case [plannedStepOperationKey node | node <- NonEmpty.toList (forward projectPlan), Text.pack (operationKeyText (plannedStepOperationKey node)) == wanted] of
             [found] -> Just found
             _ -> Nothing
-    renderOne lifecycle operation planned = do
-        bytes <- either (assertFailure . show) pure $ renderResourceRecordBundle lifecycle planned 7 operation 3 "running" "adapter-v1" True
-        keyText <- resourceKey (lifecyclePlanDigest lifecycle) (plannedResourceFrame planned) (plannedResourceKey planned)
+    renderOne plan operation planned = do
+        bytes <- either (assertFailure . show) pure $ renderResourceRecordBundle plan planned 7 operation 3 "running" "adapter-v1" True
+        keyText <- resourceKey (stablePlanSnapshotDigest (renderSnapshot plan)) (plannedResourceFrame planned) (plannedResourceKey planned)
         pure (keyText, bytes)
 
 writeRecord :: ProtectedStore -> Text -> ByteString.ByteString -> IO ()
@@ -306,12 +307,12 @@ resourceKey :: Text -> Text -> Text -> IO Text
 resourceKey plan frame resource =
     either (assertFailure . show) pure (resourceRecordKey plan frame resource)
 
-record :: LifecyclePlan scope planId -> PlannedResource scope planId id resource frame -> Bool -> IO ByteString.ByteString
+record :: ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId id resource frame -> Bool -> IO ByteString.ByteString
 record plan planned owned =
     either (assertFailure . show) pure $
         renderResourceRecordBundle plan planned 7 "core:deploy-kind" 3 "running" "adapter-v1" owned
 
-verify :: LifecyclePlan scope planId -> PlannedResource scope planId id resource frame -> ByteString.ByteString -> Either ReconcileError (VerifiedResourceRecordBundle scope planId id resource)
+verify :: ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId id resource frame -> ByteString.ByteString -> Either ReconcileError (VerifiedResourceRecordBundle scope planId id resource)
 verify plan planned =
     verifyResourceRecordBundle plan planned 7 "core:deploy-kind" 3 "running" "adapter-v1"
 
@@ -322,7 +323,7 @@ disposition bundle =
         (\receipt -> "owned:" <> ownershipReceiptOperationKey receipt)
         (\_ _ _ _ phase adapter _ -> "released:" <> phase <> ":" <> adapter)
 
-assertRefused :: LifecyclePlan scope planId -> PlannedResource scope planId id resource frame -> ByteString.ByteString -> IO ()
+assertRefused :: ProjectPlan scope specDigest planId configId cfg -> PlannedResource scope planId id resource frame -> ByteString.ByteString -> IO ()
 assertRefused plan planned raw =
     case verify plan planned raw of
         Left _ -> pure ()
@@ -427,8 +428,8 @@ withRecoveryRootFixtureFor planSteps use =
         either (error . show) id opened
 
 withResource ::
-    ( forall projectId planId resourceId frame.
-      LifecyclePlan (Production projectId) planId ->
+    ( forall projectId specDigest planId configId resourceId frame.
+      ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
       PlannedResource (Production projectId) planId resourceId ClusterResource frame ->
       IO result
     ) ->
@@ -442,7 +443,7 @@ withResource use =
                         projectPlan
                         ClusterResourceKind
                         (plannedStepOperationKey node)
-                        (use (lifecyclePlanFromProjectPlan projectPlan))
+                        (use projectPlan)
             _ -> assertFailure "resource fixture is not a singleton plan"
 
 resourcePlan :: StepPlan

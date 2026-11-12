@@ -1,7 +1,7 @@
 module CrossRunHarnessProjectPlanChain where
 
 import HostBootstrap.Authority (CommandAuthority, ExecutePhase, VerbUp)
-import HostBootstrap.Chain (runChainFromFrame)
+import HostBootstrap.Chain (runChainFromFrameWithDescentFailure)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Mode (LifecycleCursor)
 import HostBootstrap.Lift (SelfRef)
@@ -30,4 +30,4 @@ wrongRun ::
     LifecycleCursor (Harness Project RunB) Plan Frame Broker VerbUp ExecutePhase ->
     ()
 wrongRun cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()

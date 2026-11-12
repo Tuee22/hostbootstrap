@@ -13,6 +13,7 @@ module PrepareFixture (
     withSuccessorGate,
     gateFor,
     gateForValues,
+    assertPackageGateCommitment,
 ) where
 
 import Data.Text (Text)
@@ -20,7 +21,7 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Digest (sha256Hex)
-import HostBootstrap.Lifecycle.Prepared (PreparedGate, recordDurableUnknown)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, preparedGateCommitment, recordDurableUnknown)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
@@ -37,7 +38,7 @@ import HostBootstrap.Protected (
  )
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import Test.Tasty.HUnit (assertFailure)
+import Test.Tasty.HUnit (assertFailure, (@?=))
 
 {- | Record @operation@'s unknown phase in a throwaway protected store and run
 the action with the resulting gate.
@@ -141,7 +142,6 @@ withGateForValuesStore planDigest operation sessionId fence attempt use =
 
 fixtureRecordKey :: Text -> Text -> Text -> Either ProtectedError RecordKey
 fixtureRecordKey planDigest operation sessionId = do
-    _ <- mkRecordName planDigest
     sessionName <- mkRecordName sessionId
     operationName <- mkRecordName operation
     let digest = sha256Hex (TextEncoding.encodeUtf8 planDigest)
@@ -150,3 +150,20 @@ fixtureRecordKey planDigest operation sessionId = do
 expectKey :: Either e RecordKey -> IO RecordKey
 expectKey (Right key) = pure key
 expectKey (Left _) = assertFailure "the fixture record key is malformed"
+
+-- Inspect the returned opaque package through its derived structural representation.
+-- The journal is its seventh coordinate, after the constructor name.
+assertPackageGateCommitment :: Show package => PreparedGate -> package -> IO ()
+assertPackageGateCommitment gate package = do
+    tokens <- either assertFailure pure (lexFields (show package))
+    case tokens of
+        [_, _, _, _, _, _, _, journal, _, _, _] ->
+            case reads journal of
+                [(value, "")] -> value @?= Text.unpack (preparedGateCommitment gate)
+                _ -> assertFailure "runtime dependency journal is not a string"
+        _ -> assertFailure "runtime dependency package has an unexpected shape"
+  where
+    lexFields "" = Right []
+    lexFields input = case lex input of
+        [(token, rest)] | not (null token) -> (token :) <$> lexFields rest
+        _ -> Left "invalid runtime dependency representation"

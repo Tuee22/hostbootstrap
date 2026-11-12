@@ -39,9 +39,9 @@ foundation. Phase 12 separately owns plan-indexed workload/fit/partition/slice e
 ### Sprint 7.1: The scope vocabulary and scoped codecs [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Vocab.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Authority/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Vocab.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Authority/Internal.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`,
 `core/hostbootstrap-core/test/DhallGenSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -70,7 +70,8 @@ Make execution scope part of the configuration's type.
   The `runId` phantom is the run binding; `ScopedTestPlaintext` carries only the `TestSecret`.
 - `ProjectCodec scope specDigest cfg` carries a specification digest, so a value decoded under one schema
   cannot be presented under another.
-- The only required accessor is `cfgContext`; core reads nothing else out of a project's config.
+- The universal configuration interface requires only `cfgContext`; domain-specific planning interfaces
+  supply their own optional pure projections at their admission boundaries.
 - `runConfigAssembly` reads each declared input as bytes and decodes it as UTF-8 with `decodeUtf8'`, so the
   admitted text is independent of the process locale and a non-UTF-8 input is a `Left` diagnostic.
 
@@ -100,7 +101,7 @@ None.
 ### Sprint 7.2: The hand-written Dhall vocabulary and its equality witness [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Dhall/Gen.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Dhall/Gen.hs`,
 `core/hostbootstrap-core/dhall/Core.dhall`, `core/hostbootstrap-core/dhall/example.dhall`,
 `core/hostbootstrap-core/test/DhallGenSpec.hs`, `core/hostbootstrap-core/test/SchemaSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -163,7 +164,7 @@ None.
 ### Sprint 7.3: Validated configuration evidence [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/generic_project_model.md`
@@ -211,8 +212,8 @@ None.
 ### Sprint 7.4: Binary context inside the project config [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `core/hostbootstrap-core/test/SchemaSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`,
@@ -269,7 +270,7 @@ None.
 ### Sprint 7.5: Config-family service registry [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/generic_project_model.md`
@@ -393,7 +394,7 @@ None.
 ### Sprint 7.8: Configuration-facing cordon facade [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon.hs`,
 `core/hostbootstrap-core/test/CordonSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/engineering/resource_budgeting.md`,
@@ -441,7 +442,7 @@ None.
 ### Sprint 7.9: Pure lift-context vocabulary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lift/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lift/Context.hs`,
 `core/hostbootstrap-core/test/LiftContextSpec.hs`, `core/hostbootstrap-core/test/LiftSpec.hs`,
 `core/hostbootstrap-core/test/Wsl2Spec.hs`, `core/hostbootstrap-core/test/ProviderSpec.hs`,
 `core/hostbootstrap-core/test/RegistrySpec.hs`
@@ -498,7 +499,7 @@ None.
 ### Sprint 7.10: The role vocabulary is derived from the role type [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -540,7 +541,7 @@ None.
 ### Sprint 7.11: One existing-output policy for config initialization [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: none
@@ -573,8 +574,8 @@ None.
 ### Sprint 7.12: The scope index determines its descriptive scope tag [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Fields.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Fields/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Fields.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Fields/Internal.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/generic_project_model.md`
@@ -584,7 +585,7 @@ None.
 The descriptive `ScopeKind` tag a framework envelope reports is a function of the codec's `scope` index, so
 the runtime agreement check that authority-bearing dispatch performs can compare a tag the type determined
 rather than one a caller chose. This sprint supplies that function as a class. Its consumers are Sprint 7.15's
-full-config route here, Phase 12's `frameworkEnvelopeCodec` signature (Sprint 12.38), and Phase 17's
+full-config route here, Phase 12's `frameworkEnvelopeCodec` signature (Sprint 12.39), and Phase 17's
 `withFinalizedProjectSpec` and `withFinalizedProjectSpecKernel` (Sprint 17.69), which read the same class;
 `withFinalizedServiceRegistry` takes its scope kind from the codec (Phase 22).
 
@@ -617,7 +618,7 @@ None.
 ### Sprint 7.13: Placement relations are total and every topology refusal is produced [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Context.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -674,8 +675,8 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`,
 `core/hostbootstrap-core/test/SourceGuard.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
 **Substrates**: none
@@ -741,8 +742,8 @@ None.
 ### Sprint 7.15: Project lifecycle and check-code admit only a full project wire [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Fields.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Fields.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/SchemaSpec.hs`, `core/hostbootstrap-core/test/ContextSpec.hs`,
 `core/hostbootstrap-core/test/SealedExportInventory.hs`,

@@ -469,7 +469,13 @@ withReauthorizedBoundPlanSnapshotKernel admission =
                                     project
                                     verb
                                     use
-                            pure (fromMode resumed)
+                            -- With the mode absent, "no retained intent" is the engine's
+                            -- generic in-progress refusal; report the honest absent-mode
+                            -- failure instead of claiming a reverse root is in flight.
+                            pure $ case (failure, fromMode resumed) of
+                                (ModeWrongMode "production" "absent", Left (SnapshotVerificationError ModeReverseRootInProgress)) ->
+                                    Left (SnapshotVerificationError failure)
+                                (_, outcome) -> outcome
                         Left failure -> pure (Left (SnapshotVerificationError failure))
                         Right outcome -> pure outcome
 

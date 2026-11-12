@@ -2,10 +2,10 @@
 
 {- | The owned-object vocabulary, proved by application.
 
-Every case here is a pure function applied to a value. That is the point of the
-module under test: the nouns the four ownership clauses are written in carry no
-effects, so nothing here needs a filesystem, a stand-in, or a process, and a
-property that holds by application holds on every gate host (§ NN).
+The identity, payload, codec and fault groups apply pure functions to values.
+The clause group reads the actual Haskell sources and Cabal description to hold
+their registration, importer and role declarations. Private import refusal is
+proved separately by the public compile-fail fixture (§ NN).
 
 What is covered is the whole of what a durable record can do to an owner. The
 codec round-trips, and every way a record can be malformed — a wrong magic, a
@@ -85,6 +85,19 @@ identityTests =
         left @?= right
         assertBool "different kernel answers are different identities" (left /= other)
         objectIdentityText other @?= "0103"
+    , testCase "a kernel identity admits exactly eight or sixteen object bytes" $ do
+        traverse_
+            (\size -> mkKernelObjectIdentity 1 (ByteString.replicate size 0x11)
+                @?= Left (OwnershipMalformed "a kernel object identifier is neither 8 nor 16 bytes"))
+            [0, 1, 7, 9, 15, 17, 64]
+        traverse_
+            (\size -> do
+                identity <- expectRight (mkKernelObjectIdentity 1 (ByteString.replicate size 0x11))
+                ByteString.length (objectIdentityBytes identity) @?= 8 + size)
+            [8, 16]
+    , testCase "the POSIX kernel identity keeps its volume and inode bytes" $ do
+        identity <- expectRight (mkKernelObjectIdentity 0x0102030405060708 (ByteString.pack [0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11]))
+        objectIdentityText identity @?= "08070605040302011817161514131211"
     ]
 
 -- ---------------------------------------------------------------------------
@@ -215,6 +228,11 @@ recordTests =
             , "ownership 1 directory absent - -\n\n"
             , "ownership 1 directory absent - -\nownership 1 directory absent - -\n"
             , "ownership 1 directory absent - -\n "
+            , "ownership 1 directory absent - -\r\n"
+            , "ownership\t1 directory absent - -\n"
+            , "ownership  1 directory absent - -\n"
+            , " ownership 1 directory absent - -\n"
+            , "ownership 1 directory absent - - \n"
             , "ownership 2 directory absent - -\n"
             , "reservation 1 directory absent - -\n"
             , "ownership 1 directory absent -\n"
@@ -230,13 +248,12 @@ recordTests =
             , "ownership 1 directory absent - absent\n"
             , ByteString.pack [0x6f, 0x77, 0xff, 0x0a]
             ]
-    , testCase "a record is compared by its own bytes rather than by its rendering's shape" $ do
-        let record = originRecord (OwnedFile (payloadDigest (mkPayload "abc"))) OriginAbsent
-        readBack <- expectRight (parseOriginRecord (renderOriginRecord record))
-        readBack @?= record
-        assertBool
-            "the payload digest survives the round trip"
-            (originRecordKind readBack == OwnedFile (payloadDigest (mkPayload "abc")))
+    , testCase "a file record names its missing payload digest exactly" $
+        parseOriginRecord "ownership 1 file absent - -\n"
+            @?= Left (OwnershipMalformed "a file record is missing its payload digest")
+    , testCase "a reported-object record names its missing owner claim exactly" $
+        parseOriginRecord "ownership 1 reported absent - -\n"
+            @?= Left (OwnershipMalformed "a reported-object record is missing its owner claim")
     ]
 
 roundTrips :: OriginRecord -> IO ()
@@ -296,7 +313,7 @@ else.
 -}
 clauseTests :: [TestTree]
 clauseTests =
-    [ testCase "the constructors are private and only this phase's own modules reach them" $
+    [ testCase "the constructor owner, importer set and nominal roles stay registered" $
         withCoreSourceRoot $ \packageRoot sourceRoot -> do
             internalSource <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Internal.hs")
             clauseSource <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Clause.hs")
@@ -305,10 +322,10 @@ clauseTests =
                 importsInternal name =
                     SourceGuard.importsModule "HostBootstrap.Ownership.Internal" name
             assertBool
-                "the constructor owner is registered privately"
+                "the constructor owner module is registered"
                 ("HostBootstrap.Ownership.Internal" `elem` rows)
             assertBool
-                "the facade and the vocabulary are the public surface"
+                "the facade and vocabulary modules are registered"
                 ( "HostBootstrap.Ownership.Clause" `elem` rows
                     && "HostBootstrap.Ownership.Object" `elem` rows
                 )

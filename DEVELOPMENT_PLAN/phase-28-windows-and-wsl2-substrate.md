@@ -1124,16 +1124,62 @@ four-command host static gate passes, and the native Windows matrix of Sprint 28
   exact route alone" as Validation states.
 - Rewrite the WSL2 sentences of `documents/architecture/durable_state.md` and
   `documents/architecture/ownership_invariant.md` so every VM provider runs only `runExactVmShare`.
+### Sprint 28.8: Integrate native WSL disk-cap confirmation [Planned]
+
+**Status**: Planned
+**Substrates**: windows
+**Docs to update**: `documents/engineering/wsl2.md`, `documents/engineering/testing.md`,
+`documents/operations/demo_runbook.md`
+
+#### Objective
+
+Integrate the real owned-distro disk-cap confirmation owed by Sprint 15.45b into this phase's
+native Windows acceptance. Ordinary disk metadata and static protected-store cases do not prove
+an installed WSL virtual disk's capacity or registration behavior.
+
+#### Deliverables
+
+- Add the native acceptance case "owned WSL installation retains its original disk cap" to the
+  Windows gate driver, with its compilation/registration guard in the host static suite. It invokes
+  the actual guest-VM transaction and fixed native registry observer over an owned disposable distro.
+- Confirm the actual virtual disk's original cap by native readback and correlate it with the exact
+  registration GUID, install location, owner and persisted cap. Equal retained provisioning returns
+  AlreadyOwned without reinstalling; a different storage declaration returns the shared sizing Conflict
+  with declared and recorded quantities, preserving the origin/cap records and native distro.
+- Exercise a real interrupted-install retry and retain the original cap. A CLI answer never supplies
+  native identity. Use no alternate registry root, supplied GUID or production fault hook; record the
+  actual interrupted state the run reaches.
+- Release only the run's owned distro and records and audit no residue. Preserve unrelated distros and
+  settings. Sprint 28.5 owns the complete native confirmation after this integration and every lower
+  baseline change; this sprint closes on the four host-static commands.
+
+#### Validation
+
+The host static suite compiles the native case and pins its registration in the Windows acceptance
+driver; non-Windows rows retain real Unsupported results. It does not report the native confirmation
+as static evidence. Sprint 28.5 runs the phase's complete declared gate with this case included and
+records the original/equal/changed/interrupted results, actual virtual capacity, native GUID/location,
+no-reinstallation/no-mutation observations, exact command, date, duration and audited cleanup.
+
+#### Remaining Work
+
+- Integrate the named real-distro case and its static registration/compilation controls.
+- Run all four host-static commands and leave the live confirmation explicitly owned by Sprint 28.5.
+- Include its actual result in the final Windows gate evidence after all baseline phases settle.
+
 
 ## Remaining Work
 
 - Sprint 28.5: run and record the demo daemon's kill-and-restart on the Win32 kernel (daemon kill and
   operation-holder kill, each resolved through supported commands), re-run the declared gate against the tree
-  carrying Sprints 6.5, 7.9, 16.61, 24.43, and 28.7 while recording each generation's four distinct loopback
+  carrying Sprints 6.5, 7.9, 16.61, 24.43, 28.7, and 28.8 while recording each generation's four distinct loopback
   ports.
 - Sprint 28.7: route WSL2 `copy-source` through `runExactVmShare` alone, deleting `reconcileShippedDurableAlias`,
   `reconcileDurableShare`, and their now-unused imports, with the `CommandsSpec` case that pins the single
   route; it lands before Sprint 28.5's visit and closes on that visit's matrix.
+- Sprint 28.8: integrate the original WSL disk-cap native acceptance case, with its live confirmation
+  included in Sprint 28.5's final Windows gate.
+
 
 ## Documentation Requirements
 

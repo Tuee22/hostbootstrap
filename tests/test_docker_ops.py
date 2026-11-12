@@ -51,7 +51,7 @@ def test_build_command_minimal_no_pull_no_target() -> None:
     assert "--pull" not in cmd
     assert "--no-cache" not in cmd
     assert "--target" not in cmd
-    assert cmd[-2:] == ("D", ".") or cmd[-1] == "."
+    assert cmd[-3:] == ("--file", "D", ".")
 
 
 def test_build_command_no_cache() -> None:
@@ -146,53 +146,9 @@ async def test_build_forces_classic_builder_for_caps_or_explicit_local_resolutio
     assert seen[2] == {"DOCKER_BUILDKIT": "0"}
 
 
-def test_run_command_one_shot_rm_with_mounts() -> None:
-    spec = docker_ops.RunSpec(
-        image="img",
-        command=("echo", "hi"),
-        rm=True,
-        mounts=(("/h", "/c", False), ("/secret", "/s", True)),
-    )
-    cmd = docker_ops.run_command(spec)
-    assert cmd[:3] == ("docker", "run", "--rm")
-    assert "-v" in cmd
-    assert "/h:/c" in cmd
-    assert "/secret:/s:ro" in cmd
-    assert cmd[-3:] == ("img", "echo", "hi")
-
-
-def test_run_command_detached_service() -> None:
-    spec = docker_ops.RunSpec(
-        image="img",
-        detach=True,
-        name="proj",
-        env={"K": "V"},
-        network="host",
-        extra=("-w", "/src"),
-    )
-    cmd = docker_ops.run_command(spec)
-    assert "-d" in cmd
-    assert "--restart" not in cmd
-    assert ("--name", "proj") == cmd[cmd.index("--name") : cmd.index("--name") + 2]
-    assert ("--network", "host") == cmd[cmd.index("--network") : cmd.index("--network") + 2]
-    assert "K=V" in cmd
-    assert cmd[-3:] == ("-w", "/src", "img")
-    assert "--rm" not in cmd
-
-
 def test_push_tag_inspect_commands() -> None:
     assert docker_ops.push_command("r:t") == ("docker", "push", "r:t")
     assert docker_ops.pull_command("r:t") == ("docker", "pull", "r:t")
-    assert docker_ops.tag_command("a", "b") == ("docker", "tag", "a", "b")
-    assert docker_ops.image_exists_command("x") == ("docker", "image", "inspect", "x")
-    assert docker_ops.image_entrypoint_command("x") == (
-        "docker",
-        "image",
-        "inspect",
-        "--format",
-        "{{json .Config.Entrypoint}}",
-        "x",
-    )
     assert docker_ops.engine_arch_command() == (
         "docker",
         "info",
@@ -264,6 +220,35 @@ def test_parse_digest_reference_accepts_docker_hub_registry_elision() -> None:
     )
 
 
+def test_parse_digest_reference_requires_a_canonical_lowercase_hex_digest() -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    repository = "docker.io/tuee22/hostbootstrap"
+    for digest in ("a" * 63, "g" * 64, "A" * 64, "a" * 65):
+        with pytest.raises(RuntimeError, match="exactly one"):
+            docker_ops.parse_digest_reference(f'["{repository}@sha256:{digest}"]', tag=tag)
+
+
+def test_parse_digest_reference_skips_non_string_entries() -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    expected = f"docker.io/tuee22/hostbootstrap@sha256:{'a' * 64}"
+    assert docker_ops.parse_digest_reference(f'[5, "{expected}"]', tag=tag) == expected
+
+
+def test_parse_digest_reference_normalizes_the_index_registry_alias() -> None:
+    tag = "docker.io/tuee22/hostbootstrap:basecontainer-cpu-arm64"
+    digest = f"sha256:{'e' * 64}"
+    rendered = f'["index.docker.io/tuee22/hostbootstrap@{digest}"]'
+    assert docker_ops.parse_digest_reference(rendered, tag=tag) == (
+        f"docker.io/tuee22/hostbootstrap@{digest}"
+    )
+
+
+def test_parse_digest_reference_keeps_a_registry_port_in_the_repository() -> None:
+    tag = "localhost:5000/repo"
+    entry = f"localhost:5000/repo@sha256:{'f' * 64}"
+    assert docker_ops.parse_digest_reference(f'["{entry}"]', tag=tag) == entry
+
+
 def test_parse_image_id_requires_full_sha256() -> None:
     image_id = f"sha256:{'d' * 64}"
     assert docker_ops.parse_image_id(f"{image_id}\n", tag="r:t") == image_id
@@ -271,22 +256,6 @@ def test_parse_image_id_requires_full_sha256() -> None:
         docker_ops.parse_image_id("sha256:short", tag="r:t")
     with pytest.raises(RuntimeError, match="unexpected Docker image ID"):
         docker_ops.parse_image_id(f"sha256:{'D' * 64}", tag="r:t")
-
-
-def test_parse_image_entrypoint() -> None:
-    assert docker_ops.parse_image_entrypoint("", tag="img") == ()
-    assert docker_ops.parse_image_entrypoint("null\n", tag="img") == ()
-    assert docker_ops.parse_image_entrypoint('["/usr/bin/tini","--","proj"]', tag="img") == (
-        "/usr/bin/tini",
-        "--",
-        "proj",
-    )
-    with pytest.raises(RuntimeError, match="could not parse"):
-        docker_ops.parse_image_entrypoint("not-json", tag="img")
-    with pytest.raises(RuntimeError, match="unexpected"):
-        docker_ops.parse_image_entrypoint('"not-a-list"', tag="img")
-    with pytest.raises(RuntimeError, match="unexpected"):
-        docker_ops.parse_image_entrypoint("[1]", tag="img")
 
 
 async def test_async_wrappers_delegate_to_process(
@@ -303,25 +272,10 @@ async def test_async_wrappers_delegate_to_process(
     assert (await docker_ops.build(spec)).ok
     assert (await docker_ops.push("t")).ok
     assert (await docker_ops.pull("t")).ok
-    assert await docker_ops.image_exists("t")
 
     assert recorded_commands[0][0][:2] == ("docker", "build")
     assert recorded_commands[1] == (("docker", "push", "t"), None, "checked")
     assert recorded_commands[2] == (("docker", "pull", "t"), None, "checked")
-    assert recorded_commands[3] == (("docker", "image", "inspect", "t"), None, "probe")
-
-    async def _fake_run_checked(cmd: object, **kwargs: object) -> process.CommandResult:
-        argv = tuple(str(part) for part in cmd)  # type: ignore[union-attr]
-        assert kwargs == {"quiet": True}
-        return process.CommandResult(
-            args=argv,
-            returncode=0,
-            stdout='["/usr/bin/tini","--","proj"]\n',
-            stderr="",
-        )
-
-    monkeypatch.setattr(docker_ops.process, "run_checked", _fake_run_checked)
-    assert await docker_ops.image_entrypoint("t") == ("/usr/bin/tini", "--", "proj")
 
 
 async def test_arch_and_digest_async_wrappers_parse_quiet_output(
@@ -353,13 +307,3 @@ async def test_arch_and_digest_async_wrappers_parse_quiet_output(
         docker_ops.image_repo_digests_command(tag),
         docker_ops.image_id_command(tag),
     ]
-
-
-async def test_image_exists_false(monkeypatch) -> None:
-    async def _missing(cmd: object, **_: object) -> docker_ops.process.CommandResult:
-        argv = tuple(str(part) for part in cmd)
-        return docker_ops.process.CommandResult(args=argv, returncode=1, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_ops.process, "run", _missing)
-
-    assert not await docker_ops.image_exists("missing")

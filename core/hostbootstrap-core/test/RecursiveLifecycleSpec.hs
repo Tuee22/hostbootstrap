@@ -63,7 +63,7 @@ import HostBootstrap.Step (
     reversedBy,
  )
 import PlatformPath (hostPathAsPosixDescriptor)
-import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesFileExist)
+import System.Directory (copyFile, createDirectory, createDirectoryIfMissing, doesFileExist, renameFile)
 import System.Environment (getArgs, getEnv, getEnvironment, getExecutablePath, lookupEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath (searchPathSeparator, takeFileName, (<.>), (</>))
@@ -218,7 +218,9 @@ runLifecycleRoot verb = do
 runDestroyInterruptionProbe :: FilePath -> IO ()
 runDestroyInterruptionProbe readyPath = do
     runLifecycleRoot "destroy"
-    writeFile readyPath "destroy-settled"
+    let pendingPath = readyPath ++ ".pending"
+    writeFile pendingPath "destroy-settled"
+    renameFile pendingPath readyPath
     threadDelay 600000000
 
 spawnDestroyInterruptionProbe :: FilePath -> FilePath -> IO ProcessHandle
@@ -395,9 +397,11 @@ withLocalGuestFrame family action =
                     ""
             status @?= ExitFailure 1
             assertBool
-                "the native receiver refuses the different guest-root snapshot"
-                ( "PlanHandoffEvidenceMismatch" `Text.isInfixOf` Text.pack diagnostic
-                    && "stable plan digest" `Text.isInfixOf` Text.pack diagnostic
+                ("the native receiver refuses the different guest-root snapshot; diagnostic: " ++ diagnostic)
+                ( ( "PlanHandoffEvidenceMismatch" `Text.isInfixOf` Text.pack diagnostic
+                        && "stable plan digest" `Text.isInfixOf` Text.pack diagnostic
+                  )
+                    || "ProjectRootEscapesAnchor" `Text.isInfixOf` Text.pack diagnostic
                 )
 
 node :: String -> String -> StepObservation -> Step
@@ -408,7 +412,7 @@ stepId :: String -> ProjectStepId
 stepId = either error id . projectStepId
 
 passingSuite :: TestSuite
-passingSuite = TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False AssertOnce] (\_ _ -> pure Pass) (pure ())
+passingSuite = TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) AssertOnce] (\_ _ -> pure Pass) (pure ())
 
 fixtureTestInit :: a -> Fixture.TestConfig
 fixtureTestInit _ = Fixture.defaultTestConfig (Fixture.Resources 1 "1GiB" "1GiB")

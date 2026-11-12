@@ -3,8 +3,9 @@
 module EscapeReenteredOwnershipEntry where
 
 import HostBootstrap.Ownership.Clause (Bound)
-import HostBootstrap.Ownership.Object (OriginRecord, OwnershipFault)
-import HostBootstrap.Ownership.Primitive (OwnershipRow, reenterOwnedObject)
+import HostBootstrap.Ownership.Object (OwnershipFault)
+import HostBootstrap.Ownership.Primitive (OwnershipRow, reenterStoredOwnedObject)
+import HostBootstrap.Ownership.Tape (StoredOriginRecord)
 import HostBootstrap.Protected (ProtectedSession)
 
 -- Re-entering an object already owned is an entry, not a way around one: the
@@ -14,7 +15,7 @@ escapes ::
     OwnershipRow ->
     ProtectedSession session ->
     FilePath ->
-    OriginRecord ->
+    StoredOriginRecord session ->
     IO (Either OwnershipFault (Bound escaped object))
 escapes row session target record =
-    reenterOwnedObject row session target record (\bound -> pure (Right bound))
+    reenterStoredOwnedObject row session target record (\bound -> pure (Right bound))

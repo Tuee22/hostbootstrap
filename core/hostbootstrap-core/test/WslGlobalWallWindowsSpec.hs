@@ -3,7 +3,7 @@
 {- | Native Windows coverage for the public WSL global-wall entry points.
 
 The portable driver and its crash-resume matrix run through
-"WslGlobalWallHostSpec" over the POSIX row. These cases exercise the production
+"WslGlobalWallHostSpec" over the host's ownership row. These cases exercise the production
 Win32 backend against a temporary @USERPROFILE@ so the native identity,
 hard-link, rename, journal, and conditional-release operations run without
 touching the operator's real @.wslconfig@.
@@ -20,7 +20,11 @@ import ConditionalCase (conditionalCase)
 import Control.Exception (bracket)
 import qualified Data.ByteString as ByteString
 import Expect (expectRightLabelled)
+import HostBootstrap.Ownership.Object (ObjectIdentity)
+import HostBootstrap.Ownership.Primitive (rowLinkNoReplace, rowObserveIdentity, withOwnershipRow)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Wsl2.GlobalWall
+import HostBootstrap.Wsl2.GlobalWall.ConfigBytes (mergeManagedWslConfig, mkManagedWslConfigSpec)
 import HostBootstrap.Wsl2.GlobalWall.Host
 import HostBootstrap.Wsl2.GlobalWall.Windows
 import System.Directory (doesFileExist, removeFile)
@@ -109,33 +113,59 @@ tests =
                 persistedWallPhase (appliedWslConfigRecord applied) @?= WallApplied
                 let target = profile </> ".wslconfig"
                 published <- ByteString.readFile target
-                assertBool
-                    "the native publication contains the managed memory wall"
-                    ("memory=8GB" `ByteString.isInfixOf` published)
+                spec <- expectRightLabelled "managed spec" (mkManagedWslConfigSpec managedBody)
+                expected <- expectRightLabelled "exact merge" (mergeManagedWslConfig ByteString.empty spec)
+                published @?= expected
                 _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
                 doesFileExist target >>= (@?= False)
-                doesFileExist (profile </> ".hostbootstrap" </> "global-wall.record")
-                    >>= (@?= False)
+                restoredAgain <- restoreCurrentUserGlobalWall wall
+                restoredAgain @?= Left HostWallNoActiveRecord
         , rowCase "a present origin is restored byte-for-byte" $ \profile -> do
             let target = profile </> ".wslconfig"
                 original = "# operator bytes\r\n[wsl2]\r\nkernel=C:\\\\custom\r\n"
             ByteString.writeFile target original
+            originalIdentity <- observeIdentity target
             wall <- request
             _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+            published <- ByteString.readFile target
+            assertBool "apply changed the target bytes" (published /= original)
             _ <- restoreCurrentUserGlobalWall wall >>= expectRightLabelled "restore"
             ByteString.readFile target >>= (@?= original)
+            restoredIdentity <- observeIdentity target
+            restoredIdentity @?= originalIdentity
         , rowCase "a replacement is refused and preserved" $ \profile -> do
             let target = profile </> ".wslconfig"
-                replacement = "foreign replacement\r\n"
+                retained = profile </> "published-original"
             wall <- request
             _ <- applyCurrentUserGlobalWall wall >>= expectRightLabelled "apply"
+            replacement <- ByteString.readFile target
+            linked <- withOwnershipRow ownershipRowForHost (\primitives -> rowLinkNoReplace primitives target retained)
+            _ <- expectRightLabelled "retain the original live identity" linked
             removeFile target
             ByteString.writeFile target replacement
             restored <- restoreCurrentUserGlobalWall wall
             case restored of
-                Left (HostWallConflict _) -> pure ()
+                Left (HostWallConflict (TargetReplaced _ _)) -> pure ()
                 other ->
                     assertFailure
                         ("expected an identity conflict, got " ++ show other)
             ByteString.readFile target >>= (@?= replacement)
+        , profileRefusalCase "an unset USERPROFILE refuses both entry points" Nothing
+        , profileRefusalCase "an empty USERPROFILE refuses both entry points" (Just "")
+        , profileRefusalCase "a relative USERPROFILE refuses both entry points" (Just "relative-profile")
         ]
+
+profileRefusalCase :: TestName -> Maybe String -> TestTree
+profileRefusalCase name profile =
+    rowCase name $ \_ ->
+        bracket
+            (lookupEnv "USERPROFILE")
+            (restoreEnvironment "USERPROFILE")
+            (\_ -> restoreEnvironment "USERPROFILE" profile >> expectRowRefusal)
+
+observeIdentity :: FilePath -> IO ObjectIdentity
+observeIdentity target = do
+    observed <- withOwnershipRow ownershipRowForHost (\primitives -> rowObserveIdentity primitives target)
+    case observed of
+        Right (Just identity) -> pure identity
+        other -> assertFailure ("expected a native file identity, got " <> show other)

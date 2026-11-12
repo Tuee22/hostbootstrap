@@ -41,9 +41,9 @@ The warm Cabal store inside the image is a cache and nothing more. A miss resolv
 
 ## Sprints
 
-### Sprint 23.1: Native rolling publication [Active]
+### Sprint 23.1: Native rolling publication [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `docker/basecontainer.Dockerfile`, `hostbootstrap/base_image.py`,
 `hostbootstrap/docker_ops.py`, `hostbootstrap/cli.py`, `.dockerignore`, `tests/test_cli.py`,
 `tests/test_base_image.py`, `tests/test_docker_ops.py`
@@ -93,20 +93,25 @@ passes, because `demo/test/CommandsSpec.hs` reads the root `.dockerignore`:
   `**/.data/`, `**/.build/`, `**/.hostbootstrap/`, `**/.test_data/` and `**/cabal.project.freeze` is
   present and that no root-only spelling of those entries remains.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (Python 3.14.3, Poetry 2.4.1, GHC 9.12.4):
+the root `.dockerignore` carries `**/dist-newstyle/`, `**/.data/`, `**/.build/`, `**/.hostbootstrap/`,
+`**/.test_data/`, and `**/cabal.project.freeze` with a comment that Docker patterns are context-root-anchored unlike
+`.gitignore`, and no root-only spelling of them remains (`test_dockerignore_excludes_build_state_at_every_depth`).
+`test_native_architecture_requires_request_host_and_engine_match` also asserts that request and host both `amd64`
+with an `arm64` engine raises `must be native`; `test_resolve_cuda_picks_the_newest_numeric_version_not_the_first_or_lexical`
+selects `12.10.0` over `12.9.x` and an older first-listed tag; and
+`test_build_command_minimal_no_pull_no_target` asserts `cmd[-3:] == ("--file", "D", ".")`.
+`poetry run python -m hostbootstrap.check_code` passes and `poetry run python -m hostbootstrap.test_all` passes
+(379 tests, coverage 100%). The `demo/` leg `cabal test all` ran the changed `.dockerignore` through
+`demo/test/CommandsSpec.hs`.
+
 #### Remaining Work
 
-- Rewrite the build-state entries of `.dockerignore` with a `**/` prefix, add `**/.test_data/`, replace the
-  `cabal.project.freeze` comment with one that says patterns are context-root-anchored unlike `.gitignore`,
-  and add the `.dockerignore` assertion case to `tests/test_base_image.py`.
-- Add the engine-mismatch assertion to
-  `tests/test_cli.py::test_native_architecture_requires_request_host_and_engine_match`.
-- Add the multi-candidate CUDA ordering case to `tests/test_base_image.py`.
-- Replace the disjunctive tail assertion in `tests/test_docker_ops.py::test_build_command_minimal_no_pull_no_target`
-  with `cmd[-3:] == ("--file", "D", ".")`.
+None.
 
-### Sprint 23.2: Publish → pull → real-consumer smoke [Active]
+### Sprint 23.2: Publish → pull → real-consumer smoke [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/cli.py`, `hostbootstrap/docker_ops.py`, `docker/`,
 `tests/test_base_image.py`, `tests/test_cli.py`, `tests/test_docker_ops.py`
 **Substrates**: linux-cpu
@@ -154,12 +159,21 @@ The sprint closes when these cases exist and pass under `poetry run python -m ho
   unless it sits inside the allow-listed `cli.py` assignments `_FORMATTER_ROOTS`, `_LINTER_ROOTS` or the body of
   `_quality_gates`; a fixture module containing `context / "demo" / "docker" / "Dockerfile"` is refused.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (Python 3.14.3, Poetry 2.4.1):
+`parse_digest_reference` now requires `re.fullmatch(r"[0-9a-f]{64}", ...)` on the digest part, and
+`tests/test_docker_ops.py` asserts a 63-character, a non-hex, an uppercase, and a 65-character digest each raise
+`RuntimeError` matching `exactly one`, a non-string entry beside the expected one, the `index.docker.io/`
+normalization, and a `localhost:5000/repo` repository keeping its registry port.
+`tests/test_base_image.py::test_python_owns_no_demo_path` is now an `ast` check of every string constant, with the
+`cli.py` `_FORMATTER_ROOTS`, `_LINTER_ROOTS`, and `_quality_gates` allow-list, and
+`test_demo_path_check_refuses_a_segment_spelling` refuses `context / "demo" / "docker" / "Dockerfile"`, a
+`("demo", "docker")` tuple, `"demo/docker/..."`, and `"build/demo/..."`.
+`poetry run python -m hostbootstrap.check_code` passes and `poetry run python -m hostbootstrap.test_all` passes
+(377 tests, coverage 100%).
+
 #### Remaining Work
 
-- Tighten `parse_digest_reference` to `re.fullmatch(r"[0-9a-f]{64}", ...)` on the digest part and add the
-  five `tests/test_docker_ops.py` cases above.
-- Rewrite `tests/test_base_image.py::test_python_owns_no_demo_path` as the `ast`-based segment check with the
-  named `cli.py` allow-list, so a `Path("demo") / "docker"` or `("demo", "docker")` spelling fails it.
+None.
 
 ### Sprint 23.3: The opportunistic warm store [Active]
 
@@ -206,13 +220,16 @@ affected base tags are rebuilt, republished and pulled through this phase's gate
 
 #### Remaining Work
 
-- Add `crypton` to `core/warm-deps/core/basecontainer-core-deps.cabal` `build-depends` and add the
-  manifest-coverage case to `tests/test_base_image.py`.
-- Rewrite the comment at `core/warm-deps/warm-store.config:1-5` and `core/cabal.project:8-10` to say top-level
-  options reach only local packages, removing the claim that they align dependency builds for reuse.
-- Rewrite the `http-client` note in `core/warm-deps/daemon/basecontainer-daemon-deps.cabal` to say the two
-  packages reach the core closure transitively through `dhall`, not that the core manifest lists them.
-- Rewrite `core/warm-deps/patches/README.md` with the metadata block and the vendored-package wiring above.
+On 2026-11-11 `crypton` joined the core manifest's `build-depends`, and
+`test_core_warm_manifest_lists_every_direct_non_boot_dependency` parses every `build-depends` of
+`hostbootstrap-core.cabal`, drops `bytestring`, `file-io`, `Win32` and the package's own library, and asserts the
+rest are listed. The comments in `core/warm-deps/warm-store.config` and `core/cabal.project` now say top-level options
+reach only local packages, the daemon manifest says `http-client` and `http-client-tls` reach the core closure
+transitively through `dhall`, and `core/warm-deps/patches/README.md` carries the governed metadata block and the
+vendored-package wiring. `check_code` passed and `test_all` passed 383 cases.
+
+- Rebuild, republish and pull the affected base tags through this phase's gate, since the manifest is a warm-store
+  input, and run `cabal build all` from `demo/` against a warm and a cold store.
 
 ### Sprint 23.4: The publish, pull, and consumer smoke run [Done]
 
@@ -316,18 +333,16 @@ republishing and pulling the affected tags with that sample check passing.
 
 #### Remaining Work
 
-- Rewrite the header of `.hlint.yaml` (lines 3-7) and of `fourmolu.yaml` (lines 3-8) to say the file fixes the
-  configurable options while the tool versions roll with the base, removing "the gate's verdict is a property
-  of this repository" and "A tool upgrade that changes a default now changes nothing here".
-- Rewrite the `demo/` paragraph of `.hlint.yaml` (lines 15-18) to say `demo/` is linted with this same file by
-  the host source gate and the container `check-code`, so every declined family applies to it, and that it
-  currently contains no instance of them.
-- Rewrite the measurement paragraph of `fourmolu.yaml` (lines 10-15) in the past tense with the 2026-09-13
-  adoption date, and add that every formatter-readable module now matches except the modules
-  `_FORMATTER_UNREADABLE` in `hostbootstrap/cli.py` names.
-- Add `COPY fourmolu.yaml /opt/basecontainer/haskell-deps/fourmolu.yaml` and
-  `COPY .hlint.yaml /opt/basecontainer/haskell-deps/.hlint.yaml` to `docker/basecontainer.Dockerfile` ahead of
-  the style sample `RUN` step, and add the ordering case to `tests/test_base_image.py`.
+On 2026-11-11 both configuration headers were rewritten to say each file fixes the configurable options while
+the tool versions roll with the base; `.hlint.yaml` now says `demo/` is linted with the same file by the host
+source gate and a derived image's `check-code`, and `fourmolu.yaml` states its measurement in the past tense
+with the 2026-09-13 adoption date and names `_FORMATTER_UNREADABLE`. `docker/basecontainer.Dockerfile` copies
+`fourmolu.yaml` and `.hlint.yaml` into `/opt/basecontainer/haskell-deps/` ahead of the style sample `RUN`, and
+`test_base_style_sample_check_reads_the_committed_contract` in `tests/test_base_image.py` holds that ordering.
+`check_code` passed and `test_all` passed 381 cases.
+
+- Rebuild, republish and pull the affected base tags through this phase's gate with the sample check passing,
+  together with the other base-input sprints (23.3, 23.11), since the Dockerfile is a base input.
 
 ### Sprint 23.6: The repository's Haskell sources meet the committed style [Done]
 
@@ -381,9 +396,9 @@ as an error. It had never failed because the module had not been recompiled sinc
 the original file reproduces the same three errors. The constructors are now eliminated positionally,
 which is what the package's own warning policy says a sum's fields are for; no selector was in use.
 
-### Sprint 23.7: The source gate runs the formatter and the linter [Active]
+### Sprint 23.7: The source gate runs the formatter and the linter [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `hostbootstrap/cli.py`, `tests/test_cli.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/code_check_doctrine.md`, `documents/engineering/build_release.md`
@@ -421,12 +436,20 @@ each to its top-level directory under the package (`internal/effect` to `interna
 by a `_FORMATTER_ROOTS` entry (it fails today on `provider-live`); `fourmolu --mode check` exits 0 over the four
 `core/hostbootstrap-core/provider-live/*.hs` modules; and the host static gate (§ JJ) passes.
 
+On 2026-11-10, `("core", "hostbootstrap-core", "provider-live")` joined `_FORMATTER_ROOTS`, and
+`test_formatter_roots_cover_every_cabal_source_directory` reads every `hs-source-dirs` entry of both Cabal files
+and asserts its top-level directory is a formatter root. The four `provider-live` modules were formatted in place
+by the published base image's `fourmolu` 0.19.0.1 (run in the dedicated `hostbootstrap-linux-d` WSL2 distribution
+with Docker started as root and stopped afterwards), and `fourmolu --mode check` then exited 0 over all four. No
+guard constant measures those modules, so none was re-frozen. `poetry run python -m hostbootstrap.check_code`
+passed and `test_all` passed 380 cases. Native Windows `cabal test all` from `core/` ran 5336 cases in 820.83
+seconds with the one `DocValidatorSpec` failure that this change's evidence expiry caused: phase 1's digest was
+re-recorded and phase 15, whose `**Evidence covers**` set contains `provider-live`, is `Active` with Sprint 15.50t
+owing its re-run (§ C evidence expiry).
+
 #### Remaining Work
 
-- Add `("core", "hostbootstrap-core", "provider-live")` to `_FORMATTER_ROOTS` in `hostbootstrap/cli.py`.
-- Format the four `core/hostbootstrap-core/provider-live` modules in place (formatting only; any guard constant
-  that measures them is re-frozen and named, as Sprint 23.6 does).
-- Add the Cabal-derived root-coverage case to `tests/test_cli.py`.
+None.
 
 ### Sprint 23.8: The compatibility smoke asks a consumer's question [Active]
 
@@ -478,26 +501,23 @@ package that is absent from both `core/warm-deps` manifests.
 
 #### Remaining Work
 
-- Split the first `RUN` of `docker/compatibility-smoke.Dockerfile` into a toolchain step (`ghc --version`,
-  `cabal --version`) and a store step that runs
-  `set -- "${CABAL_DIR}/store/ghc-$(ghc --numeric-version)-"*; test -d "$1"; set -- "$1"/package.db/*.conf; test -f "$1"`,
-  each with its own message; drop the `/opt/basecontainer/haskell-deps` check from the store step's claim.
-- Add one Hackage leaf package absent from the store to the consumer's `build-depends` (confirm absence with
-  `ghc-pkg --package-db "${CABAL_DIR}/store/ghc-<ver>-<abi>/package.db" list` on the published image before
-  choosing it), and write `/tmp/compatibility-smoke/cabal.project` with `packages: .` and `optimization: 2`.
-- Rewrite the comments: the store comment names only what is checked; the style-tool comment says the tools also
-  run in the host source gate (`_style_gates` in `hostbootstrap/cli.py`) and in the base build's sample check;
-  the header cites the base-image-and-warm-store phase by name rather than as "Phase 23".
-- Add the static `tests/test_base_image.py` case above and record the dated negative store run.
-- Rewrite the `compatibility_smoke_spec` docstring in `hostbootstrap/base_image.py`, the docstring of
-  `tests/test_base_image.py::test_compatibility_smoke_consumer_needs_only_the_base_image` and the "NOT the
-  demo's Dockerfile" paragraph of `docker/compatibility-smoke.Dockerfile` to name the demo Dockerfile's
-  requirements as listed above, replacing "four ``required=true`` secrets, two of which are a signed one-use
-  build grant" and dropping the test docstring's account of a previous consumer.
+On 2026-11-11 `docker/compatibility-smoke.Dockerfile` split the toolchain step from a store step that requires
+`$CABAL_DIR`, a `store/ghc-<ghc --numeric-version>-*` directory and a registered `package.db/*.conf`, each with its
+own message; its consumer now also depends on `split` and writes a `cabal.project` with `packages: .` and
+`optimization: 2`; its comments name only what each step checks, cite the phase by name and say the style tools also
+run in the host source gate and the base build's sample check; and the demo-Dockerfile requirements are named in
+that header, in `compatibility_smoke_spec` and in the consumer test's docstring.
+`test_compatibility_smoke_asks_a_consumer_question_past_the_store` holds the separate steps, the project settings and
+a consumer dependency absent from both warm-deps manifests. `check_code` passed and `test_all` passed 382 cases.
 
-### Sprint 23.9: The bootstrapper's image surface is typed [Active]
+- Confirm with `ghc-pkg --package-db "${CABAL_DIR}/store/ghc-<ver>-<abi>/package.db" list` on the published image that
+  `split` is absent from the store (substitute another leaf if it is present), pass the smoke against the freshly
+  built local image and the pulled digest, and record the dated negative run that renames `$CABAL_DIR/store/ghc-*` to
+  `ghc-0.0.0-x` and fails at the store step. These need Docker and run with the base republish.
 
-**Status**: Active
+### Sprint 23.9: The bootstrapper's image surface is typed [Done]
+
+**Status**: Done
 **Implementation**: `hostbootstrap/base_image.py`, `hostbootstrap/docker_ops.py`, `tests/test_docker_ops.py`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/base_image.md`
@@ -531,14 +551,18 @@ The sprint closes when `grep -rnw` over `hostbootstrap/` and `tests/` finds none
 `poetry run python -m hostbootstrap.check_code` passes, and `poetry run python -m hostbootstrap.test_all` passes
 with coverage at 100%.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (Python 3.14.3, Poetry 2.4.1):
+`RunSpec`, `run_command`, `tag_command`, `image_exists_command`, `image_exists`, `image_entrypoint_command`,
+`image_entrypoint`, `parse_image_entrypoint`, and `_NO_ENV` are deleted from `hostbootstrap/docker_ops.py` with
+their tests; `grep -rnw` over `hostbootstrap/` and `tests/` finds none of the names;
+`poetry run python -m hostbootstrap.check_code` passes; and `poetry run python -m hostbootstrap.test_all` passes
+(372 tests) and reports coverage 100% on the 12 package modules. The separate
+`coverage run -m hostbootstrap.test_all && coverage report -m` chain reports 2% on this host because the runner
+reloads package modules in-process; the runner's own coverage report is the 100% figure.
+
 #### Remaining Work
 
-- Delete `RunSpec`, `run_command`, `tag_command`, `image_exists_command`, `image_exists`,
-  `image_entrypoint_command`, `image_entrypoint`, `parse_image_entrypoint` and `_NO_ENV` from
-  `hostbootstrap/docker_ops.py`, and delete `test_run_command_one_shot_rm_with_mounts`,
-  `test_run_command_detached_service`, `test_parse_image_entrypoint`, `test_image_exists_false` and the
-  `tag`/`exists`/`entrypoint` assertions of `test_push_tag_inspect_commands` and
-  `test_async_wrappers_delegate_to_process` in `tests/test_docker_ops.py`.
+None.
 
 ### Sprint 23.10: The publication gate against the styled tree [Done]
 
@@ -666,23 +690,22 @@ republishes the affected tags, since the Dockerfile is a base input.
 
 #### Remaining Work
 
-- Install GHCup, GHC and Cabal under `GHCUP_INSTALL_BASE_PREFIX=/opt/ghcup` in `docker/basecontainer.Dockerfile`
-  and replace `/root/.ghcup/bin` in its `ENV PATH` with `/opt/ghcup/.ghcup/bin`; add the non-root `setpriv`
-  toolchain step to `docker/compatibility-smoke.Dockerfile`.
-- Rewrite the nine `<probe> | grep` checks of `docker/basecontainer.Dockerfile` (the Go, Node, PureScript,
-  kind, kubectl, Helm, MinIO client, Pulumi and GHC probes) as command-substitution comparisons.
-- Rewrite the header comment of `docker/basecontainer.Dockerfile` with the three input classes above.
-- Add the static `tests/test_base_image.py` case above.
+On 2026-11-11 `docker/basecontainer.Dockerfile` sets `GHCUP_INSTALL_BASE_PREFIX=/opt/ghcup` and its `ENV PATH`
+names `/opt/ghcup/.ghcup/bin` in place of `/root/.ghcup/bin`; its Go, Node, PureScript, kind, kubectl, Helm, MinIO
+client, Pulumi and GHC probes compare a command-substitution result instead of piping into `grep`; and its header
+names the three input classes. `docker/compatibility-smoke.Dockerfile` runs `ghc` and `cabal --numeric-version`
+through `setpriv --reuid=65534`. `test_base_dockerfile_probes_fail_the_build_and_name_its_input_classes` holds those
+properties. `check_code` passed and `test_all` passed 384 cases.
+
+- Rebuild, republish and pull the affected tags through this phase's gate, observe the published image carry GHC
+  9.12.4 under `/opt/ghcup`, and pass the non-root smoke step against the local image and the pulled digest.
+
 
 ## Remaining Work
 
-- Sprint 23.1: anchor `.dockerignore` build-state entries with `**/`, and pin the engine-mismatch, CUDA-ordering and `--file` tail cases.
-- Sprint 23.2: tighten the pulled-digest parser to 64 hex characters with its missing cases, and make the no-demo-path guard a segment check.
 - Sprint 23.3: list `crypton` in the core manifest with a coverage test, and correct the warm-store, project, daemon-manifest and patches comments.
 - Sprint 23.5: narrow the `fourmolu.yaml` and `.hlint.yaml` headers to option drift, the demo scope and the dated adoption measurement, and copy both files beside the base build's style sample check.
-- Sprint 23.7: add the `provider-live` root to the formatter gate, format its modules, and derive the root set from the Cabal files in a test.
 - Sprint 23.8: split the smoke's toolchain and compiler-keyed store checks, reach past the store's closure with `optimization: 2`, and correct its comments and the demo-secrets account in its docstrings.
-- Sprint 23.9: delete the uncalled `docker run`/tag/inspect vocabulary from `hostbootstrap/docker_ops.py`.
 - Sprint 23.11: make the toolchain reachable by a non-root uid, replace the base Dockerfile's `grep` pipelines, name its three input classes, and republish the affected tags through this phase's gate.
 
 ## Documentation Requirements

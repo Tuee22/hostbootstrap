@@ -65,8 +65,8 @@ are structured refusals") and `ProviderReconcileSpec` ("a Direct stop refusal mi
 ### Sprint 27.1: The accelerator cluster driver [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Command.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure/Cuda.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `demo/test/CommandsSpec.hs`

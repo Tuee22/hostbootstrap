@@ -1,0 +1,5 @@
+module ImportRecoveredClusterReadiness where
+
+import HostBootstrap.Cluster.Reconcile (withRecoveredClusterReadiness)
+
+exposedProducer = withRecoveredClusterReadiness

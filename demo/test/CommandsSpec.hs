@@ -6,17 +6,32 @@ module CommandsSpec (hostCfg, tests) where
 
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad (forM_)
+import qualified Data.ByteString as ByteString
 import Data.Either (isLeft)
 import Data.Function ((&))
-import Data.List (findIndex, isInfixOf, isPrefixOf, isSuffixOf, tails)
+import Data.List (findIndex, intercalate, isInfixOf, isPrefixOf, isSuffixOf, tails)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TextEncoding
 import qualified Dhall
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production, TestCase), acceleratorIngressPlan, ingressKindListenAddress, profileDataPath, profileDataSegments)
+import HostBootstrap.Activation (
+    ActivationError (ActivationManifestInvalid),
+    ActivationManifestInput (..),
+    activationManifest,
+    activationManifestFromWire,
+    activationSecretDigestFromBytes,
+    manifestConfigDigest,
+    manifestFrame,
+    manifestPermittedEffects,
+    manifestRolePlanDigest,
+    manifestService,
+    renderActivationManifest,
+ )
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production), mkTestCaseProfile, acceleratorIngressPlan, ingressKindListenAddress, profileDataPath, profileDataSegments)
 import HostBootstrap.Cluster.Reconcile (ClusterReadinessResultView (..))
-import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), projectCodecSpecDigest)
+import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), decodeProjectCodecWithSettings, projectCodecSpecDigest)
 import HostBootstrap.Config.Fields (
-    ScopeKind (ProductionScope),
+    ScopeKind (HarnessScope, ProductionScope),
     WireKind (FullProjectWire, ServiceRoleWire),
     decodeRoleWire,
     frameworkEnvelopeCodec,
@@ -26,16 +41,20 @@ import HostBootstrap.Config.Fields (
     frameworkWireKind,
     inspectFullConfig,
     inspectLocalContext,
+    localCurrentFrame,
+    renderRoleWire,
     renderValidatedServiceRequest,
     requestFrameworkValidation,
     requestVerifiedDigest,
     roleCodecSpecDigest,
+    roleFrameworkValidation,
  )
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Context (ContextKind (HostOrchestrator, VMOrchestrator, VMProjectContainer))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Detached (detachedLaunchArguments, detachedLaunchExecutable)
 import HostBootstrap.Dhall.Gen (artifactName)
+import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftLayer (ViaContainer), liftLayers, localContext)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
@@ -51,10 +70,11 @@ import HostBootstrap.Protected (
  )
 import HostBootstrap.Readiness (ProbeConflict (ProbeConflict), ProbeResult (..))
 import HostBootstrap.Reconcile (ConflictDetail (ConflictDetail), FailureDetail (FailureDetail), ReconcileError (Conflict, Failure), RecoveryDisposition (ReprobeBeforeRetry))
-import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn), declaredEffectList)
+import HostBootstrap.RoleLifecycle (RoleEffect (DurableStore, NetworkListen, ProcessSpawn), declaredEffectList, roleEffectName, rolePlanDraftDigest)
 import HostBootstrap.Service (
     serviceIdText,
     serviceRoleSchemaFamilies,
+    serviceRolePlanDraft,
     serviceVariantNames,
     withFinalizedServiceRegistry,
     withSelectedServiceProgram,
@@ -62,7 +82,7 @@ import HostBootstrap.Service (
 import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations, stepServiceActivationDeclarations)
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
-import HostBootstrap.Wsl2.GlobalWall.Host (hostWallActiveRecordKey, hostWallProtectedStore, openHostWallLocation)
+import HostBootstrap.Substrate.Provider (ProviderWallDecision (..), ProviderWallDimension (..))
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
     acceleratorDaemonManifest,
@@ -80,6 +100,7 @@ import HostBootstrapDemo.Commands (
     demoServices,
     demoTestFrameContext,
     directClusterPresence,
+    renderDirectProviderWallDecision,
     directClusterReleaseArgs,
     directContainerCandidates,
     directDurableMountSource,
@@ -111,6 +132,7 @@ import HostBootstrapDemo.Config (
     RunProfile (HarnessRun),
     WebServiceConfig (WebServiceConfig),
     clusterProfileOf,
+    mkHarnessRunKey,
     demoDefaultDeployConfig,
     demoDefaultDockerfile,
     demoDefaultMessage,
@@ -163,11 +185,27 @@ validPort = either (error . ("invalid test port: " ++)) id . mkPort
 substringOffset :: String -> String -> Maybe Int
 substringOffset needle = findIndex (isInfixOf needle . take (length needle)) . tails
 
+fixtureHarnessProfile :: String -> ClusterProfile
+fixtureHarnessProfile = either (error . show) id . mkTestCaseProfile . T.pack
+
 tests :: TestTree
 tests =
     testGroup
         "CommandsSpec"
-        [ testCase "provider reachability refuses an absent frame" $
+        [ testCase "direct reservation reports every uncapped outer-host dimension" $ do
+            let envelope = Context.ResourceEnvelope 6 "10GiB" "80GiB"
+                decision = DirectHostWallsUnsupported envelope [ProviderCpuWall, ProviderMemoryWall, ProviderStorageWall]
+            case renderDirectProviderWallDecision decision of
+                Nothing -> assertFailure "direct host omitted its wall decision"
+                Just report -> do
+                    forM_ ["outer build", "project container", "uncapped", "CPU", "memory", "storage"] $ \term ->
+                        assertBool ("report omitted " ++ term) (term `isInfixOf` report)
+            renderDirectProviderWallDecision ProviderWallsDelegated @?= Nothing
+            commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+            let reservation = maybe "" (`drop` commandsSource) (substringOffset "runDirectProviderReservation ::" commandsSource)
+            assertBool "direct reservation does not consume the planned decision"
+                ("renderDirectProviderWallDecision (provisionWallDecision provision)" `isInfixOf` reservation)
+        , testCase "provider reachability refuses an absent frame" $
             demoProviderReachAdmission False
                 @?= Left (Step.TeardownFailed "provider reverse: managed provider frame is absent; retained children cannot be reached")
         , testCase "provider reachability admits an existing frame for retained-child cleanup" $
@@ -295,7 +333,7 @@ tests =
         , testCase "the reverse command authenticates exact chart ownership without a forward package" $ do
             commandSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
             let productionTail = maybe "" (`drop` commandSource) (substringOffset "runProductionTeardown root validated ctx cfg verb = do" commandSource)
-                production = maybe productionTail (`take` productionTail) (substringOffset "_reverseProjection ::" productionTail)
+                production = maybe productionTail (`take` productionTail) (substringOffset "openAuthorityStore ::" productionTail)
                 stages =
                     [ "runRootProjectReverseLifecycleEntry"
                     , "localWorkOperationKey local"
@@ -309,15 +347,17 @@ tests =
             assertBool "reverse adoption reconstructs a forward execution package" (not ("PlanExecutionPackage" `isInfixOf` production))
         , testCase "reverse releases the recorded relay before retained cluster ownership in both routes" $ do
             coreSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command.hs"
+            childSource <- readFile "../core/hostbootstrap-core/src/HostBootstrap/Command/Child/Reverse.hs"
             demoSource <- readFile "src/HostBootstrapDemo/Commands.hs"
-            let coreReverse = maybe "" (`drop` coreSource) (substringOffset "coreManaged _key reverseAction" coreSource)
+            let coreReverse = maybe "" (`drop` coreSource) (substringOffset "runProductionTeardown root validated ctx cfg verb = do" coreSource)
                 coreRelease = maybe "" (`drop` coreSource) (substringOffset "releaseRetainedClusterLifecycle cfg plan = do" coreSource)
                 directReverse = maybe "" (`drop` demoSource) (substringOffset "demoDirectClusterReverseAt profile root cfg" demoSource)
                 ordered body first second = case (substringOffset first body, substringOffset second body) of
                     (Just left, Just right) -> left < right
                     _ -> False
-            assertBool "core reverse does not enter retained ownership release" ("releaseRetainedClusterLifecycle cfg clusterPlan" `isInfixOf` coreReverse)
+            assertBool "core reverse does not enter retained ownership release" ("releaseRetainedClusterLifecycle cfg (planForRoot root ctx)" `isInfixOf` coreReverse)
             assertBool "core reverse does not release exposure before retained cluster ownership" (ordered coreRelease "releaseRecordedClusterExposure cfg plan" "releaseRetainedCluster cfg plan")
+            assertBool "child reverse does not release exposure before retained cluster ownership" (ordered childSource "releaseRecordedClusterExposure host clusterPlan" "releaseRetainedCluster host clusterPlan")
             assertBool "direct reverse does not release exposure before retained nvkind ownership" (ordered directReverse "releaseRecordedClusterExposure cfg directPlan" "directClusterReleaseArgs dockerHostDataPath (dataPath directPlan) profile")
             assertBool "direct reverse no longer bypasses retained ownership with raw kind" (not ("directClusterTeardownArgs" `isInfixOf` directReverse))
             let childRelease = maybe "" (`drop` demoSource) (substringOffset "runDirectClusterReleaseChild rawProfile = do" demoSource)
@@ -452,7 +492,7 @@ tests =
                     , "mkProviderShareSpec (hpsHostPath durableShare) (hpsGuestPath durableShare)"
                     , "withNodeResourceOfKind execution DurableShareResourceKind (stepExecutionOperationKey execution)"
                     , "withFreshRunningProviderHandle"
-                    , "withPreparedProviderShare execution plannedShare shareHandle managedProvider (dependencyProbe reprobe) shareSpec gate"
+                    , "withPreparedProviderShare execution plannedShare shareHandle managedProvider reprobe shareSpec gate"
                     , "runProviderShareCall backend preparedShare"
                     , "settleProviderShare Nothing preparedShare shareCall"
                     , "withProviderShareSettlement"
@@ -544,7 +584,8 @@ tests =
                 )
             assertBool
                 "Harness teardown restores descendants without chmodding the virtiofs mountpoint before giving back the guest alias"
-                ( "TestCase _ ->" `isInfixOf` commandsSource
+                ( "case clusterProfileRunKey (clusterProfileOf projectCfg) of" `isInfixOf` commandsSource
+                    && "Just _ ->" `isInfixOf` commandsSource
                     && "sudo find " `isInfixOf` commandsSource
                     && "shellQuoteArg (durableDockerHostPath ++ \"/\")" `isInfixOf` commandsSource
                     && "-mindepth 1 ! -type l -exec chmod a+rwX -- {} +" `isInfixOf` commandsSource
@@ -719,11 +760,12 @@ tests =
                 directPath @?= "/workspace/demo"
                 Context.currentFrame (context directCfg) @?= "vm-project-container-1"
 
-                let harnessCfg = hostCfg{runProfile = HarnessRun "run-42"}
+                runKey <- either assertFailure pure (mkHarnessRunKey "run-42")
+                let harnessCfg = hostCfg{runProfile = HarnessRun runKey}
                 harnessPlan <- pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root harnessCfg))
                 harnessLift <- requireDescent "host-orchestrator-0" harnessPlan
                 (_, projectedHarness, _) <- project "host-orchestrator-0" "vm-project-container-1" harnessCfg harnessLift
-                clusterProfileOf projectedHarness @?= TestCase "run-42"
+                clusterProfileOf projectedHarness @?= fixtureHarnessProfile "run-42"
 
                 assertBool "a foreign child edge was projected" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "foreign" directLift))
                 assertBool "a VM lift was accepted for the Direct child" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "vm-project-container-1" vmLift))
@@ -770,7 +812,7 @@ tests =
           testCase "a harness run's container plan is scoped to its own run" $ do
             let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
                 production = containerPlan Production ctx
-                harness = containerPlan (TestCase "run-42") ctx
+                harness = containerPlan (fixtureHarnessProfile "run-42") ctx
             clusterName production @?= "hostbootstrap-demo"
             clusterName harness @?= "hostbootstrap-demo-test-run-42"
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
@@ -793,25 +835,26 @@ tests =
         , {- The profile travels in the config, so the frame that resolves the
           plan is the frame the parent handed it to. -}
           testCase "the run profile is decoded from the config and crosses each frame" $ do
-            let harnessCfg = hostCfg{runProfile = HarnessRun "run-42"}
+            runKey <- either assertFailure pure (mkHarnessRunKey "run-42")
+            let harnessCfg = hostCfg{runProfile = HarnessRun runKey}
             clusterProfileOf hostCfg @?= Production
-            clusterProfileOf harnessCfg @?= TestCase "run-42"
+            clusterProfileOf harnessCfg @?= fixtureHarnessProfile "run-42"
             vm <- either assertFailure pure (deriveProjectConfigForKind VMOrchestrator harnessCfg "/vm/demo")
             child <- either assertFailure pure (deriveProjectConfigForKind VMProjectContainer vm "/workspace/demo")
-            clusterProfileOf vm @?= TestCase "run-42"
-            clusterProfileOf child @?= TestCase "run-42"
+            clusterProfileOf vm @?= fixtureHarnessProfile "run-42"
+            clusterProfileOf child @?= fixtureHarnessProfile "run-42"
         , {- The durable host root is the run's own too, and it is the *same*
           directory the resolved plan preserves — both come from
           'profileDataSegments'. That is what keeps the long gate off the
           operator's durable state (the worked-demo phase). -}
           testCase "the durable host root is the run's own, and is the path teardown preserves" $ do
             profileDataSegments Production @?= [".data"]
-            profileDataSegments (TestCase "run-42") @?= [".test_data", "run-42"]
+            profileDataSegments (fixtureHarnessProfile "run-42") @?= [".test_data", "run-42"]
             profileDataPath Production "host-root" @?= "host-root" </> ".data"
-            profileDataPath (TestCase "run-42") "host-root" @?= "host-root" </> ".test_data" </> "run-42"
+            profileDataPath (fixtureHarnessProfile "run-42") "host-root" @?= "host-root" </> ".test_data" </> "run-42"
             -- the mount and the preserved path are one directory by construction
             let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
-            dataPath (containerPlan (TestCase "run-42") ctx)
+            dataPath (containerPlan (fixtureHarnessProfile "run-42") ctx)
                 @?= "/workspace/demo/.test_data/run-42"
             dataPath (containerPlan Production ctx)
                 @?= "/workspace/demo/.data"
@@ -890,7 +933,7 @@ tests =
                 assertionTail = maybe "" (`drop` commandsSource) (substringOffset "assertDurableReadback ::" commandsSource)
                 assertion = maybe assertionTail (`take` assertionTail) (substringOffset "demoProjectImage ::" assertionTail)
                 onceCases = length (filter (isInfixOf "AssertOnce") (lines cases))
-            assertBool "durable-readback must span the Harness restart" ("Case (literalCaseId \"durable-readback\") 1 False AssertAcrossRestart" `isInfixOf` cases)
+            assertBool "durable-readback must span the Harness restart" ("Case (literalCaseId \"durable-readback\") AssertAcrossRestart" `isInfixOf` cases)
             onceCases @?= 4
             assertBool "the first assertion phase must POST the marker" ("BeforeRestart ->" `isInfixOf` assertion && "-X POST" `isInfixOf` assertion)
             assertBool "the second assertion phase must read the same marker" ("AfterRestart -> \"\"" `isInfixOf` assertion && "hostbootstrap-destroy-up-v1" `isInfixOf` assertion)
@@ -1075,18 +1118,18 @@ tests =
                     ( \sub -> do
                         demoAssertionDurableRoot sub Production canonicalRoot
                             @?= Right (canonicalRoot </> ".data")
-                        demoAssertionDurableRoot sub (TestCase "run-123") canonicalRoot
+                        demoAssertionDurableRoot sub (fixtureHarnessProfile "run-123") canonicalRoot
                             @?= Right (canonicalRoot </> ".test_data" </> "run-123")
-                        demoAssertionDurableRoot sub (TestCase "run-456") canonicalRoot
+                        demoAssertionDurableRoot sub (fixtureHarnessProfile "run-456") canonicalRoot
                             @?= Right (canonicalRoot </> ".test_data" </> "run-456")
                     )
         , testCase "assertions project the exact Windows durable profile into WSL2" $
             forM_ [Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64] $ \sub -> do
                 demoAssertionDurableRoot sub Production "D:\\repo\\demo project"
                     @?= Right "/mnt/d/repo/demo project/.data"
-                demoAssertionDurableRoot sub (TestCase "run-123") "C:\\Users\\Matt\\demo project"
+                demoAssertionDurableRoot sub (fixtureHarnessProfile "run-123") "C:\\Users\\Matt\\demo project"
                     @?= Right "/mnt/c/Users/Matt/demo project/.test_data/run-123"
-                demoAssertionDurableRoot sub (TestCase "run-456") "C:/Users/Matt/demo project"
+                demoAssertionDurableRoot sub (fixtureHarnessProfile "run-456") "C:/Users/Matt/demo project"
                     @?= Right "/mnt/c/Users/Matt/demo project/.test_data/run-456"
         , testCase "Direct durable bind selects one exact Docker-visible source for the run profile" $ do
             directContainerCandidates
@@ -1097,28 +1140,28 @@ tests =
             assertBool "an empty current-container listing was accepted" $
                 isLeft (directContainerCandidates (Right (ExitSuccess, "", "")))
             directDurableMountSource
-                (TestCase "run-123")
+                (fixtureHarnessProfile "run-123")
                 "/workspace/demo/.test_data/run-123"
                 (Right (ExitSuccess, "/srv/demo/.test_data/run-123\n", ""))
                 @?= Right "/srv/demo/.test_data/run-123"
             assertBool "an absent exact destination was accepted" $
                 isLeft
                     ( directDurableMountSource
-                        (TestCase "run-123")
+                        (fixtureHarnessProfile "run-123")
                         "/workspace/demo/.test_data/run-123"
                         (Right (ExitSuccess, "", ""))
                     )
             assertBool "a duplicate exact destination was accepted" $
                 isLeft
                     ( directDurableMountSource
-                        (TestCase "run-123")
+                        (fixtureHarnessProfile "run-123")
                         "/workspace/demo/.test_data/run-123"
                         (Right (ExitSuccess, "/srv/one/.test_data/run-123\n/srv/two/.test_data/run-123\n", ""))
                     )
             assertBool "a cross-profile source was accepted" $
                 isLeft
                     ( directDurableMountSource
-                        (TestCase "run-123")
+                        (fixtureHarnessProfile "run-123")
                         "/workspace/demo/.test_data/run-123"
                         (Right (ExitSuccess, "/srv/demo/.test_data/run-456\n", ""))
                     )
@@ -1131,7 +1174,7 @@ tests =
                     )
         , testCase "direct teardown re-enters retained ownership through the exact durable bind" $ do
             let productionArgs = directClusterReleaseArgs "/srv/demo/.data" "/workspace/demo/.data" Production
-                harnessArgs = directClusterReleaseArgs "/srv/demo/.test_data/run-123" "/workspace/demo/.test_data/run-123" (TestCase "run-123")
+                harnessArgs = directClusterReleaseArgs "/srv/demo/.test_data/run-123" "/workspace/demo/.test_data/run-123" (fixtureHarnessProfile "run-123")
             assertBool "teardown mounts the Docker socket" ("/var/run/docker.sock:/var/run/docker.sock" `elem` productionArgs)
             assertBool "production teardown mounts only its exact durable profile" ("/srv/demo/.data:/workspace/demo/.data" `elem` productionArgs)
             assertBool "Harness teardown mounts only its exact durable profile" ("/srv/demo/.test_data/run-123:/workspace/demo/.test_data/run-123" `elem` harnessArgs)
@@ -1313,10 +1356,7 @@ tests =
                 verifyHarnessHostArtifacts root Nothing
         , testCase "host teardown refuses the current wall receipt and accepts its release" $
             withCommandsTempDirectory $ \root -> do
-                opened <- openHostWallLocation (root </> ".wslconfig") (root </> ".hostbootstrap" </> "global-wall")
-                location <- either (assertFailure . show) pure opened
-                let store = hostWallProtectedStore location
-                    key = hostWallActiveRecordKey location
+                (store, key) <- openTeardownWallStore root
                 claimed <- withProtectedEntry store $ \session ->
                     compareAndSwapProtectedRecord session key ExpectAbsent "retained-wall-receipt"
                 version <- either (assertFailure . show) pure claimed
@@ -1328,9 +1368,8 @@ tests =
                 verifyHarnessHostArtifacts root (Just root)
         , testCase "host teardown refuses a held wall entry even without an active receipt" $
             withCommandsTempDirectory $ \root -> do
-                opened <- openHostWallLocation (root </> ".wslconfig") (root </> ".hostbootstrap" </> "global-wall")
-                location <- either (assertFailure . show) pure opened
-                held <- withProtectedEntry (hostWallProtectedStore location) $ \_ -> do
+                (store, _) <- openTeardownWallStore root
+                held <- withProtectedEntry store $ \_ -> do
                     assertHostTeardownRefused root (Just root)
                     pure (Right ())
                 either (assertFailure . show) pure held
@@ -1524,7 +1563,7 @@ tests =
                     ( \codec registry -> do
                         let fullValidation =
                                 inspectFullConfig
-                                    (frameworkEnvelopeCodec ProductionScope codec)
+                                    (frameworkEnvelopeCodec codec)
                                     webCfg
                         frameworkWireKind fullValidation @?= FullProjectWire
                         frameworkScopeKind fullValidation @?= ProductionScope
@@ -1536,34 +1575,45 @@ tests =
                             ( \_ roleCodec request _ _ _ _ -> do
                                 let roleValidation = requestFrameworkValidation request
                                     rendered = renderValidatedServiceRequest roleCodec request
-                                    changedDigest =
-                                        T.replace
-                                            (frameworkSpecDigest roleValidation)
-                                            "ffffffffffffffff"
-                                            rendered
-                                    changedScope =
-                                        T.replace
-                                            ".ProductionScope"
-                                            ".HarnessScope"
-                                            rendered
                                 frameworkWireKind roleValidation @?= ServiceRoleWire
                                 frameworkScopeKind roleValidation @?= ProductionScope
                                 frameworkLocalContext roleValidation
                                     @?= frameworkLocalContext fullValidation
                                 frameworkSpecDigest roleValidation
                                     @?= roleCodecSpecDigest roleCodec
+                                frameworkSpecDigest fullValidation
+                                    @?= roleCodecSpecDigest roleCodec
+                                fullValidation @?= roleValidation {frameworkWireKind = FullProjectWire}
                                 accepted <- decodeRoleWire roleCodec Dhall.defaultInputSettings rendered
-                                case accepted of
-                                    Right _ -> pure ()
-                                    Left err -> assertFailure ("matching role wire was rejected: " ++ err)
+                                role <- either (assertFailure . ("matching role wire was rejected: " ++)) pure accepted
+                                roleFrameworkValidation role @?= roleValidation
+                                let changedDigest =
+                                        renderRoleWire roleCodec $
+                                            role
+                                                { roleFrameworkValidation =
+                                                    roleValidation {frameworkSpecDigest = "ffffffffffffffff"}
+                                                }
+                                    changedScope =
+                                        renderRoleWire roleCodec $
+                                            role
+                                                { roleFrameworkValidation =
+                                                    roleValidation {frameworkScopeKind = HarnessScope}
+                                                }
+                                    fullWire =
+                                        renderRoleWire roleCodec $
+                                            role {roleFrameworkValidation = fullValidation}
+                                assertBool "the digest mutation did not change the wire" (changedDigest /= rendered)
+                                assertBool "the scope mutation did not change the wire" (changedScope /= rendered)
+                                assertBool "the full-project validation did not change the wire" (fullWire /= rendered)
                                 rejectedDigest <- decodeRoleWire roleCodec Dhall.defaultInputSettings changedDigest
-                                case rejectedDigest of
-                                    Left _ -> pure ()
-                                    Right _ -> assertFailure "changed spec digest was accepted"
+                                fmap (const ()) rejectedDigest
+                                    @?= Left "role wire specification digest disagrees with its selected codec"
                                 rejectedScope <- decodeRoleWire roleCodec Dhall.defaultInputSettings changedScope
-                                case rejectedScope of
-                                    Left _ -> pure ()
-                                    Right _ -> assertFailure "changed scope tag was accepted"
+                                fmap (const ()) rejectedScope
+                                    @?= Left "role wire scope kind disagrees with its selected codec"
+                                rejectedKind <- decodeRoleWire roleCodec Dhall.defaultInputSettings fullWire
+                                fmap (const ()) rejectedKind
+                                    @?= Left "role wire declares a non-service wire kind"
                             )
                             & either (assertFailure . show) id
                     )
@@ -1629,6 +1679,7 @@ tests =
             withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
                 withFinalizedServiceRegistry ProductionScope baseCodec demoServices $ \codec _registry ->
                     demoImageBuildSpecDigest @?= projectCodecSpecDigest codec
+        , testGroup "checked activation DATA" checkedActivationTests
         ]
 
 openTeardownDaemonStore :: FilePath -> IO (ProtectedStore, RecordKey)
@@ -1636,6 +1687,14 @@ openTeardownDaemonStore root = do
     opened <- openProtectedStore (root </> ".build" </> "accelerator-daemon" </> ".claims")
     store <- either (assertFailure . show) pure opened
     key <- either (assertFailure . show) pure (mkRecordKey "hostbootstrap-demo.accelerator.owner")
+    pure (store, key)
+
+-- Independent canonical-key fixture: production receives only presence.
+openTeardownWallStore :: FilePath -> IO (ProtectedStore, RecordKey)
+openTeardownWallStore root = do
+    opened <- openProtectedStore (root </> ".hostbootstrap" </> "global-wall")
+    store <- either (assertFailure . show) pure opened
+    key <- either (assertFailure . show) pure (mkRecordKey "wall.hostbootstrap-global.active")
     pure (store, key)
 
 assertHostTeardownRefused :: FilePath -> Maybe FilePath -> IO ()
@@ -1673,3 +1732,97 @@ hostCfg =
         demoDefaultDeployConfig
         demoDefaultMessage
         HostOrchestrator
+
+checkedActivationTests :: [TestTree]
+checkedActivationTests =
+    [ testCase "the activation adopter source checks every input before signing or installation" $ do
+        commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
+        start <- maybe (assertFailure "the activation adopter signature is absent") pure
+            (substringOffset "prepareDemoServiceActivationFor ::" commandsSource)
+        let tailSource = drop start commandsSource
+        end <- maybe (assertFailure "the activation adopter boundary is absent") pure
+            (substringOffset "exactProjectBinaryDigest ::" tailSource)
+        let body = unwords (words (take end tailSource))
+        constructionStart <- maybe (assertFailure "the checked manifest binding is absent") pure
+            (substringOffset "manifest <-" body)
+        let construction = drop constructionStart body
+            fields =
+                [ "manifestInputScope = \"Production\""
+                , "manifestInputPlanDigest = stepExecutionPlanDigest execution"
+                , "manifestInputSpecDigest = projectCodecSpecDigest codec"
+                , "manifestInputBinaryDigest = binaryDigest"
+                , "manifestInputFrame = localCurrentFrame (inspectLocalContext (context serviceCfg))"
+                , "manifestInputRevision = rolloutRevision"
+                , "manifestInputConfigDigest = sha256HexBytes roleWire"
+                , "manifestInputSecretDigest = activationSecretDigestFromBytes BS.empty"
+                , "manifestInputService = serviceName"
+                , "manifestInputRolePlanDigest = roleDraftDigest"
+                , "manifestInputPermittedEffects = permittedEffects"
+                , "manifestInputSecretChannel = \"/run/hostbootstrap/activation/secret.bundle\""
+                ]
+            stages =
+                [ "manifest <- either (die . activationErrorMessage) pure ( activationManifest ( ActivationManifestInput"
+                ] ++ fields ++
+                [ "signature <- stepExecutionSignActivationManifest execution (renderActivationManifest manifest) >>= either (die . T.unpack) pure"
+                , "installed <- installRelayedServiceActivationRevision verification (adoptRelayedActivationGrant signature) activationRoot manifest roleWire BS.empty"
+                , "revision <- either (die . serviceActivationErrorMessage) pure installed"
+                ]
+        positions <- maybe (assertFailure "the activation adopter lost a checked input or consuming stage") pure
+            (traverse (`substringOffset` construction) stages)
+        assertBool "checked activation construction and consumers are out of order"
+            (and (zipWith (<) positions (drop 1 positions)))
+        length fields @?= 12
+        assertBool "the checked input's complete twelve expressions changed"
+            (("{ " ++ intercalate " , " fields ++ " }") `isInfixOf` construction)
+        forM_ ["ActivationManifest", "fromRight", "fromMaybe", "error", "undefined"] $ \fallback ->
+            assertBool ("the activation adopter contains a raw fallback: " ++ fallback)
+                (fallback `notElem` words construction)
+        length (filter (== "activationManifest") (words construction)) @?= 1
+    , testCase "finalized service projection feeds checked activation DATA and an exact rollout refusal" $
+        forM_
+            [ (Context.ClusterService, "web", ["network-listen", "durable-store"])
+            , (Context.Daemon, "accelerator", ["network-listen", "process"])
+            ] $ \(kind, expectedService, expectedEffects) -> do
+                let projectCfg = projectConfigForRole
+                        "hostbootstrap-demo" "hostbootstrap-demo" "/srv" "docker/Dockerfile"
+                        demoDefaultResources demoDefaultDeployConfig demoDefaultMessage kind
+                    (serviceCfgWire, expectedFrame) = renderActivationConfig projectCfg
+                withProductionProjectCodec @ProjectConfig @() $ \baseCodec ->
+                    withFinalizedServiceRegistry ProductionScope baseCodec demoServices $ \codec registry -> do
+                        serviceCfg <- decodeProjectCodecWithSettings codec Dhall.defaultInputSettings serviceCfgWire
+                        let selected = withSelectedServiceProgram
+                                "verified-config-DATA"
+                                (inspectLocalContext (context serviceCfg)) serviceCfg registry
+                                ( \identity roleCodec request effects roleResources _backend _program ->
+                                    ( T.pack (serviceIdText identity)
+                                    , renderValidatedServiceRequest roleCodec request
+                                    , map roleEffectName (declaredEffectList effects)
+                                    , rolePlanDraftDigest (serviceRolePlanDraft roleResources)
+                                    )
+                                )
+                        (serviceName, roleWireText, effects, roleDigest) <- either assertFailure pure selected
+                        let roleWire = TextEncoding.encodeUtf8 roleWireText
+                            input = ActivationManifestInput
+                                { manifestInputScope = "Production"
+                                , manifestInputPlanDigest = "demo-plan-DATA"
+                                , manifestInputSpecDigest = projectCodecSpecDigest codec
+                                , manifestInputBinaryDigest = "demo-binary-DATA"
+                                , manifestInputFrame = localCurrentFrame (inspectLocalContext (context serviceCfg))
+                                , manifestInputRevision = "demo-rollout-DATA"
+                                , manifestInputConfigDigest = childConfigDigest roleWire
+                                , manifestInputSecretDigest = activationSecretDigestFromBytes ByteString.empty
+                                , manifestInputService = serviceName
+                                , manifestInputRolePlanDigest = roleDigest
+                                , manifestInputPermittedEffects = effects
+                                , manifestInputSecretChannel = "/run/hostbootstrap/activation/secret.bundle"
+                                }
+                        manifest <- either (assertFailure . show) pure (activationManifest input)
+                        manifestService manifest @?= expectedService
+                        manifestFrame manifest @?= expectedFrame
+                        manifestPermittedEffects manifest @?= expectedEffects
+                        manifestConfigDigest manifest @?= childConfigDigest roleWire
+                        manifestRolePlanDigest manifest @?= roleDigest
+                        activationManifestFromWire (renderActivationManifest manifest) @?= Right manifest
+                        activationManifest input{manifestInputRevision = ""}
+                            @?= Left (ActivationManifestInvalid "the rollout revision is empty")
+    ]

@@ -12,6 +12,7 @@ activation by hand, because none of those has a public constructor.
 module RoleLifecycleSpec (tests, withRole, mutatingEffects, storeDraft) where
 
 import Control.Exception (AsyncException (ThreadKilled), throwIO)
+import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (nub, sort)
@@ -137,16 +138,19 @@ admissionTests =
                             "the same bounded admission key is rehydrated"
                             (not (Text.null (reservedRoleAdmissionKey secondAdmission)))
                     other -> assertFailure ("expected a rehydrated reservation, got " ++ describeAdmission other)
-    , testCase "instance identities that the former sanitizer collided reserve distinct rows" $ do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = servingEffects
-                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+    , testCase "instance identities that the former sanitizer collided reserve distinct rows" $ withBaseMeasurement $ \baseMeasurement -> do
+        slashInstance <- either (assertFailure . activationErrorMessage) pure (hostServiceInstance "nonce/a")
+        joinedInstance <- either (assertFailure . activationErrorMessage) pure (hostServiceInstance "noncea")
+        let manifestInput =
+                baseManifestInput
+                    { manifestInputPermittedEffects = servingEffects
+                    , manifestInputRolePlanDigest = rolePlanDraftDigest listenerDraft
                     }
             slashIdentity =
-                baseMeasurement{measuredInstance = HostServiceInstance "nonce/a"}
+                baseMeasurement{measuredInstance = slashInstance}
             joinedIdentity =
-                baseMeasurement{measuredInstance = HostServiceInstance "noncea"}
+                baseMeasurement{measuredInstance = joinedInstance}
+        manifest <- either (assertFailure . activationErrorMessage) pure (activationManifest manifestInput)
         withBroker manifest $ \broker store key -> do
             grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
             slashKey <-
@@ -156,16 +160,18 @@ admissionTests =
             assertBool
                 "the slash is framed into the measured coordinate rather than discarded"
                 (slashKey /= joinedKey)
-    , testCase "an arbitrarily long valid measured identity still reserves with a bounded key" $ do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = servingEffects
-                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+    , testCase "an arbitrarily long valid measured identity still reserves with a bounded key" $ withBaseMeasurement $ \baseMeasurement -> do
+        longInstance <- either (assertFailure . activationErrorMessage) pure (hostServiceInstance (Text.replicate 10000 "n"))
+        let manifestInput =
+                baseManifestInput
+                    { manifestInputPermittedEffects = servingEffects
+                    , manifestInputRolePlanDigest = rolePlanDraftDigest listenerDraft
                     }
             longIdentity =
                 baseMeasurement
-                    { measuredInstance = HostServiceInstance (Text.replicate 10000 "n")
+                    { measuredInstance = longInstance
                     }
+        manifest <- either (assertFailure . activationErrorMessage) pure (activationManifest manifestInput)
         withBroker manifest $ \broker store key -> do
             grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
             admissionKey <-
@@ -174,12 +180,13 @@ admissionTests =
             assertBool
                 "the admission key remains below the protected store's 200-character limit"
                 (Text.length admissionKey <= 200)
-    , testCase "a cross-store activation is refused before the target store mutates" $ do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = servingEffects
-                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+    , testCase "a cross-store activation is refused before the target store mutates" $ withBaseMeasurement $ \baseMeasurement -> do
+        let manifestInput =
+                baseManifestInput
+                    { manifestInputPermittedEffects = servingEffects
+                    , manifestInputRolePlanDigest = rolePlanDraftDigest listenerDraft
                     }
+        manifest <- either (assertFailure . activationErrorMessage) pure (activationManifest manifestInput)
         withBroker manifest $ \broker origin key -> do
             signed <- signActivationManifest broker manifest
             grant <- either (assertFailure . activationErrorMessage) pure signed
@@ -188,8 +195,8 @@ admissionTests =
                     verifyRuntimeRoleActivation
                         key
                         origin
-                        manifest
-                        manifest
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
                         grant
                         baseMeasurement
                         ( \activation ->
@@ -216,8 +223,8 @@ admissionTests =
                     verifyRuntimeRoleActivation
                         key
                         other
-                        manifest
-                        manifest
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
                         grant
                         baseMeasurement
                         ( \activation ->
@@ -234,12 +241,13 @@ admissionTests =
                                             )
                         )
                 either (assertFailure . activationErrorMessage) pure admitted
-    , testCase "an origin-A reservation cannot consume a same-shaped store-B row" $ do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = servingEffects
-                    , manifestRolePlanDigest = rolePlanDraftDigest listenerDraft
+    , testCase "an origin-A reservation cannot consume a same-shaped store-B row" $ withBaseMeasurement $ \baseMeasurement -> do
+        let manifestInput =
+                baseManifestInput
+                    { manifestInputPermittedEffects = servingEffects
+                    , manifestInputRolePlanDigest = rolePlanDraftDigest listenerDraft
                     }
+        manifest <- either (assertFailure . activationErrorMessage) pure (activationManifest manifestInput)
         withBroker manifest $ \broker origin key -> do
             signed <- signActivationManifest broker manifest
             grant <- either (assertFailure . activationErrorMessage) pure signed
@@ -251,8 +259,8 @@ admissionTests =
                     verifyRuntimeRoleActivation
                         key
                         other
-                        manifest
-                        manifest
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
                         grant
                         baseMeasurement
                         ( \activation ->
@@ -274,8 +282,8 @@ admissionTests =
                     verifyRuntimeRoleActivation
                         key
                         origin
-                        manifest
-                        manifest
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
                         grant
                         baseMeasurement
                         ( \activation ->
@@ -315,8 +323,8 @@ admissionTests =
                     verifyRuntimeRoleActivation
                         key
                         other
-                        manifest
-                        manifest
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
                         grant
                         baseMeasurement
                         ( \activation ->
@@ -431,6 +439,7 @@ admissionTests =
                         outcome
                             @?= Right (RequiresGenerationLease, [DurableStore, NetworkListen], "accelerator")
                     other -> assertFailure ("expected a reservation, got " ++ describeAdmission other)
+    , testCase "checked instances retain independent framed admission-key goldens" instanceKeyVectorCase
     ]
 
 {- | The declared effect row and its authorization against the signed ceiling
@@ -717,18 +726,20 @@ engineTests =
                         "the refusal states its cause"
                         (maybe False (Text.isInfixOf "cursor was already consumed") (exitReason report))
             readIORef inner >>= (@?= [])
-    , testCase "a distinct live exclusive instance is refused before acquisition" $ do
-        let manifest =
-                baseManifest
-                    { manifestPermittedEffects = mutatingEffects
-                    , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
+    , testCase "a distinct live exclusive instance is refused before acquisition" $ withBaseMeasurement $ \baseMeasurement -> do
+        peerInstance <- either (assertFailure . activationErrorMessage) pure (kubernetesInstance "pod-uid-2" 0)
+        let manifestInput =
+                baseManifestInput
+                    { manifestInputPermittedEffects = mutatingEffects
+                    , manifestInputRolePlanDigest = rolePlanDraftDigest storeDraft
                     }
-            peerMeasurement = baseMeasurement{measuredInstance = KubernetesInstance "pod-uid-2" 0}
+            peerMeasurement = baseMeasurement{measuredInstance = peerInstance}
+        manifest <- either (assertFailure . activationErrorMessage) pure (activationManifest manifestInput)
         withBroker manifest $ \broker store key -> do
             grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
-            outerVerified <- verifyRuntimeRoleActivation key store manifest manifest grant baseMeasurement $ \outerActivation ->
+            outerVerified <- verifyRuntimeRoleActivation key store (selectedActivationManifest manifest) (receivedActivationManifest manifest) grant baseMeasurement $ \outerActivation ->
                 withVerifiedDraft outerActivation storeDraft $ \outerDraft -> do
-                    peerVerified <- verifyRuntimeRoleActivation key store manifest manifest grant peerMeasurement $ \peerActivation ->
+                    peerVerified <- verifyRuntimeRoleActivation key store (selectedActivationManifest manifest) (receivedActivationManifest manifest) grant peerMeasurement $ \peerActivation ->
                         withVerifiedDraft peerActivation storeDraft $ \peerDraft ->
                             entry store $ \session -> do
                                 outerReserved <- withRoleLifecycleAdmission session outerActivation outerDraft
@@ -781,23 +792,24 @@ engineTests =
 -- lifecycle runs while the first holds its kernel lease, so an aliased name
 -- fails at the real exclusion rather than passing through sequential releases.
 roleLeasePairCase :: (Text, Text) -> (Text, Text) -> IO ()
-roleLeasePairCase (firstService, firstFrame) (secondService, secondFrame) = do
-    let manifest service frame =
-            baseManifest
-                { manifestService = service
-                , manifestFrame = frame
-                , manifestPermittedEffects = mutatingEffects
-                , manifestRolePlanDigest = rolePlanDraftDigest storeDraft
+roleLeasePairCase (firstService, firstFrame) (secondService, secondFrame) = withBaseMeasurement $ \baseMeasurement -> do
+    peerInstance <- either (assertFailure . activationErrorMessage) pure (kubernetesInstance "pod-uid-2" 0)
+    let manifestInput service frame =
+            baseManifestInput
+                { manifestInputService = service
+                , manifestInputFrame = frame
+                , manifestInputPermittedEffects = mutatingEffects
+                , manifestInputRolePlanDigest = rolePlanDraftDigest storeDraft
                 }
-        first = manifest firstService firstFrame
-        second = manifest secondService secondFrame
-        peerMeasurement = baseMeasurement{measuredInstance = KubernetesInstance "pod-uid-2" 0}
+        peerMeasurement = baseMeasurement{measuredInstance = peerInstance}
+    first <- either (assertFailure . activationErrorMessage) pure (activationManifest (manifestInput firstService firstFrame))
+    second <- either (assertFailure . activationErrorMessage) pure (activationManifest (manifestInput secondService secondFrame))
     withBrokerManifests (nub [first, second]) $ \broker store key -> do
         firstGrant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker first
         secondGrant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker second
-        outerVerified <- verifyRuntimeRoleActivation key store first first firstGrant baseMeasurement $ \outerActivation ->
+        outerVerified <- verifyRuntimeRoleActivation key store (selectedActivationManifest first) (receivedActivationManifest first) firstGrant baseMeasurement $ \outerActivation ->
             withVerifiedDraft outerActivation storeDraft $ \outerDraft -> do
-                peerVerified <- verifyRuntimeRoleActivation key store second second secondGrant peerMeasurement $ \peerActivation ->
+                peerVerified <- verifyRuntimeRoleActivation key store (selectedActivationManifest second) (receivedActivationManifest second) secondGrant peerMeasurement $ \peerActivation ->
                     withVerifiedDraft peerActivation storeDraft $ \peerDraft ->
                         entry store $ \session -> do
                             outerReserved <- withRoleLifecycleAdmission session outerActivation outerDraft
@@ -833,7 +845,7 @@ roleLeasePairCase (firstService, firstFrame) (secondService, secondFrame) = do
 
 roleLeaseRefusalCase :: (Text, Text) -> IO ()
 roleLeaseRefusalCase (service, frame) =
-    withRoleFrom baseManifest{manifestService = service, manifestFrame = frame} mutatingEffects storeDraft $ \store plan placement cursor -> do
+    withRoleFrom baseManifestInput{manifestInputService = service, manifestInputFrame = frame} mutatingEffects storeDraft $ \store plan placement cursor -> do
         before <- recordBytes store
         trace <- newIORef []
         report <- runRoleLifecycle store plan placement cursor (tracingEngine trace)
@@ -913,10 +925,10 @@ withActivationFor ::
       IO result
     ) ->
     IO result
-withActivationFor = withActivationFrom baseManifest
+withActivationFor = withActivationFrom baseManifestInput
 
 withActivationFrom ::
-    ActivationManifest ->
+    ActivationManifestInput ->
     [Text] ->
     RolePlanDraft ->
     ( forall scope planDigest specDigest binaryDigest frame revision instanceId.
@@ -925,27 +937,27 @@ withActivationFrom ::
       IO result
     ) ->
     IO result
-withActivationFrom base effects draft use =
-    let manifest =
-            base
-                { manifestPermittedEffects = effects
-                , manifestRolePlanDigest = rolePlanDraftDigest draft
-                }
-     in withBroker manifest $ \broker store key -> do
-            signed <- signActivationManifest broker manifest
-            case signed of
-                Left failure -> assertFailure (activationErrorMessage failure)
-                Right grant -> do
-                    verified <-
-                        verifyRuntimeRoleActivation
-                            key
-                            store
-                            manifest
-                            manifest
-                            grant
-                            baseMeasurement
-                            (use store)
-                    either (assertFailure . activationErrorMessage) pure verified
+withActivationFrom base effects draft use = withBaseMeasurement $ \baseMeasurement -> do
+    manifest <- either (assertFailure . activationErrorMessage) pure $
+        activationManifest base
+            { manifestInputPermittedEffects = effects
+            , manifestInputRolePlanDigest = rolePlanDraftDigest draft
+            }
+    withBroker manifest $ \broker store key -> do
+        signed <- signActivationManifest broker manifest
+        case signed of
+            Left failure -> assertFailure (activationErrorMessage failure)
+            Right grant -> do
+                verified <-
+                    verifyRuntimeRoleActivation
+                        key
+                        store
+                        (selectedActivationManifest manifest)
+                        (receivedActivationManifest manifest)
+                        grant
+                        baseMeasurement
+                        (use store)
+                either (assertFailure . activationErrorMessage) pure verified
 
 withVerifiedDraft ::
     VerifiedRuntimeRoleActivation scope planDigest specDigest binaryDigest frame revision instanceId ->
@@ -977,8 +989,8 @@ reserveAdmissionKey store key manifest grant measurement draft = do
         verifyRuntimeRoleActivation
             key
             store
-            manifest
-            manifest
+            (selectedActivationManifest manifest)
+            (receivedActivationManifest manifest)
             grant
             measurement
             ( \activation ->
@@ -1009,10 +1021,10 @@ withRole ::
       IO ()
     ) ->
     IO ()
-withRole = withRoleFrom baseManifest
+withRole = withRoleFrom baseManifestInput
 
 withRoleFrom ::
-    ActivationManifest ->
+    ActivationManifestInput ->
     [Text] ->
     RolePlanDraft ->
     ( forall scope specDigest planId configId secretDigest frame revision instanceId service permittedEffects.
@@ -1045,30 +1057,31 @@ entry store action = do
 baseSecretBundle :: ByteString.ByteString
 baseSecretBundle = "role=accelerator\ncredential=fixture-secret\n"
 
-baseManifest :: ActivationManifest
-baseManifest =
-    ActivationManifest
-        { manifestScope = "Production"
-        , manifestPlanDigest = "plan-1"
-        , manifestSpecDigest = "spec-1"
-        , manifestBinaryDigest = "binary-1"
-        , manifestFrame = "daemon-3"
-        , manifestRevision = "rev-1"
-        , manifestConfigDigest = "config-1"
-        , manifestSecretDigest = activationSecretDigestFromBytes baseSecretBundle
-        , manifestService = "accelerator"
-        , manifestRolePlanDigest = "roleplan-1"
-        , manifestPermittedEffects = []
-        , manifestSecretChannel = "/var/run/secrets/hostbootstrap/bundle"
+baseManifestInput :: ActivationManifestInput
+baseManifestInput =
+    ActivationManifestInput
+        { manifestInputScope = "Production"
+        , manifestInputPlanDigest = "plan-1"
+        , manifestInputSpecDigest = "spec-1"
+        , manifestInputBinaryDigest = "binary-1"
+        , manifestInputFrame = "daemon-3"
+        , manifestInputRevision = "rev-1"
+        , manifestInputConfigDigest = "config-1"
+        , manifestInputSecretDigest = activationSecretDigestFromBytes baseSecretBundle
+        , manifestInputService = "accelerator"
+        , manifestInputRolePlanDigest = "roleplan-1"
+        , manifestInputPermittedEffects = []
+        , manifestInputSecretChannel = "/var/run/secrets/hostbootstrap/bundle"
         }
 
-baseMeasurement :: RuntimeMeasurement
-baseMeasurement =
-    RuntimeMeasurement
+withBaseMeasurement :: (RuntimeMeasurement -> IO result) -> IO result
+withBaseMeasurement use = do
+    instance' <- either (assertFailure . activationErrorMessage) pure (kubernetesInstance "pod-uid-1" 0)
+    use RuntimeMeasurement
         { measuredBinaryDigest = "binary-1"
         , measuredConfigDigest = "config-1"
         , measuredSecretDigest = activationSecretDigestFromBytes baseSecretBundle
-        , measuredInstance = KubernetesInstance "pod-uid-1" 0
+        , measuredInstance = instance'
         }
 
 -- | A real root invocation, a real activation broker, and its installed key.
@@ -1151,3 +1164,24 @@ describePlan = either roleLifecycleErrorMessage (const "a second opened plan")
 
 isSuffixOfList :: (Eq a) => [a] -> [a] -> Bool
 isSuffixOfList needle haystack = needle == drop (length haystack - length needle) haystack
+
+instanceKeyVectorCase :: IO ()
+instanceKeyVectorCase = withBaseMeasurement $ \baseMeasurement -> do
+    manifest <- either (assertFailure . activationErrorMessage) pure $
+        activationManifest baseManifestInput
+            { manifestInputPermittedEffects = servingEffects
+            , manifestInputRolePlanDigest = rolePlanDraftDigest listenerDraft
+            }
+    withBroker manifest $ \broker store key -> do
+        grant <- either (assertFailure . activationErrorMessage) pure =<< signActivationManifest broker manifest
+        forM_
+            [ (kubernetesInstance "pod-uid-1" 0, "role-admission.862e0bc69587e14626a1db388ee5cffe088aff01d1f92c7106b28cab5d0180e0")
+            , (kubernetesInstance "pod-uid-1" 1, "role-admission.53e500061c28405c4af23a8df2a84cd078202840969962eb8922a2bbc4b8b58f")
+            , (kubernetesInstance "pod-uid-1" maxBound, "role-admission.0fd889cc79099500ab88db64379aac07db17fa8ddd5f25939c5bd47e5a76e3e2")
+            , (hostServiceInstance "nonce/a", "role-admission.f3840c3c6261df4d313e9114e932025daa516277cc13641615ff74f239922788")
+            , (hostServiceInstance "noncea", "role-admission.ad9e0b94308c584a66243f32af96b10bad860bf24667fed63239e5d6f0611b4c")
+            ] $ \(produced, expectedKey) -> do
+                instance' <- either (assertFailure . activationErrorMessage) pure produced
+                let measurement = baseMeasurement{measuredInstance = instance'}
+                observed <- reserveAdmissionKey store key manifest grant measurement listenerDraft
+                observed @?= expectedKey

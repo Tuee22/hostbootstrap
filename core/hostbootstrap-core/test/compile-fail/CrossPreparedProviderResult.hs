@@ -26,5 +26,5 @@ badSettle ::
         journalVersionB ->
     Either
         ReconcileError
-        (ProviderPhaseAdvance scope planId backendId providerId Stopped)
+        (ProviderPhaseAdvance scope planId backendId providerId Running Stopped)
 badSettle prepared result = settleProviderStop prepared result

@@ -1,18 +1,28 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module ProviderReconcileSpec (tests) where
+module ProviderReconcileSpec (tests, shareDescriptorRefusalCaseWith) where
 
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
+import qualified TestDependency
+import Data.List (sort)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import qualified FakeProvider
 import qualified Fixture
 import HostBootstrap.Config.Vocab (Production)
+import HostBootstrap.Effect.Interpreter (interpretHostCommand)
+import HostBootstrap.Effect.Run (CapturedRun (..))
+import HostBootstrap.Effect.Vocabulary (hostCommand)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (AbsExe, HostTool (..), mkAbsExe)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore (newResourceCarrierCore, newStepRuntimeCore)
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Ownership.Object (ObjectIdentity, mkObjectIdentity)
 import qualified HostBootstrap.ProjectPlan as ProjectPlan
@@ -32,24 +42,96 @@ import HostBootstrap.Substrate.Provider.Reconcile
 import HostBootstrap.Substrate.Provider.Resume (
     ProviderStandingConflict (InstanceReplaced, InstanceUnderNoRecord),
  )
+import qualified SourceGuard
 import PlatformPath (hostFixturePath)
-import PrepareFixture (gateFor)
-import System.Directory (canonicalizePath, createDirectory)
-import System.FilePath ((</>))
+import PrepareFixture (gateFor, gateForValues)
+import System.Directory (canonicalizePath, createDirectory, listDirectory)
+import System.FilePath (takeFileName, (</>))
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.IO (readFile')
+import System.Environment (getExecutablePath)
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
+literalToolCases :: [TestTree]
+literalToolCases =
+    [ testCase "a spec-written tool prints literal data without creating redirected files" $
+        withSystemTempDirectory "hostbootstrap-literal-tool" $ \temporary -> do
+            root <- canonicalizePath temporary
+            tool <- Fixture.newFakeTool root "literal-answer" literalToolReport
+            before <- sort <$> listDirectory root
+            answer <- runLiteralTool tool
+            capturedExit answer @?= ExitSuccess
+            capturedStdout answer @?= literalToolReport <> nativeToolNewline
+            capturedStderr answer @?= ""
+            sort <$> listDirectory root >>= (@?= before)
+    , testCase "an exhausting tool preserves literal stdout then exact stderr" $
+        withSystemTempDirectory "hostbootstrap-literal-exhaustion" $ \temporary -> do
+            root <- canonicalizePath temporary
+            tool <- Fixture.newExhaustingFakeTool root "literal-exhaustion" literalToolReport literalToolReport
+            before <- sort <$> listDirectory root
+            first <- runLiteralTool tool
+            capturedExit first @?= ExitSuccess
+            capturedStdout first @?= literalToolReport <> nativeToolNewline
+            capturedStderr first @?= ""
+            second <- runLiteralTool tool
+            capturedExit second @?= ExitFailure 1
+            capturedStdout second @?= ""
+            capturedStderr second @?= literalToolReport <> nativeToolNewline
+            after <- sort <$> listDirectory root
+            after @?= sort (before <> [takeFileName tool <> ".calls"])
+    , testCase "a recording tool quotes output and its apostrophe-bearing transcript path" $
+        withSystemTempDirectory "hostbootstrap-literal-recording" $ \temporary -> do
+            root <- canonicalizePath temporary
+            let transcript = root </> "invocations'capture"
+            tool <- Fixture.newRecordingFakeTool root "literal-recording" literalToolReport 0 transcript
+            before <- sort <$> listDirectory root
+            answer <- runLiteralTool tool
+            capturedExit answer @?= ExitSuccess
+            capturedStdout answer @?= literalToolReport <> nativeToolNewline
+            capturedStderr answer @?= ""
+            readFile' transcript >>= (@?= "literal-recording\n")
+            after <- sort <$> listDirectory root
+            after @?= sort (before <> ["invocations'capture"])
+    , testCase "the unused refusing helper and generator stay absent from every test source" $
+        SourceGuard.withPackageSourceIn ["test"] $ \_ testRoot -> do
+            sources <- SourceGuard.readHaskellSources testRoot
+            let forbiddenNames = ["newRefusing" <> "FakeTool", "refusing" <> "ToolProgram"]
+            mapM_ (\(path, source) -> mapM_ (\name ->
+                assertBool (path <> " still names the deleted fixture helper")
+                    (not (Text.isInfixOf (Text.pack name) (Text.pack source)))) forbiddenNames) sources
+    ]
+
+literalToolBase :: String
+literalToolBase = "{\"a\":\"b>c\"} $HOME " <> [toEnum 96] <> " 50% & | ^ 'quoted'"
+
+literalToolReport :: String
+nativeToolNewline :: String
+#if defined(mingw32_HOST_OS)
+literalToolReport = literalToolBase
+nativeToolNewline = "\r\n"
+#else
+literalToolReport = literalToolBase <> " \233"
+nativeToolNewline = "\n"
+#endif
+
+runLiteralTool :: FilePath -> IO CapturedRun
+runLiteralTool tool = do
+    let cfg = testHostConfig{hcToolPaths = Map.singleton Docker (fixtureExe tool)}
+    interpretHostCommand cfg (hostCommand Docker []) >>= either assertFailure pure
+
 tests :: TestTree
-tests =
-    testGroup
-        "ProviderReconcileSpec"
+tests = testGroup "ProviderReconcileSpec" (literalToolCases <> providerCases)
+
+providerCases :: [TestTree]
+providerCases =
         [ testCase "a prepared provider creation returns its exact backend-indexed wrapper" $
             withIncusProviderFixture 17 createdBackendReport (settledProvision NoPrior)
                 >>= \case
                     Right (Changed Created, "core:deploy-vm", 17, 7, owner) ->
                         assertBool
-                            "the wrapper retains the provider origin"
+                            "the prepared binding retains the provider origin"
                             ("hostbootstrap/provider-origin/v2" `Text.isInfixOf` owner)
                     other -> assertFailure ("expected a managed provider creation, got " ++ show other)
         , testCase "an explicitly recovered provider settles Repaired" $
@@ -68,12 +150,17 @@ tests =
                     Right (Unchanged, "core:deploy-vm", 17, 7, _) -> pure ()
                     other -> assertFailure ("expected unchanged provider authority, got " ++ show other)
         , testCase "a foreign provider remains descriptive and grants no wrapper" $
-            withIncusProviderFixture 17 foreignProvisionBackendReport foreignProvision
-                >>= (@?= Right "core:deploy-vm")
+            withIncusProviderFixture 17 foreignProvisionBackendReport foreignProvision >>= \case
+                Right (resourceKey, generation, observation) -> do
+                    resourceKey @?= "core:deploy-vm"
+                    foreignIdentity observation @?= resourceKey
+                    foreignDetail observation @?= "provider stable identity=666f726569676e2d70726f7669646572"
+                    generation @?= 9743538103680144570
+                other -> assertFailure ("expected the settled foreign identity and generation, got " ++ show other)
         , testCase "Direct admission owns only its plan-local journal reservation" $
             withDirectProviderFixture 17 (directAdmission NoPrior) >>= \case
                 Right (Changed Created, owner, resourceKey) -> do
-                    assertBool "the owner is a framed provider-origin binding" ("hostbootstrap/provider-origin/v2" `Text.isInfixOf` owner)
+                    assertBool "the prepared owner is a framed provider-origin binding" ("hostbootstrap/provider-origin/v2" `Text.isInfixOf` owner)
                     resourceKey @?= "core:deploy-vm"
                 other -> assertFailure ("expected a Direct local admission, got " ++ show other)
         , testCase "Direct admission with matching proof settles Unchanged" $
@@ -96,7 +183,13 @@ tests =
                 withManagedProviderFixture backend replacedStop
             )
                 >>= \case
-                    Left (Conflict detail) -> conflictResource detail @?= "core:deploy-vm"
+                    Left (Conflict detail) ->
+                        detail
+                            @?= ConflictDetail
+                                "core:deploy-vm"
+                                "owned generation=17"
+                                "replacement generation=17435237075782472532; provider stable identity=7265706c6163656d656e742d766d"
+                                "stop provider must leave the replacement untouched and require operator resolution"
                     other -> assertFailure ("expected a replacement conflict, got " ++ show other)
         , testCase "a Direct stop refusal mints no successor phase" $
             ( withDirectBackend $ \backend _root ->
@@ -114,6 +207,14 @@ tests =
                         guestPath @?= shareGuestPath
                         providerGeneration @?= 17
                     other -> assertFailure ("expected a prepared Direct share admission, got " ++ show other)
+        , testCase "a Direct share refuses a sibling of its admitted root" $ do
+            result <- withDirectBackend $ \backend root -> do
+                let sibling = root <> "-sibling"
+                createDirectory sibling
+                withShareFixture backend sibling (Right 31) (settledShare NoPrior backend)
+            case result of
+                Left (Conflict detail) -> conflictResource detail @?= "direct-host-share"
+                other -> assertFailure ("expected sibling-root Direct share conflict, got " <> show other)
         , testCase "a Direct share with matching prior proof settles Unchanged" $
             withDirectBackend (\backend root -> withShareFixture backend root (Right 31) (settledShare MatchingPrior backend))
                 >>= \case
@@ -154,16 +255,124 @@ tests =
                         backend
                         root
                         (Left (Failure (FailureDetail "probe provider" "provider stopped answering" ReprobeBeforeRetry)))
-                        (\_ _ _ -> pure (Right ()))
+                        (\_ _ _ _ -> pure (Right ()))
                 )
                 >>= \case
                     Left (Failure detail) -> failedOperation detail @?= "probe provider"
                     other -> assertFailure ("expected the dependency probe failure, got " ++ show other)
+        , testGroup
+            "fresh provider-share preparation"
+            [ testCase "the actual share preparation probes its ready provider exactly once" $ do
+                probes <- newIORef (0 :: Int)
+                callbacks <- newIORef (0 :: Int)
+                result <- withDirectBackend $ \backend root ->
+                    (fmap . fmap) ((,) root) $
+                        withShareFixtureProbe
+                            backend
+                            root
+                            (countedProviderProbe probes (Right 31))
+                            providerGate
+                            (readIORef probes >>= (@?= 0))
+                            ( \plan planned observed prepared -> do
+                                readIORef probes >>= (@?= 1)
+                                modifyIORef' callbacks (+ 1)
+                                settledShare NoPrior backend plan planned observed prepared
+                            )
+                case result of
+                    Right (root, summary) ->
+                        summary @?= (Changed Created, "core:copy-source", 29, 11, root, shareGuestPath, 17)
+                    other -> assertFailure ("expected the counted prepared share, got " ++ show other)
+                readIORef probes >>= (@?= 1)
+                readIORef callbacks >>= (@?= 1)
+            , testCase "a first-run not-ready provider probe yields no prepared-share continuation" $ do
+                probes <- newIORef (0 :: Int)
+                callbacks <- newIORef (0 :: Int)
+                let refusal = Failure (FailureDetail "probe provider" "provider is not ready" ReprobeBeforeRetry)
+                result <- withDirectBackend $ \backend root ->
+                    withShareFixtureProbe
+                        backend
+                        root
+                        (countedProviderProbe probes (Left refusal))
+                        providerGate
+                        (readIORef probes >>= (@?= 0))
+                        ( \_ _ _ _ -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (Right ())
+                        )
+                result @?= Left refusal
+                readIORef probes >>= (@?= 1)
+                readIORef callbacks >>= (@?= 0)
+            , testCase "a wrong-plan share gate refuses before its provider probe" $
+                shareGateRefusalCase ShareGatePlanMismatch
+            , testCase "a wrong-operation share gate refuses before its provider probe" $
+                shareGateRefusalCase ShareGateOperationMismatch
+            , testCase "a zero-attempt share gate refuses before its provider probe" $
+                shareGateRefusalCase ShareGateZeroAttempt
+            ]
         , testCase "provider share declarations reject relative paths before preparation" $
             case mkProviderShareSpec "relative/source" "/guest/target" of
                 Left (Failure detail) -> failedOperation detail @?= "validate provider share"
                 other -> assertFailure ("expected absolute-path validation, got " ++ show other)
         ]
+
+countedProviderProbe :: IORef Int -> Either ReconcileError Word64 -> IO (Either ReconcileError Word64)
+countedProviderProbe probes result = do
+    modifyIORef' probes (+ 1)
+    pure result
+
+data ShareGateRefusal = ShareGatePlanMismatch | ShareGateOperationMismatch | ShareGateZeroAttempt
+
+shareGateRefusalCase :: ShareGateRefusal -> IO ()
+shareGateRefusalCase refusal = do
+    probes <- newIORef (0 :: Int)
+    callbacks <- newIORef (0 :: Int)
+    expectedRef <- newIORef Nothing
+    result <- withDirectBackend $ \backend root ->
+        withShareFixtureProbe
+            backend
+            root
+            (countedProviderProbe probes (Right 31))
+            ( \execution -> do
+                let planDigest = Execution.stepExecutionPlanDigest execution
+                    operation = Execution.stepExecutionOperationKey execution
+                    (expected, mintGate) = case refusal of
+                        ShareGatePlanMismatch ->
+                            ( Conflict
+                                ( ConflictDetail
+                                    operation
+                                    ("a prepare gate from plan " <> planDigest)
+                                    "a prepare gate from plan another-plan"
+                                    "prepare each operation through its own plan's journal"
+                                )
+                            , gateFor "another-plan" operation
+                            )
+                        ShareGateOperationMismatch ->
+                            ( Conflict
+                                ( ConflictDetail
+                                    operation
+                                    ("a prepare gate recorded for " <> operation)
+                                    "a prepare gate recorded for core:deploy-vm"
+                                    "record this operation's unknown phase before preparing it"
+                                )
+                            , gateFor planDigest "core:deploy-vm"
+                            )
+                        ShareGateZeroAttempt ->
+                            ( Failure (FailureDetail "prepare operation" "attempt must be positive" DoNotRetry)
+                            , gateForValues planDigest operation "session-1" 1 0
+                            )
+                writeIORef expectedRef (Just expected)
+                mintGate
+            )
+            (readIORef probes >>= (@?= 0))
+            ( \_ _ _ _ -> do
+                modifyIORef' callbacks (+ 1)
+                pure (Right ())
+            )
+    readIORef expectedRef >>= \case
+        Just expected -> result @?= Left expected
+        Nothing -> assertFailure "the fixture never minted the requested share gate"
+    readIORef probes >>= (@?= 0)
+    readIORef callbacks >>= (@?= 0)
 
 data PriorMode = NoPrior | MatchingPrior
 
@@ -172,16 +381,16 @@ type ProvisionSummary = (ChangeView, Text.Text, Word64, Word64, Text.Text)
 settledProvision ::
     PriorMode ->
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ResourceHandle scope planId providerId ProviderResource Unclassified Observed ->
     PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError ProvisionSummary)
-settledProvision priorMode backend plan _ _ observed prepared = do
+settledProvision priorMode backend plan _ planned observed prepared = do
     callResult <- provisionCall backend prepared
     pure $ do
-        settled <- settleProvisionWithPrior priorMode plan observed prepared callResult
+        settled <- settleProvisionWithPrior priorMode plan planned observed prepared callResult
         pure $
             withProviderProvisionSettlement
                 settled
@@ -197,30 +406,32 @@ settledProvision priorMode backend plan _ _ observed prepared = do
 
 settleProvisionWithPrior ::
     PriorMode ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
     ResourceHandle scope planId providerId ProviderResource Unclassified Observed ->
     PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     ProviderProvisionCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     Either ReconcileError (ProviderProvisionSettlement scope planId backendId providerId)
-settleProvisionWithPrior priorMode plan observed prepared callResult =
+settleProvisionWithPrior priorMode plan planned observed prepared callResult =
     case priorMode of
         NoPrior -> settleProviderProvision Nothing prepared callResult
         MatchingPrior ->
             joinReconcile $
                 withMatchingPriorCommit
                     plan
+                    planned
                     observed
                     (preparedOperationKey observed (preparedProviderProvisionBinding prepared))
                     (\proof -> settleProviderProvision (Just proof) prepared callResult)
 
 foreignProvision ::
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ResourceHandle scope planId providerId ProviderResource Unclassified Observed ->
     PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
-    IO (Either ReconcileError Text.Text)
+    IO (Either ReconcileError (Text.Text, Word64, ForeignObservation))
 foreignProvision backend _ _ _ _ prepared = do
     callResult <- provisionCall backend prepared
     pure $ do
@@ -229,35 +440,35 @@ foreignProvision backend _ _ _ _ prepared = do
             withProviderProvisionSettlement
                 settled
                 (\_ _ -> error "a foreign observation must not establish ownership")
-                (\_ _ _ foreignState -> foreignIdentity foreignState)
+                (\key generation _ foreignState -> (key, generation, foreignState))
 
 directAdmission ::
     PriorMode ->
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ResourceHandle scope planId providerId ProviderResource Unclassified Observed ->
     PreparedProviderProvision scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError (ChangeView, Text.Text, Text.Text))
-directAdmission priorMode backend plan _ _ observed prepared = do
+directAdmission priorMode backend plan _ planned observed prepared = do
     callResult <- provisionCall backend prepared
     pure $ do
-        settled <- settleProvisionWithPrior priorMode plan observed prepared callResult
+        settled <- settleProvisionWithPrior priorMode plan planned observed prepared callResult
         pure $
             withProviderProvisionSettlement
                 settled
-                ( \_ change ->
+                ( \managed change ->
                     ( change
                     , preparedProviderBindingOwner (preparedProviderProvisionBinding prepared)
-                    , preparedProviderBindingResourceKey (preparedProviderProvisionBinding prepared)
+                    , managedProviderKey managed
                     )
                 )
                 (\_ _ _ _ -> error "a Direct admission must own its local reservation")
 
 lifecycleSequence ::
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ManagedProviderHandle scope planId backendId providerId Provisioned ->
@@ -330,7 +541,7 @@ lifecycleSequence backend _ execution planned provisioned =
 
 replacedStop ::
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ManagedProviderHandle scope planId backendId providerId Provisioned ->
@@ -354,7 +565,7 @@ replacedStop backend _ execution planned provisioned =
 
 unsupportedStop ::
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ManagedProviderHandle scope planId backendId providerId Provisioned ->
@@ -386,7 +597,7 @@ bootProvider ::
     Execution.StepExecution scope planId ->
     PlannedResource scope planId providerId ProviderResource providerFrame ->
     ManagedProviderHandle scope planId backendId providerId Provisioned ->
-    IO (Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Running))
+    IO (Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Provisioned Running))
 bootProvider backend execution planned provisioned = do
     gate <- providerGate execution
     joinIO $
@@ -406,14 +617,15 @@ type ShareSummary = (ChangeView, Text.Text, Word64, Word64, FilePath, FilePath, 
 settledShare ::
     PriorMode ->
     ProviderUnderTest backendId ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+    PlannedResource scope planId shareId DurableShareResource shareFrame ->
     ResourceHandle scope planId shareId DurableShareResource Unclassified Observed ->
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     IO (Either ReconcileError ShareSummary)
-settledShare priorMode backend plan observed prepared = do
+settledShare priorMode backend plan planned observed prepared = do
     callResult <- shareCall backend prepared
     pure $ do
-        settled <- settleShareWithPrior priorMode plan observed prepared callResult
+        settled <- settleShareWithPrior priorMode plan planned observed prepared callResult
         pure $
             withProviderShareSettlement
                 settled
@@ -432,18 +644,20 @@ settledShare priorMode backend plan observed prepared = do
 
 settleShareWithPrior ::
     PriorMode ->
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+    PlannedResource scope planId shareId DurableShareResource shareFrame ->
     ResourceHandle scope planId shareId DurableShareResource Unclassified Observed ->
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     ProviderShareCallResult scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     Either ReconcileError (ProviderShareSettlement scope planId backendId providerId shareId)
-settleShareWithPrior priorMode plan observed prepared callResult =
+settleShareWithPrior priorMode plan planned observed prepared callResult =
     case priorMode of
         NoPrior -> settleProviderShare Nothing prepared callResult
         MatchingPrior ->
             joinReconcile $
                 withMatchingPriorCommit
                     plan
+                    planned
                     observed
                     (preparedOperationKey observed (preparedProviderShareBinding prepared))
                     (\proof -> settleProviderShare (Just proof) prepared callResult)
@@ -456,20 +670,22 @@ preparedOperationKey handle binding =
     resourceHandleKey handle <> ":" <> preparedProviderBindingCallDigest binding
 
 withMatchingPriorCommit ::
-    LifecyclePlan scope planId ->
+    ProjectPlan.ProjectPlan scope specDigest planId configId cfg ->
+    PlannedResource scope planId resourceId resource frame ->
     ResourceHandle scope planId resourceId resource Unclassified Observed ->
     Text.Text ->
     (PriorCommitProof scope planId resourceId resource -> result) ->
     Either ReconcileError result
-withMatchingPriorCommit plan handle operationKey consume = do
+withMatchingPriorCommit plan planned handle operationKey consume = do
     verified <-
         verifyPersistedJournalRecord
             plan
+            planned
             handle
             "acquire"
             PersistedJournalRecord
-                { persistedPlanDigest = lifecyclePlanDigest plan
-                , persistedFrameKey = "host"
+                { persistedPlanDigest = ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan)
+                , persistedFrameKey = plannedResourceFrame planned
                 , persistedResourceKey = resourceHandleKey handle
                 , persistedGeneration = resourceHandleGeneration handle
                 , persistedOperation = "acquire"
@@ -480,9 +696,9 @@ withMatchingPriorCommit plan handle operationKey consume = do
     withPriorCommitProof verified consume
 
 type ProviderFixtureConsumer summary =
-    forall backendId projectId planId providerId providerFrame operationKey callDigest attempt journalVersion.
+    forall backendId projectId specDigest planId configId providerId providerFrame operationKey callDigest attempt journalVersion.
     ProviderUnderTest backendId ->
-    LifecyclePlan (Production projectId) planId ->
+    ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
     Execution.StepExecution (Production projectId) planId ->
     PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
     ResourceHandle (Production projectId) planId providerId ProviderResource Unclassified Observed ->
@@ -517,9 +733,9 @@ withDirectProviderFixture generation consume =
 withProviderFixture ::
     ProviderUnderTest backendId ->
     Word64 ->
-    ( forall projectId planId providerId providerFrame operationKey callDigest attempt journalVersion.
+    ( forall projectId specDigest planId configId providerId providerFrame operationKey callDigest attempt journalVersion.
       ProviderUnderTest backendId ->
-      LifecyclePlan (Production projectId) planId ->
+      ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
       Execution.StepExecution (Production projectId) planId ->
       PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
       ResourceHandle (Production projectId) planId providerId ProviderResource Unclassified Observed ->
@@ -539,10 +755,9 @@ withProviderFixture backend generation consume =
     Fixture.withFixtureProjectPlan providerPlan $ \projectPlan ->
         case NonEmpty.toList (ProjectPlan.forward projectPlan) of
             [providerNode] -> do
-                carrier <- Execution.newResourceCarrier
-                runtime <- Execution.newStepRuntime carrier
-                let plan = lifecyclePlanFromProjectPlan projectPlan
-                    execution = stepExecutionFor projectPlan testHostConfig runtime providerNode
+                carrier <- ExecutionCore.newResourceCarrierCore
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
+                let execution = stepExecutionFor projectPlan testHostConfig runtime providerNode
                     operationKey = Execution.stepExecutionOperationKey execution
                 gate <- providerGate execution
                 joinIO $
@@ -551,14 +766,14 @@ withProviderFixture backend generation consume =
                             joinReconcile $
                                 withNodeObservedResource execution planned generation 7 $ \observed ->
                                     withPreparedProviderProvision execution (providerBackendBinding (underTestBackend backend)) planned observed gate $
-                                        consume backend plan execution planned observed
+                                        consume backend projectPlan execution planned observed
             nodes -> fail ("expected one provider node, got " ++ show (length nodes))
 
 withManagedProviderFixture ::
     ProviderUnderTest backendId ->
-    ( forall projectId planId providerId providerFrame.
+    ( forall projectId specDigest planId configId providerId providerFrame.
       ProviderUnderTest backendId ->
-      LifecyclePlan (Production projectId) planId ->
+      ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
       Execution.StepExecution (Production projectId) planId ->
       PlannedResource (Production projectId) planId providerId ProviderResource providerFrame ->
       ManagedProviderHandle (Production projectId) planId backendId providerId Provisioned ->
@@ -580,8 +795,9 @@ withShareFixture ::
     ProviderUnderTest backendId ->
     FilePath ->
     Either ReconcileError Word64 ->
-    ( forall projectId planId providerId shareId operationKey callDigest attempt journalVersion.
-      LifecyclePlan (Production projectId) planId ->
+    ( forall projectId specDigest planId configId providerId shareId shareFrame operationKey callDigest attempt journalVersion.
+      ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      PlannedResource (Production projectId) planId shareId DurableShareResource shareFrame ->
       ResourceHandle (Production projectId) planId shareId DurableShareResource Unclassified Observed ->
       PreparedProviderShare
         (Production projectId)
@@ -597,18 +813,70 @@ withShareFixture ::
     ) ->
     IO (Either ReconcileError summary)
 withShareFixture backend hostPath providerProbe consume =
+    withShareFixtureProbe backend hostPath (pure providerProbe) providerGate (pure ()) consume
+
+withShareFixtureProbe ::
+    ProviderUnderTest backendId ->
+    FilePath ->
+    IO (Either ReconcileError Word64) ->
+    (forall scope planId. Execution.StepExecution scope planId -> IO PreparedGate) ->
+    IO () ->
+    ( forall projectId specDigest planId configId providerId shareId shareFrame operationKey callDigest attempt journalVersion.
+      ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      PlannedResource (Production projectId) planId shareId DurableShareResource shareFrame ->
+      ResourceHandle (Production projectId) planId shareId DurableShareResource Unclassified Observed ->
+      PreparedProviderShare
+        (Production projectId)
+        planId
+        backendId
+        providerId
+        shareId
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+      IO (Either ReconcileError summary)
+    ) ->
+    IO (Either ReconcileError summary)
+withShareFixtureProbe = withShareFixtureProbeWithExecution id
+
+withShareFixtureProbeWithExecution ::
+    (forall scope planId. Execution.StepExecution scope planId -> Execution.StepExecution scope planId) ->
+    ProviderUnderTest backendId ->
+    FilePath ->
+    IO (Either ReconcileError Word64) ->
+    (forall scope planId. Execution.StepExecution scope planId -> IO PreparedGate) ->
+    IO () ->
+    ( forall projectId specDigest planId configId providerId shareId shareFrame operationKey callDigest attempt journalVersion.
+      ProjectPlan.ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      PlannedResource (Production projectId) planId shareId DurableShareResource shareFrame ->
+      ResourceHandle (Production projectId) planId shareId DurableShareResource Unclassified Observed ->
+      PreparedProviderShare
+        (Production projectId)
+        planId
+        backendId
+        providerId
+        shareId
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+      IO (Either ReconcileError summary)
+    ) ->
+    IO (Either ReconcileError summary)
+withShareFixtureProbeWithExecution changeExecution backend hostPath providerProbe shareGate beforePrepare consume =
     Fixture.withFixtureProjectPlan providerSharePlan $ \projectPlan ->
         case NonEmpty.toList (ProjectPlan.forward projectPlan) of
             [providerNode, shareNode] -> do
-                carrier <- Execution.newResourceCarrier
-                providerRuntime <- Execution.newStepRuntime carrier
-                shareRuntime <- Execution.newStepRuntime carrier
+                carrier <- ExecutionCore.newResourceCarrierCore
+                providerRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                shareRuntime <- ExecutionCore.newStepRuntimeCore carrier
                 let providerExecution = stepExecutionFor projectPlan testHostConfig providerRuntime providerNode
-                    shareExecution = stepExecutionFor projectPlan testHostConfig shareRuntime shareNode
+                    shareExecution = changeExecution (stepExecutionFor projectPlan testHostConfig shareRuntime shareNode)
                     providerKey = Execution.stepExecutionOperationKey providerExecution
                     shareKey = Execution.stepExecutionOperationKey shareExecution
                 providerPrepareGate <- providerGate providerExecution
-                sharePrepareGate <- providerGate shareExecution
+                sharePrepareGate <- shareGate shareExecution
                 spec <- either (fail . show) pure (mkProviderShareSpec hostPath shareGuestPath)
                 joinIO $
                     joinReconcile $
@@ -630,20 +898,70 @@ withShareFixture backend hostPath providerProbe consume =
                                                                     joinIO $
                                                                         joinReconcile $
                                                                             withNodeResourceOfKind shareExecution DurableShareResourceKind shareKey $ \plannedShare ->
-                                                                                withNodeObservedResource shareExecution plannedShare 29 11 $ \observedShare ->
+                                                                                withNodeObservedResource shareExecution plannedShare 29 11 $ \observedShare -> do
+                                                                                    beforePrepare
                                                                                     flattenIO $
                                                                                         withPreparedProviderShare
                                                                                             shareExecution
                                                                                             plannedShare
                                                                                             observedShare
                                                                                             runningProvider
-                                                                                            (dependencyProbe (pure providerProbe))
+                                                                                            (TestDependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind providerProbe)
                                                                                             spec
                                                                                             sharePrepareGate
-                                                                                            (consume (lifecyclePlanFromProjectPlan projectPlan) observedShare)
+                                                                                            (consume projectPlan plannedShare observedShare)
                                                     )
                                                     (\_ _ _ _ -> pure (Left (Failure (FailureDetail "share fixture" "unexpected foreign provider" DoNotRetry))))
             nodes -> fail ("expected provider/share nodes, got " ++ show (length nodes))
+
+-- The isolated runtime probe supplies the private descriptor transformation.
+-- Ordinary spec compilation imports only the public execution facade.
+shareDescriptorRefusalCaseWith ::
+    (forall scope planId. Execution.StepExecution scope planId -> Execution.StepExecution scope planId) ->
+    IO ()
+shareDescriptorRefusalCaseWith changeExecution = do
+    positiveProbes <- newIORef (0 :: Int)
+    positiveCallbacks <- newIORef (0 :: Int)
+    positive <- withDirectBackend $ \backend root ->
+        withShareFixtureProbe
+            backend
+            root
+            (countedProviderProbe positiveProbes (Right 31))
+            providerGate
+            (pure ())
+            ( \_ _ _ _ -> do
+                modifyIORef' positiveCallbacks (+ 1)
+                pure (Right ())
+            )
+    positive @?= Right ()
+    readIORef positiveProbes >>= (@?= 1)
+    readIORef positiveCallbacks >>= (@?= 1)
+    probes <- newIORef (0 :: Int)
+    callbacks <- newIORef (0 :: Int)
+    result <- withDirectBackend $ \backend root ->
+        withShareFixtureProbeWithExecution
+            changeExecution
+            backend
+            root
+            (countedProviderProbe probes (Right 31))
+            providerGate
+            (pure ())
+            ( \_ _ _ _ -> do
+                modifyIORef' callbacks (+ 1)
+                pure (Right ())
+            )
+    result
+        @?= Left
+            ( Conflict
+                ( ConflictDetail
+                    "core:deploy-vm"
+                    "provider declared as a dependency of the durable share"
+                    "declared dependencies="
+                    "declare the provider resource as a dependency before preparing its share"
+                )
+            )
+    readIORef probes >>= (@?= 0)
+    readIORef callbacks >>= (@?= 0)
 
 providerGate :: Execution.StepExecution scope planId -> IO PreparedGate
 providerGate execution =
@@ -774,12 +1092,11 @@ withIncusBackend answers consume =
                 joinReconcile
                     <$> discoverStrongProviderBackend config spec (\backend -> consume (ProviderUnderTest backend (Just answers)))
 
-{- | Real host tools, and a real directory the Direct realization may admit.
+{- | A real directory and spec-chosen stand-in clients.
 
-The Direct probes are this binary's own observation and one described
-command, so what a suite supplies is a root the kernel really answers for and
-a program the interpreter really launches (§ NN); what the /provider/ answers
-is a separate question and arrives as a value.
+The binary observes the host root through the real kernel. Its interpreter
+launches the configured clients, whose chosen status and streams test the code's
+reaction to those inputs and establish no real Docker or Incus behaviour.
 -}
 withRealHostTools :: (HostConfig -> FilePath -> IO result) -> IO result
 withRealHostTools use =
@@ -787,17 +1104,19 @@ withRealHostTools use =
         root <- canonicalizePath temporary
         let admissible = root </> "data"
         createDirectory admissible
-        docker <- Fixture.newFakeTool root "docker" ""
+        docker <- getExecutablePath
+        _ <- FakeProvider.newDockerFixture root (Just ["manifest", "inspect", "alpine:3.22"]) "" 0
         incus <- Fixture.newFakeTool root "incus" ""
-        use
-            testHostConfig
-                { hcToolPaths =
-                    Map.fromList
-                        [ (Docker, fixtureExe docker)
-                        , (Incus, fixtureExe incus)
-                        ]
-                }
-            admissible
+        FakeProvider.withFakeProviderClient root $
+            use
+                testHostConfig
+                    { hcToolPaths =
+                        Map.fromList
+                            [ (Docker, fixtureExe docker)
+                            , (Incus, fixtureExe incus)
+                            ]
+                    }
+                admissible
 
 {- | The one host directory this suite's share exposes.
 

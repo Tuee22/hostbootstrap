@@ -9,6 +9,8 @@
 **Gate evidence**: 2026-10-26 ; `hostbootstrap-core-gate-20261026`, x86_64 Ubuntu 24.04.4 CPU-only container on WSL2 Linux 6.18.33.2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 **Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the root ; pass ; covers in-gate
 
+**Gate evidence**: 2026-11-07 ; hostbootstrap-linux-d, native x86_64 Ubuntu 24.04.5 on WSL2 Linux 6.18.54.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
+
 > **Purpose**: Close both axes of host invocation — *which* executable a call names, and the *shape* the
 > call takes — and classify the outer host realization on which the binary is running.
 
@@ -25,8 +27,8 @@ sharply.
 ### Sprint 3.1: The closed `HostTool` boundary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/HostTool.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/HostConfig.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostTool.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/HostConfig.hs`,
 `core/hostbootstrap-core/test/HostToolSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/build_and_run_model.md`
@@ -108,7 +110,7 @@ None.
 ### Sprint 3.2: Outer-host realization classification [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/build_and_run_model.md`
@@ -280,8 +282,8 @@ None.
 ### Sprint 3.5: The canonical project root [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectRoot.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Schema.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectRoot.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Schema.hs`,
 `core/hostbootstrap-core/test/ProjectRootSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/CrossScopeProjectRoot.hs`
@@ -462,15 +464,17 @@ teardown decision is made once rather than at every spawn site.
   termination grace. Both read the child's output as bytes and decode it as lenient UTF-8, so the same
   bytes give the same `CapturedRun` under either disposition and under any process locale. The Colima
   backend's shipped command transaction and fallback NVIDIA discovery share the bounded runner, each
-  keeping its own `RunBounds` row and `RunNamespace`; the cluster backend issues described commands through the
-  interpreter (Sprint 3.8) and runs no bounded child.
+  keeping its own `RunBounds` row and `RunNamespace`. Described-effect callers reach the same runner
+  through the interpreter (Sprint 3.8) and select their own finite bounds.
 - Every bound the runner states is one it actually holds. The wall clock is one budget measured from the
   launch, covering the request write, the drain, and the exit wait together. A wall clock, a grace
   period, and a reap budget are all waited out by polling the child's status rather than by wrapping a
   blocking wait in a timeout: a process wait is a foreign call, and under the non-threaded runtime the
   gate builds this package with, an asynchronous exception cannot bring the launcher back out of one.
   The output readers start before the request is written, so a request larger than a pipe buffer cannot
-  deadlock against a child that writes first.
+  deadlock against a child that writes first. Both captured and bounded calls close the request
+  pipe after the complete write, including an empty request, before waiting for output. End-of-input
+  is part of the request protocol; its close consumes the same finite wall budget.
 - The teardown waits for the *group*, not the leader. On POSIX the grace period ends when the group is
   empty and the escalation to `SIGKILL` is driven by a null-signal probe of the group rather than by the
   leader's exit alone. On Windows the leader is launched into a job object (`use_process_jobs`), so
@@ -501,41 +505,27 @@ teardown decision is made once rather than at every spawn site.
 
 #### Validation
 
-`EffectSpec`'s eleven source guards and `ColimaSpec`'s "the shipped command transaction kills its group
-on hard parent death" case cover the runner's boundary today. The sprint closes when these behavioural
-cases exist in `EffectSpec` and pass under `cabal test all` from `core/`, each driving the test
-executable re-invoked through a probe flag dispatched in `test/Spec.hs` (the `DetachedSpec` idiom), on
-POSIX hosts unless noted:
+On 2026-11-07, `hostbootstrap-linux-d` (native x86_64 Ubuntu 24.04.5 inside WSL2,
+Linux 6.18.54.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0) passes all 73 selected
+EffectSpec, DocValidatorSpec and exact dry-run cases. The actual test executable reads until EOF
+for empty input and for a 128 KiB request; both bounded calls complete with every byte retained.
+Existing timeout, output ceiling, duplex backpressure, unread-input exit, cancellation, group escalation,
+cwd/argv and byte-decoding cases pass. No executable substitution or provider stand-in is counted.
 
-- A child that sleeps past a 500 ms wall returns `BoundedTimedOut`, and its process id answers no
-  null signal afterwards.
-- A child that closes both streams and then sleeps returns `BoundedTimedOut` within one wall plus the
-  grace, not two walls.
-- A child that writes more than `boundOutputBytes` returns `BoundedOutputLimit`, not a truncated run.
-- A child that ignores `SIGTERM` and forks a grandchild holding the pipes leaves neither process alive
-  after the grace and the `SIGKILL` escalation.
-- A missing executable returns `BoundedFailed`; a `killThread` on the launching thread re-raises
-  `ThreadKilled` and leaves no group member.
-- A child that exits without reading a request larger than a pipe buffer returns `BoundedCompleted`
-  with its exit code.
-- `runCaptured` over a child writing invalid UTF-8 returns `Right` with U+FFFD in place of the bad bytes
-  while the process locale is ASCII (every host).
-- The launch-boundary guard, run over an in-memory source that calls `callProcess`, reports it (every
-  host).
+Both workspaces build with `--enable-tests` on Linux and native Windows. Windows runtime execution
+remains owed by host-portability acceptance; these Windows results establish compilation only.
+The production change is two non-empty diff lines in the one existing Run module.
 
-Dated evidence: on 2026-08-17, Windows 11 Home 10.0.26200 x86_64 with GHC 9.12.4 and Cabal 3.16.1.0
-passed `cabal build all` and `cabal test all --ghc-options=-Werror` from `core/` host-native at
-1,885/1,885 in 222.28 seconds, plus `poetry run python -m hostbootstrap.check_code` and
-`poetry run python -m hostbootstrap.test_all` at 231 passed.
+| Command | Start UTC | End UTC | Seconds | Result |
+|---|---|---|---:|---|
+| `cabal test all` from `core/` | 2026-11-07T15:21:54.127284+00:00 | 2026-11-07T15:32:24.526437+00:00 | 630.437394 | 5166 core cases; exit 0 |
+| `cabal test all` from `demo/` | 2026-11-07T15:21:54.127323+00:00 | 2026-11-07T15:31:47.901251+00:00 | 593.809963 | 5166 core and 167 demo cases; exit 0 |
+| `poetry run python -m hostbootstrap.check_code` | 2026-11-07T15:21:54.127222+00:00 | 2026-11-07T15:21:54.925839+00:00 | 0.798680 | ruff, Black and mypy pass; exit 0 |
+| `poetry run python -m hostbootstrap.test_all` | 2026-11-07T15:21:54.127328+00:00 | 2026-11-07T15:21:59.875159+00:00 | 5.748305 | 376 Python cases; 100% coverage; exit 0 |
 
-Dated evidence: on 2026-08-18, x86_64 Linux with GHC 9.12.4 and Cabal 3.16.1.0 passed the same gate
-host-native at 2,121/2,121 in 209.17 seconds, plus both Python commands with 231 passed.
-
-Dated closing evidence, 2026-10-26: The complete Linux gate exercises real timeout, single wall budget, output ceiling, grandchild escalation, cancellation, unread large input, duplex pipes, native cwd/argv entry, missing directory/executable, and locale-independent byte decoding. Windows executes all portable cases and actual process-probe/native-entry refusals. The focused Windows effect run passed 43/43 before the complete gates. The four new CLI lines are excluded from the unrelated projector attribution; frozen projector hashes and 216/217 line totals remain unchanged.
-The declared Linux CPU core gate passed 2,633/2,633 in 234.60 seconds. Native Windows core passed
-2,626/2,626 in 442.17 seconds; the demo leg passed 164/164 in 5.80 seconds and its included core
-2,626/2,626 in 430.02 seconds. Python check_code and the complete 376-case suite passed, with 100%
-line and branch coverage. The closing phase evidence below records the commands and gate hosts.
+Every command checks all 1189 source files against the same frozen manifest before and after execution
+in both workspaces. Dated artifacts: `D:\CodexScratch\hostbootstrap-test-temp\hostbootstrap-3-7-request-eof-cases-sgw_te14` and the four
+`hostbootstrap-3-7-request-eof-final-*` artifact directories under `D:/CodexScratch/hostbootstrap-test-temp/`.
 
 #### Remaining Work
 
@@ -544,8 +534,8 @@ None.
 ### Sprint 3.8: The closed vocabulary and its one interpreter [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Effect/Vocabulary.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Effect/Interpreter.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/effect-command/HostBootstrap/Effect/Vocabulary.hs`,
+`core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Effect/Interpreter.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Effect.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lift.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Ensure.hs`,
@@ -676,7 +666,7 @@ None.
 ### Sprint 3.10: One substrate detection, and a total accelerator answer [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Substrate.hs`,
 `core/hostbootstrap-core/test/SubstrateSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/python_haskell_boundary.md`, `documents/engineering/prerequisites.md`

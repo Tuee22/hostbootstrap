@@ -120,7 +120,7 @@ import HostBootstrap.Lifecycle.FrameExecutor (
     withOpenedFrameExecutorForPlanKernel,
     withOpenedFrameExecutorKernel,
  )
-import HostBootstrap.Lifecycle.Plan (PlannedStep (..))
+import HostBootstrap.Lifecycle.Plan (PlannedStep, plannedStepStepKernel)
 import qualified HostBootstrap.Lifecycle.Plan as LifecyclePlan
 import HostBootstrap.Lift.Context (
     LiftContext,
@@ -791,7 +791,7 @@ nodeObservationFailure raw = do
             Right value -> Right value
 
 plannedNode :: PlannedStep scope planId configId config -> (ExecutionNode, Step, PlannedStep scope planId configId config)
-plannedNode planned@(PlannedStep _ step _) =
+plannedNode planned =
     ( ExecutionNode
         { executionNodeOperationKey = key
         , executionNodeFrame = plannedStepFrameId planned
@@ -807,6 +807,7 @@ plannedNode planned@(PlannedStep _ step _) =
     , planned
     )
   where
+    step = plannedStepStepKernel planned
     key = Text.pack (operationKeyText (plannedStepOperationKey planned))
 
 renderObservation :: Text -> StepObservation -> ByteString

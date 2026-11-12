@@ -257,3 +257,7 @@ The worked demo's root, VM/container projections, and service roles consume this
 respective admitted boundaries. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
 records recursive Production and Harness acceptance. The parameters/context/witness model and independent
 authority checks are defined in [binary_context_config](binary_context_config.md).
+
+The bare cluster-live assertions decode the generated sibling config through a Harness codec derived
+from the actual run authority. They compare the decoded canonical rendering with the config retained
+by that lifecycle and also check the run and project identities before using it.

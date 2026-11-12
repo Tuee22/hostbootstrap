@@ -11,6 +11,7 @@ import Control.Monad (forM_)
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
 import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.List (isPrefixOf, sort)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
@@ -51,6 +52,7 @@ import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Harness (Case (Case), CaseLifecycle (AssertOnce), CaseResult (Pass), TestSuite (TestSuite), mkCaseId)
 import HostBootstrap.Lifecycle.Context (
     LifecycleContextError (..),
+    lifecycleContextErrorMessage,
     withValidatedLifecycleContext,
  )
 import HostBootstrap.Lifecycle.Mode (
@@ -122,6 +124,7 @@ import HostBootstrap.Step (
     ensureStep,
     mkStepPlan,
  )
+import qualified SourceGuard
 import System.Directory (doesFileExist, getCurrentDirectory, removeFile, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv, withArgs)
 import System.Exit (ExitCode (ExitFailure))
@@ -280,7 +283,7 @@ executableProjectName = normalizeExecutableIdentity <$> getExecutablePath
 
 passingSuite :: TestSuite
 passingSuite =
-    TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) 1 False AssertOnce] (\_ _ -> pure Pass) (pure ())
+    TestSuite (pure (Right ())) (\_ _ -> pure ()) [Case (either (error . show) id (mkCaseId "ok")) AssertOnce] (\_ _ -> pure Pass) (pure ())
 
 tests :: TestTree
 tests =
@@ -293,6 +296,22 @@ tests =
                     , "   . host-orchestrator-0  [HostProvider / HostOrchestrator]"
                     , "   . vm-orchestrator-1  [LimaVMProvider / VMOrchestrator]  (parent: host-orchestrator-0)"
                     , "  -> vm-project-container-2  [DockerContainerProvider / VMProjectContainer]  (parent: vm-orchestrator-1)"
+                    ]
+        , testCase "renderComposition marks only the host frame when it is current" $
+            renderComposition sampleContext{currentFrame = "host-orchestrator-0"}
+                @?= unlines
+                    [ "composition (3 frames; current = host-orchestrator-0):"
+                    , "  -> host-orchestrator-0  [HostProvider / HostOrchestrator]"
+                    , "   . vm-orchestrator-1  [LimaVMProvider / VMOrchestrator]  (parent: host-orchestrator-0)"
+                    , "   . vm-project-container-2  [DockerContainerProvider / VMProjectContainer]  (parent: vm-orchestrator-1)"
+                    ]
+        , testCase "renderComposition marks only the VM frame when it is current" $
+            renderComposition sampleContext{currentFrame = "vm-orchestrator-1"}
+                @?= unlines
+                    [ "composition (3 frames; current = vm-orchestrator-1):"
+                    , "   . host-orchestrator-0  [HostProvider / HostOrchestrator]"
+                    , "  -> vm-orchestrator-1  [LimaVMProvider / VMOrchestrator]  (parent: host-orchestrator-0)"
+                    , "   . vm-project-container-2  [DockerContainerProvider / VMProjectContainer]  (parent: vm-orchestrator-1)"
                     ]
         , testCase "projectConfigPathForExecutable uses the executable directory" $ do
             let exe = "/tmp/bin/demo"
@@ -882,6 +901,7 @@ tests =
             path <- Schema.siblingProjectConfigPath projectName
             withRestoredFiles [path] $ do
                 removeIfPresent path
+                doesFileExist path >>= (@?= False)
                 assertSiblingGateRefuses
                     projectName
                     CheckCodeCommand
@@ -1228,16 +1248,13 @@ frameAdmissionTests =
                             "vm-project-container-2"
                             "vm-orchestrator-1"
                         )
-        , testCase "admission performs no protected-store transition" $
-            withFramePlanAndStore hostFrameContext twoFramePlan $ \store plan -> do
-                before <- observeProtectedStore store
+        , testCase "admission yields the exact current frame id" $
+            withFramePlan hostFrameContext twoFramePlan $ \plan ->
                 withCurrentFrame
                     plan
                     hostFrameContext
                     (\current _ _ -> currentFrameId current)
                     @?= Right "host-orchestrator-0"
-                after <- observeProtectedStore store
-                after @?= before
         ]
 
 lifecycleContextAdmissionTests :: TestTree
@@ -1531,6 +1548,35 @@ lifecycleContextAdmissionTests =
                 admitted @?= Right ()
                 after <- observeProtectedStore store
                 after @?= before
+        , testGroup
+            "lifecycle context diagnostics"
+            [ testCase label $ lifecycleContextErrorMessage failure @?= expected
+            | (label, failure, expected) <- lifecycleContextErrorRows
+            ]
+        , testCase "joint frame admission leaves no redundant private refusal vocabulary" $
+            -- See DEVELOPMENT_PLAN/rationale.md#lifecycle-context-retains-jointly-admitted-frame-evidence.
+            SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+                description <- SourceGuard.readPackageDescription
+                sources <- SourceGuard.readLibrarySources packageRoot description
+                case [source | (name, _, source) <- sources, name == "HostBootstrap.Lifecycle.Context.Internal"] of
+                    [internal] -> do
+                        definitions <- either assertFailure pure (SourceGuard.haskellDefinitionNames internal)
+                        let constructors =
+                                filter
+                                    (\name -> "LifecycleContext" `isPrefixOf` name && name /= "LifecycleContextError")
+                                    definitions
+                        sort [label | (label, _, _) <- lifecycleContextErrorRows] @?= sort constructors
+                    _ -> assertFailure "the lifecycle-context representation has no unique library source"
+                forM_ sources $ \(name, _, source) -> do
+                    let tokens = SourceGuard.haskellTokens source
+                    forM_
+                        [ "LifecycleContextFrameEvidenceMismatch"
+                        , "LifecycleContextFrameOutsidePlan"
+                        , "LifecycleContextPlanRootCount"
+                        ]
+                        ( \removed ->
+                            assertBool (name <> " retains " <> removed) (removed `notElem` tokens)
+                        )
         , testCase "private source separates root and nested refinement without a public projection" $ do
             cwd <- getCurrentDirectory
             repoRoot <-
@@ -1538,18 +1584,10 @@ lifecycleContextAdmissionTests =
                     >>= maybe
                         (assertFailure ("could not locate repository root from " ++ cwd))
                         pure
-            let packageSourceRoot = repoRoot </> "core" </> "hostbootstrap-core" </> "src"
-                internalPath =
-                    packageSourceRoot
-                        </> "HostBootstrap"
-                        </> "Lifecycle"
-                        </> "Context"
-                        </> "Internal.hs"
-                facadePath =
-                    packageSourceRoot
-                        </> "HostBootstrap"
-                        </> "Lifecycle"
-                        </> "Context.hs"
+            let packageRoot = repoRoot </> "core" </> "hostbootstrap-core"
+            description <- SourceGuard.readPackageDescription
+            internalPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Context.Internal"
+            facadePath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Lifecycle.Context"
             internal <- unwords . words <$> readFile internalPath
             facade <- unwords . words <$> readFile facadePath
             let require label fragment source =
@@ -1564,6 +1602,27 @@ lifecycleContextAdmissionTests =
                 "all five nominal roles"
                 "type role ValidatedLifecycleContext nominal nominal nominal nominal nominal"
                 internal
+            require
+                "total retained-evidence construction"
+                ( unwords
+                    [ "mintValidatedLifecycleContext ::"
+                    , "ProjectPlan scope specDigest planId configId cfg ->"
+                    , "CanonicalProjectRoot scope rootId -> ProtectedStore ->"
+                    , "CurrentFrame scope planId frame ->"
+                    , "ProjectFrame scope specDigest planId configId frame ->"
+                    , "ValidatedContext scope planId frame ->"
+                    , "ValidatedLifecycleContext scope specDigest planId configId frame"
+                    ]
+                )
+                internal
+            require
+                "root membership from the admitted nonempty chain"
+                "rootFrame = fst (NonEmpty.head (topologyFrameOrder (topology plan)))"
+                internal
+            require
+                "direct construction after public frame admission"
+                "Right <$> use (mintValidatedLifecycleContext plan root store current projectFrame validated)"
+                facade
             require
                 "root-only evidence branch"
                 "LifecycleRootFrame -> Right (use root store current projectFrame validated)"
@@ -1584,6 +1643,42 @@ lifecycleContextAdmissionTests =
             forbid "nested eliminator" "withValidatedNestedLifecycleContext" facade
             forbid "path-only protected-store reopen" "openProtectedStore" facade
         ]
+
+lifecycleContextErrorRows :: [(String, LifecycleContextError, String)]
+lifecycleContextErrorRows =
+    [ ( "LifecycleContextBinaryContextError"
+      , LifecycleContextBinaryContextError (ContextProjectMismatch "expected-project" "observed-project")
+      , "lifecycle context: binary context: project mismatch (expected expected-project, got observed-project)"
+      )
+    , ( "LifecycleContextPlanRootMismatch"
+      , LifecycleContextPlanRootMismatch "expected-root" "observed-root"
+      , "lifecycle context: plan root mismatch (expected \"expected-root\", got \"observed-root\")"
+      )
+    , ( "LifecycleContextSourceRootMismatch"
+      , LifecycleContextSourceRootMismatch "expected-root" "observed-root"
+      , "lifecycle context: context source root mismatch (expected \"expected-root\", got \"observed-root\")"
+      )
+    , ( "LifecycleContextStoreRootMismatch"
+      , LifecycleContextStoreRootMismatch "expected-store" "observed-store"
+      , "lifecycle context: protected-store root mismatch (expected \"expected-store\", got \"observed-store\")"
+      )
+    , ( "LifecycleContextStoreIdentityMismatch"
+      , LifecycleContextStoreIdentityMismatch "expected-identity" "observed-identity"
+      , "lifecycle context: protected-store identity mismatch (expected \"expected-identity\", got \"observed-identity\")"
+      )
+    , ( "LifecycleContextFrameError"
+      , LifecycleContextFrameError (FrameCurrentFrameEndpointMismatch "expected-frame" "observed-frame")
+      , "lifecycle context: frame admission failed: FrameCurrentFrameEndpointMismatch \"expected-frame\" \"observed-frame\""
+      )
+    , ( "LifecycleContextRootFrameRequired"
+      , LifecycleContextRootFrameRequired "nested-frame"
+      , "lifecycle context: root frame required, got \"nested-frame\""
+      )
+    , ( "LifecycleContextNestedFrameRequired"
+      , LifecycleContextNestedFrameRequired "root-frame"
+      , "lifecycle context: nested frame required, got \"root-frame\""
+      )
+    ]
 
 withLifecycleContextPlan ::
     (BinaryContext -> BinaryContext) ->

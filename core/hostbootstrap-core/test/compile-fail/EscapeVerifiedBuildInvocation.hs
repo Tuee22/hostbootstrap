@@ -2,7 +2,6 @@
 
 module EscapeVerifiedBuildInvocation where
 
-import Data.Text (Text)
 import HostBootstrap.Build
 
 data ChosenBuildProject
@@ -57,12 +56,12 @@ selectBuilder _ _ = pure ()
 
 verifyWith ::
     BuildVerificationKey ->
-    Text ->
-    Text ->
-    Text ->
-    Text ->
-    FilePath ->
-    FilePath ->
+    BuildProjectName ->
+    BuildSpecDigest ->
+    BuildConfigDigest ->
+    CoordinatorDigest ->
+    BuildSourceRoot ->
+    BuilderPath ->
     BuildChannel ->
     ( forall project spec config frame build source builder.
       ImageBuildFrame project spec config frame ->

@@ -1,33 +1,26 @@
 {-# LANGUAGE LambdaCase #-}
 
-{- | A cluster driver, container runtime, and API server this suite drives, as
-one real process.
+{- | Authored cluster-tool protocol models for fixture compatibility.
 
-§ KK admits one effect vocabulary and one interpreter for it, and § NN admits
-evidence only from applying total functions to values or from real processes
-doing real work. There is therefore no runner to inject: a suite that wants the
-driver to have answered a particular way supplies a program the interpreter can
-launch, and that program is __this suite's own executable__.
+The child executable reads and writes this fixture's own files. Its Kind,
+Docker, kubectl and Helm answers are authored here; running those answers in a
+separate process does not make them provider execution evidence under section NN.
+Pure production classifications, actual protected-store kernel operations and
+the real Docker/Kind cluster-live gate establish their respective subjects.
 
-One program serves all three tools, because the argument vector says which one it
-is being asked as. That is not a shortcut — it is the same property the described
-commands are built on: a vector that could be read as belonging to two tools
-would be a vector the driver could send to the wrong one.
-
-Everything it answers from is durable, because the client is a second process: a
-cluster a create established has to still be there when the next command asks
-about it, and a fixture that kept it in the parent would be asserting about its
-own memory rather than about what a tool reported.
-
-A vector this module does not recognize is a refusal rather than a silent
-success, so a driver that starts asking for something new fails a fixture instead
-of passing through it.
+Each modeled tool has its own executable name. A vector addressed to the wrong
+tool is refused before fixture state changes, and unrecognized vectors remain
+refusals. These checks validate this fixture's routing and modeled sequencing.
+The fixture runs on every gate host; it makes no claim about that host's real
+cluster tools.
 -}
 module FakeCluster (
     -- * Entering the role
     fakeClusterVariable,
     withFakeClusterClient,
     runFakeClusterClient,
+    prepareFixtureExecutables,
+    fixtureToolPath,
 
     -- * Declaring the fixture
     newClusterFixture,
@@ -44,6 +37,7 @@ module FakeCluster (
     writeRelays,
     recordedClusterMutations,
     recordedKubeconfigPaths,
+    recordedConfigFiles,
     fixtureKubeconfig,
     fixtureNodeIdentity,
     armReplacementAfter,
@@ -53,20 +47,31 @@ module FakeCluster (
     armHelmCleanupMalformed,
     armRolloutRefusal,
     armCreateRefusal,
+    armDeleteRefusal,
+    armDeleteThenRefusal,
+    armDeleteNoop,
+    armUpdateRefusal,
+    armUpdateStderr,
+    armRelayRemovalRefusal,
+    armRelayPullProgress,
+    armRelayNullPorts,
+    armRelayStoppedOnCreate,
+    armBareRelayBlock,
     replacementIdentity,
     crashAfterCreatePath,
 ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (bracket_)
-import Control.Monad (forM_, when)
+import Control.Monad (forM_, unless, when)
 import qualified Data.ByteString as ByteString
-import Data.List (intercalate, isPrefixOf, isSuffixOf, stripPrefix)
+import Data.List (isInfixOf, intercalate, isPrefixOf, isSuffixOf, stripPrefix)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
-import System.Environment (setEnv, unsetEnv)
+import System.Directory (copyFile, copyPermissions, createDirectoryIfMissing, doesFileExist, listDirectory, removeFile)
+import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (ExitFailure), exitWith)
-import System.FilePath ((</>))
+import System.FilePath (takeBaseName, takeDirectory, takeExtension, takeFileName, (</>))
 import System.IO (Handle, readFile', stderr, stdout)
 
 -- ---------------------------------------------------------------------------
@@ -85,6 +90,24 @@ withFakeClusterClient :: FilePath -> IO result -> IO result
 withFakeClusterClient root =
     bracket_ (setEnv fakeClusterVariable root) (unsetEnv fakeClusterVariable)
 
+-- | Place distinct tool-named copies in this fixture's own temporary directory.
+-- The returned template selects that directory and the host executable suffix.
+prepareFixtureExecutables :: FilePath -> IO FilePath
+prepareFixtureExecutables root = do
+    executable <- getExecutablePath
+    let directory = root </> "tool-bin"
+        template = directory </> takeFileName executable
+    createDirectoryIfMissing True directory
+    forM_ ["kind", "nvkind", "docker", "kubectl", "helm"] $ \tool -> do
+        let target = fixtureToolPath template tool
+        present <- doesFileExist target
+        unless present (copyFile executable target >> copyPermissions executable target)
+    pure template
+
+-- | The actual tool filename beside one fixture's executable template.
+fixtureToolPath :: FilePath -> String -> FilePath
+fixtureToolPath template tool = takeDirectory template </> (tool <> takeExtension template)
+
 -- ---------------------------------------------------------------------------
 -- Declaring the fixture
 
@@ -101,6 +124,9 @@ data FakeRelay = FakeRelay
     , relayName :: String
     , relayLabels :: [(String, String)]
     , relayMappings :: [(Int, String, Int)]
+    , relayRunning :: Bool
+    , relayTargets :: [(String, Int, String, Int)]
+    , relayNullPorts :: [Int]
     }
     deriving (Eq, Read, Show)
 
@@ -116,10 +142,12 @@ newClusterFixture root nodes = do
     createDirectoryIfMissing True root
     writeFile (clusterMutationsPath root) ""
     writeFile (kubeconfigPathsPath root) ""
+    writeFile (root </> "config-files") ""
     writeClusters root []
     writeNodes root []
     writeRelays root []
     writeFile (root </> "next-host-port") "41000"
+    writeFile (root </> "next-relay-identity") "1"
     declareNodes root nodes
     pure root
 
@@ -178,6 +206,36 @@ refusal leaves -- so the fixture reaches it by having the driver really refuse.
 armCreateRefusal :: FilePath -> IO ()
 armCreateRefusal root = writeFile (refuseCreatePath root) "once\n"
 
+armDeleteRefusal :: FilePath -> IO ()
+armDeleteRefusal root = writeFile (root </> "delete-refusal") "once\n"
+
+armDeleteThenRefusal :: FilePath -> IO ()
+armDeleteThenRefusal root = writeFile (root </> "delete-then-refusal") "once\n"
+
+armDeleteNoop :: FilePath -> IO ()
+armDeleteNoop root = writeFile (root </> "delete-noop") "once\n"
+
+armUpdateRefusal, armUpdateStderr :: FilePath -> IO ()
+armUpdateRefusal root = writeFile (root </> "update-refusal") "once\n"
+armUpdateStderr root = writeFile (root </> "update-stderr") "once\n"
+
+armRelayRemovalRefusal, armRelayPullProgress, armRelayNullPorts, armRelayStoppedOnCreate :: FilePath -> IO ()
+armRelayRemovalRefusal root = writeFile (root </> "relay-removal-refusal") "once\n"
+armRelayPullProgress root = writeFile (root </> "relay-pull-progress") "once\n"
+armRelayNullPorts root = writeFile (root </> "relay-null-ports") "once\n"
+armRelayStoppedOnCreate root = writeFile (root </> "relay-start-stopped") "once\n"
+
+armBareRelayBlock :: FilePath -> IO ()
+armBareRelayBlock root = writeFile (root </> "bare-relay-block") "armed\n"
+
+
+consumeRelayArm :: FilePath -> String -> IO Bool
+consumeRelayArm root name = do
+    let path = root </> name
+    armed <- doesFileExist path
+    when armed (removeFile path)
+    pure armed
+
 refuseCreatePath :: FilePath -> FilePath
 refuseCreatePath root = root </> "refuse-create"
 
@@ -212,7 +270,11 @@ writeNodes :: FilePath -> [(String, ClusterNode)] -> IO ()
 writeNodes root = writeFile (nodesPath root) . show
 
 readRelays :: FilePath -> IO [FakeRelay]
-readRelays root = read <$> readFile' (relaysPath root)
+readRelays root = do
+    existing <- read <$> readFile' (relaysPath root)
+    names <- filter (isPrefixOf "bare-relay-state-") <$> listDirectory root
+    bare <- traverse (fmap read . readFile' . (root </>)) names
+    pure (existing <> bare)
 
 writeRelays :: FilePath -> [FakeRelay] -> IO ()
 writeRelays root = writeFile (relaysPath root) . show
@@ -229,6 +291,10 @@ does not already own would be leaking a live credential.
 -}
 recordedKubeconfigPaths :: FilePath -> IO [String]
 recordedKubeconfigPaths root = lines <$> readFile' (kubeconfigPathsPath root)
+
+-- | Actual config paths and bytes read by each creating client process.
+recordedConfigFiles :: FilePath -> IO [(FilePath, ByteString.ByteString)]
+recordedConfigFiles root = map read . lines <$> readFile' (root </> "config-files")
 
 kubeconfigPathsPath :: FilePath -> FilePath
 kubeconfigPathsPath root = root </> "kubeconfig-paths"
@@ -251,17 +317,45 @@ fixtureKubeconfig name = "apiVersion: v1\nclusters: [" <> name <> "]\n"
 
 -- | Serve one cluster command, as a process the one interpreter launched.
 runFakeClusterClient :: FilePath -> [String] -> IO ()
-runFakeClusterClient root argv = case argv of
+runFakeClusterClient root argv = do
+    actual <- takeBaseName <$> getExecutablePath
+    case fixtureToolFamily argv of
+        Just expected | actual /= expected ->
+            refuse ("fixture wrong tool: expected " <> expected <> ", got " <> actual)
+        _ -> serveFakeClusterClient root argv
+
+-- | Classification of this fixture's own supported vector families.
+fixtureToolFamily :: [String] -> Maybe String
+fixtureToolFamily ("--quiet" : arguments) = fixtureToolFamily arguments
+fixtureToolFamily ("get" : _) = Just "kind"
+fixtureToolFamily ("create" : "cluster" : _) = Just "kind"
+fixtureToolFamily ("delete" : "cluster" : _) = Just "kind"
+fixtureToolFamily ("cluster" : "create" : _) = Just "nvkind"
+fixtureToolFamily ("--kubeconfig" : _ : command : _)
+    | command `elem` ["upgrade", "uninstall", "status"] = Just "helm"
+    | otherwise = Just "kubectl"
+fixtureToolFamily (argument : _)
+    | "--kubeconfig=" `isPrefixOf` argument = Just "kubectl"
+    | argument `elem` ["container", "inspect", "update", "image", "pull"] = Just "docker"
+fixtureToolFamily _ = Nothing
+
+serveFakeClusterClient :: FilePath -> [String] -> IO ()
+serveFakeClusterClient root ("--quiet" : arguments) =
+    -- Fixture compatibility only; this supplies no provider execution evidence.
+    bracket_ (setEnv "HOSTBOOTSTRAP_FAKE_CLUSTER_QUIET" "1") (unsetEnv "HOSTBOOTSTRAP_FAKE_CLUSTER_QUIET")
+        (serveFakeClusterClient root arguments)
+serveFakeClusterClient root argv = case argv of
     -- The cluster driver
-    ["--quiet", "get", "clusters"] -> readClusters root >>= mapM_ emitLine
-    ["--quiet", "get", "kubeconfig", "--name", name] -> do
+    ["get", "clusters"] -> readClusters root >>= mapM_ emitLine
+    ["get", "kubeconfig", "--name", name] -> do
         present <- readClusters root
         if name `elem` present
             then writeUtf8 stdout (fixtureKubeconfig name)
             else refuse ("no cluster named " <> name)
-    ("--quiet" : "create" : "cluster" : "--name" : name : rest) -> do
+    ("create" : "cluster" : "--name" : name : rest) -> do
         present <- readClusters root
         recordKubeconfig root rest
+        recordConfig root rest
         refusing <- doesFileExist (refuseCreatePath root)
         if refusing
             then do
@@ -281,13 +375,21 @@ runFakeClusterClient root argv = case argv of
                         when armed $ do
                             removeFile (crashAfterCreatePath root)
                             refuse "the cluster client died after the create it performed"
-    ["--quiet", "delete", "cluster", "--name", name] -> do
-        present <- readClusters root
-        held <- readNodes root
-        writeClusters root (filter (/= name) present)
-        writeNodes root (filter (not . (nodePrefix name `isPrefixOf`) . fst) held)
-        recordMutation root "delete"
-        replaceIfArmed root "delete" (name <> "-control-plane")
+    ["delete", "cluster", "--name", name] -> do
+        refusing <- consumeRelayArm root "delete-refusal"
+        when refusing (refuse "the cluster client refused the delete it was asked for")
+        noOp <- consumeRelayArm root "delete-noop"
+        if noOp
+            then recordMutation root "delete"
+            else do
+                present <- readClusters root
+                held <- readNodes root
+                writeClusters root (filter (/= name) present)
+                writeNodes root (filter (not . (nodePrefix name `isPrefixOf`) . fst) held)
+                recordMutation root "delete"
+                replaceIfArmed root "delete" (name <> "-control-plane")
+                failedAfter <- consumeRelayArm root "delete-then-refusal"
+                when failedAfter (refuse "the modeled delete completed before its client refused")
     -- The container runtime
     ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", filterArg] ->
         case stripAnchoredName filterArg of
@@ -306,17 +408,39 @@ runFakeClusterClient root argv = case argv of
                     relays <- readRelays root
                     mapM_ emitLine ([nodeIdentity node | (_, node) <- held, nodeIdentity node == identity] <> [relayIdentity relay | relay <- relays, relayIdentity relay == identity])
                 Nothing -> refuse ("unrecognized container filter " <> filterArg)
+    ["inspect", "--format", "{{.Image}}", name]
+        | "-control-plane" `isSuffixOf` name -> emitLine "sha256:bare-fixture-image"
+    ["container", "ls", "--all", "--quiet", "--filter", filterArg] ->
+        case stripAnchoredName filterArg of
+            Just name -> do
+                present <- doesFileExist (root </> ("bare-relay-state-" <> name))
+                when present (emitLine name)
+            Nothing -> refuse "unrecognized bare relay name filter"
+    ("container" : "run" : "--detach" : "--name" : name : "--publish" : "127.0.0.1::20000/tcp" : "--entrypoint" : "/bin/sleep" : _image : "infinity" : []) -> do
+        let relay = FakeRelay (replicate 64 'a') name [] [(20000, "127.0.0.1", 43123)] True [] []
+        writeFile (root </> ("bare-relay-state-" <> name)) (show relay)
+        blocked <- doesFileExist (root </> "bare-relay-block")
+        when blocked (threadDelay 120000000)
+        emitLine (relayIdentity relay)
     ("container" : "run" : rest) -> createRelay root rest
     ["container", "rm", "--force", identity] -> do
-        relays <- readRelays root
-        if any ((== identity) . relayIdentity) relays
-            then do
-                writeRelays root (filter ((/= identity) . relayIdentity) relays)
-                emitLine identity
-                recordMutation root "relay-delete"
-            else refuse ("no such relay " <> identity)
+        refusing <- consumeRelayArm root "relay-removal-refusal"
+        when refusing (refuse "the runtime refused relay removal")
+        let barePath = root </> ("bare-relay-state-" <> identity)
+        barePresent <- doesFileExist barePath
+        if barePresent
+            then removeFile barePath >> emitLine identity
+            else do
+                relays <- readRelays root
+                if any ((== identity) . relayIdentity) relays
+                    then do
+                        writeRelays root (filter ((/= identity) . relayIdentity) relays)
+                        emitLine identity
+                        recordMutation root "relay-delete"
+                    else refuse ("no such relay " <> identity)
     ["inspect", "--format", template, identity]
         | "{{\"\\n\"}}" `isSuffixOf` template -> refuse "the relay format duplicates the runtime record terminator"
+        | not ("{{.State.Running}}" `isInfixOf` template) -> refuse "relay inspection omits running state"
         | otherwise ->
             readRelays root >>= \relays -> case [relay | relay <- relays, relayIdentity relay == identity] of
                 [relay] -> renderRelay relay
@@ -332,6 +456,8 @@ runFakeClusterClient root argv = case argv of
             Just node -> emitLine (if nodeRunning node then "true" else "false")
     ("update" : rest)
         | not (null rest) -> do
+            refusing <- consumeRelayArm root "update-refusal"
+            when refusing (refuse "the cluster runtime refused the update")
             let identifier = last rest
                 limits = init rest
             nodeNamed root identifier >>= \case
@@ -345,6 +471,8 @@ runFakeClusterClient root argv = case argv of
                         ]
                     recordMutation root "update"
                     replaceIfArmed root "update" name
+                    noisy <- consumeRelayArm root "update-stderr"
+                    when noisy (writeUtf8 stderr "the cluster runtime emitted update stderr\n")
     -- The API server
     ["--kubeconfig=/dev/stdin", "get", "--raw=/readyz"] -> do
         unready <- doesFileExist (apiUnreadyPath root)
@@ -417,45 +545,58 @@ runFakeClusterClient root argv = case argv of
 createRelay :: FilePath -> [String] -> IO ()
 createRelay root arguments = case parseRelayRun arguments of
     Left reason -> refuse reason
-    Right (name, labels, listeners) -> do
+    Right (name, labels, targets) -> do
         relays <- readRelays root
         if any ((== name) . relayName) relays
             then refuse ("a relay named " <> name <> " already exists")
             else do
                 nextPort <- read <$> readFile' (root </> "next-host-port")
-                let identity = replicate 56 'e' <> padNumber (length relays + 1)
+                identityIndex <- read <$> readFile' (root </> "next-relay-identity")
+                nullPorts <- consumeRelayArm root "relay-null-ports"
+                pullProgress <- consumeRelayArm root "relay-pull-progress"
+                stopped <- consumeRelayArm root "relay-start-stopped"
+                let identity = replicate 56 'e' <> padNumber (identityIndex :: Int)
+                    listeners = [listener | (_, listener, _, _) <- targets]
                     mappings = [(listener, "127.0.0.1", nextPort + offset) | (offset, listener) <- zip [0 ..] listeners]
+                    relay = FakeRelay identity name labels (if stopped then [] else mappings) (not stopped) targets (if nullPorts then [8080] else [])
                 writeFile (root </> "next-host-port") (show (nextPort + length listeners))
-                writeRelays root (FakeRelay identity name labels mappings : relays)
+                writeFile (root </> "next-relay-identity") (show (identityIndex + 1))
+                writeRelays root (relay : relays)
                 recordMutation root "relay-create"
+                when pullProgress (writeUtf8 stderr "Pulling relay image\nDigest: fixture-image\n")
                 emitLine identity
   where
     padNumber number = replicate (8 - length rendered) '0' <> rendered
       where
         rendered = show number
 
-parseRelayRun :: [String] -> Either String (String, [(String, String)], [Int])
-parseRelayRun ("--detach" : "--name" : name : rest) = flags [] [] rest
+parseRelayRun :: [String] -> Either String (String, [(String, String)], [(String, Int, String, Int)])
+parseRelayRun ("--detach" : "--quiet" : "--name" : name : rest) = flags False [] [] rest
   where
-    flags labels listeners ("--label" : assignment : remaining) = case break (== '=') assignment of
-        (key, '=' : value) -> flags ((key, value) : labels) listeners remaining
+    flags network labels listeners ("--label" : assignment : remaining) = case break (== '=') assignment of
+        (key, '=' : value) -> flags network ((key, value) : labels) listeners remaining
         _ -> Left "malformed relay label"
-    flags labels listeners ("--network" : "kind" : remaining) = flags labels listeners remaining
-    flags labels listeners ("--publish" : mapping : remaining) = case reads (takeWhile (/= '/') (drop (length ("127.0.0.1::" :: String)) mapping)) of
-        [(listener, "")] | "127.0.0.1::" `isPrefixOf` mapping -> flags labels (listener : listeners) remaining
-        _ -> Left "malformed relay publication"
-    flags labels listeners (_image : "__hostbootstrap-exposure-relay-v1" : relayArgs) = do
-        declared <- relayListeners relayArgs
-        if reverse listeners == declared
-            then Right (name, reverse labels, declared)
+    flags False labels listeners ("--network" : "kind" : remaining) = flags True labels listeners remaining
+    flags network labels listeners ("--publish" : mapping : remaining)
+        | Just raw <- stripPrefix "127.0.0.1::" mapping
+        , "/tcp" `isSuffixOf` raw = case reads (take (length raw - 4) raw) of
+            [(listener, "")] | validPort listener -> flags network labels (listener : listeners) remaining
+            _ -> Left "malformed relay publication"
+    flags True labels listeners (_image : "__hostbootstrap-exposure-relay-v1" : relayArgs) = do
+        targets <- relayTargetsFromArgs relayArgs
+        if reverse listeners == [listener | (_, listener, _, _) <- targets]
+            then Right (name, reverse labels, targets)
             else Left "relay arguments and publications differ"
-    flags _ _ _ = Left "malformed relay run"
+    flags _ _ _ _ = Left "malformed relay run or missing kind network"
 
-    relayListeners [] = Right []
-    relayListeners (_service : listener : _target : _port : remaining) = case reads listener of
-        [(parsed, "")] -> (parsed :) <$> relayListeners remaining
-        _ -> Left "malformed relay listener"
-    relayListeners _ = Left "malformed relay target tuple"
+    relayTargetsFromArgs [] = Right []
+    relayTargetsFromArgs (service : listener : host : port : remaining) = case (reads listener, reads port) of
+        ([(parsedListener, "")], [(parsedPort, "")])
+            | validPort parsedListener && validPort parsedPort && not (null service) && not (null host) ->
+                ((service, parsedListener, host, parsedPort) :) <$> relayTargetsFromArgs remaining
+        _ -> Left "malformed relay target"
+    relayTargetsFromArgs _ = Left "malformed relay target tuple"
+    validPort port = port > 0 && port < 65536
 parseRelayRun _ = Left "malformed relay run prefix"
 
 renderRelay :: FakeRelay -> IO ()
@@ -463,13 +604,13 @@ renderRelay relay = do
     emitLine (relayIdentity relay)
     emitLine ('/' : relayName relay)
     mapM_ (emitLine . labelValue) ["io.hostbootstrap.owner", "io.hostbootstrap.cluster", "io.hostbootstrap.generation", "io.hostbootstrap.operation", "io.hostbootstrap.spec"]
-    emitLine
-        ( "{"
-            <> intercalate "," [show (show listener <> "/tcp") <> ":[{\"HostIp\":" <> show address <> ",\"HostPort\":" <> show (show hostPort) <> "}]" | (listener, address, hostPort) <- relayMappings relay]
-            <> "}"
-        )
+    emitLine (if relayRunning relay then "true" else "false")
+    emitLine ("{" <> intercalate "," (published <> unpublished) <> "}")
   where
     labelValue key = maybe "<no value>" id (lookup key (relayLabels relay))
+    mappings = if relayRunning relay then relayMappings relay else []
+    published = [show (show listener <> "/tcp") <> ":[{\"HostIp\":" <> show address <> ",\"HostPort\":" <> show (show hostPort) <> "}]" | (listener, address, hostPort) <- mappings]
+    unpublished = [show (show port <> "/tcp") <> ":null" | port <- relayNullPorts relay]
 
 -- ---------------------------------------------------------------------------
 -- What the fixture holds
@@ -509,8 +650,17 @@ stripAnchoredName value = case value of
     'n' : 'a' : 'm' : 'e' : '=' : '^' : '/' : rest
         | not (null rest)
         , last rest == '$' ->
-            Just (init rest)
+            unquote (init rest)
     _ -> Nothing
+  where
+    unquote encoded = case stripPrefix "\\." encoded of
+        Just rest -> ('.' :) <$> unquote rest
+        Nothing -> case encoded of
+            [] -> Just []
+            character : rest
+                | character `elem` ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" :: String) ->
+                    (character :) <$> unquote rest
+            _ -> Nothing
 
 {- | The node one reference names, by its own name or by its identifier.
 
@@ -556,6 +706,14 @@ recordKubeconfig root arguments = case arguments of
     (_ : rest) -> recordKubeconfig root rest
     [] -> pure ()
 
+recordConfig :: FilePath -> [String] -> IO ()
+recordConfig root arguments = case arguments of
+    ("--config" : path : _) -> do
+        bytes <- ByteString.readFile path
+        appendFile (root </> "config-files") (show (path, bytes) <> "\n")
+    (_ : rest) -> recordConfig root rest
+    [] -> pure ()
+
 -- | Put a different container at one node's name, if this verb was armed for it.
 replaceIfArmed :: FilePath -> String -> String -> IO ()
 replaceIfArmed root verb name = do
@@ -577,7 +735,8 @@ replaceIfArmed root verb name = do
 
 refuse :: String -> IO ()
 refuse reason = do
-    writeUtf8 stderr (reason <> "\n")
+    quiet <- lookupEnv "HOSTBOOTSTRAP_FAKE_CLUSTER_QUIET"
+    when (quiet /= Just "1") (writeUtf8 stderr (reason <> "\n"))
     exitWith (ExitFailure 1)
 
 ifM :: (Monad monad) => monad Bool -> monad value -> monad value -> monad value

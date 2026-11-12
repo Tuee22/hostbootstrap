@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
@@ -6,14 +7,13 @@
 {- | Build-invocation authority for the in-Dockerfile quality gate (§ X,
 the operator-root-and-command-authority phase).
 
-Today the derived image runs @project init --role image-build-container@ and
-then @check-code@, and the gate authorizes from that **baked** config alone. The
-config is a file the Dockerfile just wrote, so it proves only that a Dockerfile
-ran: nothing binds the gate to the project whose sources are being built, to the
-exact source context, or to the binary doing the building. A stale or copied
-image-build config authorizes the same gate.
+The worked demo installs its canonical config from the
+@hostbootstrap-build-config@ BuildKit secret, without @project init@. Its
+@check-code@ RUN mounts @hostbootstrap-build-channel@,
+@hostbootstrap-build-verification@ and @hostbootstrap-build-coordinator@.
+Command supplies those installed inputs, @Context.sourceRoot@ and
+@getExecutablePath@ to 'verifyBuildInvocation'.
 
-This module supplies the ephemeral authority the gate should require instead.
 The build coordinator — the process that decided to build this image — signs a
 'BuildBinding' with a long-lived, independently provisioned 'BuildSigningKey'.
 The binding names the project, spec digest, config digest, build id, source
@@ -46,6 +46,36 @@ already succeeded.
 -}
 module HostBootstrap.Build (
     -- * The signed binding
+    BuildProjectName,
+    buildProjectNameFromText,
+    buildProjectNameText,
+    BuildSpecDigest,
+    buildSpecDigestFromText,
+    buildSpecDigestText,
+    BuildConfigDigest,
+    buildConfigDigestFromText,
+    buildConfigDigestText,
+    BuildIdentifier,
+    buildIdentifierFromText,
+    buildIdentifierText,
+    BuildSourceDigest,
+    buildSourceDigestFromText,
+    buildSourceDigestText,
+    CoordinatorDigest,
+    coordinatorDigestFromText,
+    coordinatorDigestText,
+    BuilderDigest,
+    builderDigestFromText,
+    builderDigestText,
+    BuildFrameName,
+    buildFrameNameFromText,
+    buildFrameNameText,
+    BuildSourceRoot,
+    buildSourceRootFromFilePath,
+    buildSourceRootFilePath,
+    BuilderPath,
+    builderPathFromFilePath,
+    builderPathFilePath,
     BuildBinding (..),
     renderBuildBinding,
 
@@ -95,31 +125,195 @@ module HostBootstrap.Build (
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, withMVar)
-import Control.Exception (SomeException, evaluate, finally, try)
+import Control.Exception (IOException, evaluate, finally, try)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
-import qualified Crypto.Hash as Hash
 import qualified Crypto.PubKey.Ed25519 as Ed25519
+#ifdef mingw32_HOST_OS
 import Data.Bits (shiftL, shiftR, (.&.), (.|.))
+#endif
 import Data.ByteArray (convert)
-import qualified Data.ByteArray as ByteArray
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
-import qualified Data.ByteString.Char8 as ByteStringChar8
+import Data.Char (ord)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
-import Data.Word (Word64, Word8)
+#ifdef mingw32_HOST_OS
+import Data.Word (Word8)
+#endif
+import HostBootstrap.Digest (sha256Hex)
 import HostBootstrap.Handoff (
+    HandoffError (HandoffWireTruncated),
     frameWire,
+    handoffErrorMessage,
+    takeHandoffFrame,
     unframeWire,
  )
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath ((</>))
+import System.Directory (doesFileExist)
+import qualified System.Directory.OsPath as OsDirectory
+import qualified System.File.OsPath as OsFile
+import qualified System.OsPath as OsPath
+#ifdef mingw32_HOST_OS
+import qualified System.Directory.Internal as DirectoryInternal
+import qualified System.Win32.WindowsString.File as Win32
+#else
+import qualified System.Posix.Files.ByteString as PosixFiles
+#endif
 
 -- ---------------------------------------------------------------------------
 -- Bindings
+
+-- | A descriptive project coordinate, with no added validity or authority claim.
+newtype BuildProjectName = BuildProjectName Text
+    deriving (Eq)
+
+instance Show BuildProjectName where
+    showsPrec precedence (BuildProjectName value) = showsPrec precedence value
+
+-- | Assign the build-project role without imposing a new text format.
+buildProjectNameFromText :: Text -> BuildProjectName
+buildProjectNameFromText = BuildProjectName
+
+-- | Read the descriptive project text.
+buildProjectNameText :: BuildProjectName -> Text
+buildProjectNameText (BuildProjectName value) = value
+
+-- | A descriptive specification coordinate, with no new validity or authority claim.
+newtype BuildSpecDigest = BuildSpecDigest Text
+    deriving (Eq)
+
+instance Show BuildSpecDigest where
+    showsPrec precedence (BuildSpecDigest value) = showsPrec precedence value
+
+-- | Assign the build-specification role without imposing a new text format.
+buildSpecDigestFromText :: Text -> BuildSpecDigest
+buildSpecDigestFromText = BuildSpecDigest
+
+-- | Read the descriptive specification text.
+buildSpecDigestText :: BuildSpecDigest -> Text
+buildSpecDigestText (BuildSpecDigest value) = value
+
+-- | A descriptive config coordinate, with no new validity or authority claim.
+newtype BuildConfigDigest = BuildConfigDigest Text
+    deriving (Eq)
+
+instance Show BuildConfigDigest where
+    showsPrec precedence (BuildConfigDigest value) = showsPrec precedence value
+
+-- | Assign the build-config role without imposing a new text format.
+buildConfigDigestFromText :: Text -> BuildConfigDigest
+buildConfigDigestFromText = BuildConfigDigest
+
+-- | Read the descriptive config text.
+buildConfigDigestText :: BuildConfigDigest -> Text
+buildConfigDigestText (BuildConfigDigest value) = value
+
+-- | A descriptive build identifier; validity remains a verifier requirement.
+newtype BuildIdentifier = BuildIdentifier Text
+    deriving (Eq)
+
+instance Show BuildIdentifier where
+    showsPrec precedence (BuildIdentifier value) = showsPrec precedence value
+
+-- | Assign the identifier role without moving the existing nonempty check.
+buildIdentifierFromText :: Text -> BuildIdentifier
+buildIdentifierFromText = BuildIdentifier
+
+-- | Read the descriptive build identifier.
+buildIdentifierText :: BuildIdentifier -> Text
+buildIdentifierText (BuildIdentifier value) = value
+
+-- | A descriptive source digest; fresh measurement remains a verifier requirement.
+newtype BuildSourceDigest = BuildSourceDigest Text
+    deriving (Eq)
+
+instance Show BuildSourceDigest where
+    showsPrec precedence (BuildSourceDigest value) = showsPrec precedence value
+
+-- | Assign the descriptive role without adding format or provenance checks.
+buildSourceDigestFromText :: Text -> BuildSourceDigest
+buildSourceDigestFromText = BuildSourceDigest
+
+-- | Read the existing descriptive text.
+buildSourceDigestText :: BuildSourceDigest -> Text
+buildSourceDigestText (BuildSourceDigest value) = value
+
+-- | A descriptive coordinator digest; trust remains at the signing boundary.
+newtype CoordinatorDigest = CoordinatorDigest Text
+    deriving (Eq)
+
+instance Show CoordinatorDigest where
+    showsPrec precedence (CoordinatorDigest value) = showsPrec precedence value
+
+-- | Assign the role without adding format, validity or provenance checks.
+coordinatorDigestFromText :: Text -> CoordinatorDigest
+coordinatorDigestFromText = CoordinatorDigest
+
+-- | Read the existing descriptive coordinator text.
+coordinatorDigestText :: CoordinatorDigest -> Text
+coordinatorDigestText (CoordinatorDigest value) = value
+
+-- | A descriptive builder digest; fresh binary measurement remains required.
+newtype BuilderDigest = BuilderDigest Text
+    deriving (Eq)
+
+instance Show BuilderDigest where
+    showsPrec precedence (BuilderDigest value) = showsPrec precedence value
+
+-- | Assign the role without adding format, validity or provenance checks.
+builderDigestFromText :: Text -> BuilderDigest
+builderDigestFromText = BuilderDigest
+
+-- | Read the existing descriptive builder text.
+builderDigestText :: BuilderDigest -> Text
+builderDigestText (BuilderDigest value) = value
+
+-- | A descriptive frame name; nonempty validation remains at verification.
+newtype BuildFrameName = BuildFrameName Text
+    deriving (Eq)
+
+instance Show BuildFrameName where
+    showsPrec precedence (BuildFrameName value) = showsPrec precedence value
+
+-- | Assign the role without moving the existing nonempty-frame check.
+buildFrameNameFromText :: Text -> BuildFrameName
+buildFrameNameFromText = BuildFrameName
+
+-- | Read the existing descriptive frame text.
+buildFrameNameText :: BuildFrameName -> Text
+buildFrameNameText (BuildFrameName value) = value
+
+-- | A descriptive source root; filesystem measurement remains a verifier task.
+newtype BuildSourceRoot = BuildSourceRoot FilePath
+    deriving (Eq)
+
+instance Show BuildSourceRoot where
+    showsPrec precedence (BuildSourceRoot value) = showsPrec precedence value
+
+-- | Assign the role without validation, normalization or provenance checks.
+buildSourceRootFromFilePath :: FilePath -> BuildSourceRoot
+buildSourceRootFromFilePath = BuildSourceRoot
+
+-- | Read the existing source-root path.
+buildSourceRootFilePath :: BuildSourceRoot -> FilePath
+buildSourceRootFilePath (BuildSourceRoot value) = value
+
+-- | A descriptive builder path; binary measurement remains a verifier task.
+newtype BuilderPath = BuilderPath FilePath
+    deriving (Eq)
+
+instance Show BuilderPath where
+    showsPrec precedence (BuilderPath value) = showsPrec precedence value
+
+-- | Assign the role without validation, normalization or provenance checks.
+builderPathFromFilePath :: FilePath -> BuilderPath
+builderPathFromFilePath = BuilderPath
+
+-- | Read the existing builder path.
+builderPathFilePath :: BuilderPath -> FilePath
+builderPathFilePath (BuilderPath value) = value
 
 {- | Everything a build grant authenticates.
 
@@ -129,14 +323,14 @@ the gate inside the image. A grant issued for one builder cannot authorize a
 different one even when everything else matches.
 -}
 data BuildBinding = BuildBinding
-    { buildProjectName :: Text
-    , buildSpecDigest :: Text
-    , buildConfigDigest :: Text
-    , buildIdentifier :: Text
-    , buildSourceDigest :: Text
-    , buildCoordinatorDigest :: Text
-    , buildBuilderDigest :: Text
-    , buildFrameName :: Text
+    { buildProjectName :: BuildProjectName
+    , buildSpecDigest :: BuildSpecDigest
+    , buildConfigDigest :: BuildConfigDigest
+    , buildIdentifier :: BuildIdentifier
+    , buildSourceDigest :: BuildSourceDigest
+    , buildCoordinatorDigest :: CoordinatorDigest
+    , buildBuilderDigest :: BuilderDigest
+    , buildFrameName :: BuildFrameName
     }
     deriving (Eq, Show)
 
@@ -144,14 +338,14 @@ data BuildBinding = BuildBinding
 renderBuildBinding :: BuildBinding -> ByteString
 renderBuildBinding binding =
     ByteString.concat
-        [ field (buildProjectName binding)
-        , field (buildSpecDigest binding)
-        , field (buildConfigDigest binding)
-        , field (buildIdentifier binding)
-        , field (buildSourceDigest binding)
-        , field (buildCoordinatorDigest binding)
-        , field (buildBuilderDigest binding)
-        , field (buildFrameName binding)
+        [ field (buildProjectNameText (buildProjectName binding))
+        , field (buildSpecDigestText (buildSpecDigest binding))
+        , field (buildConfigDigestText (buildConfigDigest binding))
+        , field (buildIdentifierText (buildIdentifier binding))
+        , field (buildSourceDigestText (buildSourceDigest binding))
+        , field (coordinatorDigestText (buildCoordinatorDigest binding))
+        , field (builderDigestText (buildBuilderDigest binding))
+        , field (buildFrameNameText (buildFrameName binding))
         ]
   where
     field = frameWire . TextEncoding.encodeUtf8
@@ -229,7 +423,7 @@ loadBuildKey unavailable parseKey path = do
     if not present
         then pure (Left (unavailable ("no installed key at " <> Text.pack path)))
         else do
-            loaded <- try (ByteString.readFile path) :: IO (Either SomeException ByteString)
+            loaded <- try (ByteString.readFile path) :: IO (Either IOException ByteString)
             pure $ case loaded of
                 Left err ->
                     Left
@@ -247,14 +441,14 @@ cannot mark the bracket closed while a signature is still being produced.
 -}
 data BuildCoordinator coordinatorId = BuildCoordinator
     { coordinatorSigningKey :: BuildSigningKey
-    , coordinatorDigest :: Text
+    , coordinatorDigest :: CoordinatorDigest
     , coordinatorActive :: MVar Bool
     }
 
 type role BuildCoordinator nominal
 
 instance Show (BuildCoordinator coordinatorId) where
-    show coordinator = "BuildCoordinator <signing> " <> Text.unpack (coordinatorDigest coordinator)
+    show coordinator = "BuildCoordinator <signing> " <> Text.unpack (coordinatorDigestText (coordinatorDigest coordinator))
 
 {- | Run an action with one active use of the provisioned signing key, bound to
 the coordinator binary's measured digest.
@@ -262,7 +456,7 @@ the coordinator binary's measured digest.
 withBuildCoordinator ::
     BuildSigningKey ->
     -- | the coordinator binary's measured digest
-    Text ->
+    CoordinatorDigest ->
     (forall coordinatorId. BuildCoordinator coordinatorId -> IO result) ->
     IO result
 withBuildCoordinator signingKey digest use = do
@@ -301,8 +495,8 @@ signBuildGrant coordinator binding =
                             ( Left
                                 ( BuildIdentityMismatch
                                     "coordinator"
-                                    (buildCoordinatorDigest binding)
-                                    (coordinatorDigest coordinator)
+                                    (coordinatorDigestText (buildCoordinatorDigest binding))
+                                    (coordinatorDigestText (coordinatorDigest coordinator))
                                 )
                             )
                     else Right <$> signBinding (coordinatorSigningKey coordinator) binding
@@ -332,67 +526,125 @@ buildSignedMaterial binding =
 -- ---------------------------------------------------------------------------
 -- Measurement
 
-{- | Digest a source context deterministically.
+{- | Hash regular-file relative names and strict content bytes under the supplied
+root. POSIX names retain their exact bytes; Windows UTF-16 names use UTF-8 with
+unpaired units preserved as WTF-8. Components join with one slash byte, entries
+sort by those canonical relative-name bytes, and both names and contents retain
+the existing length framing. The absolute root, locale, modes, empty directories
+and whether regular contents came through a symlink or a copy are excluded.
 
-Path and contents are both length-prefixed and the entries are sorted, so two
-different trees cannot measure the same — in particular, moving a file's bytes
-to a differently named file changes the digest. Paths are encoded as UTF-8,
-without the lossy low-byte projection of @Char8@. A missing root is a typed
-refusal rather than an empty-tree digest, which would otherwise let an image
-built from no sources satisfy a grant.
+A missing root or non-regular source entry is a typed refusal. Only filesystem
+IO exceptions become measurement failures; asynchronous cancellation propagates.
 -}
 measureSourceDigest :: FilePath -> IO (Either BuildError Text)
 measureSourceDigest root = do
-    present <- doesDirectoryExist root
-    if not present
-        then pure (Left (BuildSourceUnavailable (Text.pack root)))
-        else do
-            collected <- try (collect "" root) :: IO (Either SomeException [(FilePath, ByteString)])
-            pure $ case collected of
-                Left err ->
-                    Left (BuildSourceUnavailable (Text.pack (root <> ": " <> firstLine (show err))))
-                Right entries ->
-                    Right
-                        ( sha256Hex
-                            ( ByteString.concat
-                                [ frameWire (TextEncoding.encodeUtf8 (Text.pack path)) <> frameWire contents
-                                | (path, contents) <- sort entries
-                                ]
-                            )
-                        )
+    measured <- try measure :: IO (Either IOException (Either BuildError Text))
+    pure $ case measured of
+        Left failure -> Left (BuildSourceUnavailable (Text.pack (root <> ": " <> firstLine (show failure))))
+        Right outcome -> outcome
   where
+    measure = do
+        nativeRoot <- OsPath.encodeFS root
+        present <- OsDirectory.doesDirectoryExist nativeRoot
+        if not present
+            then pure (Left (BuildSourceUnavailable (Text.pack root)))
+            else do
+                collected <- collect ByteString.empty nativeRoot
+                pure $
+                    fmap
+                        ( sha256Hex
+                            . ByteString.concat
+                            . map (\(name, contents) -> frameWire name <> frameWire contents)
+                            . sort
+                        )
+                        collected
     collect prefix directory = do
-        names <- listDirectory directory
-        fmap concat (traverse (visit prefix directory) (sort names))
-
+        names <- OsDirectory.listDirectory directory
+        nested <- traverse (visit prefix directory) names
+        pure (concat <$> sequence nested)
     visit prefix directory name = do
-        let absolute = directory </> name
-            relative = if null prefix then name else prefix <> "/" <> name
-        isDirectory <- doesDirectoryExist absolute
+        let absolute = directory OsPath.</> name
+            component = canonicalSourceNameBytes name
+            relative = if ByteString.null prefix then component else prefix <> "/" <> component
+        (isDirectory, isRegular) <- sourcePathKind absolute
         if isDirectory
             then collect relative absolute
-            else do
-                isFile <- doesFileExist absolute
-                if isFile
+            else
+                if isRegular
                     then do
-                        contents <- ByteString.readFile absolute
-                        pure [(relative, contents)]
-                    else pure []
+                        contents <- OsFile.readFile' absolute
+                        pure (Right [(relative, contents)])
+                    else pure (Left (BuildSourceUnavailable ("non-regular source entry: " <> Text.pack (show relative))))
 
-{- | Digest a binary on disk. Used for both the coordinator and builder
-identities; a missing path is a typed refusal, never a skipped comparison.
--}
+-- | Digest only a regular builder/coordinator file. Metadata is read before
+-- file contents, so a FIFO or device cannot block a measurement read.
 measureBinaryDigest :: FilePath -> IO (Either BuildError Text)
 measureBinaryDigest path = do
-    present <- doesFileExist path
-    if not present
-        then pure (Left (BuildBinaryUnavailable (Text.pack path)))
-        else do
-            loaded <- try (ByteString.readFile path) :: IO (Either SomeException ByteString)
-            pure $ case loaded of
-                Left err ->
-                    Left (BuildBinaryUnavailable (Text.pack (path <> ": " <> firstLine (show err))))
-                Right contents -> Right (sha256Hex contents)
+    measured <- try measure :: IO (Either IOException (Either BuildError Text))
+    pure $ case measured of
+        Left failure -> Left (BuildBinaryUnavailable (Text.pack (path <> ": " <> firstLine (show failure))))
+        Right outcome -> outcome
+  where
+    measure = do
+        nativePath <- OsPath.encodeFS path
+        present <- OsDirectory.doesPathExist nativePath
+        if not present
+            then pure (Left (BuildBinaryUnavailable (Text.pack path)))
+            else do
+                (_, isRegular) <- sourcePathKind nativePath
+                if isRegular
+                    then Right . sha256Hex <$> OsFile.readFile' nativePath
+                    else pure (Left (BuildBinaryUnavailable ("non-regular binary path: " <> Text.pack path)))
+
+-- | Directory and regular-file classification without a content read.
+sourcePathKind :: OsPath.OsPath -> IO (Bool, Bool)
+#ifdef mingw32_HOST_OS
+sourcePathKind path = do
+    native <- DirectoryInternal.furnishPath path
+    attributes <- Win32.fadFileAttributes <$> Win32.getFileAttributesExStandard native
+    let directory = attributes .&. Win32.fILE_ATTRIBUTE_DIRECTORY /= 0
+        -- FILE_ATTRIBUTE_DEVICE is the reserved device attribute, value 0x40.
+        device = attributes .&. 0x40 /= 0
+    pure (directory, not directory && not device)
+#else
+sourcePathKind path = do
+    status <- PosixFiles.getFileStatus (canonicalSourceNameBytes path)
+    pure (PosixFiles.isDirectory status, PosixFiles.isRegularFile status)
+#endif
+
+-- | Encode actual native name units without a locale/text round trip.
+canonicalSourceNameBytes :: OsPath.OsPath -> ByteString
+#ifdef mingw32_HOST_OS
+canonicalSourceNameBytes =
+    ByteString.pack . encodeUnits . map (ord . OsPath.toChar) . OsPath.unpack
+  where
+    encodeUnits (high : low : rest)
+        | high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff =
+            utf8 (0x10000 + ((high - 0xd800) `shiftL` 10) + low - 0xdc00) <> encodeUnits rest
+    encodeUnits (unit : rest) = utf8 unit <> encodeUnits rest
+    encodeUnits [] = []
+    utf8 :: Int -> [Word8]
+    utf8 unit
+        | unit <= 0x7f = [fromIntegral unit]
+        | unit <= 0x7ff =
+            [ fromIntegral (0xc0 .|. (unit `shiftR` 6))
+            , continuation unit
+            ]
+        | unit <= 0xffff =
+            [ fromIntegral (0xe0 .|. (unit `shiftR` 12))
+            , continuation (unit `shiftR` 6)
+            , continuation unit
+            ]
+        | otherwise =
+            [ fromIntegral (0xf0 .|. (unit `shiftR` 18))
+            , continuation (unit `shiftR` 12)
+            , continuation (unit `shiftR` 6)
+            , continuation unit
+            ]
+    continuation unit = fromIntegral (0x80 .|. (unit .&. 0x3f))
+#else
+canonicalSourceNameBytes = ByteString.pack . map (fromIntegral . ord . OsPath.toChar) . OsPath.unpack
+#endif
 
 -- ---------------------------------------------------------------------------
 -- The delivery channel
@@ -428,7 +680,7 @@ readBuildChannel path = do
     if not present
         then pure (Left (BuildChannelUnavailable (Text.pack path)))
         else do
-            loaded <- try (ByteString.readFile path) :: IO (Either SomeException ByteString)
+            loaded <- try (ByteString.readFile path) :: IO (Either IOException ByteString)
             pure $ case loaded of
                 Left err ->
                     Left (BuildChannelUnavailable (Text.pack (path <> ": " <> firstLine (show err))))
@@ -449,14 +701,14 @@ decodeChannel raw = do
                         BuildChannel
                             { channelBinding =
                                 BuildBinding
-                                    { buildProjectName = p
-                                    , buildSpecDigest = sp
-                                    , buildConfigDigest = c
-                                    , buildIdentifier = b
-                                    , buildSourceDigest = so
-                                    , buildCoordinatorDigest = co
-                                    , buildBuilderDigest = bu
-                                    , buildFrameName = f
+                                    { buildProjectName = buildProjectNameFromText p
+                                    , buildSpecDigest = buildSpecDigestFromText sp
+                                    , buildConfigDigest = buildConfigDigestFromText c
+                                    , buildIdentifier = buildIdentifierFromText b
+                                    , buildSourceDigest = buildSourceDigestFromText so
+                                    , buildCoordinatorDigest = coordinatorDigestFromText co
+                                    , buildBuilderDigest = builderDigestFromText bu
+                                    , buildFrameName = buildFrameNameFromText f
                                     }
                             , channelGrant = BuildGrant signature
                             }
@@ -473,17 +725,12 @@ takeFrames count raw = go count raw []
     go 0 rest acc = case unframeWire rest of
         Left _ -> Left (BuildChannelMalformed "missing or malformed signature frame")
         Right signature -> Right (reverse acc, signature)
-    go remaining rest acc
-        | ByteString.length rest < 8 = Left (BuildChannelMalformed "truncated channel")
-        | ByteString.length body < declared = Left (BuildChannelMalformed "truncated channel field")
-        | otherwise =
-            go (remaining - 1) (ByteString.drop declared body) (ByteString.take declared body : acc)
-      where
-        declared = fromIntegral (bigEndianWord (ByteString.unpack (ByteString.take 8 rest)))
-        body = ByteString.drop 8 rest
-
-bigEndianWord :: [Word8] -> Word64
-bigEndianWord = foldl (\acc byte -> (acc `shiftL` 8) .|. fromIntegral byte) 0
+    go remaining rest acc = case takeHandoffFrame rest of
+        Left (HandoffWireTruncated {})
+            | ByteString.length rest < 8 -> Left (BuildChannelMalformed "truncated channel")
+            | otherwise -> Left (BuildChannelMalformed "truncated channel field")
+        Left failure -> Left (BuildChannelMalformed (Text.pack (handoffErrorMessage failure)))
+        Right (field, suffix) -> go (remaining - 1) suffix (field : acc)
 
 decodeUtf8Field :: ByteString -> Either BuildError Text
 decodeUtf8Field raw = case TextEncoding.decodeUtf8' raw of
@@ -497,15 +744,15 @@ decodeUtf8Field raw = case TextEncoding.decodeUtf8' raw of
 authority, so a caller cannot pair a frame from one build with authority from
 another.
 -}
-data ImageBuildFrame projectId specDigest configId frame = ImageBuildFrame Text
+data ImageBuildFrame projectId specDigest configId frame = ImageBuildFrame BuildFrameName
 
 type role ImageBuildFrame nominal nominal nominal nominal
 
 instance Show (ImageBuildFrame projectId specDigest configId frame) where
-    show (ImageBuildFrame name) = "ImageBuildFrame " <> Text.unpack name
+    show (ImageBuildFrame name) = "ImageBuildFrame " <> Text.unpack (buildFrameNameText name)
 
 imageBuildFrameName :: ImageBuildFrame projectId specDigest configId frame -> Text
-imageBuildFrameName (ImageBuildFrame name) = name
+imageBuildFrameName (ImageBuildFrame name) = buildFrameNameText name
 
 {- | Ephemeral authority for one successful verification result. Opaque: it
 exists only as a result of 'verifyBuildInvocation'. Each result owns its own
@@ -513,20 +760,20 @@ in-memory phase-consumption state; cross-presentation replay belongs to the
 concrete command/channel consumer.
 -}
 data BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest
-    = BuildInvocationAuthority Text Text (IORef [BuildPhaseKind])
+    = BuildInvocationAuthority BuildIdentifier BuildSourceDigest (IORef [BuildPhaseKind])
 
 type role BuildInvocationAuthority nominal nominal nominal nominal nominal nominal
 
 instance Show (BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest) where
-    show (BuildInvocationAuthority buildId _ _) = "BuildInvocationAuthority " <> Text.unpack buildId
+    show (BuildInvocationAuthority buildId _ _) = "BuildInvocationAuthority " <> Text.unpack (buildIdentifierText buildId)
 
 buildAuthorityBuildId ::
     BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest -> Text
-buildAuthorityBuildId (BuildInvocationAuthority value _ _) = value
+buildAuthorityBuildId (BuildInvocationAuthority value _ _) = buildIdentifierText value
 
 buildAuthoritySourceDigest ::
     BuildInvocationAuthority projectId specDigest configId buildId sourceDigest builderBinaryDigest -> Text
-buildAuthoritySourceDigest (BuildInvocationAuthority _ value _) = value
+buildAuthoritySourceDigest (BuildInvocationAuthority _ value _) = buildSourceDigestText value
 
 {- | Verify a delivered build channel inside the image.
 
@@ -544,17 +791,17 @@ verifyBuildInvocation ::
     -- | the installed verification key
     BuildVerificationKey ->
     -- | the locally verified project name
-    Text ->
+    BuildProjectName ->
     -- | the finalized Production codec's locally computed spec digest
-    Text ->
+    BuildSpecDigest ->
     -- | the locally computed Production config digest
-    Text ->
+    BuildConfigDigest ->
     -- | the installed coordinator binary identity
-    Text ->
+    CoordinatorDigest ->
     -- | the caller-selected source root to measure
-    FilePath ->
+    BuildSourceRoot ->
     -- | the caller-selected builder path to measure
-    FilePath ->
+    BuilderPath ->
     BuildChannel ->
     ( forall projectId specDigest configId frame buildId sourceDigest builderBinaryDigest.
       ImageBuildFrame projectId specDigest configId frame ->
@@ -568,36 +815,57 @@ verifyBuildInvocation ::
         )
 verifyBuildInvocation key projectName specDigest configDigest expectedCoordinator sourceRoot builderPath channel use
     | buildProjectName binding /= projectName =
-        pure (Left (BuildIdentityMismatch "project" (buildProjectName binding) projectName))
+        pure
+            ( Left
+                ( BuildIdentityMismatch
+                    "project"
+                    (buildProjectNameText (buildProjectName binding))
+                    (buildProjectNameText projectName)
+                )
+            )
     | buildSpecDigest binding /= specDigest =
-        pure (Left (BuildIdentityMismatch "spec digest" (buildSpecDigest binding) specDigest))
+        pure
+            ( Left
+                ( BuildIdentityMismatch
+                    "spec digest"
+                    (buildSpecDigestText (buildSpecDigest binding))
+                    (buildSpecDigestText specDigest)
+                )
+            )
     | buildConfigDigest binding /= configDigest =
-        pure (Left (BuildIdentityMismatch "config digest" (buildConfigDigest binding) configDigest))
+        pure
+            ( Left
+                ( BuildIdentityMismatch
+                    "config digest"
+                    (buildConfigDigestText (buildConfigDigest binding))
+                    (buildConfigDigestText configDigest)
+                )
+            )
     | buildCoordinatorDigest binding /= expectedCoordinator =
         pure
             ( Left
                 ( BuildIdentityMismatch
                     "coordinator binary"
-                    (buildCoordinatorDigest binding)
-                    expectedCoordinator
+                    (coordinatorDigestText (buildCoordinatorDigest binding))
+                    (coordinatorDigestText expectedCoordinator)
                 )
             )
-    | Text.null (buildIdentifier binding) =
+    | Text.null (buildIdentifierText (buildIdentifier binding)) =
         pure (Left (BuildChannelMalformed "the build id is empty"))
-    | Text.null (buildFrameName binding) =
+    | Text.null (buildFrameNameText (buildFrameName binding)) =
         pure (Left (BuildChannelMalformed "the image-build frame is empty"))
     | otherwise = do
-        measuredSource <- measureSourceDigest sourceRoot
+        measuredSource <- fmap buildSourceDigestFromText <$> measureSourceDigest (buildSourceRootFilePath sourceRoot)
         case measuredSource of
             Left failure -> pure (Left failure)
             Right actualSource
                 | buildSourceDigest binding /= actualSource ->
                     pure
                         ( Left
-                            (BuildIdentityMismatch "source digest" (buildSourceDigest binding) actualSource)
+                            (BuildIdentityMismatch "source digest" (buildSourceDigestText (buildSourceDigest binding)) (buildSourceDigestText actualSource))
                         )
                 | otherwise -> do
-                    measuredBuilder <- measureBinaryDigest builderPath
+                    measuredBuilder <- fmap builderDigestFromText <$> measureBinaryDigest (builderPathFilePath builderPath)
                     case measuredBuilder of
                         Left failure -> pure (Left failure)
                         Right actualBuilder
@@ -606,8 +874,8 @@ verifyBuildInvocation key projectName specDigest configDigest expectedCoordinato
                                     ( Left
                                         ( BuildIdentityMismatch
                                             "builder binary"
-                                            (buildBuilderDigest binding)
-                                            actualBuilder
+                                            (builderDigestText (buildBuilderDigest binding))
+                                            (builderDigestText actualBuilder)
                                         )
                                     )
                             | otherwise -> checkSignature actualSource
@@ -644,13 +912,13 @@ data BuildPhaseKind
 
 -- | Authority to run one build phase. Opaque; derived only from a verified pair.
 data BuildCommandAuthority projectId specDigest configId
-    = BuildCommandAuthority BuildPhaseKind Text
+    = BuildCommandAuthority BuildPhaseKind BuildFrameName
 
 type role BuildCommandAuthority nominal nominal nominal
 
 instance Show (BuildCommandAuthority projectId specDigest configId) where
     show (BuildCommandAuthority phase frame) =
-        "BuildCommandAuthority " <> show phase <> " " <> Text.unpack frame
+        "BuildCommandAuthority " <> show phase <> " " <> Text.unpack (buildFrameNameText frame)
 
 buildCommandAuthorityPhase :: BuildCommandAuthority projectId specDigest configId -> BuildPhaseKind
 buildCommandAuthorityPhase (BuildCommandAuthority phase _) = phase
@@ -687,13 +955,6 @@ authorizePhase phase (ImageBuildFrame frame) (BuildInvocationAuthority _ _ consu
 
 -- ---------------------------------------------------------------------------
 -- Digests and failures
-
-sha256Hex :: ByteString -> Text
-sha256Hex payload =
-    Text.pack (concatMap hex (ByteArray.unpack (Hash.hashWith Hash.SHA256 payload)))
-  where
-    hex byte = [hexDigit (byte `shiftR` 4), hexDigit (byte .&. 0x0f)]
-    hexDigit nibble = ByteStringChar8.index "0123456789abcdef" (fromIntegral nibble)
 
 data BuildError
     = -- | what, the signed value, then the locally measured one

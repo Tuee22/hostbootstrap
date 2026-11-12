@@ -22,7 +22,6 @@ module HostBootstrap.Substrate.Frame (
     -- * Which row holds a frame's ownership clauses
     FrameOwnershipRow (..),
     frameOwnershipRow,
-    frameOwnsLocally,
 )
 where
 
@@ -57,9 +56,9 @@ prefix is even compared, because both make the guard vacuous rather than strict:
 an empty prefix is a prefix of every name, and an empty name is a frame the
 argument vector could not have addressed anyway.
 
-The row supplies only its own argv, and receives the name after the guard has
-admitted it — so a provider module cannot render a delete for a name the guard
-would have refused.
+The row supplies its own argv callback, which receives the name only after the
+guard admits it. Each row passes that admitted name through to its argument
+vector. This is the rows' convention; the callback's types do not enforce it.
 -}
 guardedDeleteArgs ::
     -- | what this frame calls the thing being removed
@@ -123,16 +122,10 @@ Every frame this project reaches through a host-provider command is Linux, so
 there is exactly one answer for every crossing and no per-provider entry to fall
 out of step. The outer host is the only frame whose row is a build fact about
 /this/ binary.
+
+This is a declaration that no production module consults. It mints no authority
+to ship or run a transaction; the lift transport owns that route.
 -}
 frameOwnershipRow :: EffectFrame -> FrameOwnershipRow
 frameOwnershipRow OuterHost = HostOwnershipRow
 frameOwnershipRow CrossedInto{} = PosixOwnershipRow
-
-{- | Whether this process's own row is the one that holds the frame's clauses.
-
-Derived from the column rather than from a second test of the frame, so a
-caller deciding whether to run a transaction here or ship it asks the same
-value the table answers.
--}
-frameOwnsLocally :: EffectFrame -> Bool
-frameOwnsLocally frame = frameOwnershipRow frame == HostOwnershipRow

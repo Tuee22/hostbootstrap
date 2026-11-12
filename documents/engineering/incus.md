@@ -31,29 +31,10 @@ The sections below describe the target contract. The code departs from it in the
 [The host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 owes these gaps:
 
-- **Discovery overwrites a ready prefix.** When a probe is not ready, the probes before it that answered
-  ready are reported as failures ("an unexpected ready observation lacked its dependent probe") instead of
-  keeping their own observations (see [provider discovery](#provider-discovery)).
-- **The retained executable is not the one that runs.** Backend admission retains the resolved `incus` path
-  in `IncusBackendSpec`, but each provider call resolves the tool again from the discovery `HostConfig`.
-- **Admission is wider than the contract.** Memory and storage are admitted as any non-empty alphanumeric
-  text and passed to Incus unchanged, rather than as a quantity in Incus's own unit vocabulary (see
-  [resource wall](#resource-wall)). The instance name and guard prefix are admitted as any Unicode
-  alphanumeric text plus `-`, `_`, and `.`, rather than an ASCII hostname, and the name is measured in
-  characters rather than UTF-8 bytes, so a multibyte name within 47 characters can still overflow the
-  share socket's pathname (see [provider naming bounds](#provider-naming-bounds)).
-- **Every listing row is parsed before the exact row is selected.** `classifyProviderListing` reads each
-  row's state first, so a sibling that the daemon's prefix match returns in a state other than `RUNNING` or
-  `STOPPED`, or a malformed sibling row, refuses the observation of the exact instance.
-- **Only ASCII control characters are refused.** A report line carrying a C0 control or DEL is refused; C1
-  controls and Unicode format characters (bidirectional overrides among them) pass.
 - **Two revalidations reuse the bound record.** The check immediately before the guarded delete compares
   against the identity the transaction just bound rather than a fresh observation, and the share check
   confirms only that the bound share device is present, without comparing its observed identity with the
   bound one.
-- **Two Incus argument vocabularies.** `HostBootstrap.Incus` renders a second Incus argument vocabulary
-  beside the prepared route's commands, so the same Incus operation has two renderers (see
-  [asking the provider](#asking-the-provider)).
 
 ## Provider route
 
@@ -63,7 +44,7 @@ that table. "Frame handoff" and the installed frame child are the default **topo
 
 Native Linux CPU uses an Incus VM as its provider frame. The lower-boundary separation assigns pure
 `IncusVM` target data and `execVMArgs` to `HostBootstrap.Lift.Context`; `HostBootstrap.Incus` reexports them
-and adds Incus-specific lifecycle argument builders. The project selects an abstract `SubstrateProvider`
+and adds only the file-push argument builder. The project selects an abstract `SubstrateProvider`
 whose narrow projections retain the complete `LiftContext` and pure lifecycle plans without exposing
 construction or record update. Generic Lift remains below that realization and imports no Incus lifecycle
 module. Real Incus mutation enters through the exact prepared provider backend. The demo's adoption of that
@@ -74,7 +55,8 @@ is absent. The prepared route:
 - on first creation, launch the named VM with `limits.cpu`, `limits.memory`, and `root,size`;
 - when the named VM already exists and this run's durable record owns it (the instance carries the
   record's owner claim and the identity the record bound), start it if it is `STOPPED` and leave it as it
-  is if `RUNNING`, without comparing or changing its limits; a same-named VM that no record claims, or that
+  is if `RUNNING`. Owned provisioning compares canonical CPU, memory and root-disk limits first;
+  changed limits conflict without mutation and require destroy-and-reprovision. A same-named VM that no record claims, or that
   carries another claim or none, is refused as a conflict (see
   [where a transaction stands](#where-a-transaction-stands));
 - attach the host `.data` share as an Incus disk device;
@@ -83,9 +65,11 @@ is absent. The prepared route:
 - hand off the project subcommand with `incus exec`;
 - stop on `project down`, or force-delete the guarded project VM on `project destroy`.
 
-Host-side `incus` is resolved through `HostTool`; backend admission retains the resolved absolute
-executable in `IncusBackendSpec`, and each provider call resolves it again from the discovery `HostConfig`
-(see [Current Status](#current-status)). It is the **only** executable that backend resolves: the four ownership clauses (see
+Host-side `incus` is resolved through `HostTool`. Backend construction retains its absolute path
+in `IncusBackendSpec`; strong admission refuses a configuration whose resolved client differs.
+Every later call uses the captured immutable `HostConfig`, so the realization fingerprint names the
+client that runs. This check launches no tool and does not prove executable or directory usability.
+It is the **only** executable that backend resolves: the four ownership clauses (see
 [ownership invariant](../architecture/ownership_invariant.md#the-four-clauses)) are held through the
 ownership seam's reported face — the face whose identity is the one the provider reports rather than one
 a local kernel answers for (see [ownership seam](../architecture/ownership_seam.md#the-two-faces)) — every
@@ -93,6 +77,14 @@ effect is one of the described commands below, and every decision above them is 
 backend ships no interpreter program and runs under no `flock` front end, so no interpreter and no
 locking executable is resolved and no lock namespace is admitted: exclusion is the protected store's
 exclusive entry (clause 1). Commands inside the guest intentionally use the guest's own tool lookup.
+
+The guest-VM provider follows the same command boundary. Its share observation sends
+`test -d <target>`, then `test -w <target>` only after the directory probe succeeds.
+Each is a separate argument vector, so the target is one argument even when it contains spaces
+or shell metacharacters. Its provisioning-egress observation sends
+`getent hosts archive.ubuntu.com` directly. The first failing command retains the ordinary
+provider failure classification. `ProviderBackendSpec` checks both physical provider modules
+for interpreter and locking tokens and verifies their path to the described command driver.
 
 Before that provider value is used, `HostBootstrap.Ensure.Incus` converges the native provider and runs
 a total final observation. Its pure `IncusProviderStatus` distinguishes:
@@ -141,12 +133,14 @@ enter through that boundary; there is no parallel public target or reboot/readin
 ## Provider discovery
 
 The common provider discovery transition is separate from the ensure reconciler's installation proof. It
-runs a closed, ordered set of probes — daemon and permissions (both answered by the provider's instance
-listing), VM capability (the guest answering `true`), and provisioning egress — and stops at the first
-probe that is not ready; the probes after it take that probe's observation, and the ready probes before it
-are also reported as failures rather than as their own observations (see
-[Current Status](#current-status)). Its executor returns only a raw
-exit status and streams, or a transport failure, and a private classifier reads each probe by exit status:
+runs three closed probes in order: the provider's listing answers daemon reachability and permission
+as one observation, then the guest answers `true`, then provisioning egress is checked. It stops
+at the first blocking observation, retains every probe's actual answer, and gives that blocking answer
+only to the suffix that never ran. Direct has its distinct canonical-root permission and egress probes.
+The bound route must match the selected instance before any probe executes. Its executor returns only
+raw exit status and streams, or a transport failure. The total `classifyProviderProbe` and
+`providerConflictMarker` functions expose descriptive classification without constructing a
+`ProviderProbeRequest` or minting capability authority:
 
 | Raw outcome | Classification |
 |---|---|
@@ -159,7 +153,8 @@ exit status and streams, or a transport failure, and a private classifier reads 
 Only a not-ready probe is retried, within a module-owned bounded policy of 60 attempts one second apart.
 The resulting `ProviderCapability` describes what discovery observed; a rank-2 type variable ties it to
 the exact opaque managed Running provider and backend realization, and it is not VM mutation authority.
-The alias backend may derive a guest executor only from that capability.
+The capability carries no guest executor. The narrower strong alias backend uses its retained lift
+context to reach the provider frame; its prepared ownership transaction remains the mutation boundary.
 
 ## Capability and ownership
 
@@ -176,7 +171,10 @@ check immediately before the delete and the share check compare against the boun
 fresh observation (see [Current Status](#current-status)). A share is not bound merely
 because the forced activation restart reports the VM `RUNNING`: the driver polls
 `incus exec <name> -- true` under the canonical VM-boot policy and admits dependent guest work only after
-that exact owned VM answers. Two consequences of that shape:
+that exact owned VM answers. A prepared stop that observes a replacement returns a conflict naming
+the owned generation, replacement generation and canonical hexadecimal stable identity. Its remedy names
+the stop and requires operator resolution while leaving the replacement untouched; it produces no
+Stopped successor authority. Two consequences of that shape:
 
 - **the re-entry compares what a record says, not its bytes.** Every release and every dependent
   transaction re-establishes clauses 1 through 3 over a record a previous entry already bound, and that
@@ -209,13 +207,11 @@ the exact argument vector, the stdio disposition, and the frame whose process re
 can run anything, which is what makes an argument vector comparable by application rather than only
 observable by launching it.
 
-`HostBootstrap.Incus` holds a second set of Incus argument builders — launch (sized by
-`incusSizingArgs`), start, stop, file push, device list and add, and the guarded delete — that fill the
-`SubstrateProvider` value's plan fields. On the Incus route the prepared backend executes none of its
-launch, start, stop, device, or delete vectors; the vector the route does execute is the provider's file
-transfer (`incus file push`), which source and build-context staging use. The owner tag rides only on
-`launchInstanceCommand`, so a change to how an instance is created belongs in
-`HostBootstrap.Substrate.Provider.Command`.
+`HostBootstrap.Incus` retains the lower target and crossing renderer plus the file-push builder used
+by source and build-context staging. The Incus provider row projects start, stop, device listing,
+share attachment and guarded delete from `HostBootstrap.Substrate.Provider.Command`. Its descriptive
+launch plan returns a structured refusal requiring the prepared provision call, which supplies the
+durable origin and owner claim. There is no second lifecycle argument builder.
 
 Two properties of the set are worth stating because they are easy to lose:
 
@@ -245,8 +241,8 @@ What it admits is deliberately narrow, because a provider is another program's o
 
 - an instance listing is a set of `name,state` rows, and only the row naming the exact instance is about
   it — the daemon matches a listing argument by prefix, so a sibling name is an absence rather than a hit.
-  Every row is parsed before the exact row is selected, so a sibling in a state other than `RUNNING` or
-  `STOPPED` refuses the observation (see [Current Status](#current-status));
+  The exact name is selected before state and arity are read, so a sibling's state or malformed
+  arity cannot decide this instance's observation. A nonblank row with no name still refuses;
 - the two lifecycle states a clause-holding transaction can act from are `RUNNING` and `STOPPED`; every
   other state the daemon might name is refused rather than mapped onto whichever of the two is closer;
 - a configuration read answers at most one bounded line; no line, or an empty one, is an unset key rather
@@ -254,11 +250,22 @@ What it admits is deliberately narrow, because a provider is another program's o
   unclaimed;
 - an identity is admitted through the ownership seam's own producer, so a value this vocabulary could not
   read is never compared against a bound one;
-- a report that is over-long, that carries an ASCII control character (a C0 control or DEL; see
-  [Current Status](#current-status) for C1 and format characters), or that lists the exact instance twice
-  is a refusal, because each is the daemon contradicting itself. Before that check each line loses one
+- a report that is over-long, carries a Unicode control or format character, or lists the exact
+  instance twice is a refusal. The character rule covers C0, DEL, C1 and formatting characters such as
+  bidirectional overrides. Before that check each line loses one
   trailing carriage return and empty lines are dropped, so a CRLF-terminated report reads as the same
   rows.
+
+The global report bounds and character checks apply before name reduction. A report line admits
+at most 512 characters; configuration values admit 240 characters for owner tags and device properties.
+An identity is checked again by `mkObjectIdentity` against its separate 64-byte ceiling.
+The successful configuration result has an unset constructor and a private nonempty branch;
+`providerConfigValueText` presents `Nothing` or the admitted nonempty text. An empty line and
+no output both mean unset. Clients cannot construct an unchecked value branch.
+
+A provider's diagnostic uses its first nonempty sanitized line, bounded by the same report-line
+limit. Control and format characters are removed before exit or noisy-success diagnostics are
+constructed; the numeric exit status remains in the rendered refusal.
 
 The join is one function: a listing and an identity read together become the observation the seam's
 reported face is held over (see [ownership seam](../architecture/ownership_seam.md)). An instance listed
@@ -281,6 +288,11 @@ record claims, an instance carrying a different claim or none at all, a bound re
 been replaced, a bound record whose instance is gone, a record another owner wrote, and a record naming an
 instance that was there before it.
 
+Conflict messages retain the instance's observed claim after "carries the claim" and the
+durable record's expected claim after "this record's". Replacement messages retain both the
+bound and observed identities; vanished and prior-instance messages retain the identity
+their conflict carries. The resumption suite checks each of the six complete renderings.
+
 The claim comparison is the whole of the crash-window resolution. The instance name is the same by
 construction — it is the name the plan declares — so the claim is the only thing that tells an instance
 this record created from one an earlier record left behind. One vocabulary answers every verb, because
@@ -295,6 +307,9 @@ name to the argument vector; each row receives only the admitted name and render
 That is the rows' convention, which the types do not enforce. An instance outside the project's namespace refuses, and so do the two
 degenerate inputs that make the guard vacuous: an empty prefix, which is a prefix of every name, and an empty
 instance name.
+
+The pure provider commands name the literal `ToolTarget Incus` and `OuterHost` frame.
+The frame table supplies the shared delete guard; it supplies no frame-to-tool lookup.
 
 `incus stop <name> --force` (and `incus restart <name> --force`) is a forced power-off: the VM is killed
 without a clean guest shutdown, so guest writes that were not flushed can be lost. It carries no name guard
@@ -325,6 +340,18 @@ Production durable-root preservation, and same-run Harness destroy/up/readback. 
 [ownership invariant](../architecture/ownership_invariant.md) and
 [durable state](../architecture/durable_state.md).
 
+Retained provider stop, readiness and delete re-enter the protected provider record without a
+forward managed handle or caller-supplied owner or generation. Stop checks the provider's resulting
+state. Readiness starts a stopped instance and asks the guest whether it answers, polling only
+not-ready observations; a terminal guest failure returns after one probe. All three operations
+refuse a same-named replacement before mutation and preserve the retained records on refusal.
+Direct and Lima return their declared Unsupported results through this retained boundary.
+
+The backend suite drives these paths through its compiled CLI stand-in and the real protected
+store. It checks exact stop/start counts, three probes across two not-ready replies, one probe for
+terminal failure, full replacement preservation, and the failure of a stop that still reports a
+running instance. The live component confirms the actual Incus substrate separately.
+
 ## Resource wall
 
 The prepared launch (`launchInstanceCommand`) renders the instance's `ProviderSizing`:
@@ -337,15 +364,28 @@ root,size=<storage>
 
 `<N>` is the declared CPU count. `<memory>` and `<storage>` are the declaration's quantity text passed
 through unchanged (the demo's defaults are `10GiB` and `80GiB`); backend admission (`mkIncusBackendSpec`)
-requires only that each is non-empty and alphanumeric, so Incus receives the spelling the configuration
-wrote rather than a value the canonical quantity parser normalised. `incusSizingArgs`, which renders
+requires ASCII digits followed by an exact Incus byte suffix, with the scaled value within the signed
+64-bit byte range. It rejects a unit without a number, non-ASCII digits, unknown suffixes and overflow;
+the admitted spelling is passed unchanged. The supported suffixes follow the
+[Incus byte-unit reference](https://linuxcontainers.org/incus/docs/main/reference/instance_units/) and its
+[byte parser](https://github.com/lxc/incus/blob/main/shared/units/units.go), including the bare-byte form.
+`incusSizingArgs`, which renders
 whole `GiB` values from the canonical parser, sizes only the `SubstrateProvider` value's launch plan, which
 the Incus route does not execute.
 
-These are real per-VM CPU, memory, and storage walls for a newly created VM. Current reconcile-to-running
-does not observe an existing VM's effective limits or resize/refuse it when the declaration changes; it
-starts the existing VM unchanged. The in-VM kind cluster computes a local slice, but that does not repair
-a stale outer wall. The
+These are per-VM CPU, memory and storage walls. Provisioning validates a positive canonical budget
+before any provider command. For an instance whose exact claim and native identity match its stored
+ownership binding, the entered transaction reads `limits.cpu`, `limits.memory` and the root device's
+`size`. The native byte parser is shared with backend admission, so every admitted Incus unit retains
+its exact meaning, including decimal and binary spellings. Comparison uses canonical quantities rather
+than spelling. A fresh ownership/identity check follows those reads.
+
+Equal limits return `ProvisionAlreadyOwned` without launching, starting or publishing another origin
+record. A different CPU, memory or disk quantity returns a typed `Conflict` with both canonical sides
+and destroy-and-reprovision as the remedy. A missing, malformed, noisy or failed read refuses. The
+transaction does not resize the VM, and it preserves the existing exact plan/owner/backend binding.
+The static protocol cases supply raw client values; the phase's live component separately confirms real
+Incus behavior. The in-VM kind slice does not replace this outer wall. The
 [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
 supplies the lower result/capacity algebra, while the
 [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
@@ -363,12 +403,46 @@ never attaches.
 
 Admission computes the budget against Incus's default state directory, `/var/lib/incus`, as
 `<var-path>`: 107 bytes less the 39 fixed path bytes and the 21-byte device name leaves an instance name of
-at most 47 bytes. Admission measures the name in characters and admits non-ASCII alphanumerics, so a
-multibyte name within 47 characters can still overflow the budget (see [Current Status](#current-status)).
+at most 47 bytes. Admission measures UTF-8 bytes before checking the hostname grammar, so a
+multibyte declaration cannot evade the socket bound through a smaller character count. Names use
+lowercase ASCII letters, digits and hyphens, start with a letter and do not end in a hyphen. The
+destructive-delete guard prefix uses the same grammar and may end in a hyphen.
 An Incus installation whose state directory is elsewhere has a different
 budget, which admission does not compute.
 
+## Live provider component
+
+The provider-live component admits the same strong backends and prepared calls as the application.
+Its confirmed route requires Linux x86_64, a ready Incus provider, read/write permission on the KVM
+device and a successful open of that device. These preflights run before its temporary root is
+created. A collision or other setup failure before durable intent publication removes that root;
+only a failure after successful publication reports the preserved intent and VM inspection remedy.
+
+Initial readiness and provisioned-state recovery convert exceptions to reconciliation failures so
+the owned provider still reaches cleanup. The guest preparation callback runs after share settlement
+and before alias acquisition. The two restart callbacks run while the alias is held. If both the
+body and release fail, the reported failure contains both causes. Invalid step plans travel through
+the validated builder as `Either` values.
+
+The live assertions select the exact VM row from a name-and-state listing, recognize protected-record
+staging names containing `.rec.tmp-`, and reject every remaining provider record under `<vm>.`,
+including share records and staging files. The component's compilation and ordinary unrequested
+result establish static coverage; a confirmed KVM/Incus run supplies the live lifecycle evidence
+required by the [owning development-plan phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
+
 ## Validation
+
+During cold boot, only exit 255 with empty stdout and the exact Incus agent-not-running error
+joins the existing bounded not-ready poll. Prepared and retained readiness re-observe the bound
+instance around each guest probe; retries neither repeat a start nor publish another origin record.
+Other exit-255 faults, changed diagnostics and wrong output streams retain their causal failure.
+
+Running-provider dependency registration captures the actual native identity and compares the
+complete fresh identity at each owner-serviced request. Same-name replacement refuses with typed
+Conflict before dependent mutation. Direct uses its canonical root identity without claiming the host.
+Exact provider/share registration retains consumed nonces in its original live service closure.
+The static regressions exercise these paths through the real prepared backend and protected store;
+the final confirmed gate validates the actual KVM/Incus lifecycle on the realized Linux host.
 
 `EnsureSpec` checks the descriptive refusals and classifier precedence, the configured gate's missing
 client refusal without reaching its continuation, and the production flow from probe to admission. The public-only

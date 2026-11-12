@@ -38,7 +38,9 @@ belong to the store's own contract — the
 and covered there. This boundary inherits that contract by holding no durable
 byte of its own: it names no mutating filesystem primitive, which is why there is
 no instruction point here at which a second durability window could exist to
-patch (§ NN). A source guard holds the absence.
+patch (§ NN). A source guard holds the absence across the provider facade and
+its whole module subtree, and checks that this driver applies the record tape's
+publications rather than merely importing their names.
 -}
 module HostBootstrap.Substrate.Provider.Ownership (
     -- * The instance a transaction owns
@@ -72,10 +74,12 @@ module HostBootstrap.Substrate.Provider.Ownership (
 
     -- * The observation every clause is held against
     observeOwnedInstanceOrigin,
+    observeOwnedShare,
 )
 where
 
 import Control.Concurrent (threadDelay)
+import HostBootstrap.Cluster.Cordon.Foundation (ResourceBudget)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.List (sort)
@@ -93,7 +97,7 @@ import HostBootstrap.Lift (
     inVM,
  )
 import HostBootstrap.Lift.Context (emptyVMStack, vmContext)
-import HostBootstrap.Ownership.Clause (Bound, Recorded, Releasable, recordedEvidence)
+import HostBootstrap.Ownership.Clause (Bound, Recorded, recordedEvidence)
 import HostBootstrap.Ownership.Object (
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
     ObjectIdentity,
@@ -103,6 +107,7 @@ import HostBootstrap.Ownership.Object (
     OwnerClaim,
     OwnershipFault (
         OwnershipConflict,
+        OwnershipMalformed,
         OwnershipOccupied,
         OwnershipProbeFailed,
         OwnershipUnsupported
@@ -110,14 +115,18 @@ import HostBootstrap.Ownership.Object (
     mkObjectIdentity,
     mkOwnerClaim,
     originRecordBinding,
+    originRecordKind,
+    originRecordOrigin,
     ownerClaimText,
     ownershipFaultMessage,
  )
 import HostBootstrap.Ownership.Primitive (
     bindReportedIdentity,
     enterReportedObject,
+    reenterStoredReportedObject,
     recordReportedOrigin,
     releaseReportedObject,
+    resumeReportedRemoval,
     reobserveReportedIdentity,
  )
 import HostBootstrap.Ownership.Tape (
@@ -125,11 +134,13 @@ import HostBootstrap.Ownership.Tape (
     RecordSubject (RecordSubject, subjectBinding, subjectRecord),
     RecordTape,
     carryClause,
-    carryStore,
+    carryClauseFault,
     forgetRecord,
     publishBoundRecord,
     publishFreshRecord,
     readRecordUnder,
+    readStoredRecordUnder,
+    storedOriginRecord,
     recordTape,
  )
 import HostBootstrap.Protected (
@@ -144,7 +155,9 @@ import HostBootstrap.Protected (
     recordNameIdentity,
     recordTupleSeparator,
  )
-import HostBootstrap.Readiness (microsValue, pollSchedule, vmBootPoll)
+import HostBootstrap.Readiness (ProbeResult (NotReady), microsValue, pollSchedule, vmBootPoll)
+import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderExit), classifyProviderProbe)
+import System.Exit (ExitCode (ExitFailure))
 import HostBootstrap.Substrate.Provider.Command (
     ProviderSizing,
     attachShareDeviceCommand,
@@ -161,7 +174,15 @@ import HostBootstrap.Substrate.Provider.Command (
     stopInstanceCommand,
  )
 import HostBootstrap.Substrate.Provider.Report (
-    ProviderConfigValue (ProviderConfigUnset, ProviderConfigValue),
+    ProviderSizingObservation,
+    incusSizingBudget,
+    classifyIncusSizing,
+    providerSizingMatches,
+    declaredSizingText,
+    observedSizingText,
+    sizingConflictRemedy,
+    ProviderConfigValue (ProviderConfigUnset),
+    providerConfigValueText,
     ProviderListing (listedState),
     ProviderReportFault (ProviderCommandExited, ProviderCommandUnrun),
     ProviderRunState (ProviderRunning, ProviderStopped),
@@ -175,7 +196,7 @@ import HostBootstrap.Substrate.Provider.Report (
  )
 import HostBootstrap.Substrate.Provider.Resume (
     ProviderStanding (InstanceCreated, InstanceOwned, NothingDone, OriginRecorded),
-    ProviderStandingConflict (InstanceReplaced),
+    ProviderStandingConflict (InstanceReplaced, InstanceUnderAnotherClaim, InstanceVanished),
     providerStanding,
     providerStandingConflictMessage,
  )
@@ -280,6 +301,8 @@ data ProviderOwnershipFault
       ProviderOwnershipReport ProviderReportFault
     | -- | the three facts do not describe a transaction this run may continue
       ProviderOwnershipStanding ProviderStandingConflict
+    | -- | the owned instance's sizing differs from the current declaration
+      ProviderOwnershipSizing ResourceBudget ProviderSizingObservation
     | -- | a clause could not be held
       ProviderOwnershipClause OwnershipFault
     deriving (Eq, Show)
@@ -291,6 +314,9 @@ providerOwnershipFaultMessage fault = case fault of
     ProviderOwnershipReport inner -> providerReportFaultMessage inner
     ProviderOwnershipStanding inner -> providerStandingConflictMessage inner
     ProviderOwnershipClause inner -> ownershipFaultMessage inner
+    ProviderOwnershipSizing declared observed ->
+        "declared " <> declaredSizingText declared <> "; observed " <> observedSizingText observed
+            <> "; " <> sizingConflictRemedy
 
 -- ---------------------------------------------------------------------------
 -- What the provider is currently reporting
@@ -361,12 +387,31 @@ provisionOwnedInstance ::
     RecordKey ->
     OwnedProviderInstance ->
     IO (Either ProviderOwnershipFault ProviderProvisionOutcome)
-provisionOwnedInstance cfg session key owned = do
+provisionOwnedInstance cfg session key owned =
+    case incusSizingBudget (ownedInstanceSizing owned) of
+        Left fault -> pure (Left (ProviderOwnershipReport fault))
+        Right _ -> provisionSizedInstance cfg session key owned
+
+provisionSizedInstance ::
+    HostConfig -> ProtectedSession session -> RecordKey -> OwnedProviderInstance ->
+    IO (Either ProviderOwnershipFault ProviderProvisionOutcome)
+provisionSizedInstance cfg session key owned = do
     entered <- standingOf cfg session key owned
     case entered of
         Left fault -> pure (Left fault)
         Right (standing, _) -> case standing of
-            InstanceOwned _ identity -> pure (Right (ProvisionAlreadyOwned identity))
+            InstanceOwned claim identity
+                | claim == ownedInstanceClaim owned -> checkOwnedInstanceSizing cfg session key owned identity
+                | otherwise ->
+                    pure
+                        ( Left
+                            ( ProviderOwnershipStanding
+                                ( InstanceUnderAnotherClaim
+                                    (ownerClaimText (ownedInstanceClaim owned))
+                                    (ownerClaimText claim)
+                                )
+                            )
+                        )
             NothingDone ->
                 withRecordedOrigin session key owned (launchThenBind cfg session key owned)
             OriginRecorded _ ->
@@ -377,6 +422,35 @@ provisionOwnedInstance cfg session key owned = do
                     key
                     owned
                     (bindObservedIdentity cfg session key owned ProvisionRecovered)
+
+-- | Compare retained limits while holding and rechecking the exact owned binding.
+checkOwnedInstanceSizing ::
+    HostConfig -> ProtectedSession session -> RecordKey -> OwnedProviderInstance -> ObjectIdentity ->
+    IO (Either ProviderOwnershipFault ProviderProvisionOutcome)
+checkOwnedInstanceSizing cfg session key owned identity =
+    withBoundInstance session key owned identity $ \bound -> do
+        cpu <- configValue cfg name "limits.cpu"
+        memory <- configValue cfg name "limits.memory"
+        storage <- interpret cfg (readShareDeviceCommand name "root" "size")
+        fresh <- standingOf cfg session key owned
+        pure $ do
+            (current, observation) <- fresh
+            _ <- either (Left . ProviderOwnershipClause) Right
+                (reobserveReportedIdentity bound (observedOrigin observation))
+            case current of
+                InstanceOwned claim actual
+                    | claim == ownedInstanceClaim owned && actual == identity -> Right ()
+                    | otherwise -> Left (ProviderOwnershipStanding
+                        (InstanceUnderAnotherClaim (ownerClaimText (ownedInstanceClaim owned)) (ownerClaimText claim)))
+                _ -> Left (ProviderOwnershipClause
+                    (OwnershipOccupied "the retained provider origin changed during sizing readback"))
+            declared <- reported (incusSizingBudget (ownedInstanceSizing owned))
+            observed <- reported (classifyIncusSizing cpu memory storage)
+            if providerSizingMatches declared observed
+                then Right (ProvisionAlreadyOwned identity)
+                else Left (ProviderOwnershipSizing declared observed)
+  where
+    name = ownedInstanceName owned
 
 {- | Launch the instance under its record's claim, then bind what comes back.
 
@@ -507,7 +581,10 @@ probeGuest cfg session key owned answered = do
     pure $ case probe of
         Right run -> case classifyProviderReport providerReportLineBound (Right run) of
             Right _ -> Right answered
-            Left (ProviderCommandExited _ diagnostic) -> Right (ReadyNotAnswering diagnostic)
+            Left fault@(ProviderCommandExited code diagnostic) ->
+                case classifyProviderProbe (RawProviderExit (ExitFailure code) "" (Text.unpack diagnostic)) of
+                    NotReady _ -> Right (ReadyNotAnswering diagnostic)
+                    _ -> Left (ProviderOwnershipReport fault)
             Left fault -> Left (ProviderOwnershipReport fault)
         Left fault -> Left fault
 
@@ -564,10 +641,10 @@ data ProviderStopOutcome
 
 {- | Stop the owned instance, re-observing the bound identity around the act.
 
-Stopping is not destructive, so it carries no name guard: what it carries is the
-same standing every other transaction does, taken before the stop and again
-after it, because a stop issued against a standing nobody rechecked is a
-mutation of whatever now stands at the name.
+The forced stop powers the VM off without a clean guest shutdown and can lose
+unflushed guest writes. It carries no name guard because this transaction
+re-observes the exact owned instance's standing before and after the
+name-addressed stop.
 -}
 stopOwnedInstance ::
     HostConfig ->
@@ -603,7 +680,7 @@ stopOwnedInstance cfg session key owned = do
 data ProviderDeleteOutcome
     = -- | the instance and every record of it are gone, and this entry did it
       DeleteRemoved
-    | -- | there was nothing to remove and no record to forget
+    | -- | no instance needs removal; an unbound record may have been forgotten
       DeleteAlreadyRemoved
     | -- | the provider still reports the instance, so no record was forgotten
       DeleteStillPresent
@@ -631,19 +708,23 @@ deleteOwnedInstance ::
 deleteOwnedInstance cfg session key owned = do
     entered <- standingOf cfg session key owned
     case entered of
+        Left (ProviderOwnershipStanding (InstanceVanished identity)) ->
+            resumeAbsentInstance cfg session key owned (ownedInstanceClaim owned) identity
         Left fault -> pure (Left fault)
         Right (NothingDone, _) -> pure (Right DeleteAlreadyRemoved)
         Right (OriginRecorded _, _) -> forgetUnboundRecord session key
-        Right (InstanceCreated _ _, _) -> pure (Left (notYetOwned owned))
+        Right (InstanceCreated claim _, _)
+            | claim == ownedInstanceClaim owned -> bindCreatedThenDelete cfg session key owned claim
+            | otherwise ->
+                pure (Left (ProviderOwnershipStanding
+                    (InstanceUnderAnotherClaim (ownerClaimText (ownedInstanceClaim owned)) (ownerClaimText claim))))
         Right (InstanceOwned _ identity, observation) ->
             case fmap listedState (observedListing observation) of
                 Nothing -> pure (Left (unlistedOwnedInstance owned))
                 Just ProviderRunning -> pure (Right DeleteStillPresent)
                 Just ProviderStopped ->
-                    withBoundInstance session key owned identity $ \bound ->
-                        case reobserveReportedIdentity bound (OriginPresent identity) of
-                            Left fault -> pure (Left (ProviderOwnershipClause fault))
-                            Right releasable -> removeInstance cfg session key owned identity releasable
+                    withBoundInstance session key owned identity
+                        (removeInstance cfg session key owned identity)
 
 {- | Delete the instance named by the exact retained provider record.
 
@@ -665,10 +746,13 @@ deleteRetainedOwnedInstance ::
 deleteRetainedOwnedInstance cfg session key owned = do
     entered <- standingOf cfg session key owned
     case entered of
+        Left (ProviderOwnershipStanding (InstanceVanished identity)) ->
+            withRetainedInstanceClaim session key $ \claim ->
+                resumeAbsentInstance cfg session key owned claim identity
         Left fault -> pure (Left fault)
         Right (NothingDone, _) -> pure (Right DeleteAlreadyRemoved)
         Right (OriginRecorded _, _) -> forgetUnboundRecord session key
-        Right (InstanceCreated _ _, _) -> pure (Left (notYetOwned owned))
+        Right (InstanceCreated claim _, _) -> bindCreatedThenDelete cfg session key owned claim
         Right (InstanceOwned claim identity, observation) -> do
             stopped <- case fmap listedState (observedListing observation) of
                 Nothing -> pure (Left (unlistedOwnedInstance owned))
@@ -690,10 +774,99 @@ deleteRetainedOwnedInstance cfg session key owned = do
             case stopped of
                 Left fault -> pure (Left fault)
                 Right () ->
-                    withBoundInstanceClaim session key owned claim identity $ \bound ->
-                        case reobserveReportedIdentity bound (OriginPresent identity) of
-                            Left fault -> pure (Left (ProviderOwnershipClause fault))
-                            Right releasable -> removeInstance cfg session key owned identity releasable
+                    withBoundInstanceClaim session key owned claim identity
+                        (removeInstance cfg session key owned identity)
+
+-- | Bind the interrupted launch before the retained release stops and removes it.
+bindCreatedThenDelete ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    OwnerClaim ->
+    IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
+bindCreatedThenDelete cfg session key owned claim =
+    withRecordedClaim session key owned claim $ \recorded -> do
+        recovered <- bindObservedIdentity cfg session key owned ProvisionRecovered recorded
+        case recovered of
+            Left fault -> pure (Left fault)
+            Right _ -> deleteRetainedOwnedInstance cfg session key owned
+
+-- | A retained delete takes its claim from the record it is authorized to release.
+withRetainedInstanceClaim ::
+    ProtectedSession session ->
+    RecordKey ->
+    (OwnerClaim -> IO (Either ProviderOwnershipFault result)) ->
+    IO (Either ProviderOwnershipFault result)
+withRetainedInstanceClaim session key continue = do
+    stored <- readRecordUnder (providerTape session) key
+    case stored of
+        Left fault -> pure (Left fault)
+        Right (Just record) -> case originRecordKind record of
+            ReportedObject claim -> continue claim
+            _ -> pure (Left (ProviderOwnershipClause
+                (OwnershipMalformed "the retained provider record describes a kernel object")))
+        Right Nothing -> pure (Left (ProviderOwnershipClause
+            (OwnershipProbeFailed "recover the retained provider removal"
+                "the bound record vanished inside the exclusive entry")))
+
+{- | Retire an unfinished removal only after validating records and fresh absence.
+
+No provider device query is possible after its instance has gone. The exact
+canonical share-record keys and their reported absent origins are checked in
+the same protected entry, then the instance is observed afresh. Clause 4
+retires those child records before the instance's retained binding.
+-}
+resumeAbsentInstance ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    OwnerClaim ->
+    ObjectIdentity ->
+    IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
+resumeAbsentInstance cfg session key owned claim identity =
+    withBoundInstanceClaim session key owned claim identity $ \bound -> do
+        pending <- absentInstanceShareRecords session key owned
+        case pending of
+            Left fault -> pure (Left fault)
+            Right shares -> do
+                fresh <- observeInstance cfg owned
+                case fresh of
+                    Left fault -> pure (Left fault)
+                    Right observation -> do
+                        released <- resumeReportedRemoval bound (observedOrigin observation) $ \_ -> do
+                            forgotten <- traverse (forgetRecord (providerTape session)) shares
+                            case sequence_ forgotten of
+                                Left fault -> pure (Left fault)
+                                Right () -> forgetRecord (providerTape session) key
+                        pure (fmap (const DeleteRemoved) (carryClauseFault released))
+
+absentInstanceShareRecords ::
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    IO (Either ProviderOwnershipFault [RecordKey])
+absentInstanceShareRecords session key owned = do
+    keys <- instanceShareRecordKeys session key
+    case keys of
+        Left fault -> pure (Left fault)
+        Right candidates -> do
+            checked <- traverse validate candidates
+            pure (fmap (const candidates) (sequence_ checked))
+  where
+    validate candidate = case deviceOfRecordKey owned candidate of
+        Left fault -> pure (Left (ProviderOwnershipStore fault))
+        Right _ -> do
+            stored <- readRecordUnder (providerTape session) candidate
+            pure $ case stored of
+                Left fault -> Left fault
+                Right Nothing -> Right ()
+                Right (Just record) -> case originRecordKind record of
+                    ReportedObject _
+                        | originRecordOrigin record == OriginAbsent -> Right ()
+                    _ -> Left (ProviderOwnershipClause
+                        (OwnershipMalformed "the retained provider share record is not a reported object over absence"))
 
 {- | Forget a record whose instance was never created.
 
@@ -707,7 +880,7 @@ forgetUnboundRecord ::
     IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
 forgetUnboundRecord session key = do
     forgotten <- forgetRecord (providerTape session) key
-    pure (fmap (const DeleteAlreadyRemoved) (carryStore forgotten))
+    pure (fmap (const DeleteAlreadyRemoved) (carryClauseFault forgotten))
 
 removeInstance ::
     HostConfig ->
@@ -715,13 +888,23 @@ removeInstance ::
     RecordKey ->
     OwnedProviderInstance ->
     ObjectIdentity ->
-    Releasable session object ->
+    Bound session object ->
     IO (Either ProviderOwnershipFault ProviderDeleteOutcome)
-removeInstance cfg session key owned identity releasable = do
+removeInstance cfg session key owned identity bound = do
     shares <- releasableShares cfg session key owned
     case shares of
         Left fault -> pure (Left fault)
-        Right pending -> case deleteInstanceCommand (ownedInstanceGuardPrefix owned) (ownedInstanceName owned) of
+        Right pending -> do
+            fresh <- observeInstance cfg owned
+            case fresh of
+                Left fault -> pure (Left fault)
+                Right observation ->
+                    case reobserveReportedIdentity bound (observedOrigin observation) of
+                        Left fault -> pure (Left (ProviderOwnershipClause fault))
+                        Right releasable -> deleteObserved pending releasable
+  where
+    deleteObserved pending releasable =
+        case deleteInstanceCommand (ownedInstanceGuardPrefix owned) (ownedInstanceName owned) of
             Left refusal -> pure (Left (guardedDeleteRefused refusal))
             Right command -> do
                 removed <- interpret cfg command
@@ -743,7 +926,7 @@ removeInstance cfg session key owned identity releasable = do
                                         Right () -> do
                                             forgotten <-
                                                 releaseReportedObject releasable OriginAbsent (const (forgetRecord (providerTape session) key))
-                                            pure (fmap (const DeleteRemoved) (carryStore forgotten))
+                                            pure (fmap (const DeleteRemoved) (carryClauseFault forgotten))
 
 {- | The refusal an object that took the name during the delete earns.
 
@@ -863,6 +1046,58 @@ attachOwnedShare cfg session shareKey share = do
                                     ShareDeviceOwned _ -> pure (Right ShareAlreadyAttached)
   where
     owned = ownedShareInstance share
+
+{- | Reobserve an already bound share without attaching or repairing it.
+
+The record must name this share's claim and bind the device the provider now
+reports. The parent's identity is checked on both sides of the device read.
+-}
+observeOwnedShare ::
+    HostConfig ->
+    ProtectedSession session ->
+    OwnedProviderShare ->
+    IO (Either ProviderOwnershipFault ObjectIdentity)
+observeOwnedShare cfg session share =
+    case (ownedInstanceRecordKey owned, ownedShareRecordKey share) of
+        (Left failure, _) -> pure (Left (ProviderOwnershipStore failure))
+        (_, Left failure) -> pure (Left (ProviderOwnershipStore failure))
+        (Right instanceKey, Right shareKey) -> do
+            entered <- ownedStanding cfg session instanceKey owned
+            case entered of
+                Left fault -> pure (Left fault)
+                Right (parentIdentity, _) -> do
+                    device <- observeShareDevice cfg share
+                    stored <- readRecordUnder (providerTape session) shareKey
+                    case (device, stored) of
+                        (Left fault, _) -> pure (Left fault)
+                        (_, Left fault) -> pure (Left fault)
+                        (Right origin, Right record) ->
+                            case ownedShareObservation record origin of
+                                Left fault -> pure (Left fault)
+                                Right identity -> do
+                                    final <- ownedStanding cfg session instanceKey owned
+                                    pure $ case final of
+                                        Left fault -> Left fault
+                                        Right (observed, _)
+                                            | observed == parentIdentity -> Right identity
+                                            | otherwise -> Left (replacedUnderShareAttachment parentIdentity observed)
+  where
+    owned = ownedShareInstance share
+    ownedShareObservation record origin = case record of
+        Just row
+            | originRecordKind row == ReportedObject (ownedShareClaim share)
+            , originRecordOrigin row == OriginAbsent -> do
+                standing <- shareStanding record origin
+                case standing of
+                    ShareDeviceOwned identity -> Right identity
+                    _ -> Left missingBoundShare
+        _ -> Left missingBoundShare
+    missingBoundShare =
+        ProviderOwnershipClause
+            ( OwnershipProbeFailed
+                "observe the owned provider share"
+                "the exact share has no matching bound ownership record"
+            )
 
 attachThenBind ::
     HostConfig ->
@@ -1100,8 +1335,7 @@ observeShareDevice cfg share = do
         captured <- interpret cfg (readShareDeviceCommand instanceName (ownedShareDevice share) key)
         pure $ case classifyProviderConfigValue captured of
             Left fault -> Left (ProviderOwnershipReport fault)
-            Right ProviderConfigUnset -> Right ""
-            Right (ProviderConfigValue value) -> Right (Text.unpack value)
+            Right value -> Right (maybe "" Text.unpack (providerConfigValueText value))
 
 {- | The identity a device the provider reports carries.
 
@@ -1134,7 +1368,7 @@ withRecordedShare session key share continue = do
             recorded <-
                 recordReportedOrigin
                     entered
-                    (ReportedObject (ownedShareClaim share))
+                    (ownedShareClaim share)
                     (publishFreshRecord (providerTape session) key)
             traverse continue recorded
     pure (carryClause outcome)
@@ -1151,10 +1385,11 @@ bindShare = bindIdentity
 -- ---------------------------------------------------------------------------
 -- Releasing the shares an instance carries
 
-{- | Every share record under this instance, re-observed and made releasable.
+{- | Validate the recorded share identities before removing their owned instance.
 
-Taken before the instance is removed, because clause 4 re-observes the object it
-bound and a device inside a deleted instance cannot be re-observed at all.
+Each bound device must still be exact or already absent. This returns record
+keys, not individual release tokens. The instance's conditional removal and
+reported absence authorize retiring those child records afterwards.
 -}
 releasableShares ::
     HostConfig ->
@@ -1163,18 +1398,29 @@ releasableShares ::
     OwnedProviderInstance ->
     IO (Either ProviderOwnershipFault [RecordKey])
 releasableShares cfg session key owned = do
-    keys <- listProtectedRecords session
+    keys <- instanceShareRecordKeys session key
     case keys of
-        Left failure -> pure (Left (ProviderOwnershipStore failure))
-        Right present -> do
-            let mine =
-                    sort
-                        [ candidate
-                        | candidate <- present
-                        , (recordKeyText key <> recordTupleSeparator <> "device.") `Text.isPrefixOf` recordKeyText candidate
-                        ]
+        Left fault -> pure (Left fault)
+        Right mine -> do
             observed <- traverse (observeShareRecord cfg session owned) mine
             pure (fmap (const mine) (sequence_ observed))
+
+instanceShareRecordKeys ::
+    ProtectedSession session ->
+    RecordKey ->
+    IO (Either ProviderOwnershipFault [RecordKey])
+instanceShareRecordKeys session key = do
+    keys <- listProtectedRecords session
+    pure $ case keys of
+        Left failure -> Left (ProviderOwnershipStore failure)
+        Right present ->
+            Right
+                ( sort
+                    [ candidate
+                    | candidate <- present
+                    , (recordKeyText key <> recordTupleSeparator <> "device.") `Text.isPrefixOf` recordKeyText candidate
+                    ]
+                )
 
 {- | One share record beside the device the provider still reports for it.
 
@@ -1210,8 +1456,10 @@ observeShareRecord cfg session owned candidate =
                                 )
                         pure $ case observed of
                             Left fault -> Left fault
-                            Right OriginAbsent -> Left (shareConflict bound OriginAbsent)
-                            Right (OriginPresent _) -> Right ()
+                            Right OriginAbsent -> Right ()
+                            Right (OriginPresent identity)
+                                | identity == bound -> Right ()
+                                | otherwise -> Left (shareConflict bound (OriginPresent identity))
 
 deviceOfRecordKey :: OwnedProviderInstance -> RecordKey -> Either ProtectedError String
 deviceOfRecordKey owned candidate = do
@@ -1225,14 +1473,14 @@ deviceOfRecordKey owned candidate = do
     invalid :: Either ProtectedError result
     invalid = Left (ProtectedInvalid "the provider device record key is not canonical for this instance")
 
--- | Forget every share record whose device the instance's removal took with it.
+-- | Retire validated child records after the owned instance is reported absent.
 forgetReleasableShares ::
     ProtectedSession session ->
     [RecordKey] ->
     IO (Either ProviderOwnershipFault ())
 forgetReleasableShares session = fmap sequence_ . traverse forget
   where
-    forget candidate = carryStore <$> forgetRecord (providerTape session) candidate
+    forget candidate = carryClauseFault <$> forgetRecord (providerTape session) candidate
 
 -- ---------------------------------------------------------------------------
 -- Running a command where the instance is
@@ -1294,9 +1542,10 @@ replacedUnderGuestCommand expected observed =
 
 {- | Re-establish clauses 1 through 3 over an instance a previous entry bound.
 
-The publication and the binding are both idempotent, so a re-entry re-asserts
-exactly the facts the first entry established rather than discovering that its
-own record is in the way.
+Read back the durable record in the held entry and require the exact claim,
+absent origin and bound identity this instance names. Reported re-entry mints
+the existing binding without publishing fresh or bound bytes, so the record's
+version remains unchanged. Absence or a different record is refused.
 -}
 withBoundInstance ::
     ProtectedSession session ->
@@ -1322,14 +1571,28 @@ withBoundInstanceClaim ::
       IO (Either ProviderOwnershipFault result)
     ) ->
     IO (Either ProviderOwnershipFault result)
-withBoundInstanceClaim session key owned claim identity continue =
-    withRecordedClaim session key owned claim $ \recorded -> do
-        bound <- bindReportedIdentity recorded identity (publishBoundRecord (providerTape session) key)
-        case carryStore bound of
-            Left fault -> pure (Left fault)
-            Right token -> continue token
-
--- | Forget one durable record, whatever version the store currently holds.
+withBoundInstanceClaim session key owned claim identity continue = do
+    stored <- readStoredRecordUnder (providerTape session) key
+    case stored of
+        Left fault -> pure (Left fault)
+        Right Nothing ->
+            pure
+                (Left (ProviderOwnershipClause
+                    (OwnershipProbeFailed "re-enter the provider origin record"
+                        "the origin record vanished inside the exclusive entry")))
+        Right (Just held)
+            | originRecordKind (storedOriginRecord held) == ReportedObject claim
+            , originRecordOrigin (storedOriginRecord held) == OriginAbsent
+            , originRecordBinding (storedOriginRecord held) == Just identity -> do
+                outcome <-
+                    reenterStoredReportedObject session (ownedInstanceName owned) held
+                        (\token -> Right <$> continue token)
+                pure (carryClause outcome)
+            | otherwise ->
+                pure
+                    (Left (ProviderOwnershipClause
+                        (OwnershipOccupied
+                            "the stored provider origin record does not match this instance claim and bound identity")))
 
 {- | What this owner calls its records, for the tape's refusals.
 
@@ -1397,6 +1660,12 @@ withRecordedOrigin ::
 withRecordedOrigin session key owned continue = do
     withRecordedClaim session key owned (ownedInstanceClaim owned) continue
 
+{- | Publish clause 2 or re-enter this claim's durable record.
+
+'publishFreshRecord' accepts this kind and absent origin when the record already
+extends the attempted publication, including a previous identity binding. The
+continuation receives the same durable-record fact on a first entry and a retry.
+-}
 withRecordedClaim ::
     ProtectedSession session ->
     RecordKey ->
@@ -1413,7 +1682,7 @@ withRecordedClaim session key owned claim continue = do
             recorded <-
                 recordReportedOrigin
                     entered
-                    (ReportedObject claim)
+                    claim
                     (publishFreshRecord (providerTape session) key)
             traverse continue recorded
     pure (carryClause outcome)
@@ -1428,23 +1697,8 @@ bindIdentity ::
     IO (Either ProviderOwnershipFault outcome)
 bindIdentity session key recorded identity outcome = do
     bound <- bindReportedIdentity recorded identity (publishBoundRecord (providerTape session) key)
-    pure (fmap (const outcome) (carryStore bound))
+    pure (fmap (const outcome) (carryClauseFault bound))
 
-{- | Publish clause 2's record, or accept the one this transaction already wrote.
-
-Idempotent on purpose. A resumed entry has to mint its token honestly: a first
-attempt is the compare-and-swap from absent, and a resumed one checks that what is
-already there is this transaction's own record, so either way the token asserts
-the one fact it names — this record is durable.
-
-"This transaction's own" is the kind and the origin, not the bytes. A re-entry
-over an instance a previous entry already /bound/ finds a record carrying clause
-3's identity as well, and that record does not say something different: it says
-the same thing plus one more fact this same transaction established. Comparing
-bytes alone would refuse the re-entry every release and every dependent
-transaction has to make. A record naming a different kind or a different prior
-origin is somebody else's and is refused rather than replaced.
--}
 interpret :: HostConfig -> HostCommand -> IO (Either String CapturedRun)
 interpret = interpretHostCommand
 

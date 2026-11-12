@@ -18,7 +18,10 @@
   `cfg :: Type -> Type` (its `<project>.dhall`) and test-config type `tcfg` (its
   `<project>.test.dhall`). `ProjectCfg cfg` has three methods: `withProductionProjectCodec` and
   `withHarnessProjectCodec` install the identity-generative Production and authority-closed Harness
-  `ProjectCodec`s, and `cfgContext` is the one field accessor core uses. A scope-polymorphic closed typed
+  `ProjectCodec`s, and `cfgContext` is the universal field accessor core uses. Optional domain interfaces
+  add pure projections of retained configuration: `BudgetCfg` supplies the resource envelope read by
+  plan-owned budget admission, as defined in [resource budgeting](../engineering/resource_budgeting.md).
+  A scope-polymorphic closed typed
   service registry is jointly finalized with the full codec under one canonical `specDigest`; each opaque
   `RoleCodec` reflects a wire containing mandatory `FrameworkValidation` plus only that service's fields.
   Deployment projects the role wire: `withSelectedServiceProgram` runs each definition's structural
@@ -41,6 +44,10 @@
   identities, conflicting frame labels, non-contiguous `A → B → A` returns, a post-handoff suffix that
   does not unwind deepest participating frame first, and any frame that does not declare exactly one
   descent (none, for the innermost) before any admitted project plan is returned.
+  `Step.isPostHandoffStep` exhaustively classifies every core and project step kind. Validation and frame
+  partitioning use it directly; the plan facade applies it to its retained raw step, so interpretation
+  and validation share one decision. A new step kind requires a classification before the warning-clean
+  library builds.
 - `<project>.test.dhall` is a **thin override**; `TestCfg` validates the executable cases and pure
   `VariantDraft`s into an opaque total `TestMatrix`. The harness **generates** each run's `<project>.dhall`
   through the scope-aware restricted assembler, retains one exact Harness-scoped `ProjectPlan`, and drives
@@ -90,9 +97,10 @@ contract statement is [development_plan_standards.md § BB](../../DEVELOPMENT_PL
 
 The public `KnownScopeKind scope` class supplies `scopeKindOf`: `Production projectId` maps to
 `ProductionScope`, and `Harness projectId runId` maps to `HarnessScope`. This descriptive tag follows
-the scope index and carries no authority. Sibling-config gates derive their envelope's tag through this
-class. The public envelope factory and project finalization retain their explicit scope-tag arguments;
-their signature changes remain planned.
+the scope index and carries no authority. `frameworkEnvelopeCodec` takes the retained codec alone and
+derives the envelope's tag through this class; sibling-config gates use the same factory. Project
+finalization's separate explicit scope-tag adoption remains with the
+[recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 Project lifecycle and `check-code` sibling reads first use `inspectConfigWireKind` to inspect the
 descriptive framework record. A positively decoded `ServiceRoleWire` declaration is refused before the
@@ -112,6 +120,12 @@ projected configuration through the exact finalized codec, discards the wire, an
 descriptor/path, exact `ValidatedConfig`, and opaque `StepPlan` to a fixed callback. The existing hidden
 exact-package producer retains `HandoffBindingInput` in `PlannedForwardHandoff`, exposes no live binding or
 caller-polymorphic result, has no process caller, and grants no runtime authority.
+
+Canonical snapshot data and the opaque stable reporting wrapper share one production private
+`HostBootstrap.Lifecycle.Snapshot.Core` representation. The plan kernel still owns admission and canonical
+encoding/decoding, and the public facade exposes the opaque reporting view. Package tests open that same
+private wrapper on a genuinely admitted plan to obtain its retained canonical writer input. This preserves
+the actual bytes and digest without adding a public reader or recreating an opaque input from raw fields.
 
 The [recursive lifecycle command
 phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) makes the root coordinator recursively
@@ -270,7 +284,7 @@ The project config is a family `cfg :: Type -> Type`. Production init/decode/dis
 `HarnessAuthority projectId runId` and returns only
 `cfg (Harness projectId runId)`. `HarnessAuthority` and its narrowed `HarnessConfigAuthority` both
 declare their project and run indices nominal in
-[`Config.Authority.Internal`](../../core/hostbootstrap-core/src/HostBootstrap/Config/Authority/Internal.hs),
+[`Config.Authority.Internal`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Authority/Internal.hs),
 so `coerce` cannot transfer authority between runs. Their constructors and minting functions remain
 private. `HarnessConfigAuthority` is a nullary proof with no stored run name; `HarnessAuthority` retains
 the descriptive name that public `harnessRunName` observes without recreating authority.
@@ -374,6 +388,11 @@ recovered profile. Its invariants:
    fixed-identity plan only when the exact canonical root, bytes, digest, and origin reproduce the
    verified bound snapshot.
 
+The hidden `withRecoverySpecReindexKernel` compares two caller-supplied `Text` digests; its continuation
+fixes the token's target index. The public reconstruction bridge supplies the recovered profile's
+specification digest and the candidate codec's retained digest, with the profile's `specDigest` fixing
+that target. This call site owns the provenance binding that the equality kernel cannot inspect.
+
 The same token is the only relabelling authority for the two other carriers a finalized specification
 retains, `ProjectCodec scope specDigest cfg` and `FinalizedServiceRegistry scope specDigest (cfg scope)`:
 
@@ -391,8 +410,9 @@ retains, `ProjectCodec scope specDigest cfg` and `FinalizedServiceRegistry scope
 Every field a project supplies is pure or project-owned. `ProjectCfg cfg` has three methods and no
 defaults: `withProductionProjectCodec` installs the Production `ProjectCodec` under a fresh specification
 identity, `withHarnessProjectCodec` installs one run's Harness codec and closes over that run's
-`HarnessConfigAuthority projectId runId`, and `cfgContext :: cfg scope -> BinaryContext` is the one
-accessor core applies to a decoded value. Scope-correct
+`HarnessConfigAuthority projectId runId`, and `cfgContext :: cfg scope -> BinaryContext` is its universal
+accessor. Optional `BudgetCfg` projects resources only for configuration families using budget admission;
+it adds no method to `ProjectCfg`. Scope-correct
 `ProjectCodec scope specDigest cfg`, verified wire identity, and
 `ValidatedConfig scope specDigest configId (cfg scope)` govern root-local admission. Later child
 projection/promotion adds the handoff and child-plan authority described above. Service finalization

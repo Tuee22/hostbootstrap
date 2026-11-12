@@ -21,10 +21,8 @@ import qualified CompileFailSpec
 import ConditionalCase (resetConditionalCompletions)
 import qualified ContextSpec
 import qualified CordonSpec
-import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import Data.List (isPrefixOf)
-import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified DataRootSpec
@@ -33,6 +31,7 @@ import qualified DhallGenSpec
 import qualified DocValidatorSpec
 import qualified EffectSpec
 import qualified EnsureSpec
+import qualified ExposureRelaySpec
 import qualified FakeCluster
 import qualified FakeProvider
 import GHC.IO.Encoding (setLocaleEncoding, utf8)
@@ -40,12 +39,11 @@ import qualified GeneratedConfigSpec
 import qualified GuestBootstrapSpec
 import qualified HandoffSpec
 import qualified HarnessSpec
-import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
+import HostBootstrap.CLI (interpretFrameTransaction)
 import HostBootstrap.Ensure.Colima.Backend.Runner (runShippedCommandEntry, shippedCommandEntryArguments)
 import HostBootstrap.Effect.Run (runWorkingDirectoryEntry, workingDirectoryEntryArguments)
 import HostBootstrap.Handoff.Transaction (classifyFrameChild, frameInterpreter, runFrameChildEntry)
 import HostBootstrap.Identity.Install (provisionInstalledIdentity)
-import HostBootstrap.Ownership.Shipped (interpretShippedOwnership)
 import HostBootstrap.Substrate.Provider (RawProviderOutcome (RawProviderFailure))
 import qualified HostToolSpec
 import qualified IdentityInstallSpec
@@ -56,6 +54,7 @@ import qualified LiftContextSpec
 import qualified LiftSpec
 import qualified LimaSpec
 import qualified OwnershipObjectSpec
+import qualified OwnershipManifestSpec
 import qualified OwnershipPosixSpec
 import qualified OwnershipShippedSpec
 import qualified OwnershipSpec
@@ -97,17 +96,11 @@ import qualified CoverageManifest
 import Test.Tasty (defaultMain, localOption, testGroup)
 import Test.Tasty.Runners (NumThreads (..))
 import qualified Wsl2Spec
+import qualified WslDiskSpec
 import qualified WslGlobalWallConfigBytesSpec
 import qualified WslGlobalWallHostSpec
 import qualified WslGlobalWallSpec
 import qualified WslGlobalWallWindowsSpec
-
-interpretFrameTransaction :: ByteString -> IO (Either Text ByteString)
-interpretFrameTransaction raw = do
-    clusterExposure <- interpretShippedClusterExposure raw
-    case clusterExposure of
-        Just outcome -> pure outcome
-        Nothing -> interpretShippedOwnership raw
 
 runLiftProbe :: [String] -> IO ()
 runLiftProbe mode = do
@@ -154,6 +147,12 @@ main = do
     -- re-entrant probe branches below inherit it too.
     fixFileCreationMask
     args <- getArgs
+    case args of
+        ["--hostbootstrap-child-group-probe", mode, directory] -> HandoffSpec.runChildGroupProbe mode directory
+        _ -> runTestSuite args
+
+runTestSuite :: [String] -> IO ()
+runTestSuite args = do
     -- The provider client this suite's provider fixtures drive is this same
     -- executable, because the one interpreter launches whatever the host
     -- configuration resolves with the exact argument vector the described
@@ -170,6 +169,8 @@ main = do
     recursiveFixture <- lookupEnv "HOSTBOOTSTRAP_RECURSIVE_FIXTURE_ROOT"
     case args of
         ("--hostbootstrap-lift-probe" : mode) -> runLiftProbe mode
+        ["--hostbootstrap-frame-io-failure-probe"] -> HandoffSpec.runFrameInterpreterFailureProbe
+        ["--hostbootstrap-private-protocol-stdio-probe"] -> HandoffSpec.runPrivateProtocolStdioProbe
         -- The capacity fixture is an actual described sysctl process. Select its
         -- exact protocol before inherited provider/cluster fixture variables.
         ["-n", "hw.ncpu"] -> putStrLn "2"
@@ -180,7 +181,7 @@ main = do
                 RecursiveLifecycleSpec.runLifecycleFixtureClient
         _
             | Just entry <- classifyFrameChild args ->
-                runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
+                runFrameChildEntry (frameInterpreter (HandoffSpec.frameChildFixtureInterpreter interpretFrameTransaction)) entry
         _
             | Just clusterRoot <- fakeCluster
             , not (null args) ->
@@ -207,6 +208,8 @@ main = do
             AuthoritySpec.runCommandReservationProbe storeRoot epochWord planDigest frameKey
         ["--hostbootstrap-liveness-probe", storeRoot, name] ->
             AuthoritySpec.runLivenessProbe storeRoot name
+        ["--hostbootstrap-liveness-hold-probe", storeRoot, name] ->
+            AuthoritySpec.runLivenessHoldProbe storeRoot name
         ["--hostbootstrap-harness-identity-probe", stateRoot, readyPath] ->
             HarnessSpec.runHarnessIdentityProbe stateRoot readyPath
         -- A separate process attempting the *other* lifecycle profile against a
@@ -219,11 +222,15 @@ main = do
         -- presents the now-delayed token.
         ["--hostbootstrap-fence-delay-probe", storeRoot, mode, readyPath, goPath, reasonPath] ->
             SessionSpec.runFenceDelayProbe storeRoot mode readyPath goPath reasonPath
+        ["--hostbootstrap-ownership-manifest-locale-probe", root] ->
+            OwnershipPosixSpec.runOwnershipManifestLocaleProbe root
         -- A separate process holding the POSIX ownership row's own exclusive
         -- open and then killed, so that the kernel releasing it is observed by a
         -- process actually dying rather than by a finalizer running.
         ["--hostbootstrap-ownership-posix-lock-probe", target, readyPath] ->
             OwnershipPosixSpec.runOwnershipPosixLockProbe target readyPath
+        ["--hostbootstrap-ownership-windows-lock-probe", target, readyPath] ->
+            OwnershipWindowsSpec.runOwnershipWindowsLockProbe target readyPath
         -- A separate process attempting a whole harness run reservation, so the
         -- concurrency matrix races real competitors rather than threads.
         ["--hostbootstrap-harness-acquire-probe", stateRoot, reasonPath] ->
@@ -249,6 +256,8 @@ main = do
             DetachedSpec.runDetachedChildProbe mode
         ["--hostbootstrap-colima-shipped-owner-probe", directory, pidPath, python] ->
             ColimaSpec.runShippedOwnerProbe directory pidPath python
+        ["--hostbootstrap-colima-resolver-fd-limit-probe", root, home] ->
+            ColimaSpec.runResolverDescriptorLimitProbe root home
         ("--hostbootstrap-effect-probe" : mode) -> EffectSpec.runEffectProbe mode
         _ | take 1 args == workingDirectoryEntryArguments -> runWorkingDirectoryEntry (drop 1 args)
         _ | args == shippedCommandEntryArguments -> runShippedCommandEntry
@@ -283,6 +292,7 @@ main = do
                     , AuthoritySpec.tests
                     , HandoffSpec.tests
                     , OwnershipObjectSpec.tests
+                    , OwnershipManifestSpec.tests
                     , OwnershipSpec.tests
                     , OwnershipShippedSpec.tests
                     , OwnershipPosixSpec.tests
@@ -318,6 +328,7 @@ main = do
                     , ClusterResumeSpec.tests
                     , ClusterOwnershipSpec.tests
                     , ClusterBackendSpec.tests
+                    , ExposureRelaySpec.tests
                     , ClusterShippedSpec.tests
                     , DataRootSpec.tests
                     , GeneratedConfigSpec.tests
@@ -331,6 +342,7 @@ main = do
                     , IdentityInstallSpec.tests
                     , LimaSpec.tests
                     , Wsl2Spec.tests
+                    , WslDiskSpec.tests
                     , WslGlobalWallSpec.tests
                     , WslGlobalWallConfigBytesSpec.tests
                     , WslGlobalWallHostSpec.tests
@@ -364,6 +376,6 @@ than a silent success.
 -}
 fakeProviderGuest :: FakeProvider.GuestHandler
 fakeProviderGuest root name role argv
-    | "alias:" `isPrefixOf` role = ProviderAliasSpec.aliasGuest root name role argv
-    | role == "backend" = ProviderBackendSpec.backendGuest root name role argv
+    | role == "prepared-alias" = FakeProvider.aliasGuest root name role argv
+    | role == "backend" || role == "lima" = ProviderBackendSpec.backendGuest root name role argv
     | otherwise = pure (RawProviderFailure ("unknown provider fixture role " <> role))

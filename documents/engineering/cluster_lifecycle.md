@@ -13,15 +13,15 @@
 (`discoverStrongClusterBackend`), which never adopts a foreign cluster and never auto-deletes an unhealthy
 one. `project down` and `project destroy` release it through the recursive reverse command: the frame that
 owns the `deploy-kind` step releases the recorded exposure relay and then the cluster, by bound container
-identity, for both verbs. The name-only compatibility actions (`ensureCluster`, `clusterDelete`) remain only
-behind the bare `cluster-live` gate. The cluster-node cap is the whole cluster slice on every node; see
+identity, for both verbs. The bare `cluster-live` gate uses the same prepared backend and retained
+release. The cluster-node cap divides the slice across its declared nodes; see
 [resource budgeting](resource_budgeting.md#what-runs-today).
 
 The cluster modules divide the work as follows:
 
 | Module | Owns |
 |---|---|
-| `HostBootstrap.Cluster.Lifecycle` | plan types (`ClusterPlan`, `PlanOwnedClusterConfig`, `AcceleratorIngressPlan`), the teardown partition, and the compatibility actions |
+| `HostBootstrap.Cluster.Lifecycle` | plan types (`ClusterPlan`, `PlanOwnedClusterConfig`, `AcceleratorIngressPlan`), the teardown partition, and shared pure NVIDIA decisions |
 | `HostBootstrap.Cluster.Backend` | the strong backend: discovery, prepared calls, exposure relay, and retained release |
 | `HostBootstrap.Cluster.Reconcile` | the total reconcile classification and the plan-indexed cluster authorities |
 | `HostBootstrap.Cluster.Command`, `HostBootstrap.Cluster.Report`, `HostBootstrap.Cluster.Resume`, `HostBootstrap.Cluster.Ownership` | the described commands, their classifiers, resumption decisions, and the clause-holding transactions |
@@ -58,9 +58,7 @@ client to the cluster-only S3 store; see [network reachability](../architecture/
 
 Cluster creation is fail-closed around command exit status. The plan-owned backend never auto-deletes an
 existing cluster: an unhealthy owned cluster is a conflict (see [The ownership backend](#the-ownership-backend)).
-Only the compatibility `ensureCluster` path, reached solely from the bare `cluster-live` gate through
-`clusterCreate`, health-probes an existing named cluster and deletes an unhealthy one before recreation; that
-gate first refuses any existing same-named cluster. Kind creation carries a finite ten-minute driver readiness
+The independent live gate consumes the same exact ownership checks. Kind creation carries a finite ten-minute driver readiness
 bound, followed by a fresh API and declared-node readiness observation. The bound covers a cold Apple/Lima
 control plane without turning a failed creation into an unbounded wait. Nvkind adds the NVIDIA runtime smoke,
 a control-plane/GPU-worker topology whose node containers each receive the cluster cordon (see
@@ -86,32 +84,56 @@ host reaches cluster services through the runtime exposure relay described under
 none have no constructor, so the correlation is held by the type rather than by prose
 ([§ HH](../../DEVELOPMENT_PLAN/development_plan_standards.md#hh-unrepresentable-illegal-state)). A resolved
 plan also retains exactly one derived state directory rather than a list that
-could be empty, so reading it is total. Listing,
-kubeconfig readback, identity binding, and conditional deletion use Kind after either creator. Kind's quiet
-creation report remains strictly framed. Nvkind has no quiet mode and emits successful progress on both streams,
-so only that closed creation branch classifies its process outcome; it then derives authority from fresh
-kubeconfig readback and every declared node-container identity, never from the progress text. The accelerator
+could be empty, so reading it is total. The pure teardown partition returns a refusal if the
+derived removal path lexically equals or contains the durable root. Empty, parent-segment, and mixed
+relative/absolute paths are refused because their relationship is ambiguous. Filesystem alias and symlink
+resolution remain the responsibility of the ownership backend that performs actual deletion. Harness run-key
+admission uses `mkTestCaseProfile`: a nonempty key of at most 48 ASCII letters, digits, or hyphens.
+`clusterProfileRunKey` projects it without exposing the profile representation. The unchecked Harness constructor is private. The bare CLI validates the run key
+before constructing either its live plan or a retained plan. The demo refines Harness run
+keys during Dhall decoding and programmatic assembly, retaining the admitted cluster profile while
+preserving the same serialized text representation. Demo commands branch on the pattern-free
+`clusterProfileRunKey` accessor rather than inspecting the Harness constructor. Listing,
+kubeconfig readback, identity binding, and conditional deletion use Kind after either creator. Only the
+cluster listing requests Kind's quiet mode. Creation and deletion classify process exit status while
+preserving the first error line on refusal, and accept ordinary progress on either captured stream.
+Kubeconfig readback also classifies exit status before validating the strict document body. A successful
+mutation derives authority from fresh kubeconfig readback and every declared node-container identity,
+never from progress text. Docker node-name filters quote every dot before anchoring both ends, so a
+literal dotted name cannot select a similarly spelled container. The accelerator
 gate runs before the cluster package is registered, so downstream workloads cannot confuse Ready nodes with
 accelerator readiness; the plugin and GPU workload both select nvkind's verified `nvidia` RuntimeClass.
 
 The [cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
 has an independent live linux-cpu gate, reached as a case behind the fixed `test` verb:
-`hostbootstrap test run cluster-live`. It creates a fresh kind cluster, waits for node readiness, performs a
-read-only node-status query, deletes the cluster and verifies its labelled node containers are absent, then
-re-reads a durable-root sentinel outside the deletion boundary. The case drives the compatibility
-`clusterCreate`/`clusterDelete` actions, not the plan-owned ownership backend, so it is live evidence for
-creation, readiness, name-addressed deletion, and durable-root survival, and not for ownership records,
-identity binding, or conditional release. Each of its commands runs through `runTool` with no per-command
-deadline. The target routes the case through the plan-owned backend — reconcile, the applied cordon,
-readiness, and `releaseRetainedCluster` as the reverse — with every command under a bounded cluster
-interpreter (see [Current gaps](#current-gaps)). The exclusive run, the lease, the run-ownership cleanup, and the
-report card come from the harness rather than from anything the case arranges itself. The case does not
+`hostbootstrap test run cluster-live`. Its exact Harness plan reserves a Direct provider and re-probes
+its carried running dependency before creating, cordoning and readying a plan-owned Kind cluster.
+All assertion commands use the bounded cluster interpreter, and Kubernetes observation uses the run's
+private kubeconfig. The case removes both named exposure containers after stopping their creation workers,
+including when creation is interrupted; assertion failures retain their reasons. Exact
+reverse releases recorded cluster identities, checks labelled-node absence and re-reads the durable
+sentinel outside cluster state. The exclusive run, lease, run-ownership cleanup and report card come
+from the harness. The case does not
 invoke the demo; demo lifecycle integration and end-to-end durable readback are evidenced by the
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), not by this gate.
 
 The exact prepared cluster adapter produces plan/resource-indexed readiness and ownership settlement.
 Convenience `IO ()` waits are descriptive and cannot mint those authorities. See
 [readiness](../architecture/readiness.md) and the [lifecycle state model](../architecture/lifecycle_state_model.md).
+
+The project declares Kind or nvkind when `withPlanOwnedCluster` or `withExecutionOwnedCluster`
+joins the exact cluster and provider resources to their budget slice. The resulting package retains
+that driver in its resolved plan. `withPlanOwnedClusterConfig` derives the driver, paths and node
+mapping from that package and validates the rendered material; it accepts no separate driver and
+does not rewrite the declaration's driver or node set. The demo's config binder uses the same
+retained choice. Owner identity, project name and durable root still come from the admitted plan or
+execution package.
+
+Creation retains those canonical bytes and their SHA-256 in the ownership descriptor. Inside the
+exclusive entry, it writes a private config beside the temporary kubeconfig, reads it back and verifies
+its digest before issuing the create command. The driver receives that private config path; edits or
+removal of the consumer's plan-derived file cannot change the prepared creation. Both staging files
+and their private directory are removed on success or refusal.
 
 ## Current reconciliation semantics
 
@@ -173,16 +195,16 @@ nvkind plan without a resolved `Kind` fails at its first such effect rather than
 [Current gaps](#current-gaps)). The constructor is not exported, so a caller cannot mint one from chosen tool
 paths.
 
-The four `HostBootstrap.Cluster.Backend` calls below are one transaction shape with four continuations, so the
-store is opened once per transaction and the exclusive entry covers the whole of it. Their results are the
-descriptive call results the prepared reconcile, cordon, readiness, and cleanup calls return; the
-`HostBootstrap.Cluster.Ownership` transactions under
-[The cluster as a row of the frame table](#the-cluster-as-a-row-of-the-frame-table) run beneath them. A
-`ClusterCreated` or `ClusterRecovered` ownership outcome surfaces as `ClusterResultCreated`; a
-`ClusterAlreadyOwned` outcome surfaces as `ClusterResultHealthy` when every bound node container is running and
-as `ClusterResultUnhealthy` otherwise; and a `ClusterReleased` or `ClusterAlreadyReleased` release outcome
-surfaces as `ClusterCleanupRemoved`. The prepared cleanup call has no production caller: production release
-runs `releaseRetainedCluster` over the same ownership release (see [Current teardown](#current-teardown)).
+The prepared reconcile, cordon and readiness calls hold the protected entry throughout their
+ownership observation and effects. They return descriptive backend call results for exact settlement.
+`ClusterCreated` or `ClusterRecovered` surfaces as `ClusterResultCreated`, while an already-owned
+cluster is healthy only when every bound node container runs. Retained cleanup is the single release
+route: `releaseRetainedCluster` derives one `RetainedClusterProjection` at entry. This ordinary
+view contains only the cluster name, declared node names, state directory and kubeconfig path; it
+retains no durable root and grants no ownership authority. Release reads those coordinates to open
+the same state store, then recovers the recorded claim and compares bound identities under one entry.
+Released or already-absent state returns `Right ()`; uncertainty
+or refusal preserves the records and returns a typed failure (see [Current teardown](#current-teardown)).
 
 - **reconcile** answers `ClusterResultCreated`, `ClusterResultHealthy`, `ClusterResultUnhealthy`, or
   `ClusterResultForeign` — the `ClusterReconcileResultView` cases, whose remaining constructor
@@ -193,25 +215,24 @@ runs `releaseRetainedCluster` over the same ownership release (see [Current tear
   recreate. Something standing at the name under no durable record of this project's is `Foreign` and is
   never adopted.
 - **cordon** applies the one budget renderer's wall to each bound container identity and reports a container
-  that took a node's name as a replacement. The wall is the whole cluster slice on every node rather than a
-  per-node share (see [Resource limits](#resource-limits)).
-- **readiness** is read-only and versioned: the counter advances only on a ready answer — the API server and
-  every declared node reporting ready — whose stamped identity equals the managed handle's. A ready answer is
-  stamped with the handle's own identity rather than the identity the transaction re-observed, so that
-  comparison holds by construction, and a cluster released and recreated under a fresh record between the
-  cordon and this call is reported ready under the old identity (see [Current gaps](#current-gaps)). A
-  container that took a node's name inside the transaction is reported as *that* identity rather than as a
-  probe failure, which is what lets settlement tell a replacement apart from a retry.
+  that took a node's name as a replacement. Every node receives its floored share of the cluster slice
+  (see [Resource limits](#resource-limits)).
+- **readiness** is read-only and versioned: the transaction carries its re-observed control-plane identity
+  with the API and declared-node outcome. The counter advances only when that actual identity equals the
+  managed handle's and every declared node is ready. A cluster released and recreated under a fresh record
+  after the cordon returns `ClusterNotReady` naming the new identity, without advancing the counter.
+  A node replaced during the transaction likewise names the observed replacement for settlement.
 - **cleanup** re-observes every owned node, removes the cluster through the one interpreter, and forgets a
   record only over a reported absence, leaving a same-named replacement standing.
 
 What a configuration drift changes is upstream of the backend: the ownership identity is derived from the
 plan's own stable snapshot digest, of which the rendered cluster configuration is part, so a plan whose
 configuration changed presents a different identity and mints a different claim. The records are keyed by
-cluster and node name, and the standing decision (`clusterStanding`, `nodeStanding`) does not compare a
-record's claim with the plan's, so that plan treats the previous generation's records as its own and
-re-cordons the cluster they bound. The target refuses a record carrying another generation's claim as a
-conflict (see [Current gaps](#current-gaps)).
+cluster and node name. The standing decisions (`clusterStanding`, `nodeStanding`) compare each record's
+claim with the expected plan-generation claim before accepting either a bound or unbound standing.
+Another generation's record is a conflict even when its node identity matches. Retained cleanup uses the
+stored claim through the same checks, and record retirement preflights every node record before changing
+any of them.
 
 The read-only status path is outside every clause because it mutates nothing: one described command through
 the one interpreter and one projection of the cluster report vocabulary's own total classification. Its
@@ -220,13 +241,20 @@ error, a body that does not end in exactly one newline, a carriage return, a byt
 row, a name outside the portable alphabet, and a repeated name are each the driver contradicting itself, and
 each is a refusal rather than an absence, because an absence authorizes creation and a refusal must not.
 
-The exact package layer is unchanged above it. Preparation accepts only a backend-minted Running-provider
-dependency and reruns that backend's real probe before offering the cluster call. Production config bytes
-are bound by SHA-256 with the exact retained budget in the prepared call; Harness has no config and emits no
-`--config`. Only successful cordon plus a fresh real API/all-node Ready reprobe of the exact owner/container
-identity can mint `ClusterReadiness`; a replacement identity is a `Conflict`, and the successful
-phase-observation counter fails rather than wrapping at exhaustion. Constructors for raw backend results,
-managed/cordon/readiness/cleanup authority, and the running dependency remain hidden and nominally indexed.
+The exact package layer accepts only a backend-minted Running-provider dependency and reruns that
+backend's real probe before offering the cluster call. Production and Harness config bytes are bound
+by SHA-256 with the exact retained budget; creation stages and verifies those bytes before passing its
+private `--config` path. Successful cordon plus a fresh real API/all-node Ready observation of the exact
+owner/container identity produces `ClusterReadiness`. A replacement is a `Conflict`, and observation
+version exhaustion refuses instead of wrapping.
+
+A successor recovers readiness only through the backend's exact canonical/runtime package join.
+The hidden observation module verifies the carried resource, logical generation, response commitment,
+nonce and positive observation version before its private producer can reconstruct readiness.
+Every recovered reprobe invokes the actual registered service with a fresh sequence nonce and verifies
+the reply again. A caller cannot import `withRecoveredClusterReadiness` through the public facade or
+supply an ordinary version to construct authority. Raw backend results and managed, cordon, readiness,
+cleanup and running-provider authorities retain private constructors and nominal indices.
 
 Chart reconciliation uses Helm's `--rollback-on-failure` contract together with an explicit `--wait` boundary.
 The captured-command classifier still requires an empty standard-error stream on success; avoiding Helm's
@@ -236,10 +264,15 @@ the matching release name, `deployed` status, revision 1, and `Install complete`
 otherwise unfamiliar zero-exit result remains a failure.
 
 Alongside it, `HostBootstrap.Cluster.Backend` owns automatic local exposure. A plan supplies only
-semantic service identity, protocol, and the stable cluster-internal target. After readiness the backend starts
+semantic service identity and the stable cluster-internal TCP target. After readiness the backend starts
 an identity-bound relay on the cluster container network and asks the container runtime to publish each relay
 listener on `127.0.0.1` without a host-side number. Runtime creation is therefore both selection and binding;
 there is no scan-then-bind window.
+
+Intent construction and managed-record readback use the same service grammar: a non-empty identity
+of at most 128 characters, without NUL, path separators, colons, line breaks or tabs. A declared target
+host cannot be empty or contain spaces, and its internal TCP port must be in 1..65535. These checks
+run before a backend is entered, so every admitted service identity can be reopened from its record.
 
 Only inspection of the exact relay/container identity may mint `ResolvedExposure`. It binds the selected port
 to the plan, cluster generation, service, internal target, and ownership operation, and it travels through the
@@ -247,16 +280,47 @@ matching cluster dependency package rather than Dhall or canonical cluster YAML.
 mapping, while release removes the relay by identity before deleting the cluster. Wildcard, missing,
 additional, duplicate, changed-target, or replacement mappings are `Conflict`.
 
+Inspection distinguishes a running relay from an authenticated stopped relay. A stopped relay's
+empty publication map is accepted for release only after its exact identity, name and ownership
+labels match. It cannot mint a resolved endpoint. Reconcile releases that stopped owned relay and
+its record, then recreates it with a fresh operation, container identity and runtime mappings under
+the same protected entry. A fresh creation already reported stopped returns a bounded retryable
+failure; a later invocation can recover its pending record.
+
+Port inspection ignores Docker's null entries for image EXPOSE ports and still requires every
+non-null binding to match the expected listeners exactly. Creation requests quiet output and
+accepts successful pull progress on standard error only alongside an exact container-identity line;
+authenticated inspection still precedes publication. Invalid UTF-8 and noncanonical ownership rows
+are Conflict refusals. A failed removal keeps the relay and durable record available for retry.
+
 No caller-selected loopback-exposure preparation or equality settlement exists; there is no such type
 to construct. Public preparation
-accepts an applied cluster cordon, an immutable relay image identity, and semantic targets only. The protected
+accepts an applied cluster cordon, an immutable relay image identity, and semantic targets only.
+Image admission accepts a canonical SHA-256 image ID or a named SHA-256 reference with one
+non-empty repository path, optional registry/decimal port and tag. Path components are lowercase ASCII,
+with Docker's separator grammar; the remote path is at most 255 characters and a tag at most 128.
+Empty repositories, option-like names, malformed separators and repeated digest suffixes refuse before
+an exposure record or runtime effect. The syntax follows the
+[Distribution reference grammar](https://github.com/distribution/reference/blob/main/regexp.go), which
+[Docker's image reference documentation](https://docs.docker.com/reference/cli/docker/image/tag/) names
+as canonical.
+The relay entry is owned by the private `cluster-exposure-internal` Cabal library, shared with the
+core package tests. It uses one bracketed listener set and scoped worker groups that close admission,
+shut down and close the owned sockets, cancel workers and wait for their finalizers. A later bind failure closes earlier listeners. Relay
+cancellation also closes accepted sockets and both copy directions before returning. A clean EOF
+half-closes the opposite socket's send side and waits for the response direction; an exception ends
+the connection. The accept loop immediately retries interrupted or aborted connections, backs off
+on descriptor exhaustion or an unclassified error, and stops for an invalid listener. These paths
+are checked with real in-process loopback sockets and errno values by `ExposureRelaySpec`.
+
+The protected
 record is published before runtime creation with a fresh 256-bit operation nonce; managed replacement binds
 the inspected relay identity and complete mapping set. Production release removes and re-observes the exact
 relay before cluster deletion begins: `releaseRetainedClusterLifecycle` and `runCoreManagedReverse` run the
-relay release and then `releaseRetainedCluster` as two separate protected entries. Only the prepared cleanup
-call, which has no production caller, refuses inside its own entry while the exposure record exists;
-`releaseRetainedCluster` does not check it (see [Current gaps](#current-gaps)). The dated static and live
-concurrent-allocation evidence for this boundary lives in the
+relay release and then `releaseRetainedCluster` as two separate protected entries. The retained cluster
+transaction independently refuses while any exposure record exists inside its own protected entry, so
+relay-first ordering is enforced at the destructive boundary. A driver refusal or retained node preserves
+the cluster records. The dated static and live concurrent-allocation evidence for this boundary lives in the
 [cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 
 A parent-frame consumer does not retain the child's cluster runtime package after the deployment child exits.
@@ -271,13 +335,6 @@ absent-record answer before any store is opened (see [Current gaps](#current-gap
 of `HostBootstrap.Handoff.Transaction` into the provider frame that owns Docker: the request carries no
 authority, so its vocabulary admits observations only. Its bounded response is only the freshly observed
 port; no cluster handle, ownership witness, credential, or executable selector crosses back.
-
-The compatibility actions in `HostBootstrap.Cluster.Lifecycle` hold none of these clauses.
-`ensureCluster` treats any healthy cluster with `clusterName plan` as the desired cluster without checking a
-receipt, and deletes and recreates an unhealthy same-name cluster; `clusterDown`/`clusterDelete` issue
-`kind delete cluster --name <name>` without proving this plan created or adopted the resource. Their only
-production caller is the bare `cluster-live` gate (`clusterCreate` and `clusterDelete`); `project up`,
-`project down`, and `project destroy` do not reach them.
 
 ### The cluster as a row of the frame table
 
@@ -426,42 +483,25 @@ root rather than a projection from that exact plan. See
 ## Resource limits
 
 CPU and memory are applied to kind/nvkind node containers with `docker update`, and `--memory-swap` is twice
-the memory limit, not equal to it. The owned-cluster backend applies the whole cluster slice to every node
-container rather than dividing it, so an N-node cluster's aggregate cap is N times its slice; only the
-compatibility `clusterCreate` path divides the slice per node. Bare Linux has no implemented storage quota or
+the memory limit, not equal to it. The owned-cluster backend and descriptive creation path both use
+`clusterNodeBudgetShare` to divide every budget dimension by the exact node count with integer floors.
+A dimension smaller than the count refuses before any update, and aggregate node caps stay within the
+cluster slice. Bare Linux has no implemented storage quota or
 image-garbage-collection cap; storage is only capacity-checked before bring-up. VM-backed lanes receive
-provider storage walls when a new Lima/Incus VM or WSL distro is created, but existing VM/VHDX sizes are not
-uniformly observed, resized, or refused when config changes. No production path runs the `Cluster.Budget`
+provider storage walls when a new Lima/Incus VM or WSL distro is created. The owned Incus and Lima
+provision transactions compare native CPU, memory and disk limits with the declaration and refuse drift
+without mutation. WSL provisioning records the original requested VHD cap before installation and
+requires equal storage on re-entry; changed storage conflicts without reinstalling. That record does
+not claim a fresh physical VHDX-capacity observation. No production path runs the `Cluster.Budget`
 workload-fit and partition chain, and the static `fitsBudget`/`demoPods` example is not the applied
 authority. [What runs today](resource_budgeting.md#what-runs-today) is the canonical statement of the applied
 controls and their gaps.
 
+Backend discovery requires every tool in the selected driver's declared command catalog. Source guards
+check the actual ownership import and the hidden backend capability's exact field types.
+
 ## Current gaps
 
-- The owned-cluster cordon applies the whole cluster slice to every node container. That defect is owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md);
-  [resource budgeting](resource_budgeting.md#current-status) states it canonically.
-- `discoverStrongClusterBackend` does not require `Kind` on an nvkind plan although listing, kubeconfig
-  readback, and deletion run through it, so a missing `Kind` fails at the first such effect instead of at
-  discovery. The backend belongs to
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- `releaseRetainedCluster` does not refuse while the cluster's exposure record exists; production relies on
-  its callers releasing the relay first. That check is owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- The bare `cluster-live` gate drives the compatibility actions, so no live gate exercises the ownership
-  backend's records, identity binding, or conditional release. The gate belongs to
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- The backend's described commands run through `interpretHostCommand` with no per-command deadline or
-  process-group reaping, and the compatibility actions through `runTool`; the bounded cluster interpreter is
-  owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- The readiness call stamps a ready answer with the managed handle's identity rather than the identity it
-  re-observed, so a cluster recreated under a fresh record after the cordon can advance the readiness counter.
-  Stamping the re-observed identity is owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- The cluster and node standings do not compare a record's claim with the plan's, so a plan whose
-  configuration changed adopts the previous generation's records. The claim check is owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
 - `observeRecordedClusterExposure` opens, and so creates, the protected store before it finds no exposure
   record. The non-creating observation is owed by
   [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md).
@@ -486,8 +526,10 @@ gate is:
 The static leg covers the exact plan-owned precondition, reconcile-result, ownership-receipt, same-name
 foreign-cluster, readiness, status, and teardown cases declared by the phase. The independent live leg covers
 fresh creation, bounded readiness, a read-only status observation, deletion, labelled-node absence, and
-durable-sentinel survival on linux-cpu, through the compatibility actions. It deliberately has no demo
-dependency.
+durable-sentinel survival on linux-cpu. Its Harness plan reserves a real Direct host provider,
+re-probes the carried running dependency, then creates, cordons and checks the cluster through the
+prepared owned backend. Reverse cleanup consumes retained ownership records; assertions use the
+private run kubeconfig and the shared bounded interpreter. It has no demo dependency.
 
 Recursive child-to-parent lifecycle traversal, the run-scoped demo cluster, end-to-end pod/host durable
 readback, GPU daemon placement, and substrate-specific storage-wall acceptance are evidenced by
@@ -503,3 +545,93 @@ not by the gate above.
 - [resource budgeting](resource_budgeting.md) — applied and missing resource walls.
 - [in-cluster registry](in_cluster_registry.md) — S3 store, registry, and image-push ordering.
 - [accelerator daemon](accelerator_daemon.md) — substrate-selected daemon placement.
+
+The owned cluster driver and backend share one bounded command interpreter. It preserves the
+closed command's resolved launch and UTF-8 standard input through the existing grouped runner,
+inside the actual captured working directory and environment. Kind and nvkind creation have a
+660-second wall beyond their rendered ten-minute wait; Helm has 600 seconds and an explicit
+five-minute Kubernetes wait has 360 seconds. Other cluster queries, inspections, updates and
+deletions have 60 seconds. Every row bounds each output stream to 4 MiB and termination grace
+to two seconds. Completed captures retain their exit and both streams; timeout, output overflow
+and execution failure produce named refusals, never an empty successful listing. Pure decisions
+and source-flow checks connect this policy to the shared runner's actual kernel timeout, escalation,
+backpressure and child-reaping cases. No stand-in Kind command is execution evidence.
+
+The independent gate pins its Kind node image by digest and renders an InitConfiguration patch
+with a finite five-minute Kubernetes API bootstrap timeout. This fits inside the ten-minute Kind
+creation wait and its 660-second process wall. Cold container snapshot creation may exceed kubeadm's
+one-minute API default before the API server starts. The setting uses the upstream
+[kubeadm timeout field](https://kubernetes.io/docs/reference/config-api/kubeadm-config.v1beta4/).
+
+Read-only status uses one bounded Kind listing and the shared total listing classifier. The prepared
+entry validates its backend binding; `runRetainedClusterStatusCall` reads only the retained plan's
+cluster-name projection. Neither entry opens an ownership store or produces a resource witness. The
+independent live gate snapshots actual protected record bytes and stable node-container identity,
+state, configuration and published ports around status before creation, after readiness, and before
+and after release. Every observation must leave those snapshots equal; presence and absence remain
+valid observations, and a probe failure cannot become absence.
+
+### Report framing and readiness observations
+
+The node-list classifier refuses non-ASCII or oversized documents before JSON decoding, and compares
+unique node names as a set, independent of the API server's report order. Shared line-framing cases
+assert their exact refusal directly, so a cluster-name grammar cannot accidentally establish framing.
+A kubectl command that never launches is a typed report refusal, so the ownership and strong backend
+report probe failure rather than not-ready. A launched query's failed exit or noisy success retains its
+bounded first diagnostic line in the API-unready result. The private strong observation carries that
+diagnostic beside the exact managed identity. Settlement compares identities before classifying the
+not-ready refusal; a replacement remains a conflict, and a matching API-unready observation is retryable
+only after a fresh probe. The descriptive readiness view passes the identity and diagnostic to the bare
+and demo bounded polls, and a runtime dependency refusal retains the same message. The pure
+`clusterApiNotReadyRefusal` returns only an error and grants no readiness authority.
+
+### Actual generation refusal assertions
+
+The bare live suite asks the ownership transaction to reconcile its actual already-Ready cluster under
+a deliberately different generation owner. It requires the named generation conflict and compares the
+exact protected-record and immutable container snapshots around the attempt. A second assertion observes
+an independent name and worker absent through the real Kind/Docker tools, publishes a matching unbound
+root record and another generation's worker record through real protected CAS, and verifies that record
+retirement refuses without changing either record's bytes or version. These records live in the gate's
+own temporary store and name no created provider object. The original cluster still follows its ordinary
+retained reverse, node-absence and sentinel assertions. No provider executable substitutes for the real
+tools in either assertion.
+
+Cleanup re-enters the root's retained generation claim and each declared node's record. A missing bound
+container is a removal to finish; a different identity remains a refusal. A surviving bound node is
+actually re-observed before issuing the delete. When all declared containers are absent, release finishes
+through the ownership primitive's retained-removal operation without issuing another delete. Worker
+records retire before the root record. Orphan worker metadata is retired only after every declared node
+name is observed absent and all remaining records pass the same generation check.
+
+The retained backend requires its cluster ownership record before asking any provider tool. A missing
+record is the named permanent refusal "the cluster ownership record is absent". This preflight leaves
+the direct ownership API's idempotent empty release and orphan-worker cleanup intact. When an accepted
+delete leaves a bound node present, the total node-completion decision retains every record and the
+backend requires a fresh probe before retrying. A replacement or unclaimed present identity refuses
+record retirement.
+
+Supplementary owned-cluster fixture checks assert successful setup before the operation under test,
+then compare the complete re-entry or replacement refusal. Readiness and cordon preserve the named
+missing-listing refusal, and refused release preserves the exact root and worker record set, bytes and
+versions. Authored replies establish compatibility; direct pure classifications and actual cluster runs
+supply their respective decision and provider evidence.
+
+Backend admission uses `clusterDriverTools`, derived from the canonical representative command catalog
+`clusterDriverCommands` plus the Helm chart client. Kind requires Kind, Docker, Kubectl and Helm;
+nvkind also requires Nvkind while retaining Kind for listing, credential readback and deletion. The
+catalog contains ordinary described values, and runtime callers provide actual plan parameters to the
+same renderers. Source guards cover physical public and private direct cluster-command modules,
+including inline backend Helm, Docker and Kubectl calls. Nested host-capacity foundations retain their
+own platform declarations for probes such as df and sysctl.
+
+Forward and retained cluster calls share canonical target validation before their protected store opens.
+That validation derives every worker key as well as the root and exposure addresses through the
+protected-store constructors. Bounds apply to the encoded namespace and tuple, so individually admitted
+node names can still produce an over-bound key. Such a target is a permanent refusal and creates no
+cluster state directory or partial record set.
+
+Already-owned reconciliation performs its ownership and container-running observations in one protected
+entry. The same session and owned descriptor reach both checks, and the healthy or unhealthy observation
+is classified before the entry releases. Initial creation, recovery, foreign-object refusal and probe
+failure retain their distinct results through that same transaction.

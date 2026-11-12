@@ -155,10 +155,18 @@ withBoundReverseLifecycleCompletionKernel bound report acknowledgeReport use =
                     $ \settled ->
                         acknowledgeReport $ \ack ->
                             use (ReverseLifecycleCompletion report ack settled)
-    refused binding _ _ _ verb =
-        withVerifiedBoundReverseDescentReportKernel bound binding verb $
-            acknowledgeReport (const (pure (Right ())))
-    failed = refused
+    refused = unsuccessful "refused"
+    failed = unsuccessful "failed"
+    -- A refused or failed child is acknowledged exactly like a completed one, then
+    -- reported as a failure that carries the child's own detail, as the forward
+    -- kernel does.
+    unsuccessful status binding _ _ detail verb = do
+        acknowledged <-
+            withVerifiedBoundReverseDescentReportKernel bound binding verb $
+                acknowledgeReport (const (pure (Right ())))
+        pure $ case acknowledged of
+            Left failure -> Left failure
+            Right () -> Left ("lifecycle completion: the reverse child " <> status <> ": " <> detail)
     wrong _ _ _ _ _ = pure (Left "lifecycle completion: a reverse descent refuses a forward report")
 
 {- | Rehydrate exact Bound and parent Adopted state without reopening a token

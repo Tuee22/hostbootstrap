@@ -74,7 +74,7 @@ Current status and cleanup ownership live in
 This table is a taxonomy. It does not imply that a separate value controls those paths.
 
 The four names are not `ContextKind` values. `ContextKind`, in
-[`Context`](../../core/hostbootstrap-core/src/HostBootstrap/Context.hs), is the binary-context field that
+[`Context`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs), is the binary-context field that
 records which topology frame a process occupies. A parent derives it when it writes a child's context
 (`deriveOneShotContext`, `deriveHostDaemonContext`, `deriveClusterDaemonContext`, `deriveServiceContext`),
 `validateContext` refuses a context whose kind differs from its current topology frame's kind, and the
@@ -123,7 +123,7 @@ say `HostNative` while the interpreter still executes a container step. Keeping 
 violate the single-representation contract.
 
 Raw step and plan constructors are hidden. `mkStepPlan` returns a
-[`StepPlanError`](../../core/hostbootstrap-core/src/HostBootstrap/Step.hs) before effects for each of
+[`StepPlanError`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs) before effects for each of
 these rejection classes:
 
 | Class | Constructors |
@@ -145,9 +145,9 @@ second plan nor reads the hidden raw step representation.
 `LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase`, and the root coordinator's
 descent callback, which receives the exact parent and child frame names and the plan-owned lift context.
 On failure it returns the failure together with the operations whose durable gates were published before
-it stopped. It verifies the authority's and cursor's retained
-frame, verb, and phase terms, checks the authority's retained protected-store origin, and compares the
-cursor's retained acquisition project/store/broker origin to that authority before opening durable state.
+it stopped. The private entry policy checks the retained store and acquisition origins, frame agreement
+and admitted-topology membership before opening durable state. Verb and phase are fixed by the entry's
+types. [Binary-context admission](binary_context_config.md) owns the complete evidence-join contract.
 It then selects a `NonEmpty` current-frame node segment and keeps the same plan indices
 through execution descriptors, prepared operations, and the resource carrier. A step action's raw
 `StepObservation` remains non-authorizing and plan-independent; `runPlannedStep` immediately wraps it
@@ -159,6 +159,15 @@ entry also rereads the cursor's exact acquisition source and current durable row
 an Execute cursor advanced to Teardown cannot authorize a later session, prepare, settlement, or close.
 Recursive handoff derives the next frame and lift context from this plan's `DerivedTopology`, rather than
 from a caller-supplied frame graph.
+
+Definite callback failures terminalize all of that node's opened gates and close its exact session.
+Chain preserves the original synchronous exception type; the root entry owns operator rendering.
+[Terminal acknowledgement](lifecycle_state_model.md#sessions-fences-and-terminal-acknowledgement)
+defines the successful and failed settlement paths and secondary-failure context.
+
+Each node publishes settlements for its own and declared projected operations. Dependency readback
+retains the owning node's settlement; the [ownership invariant](ownership_invariant.md) defines that
+carrier boundary and the declaring frame used by canonical records.
 
 The taxonomy therefore treats the four names as derived documentation/reporting labels, not configuration
 or a second dispatch input:

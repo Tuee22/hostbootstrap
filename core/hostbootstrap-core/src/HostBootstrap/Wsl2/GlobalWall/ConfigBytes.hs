@@ -2,8 +2,10 @@
 
 {- | Strict, byte-preserving merge for the managed part of @.wslconfig@.
 
-Only five keys are controlled. Unknown keys, comments, whitespace, section
-spelling, BOM, and every unrelated byte are retained. Ambiguous duplicate
+Only five keys are controlled. Each controlled-key line is replaced whole,
+including its inline comment, and replacement lines land at the end of their
+managed section. Every other byte,including unknown keys,comments,whitespace,
+section spelling and BOM,is retained. Ambiguous duplicate
 managed sections or controlled keys are refused instead of guessed.
 -}
 module HostBootstrap.Wsl2.GlobalWall.ConfigBytes (
@@ -36,10 +38,12 @@ data ManagedWslConfigSpec = ManagedWslConfigSpec
     }
     deriving (Eq, Show)
 
+data Utf16Endianness = LittleEndian | BigEndian
+    deriving (Eq, Show)
+
 data ConfigEncoding
     = Utf8Encoding Bool
-    | Utf16LittleEndian
-    | Utf16BigEndian
+    | Utf16Encoding Utf16Endianness
     deriving (Eq, Show)
 
 data NewlineStyle = NewlineLf | NewlineCrLf
@@ -272,9 +276,9 @@ parseConfig bytes
                 "UTF-32 .wslconfig files are not supported"
             )
     | "\xFF\xFE" `ByteString.isPrefixOf` bytes =
-        parseUtf16 Utf16LittleEndian (ByteString.drop 2 bytes)
+        parseUtf16 LittleEndian (ByteString.drop 2 bytes)
     | "\xFE\xFF" `ByteString.isPrefixOf` bytes =
-        parseUtf16 Utf16BigEndian (ByteString.drop 2 bytes)
+        parseUtf16 BigEndian (ByteString.drop 2 bytes)
     | "\xEF\xBB\xBF" `ByteString.isPrefixOf` bytes =
         parseUtf8 True (ByteString.drop 3 bytes)
     | otherwise = parseUtf8 False bytes
@@ -296,7 +300,7 @@ parseUtf8 hasBom payload = do
                     }
 
 parseUtf16 ::
-    ConfigEncoding ->
+    Utf16Endianness ->
     ByteString ->
     Either ConfigBytesError ParsedConfig
 parseUtf16 encoding payload
@@ -308,7 +312,7 @@ parseUtf16 encoding payload
         (newline, lineUnits) <- splitUtf16Lines units
         pure
             ParsedConfig
-                { parsedEncoding = encoding
+                { parsedEncoding = Utf16Encoding encoding
                 , parsedNewline = newline
                 , parsedLines =
                     [ EncodedLine
@@ -468,7 +472,7 @@ oneNewlineStyle (style : remaining)
         Left
             (InvalidWslConfigBytes "mixed LF and CRLF in .wslconfig")
 
-decodeUtf16Units :: ConfigEncoding -> ByteString -> [Word16]
+decodeUtf16Units :: Utf16Endianness -> ByteString -> [Word16]
 decodeUtf16Units encoding payload =
     go (ByteString.unpack payload)
   where
@@ -477,23 +481,21 @@ decodeUtf16Units encoding payload =
         decodeUnit encoding first second : go rest
     go [_] = []
 
-decodeUnit :: ConfigEncoding -> Word8 -> Word8 -> Word16
-decodeUnit Utf16LittleEndian low high =
+decodeUnit :: Utf16Endianness -> Word8 -> Word8 -> Word16
+decodeUnit LittleEndian low high =
     fromIntegral low .|. shiftL (fromIntegral high) 8
-decodeUnit Utf16BigEndian high low =
+decodeUnit BigEndian high low =
     shiftL (fromIntegral high) 8 .|. fromIntegral low
-decodeUnit (Utf8Encoding _) _ _ = 0
 
-encodeUtf16Units :: ConfigEncoding -> [Word16] -> ByteString
+encodeUtf16Units :: Utf16Endianness -> [Word16] -> ByteString
 encodeUtf16Units encoding =
     ByteString.pack . concatMap (encodeUnit encoding)
 
-encodeUnit :: ConfigEncoding -> Word16 -> [Word8]
-encodeUnit Utf16LittleEndian unit =
+encodeUnit :: Utf16Endianness -> Word16 -> [Word8]
+encodeUnit LittleEndian unit =
     [fromIntegral (unit .&. 0xFF), fromIntegral (shiftR unit 8)]
-encodeUnit Utf16BigEndian unit =
+encodeUnit BigEndian unit =
     [fromIntegral (shiftR unit 8), fromIntegral (unit .&. 0xFF)]
-encodeUnit (Utf8Encoding _) _ = []
 
 asciiFromUnits :: [Word16] -> Maybe ByteString
 asciiFromUnits units
@@ -509,12 +511,12 @@ asciiFromUtf8 bytes
 encodingBom :: ConfigEncoding -> ByteString
 encodingBom (Utf8Encoding False) = ByteString.empty
 encodingBom (Utf8Encoding True) = "\xEF\xBB\xBF"
-encodingBom Utf16LittleEndian = "\xFF\xFE"
-encodingBom Utf16BigEndian = "\xFE\xFF"
+encodingBom (Utf16Encoding LittleEndian) = "\xFF\xFE"
+encodingBom (Utf16Encoding BigEndian) = "\xFE\xFF"
 
 encodeAscii :: ConfigEncoding -> ByteString -> ByteString
 encodeAscii (Utf8Encoding _) = id
-encodeAscii encoding =
+encodeAscii (Utf16Encoding encoding) =
     encodeUtf16Units encoding . map fromIntegral . ByteString.unpack
 
 newlineBytes :: ConfigEncoding -> NewlineStyle -> ByteString
@@ -715,10 +717,8 @@ encodedLineUnits encoding line =
             -- non-ASCII UTF-8 byte is greater than 0x7f and therefore cannot be
             -- mistaken for syntax.
             map fromIntegral (ByteString.unpack (encodedLineContent line))
-        Utf16LittleEndian ->
-            decodeUtf16Units encoding (encodedLineContent line)
-        Utf16BigEndian ->
-            decodeUtf16Units encoding (encodedLineContent line)
+        Utf16Encoding endianness ->
+            decodeUtf16Units endianness (encodedLineContent line)
 
 isAsciiSpaceUnit :: Word16 -> Bool
 isAsciiSpaceUnit unit = unit == 32 || unit == 9 || unit == 12

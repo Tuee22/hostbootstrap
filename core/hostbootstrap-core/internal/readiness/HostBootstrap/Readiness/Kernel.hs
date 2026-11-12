@@ -14,7 +14,17 @@ module HostBootstrap.Readiness.Kernel (
     ProbeFailure (..),
     BackendReady (..),
     BackendProbeKey (..),
+    BackendProbeKind (..),
+    backendProbeKeyKind,
+    backendProbeKind,
+    ProviderResponding,
+    ProviderNetworkReady,
     DurableShareReady,
+    DockerDaemonReady,
+    ObjectStoreRolloutReady,
+    RegistryReady,
+    ClusterApiReady,
+    GpuPluginReady,
     Probe,
     withBackendProbe,
     observeBackendProbe,
@@ -26,7 +36,7 @@ import HostBootstrap.Plan.Resource (
     ClusterResource,
     DockerResource,
     DurableShareResource,
-    MinioResource,
+    ObjectStoreResource,
     PlannedResource,
     ProviderResource,
     RegistryResource,
@@ -60,16 +70,38 @@ data BackendProbeKey resource dependency where
     ProviderNetworkProbe :: BackendProbeKey ProviderResource ProviderNetworkReady
     DurableShareProbe :: BackendProbeKey DurableShareResource DurableShareReady
     DockerDaemonProbe :: BackendProbeKey DockerResource DockerDaemonReady
-    MinioRolloutProbe :: BackendProbeKey MinioResource MinioRolloutReady
+    ObjectStoreRolloutProbe :: BackendProbeKey ObjectStoreResource ObjectStoreRolloutReady
     RegistryServingProbe :: BackendProbeKey RegistryResource RegistryReady
     ClusterApiProbe :: BackendProbeKey ClusterResource ClusterApiReady
     GpuPluginProbe :: BackendProbeKey ClusterResource GpuPluginReady
+
+-- | Closed term-level counterpart of the typed backend readiness relation.
+data BackendProbeKind
+    = ProviderRespondingKind
+    | ProviderNetworkKind
+    | DurableShareKind
+    | DockerDaemonKind
+    | ObjectStoreRolloutKind
+    | RegistryServingKind
+    | ClusterApiKind
+    | GpuPluginKind
+    deriving (Eq, Ord, Show)
+
+backendProbeKeyKind :: BackendProbeKey resource dependency -> BackendProbeKind
+backendProbeKeyKind ProviderRespondingProbe = ProviderRespondingKind
+backendProbeKeyKind ProviderNetworkProbe = ProviderNetworkKind
+backendProbeKeyKind DurableShareProbe = DurableShareKind
+backendProbeKeyKind DockerDaemonProbe = DockerDaemonKind
+backendProbeKeyKind ObjectStoreRolloutProbe = ObjectStoreRolloutKind
+backendProbeKeyKind RegistryServingProbe = RegistryServingKind
+backendProbeKeyKind ClusterApiProbe = ClusterApiKind
+backendProbeKeyKind GpuPluginProbe = GpuPluginKind
 
 data ProviderResponding
 data ProviderNetworkReady
 data DurableShareReady
 data DockerDaemonReady
-data MinioRolloutReady
+data ObjectStoreRolloutReady
 data RegistryReady
 data ClusterApiReady
 data GpuPluginReady
@@ -82,7 +114,7 @@ data BackendReady a = BackendReady Word64 Word64 Word64 a
     deriving (Eq, Show)
 
 data Probe scope planId id resource dependency probeId cfg a
-    = Probe (cfg -> IO (ProbeResult (BackendReady a)))
+    = Probe BackendProbeKind (cfg -> IO (ProbeResult (BackendReady a)))
 
 type role Probe nominal nominal nominal nominal nominal nominal representational representational
 
@@ -96,11 +128,15 @@ withBackendProbe ::
     (cfg -> IO (ProbeResult (BackendReady a))) ->
     (forall probeId. Probe scope planId id resource dependency probeId cfg a -> r) ->
     r
-withBackendProbe _ _planned runProbe consume = consume (Probe runProbe)
+withBackendProbe key _planned runProbe consume = consume (Probe (backendProbeKeyKind key) runProbe)
 
 -- | Observe an existing backend probe using the supplied configuration.
 observeBackendProbe ::
     Probe scope planId id resource dependency probeId cfg a ->
     cfg ->
     IO (ProbeResult (BackendReady a))
-observeBackendProbe (Probe runProbe) = runProbe
+observeBackendProbe (Probe _ runProbe) = runProbe
+
+-- | The kind fixed by the backend key that minted this probe.
+backendProbeKind :: Probe scope planId id resource dependency probeId cfg a -> BackendProbeKind
+backendProbeKind (Probe kind _) = kind

@@ -18,7 +18,6 @@ module SpecIndexSpec (tests) where
 import Data.List (isInfixOf, isPrefixOf, sort)
 import SourceGuard (
     fieldModules,
-    listHaskellSources,
     mainLibraryStanza,
     normalizeWhitespace,
  )
@@ -32,8 +31,8 @@ tests =
     testGroup
         "specification-index carriers"
         [ testCase "one reader enumerates the main library, and the package declares every module" $ do
-            -- Every guard below asks the shared reader which modules the main
-            -- library declares. The answer is checkable without a frozen
+            -- Every guard below asks the shared reader which modules Main and
+            -- its implementation owner declare. The answer is checkable without a frozen
             -- number: each module it names has a file, and each file under its
             -- source roots is named by some component of the package — the
             -- main library, or one of the private sublibraries that expose a
@@ -42,22 +41,19 @@ tests =
             (declared, present, description) <- SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 librarySource <- requiredMainLibraryStanza cabalSource
-                let named =
-                        sort
-                            ( fieldModules "exposed-modules:" librarySource
-                                <> fieldModules "other-modules:" librarySource
-                            )
-                modules <-
-                    traverse
-                        ( \sourceDirectory -> do
-                            let root = packageRoot </> sourceDirectory
-                            paths <- listHaskellSources root
-                            pure (map (moduleNameFromPath root) paths)
-                        )
-                        librarySourceDirectories
-                pure (named, sort (concat modules), cabalSource)
+                named <- sort <$> either assertFailure pure (SourceGuard.mainImplementationModuleNames cabalSource)
+                sort (SourceGuard.fieldValues "hs-source-dirs" librarySource)
+                    @?= sort librarySourceDirectories
+                modules <- SourceGuard.readLibrarySources packageRoot cabalSource
+                let present = sort
+                        [ name
+                        | (name, path, _) <- modules
+                        , let relative = SourceGuard.repoRelativePath packageRoot path
+                        , any (\directory -> (directory <> "/") `isPrefixOf` relative) implementationSourceDirectories
+                        ]
+                pure (named, present, cabalSource)
             assertBool
-                ( "the main library declares "
+                ( "the production implementation declares "
                     <> show (length declared)
                     <> " modules, and "
                     <> show (filter (`notElem` present) declared)
@@ -70,14 +66,14 @@ tests =
                 )
                 (all (`isInfixOf` description) present)
         , testCase "the installed project codec keeps one hidden owner and one relabelling authority" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                let ownerPath =
-                        sourceRoot </> "HostBootstrap" </> "Config" </> "Class" </> "Internal.hs"
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                ownerPath <- requiredModulePath packageRoot "HostBootstrap.Config.Class.Internal"
+                SourceGuard.repoRelativePath packageRoot ownerPath @?= "internal/handoff-implementation/HostBootstrap/Config/Class/Internal.hs"
                 ownerSource <- readFile ownerPath
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 librarySource <- requiredMainLibraryStanza cabalSource
-                sources <- readProductionSources sourceRoot
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
+                sources <- readProductionSources packageRoot
+                publicExports <- readPublicModuleExports packageRoot
                 ownerExports <-
                     requiredModuleExports "HostBootstrap.Config.Class.Internal" ownerSource
                 let owner = normalizeWhitespace ownerSource
@@ -141,17 +137,17 @@ tests =
                     ]
                 assertInertOwner ownerSource
         , testCase "the finalized service registry keeps one hidden owner and one relabelling authority" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                let ownerPath =
-                        sourceRoot </> "HostBootstrap" </> "Service" </> "Internal.hs"
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                ownerPath <- requiredModulePath packageRoot "HostBootstrap.Service.Internal"
+                SourceGuard.repoRelativePath packageRoot ownerPath @?= "internal/handoff-implementation/HostBootstrap/Service/Internal.hs"
                 ownerSource <- readFile ownerPath
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 librarySource <- requiredMainLibraryStanza cabalSource
-                sources <- readProductionSources sourceRoot
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
+                sources <- readProductionSources packageRoot
+                publicExports <- readPublicModuleExports packageRoot
                 ownerExports <-
                     requiredModuleExports "HostBootstrap.Service.Internal" ownerSource
-                serviceSource <- readFile (sourceRoot </> "HostBootstrap" </> "Service.hs")
+                serviceSource <- requiredModulePath packageRoot "HostBootstrap.Service" >>= readFile
                 mapM_
                     ( \identifier -> do
                         SourceGuard.countHaskellIdentifier identifier ("type " ++ identifier ++ " = IO ()") @?= 1
@@ -231,14 +227,14 @@ tests =
                     ]
                 assertInertOwner ownerSource
         , testCase "the digest-equality token is the only relabelling authority" $
-            withPackageSourceRoot $ \packageRoot sourceRoot -> do
-                let tokenPath =
-                        sourceRoot </> "HostBootstrap" </> "Config" </> "Schema" </> "Internal.hs"
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                tokenPath <- requiredModulePath packageRoot "HostBootstrap.Config.Schema.Internal"
+                SourceGuard.repoRelativePath packageRoot tokenPath @?= "internal/handoff-implementation/HostBootstrap/Config/Schema/Internal.hs"
                 tokenSource <- readFile tokenPath
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 librarySource <- requiredMainLibraryStanza cabalSource
-                sources <- readProductionSources sourceRoot
-                publicExports <- readPublicModuleExports packageRoot sourceRoot
+                sources <- readProductionSources packageRoot
+                publicExports <- readPublicModuleExports packageRoot
                 let token = normalizeWhitespace tokenSource
                 assertHiddenModule
                     "HostBootstrap.Config.Schema.Internal"
@@ -273,11 +269,11 @@ tests =
                     , "mintValidatedConfigKernel"
                     ]
         , testCase "the public config and service facades keep their complete export lists" $
-            withPackageSourceRoot $ \_packageRoot sourceRoot -> do
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 classSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Config" </> "Class.hs")
+                    requiredModulePath packageRoot "HostBootstrap.Config.Class" >>= readFile
                 serviceSource <-
-                    readFile (sourceRoot </> "HostBootstrap" </> "Service.hs")
+                    requiredModulePath packageRoot "HostBootstrap.Service" >>= readFile
                 classExports <-
                     requiredModuleExports "HostBootstrap.Config.Class" classSource
                 serviceExports <-
@@ -389,13 +385,31 @@ assertInertOwner source =
 
 assertHiddenModule :: String -> String -> String -> IO ()
 assertHiddenModule moduleName cabalSource librarySource = do
-    length (filter (== moduleName) (fieldModules "other-modules:" librarySource)) @?= 1
+    owners <- either assertFailure pure (SourceGuard.mainImplementationOwners cabalSource)
+    ownerHeader <- maybe (assertFailure ("no production owner for " <> moduleName)) pure (lookup moduleName owners)
+    ownerHeader @?= "library handoff-implementation-internal"
+    owner <- maybe (assertFailure ("missing production owner stanza: " <> ownerHeader)) pure $
+        SourceGuard.namedStanza ownerHeader cabalSource
+    let permitsOwnerExposure = moduleName == "HostBootstrap.Config.Schema.Internal"
+    length (filter ((== moduleName) . fst) owners) @?= 1
+    length (filter (== moduleName) (fieldModules "exposed-modules" owner <> fieldModules "other-modules" owner)) @?= 1
+    length (filter (== moduleName) (fieldModules "exposed-modules" owner)) @?= if permitsOwnerExposure then 1 else 0
+    length (filter (== moduleName) (fieldModules "other-modules" owner)) @?= if permitsOwnerExposure then 0 else 1
+    length (filter (== moduleName) (fieldModules "exposed-modules" librarySource <> fieldModules "other-modules" librarySource))
+        @?= if ownerHeader == "library" then 1 else 0
+    exposed <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
     assertBool
-        (moduleName <> " appears in the main library's exposed modules")
-        (moduleName `notElem` fieldModules "exposed-modules:" librarySource)
+        (moduleName <> " appears in the main library's public surface")
+        (moduleName `notElem` exposed)
     assertBool
-        (moduleName <> " is exposed by another Cabal component")
-        (moduleName `notElem` fieldModules "exposed-modules:" cabalSource)
+        (moduleName <> " is exposed by a component other than its exact implementation owner")
+        ( all
+            (\component -> moduleName `notElem` fieldModules "exposed-modules" (SourceGuard.componentBody component))
+            [ component
+            | component <- SourceGuard.componentStanzas cabalSource
+            , not (permitsOwnerExposure && SourceGuard.componentHeader component == ownerHeader)
+            ]
+        )
 
 exportedNames :: [String] -> [String]
 exportedNames = filter (`notElem` [",", "(", ")", ".."])
@@ -412,17 +426,16 @@ withPackageSourceRoot :: (FilePath -> FilePath -> IO result) -> IO result
 withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
-readProductionSources sourceRoot = do
-    sources <- SourceGuard.readHaskellSources sourceRoot
-    pure [(moduleNameFromPath sourceRoot path, path, source) | (path, source) <- sources]
+readProductionSources packageRoot = do
+    description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+    SourceGuard.mainImplementationSources packageRoot description
 
-readPublicModuleExports :: FilePath -> FilePath -> IO [(String, [String])]
-readPublicModuleExports packageRoot sourceRoot = do
+readPublicModuleExports :: FilePath -> IO [(String, [String])]
+readPublicModuleExports packageRoot = do
     cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-    librarySource <- requiredMainLibraryStanza cabalSource
-    sources <- readProductionSources sourceRoot
-    let exposed = sort (fieldModules "exposed-modules:" librarySource)
-        sourceByModule =
+    exposed <- sort <$> either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
+    sources <- SourceGuard.readLibrarySources packageRoot cabalSource
+    let sourceByModule =
             [ (moduleName, source)
             | (moduleName, _path, source) <- sources
             ]
@@ -444,7 +457,30 @@ Spelled here rather than parsed, because a guard that derived them from the same
 field it is checking would agree with itself.
 -}
 librarySourceDirectories :: [FilePath]
-librarySourceDirectories = ["src", "internal" </> "cluster-backend"]
+librarySourceDirectories = ["src", "internal/cluster-backend"]
+
+-- | Independently enumerated physical roots of Main and its production implementation owner.
+implementationSourceDirectories :: [FilePath]
+implementationSourceDirectories = ["src", "internal/cluster-backend", "internal/handoff-implementation"]
+
+requiredModulePath :: FilePath -> String -> IO FilePath
+requiredModulePath packageRoot moduleName = do
+    description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
+    path <- SourceGuard.libraryModulePath packageRoot description moduleName
+    expected <- maybe (assertFailure ("no reviewed physical home for " <> moduleName)) pure $
+        lookup moduleName expectedModuleHomes
+    SourceGuard.repoRelativePath packageRoot path @?= expected
+    pure path
+
+-- Independent physical expectations move only with their named relocation cohort.
+expectedModuleHomes :: [(String, FilePath)]
+expectedModuleHomes =
+    [ ("HostBootstrap.Config.Class", "internal/handoff-implementation/HostBootstrap/Config/Class.hs")
+    , ("HostBootstrap.Config.Class.Internal", "internal/handoff-implementation/HostBootstrap/Config/Class/Internal.hs")
+    , ("HostBootstrap.Config.Schema.Internal", "internal/handoff-implementation/HostBootstrap/Config/Schema/Internal.hs")
+    , ("HostBootstrap.Service", "internal/handoff-implementation/HostBootstrap/Service.hs")
+    , ("HostBootstrap.Service.Internal", "internal/handoff-implementation/HostBootstrap/Service/Internal.hs")
+    ]
 
 requiredMainLibraryStanza :: String -> IO String
 requiredMainLibraryStanza cabalSource =
@@ -465,9 +501,6 @@ modulesExporting exported =
     sort
         . map fst
         . filter (elem exported . snd)
-
-moduleNameFromPath :: FilePath -> FilePath -> String
-moduleNameFromPath = SourceGuard.repoRelativeModuleName
 
 assertContains :: String -> String -> String -> IO ()
 assertContains label expected source =

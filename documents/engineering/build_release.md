@@ -78,6 +78,71 @@ coordinator-binary identity, exact builder-binary identity, and image-build fram
 consumer delivers that binding and signature through a mounted secret/session file; an absent channel is an
 explicit refusal and never falls back to the descriptive image-build config.
 
+The binding's project coordinate and verifier's project input use `BuildProjectName`. The explicit
+total `buildProjectNameFromText` assignment marks that descriptive role; `buildProjectNameText`
+reads its text. It adds no validity or origin guarantee and accepts the prior descriptive inputs.
+Its text display and wire field remain compatible. Existing identifier/frame nonempty checks stay
+at canonical verification, in their original order.
+
+The specification coordinate separately uses `BuildSpecDigest`, assigned explicitly at the finalized
+codec observation and at each demo binding through `buildSpecDigestFromText`. Its ordinary
+`buildSpecDigestText` eliminator preserves the text; it adds no hexadecimal, nonempty or provenance
+guarantee. Existing comparison order, wire bytes, display and signature material remain compatible.
+
+The configuration coordinate uses `BuildConfigDigest`, explicitly assigned at the validated config
+observation and each demo binding through `buildConfigDigestFromText`. `buildConfigDigestText`
+reads its existing text. Both spec/config roles are descriptive and add no format, nonempty or
+origin assertion; swapping their opaque values at the canonical verifier is rejected at both slots.
+Canonical binding bytes, display, signature material and ordered runtime checks remain compatible.
+
+The identifier field uses `BuildIdentifier`, explicitly assigned through `buildIdentifierFromText`
+at both demo binding routes and reconstructed after decoding its existing wire text. The ordinary
+`buildIdentifierText` getter preserves that text. Empty values remain DATA; canonical verification's
+existing nonempty-ID check stays after coordinator comparison and before the frame check. The
+private authority stores the role while public `buildAuthorityBuildId` returns the same descriptive
+`Text`; binding/authority display and signed wire bytes remain compatible.
+
+The source observation uses `BuildSourceDigest` through total `buildSourceDigestFromText` assignment
+at each demo binding and at the verifier's fresh-measurement boundary. Generic `measureSourceDigest`
+continues to return `Text`. The ordinary `buildSourceDigestText` getter and public authority source
+getter preserve their text outputs. This descriptive role adds no format or provenance guarantee;
+canonical field bytes, source measurement, signatures and the existing source mismatch refusal remain
+compatible and in the same verification order.
+
+The coordinator observation uses `CoordinatorDigest` in its binding field, active signing coordinator
+and canonical verifier input. `coordinatorDigestFromText` assigns only that descriptive role and
+`coordinatorDigestText` reads its text. Generic binary measurements, direct builder bytes, independent
+VM builder measurement and coordinator secret-file text keep their existing contracts. The role adds
+no format, validity or provenance assertion;the installed key and live bracket still govern signing.
+Canonical bytes, signatures, coordinator display and mismatch categories/order remain compatible.
+
+The builder observation uses `BuilderDigest` through total `builderDigestFromText` assignment in
+both bindings and at canonical verification's fresh binary-measurement boundary. Generic
+`measureBinaryDigest` keeps returning `Text`,including accelerator callers. `builderDigestText`
+reads the existing descriptive text without asserting validity or provenance. The direct builder
+retains its shared raw coordinator measurement;the VM builder retains its independent observation.
+Existing signed bytes,binary mismatch text/order and authority indices remain compatible.
+
+The frame field uses `BuildFrameName` through total `buildFrameNameFromText` assignment in both
+demo bindings and after wire decoding. `buildFrameNameText` reads its existing text. The private
+frame and phase authority retain the role;public `imageBuildFrameName` still returns `Text`. Empty
+names remain DATA and are refused only by the existing canonical check after the identifier check
+and before measurement. Wire bytes,signatures,frame/phase display and one-use authority retain their
+contracts;the role introduces no additional validity,format or provenance rule.
+
+The verifier's source-root input uses `BuildSourceRoot`,assigned explicitly through
+`buildSourceRootFromFilePath` at Command's existing selected context path. `buildSourceRootFilePath`
+returns the same `FilePath` at the generic source measurement. The factory is total and adds no
+absolute-path,nonempty,normalization or provenance rule. The measuring root is not a binding-wire
+field;generic `measureSourceDigest`,source bytes and existing refusal order retain their contracts.
+
+The verifier's selected builder input uses `BuilderPath` through total `builderPathFromFilePath`
+assignment at Command's existing executable path. `builderPathFilePath` passes the same `FilePath`
+to generic binary measurement. The role adds no validity,absolute-path,normalization or provenance
+assertion. Source-root and builder path roles reject transposition at their two canonical inputs;
+path descriptions add no wire field. Generic `measureBinaryDigest` and existing binary refusals,
+signature material and verification order retain their contracts.
+
 Inside the build, the reusable verifier uses an independently installed public key, independently supplied
 project/spec/config/coordinator identities, and fresh measurements of the caller-supplied source-root and
 builder paths. It authenticates those selected bytes but does not intrinsically establish that the paths name
@@ -92,6 +157,19 @@ under the dedicated `hostbootstrap/build/v1` domain. The verification key is pro
 opens; it is not exported from the active coordinator or accepted from the channel. The coordinator's public
 signing operation holds its live-state lock through signature construction, and an escaped coordinator refuses
 after the bracket closes.
+
+Source measurement hashes regular-file relative names and strict content bytes. POSIX names retain their
+exact native bytes. Windows UTF-16 names use UTF-8 for valid scalar values and three-byte WTF-8 for an
+unpaired code unit, so ordinary shared names have the same bytes on both hosts. Components join with one
+`/` byte; entries sort by canonical relative-name bytes, and each name and content retains its length frame.
+No case folding or Unicode normalization changes a name. The absolute measuring root, locale, modes,
+empty directories and symlink-versus-copy distinction are excluded from the digest.
+
+Filesystem metadata classifies source entries and builder/coordinator paths before content reads;
+non-regular entries yield typed unavailability with the affected path. Filesystem traversal and reads,
+including installed-key and channel reads, catch `IOException`, allowing asynchronous cancellation to
+propagate. Channel framing bounds every declared length as `Word64` before narrowing, while preserving
+exact field-count, UTF-8, signature-frame and trailing-byte checks.
 
 This protocol is distinct from an ordinary developer invocation of `check-code`, which remains
 sibling-config-gated and non-attesting. The demo's VM and Direct builders create a clean measured context,

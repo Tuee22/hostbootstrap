@@ -9,6 +9,8 @@
 **Gate evidence**: 2026-10-26 ; `hostbootstrap-core-gate-20261026`, x86_64 Ubuntu 24.04.4 CPU-only container on WSL2 Linux 6.18.33.2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` ; pass ; covers in-gate
 **Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the root ; pass ; covers in-gate
 
+**Gate evidence**: 2026-11-07 ; hostbootstrap-linux-d, native x86_64 Ubuntu 24.04.5 on WSL2 Linux 6.18.54.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
+
 > **Purpose**: Provide the one durable, exclusively entered, versioned record store every later ownership,
 > authority, and lifecycle decision is made inside.
 
@@ -270,8 +272,8 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -319,7 +321,7 @@ None.
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Snapshot.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
 **Substrates**: linux-cpu
@@ -359,7 +361,7 @@ None.
 ### Sprint 4.4c: Runtime cluster, exposure and provider key producers [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Ownership.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
 `core/hostbootstrap-core/test/ClusterOwnershipSpec.hs`, `core/hostbootstrap-core/test/ClusterBackendSpec.hs`,
@@ -484,7 +486,7 @@ None.
 ### Sprint 4.4f: Production transaction target identity framing [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Transaction.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs`,
 `core/hostbootstrap-core/test/SessionSpec.hs`, `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/lifecycle_state_model.md`
@@ -530,21 +532,21 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected/Publication.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
 #### Objective
 
-`publishBytes` writes a temporary, `hFlush`es it, and renames it over the destination. That is atomic
-against the death of the process, because the bytes are already in the kernel, but not against an OS crash
-or power loss, where the rename can reach the disk before the data and leave an empty `<key>.rec` or an
-empty `store.identity`. This sprint makes the store's durability claim hold for the host, using the same
-primitives `HostBootstrap.Ownership.Posix` and `HostBootstrap.Ownership.Windows` already use.
+Published records establish data and namespace durability before success is acknowledged. One private
+`HostBootstrap.Protected.Publication` home supplies file sync, same-directory platform rename and parent
+sync. The protected record protocol composes those primitives under its temporary-file cleanup handler.
 
 #### Deliverables
 
-- `publishBytes` syncs the temporary's data to disk before the rename: `fileSynchronise` on a writable
+- The private publication module owns the platform sync and rename operations; its caller retains the
+  temporary-file policy and failure handler. `publishBytes` syncs the temporary's data before rename: `fileSynchronise` on a writable
   descriptor on POSIX, followed by Darwin's `F_FULLFSYNC` device-cache flush on macOS, and a write-through
   or `FlushFileBuffers` handle on Windows. A failed requested flush refuses rather than falling back to
   a weaker guarantee.
@@ -566,7 +568,8 @@ primitives `HostBootstrap.Ownership.Posix` and `HostBootstrap.Ownership.Windows`
 The complete core gate executes these cases:
 
 - `AuthoritySpec` source-guard case "publishBytes syncs before it renames and cleans up every failure":
-  the body of `publishBytes` calls the platform sync primitive before the atomic platform rename, calls the
+  the body of `publishBytes` imports the private shared publication primitives and calls file sync before
+  the atomic platform rename; the same source guard checks their actual shared platform bodies. It calls the
   parent-directory sync after it on POSIX, and places the temporary's creation, write, sync, and rename
   under the one handler that removes the temporary.
 - The existing record round-trip and compare-and-swap cases pass unchanged, and after them `records/` holds

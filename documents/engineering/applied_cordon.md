@@ -17,7 +17,7 @@ admission chain yet; [what runs today](resource_budgeting.md#what-runs-today) in
 production applies.
 
 CPU/memory controls are applied at the provider and/or cluster-node boundary supported by the realization;
-the cluster-node cap is the whole cluster slice on every node (see [Current Status](#current-status)).
+the cluster-node cap divides the cluster slice across its exact declared node count.
 Bare-Linux storage preflight is not a quota: unsupported runtime storage enforcement remains an explicit
 `StorageCordonUnsupported BareLinuxQuotaAndImageGcUnavailable` result.
 
@@ -28,7 +28,7 @@ node mapping, and state paths. Its backend retains the complete node-name/contai
 before cordon, readiness, and cleanup. A same-named replacement refuses rather than receiving the old limit.
 Only applied cordon plus fresh exact cluster readiness can authorize the dependent workload consumer.
 
-The owned-cluster backend applies the whole cluster slice to each node rather than a per-node share; see
+The owned-cluster backend and descriptive renderer use the same per-node budget share; see
 [Cluster Node Shares](#cluster-node-shares) and [resource budgeting](resource_budgeting.md#current-status).
 
 ## Canonical Quantities and Provider Controls
@@ -46,7 +46,11 @@ The owned-cluster driver returns the renderer's refusal before probing ownership
 - Incus and Lima apply the declared VM sizing and retain their managed provider/share identity.
 - Direct Colima uses an isolated home/profile/context and canonical CPU/memory arguments. Its storage total
   is the 20-GiB root disk plus the `total-20`-GiB data disk. The managed machine and artifact identities gate
-  live Docker and separately journaled conditional `colima delete --force --data` cleanup.
+  live Docker and separately journaled conditional `colima delete --force --data` cleanup. Live Docker
+  re-enters the retained context binding and does not create a missing context. Settlement also
+  requires that binding and checks the data-disk identity against the observed artifact. Its stage and
+  managed evidence expose accessors rather than updateable record fields. Its bounded commands use
+  the caller's timeout, a 16 MiB transcript ceiling, and six seconds of termination grace.
 - WSL2 CPU/memory limits belong to the shared utility VM. The managed `.wslconfig` body also sets swap equal
   to the memory amount and the two idle-timeout keys ([WSL2](wsl2.md#resource-wall-and-global-effect)). The
   global-wall transaction records the prior state and releases conditionally; incompatible concurrent
@@ -81,16 +85,15 @@ owns the complete policy matrix.
 
 ## Cluster Node Shares
 
-Kind declares its control-plane node; the demo's nvkind plan declares control-plane and worker nodes. The
-target divides the cluster slice by the exact node count with integer floors, refuses a dimension smaller than
-that count, and keeps combined node shares within the retained slice. Only the compatibility `clusterCreate`
-path divides that way today (`clusterNodeCordonArgs`). The owned-cluster backend that `project up` drives
-applies the whole slice to every node container, so an N-node cluster's aggregate cap is N times its slice;
-[resource budgeting](resource_budgeting.md#current-status) states that gap and the phase that owes it.
+Kind declares its control-plane node; the demo's nvkind plan declares control-plane and worker nodes.
+`clusterNodeBudgetShare` divides every dimension of the canonical cluster envelope by the exact
+node count with integer floors. An empty topology or dimension smaller than that count refuses.
+Both `clusterNodeCordonArgs` and the owned-cluster backend use that calculation, so the sum of the
+node shares stays within the retained cluster slice.
 
 The Docker update applies CPU, memory, and memory-swap to each immutable node container ID under the cluster
 lock. The memory-swap total is twice the memory limit. Storage participates in budget admission and in the
-compatibility path's positive-share check, but Docker update supplies no storage limit; that dimension is not
+shared positive-share check, but Docker update supplies no storage limit; that dimension is not
 an enforced node quota.
 
 The cluster's declared node set must match observation. Its readiness probe checks the API and every node's
@@ -117,3 +120,9 @@ admission, prepared provider/cluster settlement, identity substitution, and unsu
 The [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) records its
 static and live gate. The [worked demo](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) and terminal acceptance
 phases record concrete provider and workload confirmation. See [testing](testing.md).
+
+
+The direct Linux GPU provider's provision plan retains the requested resource envelope and reports
+CPU, memory, and storage walls as unsupported for the direct host. The demo reports that the outer
+image build and project container run uncapped; this decision does not claim that the later nvkind
+node cordons have been applied. The prepared provider reservation still governs the lifecycle.

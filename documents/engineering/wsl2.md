@@ -41,8 +41,9 @@ used by Incus and Lima rather than a WSL-specific dispatch fold.
 It then enters the distro with `wsl -d <distro> --exec <command> <args...>`, stages source, builds/installs the Linux project
 binary, ensures the in-distro Docker daemon, builds the project image, and hands the chain into the
 container frame. `project down` restores the journalled global-wall origin and then runs global
-`wsl --shutdown`. `project destroy` runs a different list: guarded `wsl --unregister`, then the wall
-release, and no `wsl --shutdown` (see [Wall release](#wall-release)). The guard is the one
+`wsl --shutdown`. `project destroy` orders guarded `wsl --unregister`, the wall release, then
+`wsl --shutdown`, so the utility VM's next boot reads the restored settings
+(see [Wall release](#wall-release)). The guard is the one
 every frame's destructive removal goes through, not a WSL2 copy of it: this provider supplies only the noun
 its refusal reads in and the argument vector for a name the guard has already admitted. A distro outside
 the project's namespace refuses, and so do the two degenerate inputs that make the guard vacuous — an empty
@@ -84,35 +85,15 @@ not explain the lower-level cause of intermittent WSL2 image-store corruption.
 
 ### Open gaps
 
-- **Destroy leaves the utility VM running.** `project destroy` emits no `wsl --shutdown`, so a still-running
-  utility VM keeps the managed ceiling until it idles out or an operator shuts it down (see
-  [Wall release](#wall-release)). Appending the shutdown to the WSL2 row's destroy effects is owed by
-  [the host-providers-and-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
 - **Wall settlement kernel unadopted.** The production WSL wall is applied and released through
   `HostBootstrap.Wsl2.GlobalWall.Host` directly, not through the typed reservation and settlement chain of
   [Resource wall and global effect](#resource-wall-and-global-effect). Production adoption is owed by
   [the worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) (see
   [§ O](../../DEVELOPMENT_PLAN/development_plan_standards.md#o-resource-budget-and-cordoning)).
-- **Non-NTFS profile volumes.** The Windows ownership row does not check the filesystem type, so a non-NTFS
-  profile volume that supports hard links is trusted rather than refused (see
-  [Resource wall and global effect](#resource-wall-and-global-effect)). Owed by
-  [the ownership-clauses-and-reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md).
-- **Wall location from an unchecked `USERPROFILE`.** `HostBootstrap.Wsl2.GlobalWall.Windows` refuses only an
-  unset `USERPROFILE`; an empty or relative value places `.wslconfig` and the wall's protected store under the
-  process working directory. `openHostWallLocation`, `hostWallProtectedStore`, and `hostWallActiveRecordKey`
-  are public, so a library consumer can aim the wall at any path or compare-and-swap its active record (see
-  [Resource wall and global effect](#resource-wall-and-global-effect)). Both are owed by
-  [the ownership-clauses-and-reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md).
 - **Migrated wall results refused at the mint.** `withProviderWallSettlementPermitFromObservation` refuses
   `WallMigrated` as a non-owning observation, so the `Changed Repaired` settlement the contract names is
   unreachable (see [Resource wall and global effect](#resource-wall-and-global-effect)). Owed by
   [the cluster-lifecycle-and-cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
-- **Distro adopted by name.** The shared guest-VM provider realization that serves Lima instances and WSL
-  distros reports a present distro with the configured name as already owned
-  (`ProviderProvisionAlreadyOwned`), with no origin record, owner claim, or bound identity, so an unrelated
-  distro with that name is adopted as managed (see the
-  [per-backend clause matrix](../architecture/ownership_invariant.md#per-backend-clause-matrix)). Owed by
-  [the host-providers-and-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md).
 
 ## Platform reconciliation
 
@@ -155,12 +136,12 @@ mint resource readiness authority. Live convergence on a bare Windows host remai
 [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)'s
 readiness authority is opaque and resource-indexed. See [readiness](../architecture/readiness.md).
 
-The common provider discovery/capability boundary is implemented, and the prepared provider mutation
-backend covers Incus and Direct. WSL2 provider mutation — wall apply and release, distro install,
-`wsl --shutdown`, and guarded `wsl --unregister` — runs as described host effects through the one effect
-interpreter. The WSL2 application of the shared guest-VM backend opens only after that host-effect
-transaction has established the provider, and it supplies only the typed readiness and share reprobe
-carried to child frames.
+The common provider discovery/capability boundary and prepared mutation backend cover Incus, Direct
+and the shared Lima/WSL2 guest-VM row. WSL2 provisioning records registration absence before install,
+then binds the exact install-location claim and native registration GUID under an owned directory lease.
+Readiness, share reprobes and bound guest work recheck that transaction. Described wall apply/release,
+`wsl --shutdown` and guarded `wsl --unregister` use the one effect interpreter; the global wall keeps
+its separate typed owner.
 
 The WSL2 backend is an application of the one guest-VM row described in [lima](lima.md), not a second
 constructor: it supplies the Windows host guard, the closed WSL2 provider kind, the WSL tool, and its own
@@ -169,6 +150,11 @@ frame** (`substrateFrame`, which collapses the five substrate classifications to
 [glossary](../README.md#glossary)) and admits `WindowsFrame`, rather than reading the accelerator row,
 because both Windows classifications realize the same provider and keying on the GPU row alone refused a
 `windows-cpu` host outright.
+
+The shared row selects the WSL2 route through an exhaustive provider-kind match and refuses a
+non-VM kind before handing out bound execution. Its identity remains distinct from Lima's when
+the two tools resolve to one executable path; the shared route contract is described in
+[Lima](lima.md).
 
 The thin Python bootstrap happens before this provider exists. It requires winget and Windows
 PowerShell, but downloads the pinned GHCup executable directly with `Invoke-WebRequest`; winget does not
@@ -207,10 +193,19 @@ The lifecycle never names the file. `spLaunch` emits `ApplyGlobalWslWall <manage
 declaration is a structured conflict rather than an overwrite. The production entry points
 (`applyCurrentUserGlobalWall`, `restoreCurrentUserGlobalWall`) accept no pathname:
 `HostBootstrap.Wsl2.GlobalWall.Windows` derives the target `.wslconfig` and the wall's state directory from
-the `USERPROFILE` environment variable. The contract admits only a non-empty absolute `USERPROFILE` and keeps
-the location and store accessors private to that module and the test suite. The tree refuses only an unset
-`USERPROFILE`, and `HostBootstrap.Wsl2.GlobalWall.Host` exports `openHostWallLocation`,
-`hostWallProtectedStore`, and `hostWallActiveRecordKey` from the public library (see [Open gaps](#open-gaps)).
+the `USERPROFILE` environment variable. Both entry points admit only a non-empty absolute profile under
+Windows path grammar, refusing unset, empty and relative values before opening the target or store.
+The location representation, raw opener and store/key access live in the private
+`HostBootstrap.Wsl2.GlobalWall.Location` module, shared by the driver, Windows entry and real-store
+crash fixtures. The public Host facade retains its opaque location, target reporting and read-only
+presence projection alongside the existing driver/codec API; it exports no raw opener, store or active key.
+The private opener maps protected-store errors through the caller's journal-failure constructor,
+preserving the same error text without a dependency cycle.
+
+Demo teardown opens only an already-existing wall store and takes its nonblocking protected entry.
+It calls `hostWallOwnershipPresent`, which reads the canonical active record and returns only presence
+or the protected-store fault. Any retained bytes mean ownership remains. This observation discloses
+no location, store, key or mutation authority, and leaves record version and bytes unchanged.
 
 The typed authority chain for this shared state is the target contract of
 [§ O](../../DEVELOPMENT_PLAN/development_plan_standards.md#o-resource-budget-and-cordoning). Its kernels live in
@@ -247,6 +242,13 @@ The implementation is split so that the ownership logic is not Windows-only:
 | `HostBootstrap.Wsl2.GlobalWall.Host` | the recovery driver and durable record codec |
 | `HostBootstrap.Wsl2.GlobalWall.Windows` | where the one wall is, and nothing else |
 
+The wall record is plain data. Its phase,original bytes and target identity are trusted from the
+wall's protected store;shape and reservation checks do not prove that those fields came from completed
+filesystem operations. Authority admission accepts only the applied or teardown phases with a matching
+active receipt. Stale phases,payload changes and inexact restoration observations are refused before
+mutation. UTF-8 and UTF-16 retain unrelated bytes;the five controlled-key lines are replaced whole,
+including inline comments,and replacements are appended to their managed section.
+
 The wall is one owned object among several, so its clauses come from the shared rows rather than from a
 seam of its own: the identity read, the exclusive open, the whole-object read, the create-exclusive, the
 no-replace link, and the removal are the row the gate host declares (see
@@ -267,17 +269,53 @@ publication is a link that leaves its source rather than a move. That order is w
 create-outcome-unknown phase resolvable: an armed leftover at a name embedding this receipt's
 never-reused fence is this owner's own interrupted attempt on every host, so it is removed by exact
 identity inside the same exclusive entry and the create retried, and its unknown bytes are never
-published.
+published. The same rule reclaims a different armed identity in the bound-stage phase when the
+durable stage is absent; a matching identity with changed bytes remains a conflict.
+
+Each link/unlink move syncs the changed parent before success, once when both names share a parent.
+Across parents the destination is synced before the source is withdrawn, then the source parent is
+synced. Deletes sync their parent too. Recovery recognizes two names for the journalled identity and
+bytes, withdraws only the rechecked source, and re-observes the layout before classification. This
+covers publication, origin retention, managed retirement and origin restoration, including a failed
+source unlink. Settlement syncs the observed parent before recording success, so a retry after a failed
+flush cannot advance the journal from an unsynced observation. Payload observation re-probes identity
+after reading and refuses a changed or vanished object as busy before recording a mixed origin.
+
+Before taking the wall entry, the driver applies the row's existing pure capability declarations for
+record durability and no-replace publication. An unavailable real platform row refuses both apply and
+restore, including restore with no active record. Only an occupied armed-stage create is re-probed as
+a collision; other faults retain their original reason even when a partial object remains.
+Before its first active-record publication, the driver bounds the complete future encoding, including
+the actual stage candidate and the codec's largest identity. A record cannot fit initially and become
+unstorable at its later binding. Phase and classification matches name every constructor.
+A spec identity whose stored desired bytes cannot be reproduced is an InvalidWallJournal.
+The final identity guard uses the ownership seam's `withReobservedIdentity` after payload
+observation and before namespace mutation. Delete and move retain their precise absent/replaced
+conflicts and preserve action errors; they no longer carry a second identity comparison. A replacement
+inside the later primitive call remains in the same-privilege residual window described by
+[ownership invariant](../architecture/ownership_invariant.md#what-the-invariant-excludes).
 
 On Windows the row uses public `Win32` types and wrappers where they preserve the required semantics, and
 a narrow direct `kernel32` boundary for status-sensitive calls whose public wrappers do not expose the
 exact `GetLastError` result. It adds no C shim, no Cabal `c-sources`, and no private `Win32` import.
-`getFileInformationByHandle`'s `bhfiVolumeSerialNumber`/`bhfiFileIndex` pair supplies the identity, and
-`LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` the exclusive open. The identity assumes the 64-bit file index
-is unique, which holds on NTFS but not on ReFS. The row does not check the filesystem type: the only
-`OwnershipUnsupported` it returns is a `CreateHardLinkW` refusal reporting a different device or no
-hard-link support, so a non-NTFS volume that supports hard links is trusted rather than refused (see
-[Open gaps](#open-gaps) and [ownership invariant](../architecture/ownership_invariant.md)). A byte-range
+The row queries the actual open handle's filesystem with GetVolumeInformationByHandleW and
+admits only NTFS or ReFS before reading identity. Other filesystem names return OwnershipUnsupported;
+an unsupported volume-query operation also refuses. The full FILE_ID_INFO result from
+GetFileInformationByHandleEx supplies the 64-bit volume serial and 128-bit file identifier, through
+the shared volume-first encoder. LockFileEx with LOCKFILE_EXCLUSIVE_LOCK supplies the exclusive open.
+Whole-object byte reads delegate to the [shared ownership scope](../architecture/ownership_seam.md#scoped-whole-object-read).
+The wall keeps its domain fault mapping, confirms identity again after the read and enforces its 16 MiB
+limit. Asynchronous interruption closes the actual kernel handle before the protected entry unwinds.
+The host-wall suite interrupts active re-apply and restore reads, verifies unchanged target identity,
+bytes and protected envelopes, then retries and restores the original object. The source guard excludes
+a second wall-local open/read/close transaction.
+
+Parent-directory handles are opened for write with backup semantics and flushed after namespace changes.
+Native validation records the actual fixture volume; pure filesystem-policy cases do not establish
+a live ReFS/FAT run. See the [ownership invariant](../architecture/ownership_invariant.md) for the
+admitted identity policy and unsupported store-clause classification. An unavailable protected-store
+lock or permission to maintain its durable origin is classified as ProtectedUnsupported and carried to
+OwnershipUnsupported; ordinary probe failures retain their own fault. A byte-range
 lock is not affine to the acquiring OS thread, so the row needs neither a named mutex nor the threaded
 RTS.
 
@@ -288,9 +326,10 @@ The shared pure model and codec suites remain platform-neutral. A run of the dri
 evidence for the one row that ran it; confirming it against the other row is a second gate host's, and
 that is the [host-portability acceptance phase](../../DEVELOPMENT_PLAN/phase-29-host-portability-acceptance.md)'s.
 `WslGlobalWallWindowsSpec` compiles and runs on every gate host. It holds one case asserting that the
-Win32 row's own declaration agrees with the gate host, and three row cases (absent origin, present origin,
-replacement) that on Windows drive the production entry points against a temporary `USERPROFILE` and
-elsewhere assert the row's declared refusal. The broader WSL2 provider lifecycle matrix is separate from
+Win32 row's own declaration agrees with the gate host, plus six entry-point cases: absent origin,
+present origin, same-payload replacement, and unset/empty/relative profile refusal. Windows uses a
+temporary `USERPROFILE`; other hosts assert the row's declared refusal in every case. Exact merged
+publication bytes, restored original identity and the second-restore no-active-record refusal are checked. The broader WSL2 provider lifecycle matrix is separate from
 this focused adapter coverage.
 
 A crash-resume branch is entered by writing the durable state an interruption leaves — a value — through
@@ -301,9 +340,15 @@ Shutdown affects the shared WSL utility VM and stops every distro, so it is a gl
 than a project-local wall.
 
 The managed body includes processors, memory, swap equal to the memory amount, and idle-timeout settings.
-Storage is the per-distro `--vhd-size` cap supplied only when the selected install route registers a new
-distro. The current existing-distro path neither observes nor resizes its VHDX, so that cap is not an
-effective-wall reconciliation. Windows capacity preflight includes system-drive free space.
+Storage is the per-distro `--vhd-size` cap supplied when the selected install route registers a new
+distro. Before installation, the owned VM transaction durably records the original requested cap in
+canonical bytes. Re-entry requires that exact owner's valid record: equal storage admits the existing
+owned registration without reinstalling; changed storage returns Conflict with destroy-and-reprovision
+as the remedy. Missing, foreign or malformed metadata refuses. The record is the original requested
+cap, not a fresh physical VHDX-capacity observation. CPU and memory retain their separate shared wall.
+Windows capacity preflight includes system-drive free space. Native installation and retained-cap
+confirmation belong to the
+[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md).
 
 ## Wall release
 
@@ -314,10 +359,12 @@ effects on `project down`.
 The managed body uses finite idle timeouts: six hours in milliseconds for
 `[general] instanceIdleTimeout` and `[wsl2] vmIdleTimeout`, derived from
 the single `managedWslIdleTimeoutHours` constant in `HostBootstrap.Cluster.Cordon.Foundation` (and
-reexported by the configuration facade). The six-hour ceiling exceeds the observed acceptance duration
-recorded in the [Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md),
-allowing the observed gaps between its `wsl -d` steps. These finite timeouts are an interrupted-run
-backstop: `project down` does not wait for either timeout to expire.
+reexported by the configuration facade). Each timeout bounds an idle gap after the last session, not
+the length of a run. The Windows demo gate recorded on 2026-10-22 lasted up to 4 h 3 min, so six hours
+leaves room for any idle gaps within that observed run; see the
+[Windows and WSL2 acceptance phase](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md).
+These finite timeouts are an interrupted-run backstop: `project down` does not wait for either timeout
+to expire.
 
 `project down` emits `ReleaseGlobalWslWall` followed by `wsl --shutdown`. The order is load-bearing: the
 utility VM re-reads the file on its next cold boot, so releasing *after* shutdown would publish the
@@ -339,10 +386,14 @@ the one distro leaves the shared utility VM — and the CPU and memory ceiling i
 `vmIdleTimeout` expires; only stopping the utility VM returns that memory and makes the next cold boot
 read the restored file.
 
-`project destroy` emits guarded `wsl --unregister` and then `ReleaseGlobalWslWall`, with no
-`wsl --shutdown`. The release restores the file, but a utility VM that is still running keeps the managed
-ceiling until it idles out after `vmIdleTimeout` or an operator runs `wsl --shutdown`; the restored
-configuration takes effect at the utility VM's next cold boot (see [Open gaps](#open-gaps)).
+`project destroy` emits guarded `wsl --unregister`, then `ReleaseGlobalWslWall`, then
+`wsl --shutdown`. The release precedes shutdown for the same reason as `project down`: the next
+utility-VM boot must read the restored origin configuration. A release refusal stops the list before
+shutdown.
+
+The cordon reconcile observes running distros with `wsl --list --running --quiet`. Its parser removes
+UTF-16 NUL padding and compares names, so localized state labels cannot make a running distro appear
+stopped and trigger a global shutdown.
 
 If a run is interrupted before `project down` reaches these effects, an operator can still run
 `wsl --shutdown` by hand. It deletes no distro and no data, but it terminates every running distro,
@@ -410,3 +461,36 @@ Phase status belongs in [the development-plan index](../../DEVELOPMENT_PLAN/READ
 - [applied cordon](applied_cordon.md) — the global WSL2 CPU/memory wall.
 - [durable Windows runs](durable_windows_runs.md) — why a detached gate can still be holding the wall.
 - [lifecycle state model](../architecture/lifecycle_state_model.md) — target capabilities and ownership.
+
+The guest-VM backend admits command reports through the shared provider report classifier. Successful
+commands must be quiet on standard error and carry bounded, control-free output; ordinary non-zero
+readiness remains retryable. Static cases execute compiled CLI fixtures through the production command
+interpreter. The [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+records shared report handling and recorded ownership behavior. Confirmation of actual WSL registration
+and VM lifecycle belongs to the [Windows and WSL2 acceptance](../../DEVELOPMENT_PLAN/phase-28-windows-and-wsl2-substrate.md).
+
+Native registration observation reads the current user's fixed WSL registry namespace through the
+Unicode Windows API. It admits a bounded GUID, exact name, absolute install location and WSL2 version;
+duplicate or case-ambiguous names, incomplete values and failed reads are refusals. A missing namespace
+is an empty observation. Other operating systems return the declared Unsupported result. Registration
+data is an observation; the provider's recorded ownership transaction still authorizes VM mutation.
+Microsoft documents the DistributionName/BasePath relationship in its
+[WSL disk-location guide](https://github.com/MicrosoftDocs/WSL/blob/main/WSL/disk-space.md).
+
+The static Windows cases read real registry values under unique owned scratch keys, including Unicode,
+invalid encoding, incomplete values and a handle lacking read rights. They change no WSL registration.
+The borrowed-key observer writes nothing and leaves handle closure with its caller. Live confirmation
+of the fixed production query and VM lifecycle belongs to the Windows and WSL2 substrate acceptance.
+
+The owned-install command vocabulary names its exact install location and disk budget and suppresses
+initial launch. A location claim applies only when the native registration's install location matches
+the recorded owned namespace, including equivalent extended drive or UNC spellings. A same-named
+registration at another location carries no claim. The transaction separately binds and rechecks its
+native GUID; lexical location equality alone never authorizes VM mutation.
+The recorded guest-VM driver encloses its separate VM-record entry in an owned directory lease.
+It records registration absence before installation, requires the exact owned install location and
+binds the native registration GUID before dependent work. Each dependent command rechecks the
+location claim, GUID and parent lease before and after use. The native Windows registration reader
+has no injected query or authoritative fixture response. The backend now consumes this transaction for provisioning, readiness, share probes and bound
+guest work. The global wall retains its separate typed owner. Live WSL lifecycle evidence belongs to
+the terminal Windows and WSL2 acceptance.

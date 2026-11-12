@@ -11,8 +11,10 @@ and every conflict below is reached by handing it one.
 -}
 module ProviderResumeSpec (tests) where
 
-import Data.Foldable (for_, traverse_)
+import qualified Expect as OwnershipFixture
+import Data.Foldable (for_)
 import qualified Data.Text as Text
+import HostBootstrap.Effect.Run (CapturedRun (CapturedRun))
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
@@ -20,19 +22,21 @@ import HostBootstrap.Ownership.Object (
     OriginRecord,
     OwnerClaim,
     bindOriginRecord,
-    mkKernelObjectIdentity,
     mkOwnerClaim,
     mkPayload,
+    objectIdentityText,
     originRecord,
     ownerClaimText,
     payloadDigest,
  )
 import HostBootstrap.Substrate.Provider.Report (
-    ProviderConfigValue (ProviderConfigUnset, ProviderConfigValue),
+    ProviderConfigValue (ProviderConfigUnset),
+    classifyProviderConfigValue,
  )
 import HostBootstrap.Substrate.Provider.Resume
+import System.Exit (ExitCode (ExitSuccess))
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -99,8 +103,7 @@ conflictTests =
             @?= Left (InstanceUnderAnotherClaim (ownerClaimText claim) (ownerClaimText otherClaim))
     , testCase "an instance carrying no claim at all is reported as carrying none" $ do
         identity <- expectIdentity 1 2
-        -- Distinct from the empty string, because "carries nothing" and
-        -- "carries an empty tag" are different reports.
+        -- An absent key and an empty tag share the provider's unset report.
         case providerStanding (Just (unboundRecord claim)) (OriginPresent identity) ProviderConfigUnset of
             Left (InstanceUnderAnotherClaim expected observed) -> do
                 expected @?= ownerClaimText claim
@@ -142,26 +145,32 @@ conflictTests =
     , testCase "every conflict names both sides and reads as itself" $ do
         bound <- expectIdentity 4 9
         observed <- expectIdentity 4 10
-        let messages =
-                map
-                    providerStandingConflictMessage
-                    [ InstanceUnderNoRecord observed
-                    , InstanceUnderAnotherClaim "expected" "observed"
-                    , InstanceReplaced bound observed
-                    , InstanceVanished bound
-                    , RecordNotAClaimedObject "a directory"
-                    , RecordNamesAPriorInstance observed
-                    ]
-        length messages @?= 6
-        assertBool "the six renderings are distinct" (distinct messages)
-        traverse_
-            (\message -> assertBool ("a conflict says something: " <> Text.unpack message) (not (Text.null message)))
-            messages
-        assertBool
-            "a claim conflict names both claims"
-            ( "expected" `Text.isInfixOf` providerStandingConflictMessage (InstanceUnderAnotherClaim "expected" "observed")
-                && "observed" `Text.isInfixOf` providerStandingConflictMessage (InstanceUnderAnotherClaim "expected" "observed")
-            )
+        map
+            providerStandingConflictMessage
+            [ InstanceUnderNoRecord observed
+            , InstanceUnderAnotherClaim "record-claim" "instance-claim"
+            , InstanceReplaced bound observed
+            , InstanceVanished bound
+            , RecordNotAClaimedObject "a directory"
+            , RecordNamesAPriorInstance observed
+            ]
+            @?= [ "the provider names an instance "
+                    <> objectIdentityText observed
+                    <> " that no durable record claims, and this transaction adopts nothing it finds"
+                , "the instance carries the claim instance-claim rather than this record's record-claim"
+                , "this record is bound to "
+                    <> objectIdentityText bound
+                    <> " and the provider now names "
+                    <> objectIdentityText observed
+                    <> " at the same instance"
+                , "this record is bound to "
+                    <> objectIdentityText bound
+                    <> " and the provider names no instance at all"
+                , "the record under this key describes a directory"
+                , "the record names the prior instance "
+                    <> objectIdentityText observed
+                    <> ", so it was published over something it did not create"
+                ]
     ]
 
 -- ---------------------------------------------------------------------------
@@ -196,14 +205,16 @@ unboundRecord :: OwnerClaim -> OriginRecord
 unboundRecord value = originRecord (ReportedObject value) OriginAbsent
 
 carrying :: OwnerClaim -> ProviderConfigValue
-carrying = ProviderConfigValue . ownerClaimText
+carrying value =
+    either (error . show) id
+        (classifyProviderConfigValue (Right (CapturedRun ExitSuccess (Text.unpack (ownerClaimText value) <> "\n") "")))
 
 expectIdentity :: Word -> Word -> IO ObjectIdentity
 expectIdentity volume object =
     either
         (\fault -> assertFailure ("expected an identity: " <> show fault))
         pure
-        (mkKernelObjectIdentity (fromIntegral volume) (fromIntegral object))
+        (OwnershipFixture.kernelIdentityWords (fromIntegral volume) (fromIntegral object))
 
 expectRecord :: (Show fault) => Either fault OriginRecord -> IO OriginRecord
 expectRecord = either (\fault -> assertFailure ("expected a record: " <> show fault)) pure
@@ -212,7 +223,3 @@ expectStanding ::
     Either ProviderStandingConflict ProviderStanding -> IO ProviderStanding
 expectStanding =
     either (\conflict -> assertFailure ("expected a standing: " <> show conflict)) pure
-
-distinct :: (Eq value) => [value] -> Bool
-distinct [] = True
-distinct (value : rest) = value `notElem` rest && distinct rest

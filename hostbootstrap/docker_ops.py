@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Final
 
 from . import process
@@ -27,7 +26,6 @@ _DOCKER: Final[str] = "docker"
 # 100 ms period (quota = cpus * period), exactly how `--cpus` is implemented.
 _BUILDKIT_OFF_ENV: Final[dict[str, str]] = {"DOCKER_BUILDKIT": "0"}
 _CPU_PERIOD_US: Final[int] = 100_000
-_NO_ENV: Final[Mapping[str, str]] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -102,60 +100,12 @@ def build_command(spec: BuildSpec) -> tuple[str, ...]:
     return tuple(cmd)
 
 
-@dataclass(frozen=True)
-class RunSpec:
-    """Inputs for a ``docker run`` invocation."""
-
-    image: str
-    command: tuple[str, ...] = ()
-    name: str | None = None
-    detach: bool = False
-    rm: bool = False
-    env: Mapping[str, str] = _NO_ENV
-    mounts: Sequence[tuple[str, str, bool]] = ()  # (host, container, read_only)
-    network: str | None = None
-    extra: tuple[str, ...] = ()
-
-
-def run_command(spec: RunSpec) -> tuple[str, ...]:
-    cmd: list[str] = [_DOCKER, "run"]
-    if spec.detach:
-        cmd.append("-d")
-    if spec.rm:
-        cmd.append("--rm")
-    if spec.name is not None:
-        cmd.extend(["--name", spec.name])
-    if spec.network is not None:
-        cmd.extend(["--network", spec.network])
-    for key, value in dict(spec.env).items():
-        cmd.extend(["-e", f"{key}={value}"])
-    for host, container, read_only in spec.mounts:
-        suffix = ":ro" if read_only else ""
-        cmd.extend(["-v", f"{host}:{container}{suffix}"])
-    cmd.extend(spec.extra)
-    cmd.append(spec.image)
-    cmd.extend(spec.command)
-    return tuple(cmd)
-
-
 def push_command(tag: str) -> tuple[str, ...]:
     return (_DOCKER, "push", tag)
 
 
 def pull_command(reference: str) -> tuple[str, ...]:
     return (_DOCKER, "pull", reference)
-
-
-def tag_command(source: str, target: str) -> tuple[str, ...]:
-    return (_DOCKER, "tag", source, target)
-
-
-def image_exists_command(tag: str) -> tuple[str, ...]:
-    return (_DOCKER, "image", "inspect", tag)
-
-
-def image_entrypoint_command(tag: str) -> tuple[str, ...]:
-    return (_DOCKER, "image", "inspect", "--format", "{{json .Config.Entrypoint}}", tag)
 
 
 def engine_arch_command() -> tuple[str, ...]:
@@ -203,7 +153,7 @@ def parse_digest_reference(rendered: str, *, tag: str) -> str:
         if isinstance(value, str)
         and "@sha256:" in value
         and docker_repository_name(value.split("@", 1)[0]) == expected_repository
-        and len(value.split("@sha256:", 1)[1]) == 64
+        and re.fullmatch(r"[0-9a-f]{64}", value.split("@sha256:", 1)[1]) is not None
     ]
     if len(matches) != 1:
         raise RuntimeError(
@@ -218,27 +168,6 @@ def parse_image_id(rendered: str, *, tag: str) -> str:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise RuntimeError(f"unexpected Docker image ID for {tag!r}: {image_id!r}")
     return image_id
-
-
-def parse_image_entrypoint(rendered: str, *, tag: str) -> tuple[str, ...]:
-    text = rendered.strip()
-    if text in {"", "null"}:
-        return ()
-
-    try:
-        raw: object = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"could not parse Docker Entrypoint for {tag!r}: {text}") from exc
-
-    if not isinstance(raw, list):
-        raise RuntimeError(f"unexpected Docker Entrypoint for {tag!r}: {text}")
-
-    entrypoint: list[str] = []
-    for part in raw:
-        if not isinstance(part, str):
-            raise RuntimeError(f"unexpected Docker Entrypoint for {tag!r}: {text}")
-        entrypoint.append(part)
-    return tuple(entrypoint)
 
 
 async def build(spec: BuildSpec, *, prefix: str = "") -> process.CommandResult:
@@ -267,13 +196,3 @@ async def image_digest_reference(tag: str) -> str:
 async def image_id(tag: str) -> str:
     result = await process.run_checked(image_id_command(tag), quiet=True)
     return parse_image_id(result.stdout, tag=tag)
-
-
-async def image_exists(tag: str) -> bool:
-    result = await process.run(image_exists_command(tag), quiet=True)
-    return result.ok
-
-
-async def image_entrypoint(tag: str) -> tuple[str, ...]:
-    result = await process.run_checked(image_entrypoint_command(tag), quiet=True)
-    return parse_image_entrypoint(result.stdout, tag=tag)

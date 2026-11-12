@@ -831,8 +831,21 @@ def test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read
     src = tmp_path / "core" / "hostbootstrap-core" / "src" / "HostBootstrap"
     src.mkdir(parents=True)
     (src / "Network.hs").write_text("module HostBootstrap.Network where\n", encoding="utf-8")
-    # The one module named in the CPP exclusion set, at exactly that path.
+    # A module named in the CPP exclusion set, at exactly that path.
     (src / "Registry.hs").write_text("module HostBootstrap.Registry where\n", encoding="utf-8")
+    # The former Context path is no longer excluded after relocation.
+    (src / "Context.hs").write_text("module HostBootstrap.Context where\n", encoding="utf-8")
+    internal = (
+        tmp_path
+        / "core"
+        / "hostbootstrap-core"
+        / "internal"
+        / "handoff-implementation"
+        / "HostBootstrap"
+    )
+    internal.mkdir(parents=True)
+    (internal / "Context.hs").write_text("module HostBootstrap.Context where\n", encoding="utf-8")
+    (internal / "Nearby.hs").write_text("module HostBootstrap.Nearby where\n", encoding="utf-8")
     demo = tmp_path / "demo" / "src"
     demo.mkdir(parents=True)
     (demo / "Main.hs").write_text("module Main where\n", encoding="utf-8")
@@ -843,7 +856,14 @@ def test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read
         "fourmolu",
         "--mode",
         "check",
+        "core/hostbootstrap-core/src/HostBootstrap/Context.hs",
         "core/hostbootstrap-core/src/HostBootstrap/Network.hs",
+    ]
+    assert gates["Haskell formatter over core/hostbootstrap-core/internal"] == [
+        "fourmolu",
+        "--mode",
+        "check",
+        "core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Nearby.hs",
     ]
     assert gates["Haskell formatter over demo/src"] == [
         "fourmolu",
@@ -855,11 +875,40 @@ def test_style_gates_enumerate_sources_and_skip_the_modules_fourmolu_cannot_read
         "hlint",
         "core/hostbootstrap-core/src",
     ]
+    assert gates["Haskell linter over core/hostbootstrap-core/internal"] == [
+        "hlint",
+        "core/hostbootstrap-core/internal",
+    ]
     assert gates["Haskell linter over demo/src"] == ["hlint", "demo/src"]
     # A root with no Haskell under it contributes no formatter gate, and a root
     # that does not exist contributes no linter gate.
     assert "Haskell formatter over demo/app" not in gates
     assert "Haskell linter over demo/app" not in gates
+
+
+def test_formatter_roots_cover_every_cabal_source_directory() -> None:
+    """Every ``hs-source-dirs`` entry of both Cabal files sits under a formatter root."""
+    repo = Path(__file__).resolve().parents[1]
+    cabal_files = (
+        (
+            repo / "core" / "hostbootstrap-core" / "hostbootstrap-core.cabal",
+            ("core", "hostbootstrap-core"),
+        ),
+        (repo / "demo" / "hostbootstrap-demo.cabal", ("demo",)),
+    )
+    covered = {tuple(root) for root in cli._FORMATTER_ROOTS}
+    missing: list[str] = []
+    for cabal, package in cabal_files:
+        for line in cabal.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("hs-source-dirs:"):
+                continue
+            for entry in stripped.split(":", 1)[1].split(","):
+                for directory in entry.split():
+                    top = (*package, directory.split("/")[0])
+                    if top not in covered:
+                        missing.append("/".join(top))
+    assert missing == []
 
 
 def test_style_gates_run_before_the_cabal_legs(tmp_path: Path) -> None:
@@ -935,6 +984,11 @@ def test_native_architecture_requires_request_host_and_engine_match(
     monkeypatch.setattr(cli.docker_ops, "engine_arch", _amd64)
     with pytest.raises(cli.click.ClickException, match="Docker engine=amd64"):
         asyncio.run(cli._validate_native_architecture(Arch.ARM64, Arch.ARM64))
+
+    # Request and host agree on amd64; only the engine disagrees.
+    monkeypatch.setattr(cli.docker_ops, "engine_arch", _arm64)
+    with pytest.raises(cli.click.ClickException, match="must be native"):
+        asyncio.run(cli._validate_native_architecture(Arch.AMD64, Arch.AMD64))
 
 
 def test_build_then_publish_smokes_before_and_after_registry_mutation(

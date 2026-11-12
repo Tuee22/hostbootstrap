@@ -24,7 +24,9 @@ module HostBootstrap.Substrate.Provider.Alias (
     mkGuestAliasSpec,
     guestAliasPath,
     guestAliasTarget,
+    guestAliasLinkTarget,
     guestAliasOwnershipTransaction,
+    shippedAliasFailureRecovery,
     PreparedGuestAliasCall,
     withPreparedGuestAliasCall,
     AliasCallObservation,
@@ -35,6 +37,7 @@ module HostBootstrap.Substrate.Provider.Alias (
     managedGuestAliasKey,
     managedGuestAliasGeneration,
     managedGuestAliasObservationVersion,
+    managedGuestAliasOperationKey,
     GuestAliasCallSettlement,
     withGuestAliasCallSettlement,
     settlePreparedGuestAliasCall,
@@ -55,6 +58,7 @@ import qualified Crypto.Hash as Hash
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteArray as ByteArray
 import qualified Data.ByteString.Char8 as ByteStringChar8
+import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -75,10 +79,20 @@ import qualified HostBootstrap.Ownership.Object as Ownership
 import HostBootstrap.Ownership.Shipped (
     ShippedAct (..),
     ShippedOutcome (..),
-    ShippedOwnership (..),
+    ShippedFailure (..),
+    ShippedAuthorityPath,
+    ShippedTargetPath,
+    ShippedLinkTargetPath,
+    ShippedOwnership,
+    mkShippedAuthorityPath,
+    mkShippedTargetPath,
+    mkShippedLinkTargetPath,
+    shippedLinkTargetPath,
+    shippedTargetPath,
+    mkShippedOwnership,
     shipOwnedTransaction,
  )
-import HostBootstrap.Protected (mkRecordKey, protectedErrorMessage)
+import HostBootstrap.Protected (RecordKey, mkRecordKey, protectedErrorMessage)
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (..),
     ChangeView,
@@ -107,11 +121,11 @@ import HostBootstrap.Reconcile (
     UnsupportedDetail (..),
     completePreparedUnchanged,
     completeReconcile,
-    dependencyProbe,
     emptyDependencySnapshot,
     plannedGuestAliasOperation,
     plannedResourceKey,
     plannedResourcePlanDigest,
+    ownershipReceiptOperationKey,
     resourceHandleGeneration,
     resourceHandleKey,
     resourceHandleObservationVersion,
@@ -119,7 +133,6 @@ import HostBootstrap.Reconcile (
     withDependencySnapshotEntry,
     withNodeGuestAliasProjection,
     withNodeObservedResource,
-    withOperationPreconditions,
     withPreparedOperation,
     withReconcileResult,
  )
@@ -132,6 +145,11 @@ import HostBootstrap.Substrate.Provider (
     providerCapabilityGeneration,
     providerCapabilityLiftContext,
  )
+import HostBootstrap.Substrate.Provider.Dependency.Internal (
+    ProviderShareDependency,
+    providerShareDependencyProbe,
+    withLocalProviderShareDependency,
+ )
 import HostBootstrap.Substrate.Provider.Observation.Internal (
     ManagedProviderHandle (..),
     ManagedProviderShareHandle (..),
@@ -142,7 +160,7 @@ import HostBootstrap.Substrate.Provider.Observation.Internal (
  )
 import qualified System.FilePath.Posix as Posix
 
-data GuestAliasSpec = GuestAliasSpec FilePath FilePath
+data GuestAliasSpec = GuestAliasSpec ShippedTargetPath ShippedLinkTargetPath ShippedAuthorityPath RecordKey
     deriving (Eq, Show)
 
 mkGuestAliasSpec :: FilePath -> FilePath -> Either ReconcileError GuestAliasSpec
@@ -161,8 +179,23 @@ mkGuestAliasSpec aliasPath target
         invalid "alias path and target must not contain empty, dot, or dot-dot segments"
     | trimGuestPath aliasPath == trimGuestPath target =
         invalid "alias path and target must differ"
-    | otherwise = Right (GuestAliasSpec aliasPath target)
+    | aliasSegments `isPrefixOf` targetSegments =
+        invalid "alias path must not be an ancestor of its target"
+    | (targetSegments <> [".hostbootstrap-alias-authority-v1"]) `isPrefixOf` aliasSegments =
+        invalid "alias path must not overlap the target alias authority directory"
+    | otherwise = do
+        admittedAlias <- either (invalid . Text.pack . show) Right (mkShippedTargetPath aliasPath)
+        admittedTarget <- either (invalid . Text.pack . show) Right (mkShippedLinkTargetPath target)
+        authority <-
+            either
+                (invalid . Text.pack . show)
+                Right
+                (mkShippedAuthorityPath (target Posix.</> ".hostbootstrap-alias-authority-v1"))
+        key <- either (invalid . protectedErrorMessage) Right (mkRecordKey (aliasRecordName aliasPath target))
+        Right (GuestAliasSpec admittedAlias admittedTarget authority key)
   where
+    aliasSegments = filter (not . null) (splitSegments aliasPath)
+    targetSegments = filter (not . null) (splitSegments target)
     invalid reason =
         Left
             ( Failure
@@ -170,10 +203,13 @@ mkGuestAliasSpec aliasPath target
             )
 
 guestAliasPath :: GuestAliasSpec -> FilePath
-guestAliasPath (GuestAliasSpec aliasPath _) = aliasPath
+guestAliasPath (GuestAliasSpec aliasPath _ _ _) = shippedTargetPath aliasPath
 
 guestAliasTarget :: GuestAliasSpec -> FilePath
-guestAliasTarget (GuestAliasSpec _ target) = target
+guestAliasTarget (GuestAliasSpec _ target _ _) = shippedLinkTargetPath target
+
+guestAliasLinkTarget :: GuestAliasSpec -> ShippedLinkTargetPath
+guestAliasLinkTarget (GuestAliasSpec _ target _ _) = target
 
 guestAbsolute :: FilePath -> Bool
 guestAbsolute ('/' : _) = True
@@ -219,7 +255,6 @@ aliasCallDigest origin share spec =
 data PreparedGuestAliasCall scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion
     = PreparedGuestAliasCall
         GuestAliasSpec
-        Text
         (ManagedProviderHandle scope planId backendId providerId Running)
         (ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned)
         (ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed)
@@ -243,7 +278,7 @@ withPreparedGuestAliasCall ::
         DurableShareResource
         shareFrame ->
     ResourceHandle scope planId aliasId DurableAliasResource Unclassified Observed ->
-    DependencyProbe scope planId shareId DurableShareResource ->
+    DependencyProbe scope planId shareId DurableShareResource readiness ->
     GuestAliasSpec ->
     PreparedGate ->
     ( forall operationKey callDigest attempt journalVersion.
@@ -265,7 +300,7 @@ withPreparedGuestAliasCall ::
 withPreparedGuestAliasCall
     backend
     managedProvider@(ManagedProviderHandle providerOrigin providerHandle providerReceipt)
-    managedShare@(ManagedProviderShareHandle shareOrigin shareHandle shareReceipt)
+    managedShare@(ManagedProviderShareHandle shareOrigin shareHandle shareReceipt _)
     planned
     edge
     aliasHandle
@@ -320,33 +355,26 @@ withPreparedGuestAliasCall
                         aliasHandle
                         (aliasCallDigest providerOrigin shareHandle spec) of
                         Left err -> pure (Left err)
-                        Right descriptor -> do
-                            sealed <-
-                                withOperationPreconditions
-                                    descriptor
-                                    ( withDependencySnapshotEntry
-                                        shareHandle
-                                        shareProbe
-                                        emptyDependencySnapshot
-                                    )
-                            pure $ do
-                                preconditionSet <- sealed
-                                withPreparedOperation
-                                    descriptor
-                                    preconditionSet
-                                    gate
-                                    ( \prepared preconditions ->
-                                        consume
-                                            ( PreparedGuestAliasCall
-                                                spec
-                                                (aliasOwnerBinding providerOrigin shareHandle planned spec aliasHandle)
-                                                managedProvider
-                                                managedShare
-                                                aliasHandle
-                                                prepared
-                                                preconditions
-                                            )
-                                    )
+                        Right descriptor ->
+                            withPreparedOperation
+                                descriptor
+                                ( withDependencySnapshotEntry
+                                    shareHandle
+                                    shareProbe
+                                    emptyDependencySnapshot
+                                )
+                                gate
+                                ( \prepared preconditions ->
+                                    consume
+                                        ( PreparedGuestAliasCall
+                                            spec
+                                            managedProvider
+                                            managedShare
+                                            aliasHandle
+                                            prepared
+                                            preconditions
+                                        )
+                                )
 
 sameProviderOrigin ::
     ProviderOriginBinding scope planId backendId providerId ->
@@ -363,22 +391,24 @@ sameProviderOrigin left right =
 
 {- | Structured result from the protected backend boundary.  Created/repaired
 observations authorize ownership only after settlement against the exact
-prepared operation.  A compatible link without prior commit proof is explicitly
-foreign.
+prepared operation. A retained recorded link settles Repaired without a prior
+commit proof and Unchanged with a matching one; an unrecorded link is foreign.
 -}
 data AliasCallObservation
-    = AliasCallCreated Word64
-    | AliasCallRepaired Word64
-    | AliasCallAlreadyExact Word64
-    | AliasCallForeign Word64 ForeignObservation
+    = AliasCallCreated
+    | AliasCallRepaired
+    | AliasCallAlreadyExact
+    | AliasCallForeign ForeignObservation
     | AliasCallConflict ConflictDetail
     | AliasCallUnsupported UnsupportedDetail
     | AliasCallFailed FailureDetail
     deriving (Eq, Show)
 
 -- | Indexed proof that the strong backend ran this exact prepared call.
-newtype AliasCallResult scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion
-    = AliasCallResult AliasCallObservation
+-- The generation is descriptive view metadata; settlement takes its generation
+-- from the retained prepared handle.
+data AliasCallResult scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion
+    = AliasCallResult Word64 AliasCallObservation
 
 type role AliasCallResult nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
@@ -396,11 +426,11 @@ data AliasCallResultView
 aliasCallResultView ::
     AliasCallResult scope planId providerId backendId capabilityId aliasId shareId operationKey callDigest attempt journalVersion ->
     AliasCallResultView
-aliasCallResultView (AliasCallResult observation) = case observation of
-    AliasCallCreated generation -> AliasResultCreated generation
-    AliasCallRepaired generation -> AliasResultRepaired generation
-    AliasCallAlreadyExact generation -> AliasResultAlreadyExact generation
-    AliasCallForeign generation foreignState -> AliasResultForeign generation foreignState
+aliasCallResultView (AliasCallResult generation observation) = case observation of
+    AliasCallCreated -> AliasResultCreated generation
+    AliasCallRepaired -> AliasResultRepaired generation
+    AliasCallAlreadyExact -> AliasResultAlreadyExact generation
+    AliasCallForeign foreignState -> AliasResultForeign generation foreignState
     AliasCallConflict detail -> AliasResultConflict detail
     AliasCallUnsupported detail -> AliasResultUnsupported detail
     AliasCallFailed detail -> AliasResultFailed detail
@@ -408,14 +438,13 @@ aliasCallResultView (AliasCallResult observation) = case observation of
 {- | Opaque managed alias authority retained after exact settlement.
 
 The indices bind provider, backend, discovered capability, alias, and durable
-share.  The constructor additionally retains the exact spec/owner plus the
+share. The constructor retains the exact alias/target specification plus the
 generic managed handle and receipt, but none of those authorizing values is
 projected publicly.
 -}
 data ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase
     = ManagedGuestAliasHandle
         GuestAliasSpec
-        Text
         (ResourceHandle scope planId aliasId DurableAliasResource Managed phase)
         (OwnershipReceipt scope planId aliasId DurableAliasResource)
 
@@ -424,18 +453,27 @@ type role ManagedGuestAliasHandle nominal nominal nominal nominal nominal nomina
 managedGuestAliasKey ::
     ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase ->
     Text
-managedGuestAliasKey (ManagedGuestAliasHandle _ _ handle _) = resourceHandleKey handle
+managedGuestAliasKey (ManagedGuestAliasHandle _ handle _) = resourceHandleKey handle
 
 managedGuestAliasGeneration ::
     ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase ->
     Word64
-managedGuestAliasGeneration (ManagedGuestAliasHandle _ _ handle _) = resourceHandleGeneration handle
+managedGuestAliasGeneration (ManagedGuestAliasHandle _ handle _) = resourceHandleGeneration handle
 
 managedGuestAliasObservationVersion ::
     ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase ->
     Word64
-managedGuestAliasObservationVersion (ManagedGuestAliasHandle _ _ handle _) =
+managedGuestAliasObservationVersion (ManagedGuestAliasHandle _ handle _) =
     resourceHandleObservationVersion handle
+
+-- | Descriptive journal metadata of this settled acquisition. The receipt and
+-- generic managed handle remain private; verifying a prior commit still needs
+-- the exact admitted plan, resource, generation and committed journal record.
+managedGuestAliasOperationKey ::
+    ManagedGuestAliasHandle scope planId providerId backendId capabilityId aliasId shareId phase ->
+    Text
+managedGuestAliasOperationKey (ManagedGuestAliasHandle _ _ receipt) =
+    ownershipReceiptOperationKey receipt
 
 data GuestAliasCallSettlement scope planId providerId backendId capabilityId aliasId shareId
     = ManagedGuestAlias
@@ -514,24 +552,15 @@ settlePreparedGuestAliasCall ::
         )
 settlePreparedGuestAliasCall
     priorProof
-    (PreparedGuestAliasCall spec owner _ _ handle prepared preconditions)
-    (AliasCallResult observation) = do
+    (PreparedGuestAliasCall spec _ _ handle prepared preconditions)
+    (AliasCallResult _ observation) = do
+        let generation = resourceHandleGeneration handle
         reconciled <- case observation of
-            AliasCallCreated generation ->
+            AliasCallCreated ->
                 completeReconcile handle prepared preconditions (BackendCreated generation)
-            AliasCallRepaired generation ->
+            AliasCallRepaired ->
                 completeReconcile handle prepared preconditions (BackendRepaired generation)
-            AliasCallAlreadyExact generation
-                | generation /= resourceHandleGeneration handle ->
-                    Left
-                        ( Conflict
-                            ( ConflictDetail
-                                (resourceHandleKey handle)
-                                ("generation=" <> showText (resourceHandleGeneration handle))
-                                ("generation=" <> showText generation)
-                                "reprobe the alias before classifying the exact link"
-                            )
-                        )
+            AliasCallAlreadyExact
                 | Just proof <- priorProof ->
                     completePreparedUnchanged handle prepared preconditions proof
                 | otherwise ->
@@ -540,7 +569,7 @@ settlePreparedGuestAliasCall
                         prepared
                         preconditions
                         (BackendRepaired generation)
-            AliasCallForeign generation foreignState ->
+            AliasCallForeign foreignState ->
                 completeReconcile
                     handle
                     prepared
@@ -549,11 +578,10 @@ settlePreparedGuestAliasCall
             AliasCallConflict detail -> Left (Conflict detail)
             AliasCallUnsupported detail -> Left (Unsupported detail)
             AliasCallFailed detail -> Left (Failure detail)
-        guestAliasSettlement spec owner reconciled
+        guestAliasSettlement spec reconciled
 
 guestAliasSettlement ::
     GuestAliasSpec ->
-    Text ->
     ReconcileResult scope planId aliasId DurableAliasResource Provisioned ->
     Either
         ReconcileError
@@ -566,14 +594,14 @@ guestAliasSettlement ::
             aliasId
             shareId
         )
-guestAliasSettlement spec owner reconciled =
+guestAliasSettlement spec reconciled =
     withReconcileResult
         reconciled
         ( \handle receipt change -> do
             validateOwnershipReceipt handle receipt
             Right
                 ( ManagedGuestAlias
-                    (ManagedGuestAliasHandle spec owner handle receipt)
+                    (ManagedGuestAliasHandle spec handle receipt)
                     change
                 )
         )
@@ -642,7 +670,6 @@ discoverStrongAliasBackend config self capability = do
                 )
         ProviderGuestDiscovery guest -> do
             _ <- requireObservation "provider daemon" (discoveryDaemon guest)
-            _ <- requireObservation "provider permissions" (discoveryPermissions guest)
             _ <- requireObservation "provider VM capability" (discoveryVmCapability guest)
             requireNonTerminalEgress (discoveryEgress guest)
 
@@ -674,15 +701,14 @@ requireObservation label (ProviderObservedConflict conflict) =
 requireObservation label (ProviderObservedFailure failure) =
     Left (Failure (FailureDetail label (Text.pack (show failure)) DoNotRetry))
 
-{- | Reconcile one prepared alias under the retained guest lock.
+{- | Ship this prepared call's symbolic-link ownership transaction to its
+retained guest frame.
 
-The durable record is keyed by a digest of the exact plan resource,
-plan-assigned generation, alias, and target.  Its first no-replace publication
-adds a fresh nonce.  A staging symlink named by that nonce is then hard-linked
-to the final name without replacement; both names have the same measured
-@device:inode@.  If the process dies before the managed record is published, a
-retry can therefore distinguish its staging inode from an exact-looking foreign
-link and finish the same generation rather than adopting by pathname.
+The strong backend supplies the host configuration, project binary self
+reference and capability lift context. The shared shipped program performs
+object ownership in that frame; this adapter supplies the exact alias and
+target declaration and classifies the returned crossing or ownership outcome.
+The indexed result belongs to this prepared call and still requires settlement.
 -}
 runPreparedGuestAliasCall ::
     StrongAliasBackend scope planId providerId backendId capabilityId ->
@@ -714,115 +740,94 @@ runPreparedGuestAliasCall ::
         )
 runPreparedGuestAliasCall
     (StrongAliasBackend _ config self context)
-    (PreparedGuestAliasCall spec _owner _ _ handle _ _) = do
-        result <- shipOwnedTransaction config self context (guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink (guestAliasTarget spec)))
+    (PreparedGuestAliasCall spec _ _ handle _ _) = do
+        result <- shipOwnedTransaction config self context (guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink (guestAliasLinkTarget spec)))
         pure
             ( AliasCallResult
-                (shippedAliasObservation spec (resourceHandleGeneration handle) result)
+                (resourceHandleGeneration handle)
+                (shippedAliasObservation spec result)
             )
 
-{- | Exact persisted owner binding.  Length framing keeps this injective before
-hashing and the complete binding is also stored in the record, so even a digest
-collision is refused on readback rather than aliasing two owners.
--}
-aliasOwnerBinding ::
-    ProviderOriginBinding scope planId backendId providerId ->
-    ResourceHandle scope planId shareId DurableShareResource Managed Provisioned ->
-    PlannedResource scope planId aliasId DurableAliasResource aliasFrame ->
-    GuestAliasSpec ->
-    ResourceHandle scope planId aliasId DurableAliasResource ownership phase ->
-    Text
-aliasOwnerBinding origin share planned spec handle =
-    Text.concat
-        [ sizedText "hostbootstrap/guest-alias-origin/v2"
-        , sizedText (providerOriginOwner origin)
-        , sizedText (resourceHandleKey share)
-        , sizedText (showText (resourceHandleGeneration share))
-        , sizedText (plannedResourcePlanDigest planned)
-        , sizedText (resourceHandleKey handle)
-        , sizedText (showText (resourceHandleGeneration handle))
-        , sizedText (Text.pack (guestAliasPath spec))
-        , sizedText (Text.pack (guestAliasTarget spec))
-        ]
-  where
-    sizedText value = showText (Text.length value) <> ":" <> value
-
 -- | Bounded, collision-resistant filename under the durable target share.
-aliasRecordName :: GuestAliasSpec -> Text
-aliasRecordName spec =
+aliasRecordName :: FilePath -> FilePath -> Text
+aliasRecordName aliasPath target =
     "guest-alias."
-        <> digestText (Text.pack (guestAliasPath spec) <> "\0" <> Text.pack (guestAliasTarget spec))
+        <> digestText (Text.pack aliasPath <> "\0" <> Text.pack target)
         <> ".record"
 
 guestAliasOwnershipTransaction :: GuestAliasSpec -> ShippedAct -> ShippedOwnership
-guestAliasOwnershipTransaction spec act =
-    ShippedOwnership
-        { shippedAuthority = guestAliasTarget spec Posix.</> ".hostbootstrap-alias-authority-v1"
-        , shippedRecord =
-            either
-                (error . Text.unpack . protectedErrorMessage)
-                id
-                (mkRecordKey (aliasRecordName spec))
-        , shippedTarget = guestAliasPath spec
-        , shippedAct = act
-        }
+guestAliasOwnershipTransaction (GuestAliasSpec aliasPath _ authority key) act =
+    mkShippedOwnership authority key aliasPath act
+
+{- | Recovery when a shipped response is classified as an alias failure.
+
+Only the owning frame's decoded malformed-input refusal is permanent.
+Transport uncertainty, unreadable answers and inapplicable outcomes require a
+fresh observation before retry.
+-}
+shippedAliasFailureRecovery :: Either ShippedFailure ShippedOutcome -> RecoveryDisposition
+shippedAliasFailureRecovery (Left (ShippedFrameRefused (OwnershipMalformed _))) = DoNotRetry
+shippedAliasFailureRecovery _ = ReprobeBeforeRetry
 
 shippedAliasObservation ::
     GuestAliasSpec ->
-    Word64 ->
-    Either OwnershipFault ShippedOutcome ->
+    Either ShippedFailure ShippedOutcome ->
     AliasCallObservation
-shippedAliasObservation spec generation result = case result of
-    Right (ShippedSymbolicLinkCreated _) -> AliasCallCreated generation
-    Right (ShippedSymbolicLinkRetained _) -> AliasCallAlreadyExact generation
-    Left (OwnershipOccupied reason) ->
+shippedAliasObservation spec result = case result of
+    Right (ShippedSymbolicLinkCreated _) -> AliasCallCreated
+    Right (ShippedSymbolicLinkRetained _) -> AliasCallAlreadyExact
+    Left (ShippedFrameRefused (OwnershipOccupied reason)) ->
         AliasCallForeign
-            generation
             (ForeignObservation (Text.pack (guestAliasPath spec)) reason)
-    Left (OwnershipConflict report) -> AliasCallConflict (ownershipConflictDetail spec report)
-    Left (OwnershipUnsupported reason) ->
+    Left (ShippedFrameRefused (OwnershipConflict report)) -> AliasCallConflict (ownershipConflictDetail spec report)
+    Left (ShippedFrameRefused (OwnershipUnsupported reason)) ->
         AliasCallUnsupported (UnsupportedDetail "reconcile provider guest durable alias" reason)
-    Left (OwnershipProbeFailed operation reason) ->
-        AliasCallFailed
-            (FailureDetail operation reason ReprobeBeforeRetry)
-    Left (OwnershipMalformed reason) ->
-        AliasCallFailed
-            (FailureDetail "read provider guest alias ownership" reason DoNotRetry)
+    Left (ShippedFrameRefused (OwnershipProbeFailed operation reason)) ->
+        failed operation reason
+    Left (ShippedFrameRefused (OwnershipMalformed reason)) ->
+        failed "read provider guest alias ownership" reason
+    Left (ShippedCrossingFailed reason) ->
+        failed "cross into provider guest alias frame" reason
+    Left (ShippedOutcomeUndecodable reason) ->
+        failed "decode provider guest alias ownership" reason
     Right other ->
-        AliasCallFailed
-            ( FailureDetail
-                "reconcile provider guest durable alias"
-                ("the shipped ownership row returned an inapplicable outcome: " <> Text.pack (show other))
-                DoNotRetry
-            )
+        failed
+            "reconcile provider guest durable alias"
+            ("the shipped ownership row returned an inapplicable outcome: " <> Text.pack (show other))
+  where
+    failed operation reason =
+        AliasCallFailed (FailureDetail operation reason (shippedAliasFailureRecovery result))
 
 shippedAliasRelease ::
     GuestAliasSpec ->
-    Either OwnershipFault ShippedOutcome ->
+    Either ShippedFailure ShippedOutcome ->
     Either ReconcileError ()
-shippedAliasRelease _spec (Right ShippedObjectGivenBack) = Right ()
-shippedAliasRelease spec (Left (OwnershipConflict report)) =
-    Left (Conflict (ownershipConflictDetail spec report))
-shippedAliasRelease _spec (Left (OwnershipOccupied reason)) =
-    Left
-        ( Conflict
-            (ConflictDetail "provider guest alias" "an absent or managed alias" reason "remove the foreign occupant before retrying")
-        )
-shippedAliasRelease _spec (Left (OwnershipUnsupported reason)) =
-    Left (Unsupported (UnsupportedDetail "release provider guest durable alias" reason))
-shippedAliasRelease _spec (Left (OwnershipProbeFailed operation reason)) =
-    Left (Failure (FailureDetail operation reason ReprobeBeforeRetry))
-shippedAliasRelease _spec (Left (OwnershipMalformed reason)) =
-    Left (Failure (FailureDetail "read provider guest alias ownership" reason DoNotRetry))
-shippedAliasRelease _spec (Right other) =
-    Left
-        ( Failure
-            ( FailureDetail
-                "release provider guest durable alias"
-                ("the shipped ownership row returned an inapplicable outcome: " <> Text.pack (show other))
-                DoNotRetry
+shippedAliasRelease spec result = case result of
+    Right ShippedObjectGivenBack -> Right ()
+    Left (ShippedFrameRefused (OwnershipConflict report)) ->
+        Left (Conflict (ownershipConflictDetail spec report))
+    Left (ShippedFrameRefused (OwnershipOccupied reason)) ->
+        Left
+            ( Conflict
+                (ConflictDetail "provider guest alias" "an absent or managed alias" reason "remove the foreign occupant before retrying")
             )
-        )
+    Left (ShippedFrameRefused (OwnershipUnsupported reason)) ->
+        Left (Unsupported (UnsupportedDetail "release provider guest durable alias" reason))
+    Left (ShippedFrameRefused (OwnershipProbeFailed operation reason)) ->
+        failed operation reason
+    Left (ShippedFrameRefused (OwnershipMalformed reason)) ->
+        failed "read provider guest alias ownership" reason
+    Left (ShippedCrossingFailed reason) ->
+        failed "cross into provider guest alias frame" reason
+    Left (ShippedOutcomeUndecodable reason) ->
+        failed "decode provider guest alias ownership" reason
+    Right other ->
+        failed
+            "release provider guest durable alias"
+            ("the shipped ownership row returned an inapplicable outcome: " <> Text.pack (show other))
+  where
+    failed operation reason =
+        Left (Failure (FailureDetail operation reason (shippedAliasFailureRecovery result)))
 
 ownershipConflictDetail :: GuestAliasSpec -> ConflictReport -> ConflictDetail
 ownershipConflictDetail spec report =
@@ -849,7 +854,6 @@ digestText value =
 data PreparedGuestAliasRelease scope planId providerId backendId capabilityId aliasId shareId phase releaseId
     = PreparedGuestAliasRelease
         GuestAliasSpec
-        Text
         (ResourceHandle scope planId aliasId DurableAliasResource Managed phase)
         (OwnershipReceipt scope planId aliasId DurableAliasResource)
         Word64
@@ -857,10 +861,10 @@ data PreparedGuestAliasRelease scope planId providerId backendId capabilityId al
 type role PreparedGuestAliasRelease nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
 {- | Prepare conditional deletion.  A foreign/unmanaged handle does not type
-check here, and the receipt must match the exact managed generation.  The
-prepared reconcile call supplies the same plan-digest-bound owner text that was
-used to publish the origin; release never reconstructs ownership from only a
-pathname and generation.
+check here, and the receipt must match the exact managed generation and
+observation version. The retained alias/target specification selects the shared
+origin record; the guest transaction rechecks its recorded link identity before
+conditional release.
 -}
 withPreparedGuestAliasRelease ::
     ManagedGuestAliasHandle
@@ -879,7 +883,7 @@ withPreparedGuestAliasRelease ::
     ) ->
     Either ReconcileError result
 withPreparedGuestAliasRelease
-    (ManagedGuestAliasHandle spec owner handle receipt)
+    (ManagedGuestAliasHandle spec handle receipt)
     conditionalVersion
     consume
         | conditionalVersion == 0 =
@@ -901,7 +905,7 @@ withPreparedGuestAliasRelease
             validateOwnershipReceipt handle receipt
             Right
                 ( consume
-                    (PreparedGuestAliasRelease spec owner handle receipt conditionalVersion)
+                    (PreparedGuestAliasRelease spec handle receipt conditionalVersion)
                 )
 
 {- | Conditional release (clause 4): ship the release act back to the exact
@@ -915,8 +919,8 @@ runPreparedGuestAliasRelease ::
     IO (Either ReconcileError ())
 runPreparedGuestAliasRelease
     (StrongAliasBackend _ config self context)
-    (PreparedGuestAliasRelease spec _owner _handle _ _conditionalVersion) = do
-        result <- shipOwnedTransaction config self context (guestAliasOwnershipTransaction spec (ShipGiveBackSymbolicLink (guestAliasTarget spec)))
+    (PreparedGuestAliasRelease spec _handle _ _conditionalVersion) = do
+        result <- shipOwnedTransaction config self context (guestAliasOwnershipTransaction spec (ShipGiveBackSymbolicLink (guestAliasLinkTarget spec)))
         pure (shippedAliasRelease spec result)
 
 -- ---------------------------------------------------------------------------
@@ -934,27 +938,17 @@ data GuestAliasSettlement
     | GuestAliasForeignRetained ForeignObservation
     deriving (Eq, Show)
 
-{- | Reconcile the guest alias from inside the step action that __claims__ it.
+{- | Reconcile the guest alias from the durable-share node that claims it.
 
-This is the production route, and it exists because every input it needs is now
-on the node's own descriptor rather than in a plan the action cannot see:
+The caller supplies the planned provider and share with their exact managed
+handles. This route compares their resource keys, derives the alias projection
+from the node descriptor, and takes its interpreter-opened gate once.
+'withPreparedGuestAliasCall' checks provider generation, provider/share origin
+and alias plan agreement, then runs the fresh share probe while sealing the
+preconditions. No retained observation substitutes for that probe.
 
-* the provider and durable share are resolved out of this node's plan prefix and
-  its own resource ('withNodeResourceOfKind'), so the relation is derived from
-  what the plan ordered rather than from keys the call site spelled;
-* the alias identity is the node's own declared projection
-  ('withNodeGuestAliasProjection'), and its gate is the one the interpreter
-  opened for exactly that projection — taken once, so one prepared call
-  authorises one effect;
-* the exact running provider handle is indexed with the retained strong backend,
-  while the durable share's __managed__ handle is the one the acquiring node
-  carried in process ('withCarriedManagedResource').  The plan-owned traversal
-  runs @shareProbe@ at prepare time rather than trusting an observation taken
-  earlier in the bring-up.
-
-The step that calls this is the durable-share node: validation requires the
-declaring node to be the last resource the projected key names, and the provider
-is already behind it in the plan.
+The node returns a descriptive managed change or foreign observation. It passes
+no prior commit proof, so a retained recorded link settles Repaired.
 -}
 reconcileNodeGuestAlias ::
     StepExecution scope planId ->
@@ -966,8 +960,8 @@ reconcileNodeGuestAlias ::
     GuestAliasSpec ->
     -- | the alias's plan-assigned generation and observation version
     (Word64, Word64) ->
-    -- | the durable share's readiness probe, run by the traversal at prepare time
-    IO (Either ReconcileError Word64) ->
+    -- | the exact backend-minted share dependency, reobserved at prepare time
+    ProviderShareDependency scope planId shareId ->
     IO (Either ReconcileError GuestAliasSettlement)
 reconcileNodeGuestAlias
     execution
@@ -975,10 +969,10 @@ reconcileNodeGuestAlias
     plannedProvider
     managedProvider@(ManagedProviderHandle _ providerHandle _)
     plannedShare
-    managedShare@(ManagedProviderShareHandle _ shareHandle _)
+    managedShare@(ManagedProviderShareHandle shareOrigin shareHandle shareReceipt shareCall)
     spec
     (generation, observationVersion)
-    shareProbe =
+    shareDependency =
         if plannedResourceKey plannedProvider /= resourceHandleKey providerHandle
             then
                 pure
@@ -1006,10 +1000,28 @@ reconcileNodeGuestAlias
                                     )
                                 )
                             )
+                    else if not matchingShareDependency
+                        then pure (Left (Conflict (ConflictDetail (resourceHandleKey shareHandle)
+                            "the exact local provider share dependency"
+                            "a carried or different share dependency"
+                            "use the dependency minted from this managed share")))
                     else joinAliasIO $
                         withNodeGuestAliasProjection execution plannedProvider plannedShare $ \alias edge ->
                             aliasCall alias edge
       where
+        matchingShareDependency = withLocalProviderShareDependency shareDependency matches == Just True
+        matches (ManagedProviderShareHandle origin handle receipt callDigest) =
+            providerOriginOwner origin == providerOriginOwner shareOrigin
+                && providerBackendSemanticFingerprint (providerOriginBackendBinding origin)
+                    == providerBackendSemanticFingerprint (providerOriginBackendBinding shareOrigin)
+                && providerBackendRealizationFingerprint (providerOriginBackendBinding origin)
+                    == providerBackendRealizationFingerprint (providerOriginBackendBinding shareOrigin)
+                && resourceHandleKey handle == resourceHandleKey shareHandle
+                && resourceHandleGeneration handle == resourceHandleGeneration shareHandle
+                && resourceHandleObservationVersion handle == resourceHandleObservationVersion shareHandle
+                && ownershipReceiptOperationKey receipt == ownershipReceiptOperationKey shareReceipt
+                && callDigest == shareCall
+
         aliasCall alias edge = do
             taken <- stepExecutionTakeProjectedGate execution (plannedResourceKey alias)
             case taken of
@@ -1037,7 +1049,7 @@ reconcileNodeGuestAlias
                                         alias
                                         edge
                                         aliasHandle
-                                        (dependencyProbe shareProbe)
+                                        (providerShareDependencyProbe shareDependency)
                                         spec
                                         gate
                                         (runAndSettle backend)

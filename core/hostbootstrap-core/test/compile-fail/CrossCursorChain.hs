@@ -7,7 +7,7 @@ import HostBootstrap.Authority (
     VerbDown,
     VerbUp,
  )
-import HostBootstrap.Chain (runChainFromFrame)
+import HostBootstrap.Chain (runChainFromFrameWithDescentFailure)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Mode (LifecycleCursor)
 import HostBootstrap.Lift (SelfRef)
@@ -35,7 +35,7 @@ wrongScope ::
     LifecycleCursor ForeignScope Plan Frame Broker VerbUp ExecutePhase ->
     ()
 wrongScope cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()
 
 wrongPlan ::
     HostConfig ->
@@ -46,7 +46,7 @@ wrongPlan ::
     LifecycleCursor Scope CursorPlan Frame Broker VerbUp ExecutePhase ->
     ()
 wrongPlan cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()
 
 wrongFrame ::
     HostConfig ->
@@ -57,7 +57,7 @@ wrongFrame ::
     LifecycleCursor Scope Plan CursorFrame Broker VerbUp ExecutePhase ->
     ()
 wrongFrame cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()
 
 wrongBroker ::
     HostConfig ->
@@ -68,7 +68,7 @@ wrongBroker ::
     LifecycleCursor Scope Plan Frame CursorBroker VerbUp ExecutePhase ->
     ()
 wrongBroker cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()
 
 wrongVerb ::
     HostConfig ->
@@ -79,7 +79,7 @@ wrongVerb ::
     LifecycleCursor Scope Plan Frame Broker VerbDown ExecutePhase ->
     ()
 wrongVerb cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()
 
 wrongPhase ::
     HostConfig ->
@@ -90,4 +90,4 @@ wrongPhase ::
     LifecycleCursor Scope Plan Frame Broker VerbUp PreparePhase ->
     ()
 wrongPhase cfg self store plan authority cursor =
-    seq (runChainFromFrame cfg self store plan authority cursor) ()
+    seq (runChainFromFrameWithDescentFailure cfg self store plan authority cursor (\_ _ _ _ -> pure (Right ()))) ()

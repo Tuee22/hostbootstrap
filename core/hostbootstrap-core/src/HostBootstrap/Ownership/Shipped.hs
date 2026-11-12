@@ -1,5 +1,7 @@
 {-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -12,7 +14,8 @@ once in "HostBootstrap.Ownership.Primitive" and held by one platform row
 a path inside a provider guest, a durable root inside a VM. This module is how
 that transaction reaches them, and it is a **transport rather than a third
 implementation of the clauses**: what executes on the far side is the very same
-seam over the very same row, because every frame this project reaches is Linux.
+seam over the frame's selected host row: POSIX in a Linux guest, and the
+outer host's own row under an empty context.
 
 The transaction travels as **one value**. That is what keeps clause 1 a kernel
 fact: the receiving process opens the protected store the transaction names,
@@ -37,7 +40,21 @@ what a hard kill skips.
 -}
 module HostBootstrap.Ownership.Shipped (
     -- * The transaction
-    ShippedOwnership (..),
+    ShippedAuthorityPath,
+    mkShippedAuthorityPath,
+    shippedAuthorityPath,
+    ShippedTargetPath,
+    mkShippedTargetPath,
+    shippedTargetPath,
+    ShippedLinkTargetPath,
+    mkShippedLinkTargetPath,
+    shippedLinkTargetPath,
+    ShippedOwnership,
+    mkShippedOwnership,
+    shippedAuthority,
+    shippedRecord,
+    shippedTarget,
+    shippedAct,
     ShippedAct (..),
     encodeShippedOwnership,
     decodeShippedOwnership,
@@ -48,11 +65,18 @@ module HostBootstrap.Ownership.Shipped (
     decodeShippedOutcome,
 
     -- * The near side
+    ShippedFailure (..),
+    classifyShippedOutcome,
     shipOwnedTransaction,
 
     -- * The far side
     interpretShippedOwnership,
     runShippedOwnership,
+
+    -- * A local directory's live ownership extent
+    ShippedDirectoryLease,
+    withShippedDirectoryLease,
+    useShippedDirectoryLease,
 )
 where
 
@@ -63,6 +87,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.Char (GeneralCategory (Surrogate), generalCategory)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -70,7 +95,7 @@ import Data.Word (Word32, Word8)
 import HostBootstrap.Handoff.Transaction (withFrameChildTransaction)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lift (LiftContext, SelfRef)
-import HostBootstrap.Ownership.Clause (enteredEvidence)
+import HostBootstrap.Ownership.Clause (Bound, enteredEvidence)
 import HostBootstrap.Ownership.Object (
     storeFault,
     ConflictReport (ConflictReport, conflictExpected, conflictObserved, conflictSubject),
@@ -87,9 +112,6 @@ import HostBootstrap.Ownership.Object (
         OwnershipUnsupported
     ),
     Payload,
-#ifndef mingw32_HOST_OS
-    mkKernelObjectIdentity,
-#endif
     mkObjectIdentity,
     mkOwnerClaim,
     mkPayload,
@@ -111,12 +133,13 @@ import HostBootstrap.Ownership.Primitive (
     publishOwnedFile,
     recordOwnedOrigin,
     recordReportedOrigin,
-    reenterOwnedObject,
+    reenterStoredOwnedObject,
     releaseOwnedObject,
     releaseReportedObject,
     reobserveOwnedIdentity,
     reobserveReportedIdentity,
 #ifndef mingw32_HOST_OS
+    rowObserveIdentity,
     rowSyncParent,
     withOwnershipRow,
 #endif
@@ -129,10 +152,11 @@ import HostBootstrap.Ownership.Tape (
     publishBoundRecord,
     publishFreshRecord,
     readRecordUnder,
+    readStoredRecordUnder,
     recordTape,
+    storedOriginRecord,
  )
 import HostBootstrap.Protected (
-    ProtectedError,
     ProtectedSession,
     RecordKey,
     mkRecordKey,
@@ -142,8 +166,11 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Wire.LittleEndian (word32LE)
+import qualified System.FilePath as HostPath
+import qualified System.FilePath.Posix as PosixPath
+import qualified System.FilePath.Windows as WindowsPath
 #ifndef mingw32_HOST_OS
-import System.IO.Error (isAlreadyExistsError, isDoesNotExistError)
+import System.IO.Error (isAlreadyExistsError)
 #ifdef darwin_HOST_OS
 import Foreign.C.Error (throwErrnoIfMinus1_)
 import Foreign.C.String (CString, withCString)
@@ -153,8 +180,6 @@ import System.Posix.Files (createLink)
 #endif
 import System.Posix.Files
     ( createSymbolicLink
-    , deviceID
-    , fileID
     , getSymbolicLinkStatus
     , isSymbolicLink
     , readSymbolicLink
@@ -165,24 +190,80 @@ import System.Posix.Files
 -- ---------------------------------------------------------------------------
 -- The transaction
 
+-- | An absolute authority root addressed in the owning frame's path grammar.
+newtype ShippedAuthorityPath = ShippedAuthorityPath FilePath
+    deriving (Eq, Show)
+
+{- | Admit scalar path text without choosing a frame on the caller's behalf.
+
+A guest uses POSIX grammar; an empty context can address a Windows outer host.
+The receiving process checks its own grammar again before opening the store.
+-}
+mkShippedAuthorityPath :: FilePath -> Either OwnershipFault ShippedAuthorityPath
+mkShippedAuthorityPath path = ShippedAuthorityPath <$> admitShippedPath "authority" path
+
+admitShippedPath :: Text -> FilePath -> Either OwnershipFault FilePath
+admitShippedPath role path
+    | null path = malformed "must not be empty"
+    | '\0' `elem` path = malformed "must not contain NUL"
+    | any ((== Surrogate) . generalCategory) path =
+        malformed "must be Unicode scalar text"
+    | not (PosixPath.isAbsolute path || WindowsPath.isAbsolute path) =
+        malformed "must be absolute in its owning frame"
+    | otherwise = Right path
+  where
+    malformed reason = Left (OwnershipMalformed ("the " <> role <> " path " <> reason))
+
+-- | The admitted path text, for encoding and the receiving host's store API.
+shippedAuthorityPath :: ShippedAuthorityPath -> FilePath
+shippedAuthorityPath (ShippedAuthorityPath path) = path
+
+-- | The object path, distinct from the root that stores its ownership record.
+newtype ShippedTargetPath = ShippedTargetPath FilePath
+    deriving (Eq, Show)
+
+-- | Admit an absolute scalar object path in the addressed frame's grammar.
+mkShippedTargetPath :: FilePath -> Either OwnershipFault ShippedTargetPath
+mkShippedTargetPath path = ShippedTargetPath <$> admitShippedPath "object target" path
+
+shippedTargetPath :: ShippedTargetPath -> FilePath
+shippedTargetPath (ShippedTargetPath path) = path
+
+-- | A symbolic link's destination, distinct from its object and authority.
+newtype ShippedLinkTargetPath = ShippedLinkTargetPath FilePath
+    deriving (Eq, Show)
+
+-- | Admit absolute scalar destination text in the addressed frame's grammar.
+mkShippedLinkTargetPath :: FilePath -> Either OwnershipFault ShippedLinkTargetPath
+mkShippedLinkTargetPath path = ShippedLinkTargetPath <$> admitShippedPath "symbolic link target" path
+
+shippedLinkTargetPath :: ShippedLinkTargetPath -> FilePath
+shippedLinkTargetPath (ShippedLinkTargetPath path) = path
+
 {- | One complete ownership transaction, addressed to the frame that owns the
 object.
 
-Everything the far side is entitled to is here, and nothing else. It receives no
-pathname policy, no command to run, and no authority: it is told which protected
-store holds this object's clauses, which record names it, which object it is,
-and which of a closed set of acts to perform.
+The admitted authority root, durable record, target object and closed act travel
+together. A caller cannot replace either path role with an unchecked FilePath.
 -}
-data ShippedOwnership = ShippedOwnership
-    { shippedAuthority :: FilePath
-    -- ^ where the far side keeps this object's exclusive entry and durable record
-    , shippedRecord :: RecordKey
-    -- ^ the durable record that names this object
-    , shippedTarget :: FilePath
-    -- ^ the object itself, in the far frame's own grammar (§ MM)
-    , shippedAct :: ShippedAct
-    }
+data ShippedOwnership = ShippedOwnership ShippedAuthorityPath RecordKey ShippedTargetPath ShippedAct
     deriving (Eq, Show)
+
+-- | Address one transaction to an admitted authority root.
+mkShippedOwnership :: ShippedAuthorityPath -> RecordKey -> ShippedTargetPath -> ShippedAct -> ShippedOwnership
+mkShippedOwnership = ShippedOwnership
+
+shippedAuthority :: ShippedOwnership -> ShippedAuthorityPath
+shippedAuthority (ShippedOwnership authority _ _ _) = authority
+
+shippedRecord :: ShippedOwnership -> RecordKey
+shippedRecord (ShippedOwnership _ key _ _) = key
+
+shippedTarget :: ShippedOwnership -> ShippedTargetPath
+shippedTarget (ShippedOwnership _ _ target _) = target
+
+shippedAct :: ShippedOwnership -> ShippedAct
+shippedAct (ShippedOwnership _ _ _ act) = act
 
 {- | The closed set of acts a shipped transaction may name.
 
@@ -192,7 +273,8 @@ because a described command travels through the one interpreter (§ KK) and an
 act that could run a string would make this a shell again.
 -}
 data ShippedAct
-    = -- | report what is there, and mutate nothing
+    = -- | Report without recording; opening an absent authority store creates its
+      -- directories and identity file.
       ShipObserveObject
     | -- | clauses 1–3 over a directory this transaction creates
       ShipTakeDirectory
@@ -201,10 +283,18 @@ data ShippedAct
     | -- | clause 4, re-entered from the durable record the far side holds
       ShipGiveBackObject
     | -- | clauses 1–3 over a symbolic link published without replacement
-      ShipTakeSymbolicLink FilePath
+      ShipTakeSymbolicLink ShippedLinkTargetPath
     | -- | clause 4 over that symbolic link and its exact target
-      ShipGiveBackSymbolicLink FilePath
+      ShipGiveBackSymbolicLink ShippedLinkTargetPath
     deriving (Eq, Show)
+
+linkTargetOf :: ShippedAct -> Maybe ShippedLinkTargetPath
+linkTargetOf ShipObserveObject = Nothing
+linkTargetOf ShipTakeDirectory = Nothing
+linkTargetOf (ShipTakeFile _) = Nothing
+linkTargetOf ShipGiveBackObject = Nothing
+linkTargetOf (ShipTakeSymbolicLink target) = Just target
+linkTargetOf (ShipGiveBackSymbolicLink target) = Just target
 
 -- ---------------------------------------------------------------------------
 -- The outcome
@@ -234,38 +324,47 @@ data ShippedOutcome
 -- ---------------------------------------------------------------------------
 -- The near side
 
+-- | Which stage prevented the caller from receiving a successful outcome.
+data ShippedFailure
+    = -- | the frame transaction could not return an answer
+      ShippedCrossingFailed Text
+    | -- | an answer arrived but its ownership outcome could not be decoded
+      ShippedOutcomeUndecodable Text
+    | -- | the frame decoded the transaction and refused its requested act
+      ShippedFrameRefused OwnershipFault
+    deriving (Eq, Show)
+
+-- | Preserve transport, decoding and frame refusal as distinct returned values.
+classifyShippedOutcome :: Either Text ByteString -> Either ShippedFailure ShippedOutcome
+classifyShippedOutcome crossed = case crossed of
+    Left failure -> Left (ShippedCrossingFailed failure)
+    Right raw -> case decodeShippedOutcome raw of
+        Left fault -> Left (ShippedOutcomeUndecodable (Text.pack (show fault)))
+        Right (ShippedRefused fault) -> Left (ShippedFrameRefused fault)
+        Right outcome -> Right outcome
+
 {- | Run one ownership transaction at the frame @context@ names.
 
 The invocation comes from the lift's one fold and the process group is ended on
 every exit path, because both belong to the crossing this call is wrapped in.
-What is added here is only the transaction's own encoding and the outcome's own
-decoding, so a failure of the crossing and a refusal by the frame stay distinct:
-the first is a probe that could not be made, the second is an answer.
+The transaction is encoded here and its returned outcome is classified here.
+A crossing failure retains its transport diagnostic, an undecodable answer
+retains its decoding diagnostic, and a decoded frame refusal retains the
+frame's OwnershipFault. These are three distinct ShippedFailure constructors.
 -}
 shipOwnedTransaction ::
     HostConfig ->
     SelfRef ->
     LiftContext ->
     ShippedOwnership ->
-    IO (Either OwnershipFault ShippedOutcome)
-shipOwnedTransaction config self context transaction = do
-    crossed <-
-        withFrameChildTransaction
+    IO (Either ShippedFailure ShippedOutcome)
+shipOwnedTransaction config self context transaction =
+    classifyShippedOutcome
+        <$> withFrameChildTransaction
             config
             self
             context
             (encodeShippedOwnership transaction)
-    pure $ case crossed of
-        Left failure ->
-            Left
-                ( OwnershipProbeFailed
-                    "run an ownership transaction at the frame that owns the object"
-                    failure
-                )
-        Right raw -> case decodeShippedOutcome raw of
-            Left fault -> Left fault
-            Right (ShippedRefused fault) -> Left fault
-            Right outcome -> Right outcome
 
 -- ---------------------------------------------------------------------------
 -- The far side
@@ -295,17 +394,101 @@ Both are the same two every host-local owner holds, so a shipped transaction is
 not a second way to own something — it is the same way, run somewhere else.
 -}
 runShippedOwnership :: OwnershipRow -> ShippedOwnership -> IO ShippedOutcome
-runShippedOwnership row transaction = do
-    opened <- openProtectedStore (shippedAuthority transaction)
-    case opened of
-        Left failure -> pure (refusedByStore "open this frame's ownership authority" failure)
-        Right store -> do
-            entered <-
-                withProtectedEntry store $ \session ->
-                    Right <$> inEntry row transaction session
-            pure $ case entered of
-                Left failure -> refusedByStore "enter this frame's ownership authority" failure
-                Right outcome -> outcome
+runShippedOwnership row transaction =
+    either ShippedRefused id
+        <$> withShippedEntry transaction (\session -> Right <$> inEntry row transaction session)
+
+-- | The same receiving-frame validation and entry surround both local uses.
+withShippedEntry ::
+    ShippedOwnership ->
+    (forall session. ProtectedSession session -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+withShippedEntry transaction action
+    | not (HostPath.isAbsolute authority) =
+        pure (Left (OwnershipMalformed "the authority path is not absolute in the receiving frame"))
+    | not (HostPath.isAbsolute target) =
+        pure (Left (OwnershipMalformed "the object target path is not absolute in the receiving frame"))
+    | maybe False (not . HostPath.isAbsolute . shippedLinkTargetPath) (linkTargetOf (shippedAct transaction)) =
+        pure (Left (OwnershipMalformed "the symbolic link target is not absolute in the receiving frame"))
+    | otherwise = do
+        opened <- openProtectedStore authority
+        case opened of
+            Left failure -> pure (Left (storeFault "open this frame's ownership authority" failure))
+            Right store -> do
+                entered <- withProtectedEntry store (\session -> Right <$> action session)
+                pure (either (Left . storeFault "enter this frame's ownership authority") id entered)
+  where
+    authority = shippedAuthorityPath (shippedAuthority transaction)
+    target = shippedTargetPath (shippedTarget transaction)
+
+{- | A directory bound under the protected entry that encloses its consumer.
+
+The entry and object indices are existential inside a fresh nominal lease. Its
+constructor and fields are private; the only effect-bearing eliminator checks
+the actual entry and directory again, including after its action returns.
+-}
+data ShippedDirectoryLease lease
+    = forall session object.
+      ShippedDirectoryLease
+        { directoryLeaseRow :: OwnershipRow
+        , directoryLeaseBound :: Bound session object
+        }
+
+type role ShippedDirectoryLease nominal
+
+{- | Acquire a directory through the ordinary shipped take, then keep its entry.
+
+The same acquisition resolves fresh, retained and interrupted records. Re-entry
+reads the bound record from this entry's protected tape; an in-memory identity
+alone never produces a lease. A callback exception releases the entry through
+the protected store's existing bracket.
+-}
+withShippedDirectoryLease ::
+    OwnershipRow ->
+    ShippedOwnership ->
+    (forall lease. ShippedDirectoryLease lease -> IO result) ->
+    IO (Either OwnershipFault result)
+withShippedDirectoryLease row transaction consume
+    | shippedAct transaction /= ShipTakeDirectory =
+        pure (Left (OwnershipMalformed "a directory lease requires a directory-take transaction"))
+    | otherwise =
+        withShippedEntry transaction $ \session -> do
+            taken <- inEntry row transaction session
+            case taken of
+                ShippedRefused fault -> pure (Left fault)
+                ShippedObjectTaken identity -> do
+                    current <- readStoredRecordUnder (shippedTape session) (shippedRecord transaction)
+                    case current of
+                        Left fault -> pure (Left fault)
+                        Right (Just stored)
+                            | let record = storedOriginRecord stored
+                            , originRecordKind record == OwnedDirectory
+                            , originRecordOrigin record == OriginAbsent
+                            , originRecordBinding record == Just identity ->
+                                reenterStoredOwnedObject row session target stored $ \bound ->
+                                    let lease = ShippedDirectoryLease row bound
+                                     in useShippedDirectoryLease lease (consume lease)
+                        _ -> pure (Left (OwnershipMalformed "the acquired directory has no matching bound record"))
+                _ -> pure (Left (OwnershipMalformed "directory acquisition returned a non-directory outcome"))
+  where
+    target = shippedTargetPath (shippedTarget transaction)
+
+{- | Run an action only under this thread's live entry and exact directory.
+
+The protected session checks its owner thread and liveness before the kernel
+identity observation. An escaped closure, or a use from another thread, refuses
+before running its action. The callback's surrounding entry stays held through
+both observations and the action.
+-}
+useShippedDirectoryLease :: ShippedDirectoryLease lease -> IO result -> IO (Either OwnershipFault result)
+useShippedDirectoryLease ShippedDirectoryLease{directoryLeaseRow = row, directoryLeaseBound = bound} action = do
+    before <- reobserveOwnedIdentity row bound
+    case before of
+        Left fault -> pure (Left fault)
+        Right _ -> do
+            result <- action
+            after <- reobserveOwnedIdentity row bound
+            pure (result <$ after)
 
 inEntry ::
     OwnershipRow ->
@@ -317,11 +500,11 @@ inEntry row transaction session = case shippedAct transaction of
     ShipTakeDirectory -> takeObject OwnedDirectory Nothing
     ShipTakeFile payload -> takeObject (OwnedFile (payloadDigest payload)) (Just payload)
     ShipGiveBackObject -> giveBack
-    ShipTakeSymbolicLink linkTarget -> takeSymbolicLink linkTarget
-    ShipGiveBackSymbolicLink linkTarget -> giveBackSymbolicLink linkTarget
+    ShipTakeSymbolicLink linkTarget -> takeSymbolicLink (shippedLinkTargetPath linkTarget)
+    ShipGiveBackSymbolicLink linkTarget -> giveBackSymbolicLink (shippedLinkTargetPath linkTarget)
   where
     key = shippedRecord transaction
-    target = shippedTarget transaction
+    target = shippedTargetPath (shippedTarget transaction)
     settle = either ShippedRefused id
 
     observe = do
@@ -342,10 +525,10 @@ inEntry row transaction session = case shippedAct transaction of
     -- An exact retry converges on the record this frame already holds rather
     -- than opening a second transaction over the same object.
     takeObject kind payload = do
-        stored <- readBoundRecord session key
+        stored <- readStoredRecordUnder (shippedTape session) key
         case stored of
             Left fault -> pure (ShippedRefused fault)
-            Right (Just record) -> pure (retried record)
+            Right (Just record) -> retried kind record
             Right Nothing -> do
                 outcome <- enterOwnedObject row session target $ \entered ->
                     enteredEvidence
@@ -356,13 +539,29 @@ inEntry row transaction session = case shippedAct transaction of
                         entered
                 pure (settle outcome)
 
-    retried record = case originRecordBinding record of
-        Just identity -> ShippedObjectTaken identity
-        Nothing ->
-            ShippedRefused
-                ( OwnershipMalformed
-                    "this frame holds an unbound record for the object, so a previous transaction did not get past clause 2"
-                )
+    retried kind stored
+        | originRecordKind record /= kind =
+            pure (ShippedRefused (OwnershipMalformed "this frame's record describes a different object kind or file payload"))
+        | originRecordOrigin record /= OriginAbsent =
+            pure (ShippedRefused (OwnershipMalformed "this frame's record did not record an absent origin"))
+        | otherwise = case originRecordBinding record of
+            Just identity -> do
+                outcome <- reenterStoredOwnedObject row session target stored $ \bound ->
+                    fmap
+                        (fmap (const (ShippedObjectTaken identity)))
+                        (reobserveOwnedIdentity row bound)
+                pure (settle outcome)
+            Nothing
+                | kind == OwnedDirectory -> resumeUnboundDirectory record
+                | otherwise ->
+                    pure
+                        ( ShippedRefused
+                            ( OwnershipMalformed
+                                "this frame holds an unbound record for the object, so a previous transaction did not get past clause 2"
+                            )
+                        )
+      where
+        record = storedOriginRecord stored
 
     createUnder entered kind payload = do
         recorded <- recordOwnedOrigin row entered kind (publishOrigin session key)
@@ -378,21 +577,57 @@ inEntry row transaction session = case shippedAct transaction of
                         bound <- bindOwnedIdentity row token identity (publishBinding session key)
                         pure (fmap (const (ShippedObjectTaken identity)) bound)
 
+    -- Both directions resolve the same interrupted directory record under the
+    -- protected entry. Exact unbound publication is already idempotent.
+    resumeUnboundDirectory record
+        | originRecordOrigin record /= OriginAbsent =
+            pure (ShippedRefused (OwnershipMalformed "this frame's directory record did not record an absent origin"))
+        | otherwise = do
+            outcome <- enterOwnedObject row session target $ \entered ->
+                enteredEvidence
+                    ( \_target origin -> case origin of
+                        OriginAbsent
+                            | shippedAct transaction == ShipTakeDirectory ->
+                                createUnder entered OwnedDirectory Nothing
+                            | otherwise ->
+                                fmap (fmap (const ShippedObjectGivenBack)) (forget session key record)
+                        OriginPresent identity ->
+                            pure
+                                ( Left
+                                    ( OwnershipConflict
+                                        ConflictReport
+                                            { conflictSubject =
+                                                Text.pack target
+                                                    <> " exists without a recorded identity; inspect it and restore the recorded absence before retrying"
+                                            , conflictExpected = OriginAbsent
+                                            , conflictObserved = OriginPresent identity
+                                            }
+                                    )
+                                )
+                    )
+                    entered
+            pure (settle outcome)
+
     giveBack = do
-        stored <- readBoundRecord session key
+        stored <- readStoredRecordUnder (shippedTape session) key
         case stored of
             Left fault -> pure (ShippedRefused fault)
             Right Nothing -> pure ShippedObjectGivenBack
-            Right (Just record) -> do
-                outcome <- reenterOwnedObject row session target record $ \bound -> do
-                    releasable <- reobserveOwnedIdentity row bound
-                    case releasable of
-                        Left fault -> pure (Left fault)
-                        Right token ->
-                            fmap
-                                (fmap (const ShippedObjectGivenBack))
-                                (releaseOwnedObject row token (forget session key))
-                pure (settle outcome)
+            Right (Just record)
+                | let held = storedOriginRecord record
+                , originRecordKind held == OwnedDirectory
+                , originRecordBinding held == Nothing ->
+                    resumeUnboundDirectory held
+                | otherwise -> do
+                    outcome <- reenterStoredOwnedObject row session target record $ \bound -> do
+                        releasable <- reobserveOwnedIdentity row bound
+                        case releasable of
+                            Left fault -> pure (Left fault)
+                            Right token ->
+                                fmap
+                                    (fmap (const ShippedObjectGivenBack))
+                                    (releaseOwnedObject row token (forget session key))
+                    pure (settle outcome)
 
     takeSymbolicLink linkTarget = do
         stored <- readBoundRecord session key
@@ -412,7 +647,7 @@ inEntry row transaction session = case shippedAct transaction of
                 recorded <-
                     recordReportedOrigin
                         entered
-                        (ReportedObject (symbolicLinkClaim linkTarget))
+                        (symbolicLinkClaim linkTarget)
                         (publishOrigin session key)
                 case recorded of
                     Left fault -> pure (Left fault)
@@ -444,7 +679,7 @@ inEntry row transaction session = case shippedAct transaction of
                         recorded <-
                             recordReportedOrigin
                                 entered
-                                (ReportedObject (symbolicLinkClaim linkTarget))
+                                (symbolicLinkClaim linkTarget)
                                 (publishExactRecord session key record)
                         case recorded of
                             Left fault -> pure (Left fault)
@@ -480,41 +715,64 @@ inEntry row transaction session = case shippedAct transaction of
             Right (Just record) ->
                 case validateSymbolicLinkRecord linkTarget record of
                     Left fault -> pure (ShippedRefused fault)
-                    Right Nothing -> pure (ShippedRefused (OwnershipMalformed "the symbolic-link record has no identity binding"))
+                    Right Nothing -> releaseUnboundSymbolicLink linkTarget record
                     Right (Just identity) -> releaseSymbolicLink linkTarget record identity
+
+    releaseUnboundSymbolicLink linkTarget record = do
+        observed <- observeSymbolicLink target linkTarget
+        case observed of
+            Left fault -> pure (ShippedRefused fault)
+            Right SymbolicLinkAbsent -> do
+                cleaned <- cleanupUnboundSymbolicLinkStage row transaction linkTarget
+                case cleaned of
+                    Left fault -> pure (ShippedRefused fault)
+                    Right () -> do
+                        forgotten <- forget session key record
+                        pure (either ShippedRefused (const ShippedObjectGivenBack) forgotten)
+            Right present -> pure (ShippedRefused (symbolicLinkOriginConflict target OriginAbsent present))
 
     releaseSymbolicLink linkTarget record identity = do
         observed <- observeSymbolicLink target linkTarget
         case observed of
             Left fault -> pure (ShippedRefused fault)
             Right SymbolicLinkAbsent -> do
-                forgotten <- forget session key record
-                pure (either ShippedRefused (const ShippedObjectGivenBack) forgotten)
+                cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
+                case cleaned of
+                    Left fault -> pure (ShippedRefused fault)
+                    Right () -> do
+                        forgotten <- forget session key record
+                        pure (either ShippedRefused (const ShippedObjectGivenBack) forgotten)
             Right (SymbolicLinkExact current)
                 | current == identity -> do
-                    outcome <-
-                        enterReportedObject session target OriginAbsent $ \entered -> do
-                            recorded <-
-                                recordReportedOrigin
-                                    entered
-                                    (ReportedObject (symbolicLinkClaim linkTarget))
-                                    (publishExactRecord session key record)
-                            case recorded of
-                                Left fault -> pure (Left fault)
-                                Right token -> do
-                                    rebound <- bindReportedIdentity token identity (publishExactRecord session key record)
-                                    case rebound of
-                                        Left fault -> pure (Left fault)
-                                        Right bound -> case reobserveReportedIdentity bound (OriginPresent current) of
-                                            Left fault -> pure (Left fault)
-                                            Right releasable -> do
-                                                removed <- removeExactSymbolicLink row target
-                                                case removed of
-                                                    Left fault -> pure (Left fault)
-                                                    Right () ->
-                                                        releaseReportedObject releasable OriginAbsent (forget session key)
-                    pure (either ShippedRefused (const ShippedObjectGivenBack) outcome)
+                    cleaned <- cleanupSymbolicLinkStage row transaction linkTarget identity
+                    case cleaned of
+                        Left fault -> pure (ShippedRefused fault)
+                        Right () -> releaseExactSymbolicLink linkTarget record identity
             Right present -> pure (ShippedRefused (symbolicLinkIdentityConflict target identity present))
+
+    releaseExactSymbolicLink linkTarget record identity = do
+        outcome <-
+            enterReportedObject session target OriginAbsent $ \entered -> do
+                recorded <-
+                    recordReportedOrigin
+                        entered
+                        (symbolicLinkClaim linkTarget)
+                        (publishExactRecord session key record)
+                case recorded of
+                    Left fault -> pure (Left fault)
+                    Right token -> do
+                        rebound <- bindReportedIdentity token identity (publishExactRecord session key record)
+                        case rebound of
+                            Left fault -> pure (Left fault)
+                            Right bound -> do
+                                removed <-
+                                    removeExactSymbolicLink row target linkTarget identity
+                                        (reobserveReportedIdentity bound . OriginPresent)
+                                case removed of
+                                    Left fault -> pure (Left fault)
+                                    Right releasable ->
+                                        releaseReportedObject releasable OriginAbsent (forget session key)
+        pure (either ShippedRefused (const ShippedObjectGivenBack) outcome)
 
 occupied :: FilePath -> OwnershipFault
 occupied target =
@@ -530,7 +788,7 @@ nothing else, so two transactions never stage through one name.
 -}
 stagingOf :: ShippedOwnership -> FilePath
 stagingOf transaction =
-    shippedTarget transaction
+    shippedTargetPath (shippedTarget transaction)
         <> ".hostbootstrap-shipped-"
         <> Text.unpack (recordKeyText (shippedRecord transaction))
 
@@ -556,11 +814,15 @@ symbolicLinkOccupied path observation =
         (Text.pack path <> " is occupied by " <> symbolicLinkObservationText observation)
 
 symbolicLinkIdentityConflict :: FilePath -> ObjectIdentity -> SymbolicLinkObservation -> OwnershipFault
-symbolicLinkIdentityConflict path expected observation =
+symbolicLinkIdentityConflict path expected =
+    symbolicLinkOriginConflict path (OriginPresent expected)
+
+symbolicLinkOriginConflict :: FilePath -> Origin -> SymbolicLinkObservation -> OwnershipFault
+symbolicLinkOriginConflict path expected observation =
     OwnershipConflict
         ConflictReport
             { conflictSubject = Text.pack path
-            , conflictExpected = OriginPresent expected
+            , conflictExpected = expected
             , conflictObserved = case observation of
                 SymbolicLinkAbsent -> OriginAbsent
                 SymbolicLinkExact identity -> OriginPresent identity
@@ -597,24 +859,34 @@ observeSymbolicLink _path _linkTarget =
     pure (Left (OwnershipUnsupported "symbolic-link ownership is available only in a POSIX frame"))
 #else
 observeSymbolicLink path linkTarget = do
-    statusResult <- try (getSymbolicLinkStatus path)
-    case statusResult of
-        Left failure
-            | isDoesNotExistError failure -> pure (Right SymbolicLinkAbsent)
-            | otherwise -> pure (Left (symbolicLinkProbe "observe" path failure))
-        Right status -> do
-            identity <- pure (mkKernelObjectIdentity (fromIntegral (deviceID status)) (fromIntegral (fileID status)))
-            case identity of
-                Left fault -> pure (Left fault)
-                Right stable
-                    | not (isSymbolicLink status) -> pure (Right (SymbolicLinkOther (Just stable)))
-                    | otherwise -> do
-                        targetResult <- try (readSymbolicLink path)
-                        pure $ case targetResult of
-                            Left failure -> Left (symbolicLinkProbe "read" path failure)
-                            Right actual
-                                | actual == linkTarget -> Right (SymbolicLinkExact stable)
-                                | otherwise -> Right (SymbolicLinkOther (Just stable))
+    before <- observeIdentity
+    case before of
+        Left fault -> pure (Left fault)
+        Right Nothing -> pure (Right SymbolicLinkAbsent)
+        Right (Just stable) -> do
+            statusResult <- try (getSymbolicLinkStatus path)
+            case statusResult of
+                Left failure -> pure (Left (symbolicLinkProbe "observe" path failure))
+                Right status -> do
+                    classified <-
+                        if not (isSymbolicLink status)
+                            then pure (Right (SymbolicLinkOther (Just stable)))
+                            else do
+                                targetResult <- try (readSymbolicLink path)
+                                pure $ case targetResult of
+                                    Left failure -> Left (symbolicLinkProbe "read" path failure)
+                                    Right actual
+                                        | actual == linkTarget -> Right (SymbolicLinkExact stable)
+                                        | otherwise -> Right (SymbolicLinkOther (Just stable))
+                    after <- observeIdentity
+                    pure $ do
+                        current <- after
+                        if current == Just stable
+                            then classified
+                            else Left (OwnershipOccupied (Text.pack path <> " changed during symbolic-link observation"))
+  where
+    observeIdentity =
+        withOwnershipRow ownershipRowForHost (\primitives -> rowObserveIdentity primitives path)
 #endif
 
 prepareSymbolicLink :: OwnershipRow -> ShippedOwnership -> FilePath -> IO (Either OwnershipFault ObjectIdentity)
@@ -652,7 +924,7 @@ publishPreparedSymbolicLink _row _transaction _linkTarget _identity =
 #else
 publishPreparedSymbolicLink row transaction linkTarget expectedIdentity = do
     let stage = stagingOf transaction
-        target = shippedTarget transaction
+        target = shippedTargetPath (shippedTarget transaction)
     staged <- observeSymbolicLink stage linkTarget
     case staged of
         Right (SymbolicLinkExact stagedIdentity)
@@ -701,6 +973,8 @@ foreign import capi unsafe "stdio.h renamex_np"
     c_renamex_np :: CString -> CString -> CUInt -> IO CInt
 #endif
 
+-- | Withdraw the recorded staging identity during take recovery and give-back.
+-- Synchronize its parent even when the name is absent, before forgetting.
 cleanupSymbolicLinkStage :: OwnershipRow -> ShippedOwnership -> FilePath -> ObjectIdentity -> IO (Either OwnershipFault ())
 #ifdef mingw32_HOST_OS
 cleanupSymbolicLinkStage _row _transaction _linkTarget _identity =
@@ -711,22 +985,52 @@ cleanupSymbolicLinkStage row transaction linkTarget identity = do
     observed <- observeSymbolicLink stage linkTarget
     case observed of
         Left fault -> pure (Left fault)
-        Right SymbolicLinkAbsent -> pure (Right ())
+        Right SymbolicLinkAbsent -> syncSymbolicLinkParent row stage
         Right (SymbolicLinkExact current)
-            | current == identity -> removeExactSymbolicLink row stage
+            | current == identity -> removeExactSymbolicLink row stage linkTarget identity (const (Right ()))
         Right other -> pure (Left (symbolicLinkIdentityConflict stage identity other))
 #endif
 
-removeExactSymbolicLink :: OwnershipRow -> FilePath -> IO (Either OwnershipFault ())
+-- | An unbound intent owns only an exact staging link, never an alias occupant.
+cleanupUnboundSymbolicLinkStage :: OwnershipRow -> ShippedOwnership -> FilePath -> IO (Either OwnershipFault ())
+cleanupUnboundSymbolicLinkStage row transaction linkTarget = do
+    let stage = stagingOf transaction
+    observed <- observeSymbolicLink stage linkTarget
+    case observed of
+        Left fault -> pure (Left fault)
+        Right SymbolicLinkAbsent -> pure (Right ())
+        Right (SymbolicLinkExact identity) ->
+            removeExactSymbolicLink row stage linkTarget identity (const (Right ()))
+        Right other -> pure (Left (symbolicLinkOccupied stage other))
+
+-- | Apply the pure identity admission to the fresh sample before unlinking.
+-- The returned evidence is the evidence admitted from that same observation.
+removeExactSymbolicLink ::
+    OwnershipRow ->
+    FilePath ->
+    FilePath ->
+    ObjectIdentity ->
+    (ObjectIdentity -> Either OwnershipFault admitted) ->
+    IO (Either OwnershipFault admitted)
 #ifdef mingw32_HOST_OS
-removeExactSymbolicLink _row _path =
+removeExactSymbolicLink _row _path _linkTarget _identity _admit =
     pure (Left (OwnershipUnsupported "symbolic-link ownership is available only in a POSIX frame"))
 #else
-removeExactSymbolicLink row path = do
-    removed <- try (removeLink path)
-    case removed of
-        Left failure -> pure (Left (symbolicLinkProbe "remove" path failure))
-        Right () -> syncSymbolicLinkParent row path
+removeExactSymbolicLink row path linkTarget identity admit = do
+    observed <- observeSymbolicLink path linkTarget
+    case observed of
+        Left fault -> pure (Left fault)
+        Right (SymbolicLinkExact current)
+            | current == identity -> case admit current of
+                Left fault -> pure (Left fault)
+                Right admitted -> do
+                    removed <- try (removeLink path)
+                    case removed of
+                        Left failure -> pure (Left (symbolicLinkProbe "remove" path failure))
+                        Right () -> do
+                            synced <- syncSymbolicLinkParent row path
+                            pure (fmap (const admitted) synced)
+        Right other -> pure (Left (symbolicLinkIdentityConflict path identity other))
 #endif
 
 #ifndef mingw32_HOST_OS
@@ -786,48 +1090,44 @@ forget ::
     IO (Either OwnershipFault ())
 forget session key _record = forgetRecord (shippedTape session) key
 
-refusedByStore :: Text -> ProtectedError -> ShippedOutcome
-refusedByStore operation = ShippedRefused . storeFault operation
-
 -- ---------------------------------------------------------------------------
 -- The wire
 
 {- | The transaction, exactly.
 
-Length-framed rather than delimited, because a target path and a payload are
-arbitrary bytes and a delimiter would make one of them able to describe the
-next field.
+Paths travel as UTF-8 text and only the payload is arbitrary bytes. Length
+framing keeps either kind of field from describing the next field.
 -}
 encodeShippedOwnership :: ShippedOwnership -> ByteString
 encodeShippedOwnership transaction =
     strict
         ( Builder.byteString transactionMagic
             <> Builder.word8 (actTag (shippedAct transaction))
-            <> sized (asciiBytes (Text.pack (shippedAuthority transaction)))
+            <> sized (asciiBytes (Text.pack (shippedAuthorityPath (shippedAuthority transaction))))
             <> sized (asciiBytes (recordKeyText (shippedRecord transaction)))
-            <> sized (asciiBytes (Text.pack (shippedTarget transaction)))
+            <> sized (asciiBytes (Text.pack (shippedTargetPath (shippedTarget transaction))))
             <> payloadField (shippedAct transaction)
         )
   where
     payloadField (ShipTakeFile payload) = sized (payloadBytes payload)
-    payloadField (ShipTakeSymbolicLink target) = sized (asciiBytes (Text.pack target))
-    payloadField (ShipGiveBackSymbolicLink target) = sized (asciiBytes (Text.pack target))
+    payloadField (ShipTakeSymbolicLink target) = sized (asciiBytes (Text.pack (shippedLinkTargetPath target)))
+    payloadField (ShipGiveBackSymbolicLink target) = sized (asciiBytes (Text.pack (shippedLinkTargetPath target)))
     payloadField _ = mempty
 
 decodeShippedOwnership :: ByteString -> Either OwnershipFault ShippedOwnership
 decodeShippedOwnership raw = runExact "ownership transaction" raw $ do
     checkMagic transactionMagic "ownership transaction"
     tag <- getWord8
-    authority <- getText "the ownership transaction's authority"
+    admittedAuthority <- getAdmittedPath mkShippedAuthorityPath "the ownership transaction's authority"
     rawKey <- getText "the ownership transaction's record key"
-    target <- getText "the ownership transaction's target"
+    admittedTarget <- getAdmittedPath mkShippedTargetPath "the ownership transaction's target"
     act <- case tag of
         0 -> pure ShipObserveObject
         1 -> pure ShipTakeDirectory
         2 -> ShipTakeFile . mkPayload <$> getSized "the ownership transaction's payload"
         3 -> pure ShipGiveBackObject
-        4 -> ShipTakeSymbolicLink . Text.unpack <$> getText "the symbolic link's target"
-        5 -> ShipGiveBackSymbolicLink . Text.unpack <$> getText "the symbolic link's target"
+        4 -> ShipTakeSymbolicLink <$> getAdmittedPath mkShippedLinkTargetPath "the symbolic link's target"
+        5 -> ShipGiveBackSymbolicLink <$> getAdmittedPath mkShippedLinkTargetPath "the symbolic link's target"
         _ -> refuse "the ownership transaction names an unknown act"
     key <- case mkRecordKey rawKey of
         Left failure ->
@@ -836,13 +1136,7 @@ decodeShippedOwnership raw = runExact "ownership transaction" raw $ do
                     <> protectedErrorMessage failure
                 )
         Right key -> pure key
-    pure
-        ShippedOwnership
-            { shippedAuthority = Text.unpack authority
-            , shippedRecord = key
-            , shippedTarget = Text.unpack target
-            , shippedAct = act
-            }
+    pure (mkShippedOwnership admittedAuthority key admittedTarget act)
 
 encodeShippedOutcome :: ShippedOutcome -> ByteString
 encodeShippedOutcome outcome =
@@ -956,10 +1250,10 @@ getIdentity = do
 
 {- | The widest field this wire admits.
 
-A ceiling rather than a length, because a target path and a payload differ by
-orders of magnitude and a single bound would either refuse a legitimate payload
-or admit an absurd pathname. The transport's own body bound is authoritative
-above this.
+getSized applies one 4 MiB bound to every length-framed field, paths included.
+Later field admission can be narrower, as it is for object identities. The
+encoder does not enforce this ceiling. The transport's whole-body bound is
+separate.
 -}
 shippedFieldCeiling :: Word32
 shippedFieldCeiling = 4 * 1024 * 1024
@@ -1028,6 +1322,13 @@ getText subject = do
     case TextEncoding.decodeUtf8' bytes of
         Left _ -> refuse (subject <> " is not text")
         Right value -> pure value
+
+getAdmittedPath :: (FilePath -> Either OwnershipFault path) -> Text -> Decoder path
+getAdmittedPath admit subject = do
+    text <- getText subject
+    case admit (Text.unpack text) of
+        Left fault -> refuse (Text.pack (show fault))
+        Right path -> pure path
 
 getBytes :: Int -> Decoder ByteString
 getBytes count = Decoder $ \input ->

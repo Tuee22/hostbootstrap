@@ -14,7 +14,7 @@ x86_64 Ubuntu 24.04.5 LTS, Linux 6.8.0-139-generic, GHC 9.12.4, Cabal 3.16.1.0 ;
 `cabal --store-dir=/home/ubuntu/hostbootstrap/demo/.build/cabal-store test hostbootstrap-core:test:hostbootstrap-core-test --test-options='--pattern recovery-interruption' --test-show-details=direct`
 from `core/` in the CPU VM ; pass ; covers
 5a8bbee429919f037959e3874bfd897864a16efd867b4e4d9411919fb7087aae
-**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs` `core/hostbootstrap-core/src/HostBootstrap/Harness` `core/hostbootstrap-core/internal/harness-lifecycle` `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`
+**Evidence covers**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs` `core/hostbootstrap-core/src/HostBootstrap/Harness` `core/hostbootstrap-core/internal/harness-lifecycle` `core/hostbootstrap-core/test/RecoveryInterruptionSpec.hs`
 
 > **Purpose**: Make a test run an exclusively owned transaction whose failures are isolated per variant and
 > whose cleanup cannot delete foreign or concurrently replaced state.
@@ -40,7 +40,7 @@ to the [worked-demo phase](phase-24-worked-demo.md).
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/harness_workflow.md`
@@ -99,6 +99,11 @@ matches the header; these fixture changes are outside that production/recovery p
 
 #### Remaining Work
 
+- Preserve the data generation and its resource ownership records when asynchronous cancellation
+  escapes after resource acquisition and exact reverse has not settled. A real protected-store case
+  records an acquired resource, interrupts the owning body, and proves that its root, ownership
+  record and recovery lease remain available; only a terminal resource-release proof permits deletion.
+  The recovery path resolves the retained interrupted gate runs before claiming the host clean.
 - Close a refused data-root acquisition. In `runOwned` (`Harness/Ownership.hs`), the `generalBracket` release
   ignores a `Left` from `takeDataRoot` and is skipped when `takeDataRoot` throws, so the fresh unbound lease
   and Harness mode recorded by `withHarnessRoot` stay open and every Production opener gets
@@ -141,7 +146,7 @@ matches the header; these fixture changes are outside that production/recovery p
 ### Sprint 19.2: The engine and per-variant isolation [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/internal/harness-lifecycle/HostBootstrap/Harness/Lifecycle/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
@@ -250,7 +255,7 @@ retaining one result row per restart-spanning case.
 
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Chain.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/internal/harness-lifecycle/HostBootstrap/Harness/Lifecycle/Internal.hs`,
@@ -322,11 +327,11 @@ linux-cpu leg is recorded in Sprints 19.6 through 19.8 and in the header's gate 
   card contains `variant failed:` followed by text containing `seeded assembly refusal`, and does not contain
   `ExitFailure 1`.
 
-### Sprint 19.4: Reconciler-produced report rows [Active]
+### Sprint 19.4: Reconciler-produced report rows [Done]
 
-**Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Step.hs`,
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Step.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/StepSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/engineering/testing.md`
@@ -366,24 +371,19 @@ not, and that `observationDetail`'s own rendering of each observation classifies
 when the anchored-marker cases and the token-level `StepSpec` layering guard named in Remaining Work exist and
 pass under `cabal test all` from `core/`.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0):
+`classifyLifecycleReason` (`Harness.hs`) now classifies a marker only at the start of the cause or immediately after
+the first node-row separator, so `HarnessSpec` "a bring-up failure carries the node's own outcome into its row" asserts
+that a refusal quoting "existing volume conflict" classifies as `Refused` and that
+`"docker build failed: unsupported: --platform flag"` classifies as `Nothing`, with the three node-row causes and the
+`observationDetail` round trip unchanged. `StepSpec` "the step algebra owns its observation markers below the
+harness" now reads `SourceGuard.haskellImports` over `Step.hs`, refuses `HostBootstrap.Harness` and every
+`HostBootstrap.Harness.` module, and shows the guard sees both the qualified `import ... as G` and the
+`{-# SOURCE #-}` forms. The full `cabal test all` from `core/` passed.
+
 #### Remaining Work
 
-- Anchor the observation marker. `classifyLifecycleReason` searches the whole cause with `isInfixOf` in the
-  fixed order conflict, unsupported, refused, so `"project up: [host] deploy-vm — launch: refused: existing
-  volume conflict: owned by another project"` classifies as `Conflicted`, and a plain failure quoting
-  `unsupported:` becomes `SKIPPED`. Match a marker only at the start of the cause or immediately after the
-  first `— <label>: ` node-row separator, and classify by that one position. Tests in `HarnessSpec` beside
-  "a bring-up failure carries the node's own outcome into its row": the cause above classifies as `Refused`;
-  `"docker build failed: unsupported: --platform flag"` classifies as `Nothing`; the three existing node-row
-  causes and the `observationDetail` round trip still classify as before.
-- Make the layering guard token-level. The `StepSpec` case "the step algebra owns its observation markers below
-  the harness" asserts only that the substring `import HostBootstrap.Harness` is absent from `Step.hs`, so
-  `import qualified HostBootstrap.Harness.GeneratedConfig as G` or `import {-# SOURCE #-} HostBootstrap.Harness`
-  compiles and passes it. Replace the infix check with `SourceGuard.haskellImports` over the `Step.hs` source and
-  assert no imported module is `HostBootstrap.Harness` or starts with `HostBootstrap.Harness.`. In the same case,
-  assert `haskellImports` yields `HostBootstrap.Harness.GeneratedConfig` for the literal
-  `"import qualified HostBootstrap.Harness.GeneratedConfig as G\n"` and `HostBootstrap.Harness` for
-  `"import {-# SOURCE #-} HostBootstrap.Harness\n"`, so the guard is shown to see both forms.
+None.
 
 ### Sprint 19.5: Harness root-scope capsule production [Done]
 
@@ -619,7 +619,7 @@ Every case named in Remaining Work exists in its corrected form and passes under
 ### Sprint 19.10: Harness module contracts state what the code does [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI/Bare.hs`,
 `demo/src/HostBootstrapDemo/Commands.hs`, `core/hostbootstrap-core/test/HarnessSpec.hs`,
@@ -650,36 +650,25 @@ A `HarnessSpec` source guard asserts `caseWeight` and `caseIndivisible` are abse
 `cabal test all` from `core/` and from `demo/` passes with the bare suite, the core fixtures, and the demo's
 case matrix rebuilt on the narrowed `Case`.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): the
+`HostBootstrap.Harness.Ownership` header lists the five resolved sweep branches and says only the executor's refusal or
+an unresolved ownership error blocks the new run; `acquireOwnedRunConfig`'s Haddock names `harnessPreconditions` as the
+authoritative recheck and itself as the acquisition-time refusal; the `Refused` Haddock covers late refusals after
+acquisition; the `TestSuite` and `emptySuite` Haddocks name `bareClusterLiveSuite`; and `Case` carries an id and a
+`CaseLifecycle` only, with every construction updated (`CLI.Bare`, `HarnessSpec`, `CLISpec`, `ContextSpec`,
+`ChainSpec`, `RecursiveLifecycleSpec`, and the demo's cases and `CommandsSpec`). `HarnessSpec` "a Case carries an id
+and a lifecycle only, with no per-case budget fields" asserts `caseWeight` and `caseIndivisible` are absent from
+`Harness.hs`. The warning-clean `cabal test all` from `core/` and from `demo/` passed.
+
 #### Remaining Work
 
-- Rewrite step 1 and the closing paragraph of the `HostBootstrap.Harness.Ownership` module header, which say
-  the sweep resolves only a bound run whose records prove it acquired nothing. List the resolved branches:
-  pre-effect close, persisted `Closing` finalization, incomplete-migration discard, completed-migration
-  activation, and recovered-forest teardown through the `RecoveredResourceExecutor`; say that only the
-  executor's refusal or an unresolved ownership error blocks the new run.
-- `acquireOwnedRunConfig`'s Haddock calls its refusal "the authoritative" production-config refusal, while the
-  `testSafetyPreconditions` Haddock and the `HostBootstrap.Command` comment name `harnessPreconditions`.
-  Rewrite the `acquireOwnedRunConfig` Haddock to name `harnessPreconditions` as the authoritative recheck
-  inside the mode compare-and-swap and itself as the acquisition-time refusal that closes the window after it.
-- The `Refused` Haddock says nothing was acquired, but late refusals (`lateRefusal` in `HostBootstrap.Command`)
-  classify as `Refused` after acquisition and a reverse. State that a `REFUSED` row either preceded
-  acquisition or followed it with the run's owned state reversed.
-- The `TestSuite` Haddock says the bare binary ships `emptySuite` through its bare entrypoint, and the
-  `emptySuite` Haddock calls it the suite the bare binary ships; the bare binary ships `bareClusterLiveSuite`
-  (its explicit bare entrypoint in `HostBootstrap.CLI` passes `bareClusterLiveSuite progName` to `runCLI`),
-  whose one case asserts a live harness-owned Kind cluster, and only `HarnessSpec` and `CLISpec` use
-  `emptySuite`. Rewrite both to name `bareClusterLiveSuite`, and
-  state that `emptySuite` is the zero-case suite the `0/0 passed` rendering is pinned against.
-- Delete `caseWeight` and `caseIndivisible` from `Case` and the budget-slicing Haddock above `CaseLifecycle`;
-  nothing reads either field. Update every `Case` construction in the same change — `bareClusterLiveSuite` in
-  `HostBootstrap.CLI.Bare`, `HarnessSpec`, `CLISpec`, `ContextSpec`, `RecursiveLifecycleSpec`, and the demo's
-  five cases in `demo/src/HostBootstrapDemo/Commands.hs` — and add the source guard.
+None.
 
 ### Sprint 19.11: A multi-frame Harness test run crosses the authenticated child boundary [Planned]
 
 **Status**: Planned
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Handoff.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Handoff.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`, `core/hostbootstrap-core/test/HandoffSpec.hs`
 **Production modules**: `HostBootstrap.Handoff`, `HostBootstrap.Command.Child` (2; cap 3)
 **Sprint budget**: one pure capsule-parse function moved behind an exposed name and no new behaviour; at most
@@ -739,7 +728,7 @@ named in Remaining Work; they exist and pass under `cabal test all` from `core/`
 ### Sprint 19.12: The harness precondition recheck holds both halves it names [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Harness/Ownership.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/CompileFailSpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.Mode`, `HostBootstrap.Harness.Ownership` (2; cap 3)
@@ -777,29 +766,24 @@ The `AuthoritySpec` case and the `CompileFailSpec` fixture named in Remaining Wo
 
 #### Remaining Work
 
-- Narrow the export and correct the Haddocks. Remove `harnessPreconditionProbe` from the
-  `HostBootstrap.Lifecycle.Mode` export list (only `withHarnessRoot`, inside the module, reads it) and rewrite
-  the two Haddocks as the Deliverables state. Test: a `CompileFailSpec` fixture
-  `test/compile-fail/ReplaceHarnessPreconditionProbe.hs` that applies the record update
-  `(harnessPreconditions project dir (pure True)) {harnessPreconditionProbe = pure (Right ())}` is registered
-  with `rejectsWith` and a diagnostic naming `harnessPreconditionProbe` as not in scope.
-- Thread the real probe. In `ownProjectRun`, replace `(pure False)` with `(isLeft <$> safety)`. Test: the
-  existing `HarnessSpec` case for the post-sweep Production-state refusal (Sprint 19.1) still observes
-  `SafetyRefusal` from the outer probe, and a `HarnessSpec` case calls `runWithOwnedRunAfterRecovery ownership
-  probe` with an `IORef`-counted probe that returns `Right ()` on its first call and `Left "cluster appeared"` on
-  its second: it returns a `Left` containing "a production cluster is already running; refusing to touch
-  production state", the body never runs, and no `.test_data` generation, sibling `<project>.dhall`, `mode.`,
-  `config.`, or `dataroot.` record is left behind.
-- Produce the cluster refusal. Add an `AuthoritySpec` case "a running production cluster refuses the harness
-  mode inside the entry": after `sweep`, take `protectedStoreImage`, call `withHarnessRoot` with
-  `harnessPreconditions project "/nonexistent-hostbootstrap-dir" (pure True)`, assert the result is exactly
-  `Left (ModeHarnessRefused ProductionClusterRunning)` and the body never ran, and assert `protectedStoreImage`
-  afterwards equals the image before.
+2026-11-09 (native Windows, GHC 9.12.4): `harnessPreconditionProbe` no longer leaves the `HostBootstrap.Lifecycle.Mode`
+export list (and the sealed export inventory), and the `HarnessPreconditions` and `harnessPreconditions` Haddocks state
+that the directory and the liveness probe are caller-supplied inputs the producer assembles into one probe the mode
+entry runs. `test/compile-fail/ReplaceHarnessPreconditionProbe.hs` is refused with "Not in scope: record field
+'harnessPreconditionProbe'". `ownProjectRun` passes `isLeft <$> safety` into `harnessPreconditions`, with its comment
+updated. `AuthoritySpec` "a running production cluster refuses the harness mode inside the entry" asserts
+`Left (ModeHarnessRefused ProductionClusterRunning)`, no body run, and an unchanged store image. The full
+`cabal test all` from `core/` passed.
+
+- Add the `HarnessSpec` case that drives `ownProjectRun`'s post-recovery safety probe twice: it needs a test seam
+  (`runWithOwnedRunAfterRecovery`, absent from the tree) that takes an `IORef`-counted probe returning `Right ()` then
+  `Left "cluster appeared"`, and asserts the refusal text, that the body never runs, and that no `.test_data`
+  generation, sibling `<project>.dhall`, `mode.`, `config.`, or `dataroot.` record remains.
 
 ### Sprint 19.13: Harness run closure is recoverable at every crash point [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Mode.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.Mode` (1; cap 3)
 **Sprint budget**: no new named type and one sweep branch; at most 80 production Haskell lines.
@@ -857,7 +841,7 @@ The four `AuthoritySpec` cases named in Remaining Work exist in their stated for
 ### Sprint 19.14: Project assertions return a pass/fail verdict [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/CLI/Bare.hs`, `demo/src/HostBootstrapDemo/Commands.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`,
 `core/hostbootstrap-core/test/ContextSpec.hs`, `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`,
@@ -908,7 +892,7 @@ The `CompileFailSpec` fixture and the `HarnessSpec` cases named in Remaining Wor
 ### Sprint 19.15: A Harness run trips on changed production state [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Harness.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Harness.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
 `core/hostbootstrap-core/test/HarnessSpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Production modules**: `HostBootstrap.Harness`, `HostBootstrap.Command` (2; cap 3)
@@ -969,13 +953,9 @@ The three `HarnessSpec` cases and the `CLISpec` case named in Remaining Work exi
   `runMatrix` teardown.
 - Sprint 19.3: refuse config acquisition through an `OwnedHarnessRoot` that escaped its bracket, and raise
   `LifecycleFailure` instead of `die` inside `variantWithLifecycle`.
-- Sprint 19.4: anchor the observation marker `classifyLifecycleReason` reads, and make the `StepSpec` layering
-  guard token-level.
 - Sprint 19.9: make each `HarnessSpec` case assert the exact outcome and mechanism it names.
-- Sprint 19.10: align the harness module contracts, including the bare-suite Haddocks, with the code and delete
-  the unread `Case` fields.
 - Sprint 19.11: expose the Harness capsule parse and run a multi-frame Harness test run, forward and recovered.
-- Sprint 19.12: recheck both harness preconditions inside the mode entry and stop exporting the probe field.
+- Sprint 19.12: add the `HarnessSpec` double-probe case through a `runWithOwnedRunAfterRecovery` test seam.
 - Sprint 19.13: release a Harness mode stranded behind a closed lease, and tighten the harness close and sweep
   cases in `AuthoritySpec`.
 - Sprint 19.14: narrow the `TestSuite` assertion result to `AssertionVerdict` so a project cannot return an

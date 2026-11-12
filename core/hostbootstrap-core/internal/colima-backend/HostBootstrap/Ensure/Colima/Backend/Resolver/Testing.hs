@@ -7,13 +7,16 @@ module HostBootstrap.Ensure.Colima.Backend.Resolver.Testing (
     ResolverInstallScenarioView (..),
     ResolverFixtureLayout (..),
     resolverFixtureLayout,
+    resolverOwnerModePolicyView,
     executeNativeResolverFixture,
+    executeNativeResolverFixtureWithSettlement,
     parseResolverProtocolView,
     parseResolverFixtureProtocolView,
     settleResolverExecutionView,
     settleResolverFixtureExecutionView,
     runResolverInstallScenario,
-    withTrustedResolverFixture,
+    revalidateResolverFixtureView,
+    settlementView,
 )
 where
 
@@ -21,7 +24,10 @@ import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.Word (Word64)
 import HostBootstrap.Ensure.Colima.Backend.Resolver (
     TrustedResolverResult (..),
+    classifyTrustedAppleToolchainRevalidation,
+    classifyTrustedAppleBrewRevalidation,
     settleTrustedResolverFixtureResultForTesting,
+    settleTrustedResolverProtocolForFixtureTesting,
     settleTrustedResolverResultForTesting,
     trustedAppleBrewHelperPath,
     trustedAppleBrewPath,
@@ -29,7 +35,6 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver (
     trustedAppleDockerPath,
     trustedAppleHelperPath,
     trustedAppleLimaPath,
-    trustedApplePythonPath,
     trustedAppleToolchainFingerprint,
  )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Install (
@@ -37,11 +42,7 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Install (
     TrustedInstallResult (..),
     runTrustedInstallRediscovery,
  )
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (resolveNativeResolverFixture)
-import HostBootstrap.Ensure.Colima.Backend.Resolver.Override (
-    ResolverOverride (..),
-    withResolverOverride,
- )
+import HostBootstrap.Ensure.Colima.Backend.Resolver.Native (ResolverPolicyKind (..), resolveNativeResolverFixture, resolverOwnerModePolicy)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (
     ResolvedTool (..),
     TrustedResolverProtocol (..),
@@ -57,25 +58,15 @@ import HostBootstrap.Ensure.Colima.Backend.Runner (
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 
--- These views deliberately contain only descriptive data.  They let the
--- host-static suite exercise the Cabal-private resolver without exporting an
--- authority constructor or a caller-configurable production resolver.
+-- Descriptive views project the actual private resolver result. The native
+-- fixture entry retains that opaque result from the same kernel walk and settlement;
+-- it exports no authority constructor or caller-configurable production resolver.
 data ResolverToolView = ResolverToolView !FilePath !Word64 !Word64
     deriving (Eq, Show)
 
 data ResolverProtocolView
-    = ResolverProtocolReadyView
-        !ResolverToolView
-        !ResolverToolView
-        !ResolverToolView
-        !ResolverToolView
-        !String
-        !String
-    | ResolverProtocolMissingColimaView
-        !ResolverToolView
-        !ResolverToolView
-        !String
-        !String
+    = ResolverProtocolReadyV2View !ResolverToolView !ResolverToolView !ResolverToolView !String !String
+    | ResolverProtocolMissingColimaV2View !ResolverToolView !String !String
     | ResolverProtocolUnsupportedView !String
     deriving (Eq, Show)
 
@@ -87,7 +78,6 @@ data ResolverExecutionFixture
 
 data ResolverSettlementView
     = ResolverSettlementReady
-        !FilePath
         !FilePath
         !FilePath
         !FilePath
@@ -117,7 +107,6 @@ data ResolverInstallScenarioView = ResolverInstallScenarioView
 data ResolverFixtureLayout = ResolverFixtureLayout
     { resolverFixtureRoot :: !FilePath
     , resolverFixtureHome :: !FilePath
-    , resolverFixturePython :: !FilePath
     , resolverFixtureBrew :: !FilePath
     , resolverFixtureColimaAlias :: !FilePath
     , resolverFixtureColimaTarget :: !FilePath
@@ -137,7 +126,6 @@ resolverFixtureLayout root =
      in ResolverFixtureLayout
             { resolverFixtureRoot = root
             , resolverFixtureHome = root </> "Users" </> "fixture"
-            , resolverFixturePython = root </> "usr" </> "bin" </> "python3"
             , resolverFixtureBrew = homebrew </> "bin" </> "brew"
             , resolverFixtureColimaAlias = homebrew </> "bin" </> "colima"
             , resolverFixtureColimaTarget = cellar </> "colima" </> "test" </> "bin" </> "colima"
@@ -150,10 +138,27 @@ resolverFixtureLayout root =
                 [root </> "usr" </> "bin", root </> "bin", root </> "usr" </> "sbin", root </> "sbin"]
             }
 
+-- | Descriptive policy evaluation, with an explicit private fixture root.
+resolverOwnerModePolicyView :: Maybe FilePath -> Bool -> FilePath -> Word64 -> Word64 -> Word64 -> Either String ()
+resolverOwnerModePolicyView fixtureRoot directory = resolverOwnerModePolicy kind
+  where
+    kind = case (fixtureRoot, directory) of
+        (Nothing, False) -> ProductionExecutablePolicy
+        (Nothing, True) -> ProductionDirectoryPolicy
+        (Just root, False) -> FixtureExecutablePolicy root
+        (Just root, True) -> FixtureDirectoryPolicy root
+
 executeNativeResolverFixture :: FilePath -> FilePath -> IO ResolverExecutionFixture
-executeNativeResolverFixture root home = do
+executeNativeResolverFixture root home = fst <$> executeNativeResolverFixtureWithSettlement root home
+
+-- | Observe the native result and its shared settlement without decoding wire.
+executeNativeResolverFixtureWithSettlement :: FilePath -> FilePath -> IO (ResolverExecutionFixture, TrustedResolverResult)
+executeNativeResolverFixtureWithSettlement root home = do
     protocol <- resolveNativeResolverFixture root home
-    pure (ResolverExecutionCompleted ExitSuccess (renderTrustedResolverProtocol protocol) "")
+    pure
+        ( ResolverExecutionCompleted ExitSuccess (renderTrustedResolverProtocol protocol) ""
+        , settleTrustedResolverProtocolForFixtureTesting root home protocol
+        )
 
 parseResolverProtocolView :: String -> Either String ResolverProtocolView
 parseResolverProtocolView = fmap protocolView . parseTrustedResolverOutput
@@ -164,39 +169,31 @@ parseResolverFixtureProtocolView root =
 
 settleResolverExecutionView ::
     FilePath ->
-    Word64 ->
-    Word64 ->
     ResolverExecutionFixture ->
     ResolverSettlementView
-settleResolverExecutionView home device inode execution =
+settleResolverExecutionView home execution =
     settlementView
         ( settleTrustedResolverResultForTesting
             home
-            (TrustedToolIdentity device inode)
             (executionResult execution)
         )
 
 settleResolverFixtureExecutionView ::
     FilePath ->
     FilePath ->
-    Word64 ->
-    Word64 ->
     ResolverExecutionFixture ->
     ResolverSettlementView
-settleResolverFixtureExecutionView root home device inode execution =
+settleResolverFixtureExecutionView root home execution =
     settlementView
         ( settleTrustedResolverFixtureResultForTesting
             root
             home
-            (TrustedToolIdentity device inode)
             (executionResult execution)
         )
 
 runResolverInstallScenario ::
     FilePath ->
     FilePath ->
-    Word64 ->
-    Word64 ->
     String ->
     Either String () ->
     ResolverExecutionFixture ->
@@ -205,8 +202,6 @@ runResolverInstallScenario ::
 runResolverInstallScenario
     root
     home
-    device
-    inode
     initialOutput
     revalidation
     installExecution
@@ -244,64 +239,36 @@ runResolverInstallScenario
             settleTrustedResolverFixtureResultForTesting
                 root
                 home
-                (TrustedToolIdentity device inode)
                 (executionResult execution)
 
         record trace entry = modifyIORef' trace (++ [entry])
 
--- The fixture supplies only a fresh bounded resolver execution.  Each public
--- adapter discovery and revalidation still goes through the real strict
--- fixture parser and opaque resolver settlement; no backend result or trusted
--- toolchain constructor is injected.
-withTrustedResolverFixture ::
+-- | Descriptive classification only: settlement retains authority inside the
+-- private component, and no callback can redirect a production resolver.
+revalidateResolverFixtureView ::
     FilePath ->
     FilePath ->
-    Word64 ->
-    Word64 ->
-    IO ResolverExecutionFixture ->
-    IO a ->
-    IO (Either String a)
-withTrustedResolverFixture root home device inode execute action = do
-    initial <- resolve
-    case initial of
-        TrustedResolverReady _ ->
-            withResolverOverride
-                ResolverOverride
-                    { resolverOverrideRoot = root
-                    , resolverOverrideHome = home
-                    , resolverOverrideBootstrapDevice = device
-                    , resolverOverrideBootstrapInode = inode
-                    , resolverOverrideExecution = executionResult <$> execute
-                    }
-                action
-        TrustedResolverMissingColima _ -> pure (Left "resolver-fixture-colima-missing")
-        TrustedResolverUnsupported reason -> pure (Left reason)
+    ResolverExecutionFixture ->
+    ResolverExecutionFixture ->
+    Either String ()
+revalidateResolverFixtureView root home retained fresh =
+    case settle retained of
+        TrustedResolverReady expected ->
+            classifyTrustedAppleToolchainRevalidation expected (settle fresh)
+        TrustedResolverMissingColima expected ->
+            classifyTrustedAppleBrewRevalidation expected (settle fresh)
+        TrustedResolverUnsupported reason -> Left reason
   where
-    resolve = do
-        execution <- execute
-        pure
-            ( settleTrustedResolverFixtureResultForTesting
-                root
-                home
-                (TrustedToolIdentity device inode)
-                (executionResult execution)
-            )
+    settle execution =
+        settleTrustedResolverFixtureResultForTesting root home (executionResult execution)
 
 protocolView :: TrustedResolverProtocol -> ResolverProtocolView
 protocolView protocol = case protocol of
-    ProtocolReady python colima docker lima helperPath helperBindings ->
-        ResolverProtocolReadyView
-            (toolView python)
-            (toolView colima)
-            (toolView docker)
-            (toolView lima)
-            helperPath
+    ProtocolReadyV2 colima docker lima helperPath helperBindings ->
+        ResolverProtocolReadyV2View (toolView colima) (toolView docker) (toolView lima) helperPath
             (trustedDirectoryBindingsFingerprint helperBindings)
-    ProtocolMissingColima python brew helperPath helperBindings ->
-        ResolverProtocolMissingColimaView
-            (toolView python)
-            (toolView brew)
-            helperPath
+    ProtocolMissingColimaV2 brew helperPath helperBindings ->
+        ResolverProtocolMissingColimaV2View (toolView brew) helperPath
             (trustedDirectoryBindingsFingerprint helperBindings)
     ProtocolUnsupported reason -> ResolverProtocolUnsupportedView reason
 
@@ -320,7 +287,6 @@ settlementView :: TrustedResolverResult -> ResolverSettlementView
 settlementView result = case result of
     TrustedResolverReady toolchain ->
         ResolverSettlementReady
-            (trustedApplePythonPath toolchain)
             (trustedAppleColimaPath toolchain)
             (trustedAppleDockerPath toolchain)
             (trustedAppleLimaPath toolchain)

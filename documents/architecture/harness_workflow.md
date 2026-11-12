@@ -236,11 +236,25 @@ installed project identity inside the protected transaction that takes the mode.
 recovery settle an interrupted run's own generated config before deciding whether a foreign Production
 config blocks the next run.
 
+Generated-config release and recovery read payload bytes through the [shared scoped reader](ownership_seam.md#scoped-whole-object-read).
+An interrupted read closes its actual kernel handle before the protected entry unwinds; file bytes,
+identity and the exact durable envelope remain retryable. The normal operation then re-checks the
+payload and identity, removes the owned file and conditionally forgets its record. The generated-config
+suite verifies both interruption routes against the actual host row, including a retained handle read
+after exit; the source guard excludes a duplicated local handle transaction.
+
 Both harness owners reach the store through the one record tape described in the
 [ownership seam](ownership_seam.md): publishing the origin, binding it, forgetting it, and reading it
 back are shared, and what each keeps is its own subject and its own removal-set rule. The data root's
 rule is that the parent is scaffolding and a found directory is preserved; the generated config's is
 that a found file is refused before any mutation rather than adopted.
+
+Acquisition asks the tape for the raw protected envelope: any existing record blocks a new
+acquisition, even when its origin body is malformed. Recovery asks for the decoded origin.
+Both reads retain the store-error constructor in the owner's sum. Forget continuations use the
+tape's OwnershipFault directly, preserving malformed-state and other clause classifications
+instead of converting a domain failure back into a probe failure. No local read or forget adapter
+remains in either harness owner.
 
 The project-supplied Production-state probe follows the same ordering. For each variant, the ownership
 bracket holds project liveness, settles every abandoned Harness resource, then evaluates the probe before it
@@ -343,6 +357,11 @@ reconstructed by a child process.
 Self-reference remains only for plan-declared recursive child-frame transitions. The Handoff facade
 implements the root-signed `AuthenticatedRootScope (Harness projectId runId)` primitive and verifies its
 canonical wire with the independently installed project key before introducing a fresh run phantom. The
+received Harness fold introduces `forall runId` only inside its continuation, returning the authenticated
+capsule and matching received `HandoffScope`. Those values retain signed run evidence; they do not mint
+`HarnessAuthority`, reopen a lease or recreate live root ownership from run text. Framing, semantic-field
+and signature refusals retain their distinct errors. These scope-only DATA controls establish no Offer,
+Receiver, coordinator or process-integration evidence. The
 Harness lifecycle supplies that producer from the exact installed project identity and live
 `HarnessAuthority projectId runId` retained by its ownership bracket. The unchanged four-field
 Offer/Relay/Receiver transport carries and scope-first verifies the resulting capsule: root links mint it
@@ -384,7 +403,7 @@ owned by the
 The session, journal, fence, prepare, and terminal-acknowledgement protocol, and the terms it uses (broker
 generation, fence epoch, project journal state, Closing epoch), are defined in
 [sessions, fences, and terminal acknowledgement](lifecycle_state_model.md#sessions-fences-and-terminal-acknowledgement)
-and implemented in [Lifecycle.Session](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs).
+and implemented in [Lifecycle.Session](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs).
 The rest of this subsection summarizes how the Harness path relies on that protocol and adds the
 Harness-specific abandoned-run recovery and mode exclusion.
 
@@ -422,19 +441,24 @@ whitelist can receive fenced same-key authority. It withholds admission
 until every operation is settled and every session is Closed, verifies the complete resource-record set,
 and jointly yields fresh rehydrated resources while threading the sole successor state/permit pair.
 
-**Prepare.** Before every remote reservation/mutation/delete, the storeless executor sends a bounded next-node request
-naming its exact requester path, verb/phase/frame, session, ordinal, nonce, and predecessor response. One
-protected compare-and-swap revalidates the project-wide Harness mode, bound lease, active plan revision,
-Open-project state, catalog entry, command/session/fence, and operation record. It consumes the exact
-plan-owned closed precondition set, reruns every target/dependency probe and version, and obtains conditional backend
-versions; stale/replaced/not-ready evidence returns no grant. It records the operation-specific Unknown
-journal state—including adoption transfer and adopted release—before producing the root-signed `Prepared`
-response with the exact node and projected-key coordinates. Only after independently comparing those fields
-may the executor's hidden allow-listed reifier adopt the same durable gate and invoke the local adapter. The
-executor returns only a bounded observation; root settlement validates it and advances through
-`OperationAdvance` with the sole successor project/session state. The consumed journal version cannot
-authorize another prepare or close. Initial fence creation and crash-time fence rotation persist/resume the
-same proposed epoch; an old or delayed response is rejected or deduplicated.
+**Prepare.** The common local Chain entry uses `withLifecyclePrepareEntry` before initial bookkeeping
+and each node's registration and preparation. Its actual cursor retains the Mode-owned live validator,
+which checks Mode/epoch, broker allocation, exact bound lease and snapshot binding under the same
+protected entry as the accepted writes. The [lifecycle state model](lifecycle_state_model.md#sessions-fences-and-terminal-acknowledgement)
+describes this local admission contract.
+
+For remote work, the storeless executor sends a bounded next-node request naming its exact requester
+path, verb/phase/frame, session, ordinal, nonce and predecessor response. The root derives that node
+and its projections from the retained child plan, requires the attached rooted session and root
+runtime, and publishes and strictly reads back each exact Unknown row before signing the `Prepared`
+response. The executor compares the grant coordinates before its hidden allow-listed reifier adopts
+the gate and invokes the local adapter. The root retains settlement and conversation state.
+
+Per-grant live Harness mode, bound-lease/snapshot revalidation and fresh target/dependency probe
+admission belong to the [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
+The rooted service currently uses its own grant publication path. Initial fence creation and
+crash-time fence rotation persist/resume the same proposed epoch; old or delayed responses are
+rejected or deduplicated by their corresponding session and conversation checks.
 
 **Terminal acknowledgment.** Terminal acknowledgment proves
 every registered outcome settled, records the root-owned receipt, and compare-and-swaps the exact session

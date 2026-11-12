@@ -22,12 +22,20 @@ through the canonical renderers, caps cluster nodes from the cluster slice, and 
 
 ## Current Status
 
-[Cluster.Cordon.Foundation](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon/Foundation.hs)
+[Cluster.Cordon.Foundation](../../core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon/Foundation.hs)
 owns opaque canonical-unit `ResourceBudget`, `parseQuantity`, capacity reads, exact sizing renderers, and
-storage policy. [Cluster.Cordon](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Cordon.hs) adapts
+storage policy. [Cluster.Cordon](../../core/hostbootstrap-core/internal/cluster-ownership/HostBootstrap/Cluster/Cordon.hs) adapts
 project configuration and supplies descriptive helpers such as `fitsBudget`.
 [Cluster.Budget](../../core/hostbootstrap-core/src/HostBootstrap/Cluster/Budget.hs) owns exact plan-indexed
 admission. These are distinct layers: a static helper result is not the capability for applying a wall.
+
+Budget-capable configuration families implement the optional `BudgetCfg` class, whose pure
+`budgetResourceEnvelope` projection describes their resource declaration. `withValidatedBudget` takes
+only the admitted plan and a continuation, and reads that projection from the validated configuration
+the plan retains. Repeated admissions therefore yield the same canonical budget value. The universal
+`ProjectCfg` codec/context interface gains no resource method, and configuration families that do not
+use budget admission need no instance. No public plan-config getter or independent admission envelope
+participates in this route.
 
 `ResourceBudget` has a private positional constructor. Its `budgetCpu`, `budgetMemoryBytes`, and
 `budgetStorageBytes` readers are ordinary functions, so callers cannot replace a dimension by record
@@ -35,15 +43,10 @@ update. CPU is positive and bounded by `maxBound :: Int`; memory and storage are
 bounded by `maxBound :: Int64`. Its `Show` instance preserves the record-shaped diagnostic text, field
 order, and parentheses used by nested values.
 
-Two gaps separate the tree from the contract this page states:
-
-- No production lifecycle path mints a validated budget or runs workload fit, partition, or journal-derived
-  wall reservation; see [What runs today](#what-runs-today). Production adoption of that chain is owed by
-  [the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), as
-  [standards § O](../../DEVELOPMENT_PLAN/development_plan_standards.md#o-resource-budget-and-cordoning) records.
-- The owned-cluster kind backend applies the whole cluster slice to every node container, so an N-node
-  cluster's aggregate cap is N times its slice. That defect is owed by
-  [the cluster lifecycle, budgets, and cordoning phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md).
+No production lifecycle path mints a validated budget or runs workload fit, partition, or journal-derived
+wall reservation; see [What runs today](#what-runs-today). Production adoption of that chain is owed by
+[the worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), as
+[standards ? O](../../DEVELOPMENT_PLAN/development_plan_standards.md#o-resource-budget-and-cordoning) records.
 
 A canonical quantity or budget refuses with a **closed answer**, not a sentence. `QuantityError` has six
 constructors in two groups:
@@ -70,6 +73,11 @@ mapping, and declared workload. The demo builds it from its own cluster-config r
 that package, the matching Running provider dependency, and a prepared gate. It does not reconstruct a second
 config file or accept an unrelated envelope.
 
+The closed driver is part of the cluster declaration at the initial plan-side or execution-side
+join, beside the exact resource and budget-slice checks. Rendered-config binding derives it from
+the joined package's resolved plan. It cannot change the selected driver, node identities, resource
+placement or owner; the demo renderer and binder read the same retained driver.
+
 ## What runs today
 
 This section is the canonical statement of the resource controls production applies;
@@ -79,15 +87,15 @@ the same boundary for the plan.
 | Control | Where it runs | What it enforces |
 |---|---|---|
 | Metal host preflight | `preflightHostBudget`, called by the demo's lifecycle preflight on the metal frame | CPU, memory, and storage each fit host totals; memory additionally keeps the fixed `hostMemoryReserveBytes` (4 GiB) for the host OS, Docker, and the orchestrator. CPU and storage carry no reserve. On Windows the storage figure includes swap. |
-| In-frame capacity preflight | `preflightBudget` over `verifyBudget`, called only by the compatibility `clusterCreate` path that the bare `cluster-live` gate drives | the same totals, with no reserve |
 | Provider VM walls | the Lima provider backend and the demo's provider bring-up render the project envelope through `planProviderProvision` and the canonical sizing renderers when a Lima, Incus, or WSL2 provider is created | whole-gibibyte sizing; a value the renderer cannot express exactly is refused rather than rounded |
 | WSL2 global wall | `HostBootstrap.Wsl2.GlobalWall` | the shared utility-VM CPU/memory wall under its ownership clauses (see [WSL2](wsl2.md#resource-wall-and-global-effect)) |
-| Kind/nvkind node cap | the demo's cluster step attaches the cluster slice from its config projection with `withActionResourceSlice`; the owned-cluster backend's `cordonOwnedCluster` applies it | `docker update` CPU, memory, and memory-swap on each bound node container. The whole slice lands on every node (see [Current Status](#current-status)). |
+| Kind/nvkind node cap | the demo and independent gate attach their configured cluster slice with `withActionResourceSlice`; the owned-cluster backend's `cordonOwnedCluster` applies it | `docker update` CPU, memory, and memory-swap on each bound node container. Each node receives its floored share of the cluster slice. |
 
 `withActionResourceSlice` attaches an action-local budget to the executing planned resource under fresh
 partition indices. It proves the slice belongs to that planned resource; it does not prove membership in a
-partition or that concurrent slices fit one budget. The compatibility `clusterCreate` path divides its
-slice per node with integer floors through `clusterNodeCordonArgs`; the owned-cluster backend does not.
+partition or that concurrent slices fit one budget. Both the descriptive `clusterNodeCordonArgs` path and
+the owned-cluster backend divide the cluster slice through `clusterNodeBudgetShare`. Every dimension is
+floored by the exact declared node count, and a dimension smaller than that count refuses before updates.
 
 Production applies none of `withValidatedBudget`, `admitProviderBudget`, `verifyPlannedWorkloadFit`,
 `withBudgetPartition`, `withResourceSliceFor`, or `withProviderWallReservation`, and the direct-Colima consumer
@@ -118,6 +126,26 @@ admitted plan:
 4. Construct a partition whose positive slices plus explicit provider overhead fit the effective budget.
 5. Derive the provider-wall reservation from the exact durable `PreparedGate`.
 6. Apply through the owning backend and settle only its opaque exact observation.
+
+`withProviderWallReservation` retains the gate's plan digest, provider operation key, session, fence,
+attempt and physical journal version. Its constructor is hidden and all ten indices are nominal.
+`preparePlanOwnedProviderWallCall` compares the retained plan digest and operation key again at the
+consumer join. A reservation journaled for another provider operation returns
+`InvalidProviderPackage "the reservation was journaled for another provider operation"`, even when
+both providers use the same fence. Sharing budget or partition lineage does not replace that check.
+
+Only the hidden owning-adapter bridge can mint a `ProviderWallSettlementPermit` for the exact prepared
+call and its journal lineage. The mint admits only positive-epoch applied, already-exact and migrated
+observations, storing them as the private closed `SettledWallObservation` sum. Settlement consumes
+that success-only value: applied becomes `Created`, already exact `Unchanged`, and migrated
+`Repaired` with its receipt. Refused, failed, uncertain and zero-epoch observations cannot reach
+settlement. WSL success also produces its global-wall lease; every other provider takes the ordinary
+live-wall continuation. Each provider constructor is named at that decision.
+
+A source guard enumerates all `src/`, `internal/` and `app/` imports of the private budget kernel.
+Only the budget facade and Colima settlement bridge import it; the bridge imports neither reservation
+nor prepared-call constructors. Static runtime controls link the actual built private kernel in a
+temporary test executable while the public hidden-module and permit-forging fixtures remain enforced.
 
 Inside the chain a `ResourceSlice` comes from its partition through `withBudgetPartition` and
 `withResourceSliceFor`; applying the full parent budget to several concurrent children would duplicate the
@@ -180,12 +208,12 @@ lineage refuses before the backend effect.
 
 | Realization | Applied contract and limits |
 |---|---|
-| Incus | Exact VM creation sizing and managed provider/share identity; changing an existing disk is not implicit admission |
-| Lima | Exact declared VM sizing and writable share observation retained by the provider backend |
+| Incus | Exact VM creation sizing and managed provider/share identity; retained owned CPU, memory and root-disk limits are compared canonically, and drift returns Conflict with destroy-and-reprovision as the remedy |
+| Lima | Owned provisioning compares native numeric CPU/memory/disk quantities with the declaration and refuses drift without mutation; retained native identity and writable share observation stay under the recorded transaction |
 | Direct Colima | Isolated managed profile/home/context; CPU and memory plus canonical 20-GiB root and `total-20`-GiB data disks; exact force cleanup |
-| WSL2 | Owned global utility-VM CPU/memory wall plus the declared distro storage cap; conflicting concurrent global declarations refuse |
+| WSL2 | Owned global utility-VM CPU/memory wall plus the original requested distro storage cap, recorded before installation; changed storage and conflicting concurrent global declarations refuse |
 | Direct Linux | Plan-local provider admission and cluster-node CPU/memory controls; no claim of an outer provider wall |
-| Kind/nvkind nodes | Identity-checked Docker updates using immutable container IDs; the owned-cluster backend applies the whole cluster slice to each node rather than a per-node share (see [Current Status](#current-status)) |
+| Kind/nvkind nodes | Identity-checked Docker updates using immutable container IDs and floored per-node shares of one cluster slice |
 
 The kind-node limit renderer and its named-container wrapper return a refusal when Docker cannot express
 the CPU/memory ceiling exactly. Whole CPU counts must fit the signed 64-bit nanocore field; doubled memory
@@ -245,3 +273,36 @@ node mapping, workload, and exposure data remain bound to the same package.
 Static host tests establish those program contracts. The [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md),
 [worked demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md), and terminal substrate acceptance phases
 record live provider and workload evidence. [Testing](testing.md) defines the distinction.
+
+The generic provider-start result, projection capability and fresh-managed-phase capability share
+a declaration home in the private provider-start-internal leaf. That library depends only on base.
+The public lifecycle imports those same types without exposing their module or constructors;
+closed owning bridges and generic lifecycle code can share them without a dependency on the
+public authority implementation.
+
+Colima owner tokens, origin filenames, acquisition and invocation digests, and namespace/toolchain
+owner binding share one private pure identity algebra. The public adapter projects its actual plan,
+prepared wall, journal gate and retained backend into that algebra. Domain tags, canonical UTF-8/NUL
+framing, field order and the four owner-binding digest groups are fixed protocol data; the resulting
+strings carry no authority until the owning backend and exact settlement joins admit them.
+
+The static owned Colima settlement cases feed an actual native fixture-resolved toolchain and
+shared private identity inputs to `settleColimaWallCall`. Applied settlement joins a created wall
+to a `Created` provider; exact settlement joins an unchanged wall to a `Repaired` provider.
+An unowned conflict, failed acquisition or unsupported observation retains its declared refusal
+category. CoverageManifest declares the POSIX native fixture requirement and checks the actual
+unsupported result on its other branch; these static checks establish no live provider run.
+
+Storage-wall settlement requires a private permit joined to the prepared call, journal gate, and
+live provider wall. Its resulting proof retains that wall's epoch; a refusal, failure, uncertainty,
+or mismatched ceiling cannot produce the proof.
+
+Storage-wall preparation reuses the Lima and Incus production sizing renderers and the shared WSL2
+VHD-size renderer used by installation, so the evidence describes the same tokens the provider
+launches.
+
+
+The direct Linux GPU provider's provision plan retains the requested resource envelope and reports
+CPU, memory, and storage walls as unsupported for the direct host. The demo reports that the outer
+image build and project container run uncapped; this decision does not claim that the later nvkind
+node cordons have been applied. The prepared provider reservation still governs the lifecycle.

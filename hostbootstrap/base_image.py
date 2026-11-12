@@ -387,13 +387,14 @@ def compatibility_smoke_spec(
     """Cold-build the compatibility consumer against one exact base reference.
 
     The consumer is ``docker/compatibility-smoke.Dockerfile``, whose only input is
-    ``BASE_IMAGE``. It is not the demo's Dockerfile: that one requires a named
-    build context holding a separately selected builder and four ``required=true``
-    secrets, two of which are a signed one-use build grant the project binary's
-    build coordinator mints. Driving it from here would mean minting build
-    authority in the Python bootstrapper, which is the second authority surface
-    the architecture exists to prevent -- so this smoke asks the question a
-    publication gate can answer on its own, and the demo's authenticated build
+    ``BASE_IMAGE``. It is not the demo's Dockerfile: that one needs the
+    ``hostbootstrap-builder`` named build context, the ``hostbootstrap-build-config``
+    secret, and a ``check-code`` step whose one ``RUN`` presents the
+    ``hostbootstrap-build-channel``, ``hostbootstrap-build-verification`` and
+    ``hostbootstrap-build-coordinator`` secrets. Driving it from here would mean
+    minting build authority in the Python bootstrapper, which is the second
+    authority surface the architecture exists to prevent -- so this smoke asks the
+    question a publication gate can answer on its own, and the demo's authenticated build
     stays with the coordinator that owns it.
 
     A pre-publication caller passes the freshly built local ``sha256:...`` image

@@ -13,7 +13,7 @@ pinned toolchain mounted in ;
 `core/`, then `cabal test hostbootstrap-core:test:hostbootstrap-core-test --ghc-options=-Werror
 --test-show-details=direct --test-options="--pattern CLISpec"` from `core/` in that container ; pass ;
 covers c14b03715891c9d46bdef4928b644507fe406df3d412070652289014fe478044
-**Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs` `core/hostbootstrap-core/src/HostBootstrap/Service` `core/hostbootstrap-core/src/HostBootstrap/Activation.hs` `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`
+**Evidence covers**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs` `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service` `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Activation.hs` `core/hostbootstrap-core/src/HostBootstrap/Command.hs` `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`
 
 > **Purpose**: Make a project's long-running workload a service variant, selected by a signed activation and
 > reached through one fixed command, driven by the role phase machine.
@@ -35,7 +35,7 @@ exclusive-lease transfer barrier.
 ### Sprint 22.1: The `service` command surface [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`
@@ -126,8 +126,8 @@ stays unchanged.
 ### Sprint 22.2: Typed service selection and the immutable handler payload [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service/Program.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service/Program.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -291,9 +291,10 @@ and the registry ownership guard prevents the removed aliases and constructors f
 ### Sprint 22.3: Role-machine adoption at `service run` [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Command.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Command.hs`,
+`core/hostbootstrap-core/test/ActivationSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -311,7 +312,7 @@ Enter the service through the activation package rather than beside it.
 - Admission reserves or reopens the exact role plan inside one protected-store transaction, then closes that
   transaction before the long-running role lifecycle begins. The lifecycle holds only its service/frame-specific
   generation lease, so independently admitted services sharing one authority store can serve concurrently.
-- This sprint changes only the three declared core modules. It does not edit `HostBootstrapDemo.Commands` or own
+- This sprint changes only the three declared production core modules. It does not edit `HostBootstrapDemo.Commands` or own
   Helm/chart mutation; the worked-demo phase joins these activation semantics to exact cluster readiness.
 
 #### Validation
@@ -320,9 +321,18 @@ Enter the service through the activation package rather than beside it.
 aggregate gate and live concurrent-role confirmation pass: web and accelerator independently enter Serve from
 signed immutable revisions while sharing one authority store, and each retains only its own service/frame
 generation lease after admission releases the global transaction lock. Closure needs the `ActivationSpec` cases
-under Remaining Work — the installed-revision opener's key, directory-identity, and unparseable-manifest
-refusals, the revision-path shape refusals, an exact-constructor secret-safe diagnostic, and a read-back of the
+under Remaining Work — the installed-revision opener's key, directory-identity, unparseable-manifest,
+and truncated-signature refusals, the revision-path shape refusals, an exact-constructor secret-safe diagnostic, and a read-back of the
 consumed admission record — passing under `cabal test all` from `core/`.
+
+For the installed-signature refusal, first install a genuine signed immutable revision and successfully
+open it with `withInstalledServiceActivation`. Change only that revision's actual `activation.sig` file to
+a 63-byte prefix of its original 64-byte signature. Keep the independently installed key, manifests,
+role wire, secret bundle, store, runtime instance, and all other measurements unchanged. Reopen through
+that same public installed-revision consumer and assert exact
+`ServiceActivationVerification (ActivationSignatureInvalid <parse-failure detail>)`, with the parser's
+actual detail pinned and callback count zero. A direct package verifier or local test-file reader does
+not prove the installed opener's behavior.
 
 The [authenticated-handoff phase](phase-13-authenticated-handoff-and-child-admission.md) pins the
 activation-signing tag pair, exact field shape, bounded codec, and keyless relay behavior at the private wire
@@ -405,6 +415,9 @@ obvious one.
   and expect `ServiceActivationConflict <that directory>`; corrupt `expected.manifest` and expect
   `ServiceActivationVerification`; pass a relative root to `installRelayedServiceActivationRevision` and expect
   `ServiceActivationInvalid "the activation root is not absolute"`.
+- Add the installed `activation.sig` truncation case listed under Validation: preserve a genuine successful
+  installed-revision open, change only the actual signature file to its 63-byte prefix, and require the
+  exact wrapped signature-parser refusal with callback zero.
 - Add pure `serviceActivationRevision` cases asserting `Left (ServiceActivationInvalid …)` for a relative path,
   a 63-character name, an uppercase-hex name, and a name containing `g`, and `Right` for an absolute path whose
   last segment is 64 lowercase hex characters.
@@ -492,8 +505,8 @@ reconciliation phase.
 ### Sprint 22.6: The durable store is confined to an engine-minted role root and writes atomically [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service/Program.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service/Program.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -546,8 +559,8 @@ constructs or mints a `ServiceDurableRoot` from consumer code fails naming it. `
 ### Sprint 22.7: Effect authorization precedes the lifecycle and governs its lease [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -584,7 +597,7 @@ and with `RequiresGenerationLease` refuses when the lease is held. All pass unde
 ### Sprint 22.8: Activation revision installation survives interrupted and repeated installs [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
 
@@ -631,9 +644,9 @@ pass under `cabal test all` from `core/`.
 ### Sprint 22.9: Registry finalization derives its scope kind from the codec [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Class.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Config/Class/Internal.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Config/Class/Internal.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/hostbootstrap_core_library.md`
 
@@ -671,8 +684,8 @@ under `cabal test all` from `demo/`.
 ### Sprint 22.10: Every mutating service effect is sealed in a durable per-call journal [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service/Program.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service/Program.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -717,8 +730,8 @@ under `cabal test all` from `core/`.
 ### Sprint 22.11: Role receipts are durable, so an uncatchably killed instance's resources are recovered [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -767,7 +780,7 @@ exactly that resource's record, with the failure text. All pass under `cabal tes
 #### Remaining Work
 
 - Add the plan digest and service name to `RolePlan` in
-  `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`, filled at both construction sites.
+  `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`, filled at both construction sites.
 - Persist `RoleReceipt` transitions in `runRoleLifecycle`'s Acquire and Drain steps by opening
   `withProtectedEntry store` for each transition, with the key and byte encoding stated under Deliverables.
 - Add the receipt-set reader, over `listProtectedRecords` and the `role-receipt.<group>.` prefix, that the
@@ -778,8 +791,8 @@ exactly that resource's record, with the failure text. All pass under `cabal tes
 ### Sprint 22.12: A recovery-required admission settles its predecessor instances instead of refusing [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -817,8 +830,8 @@ resource and records no `prereq` event. All pass under `cabal test all` from `co
 ### Sprint 22.13: An exclusive lease transfers only after the predecessor's mutations are fenced [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`,
 `documents/architecture/lifecycle_state_model.md`
@@ -854,10 +867,10 @@ non-exclusive row neither advances the fence nor waits on the predecessor. All p
 - Settle older-generation journal records before Prereq and refuse a superseded-generation prepare.
 - Write the `RoleLifecycleSpec` transfer, stale-fence, and non-exclusive cases listed under Validation.
 
-### Sprint 22.14: The service runtime hashes through Digest [Planned]
+### Sprint 22.14: The service runtime hashes through Digest [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Service.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Service.hs`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
 
@@ -884,10 +897,15 @@ and dispatches exactly its signed program variant", which reaches `service run` 
 `withVerifiedServiceRuntime`. All run under `cabal test all --ghc-options=-Werror` from `core/`, and the host
 static gate (§ JJ) passes.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): `Service.hs` no longer
+defines `sha256Hex` or imports `Crypto.Hash`, and imports `sha256Hex` from `HostBootstrap.Digest`; the
+`ActivationSpec` and `CLISpec` cases named above pass unchanged inside the warning-clean `cabal test all` from
+`core/`.
+
 #### Remaining Work
 
-- Delete `sha256Hex` and the then-unused `import qualified Crypto.Hash as Hash` from
-  `core/hostbootstrap-core/src/HostBootstrap/Service.hs`, and add `import HostBootstrap.Digest (sha256Hex)`.
+None.
+
 
 ## Remaining Work
 
@@ -913,7 +931,6 @@ static gate (§ JJ) passes.
 - Sprint 22.12: settle predecessor instances on `RoleAdmissionRecoveryRequired` instead of refusing.
 - Sprint 22.13: advance a durable fence and settle the predecessor's open journal entries before an exclusive
   lease transfers.
-- Sprint 22.14: `Service` takes `sha256Hex` from `HostBootstrap.Digest`.
 
 ## Documentation Requirements
 

@@ -14,7 +14,8 @@ and then reopening the store, exactly as an interrupted invocation leaves it.
 module SessionSpec (tests, runFenceDelayProbe, withInterruptedProductionTransaction) where
 
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (ErrorCall (..), SomeException, evaluate, try)
+import Control.Monad (forM_)
 import qualified Crypto.Hash as Hash
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
@@ -39,7 +40,7 @@ import HostBootstrap.Authority (
     rootScopeAuthority,
  )
 import qualified HostBootstrap.Authority as Authority
-import HostBootstrap.Authority.Kernel (commandReservationKernel)
+import HostBootstrap.Authority.Kernel (CommandFrameName (..), CommandPlanDigest (..), commandReservationKernel)
 import qualified HostBootstrap.Authority.Testing as AuthorityFixture
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
 import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
@@ -49,10 +50,9 @@ import qualified HostBootstrap.Context as Context
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.Lifecycle.Execution (
     StepExecution,
-    newResourceCarrier,
-    newStepRuntime,
     stepExecutionOperationKey,
  )
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore (newResourceCarrierCore, newStepRuntimeCore)
 import HostBootstrap.Lifecycle.Mode (
     AcquisitionJournal,
     BoundRunLease,
@@ -80,6 +80,7 @@ import HostBootstrap.Lifecycle.Mode (
     productionRootAuthority,
     productionRootModeLease,
     productionRootUnboundLease,
+    validateBoundRunLeaseAcquisitionJournal,
     withAcquisitionJournal,
     withAcquisitionJournalPhase,
     withCurrentLifecycleCursor,
@@ -170,8 +171,6 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (
-    lifecyclePlanFromProjectPlan,
-    lifecyclePlanSnapshot,
     stepExecutionFor,
  )
 import HostBootstrap.Service (emptyServiceRegistry)
@@ -204,10 +203,11 @@ import System.Directory (
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
+import System.IO.Error (ioeGetErrorString)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 import Unsafe.Coerce (unsafeCoerce)
 
 plan :: Text
@@ -246,7 +246,9 @@ runFenceDelayProbe storeRoot mode readyPath goPath reasonPath = do
         Left _ -> exitWith (ExitFailure 4)
         Right store -> do
             -- Entry one: take the generation token, then leave the store free.
-            taken <- inEntry store (\s -> establishInitialFence s plan 1)
+            taken <- inEntry store $ \s -> do
+                permit <- expect' =<< openProjectJournal s plan
+                establishInitialFence s permit 1
             case taken of
                 Left failure -> failProbe (sessionErrorMessage failure)
                 Right fence -> do
@@ -270,10 +272,11 @@ runFenceDelayProbe storeRoot mode readyPath goPath reasonPath = do
         ProtectedSession session ->
         IO (Either SessionError Word64)
     present fence s = case mode of
-        "reestablish" ->
+        "reestablish" -> do
             -- A delayed initial-fence proposal must be deduplicated to the
             -- observed epoch, not turned into a second generation.
-            fmap (fmap fenceEpochWord) (establishInitialFence s plan 5)
+            permit <- expect' =<< openProjectJournal s plan
+            fmap (fmap fenceEpochWord) (establishInitialFence s permit 5)
         "prepare" -> withProbeEpoch s $ \epoch -> do
             journal <- openProjectJournal s plan
             case journal of
@@ -401,11 +404,16 @@ tests =
                 @?= ["HostBootstrap.Lifecycle.Session.Testing"]
             assertBool "the testing unit retains its hidden Transaction implementation"
                 (transactionModule `elem` SourceGuard.fieldModules "other-modules" testingUnit)
-            mainLibrary <- requiredStanza "library"
-            assertBool "the main library retains its own hidden Transaction implementation"
-                (transactionModule `elem` SourceGuard.fieldModules "other-modules" mainLibrary)
+            implementation <- requiredStanza "library handoff-implementation-internal"
+            owners <- either assertFailure pure (SourceGuard.mainImplementationOwners description)
+            lookup transactionModule owners @?= Just "library handoff-implementation-internal"
+            assertBool "the production unit retains its own hidden Transaction implementation"
+                (transactionModule `elem` SourceGuard.fieldModules "other-modules" implementation)
+            assertBool "the production unit does not expose Transaction"
+                (transactionModule `notElem` SourceGuard.fieldModules "exposed-modules" implementation)
+            publicModules <- either assertFailure pure (SourceGuard.effectiveMainExposedModules description)
             assertBool "the main library does not expose Transaction"
-                (transactionModule `notElem` SourceGuard.fieldModules "exposed-modules" mainLibrary)
+                (transactionModule `notElem` publicModules)
         , testGroup "encoded record identities" encodedRecordIdentityTests
         ]
 
@@ -427,32 +435,34 @@ acquisitionJournalTests :: [TestTree]
 acquisitionJournalTests =
     [ testCase "reverse-root source records force hidden admission on partial application" $ do
         forced <-
-            try @SomeException
+            try @ErrorCall
                 (evaluate (withReverseRootSourceRecordsKernel (error "forced reverse-root admission")))
         case forced of
-            Left _ -> pure ()
+            Left (ErrorCall message) -> message @?= "forced reverse-root admission"
             Right _ -> assertFailure "the reverse-root source eliminator accepted a bottom admission"
-    , testCase "reverse acquisition reopen forces hidden admission before every recovery input" $ do
-        forced <-
-            try @SomeException
-                ( reopenExistingReverseAcquisitionJournalKernel
-                    (error "forced reverse acquisition admission")
-                    (error "store evaluated before admission")
-                    (error "session evaluated before admission")
-                    (\_ _ _ -> error "validator evaluated before admission")
-                    "scope"
-                    "project"
-                    "store"
-                    "snapshot"
-                    "run"
-                    "spec"
-                    1
-                    (error "frame evaluated before admission")
-                    Authority.ProjectUp
+    , testCase "acquisition admission has one live route" $
+        -- See DEVELOPMENT_PLAN/rationale.md#acquisition-admission-has-one-live-route.
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            description <- SourceGuard.readPackageDescription
+            sources <- SourceGuard.readLibrarySources packageRoot description
+            mapM_
+                ( \(name, _, source) -> do
+                    definitions <- expect (SourceGuard.haskellDefinitionNames source)
+                    -- Implicit exports expose only declarations, checked here too.
+                    let exports = maybe [] id (SourceGuard.moduleExportTokens name source)
+                    mapM_
+                        ( \removed -> do
+                            assertBool (name <> " defines " <> removed) (removed `notElem` definitions)
+                            assertBool (name <> " exports " <> removed) (removed `notElem` exports)
+                        )
+                        [ "reopenExistingAcquisitionCursorKernel"
+                        , "reopenExistingReverseAcquisitionJournalKernel"
+                        , "reopenExistingAcquisitionJournalInEntry"
+                        , "requireChildCursorPresence"
+                        , "childAcquisitionKey"
+                        ]
                 )
-        case forced of
-            Left _ -> pure ()
-            Right _ -> assertFailure "the reverse acquisition opener accepted a bottom admission"
+                sources
     , testCase "fresh admission persists the exact Prepare binding after releasing the lock" $
         withAcquisitionPlanFixture $ \store project root lease bound binding projectPlan _projectRoot -> do
             leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
@@ -574,12 +584,34 @@ acquisitionJournalTests =
             after <- protectedImage reopened
             recovered @?= first
             after @?= before
+    , testCase "a bound lease from another acquisition origin is refused by the journal binding" $
+        withAcquisitionPlanFixture $ \store _project root lease bound binding projectPlan _projectRoot ->
+            withAcquisitionPlanFixture $ \otherStore _otherProject otherRoot otherLease _otherBound _otherBinding _otherPlan _otherRootPath -> do
+                let expectedStore = protectedStoreIdentityText (protectedStoreIdentity otherStore)
+                    observedStore = protectedStoreIdentityText (protectedStoreIdentity store)
+                assertBool "the acquisition fixtures have distinct protected stores" (expectedStore /= observedStore)
+                compared <-
+                    withAcquisitionJournal root lease bound binding projectPlan $ \journal ->
+                        pure
+                            ( validateBoundRunLeaseAcquisitionJournal (Authority.rootAuthorityVerb root) lease journal
+                            , validateBoundRunLeaseAcquisitionJournal Authority.ProjectDown lease journal
+                            , validateBoundRunLeaseAcquisitionJournal
+                                (Authority.rootAuthorityVerb otherRoot)
+                                (unsafeCoerce otherLease)
+                                journal
+                            )
+                compared
+                    @?= Right
+                        ( Right ()
+                        , Left (SessionAcquisitionBindingMismatch "root verb" "down" "up")
+                        , Left (SessionAcquisitionBindingMismatch "protected store" expectedStore observedStore)
+                        )
     , testCase "retained-evidence origin drift refuses before opening a record" $
         withAcquisitionPlanFixture $ \store _project root lease bound binding projectPlan _projectRoot ->
             withAcquisitionPlanFixtureFor acquisitionDriftStepPlan $ \otherStore _otherProject otherRoot otherLease otherBound otherBinding otherPlan _otherRootPath -> do
                 callbacks <- newIORef 0
-                let refuse targetStore label action = do
-                        assertLifecycleRefusalNoMutation targetStore callbacks action
+                let refuse targetStore label field action = do
+                        assertLifecycleRefusalNoMutation targetStore callbacks (hasAcquisitionMismatchField field) action
                         image <- protectedImage targetStore
                         assertBool
                             (label <> " unexpectedly opened an acquisition record")
@@ -588,6 +620,7 @@ acquisitionJournalTests =
                 refuse
                     store
                     "root drift"
+                    "root store"
                     ( withAcquisitionJournal
                         (unsafeCoerce otherRoot)
                         lease
@@ -599,6 +632,7 @@ acquisitionJournalTests =
                 refuse
                     otherStore
                     "lease drift"
+                    "root store"
                     ( withAcquisitionJournal
                         root
                         (unsafeCoerce otherLease)
@@ -610,6 +644,7 @@ acquisitionJournalTests =
                 refuse
                     store
                     "bound-snapshot drift"
+                    "bound snapshot bytes"
                     ( withAcquisitionJournal
                         root
                         lease
@@ -621,6 +656,7 @@ acquisitionJournalTests =
                 refuse
                     store
                     "digest-binding drift"
+                    "digest binding"
                     ( withAcquisitionJournal
                         root
                         lease
@@ -632,6 +668,7 @@ acquisitionJournalTests =
                 refuse
                     store
                     "plan drift"
+                    "plan store"
                     ( withAcquisitionJournal
                         root
                         lease
@@ -647,13 +684,13 @@ acquisitionJournalTests =
             canonical <- protectedRecordBytes <$> readRequiredRecord store modeKey
             let epoch = brokerEpochWord (rootAuthorityEpoch root)
                 mutations =
-                    [ encodeFields ["harness", Text.pack (show epoch), "other-run"]
-                    , encodeFields ["production", Text.pack (show (epoch + 1))]
+                    [ (encodeFields ["harness", Text.pack (show epoch), "other-run"], "live mode")
+                    , (encodeFields ["production", Text.pack (show (epoch + 1))], "live mode broker epoch")
                     ]
             mapM_
-                ( \payload -> do
+                ( \(payload, field) -> do
                     _ <- rewriteRecordBytes store modeKey (const payload)
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (hasAcquisitionMismatchField field) $
                         withAcquisitionJournal
                             root
                             lease
@@ -674,7 +711,7 @@ acquisitionJournalTests =
             callbacks <- newIORef 0
             leaseKey <- recordKeyFor ("lease." <> installedProjectName project <> recordTupleSeparator <> "production")
             _ <- rewriteRecordBytes store leaseKey id
-            assertLifecycleRefusalNoMutation store callbacks $
+            assertLifecycleRefusalNoMutation store callbacks (hasAcquisitionMismatchField "live lease record version") $
                 withAcquisitionJournal
                     root
                     lease
@@ -694,7 +731,7 @@ acquisitionJournalTests =
                 otherSnapshotKey <- recordKeyFor ("snapshot." <> installedProjectName otherProject <> recordTupleSeparator <> "production")
                 otherSnapshot <- readRequiredRecord otherStore otherSnapshotKey
                 _ <- rewriteRecordBytes store snapshotKey (const (protectedRecordBytes otherSnapshot))
-                assertLifecycleRefusalNoMutation store callbacks $
+                assertLifecycleRefusalNoMutation store callbacks (hasAcquisitionMismatchField "live snapshot plan digest") $
                     withAcquisitionJournal
                         root
                         lease
@@ -754,24 +791,26 @@ acquisitionJournalTests =
             let canonical = protectedRecordBytes canonicalRecord
                 differentPlan = "different-plan-digest"
                 mutations =
-                    [ ("stable scope", replaceField 1 "production-drift")
+                    [ ("stable scope", "stable scope", replaceField 1 "production-drift")
                     ,
                         ( "lease version"
+                        , "lease record version"
                         , replaceField
                             6
                             (Text.pack (show (recordVersionWord (protectedRecordVersion leaseRecord) + 1)))
                         )
-                    , ("specification digest", replaceField 8 "different-spec-digest")
+                    , ("specification digest", "specification digest", replaceField 8 "different-spec-digest")
                     ,
                         ( "snapshot and lease-plan digest"
+                        , "snapshot digest"
                         , replaceField 9 differentPlan . replaceField 4 differentPlan
                         )
-                    , ("recognized root verb", replaceField 11 "down")
+                    , ("recognized root verb", "root verb", replaceField 11 "down")
                     ]
             mapM_
-                ( \(label, mutate) -> do
+                ( \(label, field, mutate) -> do
                     _ <- rewriteRecordFields store key mutate
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (hasAcquisitionMismatchField field) $
                         withAcquisitionJournal
                             root
                             lease
@@ -818,7 +857,7 @@ acquisitionJournalTests =
             mapM_
                 ( \(label, payload) -> do
                     _ <- rewriteRecordBytes store key (const payload)
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (== SessionRecordCorrupt "acquisition journal") $
                         withAcquisitionJournal
                             root
                             lease
@@ -953,9 +992,9 @@ foreignProjectReservationCase =
                                                     let reservation =
                                                             commandReservationKernel
                                                                 root
-                                                                (acquisitionJournalSnapshotDigest journal)
+                                                                (CommandPlanDigest (acquisitionJournalSnapshotDigest journal))
                                                                 (lifecycleCursorPhase cursor)
-                                                                (lifecycleCursorFrame cursor)
+                                                                (CommandFrameName (lifecycleCursorFrame cursor))
                                                         invocations = Map.filterWithKey (\key _ -> "invocation." `Text.isPrefixOf` key)
                                                     before <- protectedImage store
                                                     refused <- reserveCurrentLifecycleCommandKernel verifiedProject journal cursor reservation
@@ -979,9 +1018,26 @@ foreignProjectReservationCase =
                             frameAction
         exercise
 
+-- A negative-only substitution preserves the genuine foreign origin and the
+-- statically fixed Up/Execute witnesses while aligning its nominal indices.
+alignForeignCursorOriginForRefusal ::
+    LifecycleCursor sourceScope sourcePlanId sourceFrame sourceBroker VerbUp Authority.ExecutePhase ->
+    LifecycleCursor targetScope targetPlanId targetFrame targetBroker VerbUp Authority.ExecutePhase
+alignForeignCursorOriginForRefusal = unsafeCoerce
+
 lifecycleCursorTests :: [TestTree]
 lifecycleCursorTests =
     [ testCase "the reservation bridge refuses a foreign journal against the independently verified executable identity" foreignProjectReservationCase
+    , testCase "actual command and cursor origins match their own reservations and refuse a foreign cursor" $
+        let graph _store frame = either (error . show) id $
+                mkStepPlan [contextInitStep "origin predicate" frame (const (pure StepChanged))]
+         in Fixture.withFixtureRootChainEvidence graph $ \_store _plan authority cursor ->
+                Fixture.withFixtureRootChainEvidence graph $ \_foreignStore _foreignPlan foreignAuthority foreignCursor ->
+                    ( lifecycleCursorMatchesCommandAuthority authority cursor
+                    , lifecycleCursorMatchesCommandAuthority foreignAuthority foreignCursor
+                    , lifecycleCursorMatchesCommandAuthority authority (alignForeignCursorOriginForRefusal foreignCursor)
+                    )
+                        @?= (True, True, False)
     , testCase "fresh admission atomically hands the acquisition seed to one exact frame" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             (sourceKey, sourceBefore) <- soleRecordWithPrefix store "acquisition."
@@ -1026,7 +1082,7 @@ lifecycleCursorTests =
                     "up"
                     "prepare"
     , testCase "a canonical non-Prepare acquisition seed starts the absent cursor at that phase" $
-        withLifecycleCursorFixture $ \store root lease bound binding projectPlan journal frame -> do
+        withLifecycleCursorFixture $ \store root lease bound binding projectPlan _journal frame -> do
             (sourceKey, _) <- soleRecordWithPrefix store "acquisition."
             _ <- rewriteRecordFields store sourceKey (replaceField 12 "execute")
             sourceBeforeCursor <- readRequiredRecord store sourceKey
@@ -1034,7 +1090,7 @@ lifecycleCursorTests =
                 withAcquisitionJournal root lease bound binding projectPlan $ \executeJournal -> do
                     withAcquisitionJournalPhase executeJournal lifecyclePhaseName @?= "execute"
                     callbacks <- newIORef 0
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (== SessionCursorPhaseMismatch "execute" "prepare") $
                         withLifecycleCursor
                             executeJournal
                             frame
@@ -1056,19 +1112,18 @@ lifecycleCursorTests =
             sourceAfterCursor @?= sourceBeforeCursor
             cursorEvidencePhase evidence @?= "execute"
             cursorEvidenceVersion evidence @?= 1
-            withAcquisitionJournalPhase journal lifecyclePhaseName @?= "prepare"
     , testCase "wrong verb and absent-seed phase refuse without writing a cursor" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             callbacks <- newIORef 0
             before <- protectedImage store
-            assertLifecycleRefusalNoMutation store callbacks $
+            assertLifecycleRefusalNoMutation store callbacks (== SessionCursorVerbMismatch "up" "down") $
                 withLifecycleCursor
                     journal
                     frame
                     Authority.ProjectDown
                     Authority.Prepare
                     (countingCallback callbacks)
-            assertLifecycleRefusalNoMutation store callbacks $
+            assertLifecycleRefusalNoMutation store callbacks (== SessionCursorPhaseMismatch "prepare" "execute") $
                 withLifecycleCursor
                     journal
                     frame
@@ -1088,11 +1143,11 @@ lifecycleCursorTests =
                         Authority.ProjectUp
                         (\phase cursor -> pure (lifecyclePhaseName phase, cursorEvidence cursor))
             fst recovered @?= "prepare"
-    , testCase "a 4097-byte frame refuses before cursor store I/O" $
+    , testCase "a 4097-byte frame refuses with the frame-length bound" $
         withLifecycleCursorFixtureAt (Text.replicate 4097 "x") $ \store _root _lease _bound _binding _projectPlan journal frame -> do
             callbacks <- newIORef 0
             before <- protectedImage store
-            assertLifecycleRefusalNoMutation store callbacks $
+            assertLifecycleRefusalNoMutation store callbacks (== SessionCursorBindingInvalid "frame length") $
                 withLifecycleCursor
                     journal
                     frame
@@ -1103,6 +1158,40 @@ lifecycleCursorTests =
             after @?= before
             assertBool
                 "an oversized frame opened a cursor row"
+                (Map.null (Map.filterWithKey (\key _ -> "cursor." `Text.isPrefixOf` key) after))
+    , testCase "4096-byte ASCII and UTF-8 frames each open a cursor" $
+        mapM_
+            ( \semanticFrame ->
+                withLifecycleCursorFixtureAt semanticFrame $ \store _root _lease _bound _binding _projectPlan journal frame -> do
+                    ByteString.length (TextEncoding.encodeUtf8 semanticFrame) @?= 4096
+                    callbacks <- newIORef (0 :: Int)
+                    opened <-
+                        withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \cursor -> do
+                            modifyIORef' callbacks (+ 1)
+                            pure (cursorEvidence cursor)
+                    opened @?= Right (CursorEvidence semanticFrame 1 "up" "prepare")
+                    readIORef callbacks >>= (@?= 1)
+                    (_, record) <- soleRecordWithPrefix store "cursor."
+                    recordVersionWord (protectedRecordVersion record) @?= 1
+                    fields <- expectCursorFields (protectedRecordBytes record)
+                    fields !! 4 @?= TextEncoding.encodeUtf8 semanticFrame
+            )
+            [Text.replicate 4096 "x", Text.replicate 2048 "é"]
+    , testCase "a 4098-byte UTF-8 frame refuses with the frame-length bound" $ do
+        let semanticFrame = Text.replicate 2049 "é"
+        ByteString.length (TextEncoding.encodeUtf8 semanticFrame) @?= 4098
+        withLifecycleCursorFixtureAt semanticFrame $ \store _root _lease _bound _binding _projectPlan journal frame -> do
+            callbacks <- newIORef 0
+            assertLifecycleRefusalNoMutation store callbacks (== SessionCursorBindingInvalid "frame length") $
+                withLifecycleCursor
+                    journal
+                    frame
+                    Authority.ProjectUp
+                    Authority.Prepare
+                    (countingCallback callbacks)
+            after <- protectedImage store
+            assertBool
+                "an oversized UTF-8 frame opened a cursor row"
                 (Map.null (Map.filterWithKey (\key _ -> "cursor." `Text.isPrefixOf` key) after))
     , testCase "exact expected and discovered current-phase retries are no-write redeliveries" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
@@ -1141,7 +1230,6 @@ lifecycleCursorTests =
             readIORef callbacks >>= (@?= 3)
     , testCase "legal successors are read back before unlocked delivery and acquisition stays the seed" $
         withLifecycleCursorFixture $ \store root lease bound binding projectPlan journal frame -> do
-            sourceSeed <- pure (withAcquisitionJournalPhase journal lifecyclePhaseName)
             sourceBefore <- snd <$> soleRecordWithPrefix store "acquisition."
             transitioned <-
                 withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
@@ -1164,7 +1252,6 @@ lifecycleCursorTests =
             cursorEvidencePhase teardownEvidence @?= "teardown"
             cursorEvidenceVersion executeEvidence @?= cursorEvidenceVersion prepareEvidence + 1
             cursorEvidenceVersion teardownEvidence @?= cursorEvidenceVersion executeEvidence + 1
-            sourceSeed @?= "prepare"
             sourceAfter <- snd <$> soleRecordWithPrefix store "acquisition."
             sourceAfter @?= sourceBefore
             reopened <-
@@ -1306,12 +1393,16 @@ lifecycleCursorTests =
     , testCase "callback exceptions preserve durable initial and successor phases for redelivery" $
         withLifecycleCursorFixture $ \store root lease bound binding projectPlan journal frame -> do
             initialThrown <-
-                try @SomeException $
+                try @IOError $
                     withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \_ ->
                         fail "initial cursor callback interruption"
             case initialThrown of
-                Left _ -> pure ()
+                Left failure -> ioeGetErrorString failure @?= "initial cursor callback interruption"
                 Right _ -> assertFailure "initial cursor callback unexpectedly returned"
+            (_, initialRecord) <- soleRecordWithPrefix store "cursor."
+            recordVersionWord (protectedRecordVersion initialRecord) @?= 1
+            initialFields <- expectCursorFields (protectedRecordBytes initialRecord)
+            initialFields !! 6 @?= "prepare"
             initialRecovered <-
                 expect
                     =<< withCurrentLifecycleCursor
@@ -1322,12 +1413,12 @@ lifecycleCursorTests =
             initialRecovered @?= "prepare"
             successorThrown <-
                 withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor ->
-                    try @SomeException $
+                    try @IOError $
                         withExecuteLifecycleCursor prepareCursor $ \_ ->
                             fail "execute cursor callback interruption"
             case successorThrown of
                 Left failure -> assertFailure (lifecycleErrorMessage failure)
-                Right (Left _) -> pure ()
+                Right (Left failure) -> ioeGetErrorString failure @?= "execute cursor callback interruption"
                 Right (Right _) -> assertFailure "execute cursor callback unexpectedly returned"
             reopened <-
                 withAcquisitionJournal root lease bound binding projectPlan $ \reopenedJournal ->
@@ -1413,7 +1504,7 @@ lifecycleCursorTests =
 
                     replayCallbacks <- newIORef 0
                     executeImage <- protectedImage store
-                    assertLifecycleRefusalNoMutation store replayCallbacks $
+                    assertLifecycleRefusalNoMutation store replayCallbacks (== SessionCursorPhaseMismatch "execute" "prepare") $
                         withLifecycleCursor
                             journal
                             frame
@@ -1430,7 +1521,10 @@ lifecycleCursorTests =
                                 (pure . cursorEvidence)
                     cursorEvidencePhase resumedExecute @?= "execute"
                     protectedImage store >>= (@?= executeImage)
-                    assertLifecycleRefusalNoMutation store replayCallbacks $
+                    assertLifecycleRefusalNoMutation
+                        store
+                        replayCallbacks
+                        (== SessionStaleCursorVersion (lifecycleCursorRecordVersion prepareCursor) (cursorEvidenceVersion resumedExecute)) $
                         withExecuteLifecycleCursor prepareCursor (countingCallback replayCallbacks)
                     withLifecycleCursor
                         journal
@@ -1441,7 +1535,10 @@ lifecycleCursorTests =
                             tornDown <- withTeardownLifecycleCursor executeCursor (pure . cursorEvidence)
                             teardownEvidence <- expect tornDown
                             cursorEvidencePhase teardownEvidence @?= "teardown"
-                            assertLifecycleRefusalNoMutation store replayCallbacks $
+                            assertLifecycleRefusalNoMutation
+                                store
+                                replayCallbacks
+                                (== SessionStaleCursorVersion (lifecycleCursorRecordVersion executeCursor) (cursorEvidenceVersion teardownEvidence)) $
                                 withTeardownLifecycleCursor executeCursor (countingCallback replayCallbacks)
                         )
                         >>= expect
@@ -1452,20 +1549,28 @@ lifecycleCursorTests =
                 withLifecycleCursor journal frame Authority.ProjectUp Authority.Prepare $ \prepareCursor -> do
                     callbacks <- newIORef 0
                     (sourceKey, _) <- soleRecordWithPrefix store "acquisition."
-                    _ <- rewriteRecordBytes store sourceKey id
+                    sourceVersion <- rewriteRecordBytes store sourceKey id
+                    let expectedFailure =
+                            SessionCursorBindingMismatch
+                                "source acquisition version"
+                                (Text.pack (show (acquisitionJournalRecordVersion journal)))
+                                (Text.pack (show sourceVersion))
                     afterAba <- protectedImage store
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (== expectedFailure) $
                         withLifecycleCursor
                             journal
                             frame
                             Authority.ProjectUp
                             Authority.Prepare
                             (countingCallback callbacks)
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (== expectedFailure) $
                         withExecuteLifecycleCursor prepareCursor (countingCallback callbacks)
                     reopened <-
                         withAcquisitionJournal root lease bound binding projectPlan $ \freshJournal ->
-                            assertLifecycleRefusalNoMutation store callbacks $
+                            assertLifecycleRefusalNoMutation
+                                store
+                                callbacks
+                                (== SessionCursorBindingMismatch "durable binding" "exact acquisition and frame binding" "different binding") $
                                 withCurrentLifecycleCursor
                                     freshJournal
                                     frame
@@ -1476,7 +1581,7 @@ lifecycleCursorTests =
                 >>= expect
     , testCase "corrupt, colliding, and broker-mismatched cursor payloads never normalize" $
         withLifecycleCursorFixture $ \store _root _lease _bound _binding _projectPlan journal frame -> do
-            _ <-
+            originalEvidence <-
                 expect
                     =<< withLifecycleCursor
                         journal
@@ -1484,9 +1589,12 @@ lifecycleCursorTests =
                         Authority.ProjectUp
                         Authority.Prepare
                         (pure . cursorEvidence)
+            cursorEvidencePhase originalEvidence @?= "prepare"
             callbacks <- newIORef 0
             (cursorKey, canonicalRecord) <- soleRecordWithPrefix store "cursor."
             cursorFields <- expectCursorFields (protectedRecordBytes canonicalRecord)
+            atPayloadLimit <- canonicalCursorPayloadAtSize 65536 cursorFields
+            overPayloadLimit <- canonicalCursorPayloadAtSize 65537 cursorFields
             let canonical = protectedRecordBytes canonicalRecord
                 sourceFields = decodeFields (cursorFields !! 3)
                 replaceCursorField index value =
@@ -1499,28 +1607,31 @@ lifecycleCursorTests =
                     replaceCursorField
                         3
                         (encodeFields (replaceField 1 "production-different" sourceFields))
+                corrupt = SessionRecordCorrupt "lifecycle cursor"
+                collision = SessionCursorBindingMismatch "durable binding" "exact acquisition and frame binding" "different binding"
                 mutations =
-                    [ ("malformed", "malformed")
-                    , ("future schema", replaceCursorField 0 "lifecycle-cursor-v2")
-                    , ("noncanonical framed length", "0" <> canonical)
-                    , ("zero source version", replaceCursorField 2 "0")
-                    , ("noncanonical source version", replaceCursorField 2 ("0" <> cursorFields !! 2))
-                    , ("different source key", replaceCursorField 1 "acquisition.different")
-                    , ("different canonical source binding", sourceBindingMismatch)
-                    , ("different frame collision", replaceCursorField 4 "different-frame")
-                    , ("invalid UTF-8 frame", replaceCursorField 4 (ByteString.pack [255]))
-                    , ("different broker binding", brokerMismatch)
-                    , ("different immutable verb", replaceCursorField 5 "down")
-                    , ("unknown phase", replaceCursorField 6 "future-phase")
-                    , ("extra framed field", canonical <> "0:")
-                    , ("truncated framed payload", ByteString.take (ByteString.length canonical - 1) canonical)
-                    , ("oversized payload", ByteString.replicate 65537 120)
+                    [ ("malformed", "malformed", corrupt)
+                    , ("future schema", replaceCursorField 0 "lifecycle-cursor-v2", corrupt)
+                    , ("noncanonical framed length", "0" <> canonical, corrupt)
+                    , ("zero source version", replaceCursorField 2 "0", corrupt)
+                    , ("noncanonical source version", replaceCursorField 2 ("0" <> cursorFields !! 2), corrupt)
+                    , ("different source key", replaceCursorField 1 "acquisition.different", collision)
+                    , ("different canonical source binding", sourceBindingMismatch, collision)
+                    , ("different frame collision", replaceCursorField 4 "different-frame", collision)
+                    , ("invalid UTF-8 frame", replaceCursorField 4 (ByteString.pack [255]), corrupt)
+                    , ("different broker binding", brokerMismatch, collision)
+                    , ("different immutable verb", replaceCursorField 5 "down", corrupt)
+                    , ("unknown phase", replaceCursorField 6 "future-phase", corrupt)
+                    , ("extra framed field", canonical <> "0:", corrupt)
+                    , ("truncated framed payload", ByteString.take (ByteString.length canonical - 1) canonical, corrupt)
+                    , ("canonical 65536-byte payload", atPayloadLimit, collision)
+                    , ("canonical 65537-byte payload", overPayloadLimit, corrupt)
                     ]
             mapM_
-                ( \(label, payload) -> do
+                ( \(label, payload, expectedFailure) -> do
                     _ <- rewriteRecordBytes store cursorKey (const payload)
                     before <- protectedImage store
-                    assertLifecycleRefusalNoMutation store callbacks $
+                    assertLifecycleRefusalNoMutation store callbacks (== expectedFailure) $
                         withLifecycleCursor
                             journal
                             frame
@@ -1529,10 +1640,26 @@ lifecycleCursorTests =
                             (countingCallback callbacks)
                     protectedImage store >>= (@?= before)
                     retained <- protectedRecordBytes <$> readRequiredRecord store cursorKey
-                    retained @?= payload
-                    assertBool (label <> " mutation was unexpectedly accepted") (retained /= canonical)
+                    assertEqual (label <> " refused bytes changed") payload retained
                     _ <- rewriteRecordBytes store cursorKey (const canonical)
-                    pure ()
+                    restored <- readRequiredRecord store cursorKey
+                    protectedRecordBytes restored @?= canonical
+                    beforeReopen <- protectedImage store
+                    reopened <-
+                        withLifecycleCursor
+                            journal
+                            frame
+                            Authority.ProjectUp
+                            Authority.Prepare
+                            (pure . cursorEvidence)
+                    reopened
+                        @?= Right
+                            ( originalEvidence
+                                { cursorEvidenceVersion = recordVersionWord (protectedRecordVersion restored)
+                                }
+                            )
+                    readIORef callbacks >>= (@?= 0)
+                    protectedImage store >>= (@?= beforeReopen)
                 )
                 mutations
     ]
@@ -1553,6 +1680,29 @@ encodeCursorFields =
                     <> ":"
                     <> field
             )
+
+-- Keep the real seven-field envelope and change only the embedded acquisition's
+-- stable scope. A legal unequal binding reaches the collision check, while an
+-- otherwise identical envelope one byte above the total bound fails decoding.
+canonicalCursorPayloadAtSize :: Int -> [ByteString] -> IO ByteString
+canonicalCursorPayloadAtSize totalBytes fields = do
+    length fields @?= 7
+    let sourceFields = decodeFields (fields !! 3)
+    length sourceFields @?= 13
+    let fixedOuterBytes = ByteString.length (encodeCursorFields (take 3 fields <> drop 4 fields))
+        sourceBytes = totalBytes - fixedOuterBytes - 6
+        fixedSourceBytes = ByteString.length (encodeFields (replaceField 1 "" sourceFields))
+        scopeBytes = sourceBytes - fixedSourceBytes
+    -- These boundary fixtures have a five-digit source-length prefix and colon.
+    ByteString.length (ByteStringChar8.pack (show sourceBytes)) @?= 5
+    assertBool "the boundary fixture has a nonempty stable scope" (scopeBytes > 0)
+    let source = encodeFields (replaceField 1 (Text.replicate scopeBytes "x") sourceFields)
+        payload = encodeCursorFields (replaceByteField 3 source fields)
+    ByteString.length source @?= sourceBytes
+    assertBool "the nested acquisition remains within its own payload bound" (ByteString.length source <= 65536)
+    assertBool "the boundary fixture changes the acquisition binding" (source /= fields !! 3)
+    ByteString.length payload @?= totalBytes
+    pure payload
 
 sha256HexTest :: ByteString -> Text
 sha256HexTest bytes =
@@ -1921,9 +2071,7 @@ withAcquisitionPlanFixtureForConfigUsing openIdentity stepPlan configFor verb us
                                                                                             =<< persistCanonicalPlanSnapshot
                                                                                                 unbound
                                                                                                 1
-                                                                                                ( lifecyclePlanSnapshot
-                                                                                                    (lifecyclePlanFromProjectPlan projectPlan)
-                                                                                                )
+                                                                                                (Fixture.canonicalSnapshotFromProjectPlan projectPlan)
                                                                                     withFreshBoundPlanSnapshot
                                                                                         unbound
                                                                                         projectPlan
@@ -2183,20 +2331,25 @@ replaceField index value fields =
 assertLifecycleRefusalNoMutation ::
     ProtectedStore ->
     IORef Int ->
+    (LifecycleError -> Bool) ->
     IO (Either LifecycleError result) ->
     IO ()
-assertLifecycleRefusalNoMutation store callbacks action = do
+assertLifecycleRefusalNoMutation store callbacks accepts action = do
     before <- protectedImage store
     outcome <- action
     case outcome of
-        Left failure ->
-            assertBool
-                "the refusal has a diagnostic"
-                (not (null (lifecycleErrorMessage failure)))
+        Left failure
+            | accepts failure -> pure ()
+            | otherwise -> assertFailure ("unexpected lifecycle refusal: " <> show failure)
         Right _ -> assertFailure "expected acquisition admission to refuse"
     readIORef callbacks >>= (@?= 0)
     after <- protectedImage store
     after @?= before
+
+hasAcquisitionMismatchField :: Text -> LifecycleError -> Bool
+hasAcquisitionMismatchField field failure = case failure of
+    SessionAcquisitionBindingMismatch observed _ _ -> observed == field
+    _ -> False
 
 countingCallback :: IORef Int -> value -> IO ()
 countingCallback callbacks _ = modifyIORef' callbacks (+ 1)
@@ -2508,7 +2661,7 @@ releasedIntentOriginTests =
         withStore $ \store -> do
             (SomeOpenSession sess permit, origin) <- expect =<< inEntry store (\s ->
                 withOpenSession s $ \epoch opened afterOpen -> do
-                    fence <- expect =<< establishInitialFence s plan 1
+                    fence <- expect =<< establishInitialFence s afterOpen 1
                     afterOne <- expect =<< recordTerminalOperation s epoch opened fence "op-1" "TeardownOutcomeUnknown" "Released" afterOpen
                     observed <- expect =<< readReleasedIntentOrigin s opened "op-1"
                     afterTwo <- expect =<< recordTerminalOperation s epoch opened fence "op-2" "TeardownOutcomeUnknown" "Released" afterOne
@@ -2558,7 +2711,7 @@ terminalSessionFixture :: ProtectedStore -> Text -> Text -> IO SomeOpenSession
 terminalSessionFixture store unknownPhase observedPhase =
     expect =<< inEntry store (\session ->
         withOpenSession session $ \epoch sess permit -> do
-            fence <- expect =<< establishInitialFence session plan 1
+            fence <- expect =<< establishInitialFence session permit 1
             next <- expect =<< recordTerminalOperation session epoch sess fence "op-1" unknownPhase observedPhase permit
             pure (Right (SomeOpenSession sess next)))
 
@@ -2692,30 +2845,58 @@ closedSessionRefusalCase name action =
 
 fenceTests :: [TestTree]
 fenceTests =
-    [ testCase "establishing a fence settles it at the proposed epoch" $
+    [ testCase "fence producers retain their held permit indices" $
+        SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
+            -- DEVELOPMENT_PLAN/rationale.md#fence-producers-follow-the-held-permit
+            description <- SourceGuard.readPackageDescription
+            let moduleName = "HostBootstrap.Lifecycle.Session"
+            path <- SourceGuard.libraryModulePath packageRoot description moduleName
+            source <- Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile path
+            forM_
+                [ "type role FenceEpoch nominal nominal"
+                , "type role OldPermitsFenced nominal nominal"
+                , "type role ProjectPermit nominal nominal"
+                , "data ProjectPermit scope planId = ProjectPermit Text TransactionPermit"
+                , "projectPermitPlanDigest :: ProjectPermit scope planId -> Text"
+                , "establishInitialFence :: ProtectedSession session -> ProjectPermit scope planId -> Word64 -> IO (Either SessionError (FenceEpoch scope planId))"
+                , "rotateFence :: ProtectedSession session -> ProjectPermit scope planId -> FenceEpoch scope planId -> IO (Either SessionError (FenceEpoch scope planId))"
+                , "currentFence :: ProtectedSession session -> ProjectPermit scope planId -> IO (Either SessionError (FenceEpoch scope planId))"
+                , "fenceOldPermits :: ProtectedSession session -> ProjectPermit scope planId -> IO (Either SessionError (OldPermitsFenced scope planId))"
+                ] $ \declaration ->
+                    SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens declaration) source @?= 1
+            definitions <- expect (SourceGuard.haskellDefinitionNames source)
+            assertBool "the private held-plan projection is missing" ("projectPermitPlanDigest" `elem` definitions)
+            exports <- maybe (assertFailure "Session has no explicit exports") pure $
+                SourceGuard.moduleExportTokens moduleName source
+            assertBool "Session exports the private plan-coordinate getter" ("projectPermitPlanDigest" `notElem` exports)
+            SourceGuard.countHaskellTokenSequence ["ProjectPermit", "("] (unwords exports) @?= 0
+    , testCase "establishing a fence settles it at the proposed epoch" $
         withStore $ \store -> runEntry store $ \s -> do
-            fence <- expect' =<< establishInitialFence s plan 1
+            permit <- expect' =<< openProjectJournal s plan
+            fence <- expect' =<< establishInitialFence s permit 1
             fenceEpochWord fence @?= 1
-            observed <- expect' =<< currentFence s plan
+            observed <- expect' =<< currentFence s permit
             fenceEpochWord observed @?= 1
             pure (Right ())
     , testCase "re-establishing an observed fence keeps its persisted epoch" $
         withStore $ \store -> do
-            first <- expect =<< inEntry store (\s -> establishInitialFence s plan 1)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            first <- expect =<< inEntry store (\s -> establishInitialFence s permit 1)
             fenceEpochWord first @?= 1
             before <- protectedImage store
             -- The settled durable epoch wins over a later caller's proposal.
-            resumed <- inEntry store (\s -> establishInitialFence s plan 99)
+            resumed <- inEntry store (\s -> establishInitialFence s permit 99)
             fence <- expect resumed
             fenceEpochWord fence @?= 1
             protectedImage store >>= (@?= before)
     , testCase "an observed establishment survives reopening the store" $
         withStore $ \store -> do
-            first <- expect =<< inEntry store (\s -> establishInitialFence s plan 4)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            first <- expect =<< inEntry store (\s -> establishInitialFence s permit 4)
             fenceEpochWord first @?= 4
             before <- protectedImage store
             reopened <- reopenStore store
-            fence <- expect =<< inEntry reopened (\s -> establishInitialFence s plan 77)
+            fence <- expect =<< inEntry reopened (\s -> establishInitialFence s permit 77)
             fenceEpochWord fence @?= 4
             protectedImage reopened >>= (@?= before)
     , resumeFenceCase "FenceIntentRecorded"
@@ -2724,29 +2905,32 @@ fenceTests =
     , unsettledCurrentFenceCase "FenceOutcomeUnknown" FenceOutcomeUnknown
     , testCase "currentFence refuses an absent fence" $
         withStore $ \store -> do
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
             before <- protectedImage store
-            refused <- inEntry store $ \s -> (() <$) <$> currentFence s plan
+            refused <- inEntry store $ \s -> (() <$) <$> currentFence s permit
             refused @?= Left (SessionFenceMissing plan)
             protectedImage store >>= (@?= before)
     , testCase "rotation refuses after its observed fence record disappears" $
         withStore $ \store -> do
-            fence <- expect =<< inEntry store (\s -> establishInitialFence s plan 1)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            fence <- expect =<< inEntry store (\s -> establishInitialFence s permit 1)
             fenceEpochWord fence @?= 1
             (key, record) <- soleRecordWithPrefix store "fence."
             _ <- expect =<< withProtectedEntry store (\s -> compareAndDeleteProtectedRecord s key (ExpectVersion (protectedRecordVersion record)))
             missing <- expect =<< withProtectedEntry store (\s -> readProtectedRecord s key)
             fmap protectedRecordBytes missing @?= Nothing
             before <- protectedImage store
-            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s plan fence)
+            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s permit fence)
             refused @?= Left (SessionFenceMissing plan)
             protectedImage store >>= (@?= before)
     , testCase "rotation refuses the maximum observed fence epoch without wrapping" $
         withStore $ \store -> do
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
             (key, original) <- seedFenceRecord store "FenceObserved" "18446744073709551615"
-            fence <- expect =<< inEntry store (\s -> currentFence s plan)
+            fence <- expect =<< inEntry store (\s -> currentFence s permit)
             fenceEpochWord fence @?= 18446744073709551615
             before <- protectedImage store
-            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s plan fence)
+            refused <- inEntry store $ \s -> fmap (fmap fenceEpochWord) (rotateFence s permit fence)
             refused @?= Left (SessionFenceInvalid "a fence epoch cannot rotate past its maximum")
             after <- readRequiredRecord store key
             protectedRecordBytes after @?= protectedRecordBytes original
@@ -2754,11 +2938,12 @@ fenceTests =
             protectedImage store >>= (@?= before)
     , testCase "rotation is strictly increasing" $
         withStore $ \store -> runEntry store $ \s -> do
-            first <- expect' =<< establishInitialFence s plan 1
-            second <- expect' =<< rotateFence s plan first
+            permit <- expect' =<< openProjectJournal s plan
+            first <- expect' =<< establishInitialFence s permit 1
+            second <- expect' =<< rotateFence s permit first
             fenceEpochWord second @?= 2
             -- The superseded epoch cannot rotate again.
-            stale <- rotateFence s plan first
+            stale <- rotateFence s permit first
             case stale of
                 Left (SessionFenceSuperseded presented live) -> do
                     presented @?= 1
@@ -2767,7 +2952,8 @@ fenceTests =
             pure (Right ())
     , testCase "a zero epoch is refused" $
         withStore $ \store -> do
-            outcome <- inEntry store (\s -> establishInitialFence s plan 0)
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            outcome <- inEntry store (\s -> establishInitialFence s permit 0)
             case outcome of
                 Left (SessionFenceInvalid _) -> pure ()
                 other -> assertFailure ("expected an invalid-fence refusal, got " <> show other)
@@ -2791,8 +2977,9 @@ fenceTests =
             probed <-
                 withFenceDelayProbe executable (protectedStoreRoot store) "prepare" $
                     runEntry store $ \s -> do
-                        live <- expect' =<< currentFence s plan
-                        rotated <- expect' =<< rotateFence s plan live
+                        permit <- expect' =<< openProjectJournal s plan
+                        live <- expect' =<< currentFence s permit
+                        rotated <- expect' =<< rotateFence s permit live
                         fenceEpochWord rotated @?= 2
                         pure (Right ())
             probed @?= FenceRefused 1 2
@@ -2805,13 +2992,15 @@ fenceTests =
             probed <-
                 withFenceDelayProbe executable (protectedStoreRoot store) "reestablish" $
                     runEntry store $ \s -> do
-                        live <- expect' =<< currentFence s plan
-                        _ <- expect' =<< rotateFence s plan live
+                        permit <- expect' =<< openProjectJournal s plan
+                        live <- expect' =<< currentFence s permit
+                        _ <- expect' =<< rotateFence s permit live
                         pure (Right ())
             -- It proposed 5 and was given the live 2; nothing advanced.
             probed @?= FenceAccepted 2
             runEntry store $ \s -> do
-                settled <- expect' =<< currentFence s plan
+                permit <- expect' =<< openProjectJournal s plan
+                settled <- expect' =<< currentFence s permit
                 fenceEpochWord settled @?= 2
                 pure (Right ())
     ]
@@ -2832,11 +3021,12 @@ resumeFenceCase :: Text -> TestTree
 resumeFenceCase phase =
     testCase ("resuming " <> Text.unpack phase <> " keeps the persisted proposal") $
         withStore $ \store -> do
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
             (key, seeded) <- seedFenceRecord store phase "4"
             reopened <- reopenStore store
-            resumed <- expect =<< inEntry reopened (\session -> establishInitialFence session plan 77)
+            resumed <- expect =<< inEntry reopened (\session -> establishInitialFence session permit 77)
             fenceEpochWord resumed @?= 4
-            observed <- expect =<< inEntry reopened (\session -> currentFence session plan)
+            observed <- expect =<< inEntry reopened (\session -> currentFence session permit)
             fenceEpochWord observed @?= 4
             final <- readRequiredRecord reopened key
             protectedRecordBytes final @?= encodeFields ["FenceObserved", "4"]
@@ -2846,9 +3036,10 @@ unsettledCurrentFenceCase :: Text -> FencePhase -> TestTree
 unsettledCurrentFenceCase rawPhase phase =
     testCase ("currentFence refuses " <> Text.unpack rawPhase) $
         withStore $ \store -> do
+            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
             _ <- seedFenceRecord store rawPhase "3"
             before <- protectedImage store
-            refused <- inEntry store $ \session -> (() <$) <$> currentFence session plan
+            refused <- inEntry store $ \session -> (() <$) <$> currentFence session permit
             refused @?= Left (SessionFenceUnsettled phase)
             protectedImage store >>= (@?= before)
 
@@ -3182,7 +3373,7 @@ prepareTests =
                             recorded @?= live
                         other -> assertFailure ("expected a fresh-fence refusal, got " <> show other)
                     -- After rotation the same key may retry.
-                    rotated <- expect' =<< rotateFence s plan fence
+                    rotated <- expect' =<< rotateFence s next fence
                     allowed <-
                         withPreparedGate s sess epoch rotated "op-1" "EffectOutcomeUnknown" next $
                             \g p -> pure (Right (preparedGateFence g, p))
@@ -3216,13 +3407,13 @@ prepareTests =
             callbacks <- newIORef (0 :: Int)
             runEntry store $ \session ->
                 withOpenSession session $ \epoch sess permit -> do
-                    fence <- expect =<< establishInitialFence session plan 1
+                    fence <- expect =<< establishInitialFence session permit 1
                     fenceEpochWord fence @?= 1
                     afterIntent <- expect =<< registerOperationIntent session sess "op-1" NoHistory permit
                     key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) "op-1")
                     present <- expect =<< readProtectedRecord session key
                     original <- maybe (assertFailure "the registered operation is missing") pure present
-                    fenced <- expect =<< fenceOldPermits session plan
+                    fenced <- expect =<< fenceOldPermits session permit
                     oldPermitsFencedFrom fenced @?= 1
                     oldPermitsFencedTo fenced @?= 2
                     refused <-
@@ -3242,9 +3433,9 @@ prepareTests =
     , testCase "a prepare against a superseded fence is refused" $
         withStore $ \store -> runEntry store $ \s ->
             withOpenSession s $ \epoch sess permit -> do
-                stale <- expect' =<< establishInitialFence s plan 1
+                stale <- expect' =<< establishInitialFence s permit 1
                 afterIntent <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
-                _ <- expect' =<< rotateFence s plan stale
+                _ <- expect' =<< rotateFence s permit stale
                 blocked <-
                     withPreparedGate s sess epoch stale "op-1" "EffectOutcomeUnknown" afterIntent $
                         \_ _ -> pure (Right ())
@@ -3257,7 +3448,7 @@ prepareTests =
     , testCase "an unregistered operation cannot prepare" $
         withStore $ \store -> runEntry store $ \s ->
             withOpenSession s $ \epoch sess permit -> do
-                fence <- expect' =<< establishInitialFence s plan 1
+                fence <- expect' =<< establishInitialFence s permit 1
                 blocked <-
                     withPreparedGate s sess epoch fence "never-registered" "EffectOutcomeUnknown" permit $
                         \_ _ -> pure (Right ())
@@ -3268,7 +3459,7 @@ prepareTests =
     , testCase "a stale project permit cannot drive a prepare" $
         withStore $ \store -> runEntry store $ \s ->
             withOpenSession s $ \epoch sess permit -> do
-                fence <- expect' =<< establishInitialFence s plan 1
+                fence <- expect' =<< establishInitialFence s permit 1
                 afterIntent <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
                 -- `permit` was consumed by intent registration and is now stale.
                 blocked <-
@@ -3407,6 +3598,27 @@ prepareTests =
                 vendor <- registerOperationIntent s sess "vendor:thing" NoHistory permit
                 assertBool "a namespaced vendor key registers" (isRight vendor)
                 pure (Right ())
+    , testCase "mkRecordName refuses a namespaced token beginning with a dot" $
+        mkRecordName "core:.x"
+            @?= Left (ProtectedInvalid "record name core:.x a namespaced token may neither begin nor end with '.'")
+    , testCase "mkRecordName refuses a namespaced token ending with a dot" $
+        mkRecordName "core:x."
+            @?= Left (ProtectedInvalid "record name core:x. a namespaced token may neither begin nor end with '.'")
+    , testCase "a dot-prefixed namespaced operation cannot address an existing path operation" $
+        withStore $ \store -> do
+            SomeOpenSession sess permit <- openSessionFixture store
+            registered <- expect =<< inEntry store (\session -> registerOperationIntent session sess "core/x" NoHistory permit)
+            (key, original, target) <- sessionOperationRecord store sess "core/x"
+            transactionRecordPayload target @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
+            before <- protectedImage store
+            refused <- inEntry store $ \session ->
+                (() <$) <$> registerOperationIntent session sess "core:.x" NoHistory registered
+            refused
+                @?= Left (SessionStoreFailure (ProtectedInvalid "record name core:.x a namespaced token may neither begin nor end with '.'"))
+            retained <- readRequiredRecord store key
+            protectedRecordBytes retained @?= protectedRecordBytes original
+            protectedRecordVersion retained @?= protectedRecordVersion original
+            protectedImage store >>= (@?= before)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -3457,7 +3669,7 @@ expectExecution ::
     Step ->
     IO (StepExecution scope planId)
 expectExecution projectPlan step = do
-    runtime <- newResourceCarrier >>= newStepRuntime
+    runtime <- ExecutionCore.newResourceCarrierCore >>= ExecutionCore.newStepRuntimeCore
     planned <-
         maybe
             (assertFailure "the plan does not contain the fixture step")
@@ -3492,7 +3704,7 @@ routeSession session planDigest use = do
             case started of
                 Left failure -> pure (Left failure)
                 Right (sess, afterOpen) -> do
-                    settled <- establishInitialFence session planDigest 1
+                    settled <- establishInitialFence session afterOpen 1
                     case settled of
                         Left failure -> pure (Left failure)
                         Right fence -> use epoch sess fence afterOpen
@@ -3613,7 +3825,8 @@ admissionTests =
                     _ <- expect' =<< registerOperationIntent s sess "op-1" NoHistory permit
                     pure (Right ())
             reopened <- reopenStore store
-            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+            permit <- expect =<< inEntry reopened (\s -> openProjectJournal s plan)
+            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s permit)
             -- The set is the operation that can still receive authority, read
             -- out of the store rather than supplied.
             oldPermitsFencedOperations fenced @?= ["op-1"]
@@ -3621,7 +3834,7 @@ admissionTests =
             oldPermitsFencedFrom fenced @?= 1
             oldPermitsFencedTo fenced @?= 2
             oldPermitsFencedPlanDigest fenced @?= plan
-            live <- expect =<< inEntry reopened (\s -> currentFence s plan)
+            live <- expect =<< inEntry reopened (\s -> currentFence s permit)
             fenceEpochWord live @?= 2
     , testCase "a settled operation holds no authority, so it is not in the fence set" $
         withStore $ \store -> do
@@ -3630,31 +3843,32 @@ admissionTests =
                     _ <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
                     pure (Right ())
             reopened <- reopenStore store
-            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+            permit <- expect =<< inEntry reopened (\s -> openProjectJournal s plan)
+            fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s permit)
             oldPermitsFencedOperations fenced @?= []
     , testCase "fencing completes an unsettled proposal before successive rotations" $
         withStore $ \store -> do
-            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
+            permit <- expect =<< inEntry store (\s -> openProjectJournal s plan)
             (key, _) <- seedFenceRecord store "FenceIntentRecorded" "3"
-            first <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            first <- expect =<< inEntry store (\s -> fenceOldPermits s permit)
             oldPermitsFencedFrom first @?= 3
             oldPermitsFencedTo first @?= 4
             afterFirst <- readRequiredRecord store key
             protectedRecordBytes afterFirst @?= encodeFields ["FenceObserved", "4"]
-            second <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            second <- expect =<< inEntry store (\s -> fenceOldPermits s permit)
             oldPermitsFencedFrom second @?= 4
             oldPermitsFencedTo second @?= 5
             afterSecond <- readRequiredRecord store key
             protectedRecordBytes afterSecond @?= encodeFields ["FenceObserved", "5"]
     , testCase "fencing establishes an absent fence before rotating" $
         withStore $ \store -> do
-            runEntry store $ \s -> (() <$) <$> openProjectJournal s plan
+            permit <- expect =<< inEntry store (\s -> openProjectJournal s plan)
             before <- protectedImage store
             assertBool "the fence is genuinely absent" (all (not . Text.isPrefixOf "fence.") (Map.keys before))
-            fenced <- expect =<< inEntry store (\s -> fenceOldPermits s plan)
+            fenced <- expect =<< inEntry store (\s -> fenceOldPermits s permit)
             oldPermitsFencedFrom fenced @?= 1
             oldPermitsFencedTo fenced @?= 2
-            live <- expect =<< inEntry store (\s -> currentFence s plan)
+            live <- expect =<< inEntry store (\s -> currentFence s permit)
             fenceEpochWord live @?= 2
     , testCase "the manifest pairs the independently enumerated session and operation sets" $
         withStore $ \store -> do
@@ -3690,7 +3904,8 @@ admissionTests =
                 map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= [sessionName]
                 let operations = ["core:deploy-vm/core:copy-source/guest-alias", "project:ensure-vm-provider", "vendor:thing.v2"]
                 map manifestSessionOperations (manifestSessions manifest) @?= [operations]
-                fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s plan)
+                permit <- expect =<< inEntry reopened (\s -> openProjectJournal s plan)
+                fenced <- expect =<< inEntry reopened (\s -> fenceOldPermits s permit)
                 oldPermitsFencedOperations fenced @?= operations
                 interpreted <- expect =<< inEntry reopened interpretHere
                 map sessionIdText (interpretedRecoverySessions interpreted) @?= [sessionName]
@@ -3770,9 +3985,9 @@ admissionTests =
             -- continuation binds, so what leaves the entry is what it says
             -- rather than the value itself.
             outcome <- inEntry reopened $ \s -> do
-                fenced <- expect' =<< fenceOldPermits s plan
-                manifest <- expect' =<< verifySessionManifest s plan
                 permit <- expect' =<< openProjectJournal s plan
+                fenced <- expect' =<< fenceOldPermits s permit
+                manifest <- expect' =<< verifySessionManifest s plan
                 withEpoch s $ \epoch -> do
                     (interpreted, _) <-
                         expect' =<< interpretRecordedSessions s epoch manifest fenced permit
@@ -3813,9 +4028,9 @@ admissionTests =
     , testCase "an unrecognised phase blocks the interpretation instead of being swept" $
         withStore $ \store -> do
             _ <- unknownOperationFixture store
-            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
-            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
             permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
+            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session permit)
+            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
             before <- protectedImage store
             outcome <- inEntry store $ \session -> withEpoch session $ \epoch ->
                 (() <$) <$> interpretRecordedSessions session epoch manifest fenced permit
@@ -3840,7 +4055,8 @@ admissionTests =
             outcome <- inEntry store $ \s -> do
                 manifest <- expect' =<< verifySessionManifest s plan
                 -- A fence set taken over a different plan digest entirely.
-                otherFenced <- expect' =<< fenceOldPermits s "plan-digest-2"
+                otherPermit <- expect' =<< openProjectJournal s "plan-digest-2"
+                otherFenced <- expect' =<< fenceOldPermits s otherPermit
                 permit <- expect' =<< openProjectJournal s plan
                 withEpoch s $ \epoch ->
                     fmap
@@ -3858,18 +4074,18 @@ interpretHere ::
     ProtectedSession session ->
     IO (Either SessionError (InterpretedRecovery scope planId))
 interpretHere s = do
-    fenced <- fenceOldPermits s plan
-    case fenced of
+    opened <- openProjectJournal s plan
+    case opened of
         Left failure -> pure (Left failure)
-        Right fencedPermits -> do
-            manifested <- verifySessionManifest s plan
-            case manifested of
+        Right permit -> do
+            fenced <- fenceOldPermits s permit
+            case fenced of
                 Left failure -> pure (Left failure)
-                Right manifest -> do
-                    opened <- openProjectJournal s plan
-                    case opened of
+                Right fencedPermits -> do
+                    manifested <- verifySessionManifest s plan
+                    case manifested of
                         Left failure -> pure (Left failure)
-                        Right permit -> withEpoch s $ \epoch ->
+                        Right manifest -> withEpoch s $ \epoch ->
                             fmap
                                 (fmap fst)
                                 (interpretRecordedSessions s epoch manifest fencedPermits permit)
@@ -4021,7 +4237,7 @@ liveOperationAdmissionTests =
                     SomeAcknowledgeInput sess gate permit <- acknowledgeInputFixture store
                     (key, original, target) <- sessionOperationRecord store sess "op-1"
                     transactionRecordPayload target @?= encodeFields ["EffectOutcomeUnknown", sessionIdText (operationSessionId sess), "1", "1"]
-                    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+                    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session permit)
                     oldPermitsFencedTo fenced @?= 2
                     before <- protectedImage store
                     refused <- inEntry store $ \session -> (() <$) <$> acknowledgeOutcome session sess gate "Committed" () permit
@@ -4094,7 +4310,7 @@ gateForSessionFixture store digest sid =
         permit <- expect =<< openProjectJournal session digest
         withEpoch session $ \epoch -> do
             (sess, opened) <- expect =<< openOperationSession session epoch digest sid permit
-            fence <- expect =<< establishInitialFence session digest 1
+            fence <- expect =<< establishInitialFence session opened 1
             registered <- expect =<< registerOperationIntent session sess "op-1" NoHistory opened
             withPreparedGate session sess epoch fence "op-1" "EffectOutcomeUnknown" registered $ \gate next ->
                 pure (Right (SomePrepareInput epoch sess fence next, gate)))
@@ -4167,13 +4383,12 @@ numericOperationTests =
             transactionRecordPayload prepared @?= encodeFields ["EffectOutcomeUnknown", sessionIdText (operationSessionId sess), "1", "1"]
     , testCase "a genuine three-field initial intent abandons with attempt zero" $
         withStore $ \store -> do
-            SomePrepareInput _ sess _ _ <- prepareInputFixture store
+            SomePrepareInput _ sess _ permit <- prepareInputFixture store
             (_, _, initial) <- sessionOperationRecord store sess "op-1"
             transactionRecordPayload initial @?= encodeFields ["IntentRecorded", sessionIdText (operationSessionId sess), "0"]
-            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+            fenced <- expect =<< inEntry store (\session -> fenceOldPermits session permit)
             oldPermitsFencedTo fenced @?= 2
             manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
-            permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
             interpreted <- expect =<< inEntry store (\session -> withEpoch session $ \epoch ->
                 fmap (fmap fst) (interpretRecordedSessions session epoch manifest fenced permit))
             interpretedRecoveryOperations interpreted @?= [OperationAbandonedPreCall "op-1" "IntentRecorded"]
@@ -4294,7 +4509,7 @@ numericRetryFixture store fresh =
         withPrepared session $ \epoch sess fence gate prepared -> do
             advance <- expect =<< acknowledgeOutcome session sess gate "EffectAbsent" () prepared
             withOperationAdvance advance $ \() permit -> do
-                liveFence <- if fresh then expect =<< rotateFence session plan fence else pure fence
+                liveFence <- if fresh then expect =<< rotateFence session permit fence else pure fence
                 fenceEpochWord liveFence @?= if fresh then 2 else 1
                 pure (Right (SomePrepareInput epoch sess liveFence permit)))
 
@@ -4311,14 +4526,13 @@ withNumericRecoveryInput ::
     ) ->
     IO result
 withNumericRecoveryInput store use = do
-    SomeOpenSession sess _ <- terminalSessionFixture store "EffectOutcomeUnknown" "EffectAbsent"
-    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session plan)
+    SomeOpenSession sess permit <- terminalSessionFixture store "EffectOutcomeUnknown" "EffectAbsent"
+    fenced <- expect =<< inEntry store (\session -> fenceOldPermits session permit)
     oldPermitsFencedFrom fenced @?= 1
     oldPermitsFencedTo fenced @?= 2
     manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
     [(sessionIdText (manifestSessionId member), manifestSessionOperations member) | member <- manifestSessions manifest]
         @?= [("session-a", ["op-1"])]
-    permit <- expect =<< inEntry store (\session -> openProjectJournal session plan)
     use sess fenced manifest permit
 
 seedNumericOperation :: ProtectedStore -> OperationSession scope planId -> [Text] -> IO (RecordKey, ProtectedRecord)
@@ -5266,7 +5480,7 @@ prepareInputFixture :: ProtectedStore -> IO SomePrepareInput
 prepareInputFixture store = do
     prepared <- inEntry store $ \session ->
         withOpenSession session $ \epoch sess permit -> do
-            fence <- establishInitialFence session plan 1
+            fence <- establishInitialFence session permit 1
             case fence of
                 Left failure -> pure (Left failure)
                 Right liveFence -> do
@@ -5713,7 +5927,7 @@ withPrepared ::
     IO (Either SessionError result)
 withPrepared session use =
     withOpenSession session $ \epoch sess permit -> do
-        fenceOutcome <- establishInitialFence session plan 1
+        fenceOutcome <- establishInitialFence session permit 1
         case fenceOutcome of
             Left failure -> pure (Left failure)
             Right fence -> do

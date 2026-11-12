@@ -326,7 +326,7 @@ the bytes in the final @PUT@ works against a filesystem-backed registry but
 fails against an S3-backed one with
 @InvalidRequest: You must specify at least one part@ — the driver completes a
 multipart upload that has no parts. Verified directly against @registry:2@
-backed by MinIO.
+backed by an S3-compatible object store.
 
 The content type must be @application/octet-stream@; curl's @-d@ otherwise sends
 form encoding and the registry answers @bad Content-Type@. It is written without

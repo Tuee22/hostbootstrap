@@ -51,7 +51,14 @@ module HostBootstrap.Readiness (
 
     -- * Plan/resource-indexed readiness
     BackendProbeKey (..),
+    ProviderResponding,
+    ProviderNetworkReady,
     DurableShareReady,
+    DockerDaemonReady,
+    ObjectStoreRolloutReady,
+    RegistryReady,
+    ClusterApiReady,
+    GpuPluginReady,
     BackendReady (..),
     ProbeVersionError (..),
     Probe,
@@ -70,10 +77,18 @@ import Data.Int (Int64)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import HostBootstrap.Readiness.Kernel (
     BackendProbeKey (..),
     BackendReady (..),
+    ProviderResponding,
+    ProviderNetworkReady,
     DurableShareReady,
+    DockerDaemonReady,
+    ObjectStoreRolloutReady,
+    RegistryReady,
+    ClusterApiReady,
+    GpuPluginReady,
     ProbeConflict (..),
     ProbeFailure (..),
     ProbeResult (..),
@@ -87,7 +102,6 @@ import HostBootstrap.Reconcile (
     ReconcileError (Conflict, Failure),
     RecoveryDisposition (ReprobeBeforeRetry),
     ResourceHandle,
-    dependencyProbe,
     resourceHandleGeneration,
     resourceHandleKey,
     resourceHandleObservationVersion,
@@ -291,9 +305,10 @@ readyObservationVersion (Ready _ _ observationVersion) = observationVersion
 
 {- | The plan-owned dependency probe for one managed resource (§ CC).
 
-The probe is /not/ run here: it is stored beside the managed handle in the
-plan's dependency snapshot and run by 'HostBootstrap.Reconcile.withOperationPreconditions'
-at prepare time. Each run polls the supplied backend observation function and
+The backend-minted probe retains its readiness index and kind. This producer
+stores a poll rather than running it: the plan's dependency snapshot holds it
+beside the managed handle, and it is run by 'HostBootstrap.Reconcile.withPreparedOperation'
+after its gate checks. Each run polls the supplied backend observation function and
 then rechecks its freshly reported versions against the managed handle it is
 registered for — the shared indices reject another plan or resource at compile
 time, and equality of generation and observation version rejects stale evidence.
@@ -304,9 +319,9 @@ planDependencyProbe ::
     ResourceHandle scope planId id resource Managed phase ->
     Probe scope planId id resource dependency probeId a ->
     HostConfig ->
-    DependencyProbe scope planId id resource
+    DependencyProbe scope planId id resource dependency
 planDependencyProbe policy label handle probe cfg =
-    dependencyProbe $ do
+    Dependency.dependencyProbeWithKind (ProbeKernel.backendProbeKind probe) $ do
         outcome <- awaitPlanReady policy label probe cfg
         pure $ case outcome of
             Left err ->

@@ -4,7 +4,7 @@ project plan.
 module CrossPlanClusterConsumer where
 
 import HostBootstrap.Cluster.Budget (LimaProvider, ResourceSlice)
-import HostBootstrap.Cluster.Lifecycle (ClusterPackageError, withPlanOwnedCluster)
+import HostBootstrap.Cluster.Lifecycle (ClusterDriver (KindDriver), ClusterPackageError, withPlanOwnedCluster)
 import HostBootstrap.ProjectPlan (
     ClusterResource,
     DerivedTopology,
@@ -62,7 +62,7 @@ crossPlanClusterResource ::
     Slice ClusterPlan ->
     Either ClusterPackageError ()
 crossPlanClusterResource plan cluster provider topology slice =
-    () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice KindDriver
 
 crossPlanProviderResource ::
     ExactPlan ClusterPlan ->
@@ -72,7 +72,7 @@ crossPlanProviderResource ::
     Slice ClusterPlan ->
     Either ClusterPackageError ()
 crossPlanProviderResource plan cluster provider topology slice =
-    () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice KindDriver
 
 crossPlanTopology ::
     ExactPlan ClusterPlan ->
@@ -82,7 +82,7 @@ crossPlanTopology ::
     Slice ClusterPlan ->
     Either ClusterPackageError ()
 crossPlanTopology plan cluster provider topology slice =
-    () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice KindDriver
 
 crossPlanSlice ::
     ExactPlan ClusterPlan ->
@@ -92,4 +92,4 @@ crossPlanSlice ::
     Slice ForeignSlicePlan ->
     Either ClusterPackageError ()
 crossPlanSlice plan cluster provider topology slice =
-    () <$ withPlanOwnedCluster plan cluster provider topology slice
+    () <$ withPlanOwnedCluster plan cluster provider topology slice KindDriver

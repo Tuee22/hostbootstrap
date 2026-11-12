@@ -9,8 +9,25 @@ project binaries use to extend it.
 
 The command surface is **fixed and closed** (development_plan_standards § P):
 every project binary — and the bare @hostbootstrap@ binary — surfaces the same
-tree: @project@, @test@, @service@, @context@, and @check-code@. There are no
-hidden commands. @hostbootstrap-core@ is a **library of composable tools**,
+tree: @project@, @test@, @service@, @context@, and @check-code@.
+
+Before that parser, 'runCLI' recognizes six private entries in this order:
+
+* Installed-identity provisioning creates or validates the executable's
+  @.handoff.key@, @.handoff.pub@, @.build.key@, @.activation.key@ and
+  @.activation.pub@ sidecars, then returns success.
+* The exposure relay validates its target arguments and serves their listeners.
+* The working-directory wrapper consumes a directory, executable and argv,
+  then changes directory and executes it; native Windows refuses this entry.
+* The shipped-command entry consumes its stdin command protocol and runs the
+  requested tool under its owner; native Windows refuses this entry.
+* The forward lifecycle child loads the installed verification key and enters
+  its authenticated handoff exchange.
+* The frame child requires protocol standard input/output and answers one
+  transaction; ordinary operator input is refused with a failing diagnostic.
+
+None of those entries belongs to the command tree or appears in @--help@.
+@hostbootstrap-core@ is a **library of composable tools**,
 including the @ensure@ reconciler primitives a project runs as @ensure-*@ chain
 steps, not a CLI topology, so a project never adds a command. A project extends
 the core only through the checked builder streams finalized into 'ProjectSpec':
@@ -19,10 +36,12 @@ ordered steps, schema artifacts, its test suite, a typed service registry, its
 distinct test-config initializer.
 
 A project binary calls 'runHostBootstrapCLI' with an already finalized opaque
-'ProjectSpec'. Finalization validates the extension points (a non-empty test
-suite and step contribution; unique test cases, artifacts, assembly inputs,
-step identities, frames, and services) and then merges
-the spec into the core command tree ('HostBootstrap.Command.coreCommands'). The
+'ProjectSpec'. Finalization checks a non-empty test suite; unique test cases,
+artifacts, assembly inputs, and services; at least one step fragment; and exactly
+one forward-child projector. Concrete projection under a canonical root and
+validated config calls 'mkStepPlan' to validate a non-empty step list, step
+identities, frames, descent, and reverse rules. The finalized spec extends
+the core command tree ('HostBootstrap.Command.coreCommands'). The
 bare @hostbootstrap@ binary (built like any project binary, not baked into the
 base image) uses the separate 'runBareHostBootstrapCLI'. See
 @documents/architecture/hostbootstrap_core_library.md@.
@@ -43,6 +62,7 @@ module HostBootstrap.CLI (
     projectStepPlan,
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
+    interpretFrameTransaction,
 )
 where
 
@@ -436,8 +456,9 @@ runHostBootstrapCLI progName spec = do
 
 {- | Run the bare core binary. Its one compiled @cluster-live@ case is a normal
 harness variant: the exact Harness plan owns cluster creation and reverse, while
-the case body performs read-only node observation and the post-reverse assertion
-proves both labelled-container absence and durable-root preservation.
+the case body creates and removes two named exposure-relay containers before
+read-only Kubernetes observation, and the post-reverse assertion proves both
+labelled-container absence and durable-root preservation.
 -}
 runBareHostBootstrapCLI :: String -> IO ()
 runBareHostBootstrapCLI progName = do
@@ -547,6 +568,11 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
     parser :: Parser (IO ())
     parser = hsubparser (mconcat allCommands)
 
+{- | Dispatch one frame transaction through the production owner interpreters.
+
+Child entries share this route. Cluster exposure recognizes its own request
+first; the ownership interpreter answers the remaining bytes.
+-}
 interpretFrameTransaction :: ByteString -> IO (Either Text ByteString)
 interpretFrameTransaction raw = do
     clusterExposure <- interpretShippedClusterExposure raw

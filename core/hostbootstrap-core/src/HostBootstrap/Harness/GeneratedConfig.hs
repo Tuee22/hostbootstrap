@@ -36,8 +36,10 @@ compare-and-swap, and its file case carries the digest of the payload this run
 intends to install. Recording that digest before the write is what makes the
 crash window between the record and the identity binding resolvable: a run that
 died in that window left a file whose bytes either are this payload — in which
-case it is that run's and may be removed — or are not, in which case they belong
-to whoever wrote them.
+case recovery rechecks the entry's observed identity immediately before
+unlinking — or are not, in which case they are refused. A non-cooperating
+replacement between that final observation and the unlink remains possible;
+the protected entry excludes cooperating runs.
 
 "HostBootstrap.Harness.DataRoot" is the same four-clause protocol over the run's
 data-root /directory/, through the same seam, so the two cannot drift.
@@ -65,12 +67,12 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Ownership.Clause (enteredEvidence)
 import HostBootstrap.Ownership.Object (
-    ConflictReport (conflictExpected, conflictObserved, conflictSubject),
+    ConflictReport (..),
     ObjectIdentity,
     ObjectKind (OwnedDirectory, OwnedFile, ReportedObject),
     Origin (OriginAbsent, OriginPresent),
     OriginRecord,
-    OwnershipFault (OwnershipMalformed, OwnershipProbeFailed),
+    OwnershipFault (OwnershipConflict, OwnershipMalformed),
     PayloadDigest,
     mkPayload,
     objectIdentityText,
@@ -81,13 +83,14 @@ import HostBootstrap.Ownership.Object (
     payloadDigestText,
  )
 import HostBootstrap.Ownership.Primitive (
-    OwnershipPrimitive (rowCloseHandle, rowOpenExclusive, rowReadObject, rowRemoveObject),
+    OwnershipPrimitive (rowObserveIdentity, rowRemoveObject, rowSyncParent),
     OwnershipRow,
     bindOwnedIdentity,
     enterOwnedObject,
     publishOwnedFile,
+    readWholeObject,
     recordOwnedOrigin,
-    reenterOwnedObject,
+    reenterStoredOwnedObject,
     releaseOwnedObject,
     reobserveOwnedIdentity,
     withOwnershipRow,
@@ -96,20 +99,20 @@ import HostBootstrap.Ownership.Tape (
     OwnershipCarrier (fromClauseFault, fromStoreFault),
     RecordSubject (..),
     RecordTape,
-    carryStore,
+    carryClauseFault,
     forgetRecord,
     publishBoundRecord,
     publishFreshRecord,
-    readRecordUnder,
+    readStoredRecordUnder,
+    storedOriginRecord,
+    readRawRecordUnder,
     recordTape,
  )
 import HostBootstrap.Protected (
     ProtectedError,
-    ProtectedRecord,
     ProtectedSession,
     RecordKey,
     protectedErrorMessage,
-    readProtectedRecord,
     recordKeyText,
  )
 import System.Directory (createDirectoryIfMissing)
@@ -119,8 +122,9 @@ import System.FilePath (takeDirectory, (</>))
 
 {- | The receipt for one installed generated config.  Its constructor is
 private, so it exists only where 'acquireGeneratedConfig' created the file and
-bound its identity.  'releaseGeneratedConfig' revalidates the path and record
-key it names, so one run's receipt cannot release another's.
+bound its identity. 'releaseGeneratedConfig' compares the supplied record key
+with the receipt's key, then uses the receipt's path and the stored record.
+It does not separately compare a caller-supplied path.
 -}
 data GeneratedConfigOwnership = GeneratedConfigOwnership
     { ownershipPath :: FilePath
@@ -234,7 +238,7 @@ acquireGeneratedConfig ::
     ByteString ->
     IO (Either GeneratedConfigError GeneratedConfigOwnership)
 acquireGeneratedConfig row session key path bytes = do
-    existing <- readRecord session key
+    existing <- readRawRecordUnder (generatedConfigTape session) key
     case existing of
         Left failure -> pure (Left failure)
         Right (Just _) ->
@@ -330,7 +334,7 @@ releaseGeneratedConfig row session key owned
                 )
             )
     | otherwise = do
-        stored <- readRecordUnder (generatedConfigTape session) key
+        stored <- readStoredRecordUnder (generatedConfigTape session) key
         case stored of
             Left failure -> pure (Left failure)
             Right Nothing ->
@@ -342,9 +346,10 @@ releaseGeneratedConfig row session key owned
                             "no ownership record"
                         )
                     )
-            Right (Just record) -> do
+            Right (Just storedRecord) -> do
+                let record = storedOriginRecord storedRecord
                 outcome <-
-                    reenterOwnedObject row session path record $ \bound -> do
+                    reenterStoredOwnedObject row session path storedRecord $ \bound -> do
                         releasable <- reobserveOwnedIdentity row bound
                         case releasable of
                             Left fault -> pure (Left fault)
@@ -368,9 +373,7 @@ releaseGeneratedConfig row session key owned
                     Right ReleasedRemoved -> Right GeneratedConfigRemoved
   where
     path = ownershipPath owned
-    forget _record = do
-        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
-        pure (either (Left . forgetFailure) Right deleted)
+    forget _record = forgetRecord (generatedConfigTape session) key
 
 {- | What recovery restored for an abandoned run's generated config.  Recovery
 never adopts: it removes only the exact file that run installed.
@@ -378,7 +381,8 @@ never adopts: it removes only the exact file that run installed.
 data RecoveredGeneratedConfig
     = -- | The recorded payload was found at the recorded identity and removed.
       GeneratedConfigAbsenceRestored
-    | -- | Nothing was at the path; the record is settled.
+    | -- | No record remained, or its target was authoritatively absent.
+      -- No-record recovery does not inspect the target path.
       GeneratedConfigAlreadyAbsent
     deriving (Eq, Show)
 
@@ -387,6 +391,7 @@ is settled.
 -}
 data RecoveryOutcome
     = RecoveredAbsence
+    | RecoveredUnboundAbsence
     | RecoveredNothingThere
     | RecoveryRefusedPayload PayloadDigest PayloadDigest
 
@@ -404,9 +409,11 @@ the run intended to install, so:
 * a record with __no__ binding — the run died inside the crash window between
   clause 2 and clause 3. There is no identity to be conditional on, which is
   what the window means, but the recorded payload digest still decides it:
-  nothing at the path settles the record, exactly those bytes are the dead run's
-  own file and absence is restored, and anything else is refused and left
-  intact.
+  nothing at the path settles the record, matching bytes authorize removal
+  only while the entry's observed identity still matches after the read, and
+  different bytes or identity are refused and left intact. Every successful
+  recovery with a record withdraws the record-derived staging name before
+  forgetting the record.
 
 This is what makes an interrupted run's config self-healing instead of an
 operator's hand cleanup, and it is only reachable because the existence refusal
@@ -419,44 +426,51 @@ recoverGeneratedConfig ::
     FilePath ->
     IO (Either GeneratedConfigError RecoveredGeneratedConfig)
 recoverGeneratedConfig row session key path = do
-    stored <- readRecordUnder (generatedConfigTape session) key
+    stored <- readStoredRecordUnder (generatedConfigTape session) key
     case stored of
         Left failure -> pure (Left failure)
         Right Nothing -> pure (Right GeneratedConfigAlreadyAbsent)
-        Right (Just record) -> case originRecordBinding record of
-            Just _ -> reclaimBoundFile record
-            Nothing -> restoreRecordedAbsence record
+        Right (Just storedRecord) -> case originRecordBinding (storedOriginRecord storedRecord) of
+            Just _ -> reclaimBoundFile storedRecord
+            Nothing -> restoreRecordedAbsence (storedOriginRecord storedRecord)
   where
-    reclaimBoundFile record = do
-        outcome <-
-            reenterOwnedObject row session path record $ \bound -> do
-                releasable <- reobserveOwnedIdentity row bound
-                case releasable of
-                    Left fault -> pure (Left fault)
-                    Right token -> do
-                        matched <- payloadStillMatches row path record
-                        case matched of
+    reclaimBoundFile storedRecord = do
+        let record = storedOriginRecord storedRecord
+        prior <-
+            enterOwnedObject row session path $ \entered ->
+                enteredEvidence (\_ origin -> pure (Right origin)) entered
+        case prior of
+            Left fault -> pure (Left (ownershipError fault))
+            Right OriginAbsent -> settle GeneratedConfigAlreadyAbsent
+            Right (OriginPresent _) -> do
+                outcome <-
+                    reenterStoredOwnedObject row session path storedRecord $ \bound -> do
+                        releasable <- reobserveOwnedIdentity row bound
+                        case releasable of
                             Left fault -> pure (Left fault)
-                            Right (Just (expected, observed)) ->
-                                pure (Right (RecoveryRefusedPayload expected observed))
-                            Right Nothing ->
-                                fmap
-                                    (fmap (const RecoveredAbsence))
-                                    (releaseOwnedObject row token forget)
-        settleOutcome outcome
+                            Right token -> do
+                                matched <- payloadStillMatches row path record
+                                case matched of
+                                    Left fault -> pure (Left fault)
+                                    Right (Just (expected, observed)) ->
+                                        pure (Right (RecoveryRefusedPayload expected observed))
+                                    Right Nothing ->
+                                        fmap
+                                            (fmap (const RecoveredAbsence))
+                                            (releaseOwnedObject row token forget)
+                settleOutcome outcome
 
     -- The clause-2/clause-3 crash window. No identity was ever bound, so there
     -- is nothing for clause 4 to be conditional on and the seam has no term for
-    -- the removal; what the record proves is that a file holding exactly these
-    -- bytes was generated inside that transaction, so restoring absence is this
-    -- owner's own policy rather than a release.
+    -- the removal. The payload and the identity observed at entry are both
+    -- checked before removal; restoring absence is this owner's policy.
     restoreRecordedAbsence record = do
         outcome <-
             enterOwnedObject row session path $ \entered ->
                 enteredEvidence
                     ( \target origin -> case origin of
                         OriginAbsent -> pure (Right RecoveredNothingThere)
-                        OriginPresent _ -> do
+                        OriginPresent identity -> do
                             matched <- payloadStillMatches row target record
                             case matched of
                                 Left fault -> pure (Left fault)
@@ -464,8 +478,8 @@ recoverGeneratedConfig row session key path = do
                                     pure (Right (RecoveryRefusedPayload expected observed))
                                 Right Nothing ->
                                     fmap
-                                        (fmap (const RecoveredAbsence))
-                                        (removeThroughRow row target)
+                                        (fmap (const RecoveredUnboundAbsence))
+                                        (removeObservedTarget target identity)
                     )
                     entered
         settleOutcome outcome
@@ -476,13 +490,46 @@ recoverGeneratedConfig row session key path = do
             pure (Left (payloadConflict path expected observed))
         Right RecoveredNothingThere -> settle GeneratedConfigAlreadyAbsent
         Right RecoveredAbsence -> pure (Right GeneratedConfigAbsenceRestored)
+        Right RecoveredUnboundAbsence -> settle GeneratedConfigAbsenceRestored
 
-    forget _record = do
-        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
-        pure (either (Left . forgetFailure) Right deleted)
+    removeObservedTarget target expected =
+        withOwnershipRow row $ \primitives -> do
+            observed <- rowObserveIdentity primitives target
+            case observed of
+                Left fault -> pure (Left fault)
+                Right current
+                    | current /= Just expected ->
+                        pure
+                            ( Left
+                                ( OwnershipConflict
+                                    ( ConflictReport
+                                        (Text.pack target)
+                                        (OriginPresent expected)
+                                        (maybe OriginAbsent OriginPresent current)
+                                    )
+                                )
+                            )
+                    | otherwise -> removeThroughRow row target
+
+    withdrawStaging =
+        enterOwnedObject row session (stagingPath key path) $ \entered ->
+            enteredEvidence
+                ( \target origin -> case origin of
+                    OriginAbsent -> pure (Right ())
+                    OriginPresent _ -> removeThroughRow row target
+                )
+                entered
+
+    forget _record = settleRecord
+
+    settleRecord = do
+        withdrawn <- withdrawStaging
+        case withdrawn of
+            Left fault -> pure (Left fault)
+            Right () -> forgetRecord (generatedConfigTape session) key
 
     settle outcome = do
-        deleted <- carryStore <$> forgetRecord (generatedConfigTape session) key
+        deleted <- carryClauseFault <$> settleRecord
         pure (fmap (const outcome) deleted)
 
 -- The payload half of clause 4 -------------------------------------------------------
@@ -510,7 +557,7 @@ payloadStillMatches row target record = case originRecordKind record of
     OwnedDirectory -> pure (Left (notThisOwnersRecord "a directory"))
     ReportedObject _ -> pure (Left (notThisOwnersRecord "an object another authority owns"))
     OwnedFile expected -> do
-        contents <- readThroughRow row target
+        contents <- readWholeObject row target
         pure $ case contents of
             Left fault -> Left fault
             Right bytes ->
@@ -535,26 +582,14 @@ payloadConflict path expected observed =
 
 -- Row plumbing ------------------------------------------------------------------------
 
-{- | Read one whole object through the row's exclusive open, closing the handle
-however the read went.
--}
-readThroughRow :: OwnershipRow -> FilePath -> IO (Either OwnershipFault ByteString)
-readThroughRow row target =
-    withOwnershipRow row $ \primitives -> do
-        opened <- rowOpenExclusive primitives target
-        case opened of
-            Left fault -> pure (Left fault)
-            Right handle -> do
-                contents <- rowReadObject primitives handle
-                closed <- rowCloseHandle primitives handle
-                pure $ case (contents, closed) of
-                    (Left fault, _) -> Left fault
-                    (_, Left fault) -> Left fault
-                    (Right bytes, Right ()) -> Right bytes
-
 -- | Remove exactly the named object through the row.
 removeThroughRow :: OwnershipRow -> FilePath -> IO (Either OwnershipFault ())
-removeThroughRow row target = withOwnershipRow row (\primitives -> rowRemoveObject primitives target)
+removeThroughRow row target =
+    withOwnershipRow row $ \primitives -> do
+        removed <- rowRemoveObject primitives target
+        case removed of
+            Left fault -> pure (Left fault)
+            Right () -> rowSyncParent primitives target
 
 {- | Give back the staging object a failed publication left behind.
 
@@ -598,27 +633,6 @@ generatedConfigTape session = recordTape session generatedConfigSubject
 instance OwnershipCarrier GeneratedConfigError where
     fromClauseFault = ownershipError
     fromStoreFault = GeneratedConfigStoreFailure
-
-readRecord ::
-    ProtectedSession session ->
-    RecordKey ->
-    IO (Either GeneratedConfigError (Maybe ProtectedRecord))
-readRecord session key = do
-    observed <- readProtectedRecord session key
-    pure (either (Left . GeneratedConfigStoreFailure) Right observed)
-
-{- | Carry a store failure into the seam's fault vocabulary.
-
-The seam's publication is a continuation, so a caller's own failure has to be
-reported in the seam's terms while it is inside one. The store's exact message
-survives; what does not is the structured 'ProtectedError', which no caller of
-this module matches on for a publication.
--}
-forgetFailure :: GeneratedConfigError -> OwnershipFault
-forgetFailure failure =
-    OwnershipProbeFailed
-        "forget the generated-config ownership record"
-        (generatedConfigErrorMessage failure)
 
 {- | Create the generated config's parent, which is ordinary project scaffolding
 and not the owned object itself.

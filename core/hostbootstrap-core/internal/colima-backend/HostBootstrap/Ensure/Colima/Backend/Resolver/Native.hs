@@ -3,9 +3,15 @@
 module HostBootstrap.Ensure.Colima.Backend.Resolver.Native (
     resolveNativeAppleToolchain,
     resolveNativeResolverFixture,
+    ResolverPolicyKind (..),
+    resolverOwnerModePolicy,
 )
 where
 
+import Data.Bits ((.&.))
+import Data.List (isPrefixOf)
+import Data.Word (Word64)
+import qualified System.FilePath.Posix as Posix
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol (TrustedResolverProtocol (..))
 
 #if defined(mingw32_HOST_OS)
@@ -15,10 +21,9 @@ resolveNativeAppleToolchain _ = pure (ProtocolUnsupported "apple-silicon-require
 resolveNativeResolverFixture :: FilePath -> FilePath -> IO TrustedResolverProtocol
 resolveNativeResolverFixture _ _ = pure (ProtocolUnsupported "apple-silicon-required")
 #else
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (foldM)
 import Data.List (nub)
-import Data.Word (Word64)
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Protocol
   ( ResolvedTool (..),
     TrustedDirectoryBinding (..),
@@ -36,27 +41,19 @@ import System.Posix.Files
     fileID,
     fileMode,
     fileOwner,
+    getFdStatus,
     getSymbolicLinkStatus,
-    groupWriteMode,
-    intersectFileModes,
     isDirectory,
     isRegularFile,
     isSymbolicLink,
-    nullFileMode,
-    otherWriteMode,
-    ownerExecuteMode,
-    groupExecuteMode,
-    otherExecuteMode,
     readSymbolicLink,
-    unionFileModes,
   )
+import qualified System.Posix.IO as PosixIO
 import System.Posix.User (getEffectiveUserID)
-import qualified System.Posix.Types
 #endif
 
 data ResolverLayout = ResolverLayout
   { layoutRoot :: FilePath,
-    layoutPython :: FilePath,
     layoutBrew :: FilePath,
     layoutColima :: FilePath,
     layoutLima :: FilePath,
@@ -64,7 +61,6 @@ data ResolverLayout = ResolverLayout
     layoutDockerApp :: FilePath,
     layoutHelpers :: [FilePath],
     layoutHomebrew :: FilePath,
-    layoutApplications :: FilePath,
     layoutUsers :: FilePath,
     layoutFixture :: Bool
   }
@@ -81,7 +77,6 @@ productionLayout :: ResolverLayout
 productionLayout =
   ResolverLayout
     "/"
-    "/usr/bin/python3"
     "/opt/homebrew/bin/brew"
     "/opt/homebrew/bin/colima"
     "/opt/homebrew/bin/limactl"
@@ -89,7 +84,6 @@ productionLayout =
     "/Applications/Docker.app/Contents/Resources/bin/docker"
     systemHelperDirectories
     "/opt/homebrew"
-    "/Applications"
     "/Users"
     False
 
@@ -98,7 +92,6 @@ fixtureLayout root =
   let homebrew = root </> "opt" </> "homebrew"
    in ResolverLayout
         root
-        (root </> "usr" </> "bin" </> "python3")
         (homebrew </> "bin" </> "brew")
         (homebrew </> "bin" </> "colima")
         (homebrew </> "bin" </> "limactl")
@@ -106,7 +99,6 @@ fixtureLayout root =
         (root </> "Applications" </> "Docker.app" </> "Contents" </> "Resources" </> "bin" </> "docker")
         [root </> "usr" </> "bin", root </> "bin", root </> "usr" </> "sbin", root </> "sbin"]
         homebrew
-        (root </> "Applications")
         (root </> "Users")
         True
 
@@ -129,17 +121,10 @@ resolveChecked layout user home = do
   validHome <- validateHome layout user home
   case validHome of
     Left refusal -> pure (Left refusal)
-    Right () -> do
-      python <- inspectCandidate layout user False False (layoutPython layout)
-      case python of
-        Left refusal -> pure (Left refusal)
-        Right Nothing -> pure (Left "candidate-missing")
-        Right (Just pythonTool)
-          | resolvedPath pythonTool /= layoutPython layout -> pure (Left "python-canonical")
-          | otherwise -> resolveColima layout user pythonTool
+    Right () -> resolveColima layout user
 
-resolveColima :: ResolverLayout -> Word64 -> ResolvedTool -> IO (Either String TrustedResolverProtocol)
-resolveColima layout user python = do
+resolveColima :: ResolverLayout -> Word64 -> IO (Either String TrustedResolverProtocol)
+resolveColima layout user = do
   colima <- inspectCandidate layout user True True (layoutColima layout)
   case colima of
     Left refusal -> pure (Left refusal)
@@ -152,13 +137,13 @@ resolveColima layout user python = do
           | resolvedPath brewTool /= layoutBrew layout -> pure (Left "brew-canonical")
           | otherwise -> do
               helpers <- helperBindings layout user ((layoutHomebrew layout </> "bin") : layoutHelpers layout)
-              pure (ProtocolMissingColima python brewTool <$> fst helpers <*> snd helpers)
+              pure (ProtocolMissingColimaV2 brewTool <$> fst helpers <*> snd helpers)
     Right (Just colimaTool) -> case requireFormula layout "colima" "colima" colimaTool of
       Left refusal -> pure (Left refusal)
-      Right () -> resolveReady layout user python colimaTool
+      Right () -> resolveReady layout user colimaTool
 
-resolveReady :: ResolverLayout -> Word64 -> ResolvedTool -> ResolvedTool -> IO (Either String TrustedResolverProtocol)
-resolveReady layout user python colima = do
+resolveReady :: ResolverLayout -> Word64 -> ResolvedTool -> IO (Either String TrustedResolverProtocol)
+resolveReady layout user colima = do
   lima <- inspectCandidate layout user False True (layoutLima layout)
   case lima >>= requirePresent "candidate-missing" of
     Left refusal -> pure (Left refusal)
@@ -174,7 +159,7 @@ resolveReady layout user python colima = do
           Left refusal -> pure (Left refusal)
           Right dockerTool -> do
             helpers <- helperBindings layout user ([takeDirectory (resolvedPath colima), takeDirectory (resolvedPath limaTool), takeDirectory (resolvedPath dockerTool), layoutHomebrew layout </> "bin"] ++ layoutHelpers layout)
-            pure (ProtocolReady python colima dockerTool limaTool <$> fst helpers <*> snd helpers)
+            pure (ProtocolReadyV2 colima dockerTool limaTool <$> fst helpers <*> snd helpers)
 
 requirePresent :: String -> Maybe value -> Either String value
 requirePresent refusal = maybe (Left refusal) Right
@@ -225,14 +210,8 @@ validateExecutable layout user path = do
   case directories of
     Left refusal -> pure (Left refusal)
     Right () -> do
-      observed <- statusMaybe path
-      pure $ do
-        status <- observed >>= requirePresent "candidate-dangling"
-        if not (isRegularFile status) then Left "executable-type"
-        else if not (admittedOwner layout user path (fromIntegral (fileOwner status))) then Left "executable-owner"
-        else if hasMode status groupWriteMode || hasMode status otherWriteMode then Left "executable-write-mode"
-        else if not (hasMode status executableModes) then Left "executable-mode"
-        else Right (Just (ResolvedTool path (identity status)))
+      observed <- observeNativeEntry layout user False path
+      pure (Just . ResolvedTool path <$> observed)
 
 validateHome :: ResolverLayout -> Word64 -> FilePath -> IO (Either String ())
 validateHome layout user home
@@ -247,22 +226,8 @@ validateDirectoryChain layout user target
   where
     step (Left refusal) _ = pure (Left refusal)
     step (Right ()) path = do
-      observed <- statusMaybe path
-      pure $ do
-        status <- observed >>= requirePresent "candidate-parent-missing"
-        if not (isDirectory status) then Left "directory-type"
-        else if not (admittedDirectoryOwner layout user path (fromIntegral (fileOwner status))) then Left "directory-owner"
-        else if hasMode status otherWriteMode then Left "directory-world-write"
-        else if hasMode status groupWriteMode && path `notElem` administrativeDirectories layout
-          then Left (groupWriteRefusal layout path)
-        else Right ()
-
-groupWriteRefusal :: ResolverLayout -> FilePath -> String
-groupWriteRefusal layout path
-  | layoutFixture layout = "directory-group-write"
-  | (layoutUsers layout ++ "/") `prefixOf` path = "directory-group-write-user"
-  | layoutHomebrew layout `prefixOf` path = "directory-group-write-homebrew"
-  | otherwise = "directory-group-write-system"
+      observed <- observeNativeEntry layout user True path
+      pure (() <$ observed)
 
 helperBindings :: ResolverLayout -> Word64 -> [FilePath] -> IO (Either String String, Either String [TrustedDirectoryBinding])
 helperBindings layout user paths = do
@@ -275,8 +240,8 @@ helperBindings layout user paths = do
       case valid of
         Left refusal -> pure (Left refusal)
         Right () -> do
-          status <- getSymbolicLinkStatus path
-          pure (Right (TrustedDirectoryBinding path (identity status)))
+          observed <- observeNativeEntry layout user True path
+          pure (TrustedDirectoryBinding path <$> observed)
     bindingPath (TrustedDirectoryBinding path _) = path
 
 requireFormula :: ResolverLayout -> String -> FilePath -> ResolvedTool -> Either String ()
@@ -293,6 +258,40 @@ requireFormula layout formula binary tool =
 prefixOf :: String -> String -> Bool
 prefixOf prefix value = take (length prefix) value == prefix
 
+-- Bind an admitted pathname to a no-follow descriptor, then re-observe the
+-- pathname while that descriptor is live. No unchecked path observation can
+-- supply a tool or helper identity.
+observeNativeEntry :: ResolverLayout -> Word64 -> Bool -> FilePath -> IO (Either String TrustedToolIdentity)
+observeNativeEntry layout user directory path = do
+  named <- statusMaybe path
+  case named >>= requirePresent missing >>= admit of
+    Left refusal -> pure (Left refusal)
+    Right before ->
+      bracket (PosixIO.openFd path PosixIO.ReadOnly flags) PosixIO.closeFd $ \fd -> do
+        opened <- getFdStatus fd
+        current <- getSymbolicLinkStatus path
+        pure $ do
+          openedIdentity <- admit opened
+          currentIdentity <- admit current
+          if before == openedIdentity && currentIdentity == openedIdentity
+            then Right openedIdentity
+            else Left "entry-identity-changed"
+  where
+    missing = if directory then "candidate-parent-missing" else "candidate-dangling"
+    flags = PosixIO.defaultFileFlags
+      { PosixIO.nofollow = True,
+        PosixIO.cloexec = True,
+        PosixIO.nonBlock = True,
+        PosixIO.directory = directory
+      }
+    admit status
+      | directory && not (isDirectory status) = Left "directory-type"
+      | not directory && not (isRegularFile status) = Left "executable-type"
+      | otherwise = do
+          resolverOwnerModePolicy (resolverPolicyKind layout directory) path
+            (fromIntegral (fileOwner status)) (fromIntegral (fileMode status)) user
+          Right (identity status)
+
 statusMaybe :: FilePath -> IO (Either String (Maybe FileStatus))
 statusMaybe path = do
   attempted <- try (getSymbolicLinkStatus path) :: IO (Either IOException FileStatus)
@@ -304,35 +303,12 @@ statusMaybe path = do
 identity :: FileStatus -> TrustedToolIdentity
 identity status = TrustedToolIdentity (fromIntegral (deviceID status)) (fromIntegral (fileID status))
 
-hasMode :: FileStatus -> System.Posix.Types.FileMode -> Bool
-hasMode status mode = intersectFileModes (fileMode status) mode /= nullFileMode
-
-executableModes :: System.Posix.Types.FileMode
-executableModes = ownerExecuteMode `unionFileModes` groupExecuteMode `unionFileModes` otherExecuteMode
-
-admittedOwner :: ResolverLayout -> Word64 -> FilePath -> Word64 -> Bool
-admittedOwner layout user path owner
-  | layoutFixture layout = owner == user
-  | layoutHomebrew layout `prefixOf` path = owner == user
-  | layoutApplications layout `prefixOf` path = owner == 0 || owner == user
-  | otherwise = owner == 0
-
-admittedDirectoryOwner :: ResolverLayout -> Word64 -> FilePath -> Word64 -> Bool
-admittedDirectoryOwner layout user path owner
-  | layoutFixture layout = owner == user
-  | path == "/" || path == "/opt" || path == layoutApplications layout || path == layoutUsers layout = owner == 0
-  | layoutHomebrew layout `prefixOf` path = owner == user
-  | (layoutUsers layout ++ "/") `prefixOf` path = owner == user
-  | otherwise = owner == 0
-
-administrativeDirectories :: ResolverLayout -> [FilePath]
-administrativeDirectories layout =
-  [ layoutHomebrew layout,
-    layoutHomebrew layout </> "bin",
-    layoutHomebrew layout </> "Cellar",
-    layoutHomebrew layout </> "opt",
-    layoutApplications layout
-  ]
+resolverPolicyKind :: ResolverLayout -> Bool -> ResolverPolicyKind
+resolverPolicyKind layout directory = case (layoutFixture layout, directory) of
+  (False, False) -> ProductionExecutablePolicy
+  (False, True) -> ProductionDirectoryPolicy
+  (True, False) -> FixtureExecutablePolicy (layoutRoot layout)
+  (True, True) -> FixtureDirectoryPolicy (layoutRoot layout)
 
 withinRoot :: FilePath -> FilePath -> Bool
 withinRoot root path = root == "/" || path == root || (root ++ "/") `prefixOf` path
@@ -347,3 +323,51 @@ validAbsolute :: FilePath -> Bool
 validAbsolute path = canonicalAbsolute path == Right path
 #endif
 #endif
+
+
+-- | Layout and entry kind for the shared, descriptive owner/mode policy.
+data ResolverPolicyKind
+  = ProductionExecutablePolicy
+  | ProductionDirectoryPolicy
+  | FixtureExecutablePolicy FilePath
+  | FixtureDirectoryPolicy FilePath
+  deriving (Eq, Show)
+
+-- | Production and fixture filesystem observations pass this same total policy.
+-- A fixture's private root is owned by its effective user; modes and the
+-- administrative-directory exceptions use the same logical Apple paths.
+resolverOwnerModePolicy :: ResolverPolicyKind -> FilePath -> Word64 -> Word64 -> Word64 -> Either String ()
+resolverOwnerModePolicy kind path owner mode user
+  | not ownerAllowed = Left (if directory then "directory-owner" else "executable-owner")
+  | directory && writableByOthers = Left "directory-world-write"
+  | directory && writableByGroup && logicalPath `notElem` administrative = Left groupRefusal
+  | not directory && (writableByGroup || writableByOthers) = Left "executable-write-mode"
+  | not directory && mode .&. 0o111 == 0 = Left "executable-mode"
+  | otherwise = Right ()
+  where
+    (fixtureRoot, directory) = case kind of
+      ProductionExecutablePolicy -> (Nothing, False)
+      ProductionDirectoryPolicy -> (Nothing, True)
+      FixtureExecutablePolicy root -> (Just root, False)
+      FixtureDirectoryPolicy root -> (Just root, True)
+    logicalPath = case fixtureRoot of
+      Nothing -> path
+      Just root -> Posix.normalise ("/" Posix.</> Posix.makeRelative root path)
+    ownerAllowed = case fixtureRoot of
+      Just root -> under root path && owner == user
+      Nothing
+        | directory && logicalPath `elem` ["/", "/opt", "/Applications", "/Users"] -> owner == 0
+        | under "/opt/homebrew" logicalPath -> owner == user
+        | under "/Applications" logicalPath -> owner == 0 || owner == user
+        | directory && under "/Users" logicalPath -> owner == user
+        | otherwise -> owner == 0
+    under root value = value == root || Posix.addTrailingPathSeparator root `isPrefixOf` value
+    writableByGroup = mode .&. 0o020 /= 0
+    writableByOthers = mode .&. 0o002 /= 0
+    administrative = ["/opt/homebrew", "/opt/homebrew/bin", "/opt/homebrew/Cellar", "/opt/homebrew/opt", "/Applications"]
+    groupRefusal = case fixtureRoot of
+      Just _ -> "directory-group-write"
+      Nothing
+        | under "/Users" logicalPath -> "directory-group-write-user"
+        | under "/opt/homebrew" logicalPath -> "directory-group-write-homebrew"
+        | otherwise -> "directory-group-write-system"

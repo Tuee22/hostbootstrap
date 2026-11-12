@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -7,7 +8,7 @@ identity encoding they share.
 The Windows row is a platform row, so this module compiles on every gate host
 (§ JJ). On a native Windows gate host each kernel case drives
 "HostBootstrap.Ownership.Windows" against the real @CreateFileW@,
-@LockFileEx@, @GetFileInformationByHandle@, and @CreateHardLinkW@ in a temporary
+@LockFileEx@, @GetFileInformationByHandleEx@, and @CreateHardLinkW@ in a temporary
 directory it created; on every other host the same cases stay and assert the
 total refusal the row declares, and the first case asserts that the row's own
 declaration agrees with the gate host it is running on. The family is therefore
@@ -20,17 +21,20 @@ them changed and nothing would ever ask them the same question together. The
 second is that exactly one row is selected for this host, and that it is the one
 whose declaration says it can hold the clauses here.
 -}
-module OwnershipWindowsSpec (tests) where
+module OwnershipWindowsSpec (tests, runOwnershipWindowsLockProbe) where
 
 import ConditionalCase (conditionalCase)
+import Control.Exception (IOException, bracket, try)
+import Data.Char (isLower)
 import qualified Data.ByteString as ByteString
 import Data.Foldable (traverse_)
-import Data.List (isInfixOf)
-import Expect (expectOccupied, expectOwned)
+import qualified Data.Text as Text
+import Data.List (isInfixOf, isSuffixOf, nub, sort)
+import Expect (assertOwnershipReleaseOnDeath, expectOccupied, expectOwned, expectProbeFailure, expectRight, runOwnershipLockProbe)
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
-    OwnershipFault (OwnershipUnsupported),
+    OwnershipFault (OwnershipOccupied, OwnershipUnsupported),
     mkKernelObjectIdentity,
     objectIdentityBytes,
     objectIdentityText,
@@ -58,14 +62,24 @@ import HostBootstrap.Ownership.Windows (
     windowsOwnershipCapabilities,
     windowsOwnershipRow,
     windowsOwnershipSupported,
+    windowsIdentityFilesystem,
  )
 import qualified SourceGuard
-import System.Directory (doesFileExist, doesPathExist, getCurrentDirectory)
+import System.Directory (createFileLink, doesFileExist, doesPathExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
 import Test.Tasty (TestName, TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
+
+#ifdef mingw32_HOST_OS
+import Control.Exception (bracket_)
+import HostBootstrap.HostTool (absExePath, mkAbsExe)
+import System.Directory (findExecutable, makeAbsolute)
+import System.Environment (getEnv, getEnvironment)
+import System.Exit (ExitCode (ExitSuccess))
+import System.Process (CreateProcess (env), proc, readCreateProcessWithExitCode, readProcessWithExitCode)
+#endif
 
 tests :: TestTree
 tests =
@@ -94,7 +108,13 @@ declarationTests =
                 windowsOwnershipSupported
                 windowsOwnershipSupported
                 windowsOwnershipSupported
-                windowsOwnershipSupported
+    , testCase "only NTFS and ReFS admit stable object identity" $ do
+        traverse_ (\filesystem -> windowsIdentityFilesystem filesystem @?= Nothing) ["NTFS", "ReFS"]
+        traverse_
+            (\filesystem -> windowsIdentityFilesystem filesystem
+                @?= Just (OwnershipUnsupported ("stable object identity is unavailable on filesystem " <> filesystem)))
+            ["FAT32", "exFAT", "FAT"]
+
     ]
 
 -- ---------------------------------------------------------------------------
@@ -112,6 +132,8 @@ identityTests =
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
         directoryIdentity <- observeExisting directory
         fileIdentity <- observeExisting file
+        ByteString.length (objectIdentityBytes directoryIdentity) @?= 24
+        ByteString.length (objectIdentityBytes fileIdentity) @?= 24
         assertBool
             "two objects the kernel distinguishes have distinct identities"
             (directoryIdentity /= fileIdentity)
@@ -125,6 +147,38 @@ identityTests =
         -- A hard link publishes a second name for the same object, which is what
         -- makes clause 3's binding survive publication on this kernel too.
         targetIdentity @?= stagedIdentity
+    , rowCase "identity" "a symbolic link reads its own identity" $ \root -> do
+        let file = root </> "file"
+            link = root </> "link"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        createFileLink file link
+        fileIdentity <- observeExisting file
+        linkIdentity <- observeExisting link
+        assertBool "the link is its own object" (fileIdentity /= linkIdentity)
+    , rowCase "identity" "a junction reads its own identity" $ \root -> do
+        let target = root </> "target"
+            junction = root </> "junction"
+        onRow (\row -> rowCreateDirectory row target) >>= expectOwned "create the target"
+        createJunction junction target
+        targetIdentity <- observeExisting target
+        junctionIdentity <- observeExisting junction
+        assertBool "the junction is its own object" (targetIdentity /= junctionIdentity)
+    , rowCase "identity" "a path through a non-directory is a probe failure" $ \root -> do
+        let file = root </> "file"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        observed <- onRow (\row -> rowObserveIdentity row (file </> "beneath"))
+        expectProbeFailure "observe through a non-directory" observed
+    , rowCase "identity" "denying file-content reads still permits identity observation" $ \root -> do
+        let file = root </> "file"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        before <- observeExisting file
+        withDeniedRead file $ do
+            denied <- try (ByteString.readFile file)
+            case (denied :: Either IOException ByteString.ByteString) of
+                Left _ -> pure ()
+                Right _ -> assertFailure "the fixture must actually deny file-content reads"
+            observed <- onRow (\row -> rowObserveIdentity row file)
+            observed @?= Right (Just before)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -163,6 +217,16 @@ publicationTests =
         onRow (\row -> rowRemoveObject row staged) >>= expectOwned "withdraw the staging name"
         doesPathExist staged >>= (@?= False)
         ByteString.readFile target >>= (@?= "the staged payload")
+    , rowCase "creation and publication" "a missing parent makes file creation a probe failure" $ \root -> do
+        created <- onRow (\row -> rowCreateFile row (root </> "missing" </> "file") "payload")
+        expectProbeFailure "create beneath a missing parent" created
+    , rowCase "creation and publication" "a file is not created through a symbolic link" $ \root -> do
+        let behind = root </> "behind"
+            link = root </> "link"
+        createFileLink behind link
+        created <- onRow (\row -> rowCreateFile row link "payload")
+        expectOccupied "create through a link" created
+        doesPathExist behind >>= (@?= False)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -180,7 +244,8 @@ exclusionTests =
                     Left fault -> pure (Left fault)
                     Right handle -> do
                         read' <- rowReadObject row handle
-                        _ <- rowCloseHandle row handle
+                        closed <- rowCloseHandle row handle
+                        closed @?= Right ()
                         pure read'
         contents @?= Right "the exact payload"
     , rowCase "the exclusive open" "a directory is refused rather than opened as a file" $ \root -> do
@@ -188,6 +253,44 @@ exclusionTests =
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row directory))
         expectOccupied "open a directory" opened
+        case opened of
+            Left (OwnershipOccupied reason) -> assertBool "the non-regular guard answers" (Text.isInfixOf "is a directory or reparse point" reason)
+            _ -> assertFailure "the directory must be occupied"
+    , rowCase "the exclusive open" "a symbolic link is refused rather than followed" $ \root -> do
+        let file = root </> "file"
+            link = root </> "link"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        createFileLink file link
+        opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row link))
+        expectOccupied "open a link" opened
+    , rowCase "the exclusive open" "a junction is refused rather than followed" $ \root -> do
+        let target = root </> "target"
+            junction = root </> "junction"
+        onRow (\row -> rowCreateDirectory row target) >>= expectOwned "create the target"
+        createJunction junction target
+        opened <- onRow (\row -> fmap (fmap (const ())) (rowOpenExclusive row junction))
+        expectOccupied "open a junction" opened
+    , rowCase "the exclusive open" "a second handle in this process is occupied until close" $ \root -> do
+        let file = root </> "file"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        released <- onRow $ \row -> do
+            bracket
+                (rowOpenExclusive row file)
+                (\opened -> case opened of
+                    Left _ -> pure ()
+                    Right handle -> rowCloseHandle row handle >>= (@?= Right ()))
+                (\opened -> case opened of
+                    Left fault -> assertFailure ("could not hold the first handle: " <> show fault)
+                    Right _ -> do
+                        contended <- fmap (fmap (const ())) (rowOpenExclusive row file)
+                        expectOccupied "open a second handle" contended)
+            fresh <- rowOpenExclusive row file
+            case fresh of
+                Left fault -> pure (Left fault)
+                Right handle -> rowCloseHandle row handle
+        released @?= Right ()
+    , rowCase "the exclusive open" "the kernel releases the exclusion when the holding process dies" $
+        assertOwnershipReleaseOnDeath windowsOwnershipRow "--hostbootstrap-ownership-windows-lock-probe"
     ]
 
 -- ---------------------------------------------------------------------------
@@ -195,9 +298,10 @@ exclusionTests =
 
 removalTests :: [TestTree]
 removalTests =
-    [ rowCase "removal" "a file is removed, and the parent's own change is made durable" $ \root -> do
+    [ rowCase "removal" "a file is removed, and its parent can be opened and flushed" $ \root -> do
         let file = root </> "file"
         onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        onRow (\row -> rowSyncParent row file) >>= expectOwned "flush the created name's parent"
         onRow (\row -> rowRemoveObject row file) >>= expectOwned "remove the file"
         onRow (\row -> rowSyncParent row file) >>= expectOwned "sync the parent"
         doesPathExist file >>= (@?= False)
@@ -206,6 +310,25 @@ removalTests =
         onRow (\row -> rowCreateDirectory row directory) >>= expectOwned "create the directory"
         onRow (\row -> rowRemoveObject row directory) >>= expectOwned "remove the directory"
         doesPathExist directory >>= (@?= False)
+    , rowCase "removal" "removing an absent object is a probe failure" $ \root -> do
+        removed <- onRow (\row -> rowRemoveObject row (root </> "absent"))
+        expectProbeFailure "remove an absent object" removed
+    , rowCase "removal" "a symbolic link is refused rather than removed" $ \root -> do
+        let file = root </> "file"
+            link = root </> "link"
+        onRow (\row -> rowCreateFile row file "payload") >>= expectOwned "create the file"
+        createFileLink file link
+        onRow (\row -> rowRemoveObject row link) >>= expectOccupied "remove a link"
+        ByteString.readFile file >>= (@?= "payload")
+        doesPathExist link >>= (@?= True)
+    , rowCase "removal" "a junction is refused rather than removed" $ \root -> do
+        let target = root </> "target"
+            junction = root </> "junction"
+        onRow (\row -> rowCreateDirectory row target) >>= expectOwned "create the target"
+        createJunction junction target
+        onRow (\row -> rowRemoveObject row junction) >>= expectOccupied "remove a junction"
+        doesPathExist target >>= (@?= True)
+        doesPathExist junction >>= (@?= True)
     ]
 
 -- ---------------------------------------------------------------------------
@@ -213,8 +336,8 @@ removalTests =
 
 encodingTests :: [TestTree]
 encodingTests =
-    [ testCase "an identity is the volume word first, then the object word, little-endian" $ do
-        identity <- expectIdentity (mkKernelObjectIdentity 0x0102030405060708 0x1112131415161718)
+    [ testCase "an identity is the volume word followed by the full object bytes" $ do
+        identity <- expectIdentity (mkKernelObjectIdentity 0x0102030405060708 (ByteString.pack [0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21]))
         objectIdentityBytes identity
             @?= ByteString.pack
                 [ 0x08
@@ -233,8 +356,16 @@ encodingTests =
                 , 0x13
                 , 0x12
                 , 0x11
+                , 0x28
+                , 0x27
+                , 0x26
+                , 0x25
+                , 0x24
+                , 0x23
+                , 0x22
+                , 0x21
                 ]
-        objectIdentityText identity @?= "08070605040302011817161514131211"
+        objectIdentityText identity @?= "080706050403020118171615141312112827262524232221"
     , testCase "neither row builds an identity of its own" $
         -- The rows read different kernel facts, so two encodings would agree
         -- until one of them was changed and nothing would ask them the same
@@ -247,7 +378,7 @@ encodingTests =
                     SourceGuard.countHaskellIdentifier "mkObjectIdentity" source @?= 0
                     assertBool
                         (row <> " reaches the one kernel-identity producer")
-                        ("mkKernelObjectIdentity" `isInfixOf` source)
+                        (SourceGuard.countHaskellIdentifier "mkKernelObjectIdentity" source >= 2)
                 )
                 ["Posix.hs", "Windows.hs"]
     ]
@@ -265,7 +396,7 @@ selectorTests =
             @?= if windowsOwnershipSupported
                 then windowsOwnershipCapabilities
                 else posixOwnershipCapabilities
-        selected @?= OwnershipCapabilities True True True True
+        selected @?= OwnershipCapabilities True True True
     ]
 
 -- ---------------------------------------------------------------------------
@@ -274,11 +405,10 @@ selectorTests =
 shapeTests :: [TestTree]
 shapeTests =
     [ testCase "every observation opens without following a reparse point" $
-        -- The live refusal of a reparse point at a target needs a Windows kernel
-        -- and a link this suite may create there, which the host-portability
-        -- acceptance phase confirms. What holds on every gate host is that the
-        -- row asks the kernel not to follow one and treats it as non-regular
-        -- when it sees one, and both are properties of this source.
+        -- WslGlobalWallHostSpec's real symbolic-link target case reaches the
+        -- Win32 row through ownershipRowForHost on Windows. This case holds the
+        -- no-follow source shape on every gate host; junction/link cases above
+        -- additionally exercise the native row directly.
         withCoreSourceRoot $ \sourceRoot -> do
             source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Windows.hs")
             traverse_
@@ -289,12 +419,61 @@ shapeTests =
                 )
                 [ "observationFlags = fILE_ATTRIBUTE_NORMAL .|. fILE_FLAG_BACKUP_SEMANTICS .|. fileFlagOpenReparsePoint"
                 , "isNonRegular information = isDirectoryObject information || isReparsePoint information"
+                , "parentDirectoryFlags = fILE_FLAG_BACKUP_SEMANTICS .|. fileFlagOpenReparsePoint"
                 ]
-    , testCase "the row selector names two rows and no third" $
+            SourceGuard.countHaskellIdentifier "observationFlags" source @?= 5
+            SourceGuard.countHaskellIdentifier "openObject" source @?= 8
+            let calls =
+                    [ ("windowsObserveIdentity", "observationFlags")
+                    , ("windowsOpenExclusive", "observationFlags")
+                    , ("windowsRemoveObject", "observationFlags")
+                    , ("confirmMissingIdentity", "parentDirectoryFlags")
+                    , ("windowsSyncParent", "parentDirectoryFlags")
+                    ]
+            traverse_
+                (\(name, flags) -> do
+                    tokens <- expectRight (SourceGuard.haskellDefinitionTokens name source)
+                    let body = unwords tokens
+                    SourceGuard.countHaskellIdentifier "openObject" body @?= 1
+                    SourceGuard.countHaskellTokenSequence ["oPEN_EXISTING", flags] body @?= 1)
+                calls
+            creationTokens <- expectRight (SourceGuard.haskellDefinitionTokens "windowsCreateFile" source)
+            SourceGuard.countHaskellIdentifier "openObject" (unwords creationTokens) @?= 1
+    , testCase "the selector row names and CPP arms stay closed" $
         withCoreSourceRoot $ \sourceRoot -> do
             source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Row.hs")
             SourceGuard.countHaskellIdentifier "posixOwnershipRow" source @?= 2
             SourceGuard.countHaskellIdentifier "windowsOwnershipRow" source @?= 2
+            assertBool "the selector has no third CPP arm" (not (isInfixOf "#elif" source))
+            let rowNames =
+                    sort (nub
+                        [ token
+                        | token@(first : _) <- SourceGuard.haskellTokens source
+                        , isLower first
+                        , token /= "withOwnershipRow"
+                        , token == "ownershipRowForHost" || isSuffixOf "OwnershipRow" token
+                        ])
+            rowNames @?= ["ownershipRowForHost", "posixOwnershipRow", "windowsOwnershipRow"]
+    , testCase "identity admits the opened handle filesystem before encoding FILE_ID_INFO" $
+        withCoreSourceRoot $ \sourceRoot -> do
+            source <- readFile (sourceRoot </> "HostBootstrap" </> "Ownership" </> "Windows.hs")
+            tokens <- expectRight (SourceGuard.haskellDefinitionTokens "identityOf" source)
+            traverse_
+                (\name -> length (filter (== name) tokens) @?= 1)
+                ["rawGetVolumeInformationByHandleW", "windowsIdentityFilesystem",
+                    "rawGetFileInformationByHandleEx", "mkKernelObjectIdentity"]
+            let queried = dropWhile (/= "rawGetVolumeInformationByHandleW") tokens
+                admitted = dropWhile (/= "windowsIdentityFilesystem") queried
+                identified = dropWhile (/= "rawGetFileInformationByHandleEx") admitted
+            assertBool "the actual handle supplies the filesystem query"
+                (isInfixOf ["rawGetVolumeInformationByHandleW", "handle"] tokens)
+            assertBool "admission precedes the full identity query" (not (null identified))
+            assertBool "the admitted full identity reaches the shared encoder"
+                (elem "mkKernelObjectIdentity" identified)
+            missing <- expectRight (SourceGuard.haskellDefinitionTokens "confirmMissingIdentity" source)
+            assertBool "absence admits the nearest existing parent through the same identity path"
+                (isInfixOf ["identityOf", "parent", "handle"] missing)
+
     ]
 
 -- ---------------------------------------------------------------------------
@@ -363,3 +542,49 @@ withCoreSourceRoot use = do
         findRepoRoot cwd
             >>= maybe (assertFailure ("could not locate repo root from " <> cwd)) pure
     use (repoRoot </> "core" </> "hostbootstrap-core" </> "internal" </> "ownership")
+
+-- | The same real-handle probe mechanics, applied to the native Windows row.
+runOwnershipWindowsLockProbe :: FilePath -> FilePath -> IO ()
+runOwnershipWindowsLockProbe = runOwnershipLockProbe windowsOwnershipRow
+
+#ifdef mingw32_HOST_OS
+-- The two paths enter this constant PowerShell command through environment data.
+createJunction :: FilePath -> FilePath -> IO ()
+createJunction path target = do
+    powershell <- resolveFixtureExecutable "powershell.exe"
+    inherited <- getEnvironment
+    let names = ["HOSTBOOTSTRAP_JUNCTION_PATH", "HOSTBOOTSTRAP_JUNCTION_TARGET"]
+        supplied = [("HOSTBOOTSTRAP_JUNCTION_PATH", path), ("HOSTBOOTSTRAP_JUNCTION_TARGET", target)]
+        environment = supplied ++ filter (\(name, _) -> not (elem name names)) inherited
+        command = "New-Item -ItemType Junction -Path $env:HOSTBOOTSTRAP_JUNCTION_PATH -Value $env:HOSTBOOTSTRAP_JUNCTION_TARGET | Out-Null"
+    (status, output, errors) <- readCreateProcessWithExitCode
+        ((proc powershell ["-NoProfile", "-NonInteractive", "-Command", command]){env = Just environment}) ""
+    assertBool ("create a real junction: " <> output <> errors) (status == ExitSuccess)
+
+-- Remove the fixture's explicit deny even if an assertion fails.
+withDeniedRead :: FilePath -> IO () -> IO ()
+withDeniedRead path action = do
+    icacls <- resolveFixtureExecutable "icacls.exe"
+    user <- getEnv "USERNAME"
+    let acl arguments = do
+            (status, output, errors) <- readProcessWithExitCode icacls (path : arguments) ""
+            assertBool ("set the fixture ACL: " <> output <> errors) (status == ExitSuccess)
+    bracket_ (acl ["/deny", user <> ":(RD)"]) (acl ["/remove:d", user]) action
+
+-- Resolve an actual host executable, then validate its absolute-path contract.
+resolveFixtureExecutable :: FilePath -> IO FilePath
+resolveFixtureExecutable name = do
+    discovered <- findExecutable name
+    case discovered of
+        Nothing -> assertFailure ("missing native fixture executable: " <> name)
+        Just path -> do
+            absolute <- makeAbsolute path
+            absExePath <$> expectRight (mkAbsExe absolute)
+
+#else
+createJunction :: FilePath -> FilePath -> IO ()
+createJunction _ _ = assertFailure "junction creation requires the declared Windows row"
+
+withDeniedRead :: FilePath -> IO () -> IO ()
+withDeniedRead _ _ = assertFailure "ACL changes require the declared Windows row"
+#endif

@@ -10,3 +10,6 @@ packages:
   ../core/hostbootstrap-core/hostbootstrap-core.cabal
 
 optimization: 2
+
+package hostbootstrap-core
+  build-info: True

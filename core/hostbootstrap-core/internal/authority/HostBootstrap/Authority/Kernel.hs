@@ -32,6 +32,7 @@ module HostBootstrap.Authority.Kernel (
     brokerEpochWord,
     withFreshBrokerEpochKernel,
     withReifiedAllocatedBrokerEpochKernel,
+    validateAllocatedBrokerEpochKernel,
     RootScopeWitness (..),
     RootInvocationAuthority,
     RootScopeAuthority,
@@ -55,6 +56,10 @@ module HostBootstrap.Authority.Kernel (
     commandAuthorityOriginMatchesKernel,
     InvocationId,
     invocationIdText,
+    CommandPlanDigest (..),
+    CommandFrameName (..),
+    CommandProjectName (..),
+    CommandStoreIdentity (..),
     CommandReservation,
     commandReservationKernel,
     reserveCommandInvocationKernel,
@@ -209,34 +214,31 @@ withFreshBrokerEpochKernel ::
       IO (Either AuthorityError result)
     ) ->
     IO (Either AuthorityError result)
-withFreshBrokerEpochKernel session project use =
-    case brokerCounterKey project of
+withFreshBrokerEpochKernel session project use = do
+    observed <- readBrokerCounterRecord session (installedProjectName project)
+    case observed of
         Left failure -> pure (Left failure)
-        Right recordKey -> do
-            observed <- readProtectedRecord session recordKey
-            case observed of
-                Left failure -> pure (Left (AuthorityStoreFailure failure))
-                Right current -> do
-                    case nextCounter current of
-                        Left failure -> pure (Left failure)
-                        Right next -> do
-                            let expectation =
-                                    maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) current
-                            written <-
-                                compareAndSwapProtectedRecord
-                                    session
-                                    recordKey
-                                    expectation
-                                    (encodeCounter next)
-                            case written of
-                                Left failure -> pure (Left (AuthorityStoreFailure failure))
-                                Right _ ->
-                                    use
-                                        ( BrokerEpoch
-                                            (installedProjectName project)
-                                            (protectedStoreIdentityText (sessionStoreIdentity session))
-                                            next
-                                        )
+        Right (recordKey, current) ->
+            case nextCounter current of
+                Left failure -> pure (Left failure)
+                Right next -> do
+                    let expectation =
+                            maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) current
+                    written <-
+                        compareAndSwapProtectedRecord
+                            session
+                            recordKey
+                            expectation
+                            (encodeCounter next)
+                    case written of
+                        Left failure -> pure (Left (AuthorityStoreFailure failure))
+                        Right _ ->
+                            use
+                                ( BrokerEpoch
+                                    (installedProjectName project)
+                                    (protectedStoreIdentityText (sessionStoreIdentity session))
+                                    next
+                                )
 
 {- | Reify one already-recorded, nonzero broker generation without advancing
 the protected allocation counter.
@@ -255,41 +257,64 @@ withReifiedAllocatedBrokerEpochKernel ::
       IO (Either AuthorityError result)
     ) ->
     IO (Either AuthorityError result)
-withReifiedAllocatedBrokerEpochKernel session project recorded use
+withReifiedAllocatedBrokerEpochKernel session project recorded use = do
+    checked <- checkRecordedBrokerEpoch session (installedProjectName project) recorded
+    case checked of
+        Left failure -> pure (Left failure)
+        Right () ->
+            use
+                ( BrokerEpoch
+                    (installedProjectName project)
+                    (protectedStoreIdentityText (sessionStoreIdentity session))
+                    recorded
+                )
+
+{- | Validate a held epoch against its actual store and live allocation.
+
+This reads the counter without advancing it or producing another epoch.
+-}
+validateAllocatedBrokerEpochKernel ::
+    ProtectedSession session ->
+    BrokerEpoch brokerGeneration ->
+    IO (Either AuthorityError ())
+validateAllocatedBrokerEpochKernel session (BrokerEpoch project store recorded)
+    | store /= currentStore = pure (Left (AuthorityWrongStore store currentStore))
+    | otherwise = checkRecordedBrokerEpoch session project recorded
+  where
+    currentStore = protectedStoreIdentityText (sessionStoreIdentity session)
+
+readBrokerCounterRecord ::
+    ProtectedSession session ->
+    Text ->
+    IO (Either AuthorityError (RecordKey, Maybe ProtectedRecord))
+readBrokerCounterRecord session project =
+    case brokerCounterKey project of
+        Left failure -> pure (Left failure)
+        Right key -> do
+            observed <- readProtectedRecord session key
+            pure $ case observed of
+                Left failure -> Left (AuthorityStoreFailure failure)
+                Right record -> Right (key, record)
+
+checkRecordedBrokerEpoch ::
+    ProtectedSession session ->
+    Text ->
+    Word64 ->
+    IO (Either AuthorityError ())
+checkRecordedBrokerEpoch session project recorded
     | recorded == 0 =
         pure (Left (AuthorityInvalidIdentity "a recorded broker generation must be positive"))
-    | otherwise =
-        case brokerCounterKey project of
-            Left failure -> pure (Left failure)
-            Right recordKey -> do
-                observed <- readProtectedRecord session recordKey
-                case observed of
-                    Left failure -> pure (Left (AuthorityStoreFailure failure))
-                    Right Nothing ->
-                        pure
-                            ( Left
-                                ( AuthorityInvalidIdentity
-                                    "the recorded broker generation has no allocation counter"
-                                )
-                            )
-                    Right (Just record) ->
-                        case decodeCounter (protectedRecordBytes record) of
-                            Left failure -> pure (Left failure)
-                            Right allocated
-                                | recorded /= allocated ->
-                                    pure
-                                        ( Left
-                                            ( AuthorityInvalidIdentity
-                                                "the recorded broker generation does not match the allocated counter"
-                                            )
-                                        )
-                                | otherwise ->
-                                    use
-                                        ( BrokerEpoch
-                                            (installedProjectName project)
-                                            (protectedStoreIdentityText (sessionStoreIdentity session))
-                                            recorded
-                                        )
+    | otherwise = do
+        observed <- readBrokerCounterRecord session project
+        pure $ case observed of
+            Left failure -> Left failure
+            Right (_, Nothing) ->
+                Left (AuthorityInvalidIdentity "the recorded broker generation has no allocation counter")
+            Right (_, Just record) -> do
+                allocated <- decodeCounter (protectedRecordBytes record)
+                if recorded == allocated
+                    then Right ()
+                    else Left (AuthorityInvalidIdentity "the recorded broker generation does not match the allocated counter")
 
 nextCounter :: Maybe ProtectedRecord -> Either AuthorityError Word64
 nextCounter Nothing = Right 1
@@ -577,17 +602,23 @@ commandAuthorityMatchesStore
         epochStore
             == protectedStoreIdentityText (protectedStoreIdentity store)
 
+-- | Descriptive coordinates retained at the command-reservation boundary.
+newtype CommandPlanDigest = CommandPlanDigest Text deriving (Eq, Show)
+newtype CommandFrameName = CommandFrameName Text deriving (Eq, Show)
+newtype CommandProjectName = CommandProjectName Text deriving (Eq, Show)
+newtype CommandStoreIdentity = CommandStoreIdentity Text deriving (Eq, Show)
+
 -- | Package-private complete retained-origin comparison for composite gates.
 commandAuthorityOriginMatchesKernel ::
     CommandAuthority scope planId frame brokerGeneration verb phase ->
-    Text ->
-    Text ->
+    CommandProjectName ->
+    CommandStoreIdentity ->
     Word64 ->
     Bool
 commandAuthorityOriginMatchesKernel
     (CommandAuthority _ _ (BrokerEpoch epochProject epochStore epochWord) _ _)
-    project
-    store
+    (CommandProjectName project)
+    (CommandStoreIdentity store)
     generation =
         epochProject == project
             && epochStore == store
@@ -604,10 +635,10 @@ commandAuthorityPhase (CommandAuthority _ _ _ _ phase) = phase
 type role CommandReservation nominal nominal nominal nominal nominal nominal
 data CommandReservation scope planId frame brokerGeneration verb phase
     = CommandReservation
-        Text
-        Text
-        Text
-        Text
+        CommandProjectName
+        CommandStoreIdentity
+        CommandPlanDigest
+        CommandFrameName
         (BrokerEpoch brokerGeneration)
         (ProjectVerb verb)
         (LifecyclePhase phase)
@@ -615,14 +646,14 @@ data CommandReservation scope planId frame brokerGeneration verb phase
 
 commandReservationKernel ::
     RootInvocationAuthority scope brokerGeneration verb ->
-    Text ->
+    CommandPlanDigest ->
     LifecyclePhase phase ->
-    Text ->
+    CommandFrameName ->
     CommandReservation scope planId frame brokerGeneration verb phase
 commandReservationKernel root planDigest phase frameName =
     CommandReservation
-        (rootAuthorityProjectName root)
-        (rootAuthorityStoreIdentity root)
+        (CommandProjectName (rootAuthorityProjectName root))
+        (CommandStoreIdentity (rootAuthorityStoreIdentity root))
         planDigest
         frameName
         (rootAuthorityEpoch root)
@@ -641,7 +672,16 @@ reserveCommandInvocationKernel ::
 reserveCommandInvocationKernel
     session
     project
-    (CommandReservation rootProject rootStore planDigest frameName epoch verb phase replayEligible)
+    ( CommandReservation
+        projectName@(CommandProjectName rootProject)
+        storeIdentity@(CommandStoreIdentity rootStore)
+        planDigest
+        frameCoordinate@(CommandFrameName frameName)
+        epoch
+        verb
+        phase
+        replayEligible
+    )
     use
         | rootProject /= installedProjectName project =
             pure
@@ -690,10 +730,10 @@ reserveCommandInvocationKernel
         currentStore = protectedStoreIdentityText (sessionStoreIdentity session)
         identity =
             reservationIdentity
-                rootProject
-                rootStore
+                projectName
+                storeIdentity
                 planDigest
-                frameName
+                frameCoordinate
                 epoch
                 verb
                 phase
@@ -725,33 +765,40 @@ reverseRootReplayEligible ProjectDestroy Execute = False
 reverseRootReplayEligible ProjectDestroy Teardown = True
 
 reservationIdentity ::
-    Text ->
-    Text ->
-    Text ->
-    Text ->
+    CommandProjectName ->
+    CommandStoreIdentity ->
+    CommandPlanDigest ->
+    CommandFrameName ->
     BrokerEpoch brokerGeneration ->
     ProjectVerb verb ->
     LifecyclePhase phase ->
     ByteString
-reservationIdentity project storeIdentity planDigest frameName epoch verb phase =
-    ByteStringChar8.concat
-        [ field (TextEncoding.encodeUtf8 project)
-        , field (TextEncoding.encodeUtf8 storeIdentity)
-        , field (TextEncoding.encodeUtf8 planDigest)
-        , field (TextEncoding.encodeUtf8 frameName)
-        , field (ByteStringChar8.pack (show (brokerEpochWord epoch)))
-        , field (TextEncoding.encodeUtf8 (projectVerbName verb))
-        , field (TextEncoding.encodeUtf8 (lifecyclePhaseName phase))
-        ]
+reservationIdentity
+    (CommandProjectName project)
+    (CommandStoreIdentity storeIdentity)
+    (CommandPlanDigest planDigest)
+    (CommandFrameName frameName)
+    epoch
+    verb
+    phase =
+        ByteStringChar8.concat
+            [ field (TextEncoding.encodeUtf8 project)
+            , field (TextEncoding.encodeUtf8 storeIdentity)
+            , field (TextEncoding.encodeUtf8 planDigest)
+            , field (TextEncoding.encodeUtf8 frameName)
+            , field (ByteStringChar8.pack (show (brokerEpochWord epoch)))
+            , field (TextEncoding.encodeUtf8 (projectVerbName verb))
+            , field (TextEncoding.encodeUtf8 (lifecyclePhaseName phase))
+            ]
   where
     field bytes =
         ByteStringChar8.pack (show (ByteStringChar8.length bytes))
             <> ":"
             <> bytes
 
-brokerCounterKey :: InstalledProjectIdentity projectId -> Either AuthorityError RecordKey
+brokerCounterKey :: Text -> Either AuthorityError RecordKey
 brokerCounterKey project = do
-    name <- either (Left . AuthorityStoreFailure) Right (mkRecordName (installedProjectName project))
+    name <- either (Left . AuthorityStoreFailure) Right (mkRecordName project)
     storeKey ("broker." <> name <> ".generation")
 
 authorityBindingKey :: Either AuthorityError RecordKey

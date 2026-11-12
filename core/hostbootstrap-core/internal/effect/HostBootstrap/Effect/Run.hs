@@ -68,7 +68,7 @@ module HostBootstrap.Effect.Run
     )
 where
 
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
 import Control.Exception
     ( SomeAsyncException
@@ -86,6 +86,9 @@ import GHC.Clock (getMonotonicTimeNSec)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (Handle, hClose, hFlush, hPutStrLn, hSetBinaryMode, stderr)
 import System.IO.Error (isResourceVanishedError, tryIOError)
+#if !defined(mingw32_HOST_OS)
+import System.IO.Error (isDoesNotExistError)
+#endif
 #if defined(darwin_HOST_OS)
 import System.Environment (getExecutablePath)
 #endif
@@ -274,27 +277,36 @@ groupedProcess bounds namespace executable arguments request = do
                     (Just inputHandle, Just outputHandle, Just errorHandle) -> do
                         mapM_ (`hSetBinaryMode` True) [inputHandle, outputHandle, errorHandle]
                         events <- newChan
-                        _ <- forkIO (readPipe ceiling' outputHandle >>= writeChan events . PipeEvent StandardOutput)
-                        _ <- forkIO (readPipe ceiling' errorHandle >>= writeChan events . PipeEvent StandardError)
-                        budget <- remainingWall
-                        drained <- timeout budget (writeRequest inputHandle request >> awaitPipes events)
-                        let closeAll = mapM_ closeQuietly [inputHandle, outputHandle, errorHandle]
-                        case drained of
-                            Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
-                            Just PipesLimitExceeded -> tearDown >> closeAll >> pure BoundedOutputLimit
-                            Just (PipesComplete out err) -> do
-                                -- Both streams are at end, so the child is
-                                -- almost always already gone; the wall still
-                                -- bounds the wait, because a child that closes
-                                -- its streams and then refuses to leave is
-                                -- exactly what the bound is for.
-                                remaining <- remainingWall
-                                exited <- awaitProcessExit remaining process
-                                case exited of
+                        outputReader <- forkIO (readPipe ceiling' outputHandle >>= writeChan events . PipeEvent StandardOutput)
+                        errorReader <- forkIO (readPipe ceiling' errorHandle >>= writeChan events . PipeEvent StandardError)
+                        let closeAll = do
+                                -- Stop readers before taking their Handle locks;
+                                -- a writer outside this group may still hold a pipe.
+                                mapM_ killThread [outputReader, errorReader]
+                                mapM_ closeQuietly [inputHandle, outputHandle, errorHandle]
+                            capture = do
+                                budget <- remainingWall
+                                drained <- timeout budget (writeRequest inputHandle request >> closeQuietly inputHandle >> awaitPipes events)
+                                case drained of
                                     Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
-                                    Just code -> do
-                                        closeAll
-                                        pure (completed code out err)
+                                    Just PipesLimitExceeded -> tearDown >> closeAll >> pure BoundedOutputLimit
+                                    Just (PipesComplete out err) -> do
+                                        -- Both streams are at end, so the child is
+                                        -- almost always already gone; the wall still
+                                        -- bounds the wait, because a child that closes
+                                        -- its streams and then refuses to leave is
+                                        -- exactly what the bound is for.
+                                        remaining <- remainingWall
+                                        exited <- awaitProcessExit remaining process
+                                        case exited of
+                                            Nothing -> tearDown >> closeAll >> pure BoundedTimedOut
+                                            Just code -> do
+                                                closeAll
+                                                pure (completed code out err)
+                        -- Terminate the group before waiting for pipe-reader threads:
+                        -- on Windows a blocked pipe read may not accept cancellation
+                        -- until the child closes its inherited handle.
+                        capture `onException` (tearDown >> closeAll)
                     _ -> pure (BoundedFailed "the bounded runner did not create all requested pipes")
         runProcess `onException` tearDown
   where
@@ -405,15 +417,21 @@ terminateProcessGroup graceMicros processGroup process = do
     _ <- awaitGroupExit reapMicros processGroup process
     pure ()
 #else
-    signalGroup sigTERM processGroup
-    settled <- awaitGroupExit graceMicros processGroup process
-    if settled
+    retained <- getPid process
+    -- A completed handle has reaped its leader. Its released identifier must
+    -- never receive a later signal, including from a late asynchronous exception.
+    if retained /= processGroup
         then pure ()
         else do
-            signalGroup sigKILL processGroup
-            _ <- trySynchronous (terminateProcess process)
-            _ <- awaitGroupExit reapMicros processGroup process
-            pure ()
+            signalGroup sigTERM processGroup
+            settled <- awaitReservedGroupExit graceMicros processGroup process
+            if settled
+                then pure ()
+                else do
+                    signalGroup sigKILL processGroup
+                    _ <- trySynchronous (terminateProcess process)
+                    _ <- awaitGroupExit reapMicros processGroup process
+                    pure ()
 #endif
 
 -- | How long a torn-down leader is waited for before the launcher gives up.
@@ -423,6 +441,26 @@ reapMicros = 2 * 1000 * 1000
 -- | How often the teardown looks again while it waits out a grace period.
 teardownPollMicros :: Int
 teardownPollMicros = 25 * 1000
+
+#if !defined(mingw32_HOST_OS)
+-- Keep the unreaped leader's PID reserved while a later group signal remains
+-- possible. Once the group is absent, a completed leader can be reaped safely:
+-- that success ends escalation, so no signal can target a reused identifier.
+awaitReservedGroupExit :: Int -> Maybe Pid -> ProcessHandle -> IO Bool
+awaitReservedGroupExit budgetMicros processGroup process = go budgetMicros
+  where
+    go remaining = do
+        present <- groupPresent processGroup
+        exited <- if present then pure Nothing else awaitProcessExit 0 process
+        case exited of
+            Just _ -> pure True
+            Nothing
+                | remaining <= 0 -> pure False
+                | otherwise -> do
+                    threadDelay teardownPollMicros
+                    go (remaining - teardownPollMicros)
+
+#endif
 
 {- | Wait, within a budget, for the leader to exit and its group to empty.
 
@@ -489,8 +527,8 @@ groupPresent _ = pure False
 #else
 groupPresent Nothing = pure False
 groupPresent (Just processGroup) = do
-    probed <- trySynchronous (signalProcessGroup nullSignal processGroup)
-    pure (either (const False) (const True) probed)
+    probed <- tryIOError (signalProcessGroup nullSignal processGroup)
+    pure (either (not . isDoesNotExistError) (const True) probed)
 #endif
 
 #if !defined(mingw32_HOST_OS)

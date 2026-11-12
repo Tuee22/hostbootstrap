@@ -23,6 +23,7 @@ import HostBootstrap.Cluster.Lifecycle (
     PlanOwnedCluster,
     PlanOwnedClusterConfig,
     planOwnedClusterName,
+    planOwnedClusterDriver,
     resolvePlanWithDriver,
     withPlanOwnedClusterConfig,
  )
@@ -82,7 +83,6 @@ verifyExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSli
 
 withExactPlanOwnedClusterConfig ::
     PlanOwnedCluster scope specDigest planId configId ProjectConfig clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId ->
-    ClusterDriver ->
     FilePath ->
     Text ->
     ProjectConfig configScope ->
@@ -90,7 +90,8 @@ withExactPlanOwnedClusterConfig ::
     [Text] ->
     (PlanOwnedClusterConfig scope specDigest planId configId ProjectConfig clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId -> result) ->
     Either String result
-withExactPlanOwnedClusterConfig base driver dockerHostDataPath retainedDigest cfg clusterSlice workload consume = do
+withExactPlanOwnedClusterConfig base dockerHostDataPath retainedDigest cfg clusterSlice workload consume = do
+    let driver = planOwnedClusterDriver base
     (bytes, digest, statePath, configPath, intents) <-
         renderExactClusterConfig driver dockerHostDataPath retainedDigest cfg clusterSlice
     let mappings = case driver of
@@ -102,7 +103,7 @@ withExactPlanOwnedClusterConfig base driver dockerHostDataPath retainedDigest cf
     either
         (Left . ("demo cluster config: " ++) . show)
         Right
-        (withPlanOwnedClusterConfig base driver bytes digest statePath configPath intents mappings workload consume)
+        (withPlanOwnedClusterConfig base bytes digest statePath configPath intents mappings workload consume)
 
 exposureIntents :: ClusterDriver -> ProjectConfig scope -> [(Text, Int)] -> Either String [ExposureIntent]
 exposureIntents driver cfg semanticTargets = traverse makeIntent services

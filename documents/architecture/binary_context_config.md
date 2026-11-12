@@ -14,6 +14,15 @@ There is no separate context file; `Context` exposes no standalone context-file 
 The plan lives in code. An installed root, authenticated child handoff, verified build invocation, or signed
 service activation supplies authority independently of the decoded description.
 
+An authenticated child installs its exact payload beside its executable through the Production or
+Harness sibling-config installer. A regular file with identical bytes is an idempotent replay; foreign
+bytes are a conflict and stay intact. A symlink or non-regular destination is unsafe, and a symlinked
+install lock refuses before its target is opened. Publication uses the native create-if-absent hard link
+under the sibling lock, so concurrent installers converge on one creator and one replay. Post-publication
+inspection always attempts temporary removal in a finalizer; cleanup is best-effort and cannot overturn a
+completed publication. An unavailable reread after a successful link likewise cannot report that completed
+install as failed, while a readable foreign replacement retains its explicit conflict or unsafe refusal.
+
 One root coordinator owns the protected store and recursive catalog. Children are storeless executors of
 catalog-selected grants. A service uses a narrowed immutable role wire and a restartable signed activation;
 it never reads the sibling full project config to decide what it may do.
@@ -37,6 +46,14 @@ store separately checks `commandAuthorityMatchesStore` before effects; an author
 store fails that check even when the installed project is the same. The public authority error sum
 contains only refusals constructed by a kernel or gate. The all-library source guard distinguishes
 construction from declarations, message-rendering arms and other pattern occurrences.
+
+The private `Chain.EntryPolicy` module owns four ordered current-frame checks before Chain opens its
+journal: the authority belongs to the supplied store; its acquisition origin matches the cursor; their
+retained frames agree; and that frame belongs to the admitted topology. The policy consumes the real
+lower-unit authority and store. Main supplies the actual cursor-origin predicate and descriptive cursor
+frame and ordered topology frames. Main and tests import one compiled `chain-entry-internal` unit;
+the policy imports no main cursor or topology representation and creates no authority. `VerbUp` and
+`ExecutePhase` are fixed by the entry's types and checked by the named compiler refusals.
 
 The replay decision enumerates every member of the closed verb and phase vocabularies. Only Down
 and Destroy paired with Teardown admit byte-identical replay; adding a verb or phase therefore
@@ -86,7 +103,7 @@ entry joins that package to the exact durable origin before it interprets effect
 ### Installed Identity and the Lower Authority Kernel
 
 [Identity.Install](../../core/hostbootstrap-core/src/HostBootstrap/Identity/Install.hs) provisions identity
-beside the installed executable. [Authority](../../core/hostbootstrap-core/src/HostBootstrap/Authority.hs)
+beside the installed executable. [Authority](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs)
 verifies that executable identity and the exact protected-store origin and introduces the live root scope.
 Private kernels own constructors; public consumers receive only the evidence and eliminators they require.
 
@@ -107,6 +124,13 @@ That same verified identity reaches `reserveCurrentLifecycleCommandKernel` insid
 protected entry. The bridge revalidates live journal, source and current-cursor evidence, then supplies
 the identity directly to the reservation kernel. It does not reconstruct the comparator from the
 journal's recorded project name.
+
+Durable cursor frame limits count encoded UTF-8 bytes. The canonical record bounds and exact no-write
+resume behavior belong to the [lifecycle state model](lifecycle_state_model.md#lifecycle-profile-authority).
+
+`ValidatedLifecycleContext` retains the jointly admitted frame views and the root-owned store; it remains
+inert and has no public store or authority projection. Its public admission and private membership boundary
+are defined in the [lifecycle state model](lifecycle_state_model.md#lifecycle-profile-authority).
 
 ## Topology Shape
 
@@ -145,6 +169,164 @@ retain those exact bytes and receive no signer. The receiver verifies the capsul
 installed identity and key before interpreting the payload. Ordinary offers bind exact configuration bytes;
 recovery offers retain the complete `RecoveryChildPackage` and distinct `RootedPayloadBinding`. Truncated,
 trailing, mismatched, or noncanonical packages refuse.
+
+The nominal `AuthenticatedRootScope scope` proves installed project scope and key identity only; it has
+no broker-generation index and conveys no root, Harness, command, store or signing authority. Its seven
+frames carry the codec domain, fixed Word64BE version, installed project, closed scope kind, exact run,
+installed-key digest and 64-byte signature. Production has an empty run; Harness has a canonical nonempty
+run. The producer derives those fields from its live broker and matching scope under private admission.
+Verification uses independently installed project identity and key before either scope callback runs.
+
+Capsule framing preserves `HandoffWireTruncated` and `HandoffWireTooLarge`: a declared 64-byte signature
+truncated to 63 bytes is `HandoffWireTruncated 64 63`. A complete 63-byte signature frame instead has the
+semantic wrong-width `HandoffBindingMismatch`. Domain, version, project, key, kind and run checks retain
+their specific binding-mismatch details; an extra trailing frame retains the shared decoder's trailing
+binding mismatch. After valid framing and semantic checks, cryptographic verification failure yields
+`HandoffAuthenticatedRootScopeSignatureInvalid`. These primitive scope/codec checks supply no Offer,
+receiver-placement or lifecycle-coordinator integration evidence.
+
+The scope-first receiver keeps the Offer's four bounded opaque fields unchanged. Structural decoding may
+bound and split those fields before capsule verification; binding and payload semantics wait for the
+verified capsule's closed Production/Harness continuation. A valid Harness capsule selects the Harness
+branch, whose binding must agree with that authenticated scope. Outer missing/excess field refusals retain
+`ProtocolWrongFieldCount` or `ProtocolExcessFields` through `ReceiverProtocolFailure`. Before an Offer has
+been decoded, there is no active request identity to answer, so the receiver emits no refusal frame.
+Accepted parent refusals and acknowledgements consumed by either Receiver or Relay update the same real
+child protocol state before a later failure can attempt to announce anything. That terminal state also
+blocks later report sends and relay requests locally, before another protocol frame can be written.
+Relay's own successfully transmitted upstream refusal closes that same retained edge and preserves the
+original error. A local validation failure before transmission leaves it open for Receiver's refusal.
+
+After scope authentication, the receiver bounds the embedded Offer payload at 7,340,032 bytes before
+reading its installed-key digest or binding, sending a Challenge, or selecting a branch. Exactly that
+size is allowed; one byte more refuses. This semantic sub-ceiling is separate from Protocol's 8 MiB
+total-body limit, which also includes the other Offer fields and framing overhead.
+
+`RootedPayloadBinding` separately frames the signed complete-payload and child-config digests. The direct
+config signer requires private signing admission and a live broker, refuses recovery-kind offers, empty
+payload/config bytes and unequal nonempty configuration bytes, and retains the broker's exact verb check.
+Its matching config path derives both claims from the same exact configuration bytes. Broker generation
+is nominal; the immediate-edge payload digest is already fixed by the opaque `mkHandoffOffer` producer. That producer's
+refusal and the offer's private constructor/fields and nominal roles establish this immutable invariant;
+a genuine offer cannot exercise the final signer backstop with a mismatched immediate payload digest.
+
+`Handoff.Rooted` owns the pure canonical codec. The `Handoff` facade fixes the signature domain and gates
+signing through private `Handoff.Internal` admission. Verification requires the exact `VerifiedHandoff`
+and independently installed key. Durable token consumption belongs to root-side grant issuance;
+child verification is stateless. Ed25519 imports are confined to the actual production owners `HostBootstrap.Activation`,
+`HostBootstrap.Handoff` and `HostBootstrap.Build`; the rooted codec
+introduces no generic signing capability.
+
+`RecoveryChildPackage` is exactly two canonical length-framed nonempty fields: child configuration and
+recovery adapter. Its complete wire, including both headers, is bounded at 8 MiB. The public facade
+exposes the abstract value and renderer; the hidden neutral codec owns construction, decoding and field
+access. The package signer accepts that value, derives both digests and requires the offer to carry its
+exact canonical bytes, without independent caller-supplied config bytes or digest claims.
+
+After handoff and rooted authentication, strict package decoding precedes the join's embedded-config
+digest comparison. Malformed-package validation retains valid prior authentication and the intended
+extracted-config digest so that a later digest refusal cannot mask truncation, empty-field, trailing-byte
+or oversized-field diagnostics. The ordinary handoff bound already refuses a complete oversized package
+before this public join; the neutral codec's own bound remains a separate source/API contract.
+
+`RecoveryProjectionBindingInput` retains its three descriptive coordinates behind private record labels.
+The existing `requestedRecoveryPlanDigest`, `requestedRecoveryParentFrame` and `requestedRecoveryChildFrame`
+names are ordinary getters. They preserve the generative bracket's nominal indices without permitting
+field replacement or type-changing record updates. The private `ReceivedRecoveryDescent` retains the
+verified rooted binding, package, closed verb, projection, grant and verified adapter. Its six-argument
+eliminator passes the received edge, rendered package, closed verb, authenticated adapter bytes, rendered
+projection and grant signature. It forces the rooted binding without exposing the retained typed
+package/projection/grant/wire proofs; the four byte views come only from that evidence.
+
+Root-backed `BrokerLink` constructors retain live root brokers and their admission predicates, including
+the coordinator-specific root links. The relayed constructor retains only its authenticated route,
+request identity, installed-key digest and duplex channel; it carries no signing key or root-store authority.
+`offerHandoffEdge` opens the exact narrowed project config bytes. Recovery edges use the existing
+reverse-descent opener. `brokerRelayFromRouteWire` checks all five authenticated-route coordinates and
+all seven supplied opening-request coordinates before constructing a relay. The shared exact-offer
+decoder preserves `HandoffWireTrailingBytes n` for bytes after its three frames; the rooted-signing
+route returns that failure as `RelayHandoffFailure` and sends an `unauthenticated` refusal to its peer.
+
+The sealed requester envelope carries one to 256 nonempty UTF-8 components, each at most 4,096 encoded
+bytes, in root-nearest-to-leaf order. Receive-side grammar and admitted-child/path-origin checks precede
+forwarding or root-service entry. Boundary DATA controls capture the exact path and request at that
+service and return a declared sentinel refusal; 256 components or a 4,096-byte component does not mean
+256 nested processes or successful lifecycle execution. Received outer refusal code/detail bytes and
+signed inner `Refused` remain distinct, without translation or re-signing by the relay.
+
+Duplex channel-loss validation distinguishes failure before root action, with no admission callback or
+protected-state change, from loss after a durable grant. Retrying the same offer and challenge requires
+a fresh legitimate route to the same still-live root broker and preserves the deterministic response and
+settled token bytes/version. That route setup is accounted for separately from the retried request;
+the nested link gains no signer or coordinator admission policy.
+
+Root registration publishes the exact canonical binding as a planned one-use edge before grant issuance.
+Admitted registration runs its plan predicate once; rejection preserves that reason and creates no edge.
+`grantHandoff` checks the live broker and registered binding without rerunning that predicate. Broker and
+offer retain one nominal generation. The first grant records its transcript; an identical retry retains
+the same bytes, record version and deterministic signature, while a different transcript is consumed.
+Concurrent identical requests converge through the broker lifetime guard and protected entry; this
+serialization does not imply a forced competing-CAS interleaving. After a failed first-grant write, a
+private pure DATA policy distinguishes exact granted bytes, exact planned bytes, absence, another retained
+row and reread failure. Exact granted bytes succeed; planned bytes or absence retain the original write
+failure, another row is consumed, and a reread failure retains that actual failure. The policy performs
+no store operations and grants no authority.
+
+`HandoffBinding` stores its thirteen admitted coordinates behind private record labels. Its existing
+public readers are ordinary functions, so they expose no record-update path or type-changing phantom
+update. Canonical binding bytes and nominal scope/broker roles retain their contracts. Public parser
+tables distinguish structural request decoding from semantic required-field admission; received token
+commitments are checked against the actual offer bytes. Installed signing and verification key reads
+catch ordinary IO failures while asynchronous exceptions propagate. The
+[binding boundary rationale](../../DEVELOPMENT_PLAN/rationale.md#handoff-bindings-retain-their-admitted-fields)
+records the compiler and value-level controls.
+
+Canonical config validation and authenticated byte admission jointly produce `VerifiedConfigWire` and
+`ValidatedConfig` under one fresh `configId`, retaining the same canonical digest. Recovery specification
+reindexing preserves that identity, digest and decoded value. `withVerifiedConfigHandoff` checks the config
+payload kind, signed child digest against the verified wire, signed specification digest against the
+validated config, requested verb, and closed prepare/execute/teardown phase in order. The wire-digest check
+also covers the validated config's digest through their joint provenance. Refinement retains the existing
+opaque config identity while introducing signed plan/frame indices inside its rank-2 continuation.
+
+`withChildProjectPlan` carries that refinement into local plan admission. Project, protected-store origin,
+broker generation and lifecycle scope are derived from the signed binding; verb, config identity and digest
+retain their prior refinement. The opaque drafts supply the canonical root and undergo root, specification,
+configuration and structural admission before the rebuilt stable plan digest is compared with the signed
+revision. `ChildPlanAuthority` proves this admission without granting execution capability. The
+[lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff) distinguishes these
+Production/Harness DATA proofs from coordinator integration.
+
+Handoff's production implementations have one compiled owner in the Cabal-private
+`handoff-implementation-internal` unit. Main reexports the 29 public members and retains its existing
+104-module effective facade. Its 19 additional private implementation imports grant no public route;
+core-test's explicit mixin selects only `Handoff.Protocol`, `Handoff.Receiver`, `Handoff.Relay` and
+`Handoff.Internal` from the same unit. Five implementation modules remain unexposed within that unit.
+This component boundary permits value-level tests of the real implementations without constructing a
+second broker, binding or authority identity. The [Cabal layout](../engineering/cabal_layout.md#package-stanzas)
+states the source ownership and independent DATA exceptions; the
+[compiler-context rules](../engineering/testing.md#one-toolkit-for-reading-this-repositorys-own-sources)
+state the required visibility and identity controls.
+
+The protocol decoder consumes only the closed tag's expected bounded fields.
+`ProtocolExcessFields tag expected excessBytes` reports the actual unconsumed body bytes after those fields.
+An outer declaration above the 8 MiB body limit yields `ProtocolBodyTooLarge`; an oversized nested field
+declaration yields `ProtocolFieldTooLarge` without allocating its claimed payload. Truncation and bytes following
+the complete outer frame retain separate refusals.
+
+Codec/FSM DATA validation requires canonical encode/decode positives, exact malformed-input constructors
+and coordinates, and genuine successful setup transitions before testing each invalid child receive/send
+state/tag pair. Request and acknowledgement checks compare the exact request identity and derived bytes.
+The rooted request/response tags each carry one bounded field. Only `ChildRunning` may send a
+rooted request; `ChildAwaitingResponse` retains its request identity and sole expected response tag.
+A matching rooted response resumes `ChildRunning`. After completion, `ChildAwaitingAcknowledgement`
+checks request identity before acknowledgement bytes; a matching acknowledgement or refusal finishes.
+An unsolicited, duplicate or post-terminal rooted response is an invalid transition. Before any offer
+has established a request identity, `ChildAwaitingOffer` may receive a refusal and finish without that
+identity comparison. Connected-pipe DATA observations preserve this initial exception while checking
+the later exact identity, waiting-state and acknowledgement rules.
+These checks cover the shared codec and child-state implementation; recursive process adoption remains with
+the [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 The root catalog is the sole authority for selecting a lifecycle edge and node. `OpenFrame` has no caller
 chosen session coordinate; its sealed external envelope supplies ancestry. A verified `Opened` response

@@ -50,6 +50,7 @@ module HostBootstrap.Substrate.Provider.Reconcile (
     managedProviderShareKey,
     managedProviderShareGeneration,
     managedProviderShareObservationVersion,
+    managedProviderShareCallDigest,
     ProviderShareCallResult,
     PreparedProviderShare,
     withPreparedProviderShare,
@@ -100,6 +101,10 @@ import Data.Word (Word64)
 import HostBootstrap.Lifecycle.Dependency.Internal (
     RuntimeDependencyPackage,
     runtimeDependencyPackageKey,
+    runtimeDependencyPackageGeneration,
+    runtimeDependencyPackageResource,
+    providerRuntimeObservationMetadata,
+    verifyRuntimeDependencyProbeOutcome,
     runtimeDependencyProbeRequest,
     verifyRuntimeDependencyProbeResponse,
     withCarriedProviderRuntimeDependencyCoordinates,
@@ -113,7 +118,11 @@ import HostBootstrap.Lifecycle.Execution (
  )
 import qualified HostBootstrap.Lifecycle.Execution.Internal as ExecutionInternal
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
+import HostBootstrap.Ownership.Object (objectIdentityText)
+import HostBootstrap.Substrate.Provider.Report (classifyProviderNativeObservation, classifyProviderNativeRefusal, identityObservationVersion, providerReportFaultMessage)
 import HostBootstrap.ProjectPlan (PlannedResource, plannedResourceFrame)
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (..),
     ChangeView,
@@ -151,6 +160,7 @@ import HostBootstrap.Reconcile (
     planProviderBoot,
     planRestart,
     planStop,
+    operationDescriptorDependencies,
     plannedNodeOperation,
     plannedNodePhaseOperation,
     resourceHandleGeneration,
@@ -160,14 +170,15 @@ import HostBootstrap.Reconcile (
     withCarriedManagedResourceReceipt,
     withDependencySnapshotEntry,
     withNodeResourceOfKind,
-    withOperationPreconditions,
     withPhaseAdvance,
     withPlannedReboundManagedResourceEvidence,
+    freshManagedResourcePhase,
     withPreparedOperation,
     withPreparedZeroDependencyOperation,
     withPreparedZeroDependencyPhaseTransition,
     withReconcileResult,
  )
+import HostBootstrap.Reconcile.ProviderStart.Internal (FreshManagedPhaseAuthority (FreshManagedPhaseAuthority))
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
     ProviderShareDependency (..),
     RunningProviderDependency (..),
@@ -475,15 +486,6 @@ providerProvisionSettlement (PreparedProviderBinding origin _ _) reconciled =
 
 -- Host-side durable-share reconciliation ------------------------------------
 
-{- | Total observation of the provider-side share primitive.
-
-For a VM provider, attached/repaired means the clause-holding backend observed
-the exact provider generation and made the declared share ready.  For Direct,
-settlement records only that the already-local source and target projection was
-admitted; it performs no host mutation and claims no ownership of the
-directory.
--}
-
 -- | The exact host/guest path declaration consumed by one prepared share call.
 data ProviderShareSpec = ProviderShareSpec FilePath FilePath
     deriving (Eq, Show)
@@ -553,7 +555,7 @@ withPreparedProviderShare ::
     PlannedResource scope planId shareId DurableShareResource shareFrame ->
     ResourceHandle scope planId shareId DurableShareResource Unclassified Observed ->
     ManagedProviderHandle scope planId backendId providerId Running ->
-    DependencyProbe scope planId providerId ProviderResource ->
+    DependencyProbe scope planId providerId ProviderResource readiness ->
     ProviderShareSpec ->
     PreparedGate ->
     ( forall operationKey callDigest attempt journalVersion.
@@ -584,26 +586,38 @@ withPreparedProviderShare
             Right binding ->
                 case plannedNodeOperation execution planned shareHandle callDigest of
                     Left failure -> pure (Left failure)
-                    Right descriptor -> do
-                        sealed <-
-                            withOperationPreconditions
+                    Right descriptor
+                        | resourceHandleKey providerHandle `notElem` operationDescriptorDependencies descriptor ->
+                            pure
+                                ( Left
+                                    ( Conflict
+                                        ( ConflictDetail
+                                            (resourceHandleKey providerHandle)
+                                            "provider declared as a dependency of the durable share"
+                                            ("declared dependencies=" <> Text.intercalate "," (operationDescriptorDependencies descriptor))
+                                            "declare the provider resource as a dependency before preparing its share"
+                                        )
+                                    )
+                                )
+                        | otherwise ->
+                            withPreparedOperation
                                 descriptor
                                 ( withDependencySnapshotEntry
                                     providerHandle
                                     providerProbe
                                     emptyDependencySnapshot
                                 )
-                        pure $ do
-                            preconditions <- sealed
-                            withPreparedOperation descriptor preconditions gate $ \prepared preparedPreconditions ->
-                                consume
-                                    ( PreparedProviderShare
-                                        binding
-                                        spec
-                                        shareHandle
-                                        prepared
-                                        preparedPreconditions
-                                    )
+                                gate
+                                ( \prepared preparedPreconditions ->
+                                    consume
+                                        ( PreparedProviderShare
+                                            binding
+                                            spec
+                                            shareHandle
+                                            prepared
+                                            preparedPreconditions
+                                        )
+                                )
       where
         callDigest =
             providerShareCallDigest
@@ -631,19 +645,25 @@ not expose its generic managed handle, receipt, or retained provider origin.
 managedProviderShareKey ::
     ManagedProviderShareHandle scope planId backendId providerId shareId phase ->
     Text
-managedProviderShareKey (ManagedProviderShareHandle _ handle _) = resourceHandleKey handle
+managedProviderShareKey (ManagedProviderShareHandle _ handle _ _) = resourceHandleKey handle
 
 managedProviderShareGeneration ::
     ManagedProviderShareHandle scope planId backendId providerId shareId phase ->
     Word64
-managedProviderShareGeneration (ManagedProviderShareHandle _ handle _) =
+managedProviderShareGeneration (ManagedProviderShareHandle _ handle _ _) =
     resourceHandleGeneration handle
 
 managedProviderShareObservationVersion ::
     ManagedProviderShareHandle scope planId backendId providerId shareId phase ->
     Word64
-managedProviderShareObservationVersion (ManagedProviderShareHandle _ handle _) =
+managedProviderShareObservationVersion (ManagedProviderShareHandle _ handle _ _) =
     resourceHandleObservationVersion handle
+
+-- | Digest of the exact share call that produced this managed settlement.
+managedProviderShareCallDigest ::
+    ManagedProviderShareHandle scope planId backendId providerId shareId phase ->
+    Text
+managedProviderShareCallDigest (ManagedProviderShareHandle _ _ _ callDigest) = callDigest
 
 {- | Opaque provider-derived share settlement.  A managed share retains the
 exact provider origin that authorized its attachment.  A foreign observation
@@ -723,14 +743,14 @@ providerShareSettlement ::
     PreparedProviderBinding scope planId backendId providerId ->
     ReconcileResult scope planId shareId DurableShareResource Provisioned ->
     Either ReconcileError (ProviderShareSettlement scope planId backendId providerId shareId)
-providerShareSettlement (PreparedProviderBinding origin _ _) reconciled =
+providerShareSettlement (PreparedProviderBinding origin _ callDigest) reconciled =
     withReconcileResult
         reconciled
         ( \handle receipt change -> do
             validateOwnershipReceipt handle receipt
             Right
                 ( ManagedProviderShare
-                    (ManagedProviderShareHandle origin handle receipt)
+                    (ManagedProviderShareHandle origin handle receipt callDigest)
                     change
                 )
         )
@@ -754,7 +774,7 @@ carryProviderShareSettlement ::
     ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
     Text ->
     IO (Either ReconcileError ())
-carryProviderShareSettlement execution (ManagedProviderShareHandle _ handle receipt) adapter =
+carryProviderShareSettlement execution (ManagedProviderShareHandle _ handle receipt _) adapter =
     carryManagedResourceSettlement execution handle receipt "provisioned" adapter
 
 -- Managed phase preparations ------------------------------------------------
@@ -797,6 +817,7 @@ data PreparedProviderReady scope planId backendId providerId fromPhase operation
     = PreparedProviderReady
         (PreparedProviderBinding scope planId backendId providerId)
         (ManagedProviderHandle scope planId backendId providerId fromPhase)
+        (ProviderStartable scope planId backendId providerId fromPhase)
         ( PreparedPhaseTransition
             scope
             planId
@@ -841,6 +862,7 @@ withPreparedProviderReady execution planned managed@(ManagedProviderHandle origi
                 ( PreparedProviderReady
                     binding
                     managed
+                    startable
                     prepared
                 )
         )
@@ -848,47 +870,60 @@ withPreparedProviderReady execution planned managed@(ManagedProviderHandle origi
 preparedProviderReadyBinding ::
     PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
     PreparedProviderBinding scope planId backendId providerId
-preparedProviderReadyBinding (PreparedProviderReady binding _ _) = binding
+preparedProviderReadyBinding (PreparedProviderReady binding _ _ _) = binding
 
 preparedProviderReadyHandle ::
     PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
     ManagedProviderHandle scope planId backendId providerId fromPhase
-preparedProviderReadyHandle (PreparedProviderReady _ managed _) = managed
+preparedProviderReadyHandle (PreparedProviderReady _ managed _ _) = managed
 
-{- | Opaque successful provider phase transition.  Its eliminator exposes only
-the backend-indexed successor authority, never the generic 'PhaseAdvance', raw
-managed resource handle, receipt, or verification token.
+{- | Opaque successful provider transition retaining its exact source phase.
+The Running case keeps the validated startability witness that selected boot
+or restart; no caller supplies a predecessor label. Its eliminator exposes
+only the backend-indexed successor authority.
 -}
-newtype ProviderPhaseAdvance scope planId backendId providerId phase
-    = ProviderPhaseAdvance
-        (ManagedProviderHandle scope planId backendId providerId phase)
+data ProviderPhaseAdvance scope planId backendId providerId fromPhase toPhase where
+    ProviderRunningAdvance ::
+        ProviderStartable scope planId backendId providerId fromPhase ->
+        ManagedProviderHandle scope planId backendId providerId Running ->
+        ProviderPhaseAdvance scope planId backendId providerId fromPhase Running
+    ProviderStoppedAdvance ::
+        ManagedProviderHandle scope planId backendId providerId Stopped ->
+        ProviderPhaseAdvance scope planId backendId providerId Running Stopped
+    ProviderDestroyedAdvance ::
+        ManagedProviderHandle scope planId backendId providerId Destroyed ->
+        ProviderPhaseAdvance scope planId backendId providerId Stopped Destroyed
 
-type role ProviderPhaseAdvance nominal nominal nominal nominal nominal
+type role ProviderPhaseAdvance nominal nominal nominal nominal nominal nominal
 
 withProviderPhaseAdvance ::
-    ProviderPhaseAdvance scope planId backendId providerId phase ->
-    (ManagedProviderHandle scope planId backendId providerId phase -> result) ->
+    ProviderPhaseAdvance scope planId backendId providerId fromPhase toPhase ->
+    (ManagedProviderHandle scope planId backendId providerId toPhase -> result) ->
     result
-withProviderPhaseAdvance (ProviderPhaseAdvance managed) consume = consume managed
+withProviderPhaseAdvance advance consume = case advance of
+    ProviderRunningAdvance _ managed -> consume managed
+    ProviderStoppedAdvance managed -> consume managed
+    ProviderDestroyedAdvance managed -> consume managed
 
 carryRunningProviderSettlement ::
     StepExecution scope planId ->
-    ProviderPhaseAdvance scope planId backendId providerId Running ->
-    Text ->
+    ProviderPhaseAdvance scope planId backendId providerId fromPhase Running ->
     Text ->
     IO (Either ReconcileError ())
-carryRunningProviderSettlement execution advance sourcePhase adapter =
-    withProviderPhaseAdvance advance $ \(ManagedProviderHandle _ handle receipt) ->
-        carryManagedResourcePhaseSettlement execution handle receipt sourcePhase "running" adapter
+carryRunningProviderSettlement execution (ProviderRunningAdvance startable (ManagedProviderHandle _ handle receipt)) adapter =
+    case startable of
+        ProvisionedProviderStartable _ _ ->
+            carryManagedResourcePhaseSettlement execution handle receipt "provisioned" "running" adapter
+        StoppedProviderStartable _ _ ->
+            carryManagedResourcePhaseSettlement execution handle receipt "stopped" "running" adapter
 
-{- | Publish the final Running member for a provider created in this same step.
-No intermediate Provisioned member has reached the durable store yet, so the
-final member must retain the acquisition's absent predecessor instead of
-attempting a CAS against an in-memory phase transition.
+{- | Publish Running only for an acquisition created in this same step.
+The Provisioned source index prevents a restart from claiming an absent
+predecessor instead of its existing stopped member.
 -}
 carryCreatedRunningProviderSettlement ::
     StepExecution scope planId ->
-    ProviderPhaseAdvance scope planId backendId providerId Running ->
+    ProviderPhaseAdvance scope planId backendId providerId Provisioned Running ->
     Text ->
     IO (Either ReconcileError ())
 carryCreatedRunningProviderSettlement execution advance adapter =
@@ -914,7 +949,7 @@ withFreshRunningProviderDependency ::
     ) ->
     IO (Either ReconcileError result)
 withFreshRunningProviderDependency execution scopeCommitment backend dependencyKey route now nonce consume = do
-    withFreshRunningProviderHandle execution scopeCommitment backend dependencyKey route now nonce $ \_planned managed reprobe ->
+    withFreshRunningProviderHandleRaw execution scopeCommitment backend dependencyKey route now nonce $ \_planned managed reprobe ->
         consume (RunningProviderDependency managed reprobe)
 
 {- | Recover the authenticated parent-carried provider package without
@@ -949,20 +984,20 @@ withFreshCarriedRunningProviderDependency execution scopeCommitment dependencyKe
                             (\_origin _route -> ()) of
                             Left refusal -> pure (dependencyFailure refusal)
                             Right () -> do
-                                first <- invokePackageProbe execution package nonce
+                                first <- invokeProviderPackageProbe execution package nonce
                                 case first of
                                     Left failure -> pure (Left failure)
-                                    Right generation
-                                        | generation /= resourceHandleGeneration handle ->
-                                            pure (Left (Conflict (ConflictDetail dependencyKey ("generation=" <> Text.pack (show (resourceHandleGeneration handle))) ("fresh generation=" <> Text.pack (show generation)) "reconcile the provider generation before using its dependency")))
-                                        | otherwise -> case validateOwnershipReceipt handle receipt of
+                                    Right _nativeVersion ->
+                                        case freshManagedResourcePhase FreshManagedPhaseAuthority (runtimeDependencyPackageGeneration package) handle of
                                             Left failure -> pure (Left failure)
-                                            Right () -> do
-                                                sequenceRef <- newIORef (0 :: Word64)
-                                                let reprobe = do
-                                                        sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
-                                                        invokePackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
-                                                pure (Right (consume planned (RecoveredRunningProviderDependency handle reprobe)))
+                                            Right freshHandle -> case validateOwnershipReceipt freshHandle receipt of
+                                                Left failure -> pure (Left failure)
+                                                Right () -> do
+                                                    sequenceRef <- newIORef (0 :: Word64)
+                                                    let reprobe = do
+                                                            sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
+                                                            invokeProviderPackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
+                                                    pure (Right (consume planned (RecoveredRunningProviderDependency freshHandle reprobe)))
                 case carried of
                     Left failure -> pure (Left failure)
                     Right rebound -> either (pure . Left) id rebound of
@@ -1015,17 +1050,17 @@ withFreshCarriedProviderShareDependency execution scopeCommitment dependencyKey 
                                 first <- invokePackageProbe execution package nonce
                                 case first of
                                     Left failure -> pure (Left failure)
-                                    Right generation
-                                        | generation /= resourceHandleGeneration handle ->
-                                            pure (Left (Conflict (ConflictDetail dependencyKey ("generation=" <> Text.pack (show (resourceHandleGeneration handle))) ("fresh generation=" <> Text.pack (show generation)) "reconcile the provider share generation before using its dependency")))
-                                        | otherwise -> case validateOwnershipReceipt handle receipt of
+                                    Right generation ->
+                                        case freshManagedResourcePhase FreshManagedPhaseAuthority generation handle of
                                             Left failure -> pure (Left failure)
-                                            Right () -> do
-                                                sequenceRef <- newIORef (0 :: Word64)
-                                                let reprobe = do
-                                                        sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
-                                                        invokePackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
-                                                pure (Right (consume planned (RecoveredProviderShareDependency handle reprobe)))
+                                            Right freshHandle -> case validateOwnershipReceipt freshHandle receipt of
+                                                Left failure -> pure (Left failure)
+                                                Right () -> do
+                                                    sequenceRef <- newIORef (0 :: Word64)
+                                                    let reprobe = do
+                                                            sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
+                                                            invokePackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
+                                                    pure (Right (consume planned (RecoveredProviderShareDependency freshHandle reprobe)))
                 case carried of
                     Left failure -> pure (Left failure)
                     Right rebound -> either (pure . Left) id rebound of
@@ -1036,7 +1071,27 @@ withFreshCarriedProviderShareDependency execution scopeCommitment dependencyKey 
   where
     dependencyFailure reason = Left (Failure (FailureDetail "recover carried provider share runtime dependency" reason ReprobeBeforeRetry))
 
+-- | Open the fresh running provider with its backend-minted dependency probe.
 withFreshRunningProviderHandle ::
+    StepExecution scope planId ->
+    Text ->
+    ProviderBackendBinding backendId ->
+    Text ->
+    Text ->
+    Word64 ->
+    Text ->
+    ( forall providerId providerFrame.
+      PlannedResource scope planId providerId ProviderResource providerFrame ->
+      ManagedProviderHandle scope planId backendId providerId Running ->
+      DependencyProbe scope planId providerId ProviderResource ProbeKernel.ProviderResponding ->
+      result
+    ) ->
+    IO (Either ReconcileError result)
+withFreshRunningProviderHandle execution scopeCommitment backend dependencyKey route now nonce consume =
+    withFreshRunningProviderHandleRaw execution scopeCommitment backend dependencyKey route now nonce $
+        \planned managed reprobe -> consume planned managed (Dependency.dependencyProbeWithKind ProbeKernel.ProviderRespondingKind reprobe)
+
+withFreshRunningProviderHandleRaw ::
     StepExecution scope planId ->
     Text ->
     ProviderBackendBinding backendId ->
@@ -1051,7 +1106,7 @@ withFreshRunningProviderHandle ::
       result
     ) ->
     IO (Either ReconcileError result)
-withFreshRunningProviderHandle execution scopeCommitment backend dependencyKey route now nonce consume = do
+withFreshRunningProviderHandleRaw execution scopeCommitment backend dependencyKey route now nonce consume = do
     packages <- ExecutionInternal.stepRuntimeDependencyPackages (ExecutionInternal.stepExecutionRuntime execution)
     case filter ((== "provider:" <> dependencyKey) . runtimeDependencyPackageKey) packages of
         [] -> pure (dependencyFailure "the exact provider package is absent")
@@ -1079,33 +1134,23 @@ withFreshRunningProviderHandle execution scopeCommitment backend dependencyKey r
                                 id of
                                 Left refusal -> pure (dependencyFailure refusal)
                                 Right _ -> do
-                                    first <- invokePackageProbe execution package nonce
+                                    first <- invokeProviderPackageProbe execution package nonce
                                     case first of
                                         Left failure -> pure (Left failure)
-                                        Right generation
-                                            | generation /= resourceHandleGeneration handle ->
-                                                pure
-                                                    ( Left
-                                                        ( Conflict
-                                                            ( ConflictDetail
-                                                                dependencyKey
-                                                                ("generation=" <> Text.pack (show (resourceHandleGeneration handle)))
-                                                                ("fresh generation=" <> Text.pack (show generation))
-                                                                "reconcile the provider generation before using its dependency"
-                                                            )
-                                                        )
-                                                    )
-                                            | otherwise -> case validateOwnershipReceipt handle receipt of
+                                        Right _nativeVersion ->
+                                            case freshManagedResourcePhase FreshManagedPhaseAuthority (runtimeDependencyPackageGeneration package) handle of
                                                 Left failure -> pure (Left failure)
-                                                Right () -> do
-                                                    sequenceRef <- newIORef (0 :: Word64)
-                                                    let reprobe = do
-                                                            sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
-                                                            invokePackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
-                                                        managed = ManagedProviderHandle origin handle receipt
-                                                    pure $ do
-                                                        validateManagedProviderHandle managed
-                                                        pure (consume planned managed reprobe)
+                                                Right freshHandle -> case validateOwnershipReceipt freshHandle receipt of
+                                                    Left failure -> pure (Left failure)
+                                                    Right () -> do
+                                                        sequenceRef <- newIORef (0 :: Word64)
+                                                        let reprobe = do
+                                                                sequenceNumber <- atomicModifyIORef' sequenceRef $ \value -> let next = value + 1 in (next, next)
+                                                                invokeProviderPackageProbe execution package (nonce <> "-" <> Text.pack (show sequenceNumber))
+                                                            managed = ManagedProviderHandle origin freshHandle receipt
+                                                        pure $ do
+                                                            validateManagedProviderHandle managed
+                                                            pure (consume planned managed reprobe)
                     case carried of
                         Left failure -> pure (Left failure)
                         Right rebound -> case rebound of
@@ -1134,16 +1179,45 @@ invokePackageProbe execution package nonce =
   where
     failure refusal = Left (Failure (FailureDetail "fresh provider dependency probe" refusal ReprobeBeforeRetry))
 
+-- Logical package generation and the native observation version are separate.
+invokeProviderPackageProbe ::
+    StepExecution scope planId -> RuntimeDependencyPackage scope planId -> Text ->
+    IO (Either ReconcileError Word64)
+invokeProviderPackageProbe execution package nonce =
+    case providerRuntimeObservationMetadata package of
+        Nothing -> pure (failure "the exact provider observation metadata is absent")
+        Just metadata -> case classifyProviderNativeObservation metadata of
+            Left refusal -> pure (failure (providerReportFaultMessage refusal))
+            Right (_, identity) -> case runtimeDependencyProbeRequest package nonce of
+                Left refusal -> pure (failure refusal)
+                Right request -> do
+                    response <- ExecutionInternal.invokeStepRuntimeDependencyService
+                        (ExecutionInternal.stepExecutionRuntime execution) package request
+                    pure $ case response of
+                        Left refusal -> failure refusal
+                        Right bytes -> case verifyRuntimeDependencyProbeOutcome package nonce bytes of
+                            Left refusal -> failure refusal
+                            Right (Left refusal) -> maybe (failure refusal) Left (classifyProviderNativeRefusal refusal)
+                            Right (Right observed)
+                                | observed == expected identity -> Right observed
+                                | otherwise -> Left (Conflict (ConflictDetail (runtimeDependencyPackageResource package)
+                                    ("native observation version=" <> Text.pack (show (expected identity)))
+                                    ("native observation version=" <> Text.pack (show observed))
+                                    "reconcile the provider identity before using its dependency"))
+  where
+    expected = identityObservationVersion . Text.unpack . objectIdentityText
+    failure refusal = Left (Failure (FailureDetail "fresh provider dependency probe" refusal ReprobeBeforeRetry))
+
 settleProviderReady ::
     PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
     ProviderReadyCallResult scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
-    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Running)
+    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId fromPhase Running)
 settleProviderReady
-    (PreparedProviderReady binding managed prepared)
+    (PreparedProviderReady binding managed startable prepared)
     (ProviderReadyCallResult observation) =
         case observation of
-            ProviderReadyObserved generation -> completeProviderPhaseAdvance managed prepared generation
-            ProviderReadyAlready generation -> completeProviderPhaseAdvance managed prepared generation
+            ProviderReadyObserved generation -> ProviderRunningAdvance startable <$> completeProviderPhaseAdvance managed prepared generation
+            ProviderReadyAlready generation -> ProviderRunningAdvance startable <$> completeProviderPhaseAdvance managed prepared generation
             ProviderReadyNotReady reason -> phaseNotAtTarget "reconcile provider ready" reason
             ProviderReadyAbsent -> phaseAbsent "reconcile provider ready"
             ProviderReadyReplaced generation foreignState ->
@@ -1166,7 +1240,7 @@ completeProviderPhaseAdvance ::
         attempt
         journalVersion ->
     Word64 ->
-    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId toPhase)
+    Either ReconcileError (ManagedProviderHandle scope planId backendId providerId toPhase)
 completeProviderPhaseAdvance
     (ManagedProviderHandle origin _ _)
     prepared
@@ -1175,7 +1249,7 @@ completeProviderPhaseAdvance
         withPhaseAdvance advanced $ \handle receipt _verified -> do
             let successor = ManagedProviderHandle origin handle receipt
             validateManagedProviderHandle successor
-            Right (ProviderPhaseAdvance successor)
+            Right successor
 
 validateProviderStartable ::
     ManagedProviderHandle scope planId backendId providerId fromPhase ->
@@ -1302,13 +1376,13 @@ preparedProviderStopHandle (PreparedProviderStop _ managed _) = managed
 settleProviderStop ::
     PreparedProviderStop scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     ProviderStopCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion ->
-    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Stopped)
+    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Running Stopped)
 settleProviderStop
     (PreparedProviderStop binding managed prepared)
     (ProviderStopCallResult observation) =
         case observation of
-            ProviderStopped generation -> completeProviderPhaseAdvance managed prepared generation
-            ProviderAlreadyStopped generation -> completeProviderPhaseAdvance managed prepared generation
+            ProviderStopped generation -> ProviderStoppedAdvance <$> completeProviderPhaseAdvance managed prepared generation
+            ProviderAlreadyStopped generation -> ProviderStoppedAdvance <$> completeProviderPhaseAdvance managed prepared generation
             ProviderStopStillRunning reason -> phaseNotAtTarget "stop provider" reason
             ProviderStopAbsent -> phaseAbsent "stop provider"
             ProviderStopReplaced generation foreignState ->
@@ -1383,15 +1457,15 @@ preparedProviderDeleteHandle (PreparedProviderDelete _ managed _) = managed
 settleProviderDelete ::
     PreparedProviderDelete scope planId backendId providerId operationKey callDigest attempt journalVersion ->
     ProviderDeleteCallResult scope planId backendId providerId operationKey callDigest attempt journalVersion ->
-    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Destroyed)
+    Either ReconcileError (ProviderPhaseAdvance scope planId backendId providerId Stopped Destroyed)
 settleProviderDelete
     (PreparedProviderDelete binding managed prepared)
     (ProviderDeleteCallResult observation) =
         case observation of
             ProviderDeleted ->
-                completeProviderPhaseAdvance managed prepared (preparedProviderBindingGeneration binding)
+                ProviderDestroyedAdvance <$> completeProviderPhaseAdvance managed prepared (preparedProviderBindingGeneration binding)
             ProviderAlreadyDeleted ->
-                completeProviderPhaseAdvance managed prepared (preparedProviderBindingGeneration binding)
+                ProviderDestroyedAdvance <$> completeProviderPhaseAdvance managed prepared (preparedProviderBindingGeneration binding)
             ProviderDeleteStillPresent generation
                 | generation /= preparedProviderBindingGeneration binding ->
                     phaseReplacement

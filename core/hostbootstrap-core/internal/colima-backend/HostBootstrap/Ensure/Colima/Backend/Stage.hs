@@ -21,10 +21,20 @@ module HostBootstrap.Ensure.Colima.Backend.Stage (
     colimaStageRecordInvocation,
     renderColimaStageRecord,
     parseColimaStageRecord,
-    ColimaManagedEvidence (..),
+    ColimaManagedEvidence,
+    managedMachineIdentity,
+    managedMachineEpoch,
+    managedContextDigest,
+    managedManifestDigest,
+    managedDirectoryChainDigest,
+    managedCpu,
+    managedMemoryBytes,
+    managedDiskBytes,
+    managedRootDiskBytes,
     mkColimaManagedEvidence,
     colimaStageRecordEvidence,
     settleColimaStageRecord,
+    refreshColimaManifestRecord,
     advanceSettledColimaStageRecord,
     beginColimaReleaseRecord,
     colimaStageRecordCleanupInvocation,
@@ -57,43 +67,85 @@ data ColimaStageObservation
     | ColimaContextStageExact
     | ColimaProfileAbsent
     | ColimaProfileExact
+    | ColimaCreatedProfileExact
     | ColimaReleasedNamespaceExact
     deriving (Eq, Show, Enum, Bounded)
 
 data ColimaStageDecision
     = AdvanceColimaStage ColimaStage
+    | BeginColimaLineage
     | StartColimaProfile
     | DeleteColimaProfile
     | ReleaseColimaNamespace
     | KeepColimaStage
     deriving (Eq, Show)
 
-data ColimaStageRecord = ColimaStageRecord
-    { colimaStageRecordStage :: ColimaStage
-    , colimaStageRecordOwner :: String
-    , colimaStageRecordLineage :: String
-    , colimaStageRecordInvocation :: String
-    , colimaStageRecordEvidence :: Maybe ColimaManagedEvidence
-    , colimaStageRecordCleanupInvocation :: Maybe String
-    }
+data ColimaStageRecord = ColimaStageRecord ColimaStage String String String (Maybe ColimaManagedEvidence) (Maybe String)
     deriving (Eq, Show)
 
-data ColimaManagedEvidence = ColimaManagedEvidence
-    { managedMachineIdentity :: String
-    , managedMachineEpoch :: Word64
-    , managedContextDigest :: String
-    , managedManifestDigest :: String
-    , managedDirectoryChainDigest :: String
-    , managedCpu :: Integer
-    , managedMemoryBytes :: Integer
-    , managedDiskBytes :: Integer
-    , managedRootDiskBytes :: Integer
-    }
+colimaStageRecordStage :: ColimaStageRecord -> ColimaStage
+colimaStageRecordStage (ColimaStageRecord value _ _ _ _ _) = value
+
+colimaStageRecordOwner :: ColimaStageRecord -> String
+colimaStageRecordOwner (ColimaStageRecord _ value _ _ _ _) = value
+
+colimaStageRecordLineage :: ColimaStageRecord -> String
+colimaStageRecordLineage (ColimaStageRecord _ _ value _ _ _) = value
+
+colimaStageRecordInvocation :: ColimaStageRecord -> String
+colimaStageRecordInvocation (ColimaStageRecord _ _ _ value _ _) = value
+
+colimaStageRecordEvidence :: ColimaStageRecord -> Maybe ColimaManagedEvidence
+colimaStageRecordEvidence (ColimaStageRecord _ _ _ _ value _) = value
+
+colimaStageRecordCleanupInvocation :: ColimaStageRecord -> Maybe String
+colimaStageRecordCleanupInvocation (ColimaStageRecord _ _ _ _ _ value) = value
+
+data ColimaManagedEvidence = ColimaManagedEvidence String Word64 String String String Integer Integer Integer Integer
     deriving (Eq, Show)
+
+managedMachineIdentity :: ColimaManagedEvidence -> String
+managedMachineIdentity (ColimaManagedEvidence value _ _ _ _ _ _ _ _) = value
+
+managedMachineEpoch :: ColimaManagedEvidence -> Word64
+managedMachineEpoch (ColimaManagedEvidence _ value _ _ _ _ _ _ _) = value
+
+managedContextDigest :: ColimaManagedEvidence -> String
+managedContextDigest (ColimaManagedEvidence _ _ value _ _ _ _ _ _) = value
+
+managedManifestDigest :: ColimaManagedEvidence -> String
+managedManifestDigest (ColimaManagedEvidence _ _ _ value _ _ _ _ _) = value
+
+managedDirectoryChainDigest :: ColimaManagedEvidence -> String
+managedDirectoryChainDigest (ColimaManagedEvidence _ _ _ _ value _ _ _ _) = value
+
+managedCpu :: ColimaManagedEvidence -> Integer
+managedCpu (ColimaManagedEvidence _ _ _ _ _ value _ _ _) = value
+
+managedMemoryBytes :: ColimaManagedEvidence -> Integer
+managedMemoryBytes (ColimaManagedEvidence _ _ _ _ _ _ value _ _) = value
+
+managedDiskBytes :: ColimaManagedEvidence -> Integer
+managedDiskBytes (ColimaManagedEvidence _ _ _ _ _ _ _ value _) = value
+
+managedRootDiskBytes :: ColimaManagedEvidence -> Integer
+managedRootDiskBytes (ColimaManagedEvidence _ _ _ _ _ _ _ _ value) = value
+
+setRecordStage :: ColimaStage -> ColimaStageRecord -> ColimaStageRecord
+setRecordStage stage (ColimaStageRecord _ owner lineage invocation evidence cleanup) =
+    ColimaStageRecord stage owner lineage invocation evidence cleanup
+
+setRecordEvidence :: Maybe ColimaManagedEvidence -> ColimaStageRecord -> ColimaStageRecord
+setRecordEvidence evidence (ColimaStageRecord stage owner lineage invocation _ cleanup) =
+    ColimaStageRecord stage owner lineage invocation evidence cleanup
+
+setRecordCleanup :: Maybe String -> ColimaStageRecord -> ColimaStageRecord
+setRecordCleanup cleanup (ColimaStageRecord stage owner lineage invocation evidence _) =
+    ColimaStageRecord stage owner lineage invocation evidence cleanup
 
 mkColimaStageRecord :: ColimaStage -> String -> String -> String -> Either String ColimaStageRecord
 mkColimaStageRecord stage owner lineage invocation
-    | null owner || length owner > 4096 || any (`elem` "\r\n\0") owner = Left "stage-owner"
+    | null owner || length owner > 4096 || any (\character -> character < '!' || character > '~') owner = Left "stage-owner"
     | not (validDigest lineage) = Left "stage-lineage"
     | not (validDigest invocation) = Left "stage-invocation"
     | stage > ColimaPrepared = Left "stage-evidence"
@@ -112,7 +164,29 @@ mkColimaManagedEvidence machine epoch context manifest chain cpu memory disk roo
 settleColimaStageRecord :: ColimaStageRecord -> ColimaManagedEvidence -> Either String ColimaStageRecord
 settleColimaStageRecord record evidence
     | colimaStageRecordStage record /= ColimaPrepared = Left "stage-settlement"
-    | otherwise = Right record{colimaStageRecordStage = ColimaManaged, colimaStageRecordEvidence = Just evidence}
+    | otherwise = case decideColimaStage AcquireColima ColimaPrepared ColimaCreatedProfileExact of
+        Right (AdvanceColimaStage ColimaManaged) ->
+            Right (setRecordEvidence (Just evidence) (setRecordStage ColimaManaged record))
+        _ -> Left "stage-settlement"
+
+-- | Managed namespaces may change; release proof is immutable once frozen.
+-- Refresh only the manifest facts, preserving identity, wall and lineage.
+refreshColimaManifestRecord :: ColimaStageRecord -> String -> String -> Either String ColimaStageRecord
+refreshColimaManifestRecord record manifest chain
+    | colimaStageRecordStage record /= ColimaManaged = Left "stage-manifest-refresh"
+    | otherwise = case colimaStageRecordEvidence record of
+        Nothing -> Left "stage-evidence"
+        Just evidence -> do
+            refreshed <- mkColimaManagedEvidence
+                (managedMachineIdentity evidence)
+                (managedMachineEpoch evidence)
+                (managedContextDigest evidence)
+                manifest chain
+                (managedCpu evidence)
+                (managedMemoryBytes evidence)
+                (managedDiskBytes evidence)
+                (managedRootDiskBytes evidence)
+            Right (setRecordEvidence (Just refreshed) record)
 
 beginColimaReleaseRecord :: ColimaStageRecord -> String -> Either String ColimaStageRecord
 beginColimaReleaseRecord record cleanupInvocation
@@ -120,11 +194,7 @@ beginColimaReleaseRecord record cleanupInvocation
     | colimaStageRecordStage record /= ColimaManaged = Left "stage-release"
     | colimaStageRecordEvidence record == Nothing = Left "stage-evidence"
     | otherwise =
-        Right
-            record
-                { colimaStageRecordStage = ColimaReleasing
-                , colimaStageRecordCleanupInvocation = Just cleanupInvocation
-                }
+        Right (setRecordCleanup (Just cleanupInvocation) (setRecordStage ColimaReleasing record))
 
 advanceSettledColimaStageRecord :: ColimaStageRecord -> ColimaStage -> Either String ColimaStageRecord
 advanceSettledColimaStageRecord record successor = do
@@ -137,7 +207,7 @@ advanceSettledColimaStageRecord record successor = do
                     Nothing -> Left "stage-cleanup-invocation"
                     Just _ -> do
                         _ <- advanceColimaStage (colimaStageRecordStage record) successor
-                        Right record{colimaStageRecordStage = successor}
+                        Right (setRecordStage successor record)
 
 renderColimaStageRecord :: ColimaStageRecord -> ByteString.ByteString
 renderColimaStageRecord record =
@@ -187,7 +257,7 @@ parseColimaStageRecord raw =
                 if colimaStageRecordStage base < ColimaReleasing
                     then Left "stage-record"
                     else do
-                        let record = base{colimaStageRecordCleanupInvocation = Just cleanupInvocation}
+                        let record = setRecordCleanup (Just cleanupInvocation) base
                         if renderColimaStageRecord record == raw then Right record else Left "stage-record"
         _ -> Left "stage-record"
   where
@@ -197,7 +267,7 @@ parseColimaStageRecord raw =
             else Nothing
 
     validateBase stage owner lineage invocation
-        | null owner || length owner > 4096 || any (`elem` "\r\n\0") owner = Left "stage-owner"
+        | null owner || length owner > 4096 || any (\character -> character < '!' || character > '~') owner = Left "stage-owner"
         | not (validDigest lineage) = Left "stage-lineage"
         | not (validDigest invocation) = Left "stage-invocation"
         | otherwise = Right (ColimaStageRecord stage owner lineage invocation Nothing Nothing)
@@ -227,7 +297,7 @@ parseColimaStageRecord raw =
                     stage <- parseColimaStage stageRaw
                     base <- validateBase stage owner lineage invocation
                     evidence <- mkColimaManagedEvidence machine epoch context manifest chain cpu memory disk rootDisk
-                    Right base{colimaStageRecordEvidence = Just evidence}
+                    Right (setRecordEvidence (Just evidence) base)
             _ -> Left "stage-record"
 
 validDigest :: String -> Bool
@@ -272,16 +342,21 @@ decideColimaStage :: ColimaStageIntent -> ColimaStage -> ColimaStageObservation 
 decideColimaStage intent stage observation =
     case (intent, stage, observation) of
         (AcquireColima, ColimaReserved, ColimaNamespaceAbsent) -> advance ColimaHomeStaged
+        (AcquireColima, ColimaReserved, ColimaHomeStageExact) -> advance ColimaHomeStaged
         (AcquireColima, ColimaHomeStaged, ColimaHomeStageExact) -> advance ColimaHomeReady
         (AcquireColima, ColimaHomeReady, ColimaHomeExact) -> advance ColimaContextStaged
         (AcquireColima, ColimaContextStaged, ColimaContextStageExact) -> advance ColimaPrepared
+        (AcquireColima, ColimaPrepared, ColimaContextStageExact) -> Right KeepColimaStage
         (AcquireColima, ColimaPrepared, ColimaProfileAbsent) -> Right StartColimaProfile
-        (AcquireColima, ColimaPrepared, ColimaProfileExact) -> advance ColimaManaged
+        (AcquireColima, ColimaPrepared, ColimaProfileExact) -> Right KeepColimaStage
+        (AcquireColima, ColimaPrepared, ColimaCreatedProfileExact) -> advance ColimaManaged
         (AcquireColima, ColimaManaged, ColimaProfileExact) -> Right KeepColimaStage
+        (AcquireColima, ColimaReleased, ColimaNamespaceAbsent) -> Right BeginColimaLineage
         (ReleaseColima, ColimaManaged, ColimaProfileExact) -> advance ColimaReleasing
         (ReleaseColima, ColimaReleasing, ColimaProfileExact) -> Right DeleteColimaProfile
         (ReleaseColima, ColimaReleasing, ColimaProfileAbsent) -> advance ColimaContextReleased
-        (ReleaseColima, ColimaContextReleased, ColimaProfileAbsent) -> advance ColimaReleased
+        (ReleaseColima, ColimaContextReleased, ColimaReleasedNamespaceExact) -> Right ReleaseColimaNamespace
+        (ReleaseColima, ColimaContextReleased, ColimaNamespaceAbsent) -> advance ColimaReleased
         (ReleaseColima, ColimaReleased, ColimaReleasedNamespaceExact) -> Right ReleaseColimaNamespace
         (ReleaseColima, ColimaReleased, ColimaNamespaceAbsent) -> Right KeepColimaStage
         _ -> Left "stage-observation"

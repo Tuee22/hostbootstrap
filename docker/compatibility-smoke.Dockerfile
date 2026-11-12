@@ -3,8 +3,9 @@
 #
 # The real-consumer compatibility smoke for a newly built or freshly published base tag.
 #
-# Phase 23 runs this consumer once against the fresh local image ID before
-# publication and once against the exact pulled digest. It asks the one question
+# The base-image-and-warm-store phase runs this consumer once against the fresh
+# local image ID before publication and once against the exact pulled digest. It
+# asks the one question
 # the smoke exists to answer: is this image usable by a project that builds FROM it?
 #
 # It asks that question of a package the base has never seen. Resolving
@@ -15,10 +16,12 @@
 # dependency list, and it names the dependency shape a real derived project has
 # rather than the store's.
 #
-# It is deliberately NOT the demo's Dockerfile. That one authenticates a
-# separately selected builder and consumes a signed one-use build grant minted by
-# the project binary's build coordinator, so driving it would require the Python
-# bootstrapper to mint build authority — a second authority surface the
+# It is deliberately NOT the demo's Dockerfile. That one needs the
+# `hostbootstrap-builder` named build context, the `hostbootstrap-build-config`
+# secret, and a `check-code` step whose one RUN presents the
+# `hostbootstrap-build-channel`, `hostbootstrap-build-verification` and
+# `hostbootstrap-build-coordinator` secrets. Driving it would require the Python
+# bootstrapper to mint build authority, a second authority surface the
 # architecture exists to prevent. The demo's own authenticated build is exercised
 # by the worked-demo phase, through the coordinator that owns it.
 #
@@ -28,21 +31,35 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-# The toolchain the base exists to carry, and the warm store derived projects
-# build against. Each is a distinct failure: a missing compiler, a compiler the
-# store was not built for, and an absent or unreadable store are different
-# publication faults, so they are not collapsed into one command.
+# The compiler and the package tool the base exists to carry.
 RUN set -eu; \
     ghc --version; \
     cabal --version; \
-    test -d "${CABAL_DIR:?CABAL_DIR is not set in the published base}"; \
-    test -d /opt/basecontainer/haskell-deps; \
-    echo "compatibility smoke: toolchain and warm store present"
+    echo "compatibility smoke: the toolchain starts"
 
-# The container code-check is the only place the formatter and the linter run,
-# and the code-check doctrine treats their presence as part of what the base
-# guarantees. An image that carries neither would fail every derived project's
-# check-code at build time rather than here, so they are started here.
+# The same toolchain is reachable by an arbitrary non-root uid, as a container leg
+# that runs as the host's uid needs it to be.
+RUN set -eu; \
+    setpriv --reuid=65534 --regid=65534 --clear-groups -- ghc --numeric-version; \
+    setpriv --reuid=65534 --regid=65534 --clear-groups -- cabal --numeric-version; \
+    echo "compatibility smoke: the toolchain starts as a non-root uid"
+
+# The warm store: $CABAL_DIR is set, a store directory keyed to this image's own
+# compiler exists, and at least one package is registered in it. A store keyed
+# to another compiler fails here.
+RUN set -eu; \
+    test -d "${CABAL_DIR:?CABAL_DIR is not set in the published base}"; \
+    set -- "${CABAL_DIR}/store/ghc-$(ghc --numeric-version)-"*; \
+    test -d "$1"; \
+    set -- "$1"/package.db/*.conf; \
+    test -f "$1"; \
+    echo "compatibility smoke: the warm store matches the compiler and holds packages"
+
+# The code-check doctrine treats the presence of the formatter and the linter as
+# part of what the base guarantees. They also run in the host source gate
+# (`_style_gates` in hostbootstrap/cli.py), in the base build's sample check and
+# in every derived project's container check-code, so an image without them
+# would fail those places rather than here; they are started here.
 RUN set -eu; \
     fourmolu --version; \
     hlint --version; \
@@ -74,6 +91,7 @@ RUN set -eu; \
       '    , dhall' \
       '    , filepath' \
       '    , optparse-applicative' \
+      '    , split' \
       '    , text' \
       > /tmp/compatibility-smoke/hostbootstrap-compatibility-smoke.cabal; \
     printf '%s\n' \
@@ -82,6 +100,10 @@ RUN set -eu; \
       'probe :: Int' \
       'probe = 0' \
       > /tmp/compatibility-smoke/src/ConsumerProbe.hs; \
+    printf '%s\n' \
+      'packages: .' \
+      'optimization: 2' \
+      > /tmp/compatibility-smoke/cabal.project; \
     cd /tmp/compatibility-smoke; \
     cabal build --dry-run all; \
     echo "compatibility smoke: a derived consumer resolves a complete build plan"

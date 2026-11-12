@@ -289,12 +289,11 @@ no lifecycle route and durable state is isolated under `.test_data/<runId>`. The
 declares two assertion phases around an engine-owned settled destroy, protected fresh invocation, exact
 plan rebind, and second forward while retaining one report row. Run the long gate only on a
 disposable host with no production demo state. On Windows the gate also holds the project's full
-CPU/memory budget in the shared WSL2 utility VM while it runs. Each variant closes through settled
-destroy, which restores the journalled `.wslconfig` origin but does not shut the utility VM down, so the managed wall stays in force until that VM idles out or an operator runs
-`wsl --shutdown`, which stops every running distro, including unrelated ones. `project down` restores the
-origin and then runs that global shutdown itself (see
-[documents/engineering/wsl2.md](documents/engineering/wsl2.md#wall-release); appending the shutdown to
-destroy is owed by [the host-providers-and-lift phase](DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)).
+CPU/memory budget in the shared WSL2 utility VM while it runs. Each variant closes through settled destroy. On Windows, the provider's destroy route
+unregisters its owned distro, restores the journalled `.wslconfig` origin, and then runs
+`wsl --shutdown`. `project down` restores the origin and also runs that global shutdown.
+The shutdown stops every running distro, including unrelated ones (see
+[documents/engineering/wsl2.md](documents/engineering/wsl2.md#wall-release)).
 Its Playwright case runs the base-provided Playwright from a client container in the VM frame that joins
 the `kind` Docker network and points `BASE_URL` at the run's control-plane node on NodePort 30080.
 Authoritative current evidence and remaining live substrates are in the

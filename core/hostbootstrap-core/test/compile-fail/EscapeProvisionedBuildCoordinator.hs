@@ -10,4 +10,4 @@ data ChosenCoordinator
 -- fresh coordinator identity that a caller cannot choose in the result.
 escapeCoordinator :: BuildSigningKey -> IO (BuildCoordinator ChosenCoordinator)
 escapeCoordinator signingKey =
-    withBuildCoordinator signingKey "coordinator-digest" pure
+    withBuildCoordinator signingKey (coordinatorDigestFromText "coordinator-digest") pure

@@ -34,7 +34,6 @@ import qualified Data.Text as Text
 import HostBootstrap.Authority (
     AuthorityError (AuthorityMalformedBinding),
     ProjectVerb,
-    projectVerbName,
  )
 import HostBootstrap.Config.Class (
     ProjectCfg,
@@ -51,7 +50,6 @@ import HostBootstrap.Config.Schema (
     validatedConfigDigest,
     validatedConfigSpecDigest,
     validatedConfigValue,
-    verifiedConfigDigest,
     verifiedConfigHandoffBinding,
  )
 import HostBootstrap.Config.Schema.Internal (
@@ -66,12 +64,10 @@ import HostBootstrap.Config.Vocab (
 import HostBootstrap.Handoff (
     HandoffBinding,
     handoffBrokerGeneration,
-    handoffChildConfigDigest,
     handoffInstalledProject,
     handoffPlanRevision,
     handoffScope,
     handoffStoreIdentity,
-    handoffVerb,
  )
 import HostBootstrap.Lifecycle.Mode (
     LifecycleProfile,
@@ -307,11 +303,12 @@ childPlanAuthorityBinding = childPlanAuthorityBindingKernel
 {- | Admit the fresh local plan named by one exact authenticated child edge.
 
 The config-kind refinement has already joined signature verification to the
-constructor-hidden local wire/config identity.  This gate rechecks the closed
-verb and exact config digest, derives lifecycle profile origin only from signed
-binding fields, builds from the opaque draft root, and compares the resulting
-stable plan digest with the signed parent revision.  Only their conjunction
-yields the local plan, binding, and fully indexed child authority.
+closed verb and constructor-hidden local wire/config identity. This gate derives
+lifecycle profile origin only from signed binding fields, builds from the opaque
+draft root and exact validated configuration, and compares the resulting stable
+plan digest with the signed parent revision. Only successful structural admission
+and that exact revision comparison yield the local plan, binding, and fully
+indexed child authority.
 -}
 withChildProjectPlan ::
     ProjectVerb verb ->
@@ -346,15 +343,7 @@ withChildProjectPlan ::
     Either AuthorityError a
 withChildProjectPlan verb handoff wire config drafts use = do
     profileName <- childProfileName binding
-    require "project verb" (handoffVerb binding) (projectVerbName verb)
-    require
-        "verified config wire digest"
-        (handoffChildConfigDigest binding)
-        (verifiedConfigDigest wire)
-    require
-        "validated config digest"
-        (handoffChildConfigDigest binding)
-        (validatedConfigDigest config)
+    verb `seq` wire `seq` pure ()
     either
         (Left . AuthorityMalformedBinding . ("child plan admission failed: " <>) . Text.pack . show)
         Right
@@ -375,13 +364,6 @@ withChildProjectPlan verb handoff wire config drafts use = do
         )
   where
     binding = verifiedConfigHandoffBinding handoff
-    require subject expected observed
-        | expected == observed = Right ()
-        | otherwise =
-            Left
-                ( AuthorityMalformedBinding
-                    (subject <> " does not match the authenticated handoff")
-                )
 
 childProfileName :: HandoffBinding scope brokerGeneration -> Either AuthorityError Text
 childProfileName binding

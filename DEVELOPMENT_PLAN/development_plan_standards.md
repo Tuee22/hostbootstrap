@@ -813,10 +813,10 @@ projection, and the direct-Colima consumer that requires
 the full chain (`prepareColimaWallCall`) has no production caller; nor do the storage-wall kernels
 `prepareStorageWallCall` and `settleStorageWallCall` in `HostBootstrap.Cluster.Budget`, which the
 [cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) keeps as a
-target contract. `withValidatedBudget` ignores its `ProjectPlan` argument and sizes the budget from a
-caller-supplied `ResourceEnvelope`, so one plan can mint several differently sized budgets against the
-single-budget rule above; Sprint 12.30 of the step-algebra-and-project-plan phase owes deriving it from the
-plan. Production budget enforcement is the metal preflight (`preflightHostBudget`), the provider sizing
+target contract. `withValidatedBudget` reads the exact plan's retained validated configuration through
+the optional `BudgetCfg` resource projection; it takes no independently supplied envelope. Configuration
+families that do not use budget admission need no resource projection. Production budget enforcement is
+the metal preflight (`preflightHostBudget`), the provider sizing
 renderers applied when a VM is created, the kind node cordon, and the WSL global wall through
 `HostBootstrap.Wsl2.GlobalWall` under the § EE clauses. The in-frame cluster-capacity preflight
 (`preflightBudget` over `verifyBudget`) runs only inside the compatibility `clusterCreate`, which only the
@@ -888,10 +888,16 @@ The current state of each budget element:
   the bare cluster-live gate reaches. `fitsBudget` is a descriptive calculation used
   by the demo web API and tests; lifecycle does not derive or check the exact non-empty concurrent workload
   set;
-- a new Lima, Incus, or WSL resource is sized from the budget when it is created. An existing Lima or Incus
-  VM is started with the sizing it was created with: a changed declaration is neither compared, applied, nor
-  refused. An existing WSL distro keeps the VHDX size it was installed with. That silent retention is a gap against the "applied everywhere or typed refusal" ring below,
-  owed by the [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md);
+- a new Lima, Incus, or WSL resource is sized from the budget when it is created. Owned Incus and Lima
+  provisioning compares native CPU, memory and disk quantities with the declaration under the exact
+  ownership binding. Incus reads configuration/device limits; Lima reads the native listing's numeric
+  fields. Equal quantities return AlreadyOwned without mutation; drift returns typed Conflict naming both
+  canonical sides and destroy-and-reprovision as the remedy. Missing or unreadable limits refuse. The
+  original requested WSL VHD cap is durably recorded before installation and compared under the owned
+  entry on re-entry. Changed storage conflicts without reinstalling; missing, foreign or malformed
+  records refuse. That metadata is not a fresh physical VHDX-capacity observation. Native installation
+  and retained-cap confirmation belong to the
+  [Windows and WSL2 acceptance phase](phase-28-windows-and-wsl2-substrate.md);
 - the direct-Colima consumer is one exact `ProjectPlan`, matching provider
   resource/topology, matching budget/capability/wall/workload-fit/partition, and `PreparedGate`-derived
   reservation plus provider-start package. It rejects total storage at or below the fixed 20-GiB root disk;
@@ -1347,6 +1353,12 @@ reconstruct the cataloged target plan, but it cannot open or relabel the root ac
 child-plan cursor from it, or choose a durable operation set.
 Existing bound invocations reconstruct only the plan identity named by their verified
 snapshot; fresh admission is reserved for an absent Production mode or the exact unbound retry state.
+Canonical snapshot format 8 retains the exact root through a big-endian 64-bit byte length and
+big-endian 32-bit `Char` code points. `IndexedPlanSnapshot` is abstract at the kernel export boundary;
+its stable public projection is non-authorizing. Existing-bound structural admission preserves both
+the snapshot record key and kernel reason in `ModeMalformedCanonicalSnapshot`, refusing before
+callbacks or protected-record mutation. Structural admission accepts only an absolute root. The
+admitted plan owns the canonical encoder; reconciliation consumes that same plan directly.
 `HostBootstrap.Step`, the public plan facade, and the hidden plan kernel depend only on the pure
 `HostBootstrap.Lift.Context`; the current-frame Chain may depend on the lower full generic Lift. No
 topology projection or command argument mints child admission.
@@ -1355,11 +1367,11 @@ and Production current-frame foundation. Authenticated recursive child entry and
 [recursive-lifecycle-command phase](phase-17-recursive-lifecycle-command.md). The
 [test-harness-and-run-ownership phase](phase-19-test-harness-and-run-ownership.md) owns the Harness command
 consumer and assertion engine.
-No Production forward/reverse bridge over a `LifecyclePlan` and no public plan-only command-authority API
-exists. The `Reconcile.LifecyclePlan` compatibility family itself is still exported from
-`HostBootstrap.Reconcile` with only test callers, and the exposed `HostBootstrap.Lifecycle.Execution`
-re-exports `newStepRuntime`; Sprint 12.27 of the step-algebra-and-project-plan phase deletes that family and
-`carryManagedResource` and withdraws the public runtime constructors. Independently supplied plan, frame-context, and teardown interpretations violate this doctrine;
+Reconciliation consumes the admitted `ProjectPlan`, and carried managed state includes its durable
+settlement. No public plan-only command-authority API exists. The exposed
+`HostBootstrap.Lifecycle.Execution` exposes opaque execution state and reporting projections; carrier
+and runtime allocation use the shared private production representation inside the package boundary.
+Independently supplied plan, frame-context, and teardown interpretations violate this doctrine;
 the recursive-lifecycle-command phase owns proof-complete recursive authorization and forward/reverse
 traversal rather than another plan representation.
 There is no second hand-written orchestration path
@@ -1642,14 +1654,12 @@ consumer for Harness: it retains the exact Harness-scoped plan across generated-
 interprets root Up through the same hidden fixed entry and retains the separate teardown route, and exposes no project-lifecycle
 callback through `TestSuite`.
 
-The current stable snapshot format (version 7, `canonicalPlanSnapshotFormatVersion`; the decoder refuses
+The current stable snapshot format (version 8, `canonicalPlanSnapshotFormatVersion`; the decoder refuses
 any other version) binds that exact canonical root into the canonical bytes and
 content-derived digest as a bounded, length-framed stream of big-endian 32-bit `Char` code points. The
 structural parser exactly decodes the root, rejects empty, partial, NUL, oversized, and out-of-range
-payloads, and accepts only an absolute root or the one shared non-absolute compatibility sentinel. The
-current `Reconcile.LifecyclePlan` encoder uses that sentinel because its compatibility constructor receives
-no `CanonicalProjectRoot`; an admitted `ProjectPlan` always uses its absolute canonical root. Sprint 12.27
-deletes that encoder and its sentinel, after which admission accepts only an absolute root.
+payloads, and accepts only an absolute root. Fresh admission receives that root from
+`CanonicalProjectRoot`; reconciliation uses the resulting admitted `ProjectPlan` directly.
 
 The bound-snapshot/recovery path preserves a single local identity. Existing-snapshot admission generates
 the sole local `planId`; `BoundInvocationRecovery`, the recovered Production profile, and plan reconstruction
@@ -2350,9 +2360,10 @@ A mutating transition first takes an opaque descriptor binding
 `ValidatedConfig scope specDigest configId (cfg scope)`—can mint that descriptor after proving the topology
 relation. Its internal dependency-snapshot traversal looks up the exact managed resources and runs the
 plan-owned probes for the complete ordered zero/one/many edge set, then jointly seals those fresh
-observations and the verified backend call into `OperationPreconditionSet`. Callers cannot provide a
-retained witness or select/omit a member. The second, public producer, `zeroDependencyPreconditions`,
-accepts only a descriptor whose edge list is empty and refuses any descriptor that declares an edge. Thus
+observations and the verified backend call into an internally produced `OperationPreconditionSet`.
+Callers provide a snapshot of managed resources and probes, not a retained sealed set, and cannot
+select or omit a member of the descriptor's edge set. The explicit pure zero-dependency operation and
+phase entries derive their empty set internally and refuse any descriptor that declares an edge. Thus
 "act before the dependency is ready", choose an unrelated
 dependency, or mix production and harness values is a **type error**, not a convention. The witness is
 generative and bound to the exact resource identity observed; readiness for one VM, daemon, mount,
@@ -2360,7 +2371,7 @@ registry, or generation cannot authorize another resource with the same phantom 
 `Ready` is minted only by the polling transition (`awaitPlanReady`/`awaitPlanReadyWith`), and `planDependencyProbe` registers such
 a probe in a plan's dependency snapshot. Production prepares register backend reprobes through
 `dependencyProbe` instead (for the durable share, `providerShareDependencyReprobe`), and
-`withOperationPreconditions` runs every registered probe at prepare time. The durable-share mount must gate
+`withPreparedOperation` runs every required registered probe at prepare time. The durable-share mount must gate
 the alias step (§ DD).
 
 What runs today falls short of that rule at the worked demo's own steps. The demo sequences its in-VM
@@ -2379,12 +2390,11 @@ local convenience helpers. Managed provider/interpreter operations consume the p
 pair; they cannot treat compatibility evidence as mutation authority.
 
 The opaque witness retains the observed backend generation, resource phase, and journal version, but it
-is only a precondition-set input. The plan-owned dependency probes run once, in the
-`withOperationPreconditions` traversal immediately before preparation; `withPreparedOperation` is then pure:
-it consumes the descriptor, that sealed set, and the `PreparedGate`, and checks that all three name the same
-plan, operation, and call digest, that the attempt and journal version are positive, that every sealed
-observation carries positive generation and phase versions, and that the sealed dependency keys equal the
-descriptor's ordered list. Only success jointly returns the exact
+is only a precondition-set input. `withPreparedOperation` takes the descriptor, dependency snapshot and
+`PreparedGate`, checks the gate's plan/operation identity and positive attempt/journal version before
+probe IO, then runs the complete ordered dependency traversal itself. The private matching step checks
+the sealed plan, operation and call digest, positive observed generation and phase versions, and exact
+dependency order. Only success jointly returns the exact
 `PreparedOperation`/`PreparedPreconditions` pair the adapter accepts; no retained witness, handle, edge,
 or raw prerequisite bundle is an adapter argument. Replacement is `Conflict`; same-identity loss of
 readiness is `Failure ... ReprobeBeforeRetry`; lack of a conditional backend primitive is
@@ -2475,10 +2485,11 @@ re-exports `HostBootstrap.Protected`, so any consumer can open a store, enter `w
 a gate under a plan digest, operation key, session, fence, and attempt of its own choosing; Sprint 17.72 of
 the [recursive lifecycle command phase](phase-17-recursive-lifecycle-command.md) owes making
 `recordDurableUnknown` package-private, because its callers and its compile-fail boundary live in files that
-phase and the providers phase introduce. `HostBootstrap.Ensure.Colima.Ownership` is an exposed module whose entry points accept a
-caller interpreter or `HostConfig` and which exports its observation constructors; Sprint 16.29 of the
-[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) moves it into
-a private sublibrary.
+phase and the providers phase introduce. `HostBootstrap.Ensure.Colima.Ownership` lives in the private `colima-ownership-internal`
+sublibrary. Its interpreter-taking entry points and observation constructors are unavailable to public
+consumers; the public Colima adapter supplies the trusted resolver. Sprint 16.29a of the
+[cluster-lifecycle, budgets, and cordoning phase](phase-16-cluster-lifecycle-and-cordoning.md) validates
+that boundary. The public library reexports the descriptive Command and Report modules.
 
 `VerifiedSessionManifest` and `InterpretedRecovery` still owe nominal scope and plan roles and
 protected-entry indexing; `CurrentBrokerSessionAdmission` still owes nominal scope, plan, and broker
@@ -2524,7 +2535,7 @@ cannot satisfy all four clauses — an unsupported filesystem, an unavailable lo
 platform will not report — reports `Unsupported` and mints no receipt. Two parts of the tree fall short of
 that rule. An unavailable lock or an unwritable state directory surfaces as the store fault
 `OwnershipProbeFailed` rather than `OwnershipUnsupported`, and the Windows row trusts the volume serial and
-file index without checking the filesystem type; both are owed by Sprint 14.21 of the
+file index without checking the filesystem type; both are owed by Sprint 14.35 of the
 [four-ownership-clauses-and-host-local-reservations phase](phase-14-ownership-clauses-and-reservations.md).
 The Lima and WSL2 guest-VM provider realization holds none of the four clauses: provisioning reports an
 existing instance with the configured name as already owned (`ProviderProvisionAlreadyOwned`) with no origin
@@ -2638,7 +2649,7 @@ Owned partial state is unwound in reverse lifecycle order and all cleanup failur
 Because an external effect and the ownership record cannot share one atomic transaction, durable state
 is an untrusted, generative-identity-free `PersistedJournalRecord` of plan digest, frame key, resource
 key, generation, operation, operation key, record version, and phase. `verifyPersistedJournalRecord`
-checks it against the exact `LifecyclePlan` (Sprint 12.27 owes taking the exact `ProjectPlan` instead),
+checks it against the exact `ProjectPlan`,
 `ResourceHandle`, and expected operation — plan digest,
 resource key, generation, and operation must match, the record version must be positive, and the frame
 and operation keys must be non-empty — and yields `VerifiedJournalRecord scope planId id resource`. Only
@@ -2804,6 +2815,14 @@ serialized, and the recognized phase is decoded from the row as the initial curs
 `Prepare`, while exact pre-handoff resume preserves the acquisition record version and phase. After
 handoff the acquisition row is immutable exact source; only each frame's cursor-row phase is current/mutable.
 
+The kernel takes one descriptive `AcquisitionBindingCoordinates` record for its eleven immutable fields,
+and durable resume and retained-journal validation use the same ordered, field-specific comparison.
+`validateBoundRunLeaseAcquisitionJournal` also takes an independently expected `ProjectVerb verb`:
+authorization supplies its checked command verb, and reverse-root validation supplies the source root's
+verb. The bound lease alone carries no verb, so reading the expected verb from the journal would not
+validate that coordinate. The record supplies no admission authority; the hidden admission token remains
+required by the opener.
+
 That plan-bound record is distinct from the Phase-10 `project.<planDigest>` Open/Closing transaction and
 from the per-operation attempt/ownership journal. The lower `openProjectJournal`, operation-session, and
 prepare APIs are non-authorizing primitives: entering them directly cannot mint plan-bound command authority
@@ -2813,11 +2832,15 @@ source binding; Sprint 12.23 opens
 `LifecycleCursor scope planId frame brokerGeneration verb phase` only from that journal and the matching
 `ProjectFrame`. The journal row is the initial seed only until a frame's cursor row exists; thereafter the
 strict canonical per-frame row is authoritative. Existential current-phase recovery avoids phase guessing,
-and exact resume is no-write. At-most-once compare-and-swap transition reservation is deliberately distinct
+and exact resume is no-write. The [lifecycle state model](../documents/architecture/lifecycle_state_model.md#lifecycle-profile-authority)
+owns the encoded-frame and total-payload bounds and malformed-versus-unequal refusal rules.
+At-most-once compare-and-swap transition reservation is deliberately distinct
 from at-least-once callback delivery after unlock. The root-only reservation boundary checks the bound
 lease's full retained origin, then revalidates live mode/lease/snapshot, source journal, and exact current row
 with the one-use reservation. Its result remains inside the fixed root interpreter; pure frame evidence and
-the descriptive lifecycle context authorize nothing and contain no store. `withProjectPlan` consumes the
+the descriptive `ValidatedContext` authorize nothing and contain no store. The opaque root-resident
+`ValidatedLifecycleContext` joins that evidence to the already-open store in the plan foundation before
+the root command gate consumes it. `withProjectPlan` consumes the
 profile/config/draft into the exact `ProjectPlan scope specDigest planId configId cfg`. The target is that
 every consumer cluster name, path, and profile is a projection of that plan, with no independent argument
 that can disagree with it. Today the demo's `containerPlan` takes a separately derived `ClusterProfile`
@@ -3281,16 +3304,21 @@ parent's Reported, Acknowledged, Adopted slot) is canonical in
 [composition_methodology](../documents/architecture/composition_methodology.md#the-recursive-project-up-interpreter),
 and its proof rows are in [unrepresentable_state](../documents/architecture/unrepresentable_state.md).
 
-The bracket's lifetime guarantee is bounded by what the host can execute. On a POSIX host, timeout,
-cancellation, protocol failure, callback exception, and other catchable host exits signal and reap the
-complete host-side child process group before ownership is released. On a Windows host the same exits
-terminate and reap only the direct child: `HostBootstrap.Effect.ChildGroup` calls `terminateProcess` on the
-child handle, so a descendant the child started outlives the bracket. Job-Object containment that ends the
-whole tree on Windows is owed by Sprint 13.20 of the
-[authenticated-handoff-and-child-admission phase](phase-13-authenticated-handoff-and-child-admission.md).
-An uncatchable parent death executes no Haskell cleanup and cannot promise termination or reap; only pipe EOF
-and the kernel's descriptor/process cleanup remain. This boundary makes no claim about guest or container
-descendant groups.
+The bracket's lifetime guarantee applies to successfully acquired child groups. Both transports retain
+one scoped `HostBootstrap.Effect.ChildGroup` owner. On Windows, the pinned process library assigns a
+kill-on-close Job Object before the child can start descendants. The shared owner atomically transfers
+that exact job from the process handle before polling or restored caller execution. Every acquired
+bracket exit runs a finalizer that attempts termination and bounded observation, including after leader exit
+or on callback failure/cancellation, and always closes its exact handle in `finally`. The Windows ask
+step is hard termination. The transports retain leader reaping and pipe cleanup. The POSIX row creates a new process group and captures its identity before leader polling or caller
+execution. It uses that retained identity for TERM, KILL and null-signal group-presence observation,
+including after the leader is reaped. Cleanup attempts TERM with a fixed grace, then KILL with bounded
+observation, and its outer finalizer supplies a kill fallback when inner teardown raises. Completion
+requires both leader exit and group absence; only ESRCH is absence, while other native errors propagate.
+Failed acquisition paths inside the process library precede this acquired-group boundary and are not
+repaired here. Uncatchable parent death executes no Haskell cleanup and promises no portable grace or
+reap; Windows kill-on-last-job-close remains a kernel property. This boundary makes no claim about guest
+or container descendant groups.
 
 What this does not buy. Hidden constructors exclude construction by cooperating code inside this
 repository. They do not exclude an external actor, do not bind a caller who reaches past the boundary to
@@ -3540,8 +3568,6 @@ platform limitation of the runner.
 **What runs today.** Interpreter text stands outside the guest bootstrap module, and each site is owed by a
 named phase rather than admitted:
 
-- `Substrate/Provider/Backend.hs` by Sprint 15.35 of the
-  [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md);
 - `Registry.hs` by the [composition-and-network-algebra phase](phase-21-composition-and-network-algebra.md);
 - the demo's `Commands.hs` by the [worked-demo phase](phase-24-worked-demo.md).
 
@@ -3557,10 +3583,12 @@ bootstrap's renderings, `ClusterBackendSpec` over the cluster backend). The repo
 interpreter-invocation tokens appear only in the guest bootstrap module, beside a named list of files whose
 tokens are not an invocation, is owed by Sprint 25.25 of the
 [documentation-reconciliation phase](phase-25-documentation-reconciliation.md); it can pass only once every
-site listed above is removed by its owning phase, which is why it sits in that phase. No
-repository-wide guard yet asserts one crossing renderer (only `RegistrySpec` checks that the registry module
-derives its crossing from `foldLeaf`); that guard is owed by Sprint 15.47 of the
-[host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md), which owns § LL's
+site listed above is removed by its owning phase, which is why it sits in that phase.
+`ProviderSpec` now scans both physical public and private source trees and pins the six consumers
+of the primitive crossing renderers, including their placement-aware variants. Its shared-lexer
+predicate also refuses decoded `"exec"` and `"shell"` literals outside Lift and its context, and
+constructed controls exercise extra consumers, literal duplication, comments and escaped spellings.
+The [host-providers-and-self-reference-lift phase](phase-15-host-providers-and-the-lift.md) owns § LL's
 frame table. The fold itself, `foldLeaf` in `HostBootstrap.Lift`, is the
 [ensure-reconcilers phase](phase-8-ensure-reconcilers.md)'s. No guard yet asserts that each computation the ownership rows share — the identity read, the
 no-replace publication, the identity-conditional act, and the record codec — has one definition site;

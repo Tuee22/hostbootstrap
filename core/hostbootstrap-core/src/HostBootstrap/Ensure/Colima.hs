@@ -23,13 +23,10 @@ to pass 'settleProviderWallCall' before live wall authority exists.
 -}
 module HostBootstrap.Ensure.Colima (
     ColimaInstance (..),
-    parseColimaInstances,
-    ColimaWallDecision (..),
     ColimaWallObservation,
     PreparedColimaWallCall,
     prepareColimaWallCall,
     preparedColimaProfileName,
-    classifyColimaWall,
     runPreparedColimaWallCall,
     LiveColimaWall,
     settleColimaWallCall,
@@ -39,22 +36,23 @@ module HostBootstrap.Ensure.Colima (
     liveColimaDockerContext,
     liveColimaDockerArgs,
     runLiveColimaDocker,
+    ColimaDockerRun (..),
     ColimaCleanupAuthority,
     withColimaCleanupAuthority,
     PreparedColimaCleanupCall,
     prepareColimaCleanupCall,
     runColimaCleanup,
     validColimaProjectProfileName,
+    colimaSocketNamespaceFits,
 )
 where
 
 #if !defined(mingw32_HOST_OS)
 import Control.Exception (IOException, try)
 #endif
-import qualified Crypto.Hash as Hash
 import Data.Bifunctor (first)
 import qualified Data.ByteString as ByteString.Strict
-import Data.Char (isAlphaNum, isAsciiLower, isDigit, toLower)
+import Data.Char (isAsciiLower, isDigit)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
@@ -75,15 +73,25 @@ import HostBootstrap.Cluster.Budget (
     providerWallCallArgs,
     providerWallCallFence,
     providerWallEpoch,
+    settleProviderWallCall,
+    withLiveProviderWall,
  )
+import HostBootstrap.Cluster.Budget.Internal (withProviderWallSettlementPermitFromObservation)
+import HostBootstrap.Digest (sha256Hex)
 import HostBootstrap.Effect.Interpreter (resolveLaunch)
 import HostBootstrap.Effect.Run (CapturedRun (..))
 import HostBootstrap.Effect.Vocabulary (HostCommand)
+import qualified HostBootstrap.Ensure.Colima.Backend.Identity as ColimaIdentity
+import HostBootstrap.Ensure.Colima.Backend.Identity (colimaOwnerToken, originRecordName)
+import HostBootstrap.Ensure.Colima.Backend.Names (
+    deriveColimaNames,
+    validColimaProjectProfileName,
+    colimaHomePath,
+ )
 import HostBootstrap.Ensure.Colima.Backend.Resolver (
     TrustedAppleBrew,
     TrustedAppleToolchain,
-    TrustedResolverResult (..),
-    currentTrustedResolverOverrideHomeForTesting,
+    TrustedResolverResult,
     resolveTrustedAppleToolchain,
     revalidateTrustedAppleBrew,
     revalidateTrustedAppleToolchain,
@@ -93,7 +101,6 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver (
     trustedAppleDockerPath,
     trustedAppleHelperPath,
     trustedAppleLimaPath,
-    trustedApplePythonPath,
     trustedAppleToolchainFingerprint,
  )
 import HostBootstrap.Ensure.Colima.Backend.Resolver.Install (
@@ -102,6 +109,12 @@ import HostBootstrap.Ensure.Colima.Backend.Resolver.Install (
     runTrustedInstallRediscovery,
  )
 import HostBootstrap.Ensure.Colima.Backend.Runner (BackendNamespace (..), BoundedToolResult (..), runBoundedTool, runShippedCommand)
+import HostBootstrap.Ensure.Colima.Command (DockerContextName, dockerContextForProfile, dockerContextNameText, mkColimaProfile, mkColimaStartArguments)
+import HostBootstrap.Ensure.Colima.Observation (
+    ColimaWallObservation (..),
+    ColimaOwnedObservation (..),
+    ExpectedColimaWall (..),
+ )
 import HostBootstrap.Ensure.Colima.Ownership (
     ColimaArtifactObservation (..),
     ColimaManagedObservation (..),
@@ -109,10 +122,11 @@ import HostBootstrap.Ensure.Colima.Ownership (
     ColimaProfileMutationFault (..),
     ColimaStartedObservation (..),
     acquireManagedColimaProfileWith,
+    colimaMutationAcquireObservation,
     cleanupManagedColimaProfileWith,
     runManagedColimaDockerWith,
  )
-import HostBootstrap.Ensure.Colima.Report (ColimaInstance (..), parseColimaInstances)
+import HostBootstrap.Ensure.Colima.Report (ColimaInstance (..), ColimaDockerRun (..), colimaDockerRunResult, ColimaInstallPolicy (..), ColimaResolutionChoice (..), colimaResolutionChoice, colimaCleanupCompletion)
 import HostBootstrap.Ensure.Colima.Settlement.Internal (ColimaWallSettlementObservation (..), withColimaWallSettlement)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.HostTool (HostTool (Colima, Docker, Lima), mkAbsExe)
@@ -156,6 +170,9 @@ import HostBootstrap.Reconcile (
     Unclassified,
     UnsupportedDetail (..),
     completePreparedPhaseTransition,
+    completePreparedProviderStart,
+    withPreparedProviderStartParts,
+    withReconcileResult,
     ownershipReceiptOperationKey,
     planProviderForceDestroy,
     plannedProjectPhaseOperation,
@@ -164,142 +181,11 @@ import HostBootstrap.Reconcile (
     withPreparedZeroDependencyPhaseTransition,
  )
 import HostBootstrap.Substrate (detect, isAppleSilicon)
-import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode (..))
-import System.FilePath (isAbsolute, takeDirectory, (</>))
+import System.FilePath (isAbsolute, (</>))
 #if !defined(mingw32_HOST_OS)
 import System.Posix.User (getEffectiveUserID, getUserEntryForID, homeDirectory)
 #endif
-
-{- | The project-name policy is observable for tests and diagnostics, but it
-cannot mint a profile.  Only 'prepareColimaWallCall' can do that, from the
-project identity retained by an admitted plan.
--}
-validColimaProjectProfileName :: Text.Text -> Bool
-validColimaProjectProfileName projectName =
-    let name = Text.unpack projectName
-     in validProfileName name && name /= "default"
-
-validateProfileName :: Text.Text -> Either ReconcileError String
-validateProfileName projectName
-    | not (validProfileName name) =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "derive Colima profile"
-                    ("invalid project profile name: " <> Text.pack (show name))
-                    DoNotRetry
-                )
-            )
-    | name == "default" =
-        Left
-            ( Conflict
-                ( ConflictDetail
-                    "colima profile identity"
-                    "a project-specific profile"
-                    "default"
-                    "the shared default Colima profile is never project authority"
-                )
-            )
-    | otherwise = Right name
-  where
-    name = Text.unpack projectName
-
-deriveColimaNames :: Text.Text -> Text.Text -> Text.Text -> Text.Text -> FilePath -> Either ReconcileError (String, String)
-deriveColimaNames projectName lifecycleProfile resourceKey resourceFrame stateRoot = do
-    _ <- validateProfileName projectName
-    case lifecycleProfile of
-        "production" -> Right derived
-        profile ->
-            case Text.stripPrefix "harness:" profile of
-                Just runKey
-                    | validHarnessRunKey runKey ->
-                        Right derived
-                    | otherwise -> invalid "the admitted Harness profile carries an invalid run key"
-                Nothing -> invalid "the admitted plan carries an unknown lifecycle profile"
-  where
-    -- The 128-bit home key is the profile-global authority namespace.  The
-    -- short profile is local to that isolated home, keeping Lima's Darwin
-    -- socket path below 104 bytes without weakening the home/lock identity.
-    digest =
-        Text.unpack
-            ( sha256Text
-                ( Text.intercalate
-                    "\NUL"
-                    [ "direct-colima-provider-namespace-v1"
-                    , projectName
-                    , lifecycleProfile
-                    , resourceKey
-                    , resourceFrame
-                    , Text.pack stateRoot
-                    ]
-                )
-            )
-    derived = ("h-" ++ take 6 (drop 32 digest), take 32 digest)
-    validHarnessRunKey runKey =
-        not (Text.null runKey)
-            && Text.length runKey <= 48
-            && Text.all (\character -> isAlphaNum character || character == '-') runKey
-    invalid detail =
-        Left
-            ( Failure
-                ( FailureDetail
-                    "derive Colima profile"
-                    detail
-                    DoNotRetry
-                )
-            )
-
-sha256Text :: Text.Text -> Text.Text
-sha256Text value =
-    Text.pack
-        ( show
-            (Hash.hashWith Hash.SHA256 (Text.Encoding.encodeUtf8 value))
-        )
-
-validProfileName :: String -> Bool
-validProfileName [] = False
-validProfileName (initial : rest) =
-    validInitial initial
-        && all validRest rest
-        && length (initial : rest) <= 63
-  where
-    validInitial char = isAsciiLower char || isDigit char
-    validRest char = validInitial char || char `elem` ("._-" :: String)
-
-data ColimaWallDecision
-    = CreateColimaWall
-    | StartStoppedColimaWall
-    | KeepExactColimaWall
-    | RefuseColimaWall ConflictDetail
-    deriving (Eq, Show)
-
-{- | Raw backend facts remain deliberately plan-independent.  A successful
-owned observation carries only the durable origin-record path created by the
-lock-held backend; settlement against the exact prepared call is still what
-introduces plan indices and live authority.
--}
-data ColimaWallObservation
-    = ColimaOwnedWallObservation ColimaOwnedObservation
-    | ColimaUnownedWallObservation WallAcquireObservation
-    | ColimaWallOwnershipUnsupported UnsupportedDetail
-    deriving (Eq, Show)
-
-data ColimaOwnedObservation = ColimaOwnedObservation
-    { ownedToolchain :: TrustedAppleToolchain
-    , ownedNamespaceKey :: String
-    , ownedNamespace :: BackendNamespace
-    , ownedStateRoot :: FilePath
-    , ownedRecordPath :: FilePath
-    , ownedOwner :: String
-    , ownedLineage :: String
-    , ownedMachineId :: String
-    , ownedContextDigest :: String
-    , ownedExpectedWall :: ExpectedColimaWall
-    , ownedInvocationDigest :: String
-    , ownedSettlementObservation :: ColimaWallSettlementObservation
-    }
-    deriving (Eq, Show)
 
 {- | The exact plan-owned Colima call.  The provider profile is retained only
 inside this sealed value; there is no independently constructible or
@@ -492,75 +378,20 @@ colimaAcquireCallDigest ::
     PreparedProviderWallCall scope planId budgetId ColimaProvider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     Text.Text
 colimaAcquireCallDigest profileName namespaceKey owner recordPath prepared =
-    Text.pack
-        ( show
-            ( Hash.hashWith
-                Hash.SHA256
-                ( Text.Encoding.encodeUtf8
-                    ( Text.intercalate
-                        "\NUL"
-                        ( map
-                            Text.pack
-                            ( "direct-colima-acquire-v1"
-                                : profileName
-                                : namespaceKey
-                                : owner
-                                : recordPath
-                                : show (providerWallCallFence prepared)
-                                : providerWallCallArgs prepared
-                            )
-                        )
-                    )
-                )
-            )
-        )
+    ColimaIdentity.colimaAcquireCallDigest
+        profileName namespaceKey owner recordPath
+        (providerWallCallFence prepared) (providerWallCallArgs prepared)
 
 colimaInvocationDigest :: Text.Text -> PreparedGate -> String
 colimaInvocationDigest callDigest gate =
-    show
-        ( Hash.hashWith
-            Hash.SHA256
-            ( Text.Encoding.encodeUtf8
-                ( Text.intercalate
-                    "\NUL"
-                    [ "direct-colima-invocation-v1"
-                    , callDigest
-                    , preparedGatePlan gate
-                    , preparedGateOperation gate
-                    , preparedGateSession gate
-                    , Text.pack (show (preparedGateFence gate))
-                    , Text.pack (show (preparedGateAttempt gate))
-                    , Text.pack (show (preparedGateJournalVersion gate))
-                    ]
-                )
-            )
-        )
-
-colimaOwnerToken :: String -> Text.Text -> Text.Text -> String -> Text.Text -> Text.Text -> Word64 -> String
-colimaOwnerToken profileName projectName lifecycleProfile planDigest resourceKey resourceFrame fenceValue =
-    "v2-"
-        ++ hexText (Text.pack profileName)
-        ++ "-"
-        ++ hexText projectName
-        ++ "-"
-        ++ hexText lifecycleProfile
-        ++ "-"
-        ++ hexText (Text.pack planDigest)
-        ++ "-"
-        ++ hexText resourceKey
-        ++ "-"
-        ++ hexText resourceFrame
-        ++ "-"
-        ++ show fenceValue
-
-hexText :: Text.Text -> String
-hexText = concatMap hexByte . ByteString.Strict.unpack . Text.Encoding.encodeUtf8
-  where
-    digits = "0123456789abcdef"
-    hexByte byte =
-        [ digits !! fromIntegral (byte `div` 16)
-        , digits !! fromIntegral (byte `mod` 16)
-        ]
+    ColimaIdentity.colimaInvocationDigest
+        callDigest
+        (preparedGatePlan gate)
+        (preparedGateOperation gate)
+        (preparedGateSession gate)
+        (preparedGateFence gate)
+        (preparedGateAttempt gate)
+        (preparedGateJournalVersion gate)
 
 validateOwnerToken :: String -> Either ReconcileError String
 validateOwnerToken owner
@@ -662,84 +493,6 @@ preparedColimaWallArgs ::
 preparedColimaWallArgs (PreparedColimaWallCall _ _ _ _ _ prepared _) =
     providerWallCallArgs prepared
 
-data ExpectedColimaWall = ExpectedColimaWall
-    { expectedCpus :: Integer
-    , expectedMemoryBytes :: Integer
-    , expectedDiskBytes :: Integer
-    , expectedRootDiskBytes :: Integer
-    }
-    deriving (Eq, Show)
-
-classifyColimaWall ::
-    PreparedColimaWallCall
-        scope
-        specDigest
-        planId
-        configId
-        providerResourceId
-        providerFrame
-        budgetId
-        capabilityId
-        wallSpecId
-        workloadSetId
-        partitionId
-        reservationId
-        fence ->
-    [ColimaInstance] ->
-    Either ReconcileError ColimaWallDecision
-classifyColimaWall call@(PreparedColimaWallCall profileName _ _ _ _ _ _) instances = do
-    expected <- expectedWall call
-    case filter ((== profileName) . ciName) instances of
-        [] -> Right CreateColimaWall
-        [observed]
-            | not (matchesExpected expected observed) ->
-                Right (RefuseColimaWall (wallConflict expected observed))
-            | map toLower (ciRuntime observed) /= "docker" ->
-                Right (RefuseColimaWall (wallConflict expected observed))
-            | map toLower (ciStatus observed) == "running" ->
-                Right KeepExactColimaWall
-            | map toLower (ciStatus observed) == "stopped" ->
-                Right StartStoppedColimaWall
-            | otherwise ->
-                Right (RefuseColimaWall (wallConflict expected observed))
-        observed ->
-            Left
-                ( Conflict
-                    ( ConflictDetail
-                        "observe Colima profile"
-                        "one profile record"
-                        (Text.pack (show (length observed)) <> " records")
-                        "repair the duplicate provider observation before retrying"
-                    )
-                )
-
-matchesExpected :: ExpectedColimaWall -> ColimaInstance -> Bool
-matchesExpected expected observed =
-    ciCpus observed == expectedCpus expected
-        && ciMemoryBytes observed == expectedMemoryBytes expected
-        && ciDiskBytes observed == expectedDiskBytes expected
-
-wallConflict :: ExpectedColimaWall -> ColimaInstance -> ConflictDetail
-wallConflict expected observed =
-    ConflictDetail
-        "reconcile Colima provider wall"
-        (renderExpected expected)
-        ( Text.pack
-            ( ciName observed
-                ++ " status="
-                ++ ciStatus observed
-                ++ " runtime="
-                ++ ciRuntime observed
-                ++ " cpu="
-                ++ show (ciCpus observed)
-                ++ " memory="
-                ++ show (ciMemoryBytes observed)
-                ++ " disk="
-                ++ show (ciDiskBytes observed)
-            )
-        )
-        "stop and explicitly resize the owned profile, or choose another project identity"
-
 renderExpected :: ExpectedColimaWall -> Text.Text
 renderExpected expected =
     Text.pack
@@ -833,31 +586,32 @@ runPreparedColimaWallCall call = do
                         recordPath = preparedColimaRecordPath call
                         namespace = ownershipNamespace backend
                         owner = bindColimaOwner (preparedColimaOwner call) backend
-                        lineage = Text.unpack (sha256Text (Text.pack (ownershipNamespaceKey backend)))
+                        lineage = Text.unpack (sha256Hex (Text.Encoding.encodeUtf8 (Text.pack (ownershipNamespaceKey backend))))
                     configured <- nativeHostConfig backend
                     case configured of
                         Left err -> pure (reconcileErrorObservation err)
-                        Right config -> do
-                            createDirectoryIfMissing True (takeDirectory (namespaceDockerConfig namespace))
-                            result <-
-                                acquireManagedColimaProfileWith
-                                    (interpretNativeColima config namespace)
-                                    stateRoot
-                                    profileName
-                                    owner
-                                    lineage
-                                    (preparedColimaInvocation call)
-                                    (namespaceColimaHome namespace)
-                                    (namespaceDockerConfig namespace)
-                                    (expectedCpus expected)
-                                    (expectedMemoryBytes expected)
-                                    (expectedDiskBytes expected)
-                                    (expectedRootDiskBytes expected)
-                                    (preparedColimaWallArgs call)
-                            postCall <- revalidateOwnershipBackend backend
-                            pure $ case postCall of
-                                Left err -> reconcileErrorObservation err
-                                Right () -> acquireObservation backend owner (preparedColimaInvocation call) stateRoot recordPath expected result
+                        Right config -> case mkColimaProfile profileName >>= (\profile -> mkColimaStartArguments profile (preparedColimaWallArgs call)) of
+                            Left reason -> pure (reconcileErrorObservation (cleanupFailure "prepare Colima start" reason))
+                            Right startArguments -> do
+                                result <-
+                                    acquireManagedColimaProfileWith
+                                        (interpretNativeColima config namespace)
+                                        stateRoot
+                                        profileName
+                                        owner
+                                        lineage
+                                        (preparedColimaInvocation call)
+                                        (namespaceColimaHome namespace)
+                                        (namespaceDockerConfig namespace)
+                                        (expectedCpus expected)
+                                        (expectedMemoryBytes expected)
+                                        (expectedDiskBytes expected)
+                                        (expectedRootDiskBytes expected)
+                                        startArguments
+                                postCall <- revalidateOwnershipBackend backend
+                                pure $ case postCall of
+                                    Left err -> reconcileErrorObservation err
+                                    Right () -> acquireObservation backend owner (preparedColimaInvocation call) stateRoot recordPath expected result
 
 revalidateOwnershipBackend :: ColimaOwnershipBackend -> IO (Either ReconcileError ())
 revalidateOwnershipBackend backend = do
@@ -880,7 +634,6 @@ nativeHostConfigForOwned owned =
         ColimaOwnershipBackend
             { ownershipToolchain = ownedToolchain owned
             , ownershipNamespaceKey = ownedNamespaceKey owned
-            , ownershipPythonPath = trustedApplePythonPath (ownedToolchain owned)
             , ownershipColimaPath = trustedAppleColimaPath (ownedToolchain owned)
             , ownershipDockerPath = trustedAppleDockerPath (ownedToolchain owned)
             , ownershipLimaPath = trustedAppleLimaPath (ownedToolchain owned)
@@ -900,7 +653,6 @@ interpretNativeColima config namespace command = case resolveLaunch config comma
 data ColimaOwnershipBackend = ColimaOwnershipBackend
     { ownershipToolchain :: TrustedAppleToolchain
     , ownershipNamespaceKey :: String
-    , ownershipPythonPath :: FilePath
     , ownershipColimaPath :: FilePath
     , ownershipDockerPath :: FilePath
     , ownershipLimaPath :: FilePath
@@ -911,63 +663,49 @@ discoverDirectColimaBackend ::
     PreparedColimaWallCall scope specDigest planId configId providerResourceId providerFrame budgetId capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
     IO (Either ReconcileError ColimaOwnershipBackend)
 discoverDirectColimaBackend call = do
-    discoverDirectColimaBackendAt
+    discoverDirectColimaBackendAt ColimaMayInstall
         (preparedColimaRecordPath call)
         (preparedColimaProfileName call)
         (preparedColimaNamespaceKey call)
 
-discoverDirectColimaBackendAt :: FilePath -> String -> String -> IO (Either ReconcileError ColimaOwnershipBackend)
-discoverDirectColimaBackendAt recordPath profileName namespaceKey = do
-    fixtureHome <- currentTrustedResolverOverrideHomeForTesting
-    case fixtureHome of
-        Just home -> do
-            resolved <- resolveTrustedAppleToolchain home
-            settleTrustedResolution home recordPath profileName namespaceKey resolved
-        Nothing -> do
-            substrateResult <- detect
-            case substrateResult of
-                Left err -> pure (Left (cleanupFailure "detect direct-Colima substrate" err))
-                Right substrate
-                    | not (isAppleSilicon substrate) ->
-                        pure
-                            ( Left
-                                ( Unsupported
-                                    ( UnsupportedDetail
-                                        "reconcile Colima provider wall"
-                                        "direct Colima is supported only on a freshly detected Apple-silicon host"
-                                    )
-                                )
+discoverDirectColimaBackendAt :: ColimaInstallPolicy -> FilePath -> String -> String -> IO (Either ReconcileError ColimaOwnershipBackend)
+discoverDirectColimaBackendAt policy recordPath profileName namespaceKey = do
+    substrateResult <- detect
+    case substrateResult of
+        Left err -> pure (Left (cleanupFailure "detect direct-Colima substrate" err))
+        Right substrate
+            | not (isAppleSilicon substrate) ->
+                pure
+                    ( Left
+                        ( Unsupported
+                            ( UnsupportedDetail
+                                "reconcile Colima provider wall"
+                                "direct Colima is supported only on a freshly detected Apple-silicon host"
                             )
-                    | otherwise -> do
-                        homeResult <- effectiveHomeDirectory
-                        case homeResult of
-                            Left err -> pure (Left (cleanupFailure "resolve effective-user home" err))
-                            Right home -> do
-                                resolved <- resolveTrustedAppleToolchain home
-                                settleTrustedResolution home recordPath profileName namespaceKey resolved
+                        )
+                    )
+            | otherwise -> do
+                homeResult <- effectiveHomeDirectory
+                case homeResult of
+                    Left err -> pure (Left (cleanupFailure "resolve effective-user home" err))
+                    Right home -> do
+                        resolved <- resolveTrustedAppleToolchain home
+                        settleTrustedResolution policy home recordPath profileName namespaceKey resolved
 
 settleTrustedResolution ::
+    ColimaInstallPolicy ->
     FilePath ->
     FilePath ->
     String ->
     String ->
     TrustedResolverResult ->
     IO (Either ReconcileError ColimaOwnershipBackend)
-settleTrustedResolution home recordPath profileName namespaceKey resolved =
-    case resolved of
-        TrustedResolverReady toolchain ->
+settleTrustedResolution policy home recordPath profileName namespaceKey resolved =
+    case colimaResolutionChoice policy resolved of
+        Left fault -> pure (Left fault)
+        Right (ColimaUseResolved toolchain) ->
             pure (ownershipBackendFromToolchain toolchain home recordPath profileName namespaceKey)
-        TrustedResolverUnsupported reason ->
-            pure
-                ( Left
-                    ( Unsupported
-                        ( UnsupportedDetail
-                            "resolve direct-Colima toolchain"
-                            (Text.pack reason)
-                        )
-                    )
-                )
-        TrustedResolverMissingColima brew -> installAndRediscover home recordPath profileName namespaceKey brew
+        Right (ColimaInstallResolved brew) -> installAndRediscover home recordPath profileName namespaceKey brew
 
 installAndRediscover ::
     FilePath ->
@@ -1009,7 +747,7 @@ installAndRediscover home recordPath profileName namespaceKey brew = do
 
 ownershipBackendFromToolchain :: TrustedAppleToolchain -> FilePath -> FilePath -> String -> String -> Either ReconcileError ColimaOwnershipBackend
 ownershipBackendFromToolchain toolchain home recordPath profileName namespaceKey =
-    if socketPathBytes >= 104
+    if not (colimaSocketNamespaceFits home namespaceKey profileName)
         then
             Left
                 ( Unsupported
@@ -1023,12 +761,16 @@ ownershipBackendFromToolchain toolchain home recordPath profileName namespaceKey
                 ColimaOwnershipBackend
                     { ownershipToolchain = toolchain
                     , ownershipNamespaceKey = namespaceKey
-                    , ownershipPythonPath = trustedApplePythonPath toolchain
                     , ownershipColimaPath = trustedAppleColimaPath toolchain
                     , ownershipDockerPath = trustedAppleDockerPath toolchain
                     , ownershipLimaPath = trustedAppleLimaPath toolchain
                     , ownershipNamespace = ownershipNamespaceFor toolchain home recordPath namespaceKey
                     }
+
+-- | The Darwin socket ceiling is a byte bound, independent of the gate host.
+-- It is checked before the backend can grant profile-mutation authority.
+colimaSocketNamespaceFits :: FilePath -> String -> String -> Bool
+colimaSocketNamespaceFits home namespaceKey profileName = socketPathBytes < 104
   where
     socketPathBytes =
         ByteString.Strict.length
@@ -1067,9 +809,6 @@ brewInstallNamespace home _recordPath _profileName brew =
         , namespaceWorkingDirectory = home
         , namespaceExecutablePath = trustedAppleBrewHelperPath brew
         }
-
-colimaHomePath :: FilePath -> String -> FilePath
-colimaHomePath home namespaceKey = home </> (".h" ++ namespaceKey)
 
 effectiveHomeDirectory :: IO (Either String FilePath)
 #if defined(mingw32_HOST_OS)
@@ -1145,24 +884,9 @@ preparedColimaOwner (PreparedColimaWallCall _ _ owner _ _ _ _) = owner
 
 bindColimaOwner :: String -> ColimaOwnershipBackend -> String
 bindColimaOwner ownerSeed backend =
-    ownerSeed
-        ++ "-"
-        ++ digestFields
-            [ Text.pack (namespaceColimaHome namespace)
-            , Text.pack (namespaceLimaHome namespace)
-            , Text.pack (namespaceColimaCacheHome namespace)
-            , Text.pack (namespaceTemporaryDirectory namespace)
-            ]
-        ++ "-"
-        ++ digestFields [Text.pack (namespaceDockerConfig namespace)]
-        ++ "-"
-        ++ digestFields [Text.pack (namespaceExecutablePath namespace)]
-        ++ "-"
-        ++ digestFields [Text.pack (trustedAppleToolchainFingerprint toolchain)]
-  where
-    namespace = ownershipNamespace backend
-    toolchain = ownershipToolchain backend
-    digestFields = Text.unpack . sha256Text . Text.intercalate "\NUL"
+    ColimaIdentity.bindColimaOwner
+        ownerSeed (ownershipNamespace backend)
+        (trustedAppleToolchainFingerprint (ownershipToolchain backend))
 
 acquireObservation ::
     ColimaOwnershipBackend ->
@@ -1177,25 +901,9 @@ acquireObservation backend owner invocationDigest stateRoot recordPath expected 
     case result of
         Right (ColimaManagedApplied observation) -> owned observation (ColimaWallSettlementApplied (startedMachineEpoch (managedStartObservation observation)))
         Right (ColimaManagedAlreadyExact observation) -> owned observation (ColimaWallSettlementAlreadyExact (startedMachineEpoch (managedStartObservation observation)))
-        Left reason@ColimaMutationProfileConflict{} ->
-            ColimaUnownedWallObservation
-                ( WallRefused
-                    ( ConflictDetail
-                        "reconcile Colima provider wall"
-                        (renderExpected expected)
-                        (Text.pack (show reason))
-                        "leave the conflicting profile untouched and resolve its owner or sizing explicitly"
-                    )
-                )
         Left reason ->
             ColimaUnownedWallObservation
-                ( WallAcquireFailed
-                    ( FailureDetail
-                        "acquire Colima provider wall"
-                        (Text.pack (show reason))
-                        ReprobeBeforeRetry
-                    )
-                )
+                (colimaMutationAcquireObservation (renderExpected expected) reason)
   where
     owned observation settlementObservation =
         ColimaOwnedWallObservation
@@ -1206,7 +914,7 @@ acquireObservation backend owner invocationDigest stateRoot recordPath expected 
                 , ownedStateRoot = stateRoot
                 , ownedRecordPath = recordPath
                 , ownedOwner = owner
-                , ownedLineage = Text.unpack (sha256Text (Text.pack (ownershipNamespaceKey backend)))
+                , ownedLineage = Text.unpack (sha256Hex (Text.Encoding.encodeUtf8 (Text.pack (ownershipNamespaceKey backend))))
                 , ownedMachineId = startedMachineIdentity (managedStartObservation observation)
                 , ownedContextDigest = artifactContextDigest (managedArtifactObservation observation)
                 , ownedExpectedWall = expected
@@ -1235,7 +943,7 @@ data
         wallEpoch
         fence
     = LiveColimaWall
-        String
+        (String, DockerContextName)
         ColimaOwnedObservation
         Word64
         (ProviderWallAuthority scope planId ColimaProvider wallSpecId wallEpoch fence)
@@ -1295,25 +1003,27 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
                             DoNotRetry
                         )
                     )
-            | otherwise -> case preparedOperation of
-                PreparedColimaOperation _invocationDigest start ->
-                    withColimaWallSettlement
-                        prepared
-                        start
-                        (ownedSettlementObservation owned)
-                        ( \authority runningHandle receipt wallChange providerChange ->
-                            consume
-                                ( LiveColimaWall
-                                    profileName
-                                    owned
-                                    (providerWallCallFence prepared)
-                                    authority
-                                    runningHandle
-                                    receipt
-                                    wallChange
-                                    providerChange
-                                )
-                        )
+            | otherwise -> case mkColimaProfile profileName of
+                Left reason -> Left (Failure (FailureDetail "settle Colima provider wall" (Text.pack reason) DoNotRetry))
+                Right commandProfile -> case preparedOperation of
+                    PreparedColimaOperation _invocationDigest start ->
+                        withColimaProviderSettlement
+                            prepared
+                            start
+                            (ownedSettlementObservation owned)
+                            ( \authority runningHandle receipt wallChange providerChange ->
+                                consume
+                                    ( LiveColimaWall
+                                        (profileName, dockerContextForProfile commandProfile)
+                                        owned
+                                        (providerWallCallFence prepared)
+                                        authority
+                                        runningHandle
+                                        receipt
+                                        wallChange
+                                        providerChange
+                                    )
+                            )
   where
     expectedBoundOwnerFor owned =
         bindColimaOwner
@@ -1321,7 +1031,6 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
             ColimaOwnershipBackend
                 { ownershipToolchain = ownedToolchain owned
                 , ownershipNamespaceKey = ownedNamespaceKey owned
-                , ownershipPythonPath = trustedApplePythonPath (ownedToolchain owned)
                 , ownershipColimaPath = trustedAppleColimaPath (ownedToolchain owned)
                 , ownershipDockerPath = trustedAppleDockerPath (ownedToolchain owned)
                 , ownershipLimaPath = trustedAppleLimaPath (ownedToolchain owned)
@@ -1344,14 +1053,89 @@ settleColimaWallCall (PreparedColimaWallCall profileName expectedNamespaceKey ex
                     )
                 )
 
+withColimaProviderSettlement ::
+    PreparedProviderWallCall
+        scope
+        planId
+        budgetId
+        ColimaProvider
+        capabilityId
+        wallSpecId
+        workloadSetId
+        partitionId
+        reservationId
+        fence ->
+    PreparedProviderStart
+        scope
+        planId
+        providerResourceId
+        operationKey
+        callDigest
+        attempt
+        journalVersion ->
+    ColimaWallSettlementObservation ->
+    ( forall wallEpoch.
+      ProviderWallAuthority scope planId ColimaProvider wallSpecId wallEpoch fence ->
+      ResourceHandle scope planId providerResourceId ProviderResource Managed Running ->
+      OwnershipReceipt scope planId providerResourceId ProviderResource ->
+      ChangeView ->
+      ChangeView ->
+      result
+    ) ->
+    Either ReconcileError result
+withColimaProviderSettlement prepared start backendResult consume =
+    withColimaWallSettlement backendResult $ \projection observation startResult ->
+        withPreparedProviderStartParts
+            projection
+            start
+            ( \gate operation preconditions -> do
+                permitted <-
+                    withProviderWallSettlementPermitFromObservation
+                        prepared
+                        gate
+                        operation
+                        preconditions
+                        observation
+                        ( \permit ->
+                            settleProviderWallCall prepared permit $ \live ->
+                                withLiveProviderWall
+                                    live
+                                    ( \authority wallChange ->
+                                        completePreparedProviderStart start startResult
+                                            >>= \reconciled ->
+                                                withReconcileResult
+                                                    reconciled
+                                                    ( \handle receipt providerChange ->
+                                                        Right (consume authority handle receipt wallChange providerChange)
+                                                    )
+                                                    ( \_ _ ->
+                                                        Left
+                                                            ( Failure
+                                                                ( FailureDetail
+                                                                    "settle Colima provider start"
+                                                                    "an owning Colima backend result settled as a foreign provider"
+                                                                    DoNotRetry
+                                                                )
+                                                            )
+                                                    )
+                                    )
+                                    ( \_ _ _ ->
+                                        Left
+                                            ( Failure
+                                                ( FailureDetail
+                                                    "settle Colima provider start"
+                                                    "the Colima provider key unexpectedly produced a WSL global-wall lease"
+                                                    DoNotRetry
+                                                )
+                                            )
+                                    )
+                        )
+                settledWall <- permitted
+                settledWall
+            )
+
 preparedColimaInvocationDigest :: PreparedColimaOperation scope planId providerResourceId -> String
 preparedColimaInvocationDigest (PreparedColimaOperation digest _) = digest
-
-originRecordName :: String -> FilePath
-originRecordName ownerSeed =
-    ".hostbootstrap-colima-"
-        ++ take 32 (Text.unpack (sha256Text (Text.pack ownerSeed)))
-        ++ ".origin"
 
 liveColimaWallEpoch ::
     LiveColimaWall scope specDigest planId configId providerResourceId providerFrame wallSpecId wallEpoch fence ->
@@ -1371,7 +1155,7 @@ liveColimaProviderChange (LiveColimaWall _ _ _ _ _ _ _ change) = change
 liveColimaDockerContext ::
     LiveColimaWall scope specDigest planId configId providerResourceId providerFrame wallSpecId wallEpoch fence ->
     String
-liveColimaDockerContext (LiveColimaWall profileName _ _ _ _ _ _ _) = "colima-" ++ profileName
+liveColimaDockerContext (LiveColimaWall (_, contextName) _ _ _ _ _ _ _) = dockerContextNameText contextName
 
 liveColimaDockerArgs ::
     LiveColimaWall scope specDigest planId configId providerResourceId providerFrame wallSpecId wallEpoch fence ->
@@ -1385,9 +1169,9 @@ activates a process-global Docker context.
 runLiveColimaDocker ::
     LiveColimaWall scope specDigest planId configId providerResourceId providerFrame wallSpecId wallEpoch fence ->
     [String] ->
-    IO (Either String (ExitCode, String, String))
+    IO (Either String ColimaDockerRun)
 runLiveColimaDocker live args = do
-    let LiveColimaWall profileName owned _ _ _ _ _ _ = live
+    let LiveColimaWall (profileName, _) owned _ _ _ _ _ _ = live
     unchanged <- revalidateTrustedAppleToolchain (ownedToolchain owned)
     case unchanged of
         Left reason -> pure (Left ("live Docker toolchain changed: " ++ reason))
@@ -1396,7 +1180,7 @@ runLiveColimaDocker live args = do
             result <- case configured of
                 Left err -> pure (Left (show err))
                 Right config ->
-                    fmap (first show) $
+                    fmap (first show . fmap (\(captured, postFailure) -> (captured, show <$> postFailure))) $
                         runManagedColimaDockerWith
                             (interpretNativeColima config (ownedNamespace owned))
                             (ownedStateRoot owned)
@@ -1408,9 +1192,7 @@ runLiveColimaDocker live args = do
                             (namespaceDockerConfig (ownedNamespace owned))
                             args
             postCall <- revalidateTrustedAppleToolchain (ownedToolchain owned)
-            pure $ case postCall of
-                Left reason -> Left ("live Docker toolchain changed after execution: " ++ reason)
-                Right () -> fmap (\captured -> (capturedExit captured, capturedStdout captured, capturedStderr captured)) result
+            pure (colimaDockerRunResult result postCall)
 
 {- | Conditional cleanup authority exists only for a live wall whose exact
 plan/fence origin record was established before the profile's first write.
@@ -1454,7 +1236,7 @@ withColimaCleanupAuthority ::
     ) ->
     Maybe result
 withColimaCleanupAuthority
-    (LiveColimaWall profileName owned fenceValue authority runningHandle receipt _wallChange _providerChange)
+    (LiveColimaWall (profileName, _) owned fenceValue authority runningHandle receipt _wallChange _providerChange)
     consume =
         Just
             ( consume
@@ -1543,51 +1325,31 @@ prepareColimaCleanupCall plan planned gate authority@(ColimaCleanupAuthority _ _
 
 colimaCleanupInvocationDigest :: Text.Text -> PreparedGate -> String
 colimaCleanupInvocationDigest callDigest gate =
-    show
-        ( Hash.hashWith
-            Hash.SHA256
-            ( Text.Encoding.encodeUtf8
-                ( Text.intercalate
-                    "\NUL"
-                    [ "direct-colima-cleanup-invocation-v1"
-                    , callDigest
-                    , preparedGatePlan gate
-                    , preparedGateOperation gate
-                    , preparedGateSession gate
-                    , Text.pack (show (preparedGateFence gate))
-                    , Text.pack (show (preparedGateAttempt gate))
-                    , Text.pack (show (preparedGateJournalVersion gate))
-                    ]
-                )
-            )
-        )
+    ColimaIdentity.colimaCleanupInvocationDigest
+        callDigest
+        (preparedGatePlan gate)
+        (preparedGateOperation gate)
+        (preparedGateFence gate)
 
 colimaCleanupCallDigest ::
     ColimaCleanupAuthority scope specDigest planId configId providerResourceId providerFrame wallSpecId wallEpoch fence ->
     Text.Text
 colimaCleanupCallDigest (ColimaCleanupAuthority profileName owned epoch handle receipt fenceValue) =
-    Text.pack
-        ( show
-            ( Hash.hashWith
-                Hash.SHA256
-                ( Text.Encoding.encodeUtf8
-                    ( Text.intercalate
-                        "\NUL"
-                        [ "direct-colima-force-destroy-v1"
-                        , Text.pack profileName
-                        , Text.pack (ownedOwner owned)
-                        , Text.pack (ownedLineage owned)
-                        , Text.pack (ownedMachineId owned)
-                        , Text.pack (ownedContextDigest owned)
-                        , Text.pack (show epoch)
-                        , Text.pack (show (resourceHandleGeneration handle))
-                        , ownershipReceiptOperationKey receipt
-                        , Text.pack (show fenceValue)
-                        ]
-                    )
-                )
-            )
-        )
+    sha256Hex $
+        Text.Encoding.encodeUtf8 $
+            Text.intercalate
+                "\NUL"
+                [ "direct-colima-force-destroy-v1"
+                , Text.pack profileName
+                , Text.pack (ownedOwner owned)
+                , Text.pack (ownedLineage owned)
+                , Text.pack (ownedMachineId owned)
+                , Text.pack (ownedContextDigest owned)
+                , Text.pack (show epoch)
+                , Text.pack (show (resourceHandleGeneration handle))
+                , ownershipReceiptOperationKey receipt
+                , Text.pack (show fenceValue)
+                ]
 
 {- | Delete a profile only after re-observing the stable identity retained by
 the exact create receipt.  One kernel-held exclusion process spans the
@@ -1600,11 +1362,11 @@ runColimaCleanup ::
     IO
         ( Either
             ReconcileError
-            (PhaseAdvance scope planId providerResourceId ProviderResource Destroyed)
+            (PhaseAdvance scope planId providerResourceId ProviderResource Destroyed, Maybe ReconcileError)
         )
 runColimaCleanup
     (PreparedColimaCleanupCall (ColimaCleanupAuthority profileName owned _expectedEpoch handle _receipt _fenceValue) _gate preparedTransition cleanupInvocation) = do
-        backendResult <- discoverDirectColimaBackendAt (ownedRecordPath owned) profileName (ownedNamespaceKey owned)
+        backendResult <- discoverDirectColimaBackendAt ColimaMustExist (ownedRecordPath owned) profileName (ownedNamespaceKey owned)
         case backendResult of
             Left err -> pure (Left err)
             Right backend
@@ -1640,11 +1402,9 @@ runColimaCleanup
                                     diskPath
                     postCall <- revalidateOwnershipBackend backend
                     pure $ do
-                        case postCall of
-                            Left err -> Left err
-                            Right () -> Right ()
-                        result
-                        completePreparedPhaseTransition preparedTransition (resourceHandleGeneration handle)
+                        diagnostic <- colimaCleanupCompletion result postCall
+                        advance <- completePreparedPhaseTransition preparedTransition (resourceHandleGeneration handle)
+                        Right (advance, diagnostic)
 
 cleanupMutationError :: ColimaProfileMutationFault -> ReconcileError
 cleanupMutationError fault@ColimaMutationProfileConflict{} = cleanupConflict fault

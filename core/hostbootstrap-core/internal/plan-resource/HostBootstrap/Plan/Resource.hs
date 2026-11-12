@@ -12,7 +12,7 @@ module HostBootstrap.Plan.Resource (
     DurableShareResource,
     DurableAliasResource,
     DockerResource,
-    MinioResource,
+    ObjectStoreResource,
     RegistryResource,
     ClusterResource,
 )
@@ -35,6 +35,6 @@ data ProviderResource
 data DurableShareResource
 data DurableAliasResource
 data DockerResource
-data MinioResource
+data ObjectStoreResource
 data RegistryResource
 data ClusterResource

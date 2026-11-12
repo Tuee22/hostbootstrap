@@ -14,16 +14,13 @@ not reconstructed from steps or accepted as a second caller-supplied graph.
 module HostBootstrap.Chain (
     renderChain,
     nextFrameAfter,
-    handoffDispatch,
-    runChainFromFrame,
-    runChainFromFrameWithDescent,
     runChainFromFrameWithDescentFailure,
 )
 where
 
 import Control.Exception.Safe (displayException, throwIO, tryAny)
 import Data.IORef (modifyIORef', newIORef, readIORef)
-import Data.List (intercalate, partition)
+import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty)
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
@@ -36,14 +33,11 @@ import HostBootstrap.Authority (
     commandAuthorityEpoch,
     commandAuthorityFrame,
     commandAuthorityInvocation,
-    commandAuthorityMatchesStore,
-    commandAuthorityPhase,
-    commandAuthorityVerb,
     invocationIdText,
-    lifecyclePhaseName,
-    projectVerbName,
  )
+import HostBootstrap.Chain.EntryPolicy (validateCurrentFrameEntry)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Execution (stepExecutionFrame)
 import HostBootstrap.Lifecycle.Execution.Internal (
     ResourceCarrier,
     carriedResourceKey,
@@ -61,9 +55,8 @@ import HostBootstrap.Lifecycle.Mode (
     LifecycleCursor,
     lifecycleCursorFrame,
     lifecycleCursorMatchesCommandAuthority,
-    lifecycleCursorPhase,
-    lifecycleCursorVerb,
     validateCurrentLifecycleCursor,
+    withLifecyclePrepareEntry,
  )
 import HostBootstrap.Lifecycle.ResourceRecord (
     resourceRecordKeyKernel,
@@ -90,11 +83,7 @@ import HostBootstrap.Lifecycle.Session (
  )
 import HostBootstrap.Lift (
     LiftContext,
-    LiftDispatch,
     SelfRef,
-    foldLift,
-    liftStdin,
-    liftSubcommandWithStdin,
  )
 import HostBootstrap.ProjectPlan (
     DerivedTopology,
@@ -114,7 +103,6 @@ import HostBootstrap.ProjectPlan (
     runPlannedStep,
     stablePlanSnapshotDigest,
     topology,
-    topologyContainsFrame,
     topologyDescentFrom,
     topologyFrameOrder,
  )
@@ -130,11 +118,10 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import HostBootstrap.Reconcile (stepExecutionFor)
-import System.Exit (ExitCode (ExitSuccess))
 
 {- | Render the exact non-empty forward projection in its admitted order.
 
-This is the same projection from which 'runChainFromFrame' selects its
+This is the same projection from which 'runChainFromFrameWithDescentFailure' selects its
 current-frame segment.  It never opens another plan or reads the hidden raw
 step representation.
 -}
@@ -161,13 +148,6 @@ nextFrameAfter ::
     Maybe (Text, LiftContext)
 nextFrameAfter = topologyDescentFrom
 
--- | The pure host dispatch for the recursive handoff.
-handoffDispatch :: SelfRef -> LiftContext -> LiftDispatch
-handoffDispatch self context = foldLift self context handoffArgv
-
-handoffArgv :: [String]
-handoffArgv = ["project", "up"]
-
 -- | Durable phase published before a node effect is attempted.
 unknownStepPhase :: Text
 unknownStepPhase = "EffectOutcomeUnknown"
@@ -177,72 +157,6 @@ settledPhaseFor :: PlannedStepObservation scope planId configId -> Text
 settledPhaseFor observation
     | plannedStepObservationSucceeded observation = "Committed"
     | otherwise = "StepObservedTerminal"
-
-{- | Interpret one exact current-frame projection.
-
-The authority and cursor are intentionally fixed to @ProjectUp@'s execute
-phase.  Their shared nominal indices establish the plan, frame, broker, verb,
-and phase relation; their retained terms are also compared before any durable
-transition.  The authority's broker epoch and invocation identity drive the
-operation session, so this path allocates neither a second broker nor a second
-command identity.
--}
-runChainFromFrame ::
-    forall scope specDigest planId configId cfg frame brokerGeneration.
-    HostConfig ->
-    SelfRef ->
-    ProtectedStore ->
-    ProjectPlan scope specDigest planId configId cfg ->
-    CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
-    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
-    IO (Either String ())
-runChainFromFrame cfg self store plan authority cursor =
-    runChainFromFrameWithDescent cfg self store plan authority cursor legacyDescent
-  where
-    legacyDescent _carrier _parent _child descent = do
-        result <- liftSubcommandWithStdin cfg self descent handoffArgv (liftStdin descent)
-        case result of
-            Right (ExitSuccess, out, _) -> putStr out >> pure (Right ())
-            Right (status, out, err) -> do
-                putStr out
-                pure
-                    ( Left
-                        ( "recursive project descent failed with "
-                            ++ show status
-                            ++ diagnostic err
-                        )
-                    )
-            Left failure -> pure (Left failure)
-      where
-        diagnostic "" = " and no stderr diagnostic"
-        diagnostic err = ": " ++ err
-
-{- | Interpret a current frame while delegating its one admitted descent.
-
-The callback receives only the exact parent/child frame names and plan-owned
-lift context already selected from this plan.  The root coordinator uses this
-seam to replace the ordinary command invocation with its authenticated process
-exchange; all local preparation and settlement remain in this interpreter.
--}
-runChainFromFrameWithDescent ::
-    forall scope specDigest planId configId cfg frame brokerGeneration.
-    HostConfig ->
-    SelfRef ->
-    ProtectedStore ->
-    ProjectPlan scope specDigest planId configId cfg ->
-    CommandAuthority scope planId frame brokerGeneration VerbUp ExecutePhase ->
-    LifecycleCursor scope planId frame brokerGeneration VerbUp ExecutePhase ->
-    (ResourceCarrier scope planId -> Text -> Text -> LiftContext -> IO (Either String ())) ->
-    IO (Either String ())
-runChainFromFrameWithDescent cfg _self store plan authority cursor runDescent =
-    runChainFromFrameWithDescentObserved
-        cfg
-        store
-        plan
-        authority
-        cursor
-        runDescent
-        (const (pure ()))
 
 {- | Retain the exact operation prefix whose durable Prepared gates were
 published before a failed forward interpretation. The two operation lists are
@@ -315,35 +229,13 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
         validateEvidence
         currentFrameProjection plan current
 
-    validateEvidence
-        | not (commandAuthorityMatchesStore authority store) =
-            Left "project up: command authority does not belong to the supplied protected store"
-        | not (lifecycleCursorMatchesCommandAuthority authority cursor) =
-            Left "project up: command authority and lifecycle cursor origins do not match"
-        | current /= lifecycleCursorFrame cursor =
-            Left
-                ( "project up: command authority frame "
-                    ++ Text.unpack current
-                    ++ " does not match lifecycle cursor frame "
-                    ++ Text.unpack (lifecycleCursorFrame cursor)
-                )
-        | projectVerbName (commandAuthorityVerb authority)
-            /= projectVerbName (lifecycleCursorVerb cursor) =
-            Left "project up: command authority and lifecycle cursor verbs do not match"
-        | lifecyclePhaseName (commandAuthorityPhase authority)
-            /= lifecyclePhaseName (lifecycleCursorPhase cursor) =
-            Left "project up: command authority and lifecycle cursor phases do not match"
-        | not (topologyContainsFrame derivedTopology current) =
-            Left
-                ( "project up: current frame "
-                    ++ Text.unpack current
-                    ++ " is not a frame of the admitted plan (frames: "
-                    ++ intercalate
-                        ", "
-                        (map (Text.unpack . fst) (NonEmpty.toList (topologyFrameOrder derivedTopology)))
-                    ++ ")"
-                )
-        | otherwise = Right ()
+    validateEvidence =
+        validateCurrentFrameEntry
+            authority
+            store
+            (lifecycleCursorMatchesCommandAuthority authority cursor)
+            (lifecycleCursorFrame cursor)
+            (fmap fst (topologyFrameOrder derivedTopology))
 
     openChainJournal ::
         IO
@@ -354,7 +246,7 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                 , ProjectPermit scope planId
                 )
             )
-    openChainJournal = inEntry $ \protected -> do
+    openChainJournal = inPrepareEntry current $ \protected -> do
         swept <- recoverAbandonedSessions protected planDigest
         case swept of
             Left failure -> pure (Left failure)
@@ -373,7 +265,7 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                         case started of
                             Left failure -> pure (Left failure)
                             Right (session, afterOpen) -> do
-                                settled <- establishInitialFence protected planDigest 1
+                                settled <- establishInitialFence protected afterOpen 1
                                 case settled of
                                     Left failure -> pure (Left failure)
                                     Right fence -> pure (Right (session, fence, afterOpen))
@@ -425,7 +317,7 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
 
     runNode session fence permit planned execution runtime = do
         prepared <-
-            inEntry $ \protected -> do
+            inPrepareEntry (stepExecutionFrame execution) $ \protected -> do
                 registered <-
                     registerAll
                         protected
@@ -469,28 +361,26 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                         -- prepared gates before propagating the original exception;
                         -- otherwise an ordinary command failure is indistinguishable
                         -- from a process crash and strands EffectOutcomeUnknown.
-                        settled <- settleNode True runtime session gate afterPrepare "StepObservedTerminal"
+                        settled <- tryAny (settleNode True runtime session gate afterPrepare "StepObservedTerminal")
                         case settled of
-                            Left failure -> pure (Left failure)
-                            Right advance ->
+                            Left failure ->
+                                pure (callbackCleanupFailure planned exception "terminal settlement" (displayException failure))
+                            Right (Left failure) ->
+                                pure (callbackCleanupFailure planned exception "terminal settlement" failure)
+                            Right (Right advance) ->
                                 withOperationAdvance advance $ \_ afterNode -> do
-                                    closed <- closeAfterNode session afterNode
+                                    closed <- tryAny (closeAfterNode session afterNode)
                                     case closed of
-                                        Left failure -> pure (Left failure)
-                                        Right _ ->
-                                            throwIO
-                                                ( userError
-                                                    ( "prepared project step callback for "
-                                                        ++ operationKeyText (plannedStepOperationKey planned)
-                                                        ++ " raised an exception: "
-                                                        ++ displayException exception
-                                                    )
-                                                )
+                                        Left failure ->
+                                            pure (callbackCleanupFailure planned exception "session close" (displayException failure))
+                                        Right (Left failure) ->
+                                            pure (callbackCleanupFailure planned exception "session close" failure)
+                                        Right (Right _) -> throwIO exception
                     Right observation -> do
                         attemptedSettlement <-
                             tryAny
                                 ( settleNode
-                                    False
+                                    (not (plannedStepObservationSucceeded observation))
                                     runtime
                                     session
                                     gate
@@ -507,6 +397,18 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                                 Left failure -> Left failure
                                 Right advance ->
                                     Right (withOperationAdvance advance (\() afterNode -> (observation, afterNode)))
+
+    callbackCleanupFailure planned exception stage failure =
+        Left
+            ( "prepared project step callback for "
+                ++ operationKeyText (plannedStepOperationKey planned)
+                ++ " raised an exception: "
+                ++ displayException exception
+                ++ "; "
+                ++ stage
+                ++ " failed: "
+                ++ failure
+            )
 
     settleNode includeOpen runtime session gate afterPrepare phase =
         inEntry $ \protected -> do
@@ -635,6 +537,14 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
             Right afterPost -> do
                 closed <- inEntry (\protected -> closeOperationSession protected session afterPost)
                 pure (() <$ closed)
+
+    inPrepareEntry ::
+        Text ->
+        (forall protected. ProtectedSession protected -> IO (Either SessionError result)) ->
+        IO (Either String result)
+    inPrepareEntry frame action =
+        inEntry $ \protected ->
+            withLifecyclePrepareEntry protected authority cursor frame (action protected)
 
     inEntry ::
         (forall protected. ProtectedSession protected -> IO (Either SessionError result)) ->

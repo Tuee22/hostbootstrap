@@ -34,6 +34,16 @@
 - `durable-readback` declares `AssertAcrossRestart`; the engine owns the fresh same-run lifecycle invocation,
   exact plan rebind, and write → settled destroy → forward → read choreography.
 
+`hostbootstrap-core-test` links with `-threaded` because native handoff DATA tests send multi-megabyte
+frames through real same-process pipes. A blocking write must leave the peer reader and whole-action
+timeout schedulable; a nonthreaded RTS can block both. This test runtime requirement changes no
+production interpreter or authority boundary.
+
+The Python packaging guard requires production consumers for live Haskell builders. Retired Incus
+lifecycle builders are asserted absent; shared start/stop names remain required for Lima. A deliberate
+API removal updates that guard and revalidates the covered Python evidence through the
+[Python pre-binary-floor phase](../../DEVELOPMENT_PLAN/phase-1-python-pre-binary-floor.md).
+
 ## Gate Kinds
 
 Four gates exist, and confusing them is how coverage silently disappears. Each proves a different class
@@ -76,8 +86,12 @@ The independent cluster-phase live gate is the bare Haskell binary's `hostbootst
 case, not a Python bootstrapper verb. It is a `linux-cpu` substrate gate rather than the demo gate: one Harness-owned Kind plan creates the
 run-scoped cluster; the assertion performs read-only Kubernetes observation and concurrently asks Docker to
 assign loopback ports to two isolated same-listener containers without supplying host numbers; the allocation
-bracket requires distinct inspected ports and proves both exact containers absent. The ordinary exact reverse
-then proves labelled-node absence plus survival of the run's durable sentinel.
+bracket requires distinct inspected ports, stops creation workers before cleanup, removes both fixed names
+and verifies their absence even after interruption. The private transaction is tested with the fake Docker
+client; its answers are fixture evidence. A test-only home module includes the production bare module
+so value cases exercise its actual plan and kubeconfig argument functions without publishing them.
+Assertion refusals retain their reason in the report. The ordinary
+exact reverse then proves labelled-node absence plus survival of the run's durable sentinel.
 
 The host static gate is not the complete quality gate: it runs neither `fourmolu` nor `hlint`. Those run
 in the repository source gate that `base build` and `base build-and-push` run on the host before Docker,
@@ -110,11 +124,44 @@ walker. A guard over one named module reads that file with an ordinary `readFile
 UTF-8 locale and, where it needs tokens, hands the text to the lexical half. Both the core and demo
 suite drivers initialize that locale before tests run.
 
+Haskell fragment guards receive source before whitespace collapse. The shared
+`stripHaskellComments` reader retains literal contents, pragma tokens, newlines and token separation;
+definition-block readers keep their own pragma-removing mode. A line comment loses its terminator if
+whitespace is normalized first, so stripping inside a helper cannot repair an already-collapsed caller.
+Section boundaries use actual declarations, with explicit inclusion of a starting declaration when its
+header belongs to the checked section. Synthetic controls reject line and nested-block examples while
+accepting the same live code, and preserve comment characters inside literals.
+
+Handoff's ordered fragment checks use `haskellTokens` over both the original source and each required
+fragment. Each match consumes a contiguous token run before looking for the next fragment; a failure
+names the first unmatched fragment. Comments cannot supply a required identifier, an identifier cannot
+match part of another token, and a string literal matches only an explicitly quoted fragment. Pure
+controls cover those distinctions, layout changes, reversed order, repeated matches, and empty fragments.
+
+Caller ownership checks inspect definition-body references rather than imports or commented examples.
+The clause reader covers every real equation of a function; the unique-binding reader retains its
+separate ambiguity refusal. Their expected caller set is exact and nonempty. Source-root controls compare declared and actually scanned
+roots and require a module from the main library's additional backend directory, so a partial walk
+cannot silently satisfy the import audit.
+
 `componentStanzas` reads every library, executable, test suite, benchmark, and foreign library, including
 source directories inherited through common stanzas. `namedStanza`, `fieldValues`, and `fieldModules`
 share case-insensitive field reading across inline, continued, and comma-separated values.
+Handoff's migrated absent-module loops read all module-registration fields across the complete package
+description, including common and conditional fields, and compare complete module names. Synthetic
+descriptions cover inline and comma-separated registrations and reject commented examples.
 `listComponentSources` walks those effective roots; `listTestSources` and `forEachTestSourceBut` cover
 every test-suite root while excluding compile-fail inputs that are compiled separately.
+
+Guards scoped to Main's registered implementation use `mainImplementationSources`: the modules registered
+to Main and `handoff-implementation-internal`. `mainImplementationOwners` supplies their actual component
+headers, and `mainImplementationModuleNames` supplies the same registration inventory without reading
+source bodies. `mainImplementationHiddenModules` subtracts the effective Main facade; it describes
+consumer visibility, not whether a private unit exposes a module to trusted components. Each source must
+lie within its registered owner's effective roots. Registration completeness uses a separate physical-file census and
+independently expected roots, so an undeclared file remains visible. Existing all-library audits retain
+their broader scope. Physical ownership checks report package-relative paths and compare them with
+independent expected paths; a source lookup does not supply its own expected ownership result.
 
 Library module readers use the source directories declared by every library stanza, deduplicate
 overlapping paths, and retain the module declaration's identity when its file moves. A lookup that
@@ -135,6 +182,65 @@ members and foreign binders, and reject unsupported forms; an identifier occurre
 import, comment or literal is insufficient. The registered fixture set must match the files exactly once.
 A separate token inventory pins the exposed facades that import hidden/private implementation and the
 locally sealed registry plan, while every named library stanza must explicitly remain private.
+The public-facade reader includes Main's exposed modules and bare, unrenamed reexports, resolving each
+to its actual source home. Unsupported reexport qualification or aliases refuse explicitly. Reviewed
+literal export lists remain the expected values, and the sealed-input policy applies equally to a
+facade defined in Main and one reexported from its implementation owner. Physical source uniqueness
+and shared compiled identities are separate claims; compiler-unit visibility and real consumer controls
+establish the latter.
+
+The private `cluster-exposure-internal` unit shares the production relay with `ExposureRelaySpec`.
+Its static gate cases use real loopback sockets to check TCP half-close, bind-failure cleanup and
+asynchronous cancellation; errno classification is checked as ordinary data. They establish those
+native socket contracts without claiming container-runtime or cluster acceptance.
+
+The handoff implementation has 57 physical module homes in its disjoint private root. Main's home roots
+are `src` and `internal/cluster-backend`, and its effective public surface remains 104 modules through
+its own declarations and 37 reexports. The private implementation exposes 52 modules to trusted
+components and retains five `other-modules`; Main reexports the public 29, while the core-test mixin
+selects only `Handoff.Protocol`, `Handoff.Receiver`, `Handoff.Relay`, `Handoff.Internal` and
+`Handoff.Rooted`. The other 18 trusted-Main implementation origins remain withheld from that test
+context. Ownership guards check the actual owner and field before allowing a named trusted-Main
+exposure. Other component edges, the five unit-hidden modules and independent DATA identities retain
+their separate checks.
+The public export inventory holds 97 reviewed literal lists under the unchanged sealed-input policy.
+
+Both Cabal projects persist `package hostbootstrap-core` / `build-info: True`. Test-context compiler
+controls locate the running binary's current plan row and generated component build-info JSON, validate
+its component, unit, compiler and package identities, and use its actual compiler arguments. The official
+Main-only context remains a separate consumer proof. Same-file positives establish the selected five
+test imports, while module maps and named compiler refusals check the production identities withheld
+from that context. An available same-name DATA module requires a unit-origin and typed-identity check;
+its unqualified import alone says nothing about access to the production implementation.
+
+Scoped runtime controls compile a temporary executable with those actual arguments plus one explicit
+private-module selection. The native no-replace control selects Config.Install.Native; the provider-share
+descriptor control selects Lifecycle.Execution.Internal and lists its five declared test home modules.
+The latter compares valid share preparation with a descriptor that omits the provider, asserting the
+complete conflict and zero dependency probes/continuations. Both controls preserve the ordinary mixin,
+public exports and warning policy; the normal hidden-import refusal remains an independent case.
+
+The three provider-origin runtime controls need a constructor owned by Main's hidden observation
+module. Their temporary producer compiles in the actual Main unit, using byte-checked interfaces for
+only its currently declared home modules and the actual test compiler arguments. It compiles the
+declared test helpers in that same unit before linking; stale interfaces and reexported DATA homes
+cannot introduce a second type identity. The resource-key, generation and alternate-realization cases
+assert the complete conflict, zero provider commands and zero continuations. The regular test mixin,
+public exports, and warning policy remain unchanged.
+
+The alias-plan control additionally selects the actual plan-resource unit for its temporary
+constructor and changes only the planned alias digest after obtaining its observed handle. Its
+FakeProvider subprocess dispatch runs the same backend fixture handler as the normal suite.
+The generation and share-origin controls instead stop/delete generation 17 and publicly provision
+generation 18, retaining the prior backend or share. These cases check exact conflicts and no probes
+or continuations; successful preparation and a failing fresh share probe bracket those refusals.
+
+Prepared alias acquisition cases use FakeProvider's shared alias handler to launch the exact
+shipped guest argv as a real local suite child with inherited protocol pipes. They verify the
+filesystem result and complete settlement rather than supplying an ownership response. Their
+platform family counts the same acquisition cases and the same unsupported-row refusals on every
+host. The retained-link prior proof is verified from the actual first settlement's operation key
+and its admitted plan/resource/generation; the generic managed handle and receipt stay private.
 
 The enumeration is checked rather than frozen: each declared module resolves under its component's
 effective source directories, and every enumerated module file belongs to a component. The same inventory
@@ -172,7 +278,7 @@ guard proves the same thing everywhere, which is exactly why it may not be writt
   `windowsGlobalWallSupported`, and `localGuestAliasSupported` — rather than from a build symbol the
   suite repeats, so the expectation cannot drift from the subject it is about. A compile-fail fixture expects
   one diagnostic, because the module it names is built everywhere.
-- **No case is skipped, and no module is excluded from the build.** A case whose subject is unavailable on
+- **Every platform case remains in the suite, and no module is excluded from the build.** A case whose subject is unavailable on
   this gate host asserts the refusal its row declares; it does not disappear. A conditional that changes
   an *expectation* keeps the evidence, while one that removes the case removes it — and a green total that
   quietly shrank on one family is the most complete form of spoofing available, because the number reads
@@ -222,6 +328,15 @@ than closing it, and the parent observes the contention, kills the probe, and re
 carries no finalizer, so nothing in the probe can release that lock and the successful re-open is evidence
 about the kernel rather than about a cleanup path.
 
+The POSIX lock-probe child is bracketed, so a failed contention assertion still terminates and reaps
+it. The occupied helper accepts only OwnershipOccupied; its own cases prove that probe and unsupported
+faults fail the assertion. Real-kernel cases exercise a FIFO, permission-denied creation and observation,
+and cross-mount publication. Mode-bit cases state a prerequisite exception when the process is root,
+which bypasses those permissions; an unprivileged run exercises their actual denial paths. Cross-mount
+publication states a prerequisite exception if a distinct temporary mount is unavailable. These cases
+stay registered in the fixed conditional-family sizes. Successful parent sync proves that the parent
+can be opened and synced; crash durability requires separate crash-injection evidence.
+
 The protected-store liveness case separately launches an executed child that remains alive after its parent
 leaves the liveness extent. The parent immediately reacquires the same kernel lock before terminating the
 child. That observation proves the lock descriptor is close-on-exec; a subprocess fixture that exited first
@@ -232,6 +347,11 @@ that liveness case carry no Windows condition, unlike the POSIX ownership row's 
 exclusive entry is `base`'s portable `hLock`/`hTryLock`, which is `flock`/`fcntl` on POSIX and `LockFileEx`
 on Windows, and the probes reach it through the suite's own re-invocation route rather than a POSIX-only
 primitive, so they exercise the real kernel lock on every gate host.
+
+The recovery-interruption probes close sibling readiness files before renaming them into place.
+`RecoveryInterruptionSpec` brackets producer termination and reaping around readiness checks, so a
+failed assertion or timeout also cleans up the child. Successful cases still kill a real process and
+open the same protected store in a successor to check its exact convergence or refusal.
 
 The suite's liveness probe returns 0 for acquisition, 3 for a live peer and 4 for a typed refusal.
 Authority cases exercise a live peer before/after release, invalid names before filesystem effects,
@@ -250,7 +370,11 @@ project/store mismatch, conflict and reverse-root replay cases exercise the same
 The protected-store codec cases exhaustively enumerate short one- and two-segment identity paths,
 checking the inverse, case-fold injectivity and exclusion of the tuple separator. Real records cover
 case/underscore/dotted tuples, and actual copied executables provide installed project identities for
-mode, Harness ownership, liveness and hard-kill recovery; no installed identity is forged for a fixture.
+process-scoped mode, Harness ownership, liveness and hard-kill recovery.
+Pure recovered-profile compatibility backstops also use the existing private production name validator
+and separately produced Mode packages for foreign-name inputs. They cover the pure join over values;
+public executable-name admission and nominal non-forgeability retain their separate runtime and
+compile-fail controls.
 Old/unknown/empty identity envelopes and populated identity-less stores must refuse with their bytes
 unchanged. Runtime ownership cases exercise exact encoded provider-share recovery against the fixture
 client process and the real protected store.
@@ -308,12 +432,25 @@ declares that hardware**. Coverage that is owed and named is a smaller claim tha
 simulated, and it is a true one. The normative statement is
 [development_plan_standards.md § NN](../../DEVELOPMENT_PLAN/development_plan_standards.md#nn-evidence-and-what-cannot-count-as-it).
 
-The two ownership rows are not symmetric. Seven clauses the POSIX row's families assert have no Windows
-case at all — four symbolic-link behaviours and three that are not platform-specific (a probe that
-cannot answer is a fault, the kernel releases the exclusion when the holding process dies, and removing
-an absent object is a fault). `CoverageManifest` freezes the
-deficit at that size, so a Windows row that loses another clause fails, but the deficit is a coverage gap
-in the Windows row rather than a property of Windows (see [Current Status](#current-status)).
+The two ownership rows share the closed fault assertions and the real-child handle probe mechanics.
+Their fixed families cover identity, publication, exclusion and removal on every gate host. Windows
+also exercises native junctions, denied content reads with attribute-only identity, and directory flushes;
+POSIX adds FIFO, mode-bit and cross-mount cases. The owning phase records native kernel runs and the
+complete static gate. A family whose row is unavailable asserts that row's refusal and remains
+registered.
+
+The [host-tool fixtures](../../core/hostbootstrap-core/test/Fixture.hs) write stand-in executables
+whose output and exit status a spec chooses. Production resolves them through its normal tool
+configuration and command interpreter. Their process observations prove the code's reaction to
+those raw inputs; they establish no real Docker or Incus behaviour.
+
+The plain, exhausting and recording helpers quote report text as data on both hosts. POSIX uses
+single-quoted arguments with embedded apostrophes escaped; Windows shares one cmd echo escaper
+and uses echo with its opening-parenthesis form. Native round-trip cases preserve JSON and shell
+metacharacters, and POSIX also preserves a non-ASCII character. They compare complete captured
+streams, including native process newlines, and inspect the temporary directory for unintended
+redirection files. The exhausting helper's owned calls marker and the recording helper's transcript
+are explicit fixture state. A test-tree source guard prevents the unused refusing helper from returning.
 
 ## Current Status
 
@@ -325,7 +462,10 @@ Harness state under project liveness, then evaluates the safety precondition bef
 fresh lease, data root, config, or plan. The engine invokes its forward action,
 opens the assertion environment, runs the selected cases, and for `AssertAcrossRestart` cases invokes an
 intermediate reverse, a protected fresh same-run forward, and an `AfterRestart` assertion before its one final
-reverse and absence assertion. Both assertion phases retain one report row. A non-refusal bring-up
+reverse and absence assertion. A scoped suite is materialized inside the run's lifecycle bracket from
+its actual Harness authority and canonical generated config; it cannot change the registered case set.
+The bare suite decodes with that scoped codec and refuses a config differing from the retained value.
+Both assertion phases retain one report row. A non-refusal bring-up
 failure still enters the same reverse path. Only a refusal that the command independently verifies
 preceded project-resource acquisition becomes `SafetyRefusal` and skips reverse; a late refusal is
 classified as refused but still tears down. The demo generates two
@@ -362,6 +502,9 @@ Linux/x86_64 KVM/Incus provider gate. That gate runs the static cases and then t
 covering forced restart, post-restart guest readiness, execution of the installed
 frame-child entry, conditional alias release, identity-conditional delete, the mutation-free Direct
 refusal, and exact residue checks. Its dated run and totals belong to that phase.
+Its provider regression cases replace the actual stand-in instance or canonical Direct root, and
+require typed refusal before dependent continuation. Running-provider and provider-share replay cases
+consume a nonce, register the exact package again, and require owner-side rejection before a new probe.
 
 The [base-image-publication-and-opportunistic-warm-store
 phase](../../DEVELOPMENT_PLAN/phase-23-base-image-and-warm-store.md) records its separate publication
@@ -405,10 +548,6 @@ Three gaps separate the tree from this page's target contract:
   runtime check fails a run that touches them. The
   [test harness and run ownership phase](../../DEVELOPMENT_PLAN/phase-19-test-harness-and-run-ownership.md)
   owns this gap.
-- **The Windows ownership row asserts fewer clauses than the POSIX row.** The seven clauses named under
-  [What counts as evidence](#what-counts-as-evidence) have no Windows case. The
-  [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)
-  owns closing it, against a Windows gate host.
 
 ## Supported Fast Test Entries
 
@@ -513,11 +652,13 @@ verified records and walks child-to-parent while each child remains reachable.
 
 The explicit pure zero-dependency operation and phase entries derive their empty preconditions rather
 than accepting a retained set, and refuse any descriptor with dependencies. Their empty branch needs
-no dependency probe IO. Generic operation and phase preparation still accept caller-retainable sets;
-the matching step does not establish when their observations ran. Complete gate-first snapshot
-admission is the target owned by the
-[prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md), separately from
-the already checked protected journal gate and the still-public low-level gate-writer limitation.
+no dependency probe IO. Canonical operation and generic phase preparation accept snapshots in IO,
+check their gate before running the complete traversal, and expose no retained-set producer. Generic
+phase preparation also checks its exact receipt and transition before probing. Chart, Cluster,
+guest-alias and provider-share consumers reach that canonical entry. The precondition-set representation
+is private, and exact definition/export inventory holds the generic fresh and explicit pure zero-edge
+families. These guarantees are separate from the protected journal gate and the still-public low-level
+gate-writer limitation.
 
 The durable-readback program uses the engine-owned two-phase assertion form and a protected fresh
 lifecycle-invocation generation under the same run, config, durable root, and plan. No lifecycle action enters
@@ -546,7 +687,10 @@ tests.
 Transaction codec and redo evidence are separate. The existing `Session.Testing` vocabulary forwards
 the real pure `decodeCoordinator` beside its encoder; this observes data and adds no permit producer
 or runner. The already private `lifecycle-transaction-internal` unit exposes only `Session.Testing`;
-`Lifecycle.Transaction` is in its `other-modules`, and the main library retains its own hidden copy.
+`Lifecycle.Transaction` is in its `other-modules`. The production copy belongs to
+`handoff-implementation-internal` and remains hidden there; that unit imports neither transaction nor
+dependency DATA library. The two DATA routes retain independent compiled identities even where they
+share a physical source file with production.
 The bounded reconstruction matrix below supplies its own redo observations, separately from this
 module-list boundary.
 
@@ -563,12 +707,21 @@ module-list boundary.
 - The prepare kill-point is the `SessionSpec` case "a prepare records the unknown phase before the adapter
   runs": the durable operation record names the effect that may be in flight before any adapter effect
   runs, so a crash after that point leaves a journaled unknown phase rather than an unrecorded effect.
+- `ChainSpec` checks durable-before-effect ordering with a nonblocking protected-entry probe inside the
+  actual action. A held entry fails the case rather than hanging it; the captured store phases must be
+  exactly `EffectOutcomeUnknown`. Its observation-row cases execute the interpreter's result conversion.
 - `ReconcileSpec`'s explicit zero-dependency preparation controls require a genuine matching pair,
   direct nonempty-edge refusal, exact gate-coordinate/attempt refusals and a managed force-destroy
   preparation. A dependency-bearing managed phase must still succeed through the generic factory
   while the zero-phase entry refuses the same descriptor without delivering its continuation.
-  These validation targets preserve the full phase capability; they claim no generic fresh-probe
-  timing, live cleanup or hardware confirmation.
+  The dependency-bearing generic phase case also checks fresh snapshot observation and receipt/
+  transition refusal before probing. These controls claim no live cleanup or hardware confirmation.
+- `ReconcileSpec`'s fresh snapshot controls count actual probe and continuation executions, consume
+  the successful pair through reconciliation, and require gate refusals before any probe. Missing and
+  duplicate members refuse through fresh preparation itself. Counted chart and ProviderReconcileSpec
+  controls exercise the actual consumer paths with one fresh ready/not-ready observation. Positive
+  journal versions come from real CAS readback and the sealed gate's compiler boundaries; these cases
+  do not forge an unreachable zero-version gate or establish live backend behavior.
 - Transaction wire controls independently observe Unicode descriptor-plan data through the actual
   encoder and pure decoder, the public ASCII-only session-name refusal, and a genuine ASCII
   `TxnOpenSession` AfterApplying recovery with an absent new target. Only the last exercises journal
@@ -601,10 +754,12 @@ module-list boundary.
   stanza check requires private visibility, the exact Testing-only exposed list, Transaction in
   `other-modules`, and the main library's hidden copy. These controls construct no transaction permit.
   The runtime path has no fixture stop branch or injected crash counter.
-- `CompileFailSpec` holds the prepared-pair fixtures: `ForgePreconditionSet.hs` (a caller cannot build an
-  `OperationPreconditionSet` or a `DependencySnapshot`), `ForgePreparedGate.hs` (nor construct or relabel a
+- `CompileFailSpec` holds the prepared-pair fixtures: `ForgePreconditionSet.hs` (the precondition-set
+  representation cannot be imported), `ForgeDependencySnapshot.hs` (the snapshot constructor is private),
+  `ForgePreparedGate.hs` (a caller cannot construct or relabel a
   `PreparedGate`), and `MismatchPreparedPairRoles.hs` (nor pair a `PreparedOperation` with
-  `PreparedPreconditions` from a different operation or attempt).
+  `PreparedPreconditions` from a different operation or attempt). `ImportOperationPreconditions.hs`
+  holds the private traversal-producer boundary at a genuine public import.
 - The live items above are held by the phase gates named in [Current Status](#current-status); their dated
   runs belong in those phases.
 
@@ -618,3 +773,15 @@ module-list boundary.
 - [durable state](../architecture/durable_state.md) — the durable root, `.data` carry, and the gates that prove destroy/up/readback.
 - [readiness](../architecture/readiness.md) — readiness witnesses and legible failure.
 - [demo runbook](../operations/demo_runbook.md) — operator-facing demo commands and cautions.
+
+The Colima native fixture result family has two cases on every gate host. On a POSIX host it
+retains actual ready-toolchain or missing-Colima Brew evidence from the existing native fixture
+pipeline. On Windows each case asserts the native apple-silicon-required result. CoverageManifest
+checks the unchanged family size and completed row/refusal callbacks; no ready value is manufactured
+for a backend that cannot produce one.
+
+The direct-Colima inventory also records its native-only cases and its opt-in live lane. Pure
+command, report, and fingerprint assertions run on every host. A dedicated Windows case checks the
+native backend refusal; the live lane reports when it was not requested and rejects invalid opt-in
+values. Its parent-death probe waits for an atomically published positive PID and accepts only the
+explicit process-not-found result as evidence that the child is gone.

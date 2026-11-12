@@ -36,6 +36,7 @@ module HostBootstrap.Cluster.Reconcile (
     ManagedClusterHandle,
     managedClusterKey,
     managedClusterGeneration,
+    managedClusterBackendIdentity,
     ClusterReconcileSettlement,
     withClusterReconcileSettlement,
     carryClusterReconcileSettlement,
@@ -61,25 +62,13 @@ module HostBootstrap.Cluster.Reconcile (
     ClusterReadinessCallResult,
     ClusterReadinessResultView (..),
     clusterReadinessResultView,
+    clusterApiNotReadyRefusal,
     ClusterReadiness,
     settleClusterReadiness,
     withFreshClusterReadiness,
     reprobeClusterReadiness,
     clusterReadinessProbe,
     withClusterReadinessResourceHandle,
-    withRecoveredClusterReadiness,
-    ClusterCleanupCallResult,
-    ClusterCleanupResultView (..),
-    clusterCleanupResultView,
-    PreparedClusterCleanup,
-    withPreparedClusterCleanup,
-    preparedClusterCleanupHandle,
-    preparedCleanupClusterName,
-    preparedCleanupStateDirectory,
-    preparedCleanupOwnershipIdentity,
-    preparedCleanupConfigPath,
-    preparedCleanupNodeNames,
-    settleClusterCleanup,
     runExactClusterCleanupKernel,
 )
 where
@@ -90,7 +79,6 @@ import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
 import Data.Char (digitToInt)
-import Data.IORef (atomicModifyIORef', newIORef)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -127,10 +115,9 @@ import HostBootstrap.Cluster.Lifecycle (
  )
 import HostBootstrap.Cluster.Observation.Internal (
     ClusterBackendBinding,
-    ClusterCleanupCallResult (..),
-    ClusterCleanupObservation (..),
     ClusterCordonCallResult (..),
     ClusterCordonObservation (..),
+    ClusterReadiness (..),
     ClusterReadinessCallResult (..),
     ClusterReadinessObservation (..),
     ClusterReconcileCallResult (..),
@@ -154,6 +141,8 @@ import HostBootstrap.ProjectPlan (
     renderSnapshot,
     stablePlanSnapshotDigest,
  )
+import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
+import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
 import HostBootstrap.Reconcile (
     BackendReconcileObservation (..),
     ChangeView,
@@ -176,7 +165,6 @@ import HostBootstrap.Reconcile (
     carryManagedResourceSettlement,
     completePreparedUnchanged,
     completeReconcile,
-    dependencyProbe,
     emptyDependencySnapshot,
     plannedNodeOperation,
     plannedProjectOperation,
@@ -187,7 +175,6 @@ import HostBootstrap.Reconcile (
     withDependencySnapshotEntry,
     withNodeObservedResource,
     withObservedProjectResource,
-    withOperationPreconditions,
     withPreparedOperation,
     withReconcileResult,
  )
@@ -195,9 +182,9 @@ import HostBootstrap.Substrate.Provider.Dependency.Internal (
     ProviderShareDependency,
     RunningProviderDependency,
     providerShareDependencyHandle,
-    providerShareDependencyReprobe,
+    providerShareDependencyProbe,
     runningProviderDependencyHandle,
-    runningProviderDependencyReprobe,
+    runningProviderDependencyProbe,
  )
 import HostBootstrap.Teardown (
     LocalWork,
@@ -256,9 +243,10 @@ data
 
 type role PreparedClusterReconcile nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
-{- | Exact bytes observed at preparation for the plan-derived config path.
-The constructor is private; the backend receives only path/digest
-projections and revalidates both under the ownership lock before mutation.
+{- | The plan-derived config path and the digest of its in-memory rendering.
+The opaque plan-owned config binds the bytes to this digest. Under the ownership
+entry, the backend stages those retained bytes and verifies the staged digest
+before the creating command receives its private path.
 -}
 data PreparedClusterConfig = PreparedClusterConfig FilePath Text
 
@@ -327,20 +315,17 @@ withPreparedClusterReconcile
                 let snapshot =
                         withDependencySnapshotEntry
                             (runningProviderDependencyHandle runningProvider)
-                            (dependencyProbe (runningProviderDependencyReprobe runningProvider))
+                            (runningProviderDependencyProbe runningProvider)
                             shareSnapshot
                     shareSnapshot = case providerShare of
                         Nothing -> emptyDependencySnapshot
                         Just share ->
                             withDependencySnapshotEntry
                                 (providerShareDependencyHandle share)
-                                (dependencyProbe (providerShareDependencyReprobe share))
+                                (providerShareDependencyProbe share)
                                 emptyDependencySnapshot
-                sealed <- withOperationPreconditions descriptor snapshot
-                pure $ do
-                    preconditionSet <- sealed
-                    withPreparedOperation descriptor preconditionSet gate $ \prepared preconditions ->
-                        consume (PreparedClusterReconcile configured configBinding observed prepared preconditions)
+                withPreparedOperation descriptor snapshot gate $ \prepared preconditions ->
+                    consume (PreparedClusterReconcile configured configBinding observed prepared preconditions)
 
 {- | Stable generation of this exact admitted cluster resource.
 
@@ -535,8 +520,8 @@ settleClusterReconcile priorProof (PreparedClusterReconcile _package _config han
                     ( ConflictDetail
                         (resourceHandleKey handle)
                         "a healthy cluster owned by this plan"
-                        ("an unhealthy same-named cluster (identity=" <> identity <> ")")
-                        "resolve or remove the unhealthy cluster by hand; a same-named cluster is never auto-deleted"
+                        ("this plan's owned cluster has stopped node containers (identity=" <> identity <> ")")
+                        "start the stopped node containers or run project down to release this plan's owned cluster through its ownership record; an owned cluster is never auto-deleted"
                     )
                 )
         ClusterProbeFailed reason ->
@@ -781,7 +766,10 @@ settleClusterCordon (PreparedClusterCordon package managed) (ClusterCordonCallRe
         ClusterCordonFailed reason ->
             Left (Failure (FailureDetail "apply exact cluster cordon" reason ReprobeBeforeRetry))
 
--- | Descriptive, non-authorizing projection of a strong readiness result.
+{- | Descriptive, non-authorizing projection of a strong readiness result.
+A not-ready description includes the API diagnostic when the API query refused;
+identity comparisons remain inside settlement over the private observation.
+-}
 data ClusterReadinessResultView
     = ClusterReadinessResultReady Word64 Text
     | ClusterReadinessResultNotReady Text
@@ -794,38 +782,36 @@ clusterReadinessResultView ::
 clusterReadinessResultView (ClusterReadinessCallResult version observation _) = case observation of
     ClusterReady identity -> ClusterReadinessResultReady version identity
     ClusterNotReady identity -> ClusterReadinessResultNotReady identity
+    ClusterApiNotReady identity diagnostic ->
+        ClusterReadinessResultNotReady (apiNotReadyMessage identity diagnostic)
     ClusterReadinessProbeFailed reason -> ClusterReadinessResultProbeFailed reason
 
--- | Readiness evidence for the exact managed cluster generation.
-data ClusterReadiness scope planId clusterId phase where
-    ClusterReadiness ::
-        ManagedClusterHandle scope planId clusterId phase ->
-        IO
-            ( ClusterReadinessCallResult
-                scope
-                specDigest
-                planId
-                configId
-                cfg
-                clusterId
-                clusterFrame
-                providerId
-                providerFrame
-                budgetId
-                provider
-                capabilityId
-                wallSpecId
-                workloadSetId
-                partitionId
-                phase
-            ) ->
-        ClusterReadiness scope planId clusterId phase
-    RecoveredClusterReadiness ::
-        ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
-        IO (Either ReconcileError Word64) ->
-        ClusterReadiness scope planId clusterId phase
+{- | Classify an API-not-ready observation as a descriptive refusal only.
+The resource key, expected identity, observed identity and diagnostic are values;
+no argument or result carries lifecycle authority. A replacement remains a
+conflict even when the API also reports a readiness diagnostic.
+-}
+clusterApiNotReadyRefusal :: Text -> Text -> Text -> Text -> ReconcileError
+clusterApiNotReadyRefusal resource expected observed diagnostic
+    | observed /= expected =
+        Conflict
+            ( ConflictDetail
+                resource
+                ("control-plane identity=" <> expected)
+                ("control-plane identity=" <> observed)
+                "a same-named replacement is not readiness evidence for this plan"
+            )
+    | otherwise =
+        Failure
+            ( FailureDetail
+                "settle cluster readiness"
+                (apiNotReadyMessage observed diagnostic)
+                ReprobeBeforeRetry
+            )
 
-type role ClusterReadiness nominal nominal nominal nominal
+apiNotReadyMessage :: Text -> Text -> Text
+apiNotReadyMessage identity diagnostic =
+    "the managed cluster API is not ready: " <> identity <> ": " <> diagnostic
 
 settleClusterReadiness ::
     AppliedClusterCordon scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
@@ -869,6 +855,14 @@ settleClusterReadinessObservation managed version observation =
                         )
                     )
             | otherwise -> Right version
+        ClusterApiNotReady identity diagnostic ->
+            Left
+                ( clusterApiNotReadyRefusal
+                    (managedClusterKey managed)
+                    (managedClusterBackendIdentity managed)
+                    identity
+                    diagnostic
+                )
         ClusterNotReady identity
             | identity /= managedClusterBackendIdentity managed ->
                 clusterIdentityConflict managed identity "a same-named replacement is not readiness evidence for this plan"
@@ -890,8 +884,8 @@ exact managed cluster generation has been observed ready.
 -}
 clusterReadinessProbe ::
     ClusterReadiness scope planId clusterId phase ->
-    DependencyProbe scope planId clusterId ClusterResource
-clusterReadinessProbe evidence = dependencyProbe (reprobeClusterReadiness evidence)
+    DependencyProbe scope planId clusterId ClusterResource ProbeKernel.ClusterApiReady
+clusterReadinessProbe evidence = Dependency.dependencyProbeWithKind ProbeKernel.ClusterApiKind (reprobeClusterReadiness evidence)
 
 withClusterReadinessResourceHandle ::
     ClusterReadiness scope planId clusterId phase ->
@@ -899,23 +893,6 @@ withClusterReadinessResourceHandle ::
     result
 withClusterReadinessResourceHandle (ClusterReadiness managed _) consume = consume (managedClusterResourceHandle managed)
 withClusterReadinessResourceHandle (RecoveredClusterReadiness handle _) consume = consume handle
-
-withRecoveredClusterReadiness ::
-    ResourceHandle scope planId clusterId ClusterResource Managed observedPhase ->
-    Word64 ->
-    (ClusterReadiness scope planId clusterId phase -> result) ->
-    IO (Either ReconcileError result)
-withRecoveredClusterReadiness handle version consume
-    | version == 0 = pure (Left (Failure (FailureDetail "recover cluster readiness" "fresh observation version must be positive" DoNotRetry)))
-    | otherwise = do
-        unused <- newIORef True
-        let reprobe = do
-                available <- atomicModifyIORef' unused (\current -> (False, current))
-                pure $
-                    if available
-                        then Right version
-                        else Left (Failure (FailureDetail "recover cluster readiness" "fresh readiness observation has already been consumed" DoNotRetry))
-        pure (Right (consume (RecoveredClusterReadiness handle reprobe)))
 
 {- | Rerun the backend-bound read-only readiness probe retained by the opaque
 evidence.  The returned version is descriptive and non-authorizing on its own;
@@ -931,114 +908,6 @@ reprobeClusterReadiness (ClusterReadiness managed reprobe) = do
 reprobeClusterReadiness (RecoveredClusterReadiness _ reprobe) = reprobe
 
 -- | Descriptive, non-authorizing projection of a strong cleanup result.
-data ClusterCleanupResultView
-    = ClusterCleanupResultRemoved
-    | ClusterCleanupResultReplaced Text
-    | ClusterCleanupResultFailed ReconcileError
-    deriving (Eq, Show)
-
-clusterCleanupResultView ::
-    ClusterCleanupCallResult scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
-    ClusterCleanupResultView
-clusterCleanupResultView (ClusterCleanupCallResult observation) = case observation of
-    ClusterCleanupRemoved -> ClusterCleanupResultRemoved
-    ClusterCleanupReplaced identity -> ClusterCleanupResultReplaced identity
-    ClusterCleanupFailed err -> ClusterCleanupResultFailed err
-
-data
-    PreparedClusterCleanup
-        scope
-        specDigest
-        planId
-        configId
-        cfg
-        clusterId
-        clusterFrame
-        providerId
-        providerFrame
-        budgetId
-        provider
-        capabilityId
-        wallSpecId
-        workloadSetId
-        partitionId
-        phase
-    = PreparedClusterCleanup
-        ( PlanOwnedClusterConfig
-            scope
-            specDigest
-            planId
-            configId
-            cfg
-            clusterId
-            clusterFrame
-            providerId
-            providerFrame
-            budgetId
-            provider
-            capabilityId
-            wallSpecId
-            workloadSetId
-            partitionId
-        )
-        (ManagedClusterHandle scope planId clusterId phase)
-
-type role PreparedClusterCleanup nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
-
-withPreparedClusterCleanup ::
-    PreparedClusterReconcile scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId operationKey callDigest attempt journalVersion ->
-    ManagedClusterHandle scope planId clusterId phase ->
-    (PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> result) ->
-    Either ReconcileError result
-withPreparedClusterCleanup (PreparedClusterReconcile package _ observed _ _) managed consume = do
-    let handle = managedClusterResourceHandle managed
-    if sameObservedResource observed handle
-        then Right ()
-        else
-            Left
-                ( Conflict
-                    ( ConflictDetail
-                        (resourceHandleKey observed)
-                        ("prepared binding " <> resourceBinding observed)
-                        ("managed binding " <> resourceBinding handle)
-                        "use the managed cluster minted by this exact preparation"
-                    )
-                )
-    validateOwnershipReceipt handle (managedClusterReceipt managed)
-    Right (consume (PreparedClusterCleanup package managed))
-
-preparedClusterCleanupHandle ::
-    PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
-    ManagedClusterHandle scope planId clusterId phase
-preparedClusterCleanupHandle (PreparedClusterCleanup _ managed) = managed
-
-preparedCleanupClusterName :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> String
-preparedCleanupClusterName (PreparedClusterCleanup package _) = planOwnedClusterName (planOwnedClusterConfigBase package)
-
-preparedCleanupStateDirectory :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> FilePath
-preparedCleanupStateDirectory (PreparedClusterCleanup package _) = planOwnedClusterStateDirectory (planOwnedClusterConfigBase package)
-
-preparedCleanupOwnershipIdentity :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> Text
-preparedCleanupOwnershipIdentity (PreparedClusterCleanup package _) =
-    planOwnedClusterOwnershipIdentity (planOwnedClusterConfigBase package)
-
-preparedCleanupConfigPath :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> Maybe FilePath
-preparedCleanupConfigPath (PreparedClusterCleanup package _) = Just (planOwnedRenderedConfigPath package)
-
-preparedCleanupNodeNames :: PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase -> [String]
-preparedCleanupNodeNames (PreparedClusterCleanup package _) = planOwnedClusterNodeNames (planOwnedClusterConfigBase package)
-
-settleClusterCleanup ::
-    PreparedClusterCleanup scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
-    ClusterCleanupCallResult scope specDigest planId configId cfg clusterId clusterFrame providerId providerFrame budgetId provider capabilityId wallSpecId workloadSetId partitionId phase ->
-    Either ReconcileError ()
-settleClusterCleanup (PreparedClusterCleanup _ managed) (ClusterCleanupCallResult observation) =
-    case observation of
-        ClusterCleanupRemoved -> Right ()
-        ClusterCleanupReplaced identity ->
-            clusterIdentityConflict managed identity "a different cluster now holds the name; refusing to delete state this plan does not own"
-        ClusterCleanupFailed err -> Left err
-
 {- | Run the one core-managed cluster cleanup selected by an exact reverse entry.
 
 The durable gate and local work must name the same admitted plan and operation.

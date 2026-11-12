@@ -3,8 +3,8 @@
 {- | Pure ownership and recovery model for WSL's per-user global
 @%UserProfile%\\.wslconfig@ wall.
 
-This module deliberately contains no filesystem, Registry, or Win32 calls. A
-Windows adapter is responsible for holding a platform-authoritative reservation,
+This module contains no filesystem or Win32 calls. The portable Host adapter
+is responsible for holding a platform-authoritative reservation,
 persisting each returned 'PersistedWallRecord' durably, and observing the target
 through an identity-bound conditional file operation. The model supplies the
 legal journal graph and refuses to turn a pathname, matching bytes, or a stale
@@ -13,9 +13,12 @@ receipt into authority.
 The constructors of the owner, specification, reservation, receipt, fence, and
 authority values are hidden. Stable byte identities are admitted through
 rank-2 continuations so a caller cannot accidentally mix the evidence for two
-owners or operations. 'PersistedWallRecord' is intentionally plain untrusted
-data: a future protected Registry backend can encode and decode it, then
-'claimOrResumeWall' validates it against the locally reconstructed reservation.
+owners or operations. 'PersistedWallRecord' is plain data whose phase,origin
+and target identity are trusted from the wall's own @ProtectedStore@,located
+under @%UserProfile%\\.hostbootstrap\\global-wall@. The Host adapter reaches it
+through the POSIX or Windows ownership row. 'claimOrResumeWall' validates shape
+and the locally reconstructed reservation;it does not prove the record's history
+or store provenance through its type.
 
 Every function that advances an existing record also consumes the current
 active durable record. Fence comparison is performed before mutation, so an
@@ -181,7 +184,7 @@ instance Show WslConfigOrigin where
             ++ show (ByteString.length bytes)
             ++ " bytes>"
 
--- | Total target observation supplied by the future platform backend.
+-- | Total target observation supplied by the portable Host adapter.
 data WallObservation
     = ObservedAbsent
     | ObservedPresent ObjectIdentity ByteString
@@ -238,8 +241,9 @@ data WallJournalPhase
     | WallReleased
     deriving (Eq, Ord, Show)
 
-{- | Registry-serialisable model record. This value is untrusted until
-'claimOrResumeWall' validates it against an opaque local reservation.
+{- | Plain data encoded by the Host adapter in the wall's own ProtectedStore.
+The stored phase,origin and target identity are trusted inputs,not type-level
+proofs. 'claimOrResumeWall' validates shape and reservation agreement.
 -}
 data PersistedWallRecord = PersistedWallRecord
     { persistedOwnerIdentity :: ByteString
@@ -297,7 +301,6 @@ data WallConflict
     | TargetAmbiguous ObjectIdentity
     | InPlaceMutationUnsupported ObjectIdentity
     | UnboundStagePresent ObjectIdentity
-    | ConflictingWallPathShare ObjectIdentity
     | UnexpectedTargetAbsent ObjectIdentity
     | UnexpectedTargetPresent ObjectIdentity
     | OriginStateChanged
@@ -351,8 +354,10 @@ data RestoreClassification
 newtype WallReceipt ownerId wallSpecId reservationId receiptId fenceId
     = WallReceipt PersistedWallRecord
 
-{- | Opaque authority available only from a durably applied (or later teardown)
-record with the same active receipt and fence.
+{- | Opaque authority exposed from an applied or teardown phase with a matching
+active receipt and fence. Phase,origin and target identity are trusted from the
+protected-store record;the public record fields and shape admission do not prove
+that a filesystem operation durably applied it.
 -}
 newtype WallAuthority ownerId wallSpecId reservationId receiptId fenceId
     = WallAuthority PersistedWallRecord
@@ -1018,6 +1023,11 @@ revalidateActiveReceipt active (WallReceipt expected) = do
                 )
         else Right ()
 
+{- | Revalidate the receipt before comparing the retained authority payload.
+The authority's own fence comparison is defence in depth:the typed API pairs
+authority and receipt at one fenceId,and revalidateActiveReceipt has already
+equated the receipt's fence with the active record's fence.
+-}
 revalidateAuthority ::
     PersistedWallRecord ->
     WallAuthority ownerId wallSpecId reservationId receiptId fenceId ->

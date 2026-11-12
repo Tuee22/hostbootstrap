@@ -183,7 +183,7 @@ Registry depends on lower Lift and that generic Lift imports no credential polic
 ### Sprint 21.3: The opaque role phase machine [Active]
 
 **Status**: Active
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`,
 `core/hostbootstrap-core/test/compile-fail/ForgeRoleCursor.hs`
 **Substrates**: linux-cpu
@@ -358,7 +358,7 @@ The two range predicates that survive in `HostBootstrap.Cluster.Shipped` and
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Lifecycle.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Cluster/Shipped.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Dependency/Internal.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Dependency/Internal.hs`
 **Production modules**: `HostBootstrap.Cluster.Lifecycle`, `HostBootstrap.Cluster.Shipped`,
 `HostBootstrap.Lifecycle.Dependency.Internal` (3; cap 3)
 **Sprint budget**: no new named type and three call-site adoptions; at most 80 production Haskell lines.
@@ -401,7 +401,7 @@ Routing the runtime dependency package through the shared producer needed the
 ### Sprint 21.6: One fenced admission path [Planned]
 
 **Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`,
 `core/hostbootstrap-core/test/RoleLifecycleSpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/composition_methodology.md`
@@ -792,10 +792,10 @@ sprint closes when the cases below exist and pass under `cabal test all` from `c
 - `demo/src/HostBootstrapDemo/Commands.hs`: `pushImageBlob` takes the plan and calls `readyBlobRouteFor`
   before the push.
 
-### Sprint 21.13: The role phase machine hashes through Digest [Planned]
+### Sprint 21.13: The role phase machine hashes through Digest [Done]
 
-**Status**: Planned
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs`
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/RoleLifecycle.hs`
 **Substrates**: none
 **Docs to update**: `DEVELOPMENT_PLAN/system-components.md`
 
@@ -815,14 +815,17 @@ draft digest recomputed by the signing broker cannot drift from the one the role
 `RoleLifecycleSpec` passes unchanged inside `cabal test all --ghc-options=-Werror` from `core/`, and the host
 static gate (§ JJ) passes.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): `RoleLifecycle.hs`
+no longer defines `sha256Hex` and imports it from `HostBootstrap.Digest`; `RoleLifecycleSpec` passes unchanged
+inside the warning-clean `cabal test all` from `core/`.
+
 #### Remaining Work
 
-- Delete `sha256Hex` from `core/hostbootstrap-core/src/HostBootstrap/RoleLifecycle.hs` and import it from
-  `HostBootstrap.Digest`.
+None.
 
-### Sprint 21.14: The registry and network Haddocks name the generic object store [Planned]
+### Sprint 21.14: The registry and network Haddocks name the generic object store [Done]
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/RegistryPlan.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Network.hs`
 **Substrates**: none
@@ -845,10 +848,15 @@ store address with the product-named `minio.default.svc:9000`; their example add
 `cabal test all` from `core/` passes, and no production source under `core/hostbootstrap-core/src/` contains
 the text `minio`.
 
+Closing evidence, 2026-11-09, native Windows 11 Pro 10.0.26300 (GHC 9.12.4, Cabal 3.16.1.0): the `Network.hs` and
+`RegistryPlan.hs` module Haddocks use `object-store.default.svc:9000`, the `Network.hs` and `Lift.hs` mentions of the
+product name are reworded to the generic object store, no production source under `core/hostbootstrap-core/src/`
+contains the text `minio`, and the warning-clean `cabal test all` from `core/` passed.
+
 #### Remaining Work
 
-- Reword the `minio.default.svc:9000` examples in the `RegistryPlan.hs` and `Network.hs` module Haddocks to
-  `object-store.default.svc:9000`.
+None.
+
 
 ## Remaining Work
 
@@ -872,9 +880,6 @@ the text `minio`.
   `HOSTBOOTSTRAP_REGISTRY_AUTH` on the admitted container route only when a value is forwarded.
 - Sprint 21.12: bind `ReadyBlobRoute` to the identity of the plan it was settled for, and state the revision
   rule core enforces.
-- Sprint 21.13: `RoleLifecycle` takes `sha256Hex` from `HostBootstrap.Digest`.
-- Sprint 21.14: the `RegistryPlan` and `Network` Haddocks use the generic `object-store.default.svc:9000`
-  address.
 
 ## Documentation Requirements
 

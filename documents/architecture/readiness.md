@@ -53,12 +53,11 @@ The private readiness kernel shares that identity without depending on the main 
 The [prepared-operations phase](../../DEVELOPMENT_PLAN/phase-11-prepared-operations.md) owns the
 plan-owned dependency-snapshot traversal. An operation descriptor's edge set
 is the exact ordered **resource-bearing** prefix of the validated plan — a step that owns no plan resource
-has no managed handle to observe, so it contributes no edge. The sealed `OperationPreconditionSet` the
-prepare consumes has two producers. `withOperationPreconditions` iterates that edge set, looks each member
-up in the plan's `DependencySnapshot` of managed resources, and runs the member's registered
-`DependencyProbe` at prepare time; its caller passes no observation list, so selecting, omitting, or
-retaining a member is not expressible. `zeroDependencyPreconditions` is the second producer: it is public,
-accepts only a descriptor whose edge list is empty, and refuses any descriptor that declares an edge.
+has no managed handle to observe, so it contributes no edge. `withPreparedOperation` validates the gate,
+looks up each required member in the plan's `DependencySnapshot` of managed resources, and runs its
+registered `DependencyProbe` itself. The sealed precondition set and its producers are private; callers
+cannot pass an earlier sealed result or choose a subset of the descriptor's edges. The pure zero-edge
+operation and phase entries derive their empty set internally and refuse every edge-bearing descriptor.
 
 The probe registered for a member is the `DependencyProbe` that the code calling
 `withDependencySnapshotEntry` supplied. In production these are backend reprobes:
@@ -93,6 +92,13 @@ phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md) close
 focused, full-static, and independent linux-cpu gates. The recursive coordinator and worked demo consume
 these boundaries for provider, share, cluster, chart, exposure, and alias work.
 
+Recovered cluster readiness is produced only inside the hidden cluster observation module after the
+backend verifies a nonce-bound runtime-service response for the carried resource and logical generation.
+A public managed handle and a caller-supplied number provide no construction route. The recovered value
+retains the actual service invocation: each reprobe uses a fresh sequence nonce, verifies the package
+commitment and response nonce, and returns only a newly observed positive version. A refused probe remains
+a failure; no retained version is replayed. The counter refuses exhaustion instead of wrapping.
+
 Compatibility polling and `IO ()` convenience actions remain descriptive: they do not produce a `Ready`,
 managed receipt, or prepared-operation authority. The demo's `changed` wrapper reports successful return,
 not an idempotence observation. Exact destructive operations still require their managed adapter's receipt.
@@ -109,11 +115,30 @@ that factory; downstream consumers cannot import the kernel or name the injector
 facade. Holding a `PlannedResource` and a constant `ProbeReady` therefore provides no public route to a
 `Probe` or `Ready`.
 
-The public `dependencyProbe` wrapper is a separate gap owned by the
-[cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md): its callers live
-in provider and cluster modules, and that phase owes backend-only construction and the exact readiness
-kind required by each edge. Constructor opacity, nominal roles, and the three independently pinned
-`RawReadiness` diagnostics already protect the boundaries they test.
+The public API provides no raw callback wrapper for `DependencyProbe`. Its producers project opaque
+backend evidence for running providers, durable shares, and clusters, or a backend-minted `Probe` through
+`planDependencyProbe`. Every probe retains its nominal readiness index and runtime kind. A readiness-bearing
+edge refuses an untagged or different kind before running the probe. `ImportRawDependencyProbe` and
+`CoerceProbeReadiness` pin the public construction and readiness-index boundaries.
+The provider report vocabulary now supplies bounded canonical ordinary metadata for a native identity
+and its ready commitment, and one shared positive identity observation hash. The private runtime package
+owner exposes that metadata only for provider packages. These values carry no native provenance or
+readiness authority. Running-package registration captures the actual native identity under the owned
+provider transaction. Each service request compares the complete fresh identity with that captured value.
+The reply's positive observation token is derived from native identity; recovery checks it against the
+retained metadata and uses the independently checked package generation for the carried phase.
+Direct observes the canonical project root's native identity before and after provisioning-egress
+observation; it claims no ownership of the host. An unavailable identity row returns typed Unsupported.
+A bounded canonical refusal envelope preserves Conflict and Unsupported through the existing response
+framing, after commitment and nonce verification. Transport and malformed-envelope faults still refuse.
+Exact running-provider and provider-share registration retains the original live service closure,
+including consumed nonces. A changed canonical package or a route bound to another commitment
+returns typed Conflict;
+replay refuses before a fresh provider/share observation. Other live-service replacement routes keep
+their existing behavior.
+The [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+records the actual validation.
+
 Dated validation belongs in [the development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
 ## Readiness contract
@@ -152,9 +177,9 @@ representation or polling loop. The plan- and operation-indexed
 types readiness feeds — `ResourceHandle`, `DependencyProbe`, `DependencySnapshot`,
 `OperationDescriptor`, `OperationPreconditionSet`, `PreparedOperation`, and `PreparedPreconditions` — are
 defined in [`Reconcile`](../../core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs); `PreparedGate`
-comes from [`Lifecycle.Prepared`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared.hs),
+comes from [`Lifecycle.Prepared`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs),
 and `OperationAdvance` from
-[`Lifecycle.Session`](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs). Their opacity
+[`Lifecycle.Session`](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs). Their opacity
 contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque-capabilities).
 
 - The `Ready`, `PollPolicy`, `Micros`, and `ObservedReady` constructors are hidden by the export list of
@@ -173,9 +198,9 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
 - `BackendProbeKey resource dependency` fixes which dependency evidence a probe of a resource family can
   mint, and `withBackendProbe` requires the exact `PlannedResource`, which fixes the plan indices; a
   caller cannot pick an unrelated dependency phantom for a key. The observation function is supplied by
-  the backend or test component through the private factory. The separate public `dependencyProbe`
-  wrapper still accepts a caller-supplied observation (see [Current Status](#current-status)). Only a
-  managed dependency enters the authorizing path —
+  the backend or test component through the private factory. Public dependency probes come from opaque
+  backend evidence and carry the corresponding readiness index and runtime kind. Only a managed dependency
+  enters the authorizing path:
   `withDependencySnapshotEntry` requires a `Managed` handle — and a convenience probe of an unmanaged or
   foreign dependency yields only the non-authorizing `ObservedReady`.
 - Every managed-resource effect declares its readiness requirements through an opaque
@@ -186,21 +211,20 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
   caller-supplied plan digest, frame, or dependency list enters it. Two classes are outside this rule and
   mint no authority: compatibility polling (`pollUntilReady`, `awaitObservedReady`) and `IO ()`
   convenience actions.
-- `withOperationPreconditions` takes that descriptor and the plan's `DependencySnapshot`, runs each
-  member's registered probe, and returns the `OperationPreconditionSet`. A member the snapshot lacks is a
-  `Failure`, a member registered twice is a `Conflict`, and a probe's own error propagates. The caller
-  cannot pass a retained witness, choose a member, or omit an edge. `zeroDependencyPreconditions` is the
-  second, public producer and accepts only a descriptor with an empty edge list.
-- `withPreparedOperation` consumes the descriptor, that set, and the `PreparedGate` that
-  `recordDurableUnknown` produces after publishing the operation's unknown phase. It checks that the gate,
-  set, and descriptor name the same plan, operation, and call digest, that the attempt and journal version
-  are positive, that every sealed observation has a positive generation and phase version, and that the
-  sealed dependency keys equal the descriptor's ordered list. Only then does it hand a rank-2
-  continuation the matching `PreparedOperation`/`PreparedPreconditions` pair under fresh operation-key,
-  call-digest, attempt, and journal-version indices. It is pure: the probes run once, in the traversal
-  immediately before it. The backend adapter accepts that pair, not a separately retained `Ready`,
-  handle, or prerequisite bundle; settlement of the effect is described in
-  [lifecycle_state_model](lifecycle_state_model.md).
+- `withPreparedOperation` takes the descriptor, the plan's `DependencySnapshot` and a `PreparedGate`.
+  Its local production gate comes from the checked `withPreparedGate` journal route; routed reification
+  and the low-level public writer's limits are described in
+  [lifecycle_state_model](lifecycle_state_model.md#current-status). Gate plan/operation and positive
+  attempt/journal-version checks precede probe IO. Preparation then runs every required registered
+  probe once. A missing member is a `Failure`, a duplicate member is a `Conflict`, and a probe's error
+  propagates without delivering a pair.
+- The private matching step binds the sealed plan, operation, call digest and exact ordered observations
+  to that descriptor and gate, with positive generation and phase versions. Only then does the IO entry
+  hand a rank-2 continuation the matching `PreparedOperation`/`PreparedPreconditions` pair under fresh
+  operation-key, call-digest, attempt and journal-version indices. Generic phase preparation first checks
+  its receipt and transition; the pure zero-edge family instead requires no dependencies and performs no
+  probe IO. No public entry accepts a retained sealed set. The backend adapter consumes the pair as part
+  of its exact prepared package; a separately retained `Ready` or prerequisite bundle grants no effect.
 - A capability is tied to lifecycle scope, generative plan identity, and the identity/frame it proves,
   not merely to a phantom class of resources. Production and harness values—and two separate Production
   plans—cannot type-check together. The lifecycle capabilities hold this against `coerce` through nominal
@@ -211,6 +235,13 @@ contract is described in [lifecycle_state_model](lifecycle_state_model.md#opaque
   traversal at prepare time, not from comparing retained values. The cluster reprobe, for example, returns
   `Conflict` on a replaced container identity and a retryable failure on same-identity loss of readiness.
   Retaining an old Haskell value cannot bypass the traversal.
+
+The provider's opaque `ProviderPhaseAdvance` retains both source and target phases. A Running
+advance retains the validated `ProviderStartable` witness that selected boot from Provisioned or restart
+from Stopped. `carryRunningProviderSettlement` derives that predecessor from the retained witness;
+callers supply no predecessor text. `carryCreatedRunningProviderSettlement` accepts only a
+Provisioned-origin Running advance, so a restart cannot claim the absent predecessor of a new acquisition.
+The advance's scope, plan, backend, provider, source-phase and target-phase indices are nominal.
 
 ## Probe discipline
 
@@ -235,23 +266,25 @@ characters. A probe that reads no value is decided by exit status alone: provide
 of its probes by exit status, treats a zero exit as ready whatever the output, and reads text only to
 classify a non-zero exit or a transport failure (see [Incus](../engineering/incus.md#provider-discovery) for the classification table).
 
-Filesystem classifiers must establish existence before asking questions that are partial on absence.
-`classifyAlias` is total over the `AliasFacts` a lane gathers (the symlink target, if any, and whether
-the path exists):
+Guest provider discovery executes three closed requests: one listing for daemon reachability and
+permission, the guest `true` probe, then provisioning egress. A blocking probe preserves the answers
+of probes that already ran; only the unrun suffix inherits its observation. Direct retains its separate
+canonical-root permission and egress observations. The selected instance must match the managed bound
+route before any request is executed. The public `classifyProviderProbe` and
+`providerConflictMarker` expose total descriptive classification; callers still cannot construct a
+`ProviderProbeRequest`. Only a not-ready answer enters the bounded 60-attempt, one-second poll.
 
-```text
-not present       -> AliasAbsent
-symlink to target -> AliasLinkedCorrectly
-symlink elsewhere -> AliasLinkedElsewhere observedTarget
-other node        -> AliasOccupied AliasNodeKindUnknown
-```
+Guest-alias classification lives only in the prepared alias route,
+`reconcileNodeGuestAlias` in
+[`HostBootstrap.Substrate.Provider.Alias`](../../core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Alias.hs).
+It prepares the exact planned alias and mounted share with a fresh readiness observation before entering
+the ownership transaction. The total `aliasCallResultView` projection describes its sealed answer as
+`AliasCallResultView`, including foreign, conflict, unsupported, and failed outcomes alongside managed
+successes. Neither a matching pathname nor this descriptive view grants mutation authority.
 
-The classifier does not observe the kind of an occupying node, so it always reports
-`AliasNodeKindUnknown`. A probe that cannot answer is not an alias state: the lane reports it as a
-structured backend failure before any facts reach the classifier.
-
-The direct and VM-shell lanes must return the same domain values even though their observation
-mechanisms differ.
+A filesystem probe must distinguish absence from a failed observation. The prepared route preserves
+structured probe and backend failures rather than treating them as an absent alias or successful
+readiness. Local and transported transactions use the same domain outcomes.
 
 ## Legible failure
 
@@ -290,3 +323,58 @@ Readiness is complete only when:
 
 See [lifecycle_state_model](lifecycle_state_model.md) for the full ownership, reconciliation, and
 recursive-teardown gates.
+
+
+The dependency-probe representation is owned by the package-private lifecycle dependency leaf.
+The public reconciler currently delegates to that representation while the backend-evidence
+producers and readiness-kind checks are being completed in the cluster lifecycle phase.
+
+
+Cluster preparation obtains provider and durable-share probes from the corresponding backend-owned
+dependency objects. Each producer retains the object's exact fresh reprobe and pairs it with the
+same managed handle in the dependency snapshot.
+
+
+The fresh running-provider callback returns its backend-minted dependency probe alongside the
+managed provider handle. Provider-share preparation receives that probe directly; the callback's
+raw observation action stays within the provider adapter.
+
+
+Each private backend probe retains the closed readiness kind of the typed key that minted it.
+Cluster API readiness and GPU plugin readiness remain distinct kinds even though both belong
+to the cluster resource family.
+
+
+A dependency probe produced from a backend probe retains that backend's readiness kind. The
+remaining compatibility constructor carries no kind until the backend-evidence migration
+and plan-edge enforcement are complete.
+
+
+The running-provider, durable-share, and cluster readiness producers tag their dependency probes
+with provider-responding, durable-share, and cluster-API readiness respectively. The plan-edge
+comparison and removal of untagged compatibility probes remain open.
+
+A retained Incus share dependency reobserves the exact bound device and parent under the protected
+store; it cannot attach or repair a missing share during a readiness probe. The guest mount check
+remains a separate readiness observation.
+
+Projected chart and guest-alias edges carry their required cluster API and durable-share readiness kinds.
+When a probe carries a kind, a different kind is refused before probing; untagged compatibility probes
+remain open work. General plan resource edges derive baseline readiness kinds from the plan kernel's
+closed resource families.
+
+A managed provider share retains the exact prepared call digest, binding its settled declaration to
+subsequent backend-owned dependencies.
+
+A local provider-share dependency is minted only from the exact prepared share declaration, managed
+receipt and strong backend. Its retained fresh observation also serves the owner-serviced runtime route.
+
+The Incus share dependency also checks that the declared guest target remains writable and is a virtiofs
+mount while the protected instance and device identities remain stable. The demo retains its separate
+bidirectional host/guest identity check.
+
+A locally minted share dependency retains the managed share identity and declaration for exact
+consumer comparison; carried dependencies continue to use their authenticated recovery coordinates.
+
+The guest alias node accepts only a local backend-minted share dependency matching its managed share;
+it reobserves that dependency during preparation. The demo separately verifies bidirectional share identity.

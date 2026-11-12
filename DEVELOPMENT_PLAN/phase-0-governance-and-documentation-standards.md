@@ -5,7 +5,7 @@
 **Substrates**: none (static)
 **Gate**: `DocValidatorSpec` inside `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-11-05 ; hostbootstrap-linux, Ubuntu 24.04.5 x86_64 under WSL2, UID 1000, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Establish the metadata standard, the plan tree, and the machine-checked documentation
 > validator that every later phase is judged against.
@@ -148,33 +148,50 @@ correct and orders wrong fails the build rather than passing it.
 - `checkRemainingWorkOrdering`: no `Remaining Work` section cites a higher-numbered phase. This is § A's
   rule where it is actually broken — "this closes when phase 15 lands" is the forbidden claim in prose,
   and the `Depends on` field never sees it. The scope is the precision: a forward link in
-  `## Phase Objective` or `#### Validation` says who owns what and stays legal, because no reading of a
-  sentence separates the two claims and the section it sits in does.
-- `checkActivePhaseRemainingWork`: an `Active` phase carries a non-empty `## Remaining Work`, and the one
-  drifted spelling reports as its own correction rather than as a missing section.
-- `checkDoneSprintRemainingWork`: a `Done` sprint has the section and it begins "None." A sprint that
-  still owes something is not done, and an owed *live* confirmation is listed by the acceptance phase
-  declaring the hardware (§ II) rather than parked in a closed sprint.
-- `checkLegacyLedger` carries an arity clause reading the row's `Deleted by` cell alone — the cell between
-  the row's last two pipes, read even when it is blank — so a phase cited in the `Why` column neither
-  satisfies nor inflates it, and a row with an empty `Deleted by` cell is reported as naming no deleting
-  phase. Two owners is the same failure as none: neither phase's completion empties the row (§ I).
-- `checkContractOwnership`: every contract beneath `## hostbootstrap-Specific Contracts` opens with an
-  `**Owning phase**:` line. Inferring an owner from any phase a section happens to cite is not the same
-  claim — § O mentions ten phases and is owned by one.
-- Each guard's negative fixture proves it fires, and the two scoped guards additionally assert an
-  **absence** — a forward link in a `#### Validation` section and a bare citation inside a contract must
-  produce no violation — so the scoping is proved rather than assumed.
+  `## Phase Objective` or `#### Validation
 
-#### Validation
+DocValidatorSpec's existing negative fixture proves the doctrine guards and their scoped absences.
+Its ledger rows with no deleting-phase link remain exact refusals.
 
-`DocValidatorSpec`'s `validator flags missing metadata, links, and sections` case
-(`negativeCase`) proves the doctrine guards and their scoped absences. Its fourth ledger row links
-phase 10 only in `Why` and leaves `Deleted by` blank. Exactly two rows report
-`legacy ledger row names no deleting phase`, proving the blank cell cannot borrow that link.
+The split-sprint citation group adds five cases: an Active split beside its Done parent is recognized;
+citing only the parent still refuses; an undefined sibling names its entire label and refuses;
+multiple citations retain each label; and a longer suffix followed by possessive punctuation is
+recognized. The implementation changes seven non-empty production Haskell lines in one module.
+The classifier consumes the complete suffix before scanning the rest of the line. All other production
+modules and all 702 compile-fail fixtures retain their baseline bytes.
 
-On 2026-10-26, plain `cabal test all` from `core/` passed all 2,550 core cases on native x86_64
-Windows 11 (`DESKTOP-R6BTBVS`), GHC 9.12.4 and Cabal 3.16.1.0.
+On 2026-11-05, the closing documentation selection for the host-provider report sprint identifies
+the truncated split label. All three native builds of the complete-label implementation pass with
+GHC 9.12.4/Cabal 3.16.1.0. The first Windows documentation selection then identifies five unintended
+Remaining Work edits in unrelated governance sprints; those five sections are restored byte-for-byte
+from the baseline before the passing selections below. All 22 documentation cases pass on Linux and
+Windows, including the live repository scan and the five new controls.
+
+| Build or selection, 2026-11-05 | Start UTC | End UTC | Wall seconds | Result |
+|---|---|---|---|---|
+| Linux core build | 2026-11-05T15:30:29.499580+00:00 | 2026-11-05T15:31:27.276529+00:00 | 57.776946 | PASS; exit 0 |
+| Linux demo build | 2026-11-05T15:30:29.481855+00:00 | 2026-11-05T15:30:59.125293+00:00 | 29.643439 | PASS; exit 0 |
+| Windows core build | 2026-11-05T15:30:29.481774+00:00 | 2026-11-05T15:30:48.401923+00:00 | 18.920173 | PASS; exit 0 |
+| Linux documentation selection | 2026-11-05T15:32:11.238582+00:00 | 2026-11-05T15:32:17.468036+00:00 | 6.229454 | 22 cases; exit 0 |
+| Windows documentation selection | 2026-11-05T15:32:11.238525+00:00 | 2026-11-05T15:32:18.786670+00:00 | 7.548144 | 22 cases; exit 0 |
+
+The declared governance gate and complete host-static gate are recorded below.
+
+The declared governance gate passes on 2026-11-05: all 22 DocValidatorSpec cases run inside
+the complete `cabal test all` from `core/`. The complete four-command host-static gate also passes
+in hostbootstrap-linux, Ubuntu 24.04.5 x86_64 under WSL2, as hostbootstrap (UID 1000), with
+GHC 9.12.4/Cabal 3.16.1.0/Poetry 2.4.3.
+
+| Command | Start UTC | End UTC | Wall seconds | Result |
+|---|---|---|---|---|
+| `cabal test all` from `core/` | 2026-11-05T15:33:05.069120+00:00 | 2026-11-05T15:43:34.912562+00:00 | 629.843441 | 4467 core cases, including all 22 DocValidatorSpec cases; exit 0 |
+| `cabal test all` from `demo/` | 2026-11-05T15:33:05.068957+00:00 | 2026-11-05T15:43:10.106531+00:00 | 605.037575 | 4467 core cases and 167 demo cases; exit 0 |
+| `poetry run python -m hostbootstrap.check_code` | 2026-11-05T15:33:05.079968+00:00 | 2026-11-05T15:33:06.346134+00:00 | 1.266165 | ruff, black and mypy; exit 0 |
+| `poetry run python -m hostbootstrap.test_all` | 2026-11-05T15:33:05.095227+00:00 | 2026-11-05T15:33:12.924129+00:00 | 7.828902 | 376 cases; 100% coverage; exit 0 |
+
+All four commands verify the same 1165 source/build/document files before and after in both trees.
+Python covers all 1585 statements and 460 branches. Cabal holds -Werror. The other 196 production
+Haskell modules and all 702 compile-fail fixtures match the baseline. Changed files retain LF endings.
 
 #### Remaining Work
 

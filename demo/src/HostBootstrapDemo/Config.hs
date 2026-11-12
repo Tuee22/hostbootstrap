@@ -43,6 +43,8 @@ module HostBootstrapDemo.Config (
     timeoutSecondsNat,
     mkTimeoutSeconds,
     RunProfile (..),
+    HarnessRunKey,
+    mkHarnessRunKey,
     clusterProfileOf,
     acceleratorPlacementForContext,
     TestConfig (..),
@@ -97,16 +99,17 @@ where
 import Control.Monad (foldM)
 import Data.Bifunctor (first)
 import Data.Either (fromRight)
+import Data.Functor.Contravariant (contramap)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
-import Dhall (FromDhall (autoWith), ToDhall)
+import Dhall (FromDhall (autoWith), ToDhall (injectWith))
 import qualified Dhall
 import Dhall.Marshal.Decode (Decoder (Decoder, expected, extract), extractError, fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import HostBootstrap.Cluster.Cordon (parseQuantity, renderQuantityError)
-import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production, TestCase), profileDataSegments)
+import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon, InClusterDaemon), ClusterProfile (Production), mkTestCaseProfile, profileDataSegments)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -364,9 +367,22 @@ re-deciding. The demo's digest-checked exact-plan projection joins this
 descriptive profile/root input to the retained plan slices before lifecycle
 consumer adoption.
 -}
+-- The retained profile makes projection total after construction or decoding.
+data HarnessRunKey = HarnessRunKey Text ClusterProfile
+    deriving stock (Eq, Show)
+
+mkHarnessRunKey :: Text -> Either String HarnessRunKey
+mkHarnessRunKey value = HarnessRunKey value <$> first show (mkTestCaseProfile value)
+
+instance FromDhall HarnessRunKey where
+    autoWith n = refiningDecoder (autoWith n) mkHarnessRunKey
+
+instance ToDhall HarnessRunKey where
+    injectWith n = contramap (\(HarnessRunKey value _) -> value) (injectWith n)
+
 data RunProfile
     = ProductionRun
-    | HarnessRun Text
+    | HarnessRun HarnessRunKey
     deriving stock (Eq, Show, Generic)
     deriving anyclass (FromDhall, ToDhall)
 
@@ -393,7 +409,7 @@ not part of this configuration.
 clusterProfileOf :: ProjectConfig scope -> ClusterProfile
 clusterProfileOf cfg = case runProfile cfg of
     ProductionRun -> Production
-    HarnessRun runName -> TestCase (T.unpack runName)
+    HarnessRun (HarnessRunKey _ profile) -> profile
 
 acceleratorPlacementForContext :: Context.BinaryContext -> AcceleratorDaemonPlacement
 acceleratorPlacementForContext ctx
@@ -808,10 +824,9 @@ demoAssemble request =
             -- The run's own identity becomes the config's profile, so its
             -- cluster, removable state, and ports derive from the run rather
             -- than from production (the worked-demo phase).
-            either
-                failConfigAssembly
-                (pureConfigAssembly . withRunProfile (HarnessRun (harnessRunName authority)))
-                (configFor root tc (variantDraftValue draft))
+            either failConfigAssembly pureConfigAssembly $ do
+                runKey <- mkHarnessRunKey (harnessRunName authority)
+                withRunProfile (HarnessRun runKey) <$> configFor root tc (variantDraftValue draft)
   where
     withRunProfile profile cfg = cfg{runProfile = profile}
     configFor :: FilePath -> TestConfig -> Text -> Either String (ProjectConfig scope)

@@ -26,6 +26,7 @@ import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.HostConfig (HostConfig)
 import qualified HostBootstrap.Lifecycle.Execution as Execution
+import qualified HostBootstrap.Lifecycle.Execution.Core as ExecutionCore (newResourceCarrierCore, newStepRuntimeCore)
 import HostBootstrap.Lifecycle.Mode (
     productionActiveMode,
     productionRootAuthority,
@@ -53,7 +54,9 @@ import HostBootstrap.Protected (
     protectedErrorMessage,
     withProtectedEntry,
  )
+import HostBootstrap.Readiness (DurableShareReady, ProviderResponding)
 import HostBootstrap.Reconcile (
+    DependencyProbe,
     DurableShareResource,
     FailureDetail (FailureDetail),
     PlannedResource,
@@ -65,7 +68,6 @@ import HostBootstrap.Reconcile (
     Running,
     Stopped,
     UnsupportedDetail (UnsupportedDetail),
-    dependencyProbe,
     plannedResourceKey,
     stepExecutionFor,
     withNodeGuestAliasProjection,
@@ -76,6 +78,7 @@ import HostBootstrap.Step (
     StepFrame (StepFrame),
     StepObservation (StepChanged),
     StepPlan,
+    StepPlanError,
     copySourceStep,
     deployVMStep,
     descendsVia,
@@ -87,7 +90,6 @@ import HostBootstrap.Substrate.Provider (
     ProviderError (ProviderOperationFailure, ProviderUnsupported),
     SubstrateProvider,
     discoverProvider,
-    providerCapabilityGuestExecutor,
  )
 import HostBootstrap.Substrate.Provider.Alias (
     GuestAliasSpec,
@@ -105,20 +107,24 @@ import HostBootstrap.Substrate.Provider.Alias (
 import HostBootstrap.Substrate.Provider.Backend (
     StrongProviderBackend,
     providerBackendBinding,
+    providerShareDependencyProbe,
+    registerProviderShareDependencyPackage,
     runProviderDeleteCall,
     runProviderProvisionCall,
     runProviderReadyCall,
     runProviderShareCall,
     runProviderStopCall,
+    runningProviderDependencyProbe,
     withProviderBoundExec,
+    withProviderShareDependency,
+    withRunningProviderDependency,
  )
 import HostBootstrap.Substrate.Provider.Reconcile (
     ManagedProviderHandle,
     ManagedProviderShareHandle,
     ProviderShareSpec,
     ProviderStartable,
-    managedProviderObservationVersion,
-    managedProviderShareObservationVersion,
+    carryProviderShareSettlement,
     providerStartableAfterProvision,
     providerStartableAfterStop,
     settleProviderDelete,
@@ -126,6 +132,7 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     settleProviderReady,
     settleProviderShare,
     settleProviderStop,
+    withFreshCarriedProviderShareDependency,
     withPreparedProviderDelete,
     withPreparedProviderProvision,
     withPreparedProviderReady,
@@ -151,10 +158,13 @@ data ProviderCleanupAuthority scope planId backendId providerId
     = CleanupRunning (ManagedProviderHandle scope planId backendId providerId Running)
     | CleanupStopped (ManagedProviderHandle scope planId backendId providerId Stopped)
 
-{- | Exercise the complete prepared Incus route.  The two callbacks run while
-the managed alias is held: once before stop and once after restart and fresh
-provider discovery.  Conditional release is attempted even when either
-callback or the stop/restart body fails.
+{- | Exercise the complete prepared Incus route.
+
+@prepareGuest@ runs after the exact share settles and before the alias is
+claimed; its failure therefore requires no alias release. @beforeRestart@
+and @afterRestart@ run while the managed alias is held, respectively before
+stop and after restart and fresh provider discovery. Conditional release is
+attempted even when either callback or the stop/restart body fails.
 -}
 runLiveIncusRoute ::
     FilePath ->
@@ -194,16 +204,9 @@ runLiveDirectRoute ::
 runLiveDirectRoute root guestSelfPath config backend provider shareSpec =
     runProviderRoute root guestSelfPath config backend provider shareSpec DirectExercise
 
-{- | Where the shipped guest transaction re-invokes this binary inside the VM.
-
-'shipOwnedTransaction' crosses into the guest frame and runs the project binary
-there, so the alias backend retains an in-VM path alongside the host one. The
-live runner installs its current executable through the admitted provider's
-file API after the exact VM and durable share are ready, and this path names
-that live-only fixture executable in the guest filesystem.
-It is the one value in this fixture that the host build cannot verify — a wrong
-path is observed only as a shipped-transaction failure on a native
-Linux/KVM/Incus host, which is exactly what the owning phase's live gate is for.
+{- | Admit one live project plan and execute its matching prepared provider,
+readiness, share and optional guest-alias route. Retained managed authority
+selects cleanup for the exact lifecycle state reached by the exercise.
 -}
 runProviderRoute ::
     FilePath ->
@@ -219,9 +222,9 @@ runProviderRoute root guestSelfPath config backend provider shareSpec exercise =
         case NonEmpty.toList (forward projectPlan) of
             [providerNode, shareNode] -> do
                 self <- currentSelfRef (InVMSelfPath guestSelfPath)
-                carrier <- Execution.newResourceCarrier
-                providerRuntime <- Execution.newStepRuntime carrier
-                shareRuntime <- Execution.newStepRuntime carrier
+                carrier <- ExecutionCore.newResourceCarrierCore
+                providerRuntime <- ExecutionCore.newStepRuntimeCore carrier
+                shareRuntime <- ExecutionCore.newStepRuntimeCore carrier
                 let providerExecution = stepExecutionFor projectPlan config providerRuntime providerNode
                     shareExecution = stepExecutionFor projectPlan config shareRuntime shareNode
                     providerKey = Execution.stepExecutionOperationKey providerExecution
@@ -281,21 +284,24 @@ continueProvisioned ::
     IO (Either ReconcileError ())
 continueProvisioned root config self backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise provisioned = do
     ready <-
-        readyProvider
-            root
-            "provider-initial-ready"
-            backend
-            providerExecution
-            plannedProvider
-            provisioned
-            (providerStartableAfterProvision provisioned)
+        attemptReconcile "initial provider-live readiness" $
+            readyProviderWithDependency
+                root
+                "provider-initial-ready"
+                backend
+                providerExecution
+                plannedProvider
+                provisioned
+                (providerStartableAfterProvision provisioned)
     case ready of
         Left primaryFailure -> case exercise of
             DirectExercise -> pure (Left primaryFailure)
             IncusExercise{} -> do
-                cleanup <- recoverProvisioned root backend providerExecution plannedProvider provisioned
+                cleanup <-
+                    attemptReconcile "recover provisioned provider-live VM" $
+                        recoverProvisioned root backend providerExecution plannedProvider provisioned
                 pure (combinePrimaryCleanup (Left primaryFailure) cleanup)
-        Right running -> case exercise of
+        Right (running, runningProbe) -> case exercise of
             DirectExercise ->
                 withDiscoveredRunning backend provider running $ \capability ->
                     prepareShare
@@ -312,6 +318,7 @@ continueProvisioned root config self backend provider providerExecution shareExe
                         exercise
                         Nothing
                         running
+                        runningProbe
                         capability
             IncusExercise{} -> do
                 cleanupAuthority <- newIORef (CleanupRunning running)
@@ -331,6 +338,7 @@ continueProvisioned root config self backend provider providerExecution shareExe
                                 exercise
                                 (Just cleanupAuthority)
                                 running
+                                runningProbe
                                 capability
                 primary <- attemptReconcile "exercise prepared Incus route" routed
                 currentAuthority <- readIORef cleanupAuthority
@@ -354,9 +362,10 @@ prepareShare ::
     RouteExercise ->
     Maybe (IORef (ProviderCleanupAuthority scope planId backendId providerId)) ->
     ManagedProviderHandle scope planId backendId providerId Running ->
+    DependencyProbe scope planId providerId ProviderResource ProviderResponding ->
     ProviderCapability scope planId providerId backendId capabilityId ->
     IO (Either ReconcileError ())
-prepareShare root config self backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise cleanupAuthority running capability =
+prepareShare root config self backend provider providerExecution shareExecution plannedProvider shareKey shareSpec exercise cleanupAuthority running runningProbe capability =
     joinReconcileIO $
         withNodeResourceOfKind shareExecution DurableShareResourceKind shareKey $ \plannedShare ->
             joinReconcileIO $
@@ -373,7 +382,7 @@ prepareShare root config self backend provider providerExecution shareExecution 
                             plannedShare
                             observedShare
                             running
-                            (dependencyProbe (pure (Right (managedProviderObservationVersion running))))
+                            runningProbe
                             shareSpec
                             shareGate
                             ( \preparedShare -> do
@@ -395,28 +404,56 @@ prepareShare root config self backend provider providerExecution shareExecution 
                                                             plannedProvider
                                                             capability
                                                             running
-                                                    IncusExercise aliasSpec prepareGuest beforeRestart afterRestart ->
-                                                        case cleanupAuthority of
-                                                            Nothing -> pure (fixtureFailure "the Incus route lost its cleanup authority")
-                                                            Just retainedAuthority ->
-                                                                exerciseIncus
-                                                                    root
-                                                                    config
-                                                                    self
-                                                                    backend
-                                                                    provider
-                                                                    providerExecution
+                                                    IncusExercise aliasSpec prepareGuest beforeRestart afterRestart -> do
+                                                        carried <- carryProviderShareSettlement shareExecution managedShare "provider-live-share"
+                                                        registered <-
+                                                            registerProviderShareDependencyPackage
+                                                                backend
+                                                                shareExecution
+                                                                "provider-live"
+                                                                shareGate
+                                                                preparedShare
+                                                                managedShare
+                                                                "runtime://provider-share/live"
+                                                                100
+                                                        fresh <- case (carried, registered) of
+                                                            (Left failure, _) -> pure (Left failure)
+                                                            (_, Left failure) -> pure (Left failure)
+                                                            (Right (), Right _) ->
+                                                                withFreshCarriedProviderShareDependency
                                                                     shareExecution
-                                                                    plannedProvider
-                                                                    plannedShare
-                                                                    capability
-                                                                    running
-                                                                    managedShare
-                                                                    aliasSpec
-                                                                    retainedAuthority
-                                                                    prepareGuest
-                                                                    beforeRestart
-                                                                    afterRestart
+                                                                    "provider-live"
+                                                                    shareKey
+                                                                    "runtime://provider-share/live"
+                                                                    1
+                                                                    "provider-live-share-probe"
+                                                                    (\_ _ -> ())
+                                                        case (fresh, cleanupAuthority) of
+                                                            (Left failure, _) -> pure (Left failure)
+                                                            (_, Nothing) -> pure (fixtureFailure "the Incus route lost its cleanup authority")
+                                                            (Right (), Just retainedAuthority) ->
+                                                                case withProviderShareDependency backend preparedShare managedShare providerShareDependencyProbe of
+                                                                    Left failure -> pure (Left failure)
+                                                                    Right shareProbe ->
+                                                                        exerciseIncus
+                                                                            root
+                                                                            config
+                                                                            self
+                                                                            backend
+                                                                            provider
+                                                                            providerExecution
+                                                                            shareExecution
+                                                                            plannedProvider
+                                                                            plannedShare
+                                                                            capability
+                                                                            running
+                                                                            managedShare
+                                                                            shareProbe
+                                                                            aliasSpec
+                                                                            retainedAuthority
+                                                                            prepareGuest
+                                                                            beforeRestart
+                                                                            afterRestart
                                             )
                                             (\_ _ _ _ -> pure (fixtureFailure "the live provider share remained foreign"))
                             )
@@ -433,10 +470,6 @@ exerciseDirect ::
     ManagedProviderHandle scope planId backendId providerId Running ->
     IO (Either ReconcileError ())
 exerciseDirect root config self backend providerExecution plannedProvider capability running = do
-    guestRefusal <- case providerCapabilityGuestExecutor capability of
-        Left ProviderUnsupported{} -> pure (Right ())
-        Left failure -> pure (Left (providerFailure failure))
-        Right _ -> pure (fixtureFailure "Direct unexpectedly exposed a guest executor")
     aliasRefusal <- case discoverStrongAliasBackend config self capability of
         Left (Unsupported _) -> pure (Right ())
         Left failure -> pure (Left failure)
@@ -447,7 +480,6 @@ exerciseDirect root config self backend providerExecution plannedProvider capabi
             Left failure -> Left failure
             Right _ -> fixtureFailure "Direct stop unexpectedly minted Stopped authority"
     pure $ do
-        guestRefusal
         aliasRefusal
         stopRefusal
 
@@ -464,13 +496,14 @@ exerciseIncus ::
     ProviderCapability scope planId providerId backendId capabilityId ->
     ManagedProviderHandle scope planId backendId providerId Running ->
     ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+    DependencyProbe scope planId shareId DurableShareResource DurableShareReady ->
     GuestAliasSpec ->
     IORef (ProviderCleanupAuthority scope planId backendId providerId) ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ()) ->
     IO (Either ReconcileError ())
-exerciseIncus root config self backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare aliasSpec cleanupAuthority prepareGuest beforeRestart afterRestart = do
+exerciseIncus root config self backend provider providerExecution shareExecution plannedProvider plannedShare capability running managedShare shareProbe aliasSpec cleanupAuthority prepareGuest beforeRestart afterRestart = do
     preparedGuest <- prepareGuest
     case preparedGuest of
         Left failure -> pure (Left failure)
@@ -497,7 +530,7 @@ exerciseIncus root config self backend provider providerExecution shareExecution
                                                 plannedAlias
                                                 edge
                                                 observedAlias
-                                                (dependencyProbe (pure (Right (managedProviderShareObservationVersion managedShare))))
+                                                shareProbe
                                                 aliasSpec
                                                 aliasGate
                                                 ( runOwnedAlias
@@ -618,6 +651,25 @@ withDiscoveredRunning backend provider running consume =
             pure $ case discovered of
                 Left failure -> Left (providerFailure failure)
                 Right result -> result
+
+readyProviderWithDependency ::
+    FilePath ->
+    Text ->
+    StrongProviderBackend backendId ->
+    Execution.StepExecution scope planId ->
+    PlannedResource scope planId providerId ProviderResource providerFrame ->
+    ManagedProviderHandle scope planId backendId providerId fromPhase ->
+    ProviderStartable scope planId backendId providerId fromPhase ->
+    IO (Either ReconcileError (ManagedProviderHandle scope planId backendId providerId Running, DependencyProbe scope planId providerId ProviderResource ProviderResponding))
+readyProviderWithDependency root label backend execution planned managed startable = do
+    gate <- gateFor root label (Execution.stepExecutionPlanDigest execution) (Execution.stepExecutionOperationKey execution)
+    joinReconcileIO $
+        withPreparedProviderReady execution planned managed startable gate $ \prepared -> do
+            result <- runProviderReadyCall backend prepared
+            pure $ do
+                advance <- settleProviderReady prepared result
+                withRunningProviderDependency backend advance $ \dependency ->
+                    (withProviderPhaseAdvance advance id, runningProviderDependencyProbe dependency)
 
 readyProvider ::
     FilePath ->
@@ -769,7 +821,7 @@ recoverProvisioned root backend execution planned provisioned = do
 
 withLiveProjectPlan ::
     FilePath ->
-    StepPlan ->
+    Either StepPlanError StepPlan ->
     ( forall projectId specDigest planId configId.
       ProjectPlan
         (Production projectId)
@@ -815,7 +867,7 @@ withLiveProjectPlan directory stepPlan use = do
                                                         either
                                                             (fail . show)
                                                             pure
-                                                            (planDraftsFromValidatedBuilder root config (\_ _ -> Right stepPlan))
+                                                            (planDraftsFromValidatedBuilder root config (\_ _ -> stepPlan))
                                                     action <-
                                                         either
                                                             (fail . show)
@@ -867,20 +919,16 @@ sanitize = Text.map replace
 aliasProjectedOperation :: Text
 aliasProjectedOperation = "core:deploy-vm/core:copy-source/guest-alias"
 
-liveStepPlan :: StepPlan
+liveStepPlan :: Either StepPlanError StepPlan
 liveStepPlan =
-    either
-        (error . show)
-        id
-        ( mkStepPlan
-            [ descendsVia
-                localContext
-                (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
-            , projectsOperation
-                (Text.unpack aliasProjectedOperation)
-                (copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure StepChanged)))
-            ]
-        )
+    mkStepPlan
+        [ descendsVia
+            localContext
+            (deployVMStep "provider" (StepFrame "host" "Host") (const (pure StepChanged)))
+        , projectsOperation
+            (Text.unpack aliasProjectedOperation)
+            (copySourceStep "durable share" (StepFrame "provider" "Provider") (const (pure StepChanged)))
+        ]
 
 providerFailure :: ProviderError -> ReconcileError
 providerFailure failure = case failure of
@@ -938,12 +986,19 @@ combineBodyRelease ::
     Either SomeException (Either ReconcileError ()) ->
     Either SomeException (Either ReconcileError ()) ->
     Either ReconcileError ()
-combineBodyRelease body release = case release of
-    Left exception -> Left (runtimeFailure "release provider-live alias" exception)
-    Right (Left failure) -> Left failure
-    Right (Right ()) -> case body of
-        Left exception -> Left (runtimeFailure "exercise provider-live alias" exception)
-        Right result -> result
+combineBodyRelease body release =
+    let primary = either (Left . runtimeFailure "exercise provider-live alias") id body
+        released = either (Left . runtimeFailure "release provider-live alias") id release
+     in case (primary, released) of
+            (Left bodyFailure, Left releaseFailure) ->
+                fixtureFailure
+                    ( "body failure: "
+                        <> Text.pack (show bodyFailure)
+                        <> "; release failure: "
+                        <> Text.pack (show releaseFailure)
+                    )
+            (_, Left releaseFailure) -> Left releaseFailure
+            (_, Right ()) -> primary
 
 joinReconcileIO :: Either ReconcileError (IO (Either ReconcileError value)) -> IO (Either ReconcileError value)
 joinReconcileIO = either (pure . Left) id

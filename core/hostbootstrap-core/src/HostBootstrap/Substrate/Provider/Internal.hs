@@ -2,10 +2,10 @@
 
 {- | Package-private transport primitives for the provider boundary.
 
-Public callers may /interpret/ a request handed to their injected executor,
-but cannot construct one.  Alias/backend modules in this package use the
-bound guest executor below; no public function projects an arbitrary argv
-runner out of a discovery capability.
+Public callers may interpret a request handed to the bound discovery executor,
+but cannot construct one. The package-private bound route executes only closed
+provider requests for the exact managed resource. A discovery capability carries
+descriptive facts and no independent guest runner.
 -}
 module HostBootstrap.Substrate.Provider.Internal (
     ProviderProbeRequest,
@@ -17,9 +17,6 @@ module HostBootstrap.Substrate.Provider.Internal (
     directProbeRequest,
     provisioningEgressRequest,
     guestProbeRequest,
-    ProviderGuestExecutor,
-    bindProviderGuestExecutor,
-    runProviderGuestExecutor,
     ProviderBoundExec,
     ProviderBoundRoute (..),
     bindProviderBoundExec,
@@ -32,7 +29,7 @@ import HostBootstrap.HostTool (HostTool)
 import HostBootstrap.Readiness (Micros)
 import System.Exit (ExitCode)
 
--- | The two observations applicable to the already-local provider.
+-- | The Direct permission observation; egress uses a separate ProviderProvisioningEgressProbe request.
 data DirectProbe
     = DirectPermissionProbe
     deriving (Eq, Show)
@@ -68,27 +65,6 @@ data RawProviderOutcome
     = RawProviderExit ExitCode String String
     | RawProviderFailure String
     deriving (Eq, Show)
-
-{- | Guest execution bound to one discovered managed provider resource.
-
-Its constructor and runner live only in this hidden module.  Public code can
-possess the opaque value but cannot turn it into an argv execution oracle.
--}
-newtype ProviderGuestExecutor scope planId providerId phase backendId capabilityId
-    = ProviderGuestExecutor ([String] -> IO RawProviderOutcome)
-
-type role ProviderGuestExecutor nominal nominal nominal nominal nominal nominal
-
-bindProviderGuestExecutor ::
-    ([String] -> IO RawProviderOutcome) ->
-    ProviderGuestExecutor scope planId providerId phase backendId capabilityId
-bindProviderGuestExecutor = ProviderGuestExecutor
-
-runProviderGuestExecutor ::
-    ProviderGuestExecutor scope planId providerId phase backendId capabilityId ->
-    [String] ->
-    IO RawProviderOutcome
-runProviderGuestExecutor (ProviderGuestExecutor execute) = execute
 
 {- | Raw discovery execution already bound by the clause-holding provider
 backend to one exact managed provider resource and phase.

@@ -164,7 +164,7 @@ None.
 **Implementation**: the whole tree; the focused direct-Colima lane is in
 `core/hostbootstrap-core/test/ColimaSpec.hs`, with its native resolver and exact namespace ownership in
 `core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Resolver/Native.hs`
-and `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima/Ownership.hs`
+and `core/hostbootstrap-core/internal/colima-ownership/HostBootstrap/Ensure/Colima/Ownership.hs`
 **Substrates**: apple-silicon
 **Docs to update**: `documents/operations/demo_runbook.md`
 

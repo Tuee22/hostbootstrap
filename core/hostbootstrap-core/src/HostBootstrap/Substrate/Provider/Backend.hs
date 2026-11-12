@@ -42,6 +42,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     -- * The Direct realization's own admission
     DirectRootObservation (..),
     observeDirectRoot,
+    directRootCanonicalFact,
     admitDirectRoot,
     directEgressCommand,
 
@@ -52,6 +53,7 @@ module HostBootstrap.Substrate.Provider.Backend (
     classifyProviderStopCall,
     classifyProviderShareCall,
     classifyProviderDeleteCall,
+    guestOutcome,
 
     -- * Clause-holding backend
     StrongProviderBackend,
@@ -63,8 +65,11 @@ module HostBootstrap.Substrate.Provider.Backend (
     runProviderReadyCall,
     RunningProviderDependency,
     withRunningProviderDependency,
+    runningProviderDependencyProbe,
     registerRunningProviderDependencyPackage,
     registerProviderShareDependencyPackage,
+    withProviderShareDependency,
+    providerShareDependencyProbe,
     runProviderStopCall,
     runProviderShareCall,
     runProviderDeleteCall,
@@ -79,17 +84,21 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, try)
+import Control.Monad (unless, when)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT, throwE)
+import qualified Data.Bifunctor as Bifunctor
 import Crypto.Hash (Digest, SHA256, hash)
-import Data.Bits (xor)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import qualified Data.ByteString.Char8 as ByteString
-import Data.Char (isAlphaNum)
 import Data.IORef (atomicModifyIORef', newIORef)
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, isSuffixOf)
 import Data.Text (Text)
 import qualified Data.Text as Text
+import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Context (ResourceEnvelope)
+import qualified HostBootstrap.Context as Context
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capturedStdout))
 import HostBootstrap.Effect.Vocabulary (HostCommand, hostCommand)
@@ -100,12 +109,13 @@ import HostBootstrap.Lifecycle.Dependency.Internal (
     mkProviderRuntimeDependencyPackage,
     mkProviderShareRuntimeDependencyPackage,
     renderRuntimeDependencyProbeResponse,
+    renderRuntimeDependencyProbeRefusal,
     withRuntimeDependencyProbeRequest,
  )
 import HostBootstrap.Lifecycle.Execution.Internal (
     StepExecution,
     registerStepRuntimeDependencyPackage,
-    replaceStepRuntimeDependencyService,
+    registerStepRuntimeDependencyService,
     stepExecutionFrame,
     stepExecutionPlanDigest,
     stepExecutionRuntime,
@@ -116,13 +126,15 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateOperation,
     preparedGatePlan,
  )
-import qualified HostBootstrap.Lima as Lima
 import HostBootstrap.Ownership.Object (
+    ObjectIdentity,
     Origin (OriginAbsent, OriginPresent),
     objectIdentityText,
     ownershipFault,
  )
 import qualified HostBootstrap.Ownership.Object as OwnedObject
+import HostBootstrap.Ownership.Primitive (rowObserveIdentity, withOwnershipRow)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Protected (
     ProtectedSession,
     RecordKey,
@@ -146,26 +158,25 @@ import HostBootstrap.Reconcile (
  )
 import HostBootstrap.Substrate (HostFrame (WindowsFrame), SubstrateName (AppleSilicon, LinuxCpu), substrateFrame, substrateName)
 import HostBootstrap.Substrate.Provider (
-    FileTransfer (LimaFileTransfer, Wsl2MountTransfer),
-    HostEffect (RunHostCommand),
     HostPathShare,
-    ProviderKind (ProviderLima, ProviderWsl2),
+    ProviderKind (ProviderDirectHost, ProviderIncus, ProviderLima, ProviderWsl2),
     SubstrateProvider,
     foldExistsProbe,
-    foldWaitProbe,
     hpsGuestPath,
     hpsHostPath,
-    membersOf,
-    planProviderProvision,
     providerExistsProbe,
-    providerFileTransfer,
     providerKind,
     providerVmId,
-    providerWaitProbe,
+    validConflictToken,
  )
 import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
+import qualified HostBootstrap.Substrate.Provider.GuestVm as GuestVm
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
     RunningProviderDependency (..),
+    ProviderShareDependency (..),
+    runningProviderDependencyProbe,
+    providerShareDependencyProbe,
+    providerShareDependencyReprobe,
  )
 import HostBootstrap.Substrate.Provider.Internal (
     DirectProbe (..),
@@ -179,6 +190,7 @@ import HostBootstrap.Substrate.Provider.Internal (
  )
 import HostBootstrap.Substrate.Provider.Observation.Internal (
     ManagedProviderHandle (..),
+    ManagedProviderShareHandle (..),
     ProviderBackendBinding (..),
     ProviderDeleteCallResult (..),
     ProviderDeleteObservation (..),
@@ -201,7 +213,8 @@ import HostBootstrap.Substrate.Provider.Ownership (
         ProviderOwnershipClause,
         ProviderOwnershipReport,
         ProviderOwnershipStanding,
-        ProviderOwnershipStore
+        ProviderOwnershipStore,
+        ProviderOwnershipSizing
     ),
     ProviderProvisionOutcome (ProvisionAlreadyOwned, ProvisionCreated, ProvisionRecovered),
     ProviderReadyOutcome (ReadyAlready, ReadyNotAnswering, ReadyStarted),
@@ -213,12 +226,12 @@ import HostBootstrap.Substrate.Provider.Ownership (
     execInOwnedInstance,
     ownedInstanceRecordKey,
     ownedShareRecordKey,
+    observeOwnedShare,
     provisionOwnedInstance,
     readyOwnedInstance,
     stopOwnedInstance,
  )
 import HostBootstrap.Substrate.Provider.Reconcile (
-    ManagedProviderShareHandle,
     PreparedProviderBinding,
     PreparedProviderDelete,
     PreparedProviderProvision,
@@ -249,7 +262,14 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     withProviderPhaseAdvance,
  )
 import HostBootstrap.Substrate.Provider.Report (
-    ProviderReportFault (ProviderCommandUnrun),
+    identityObservationVersion,
+    encodeProviderNativeObservation,
+    encodeProviderNativeRefusal,
+    incusQuantityBytes,
+    declaredSizingText,
+    observedSizingText,
+    sizingConflictRemedy,
+    ProviderReportFault (ProviderCommandExited, ProviderCommandUnrun),
     providerReportFaultMessage,
  )
 import HostBootstrap.Substrate.Provider.Resume (
@@ -262,7 +282,6 @@ import HostBootstrap.Substrate.Provider.Resume (
         RecordNotAClaimedObject
     ),
  )
-import qualified HostBootstrap.Wsl2 as Wsl2
 import System.Directory (
     Permissions (readable, searchable, writable),
     canonicalizePath,
@@ -306,10 +325,13 @@ instance Show ProviderBackendSpec where
             <> " "
             <> show (backendRealizationFingerprint spec)
 
-{- | Validate the complete Incus instance declaration.  The executable and
-state directory must already be absolute; discovery proves their usability.
-Resource quantities are passed as single argv values and therefore accept only
-the bounded alphanumeric unit vocabulary used by the provider.
+{- | Validate the complete Incus instance declaration without probing the host.
+The resolved executable and state directory must be absolute; the protected
+store establishes the directory when a transaction enters it. Names use ASCII
+hostnames and the share socket bounds their UTF-8 byte length. Quantities use
+ASCII digits and an exact Incus byte suffix, within its signed 64-bit byte range.
+Strong backend admission also requires the retained executable to match the
+HostConfig that every later call uses.
 -}
 mkIncusBackendSpec ::
     -- | the instance's own name
@@ -326,21 +348,22 @@ mkIncusBackendSpec ::
     Either ReconcileError ProviderBackendSpec
 mkIncusBackendSpec name image guardPrefix hostConfig stateDirectory cpu memory storage
     | substrateName (hcSubstrate hostConfig) /= LinuxCpu = invalid "the Incus provider backend requires a linux-cpu HostConfig"
-    | not (safeName name) = invalid "the Incus instance name is empty or contains a non-portable character"
-    | not (safeName guardPrefix) = invalid "the destructive-delete guard prefix is empty or contains a non-portable character"
-    | not (guardPrefix `isPrefixOf` name) =
-        invalid "the Incus instance name does not carry the project's destructive-delete guard prefix"
-    | length name > maxIncusInstanceNameLength =
+    | ByteString.length (TextEncoding.encodeUtf8 (Text.pack name)) > maxIncusInstanceNameLength =
         invalid
             ( "the Incus instance name is longer than "
                 <> Text.pack (show maxIncusInstanceNameLength)
-                <> " characters, so its share device socket path exceeds the platform limit"
+                <> " UTF-8 bytes, so its share device socket path exceeds the platform limit"
             )
+    | not (safeName name) = invalid "the Incus instance name must be an ASCII hostname: a-z, 0-9 and hyphen, starting with a letter and not ending with a hyphen"
+    | not (safeGuardPrefix guardPrefix) = invalid "the destructive-delete guard prefix must be a non-empty ASCII hostname prefix starting with a letter"
+    | not (guardPrefix `isPrefixOf` name) =
+        invalid "the Incus instance name does not carry the project's destructive-delete guard prefix"
     | null image || '\0' `elem` image = invalid "the Incus image must be non-empty and contain no NUL"
     | not (hostAbsolutePath stateDirectory) = invalid "the provider state directory must be an absolute path on this host"
+    | '\0' `elem` stateDirectory = invalid "the provider state directory must not contain NUL"
     | cpu == 0 = invalid "the provider CPU quantity must be positive"
     | not (safeQuantity memory) || not (safeQuantity storage) =
-        invalid "provider memory and storage quantities must be non-empty alphanumeric values"
+        invalid "provider memory and storage quantities must be ASCII digits with an Incus byte suffix and fit a signed 64-bit byte value"
     | otherwise = do
         executable <- requireTool Incus
         Right (IncusBackendSpec name image guardPrefix executable stateDirectory cpu memory storage)
@@ -388,10 +411,9 @@ limaRealization =
         , guestVmToolLabel = "Lima"
         }
 
-{- | The Windows WSL2 realization.  WSL's global wall and distro creation remain
-owned by the host-effect transaction; this backend is opened only after that
-transaction has established the exact provider and supplies the typed
-readiness/share reprobe capability carried to child frames.
+{- | The Windows WSL2 realization.  WSL's global wall remains owned by its typed host-effect
+transaction. Distro creation and every readiness/share reprobe use the recorded
+guest-VM transaction; the backend does not flatten the wall into an argv.
 -}
 wsl2Realization :: GuestVmRealization
 wsl2Realization =
@@ -510,13 +532,20 @@ requireBackendTool label toolLabel hostConfig tool = case resolveMaybe hostConfi
             )
 
 safeName :: String -> Bool
-safeName value =
-    not (null value)
-        && all (\character -> isAlphaNum character || character `elem` ("-_." :: String)) value
-        && '\0' `notElem` value
+safeName value = safeGuardPrefix value && not ("-" `isSuffixOf` value)
+
+safeGuardPrefix :: String -> Bool
+safeGuardPrefix [] = False
+safeGuardPrefix (first : rest) =
+    asciiLetter first && all (\character -> asciiLetter character || asciiDigit character || character == '-') rest
+  where
+    asciiLetter character = character >= 'a' && character <= 'z'
+
+asciiDigit :: Char -> Bool
+asciiDigit character = character >= '0' && character <= '9'
 
 safeQuantity :: String -> Bool
-safeQuantity value = not (null value) && all isAlphaNum value && '\0' `notElem` value
+safeQuantity = maybe False (const True) . incusQuantityBytes
 
 absolutePath :: FilePath -> Bool
 absolutePath ('/' : _) = True
@@ -566,12 +595,27 @@ discoverStrongProviderBackend ::
     (forall backendId. StrongProviderBackend backendId -> IO result) ->
     IO (Either ReconcileError result)
 discoverStrongProviderBackend cfg spec consume =
-    Right <$> consume (admitted spec)
+    case retainedBackendClient spec of
+        Left failure -> pure (Left failure)
+        Right (label, tool, executable)
+            | fmap absExePath (resolveMaybe cfg tool) /= Just executable ->
+                pure (Left (invalidBackend label "the resolved client executable differs from the admitted provider backend"))
+            | otherwise -> Right <$> consume (admitted spec)
   where
     binding = ProviderBackendBinding (backendSemanticFingerprint spec) (backendRealizationFingerprint spec)
     admitted DirectHostBackendSpec{} = StrongDirectHostBackend binding cfg spec
     admitted IncusBackendSpec{} = StrongIncusBackend binding cfg spec
     admitted LimaBackendSpec{} = StrongLimaBackend binding cfg spec
+
+-- | Resolve every realization's retained client through the same closed rows.
+retainedBackendClient :: ProviderBackendSpec -> Either ReconcileError (Text, HostTool, FilePath)
+retainedBackendClient spec = case spec of
+    IncusBackendSpec _ _ _ executable _ _ _ _ -> Right ("Incus", Incus, executable)
+    DirectHostBackendSpec _ executable _ -> Right ("Direct", Docker, executable)
+    LimaBackendSpec provider _ _ executable ->
+        case filter ((== providerKind provider) . guestVmKind) [limaRealization, wsl2Realization] of
+            [realization] -> Right (guestVmLabel realization, guestVmTool realization, executable)
+            _ -> Left (invalidBackend "guest-VM" "the backend has no matching guest-VM realization")
 
 providerBackendBinding :: StrongProviderBackend backendId -> ProviderBackendBinding backendId
 providerBackendBinding backend = case backend of
@@ -673,7 +717,7 @@ provisionObservation binding outcome = case outcome of
     Right (ProvisionRecovered _) -> ProviderProvisionRepaired generation
     Right (ProvisionAlreadyOwned _) -> ProviderProvisionAlreadyOwned generation
     Left fault -> case ownedRefusal "provision provider" key fault of
-        RefusedForeign foreignGeneration observed ->
+        RefusedForeign foreignGeneration observed _ _ ->
             ProviderProvisionForeign foreignGeneration observed
         RefusedAbsent -> ProviderProvisionAbsent
         RefusedConflict detail -> ProviderProvisionConflict detail
@@ -735,7 +779,7 @@ readyObservation key generation outcome = case outcome of
     Right (ReadyAlready _) -> ProviderReadyAlready generation
     Right (ReadyNotAnswering reason) -> ProviderReadyNotReady reason
     Left fault -> case ownedRefusal "reconcile provider ready" key fault of
-        RefusedForeign foreignGeneration observed ->
+        RefusedForeign foreignGeneration observed _ _ ->
             ProviderReadyReplaced foreignGeneration observed
         RefusedAbsent -> ProviderReadyAbsent
         RefusedConflict detail -> ProviderReadyConflict detail
@@ -748,7 +792,7 @@ public callers can neither supply a probe nor recover the generic handle.
 -}
 withRunningProviderDependency ::
     StrongProviderBackend backendId ->
-    ProviderPhaseAdvance scope planId backendId providerId Running ->
+    ProviderPhaseAdvance scope planId backendId providerId fromPhase Running ->
     (RunningProviderDependency scope planId providerId -> result) ->
     Either ReconcileError result
 withRunningProviderDependency backend advance consume =
@@ -776,59 +820,75 @@ registerRunningProviderDependencyPackage ::
     Text ->
     PreparedGate ->
     PreparedProviderReady scope planId backendId providerId fromPhase operationKey callDigest attempt journalVersion ->
-    ProviderPhaseAdvance scope planId backendId providerId Running ->
+    ProviderPhaseAdvance scope planId backendId providerId fromPhase Running ->
     Text ->
     Word64 ->
     IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
 registerRunningProviderDependencyPackage backend execution scopeCommitment gate prepared advance route expiry =
-    withProviderPhaseAdvance advance $ \managed -> do
+    withProviderPhaseAdvance advance $ \managed -> runExceptT $ do
         let binding = preparedProviderReadyBinding prepared
             runtime = stepExecutionRuntime execution
-        case () of
-            _
-                | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
-                    pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another plan")))
-                | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
-                    pure (Left (Failure (failed "register provider runtime dependency" "the producer gate names another operation")))
-                | otherwise ->
-                    case mkProviderRuntimeDependencyPackage
-                        (stepExecutionPlanDigest execution)
-                        scopeCommitment
-                        (preparedProviderBindingResourceKey binding)
-                        (stepExecutionFrame execution)
-                        (preparedProviderBindingOwner binding)
-                        (managedProviderGeneration managed)
-                        (preparedGateCommitment gate)
-                        (providerReadyCommitment binding managed)
-                        route
-                        expiry of
-                        Left refusal -> pure (Left (Failure (failed "register provider runtime dependency" refusal)))
-                        Right package -> do
-                            registered <- registerStepRuntimeDependencyPackage runtime package
-                            case registered of
-                                Left refusal -> pure (Left (Failure (failed "register provider runtime dependency" refusal)))
-                                Right () -> do
-                                    usedNonces <- newIORef []
-                                    installed <-
-                                        replaceStepRuntimeDependencyService runtime package $ \request ->
-                                            case withRuntimeDependencyProbeRequest package request id of
-                                                Left refusal -> pure (Left refusal)
-                                                Right nonce -> do
-                                                    replay <-
-                                                        atomicModifyIORef' usedNonces $ \seen ->
-                                                            if nonce `elem` seen
-                                                                then (seen, True)
-                                                                else (nonce : seen, False)
-                                                    if replay
-                                                        then pure (Left "runtime dependency probe nonce has already been consumed")
-                                                        else
-                                                            either
-                                                                (Left . Text.pack . show)
-                                                                (Right . renderRuntimeDependencyProbeResponse package nonce)
-                                                                <$> probeRunningProvider backend managed
-                                    pure $ case installed of
-                                        Left refusal -> Left (Failure (failed "register provider runtime dependency" refusal))
-                                        Right () -> Right package
+            refuse = Failure . failed "register provider runtime dependency"
+        unless (preparedGatePlan gate == preparedProviderBindingPlanDigest binding)
+            (throwE (refuse "the producer gate names another plan"))
+        unless (preparedGateOperation gate == preparedProviderBindingOperationKey binding)
+            (throwE (refuse "the producer gate names another operation"))
+        native <- ExceptT (observeRunningProviderIdentity backend managed)
+        stamp <- either (throwE . refuse . providerReportFaultMessage) pure
+            (encodeProviderNativeObservation (providerReadyCommitment binding managed) native)
+        package <- either (throwE . refuse) pure $
+            mkProviderRuntimeDependencyPackage
+                (stepExecutionPlanDigest execution) scopeCommitment
+                (preparedProviderBindingResourceKey binding) (stepExecutionFrame execution)
+                (preparedProviderBindingOwner binding) (managedProviderGeneration managed)
+                (preparedGateCommitment gate) stamp route expiry
+        ExceptT (fmap (Bifunctor.first (dependencyRegistrationConflict (preparedProviderBindingResourceKey binding)))
+            (registerStepRuntimeDependencyPackage runtime package))
+        usedNonces <- lift (newIORef [])
+        installed <- lift $
+            registerStepRuntimeDependencyService runtime package $ \request -> runExceptT $ do
+                nonce <- ExceptT (pure (withRuntimeDependencyProbeRequest package request id))
+                replay <- lift $ atomicModifyIORef' usedNonces $ \seen ->
+                    if nonce `elem` seen then (seen, True) else (nonce : seen, False)
+                when replay (throwE "runtime dependency probe nonce has already been consumed")
+                observed <- lift (observeRunningProviderIdentity backend managed)
+                let refuseNative failure = renderRuntimeDependencyProbeRefusal package nonce
+                        (maybe (Text.pack (show failure)) id (encodeProviderNativeRefusal failure))
+                ExceptT (pure (case observed of
+                    Left failure -> refuseNative failure
+                    Right actual
+                        | actual /= native -> refuseNative (nativeIdentityConflict (managedProviderKey managed) native actual)
+                        | otherwise -> Right (renderRuntimeDependencyProbeResponse package nonce
+                            (identityObservationVersion (Text.unpack (objectIdentityText actual))))))
+
+        either (throwE . dependencyRegistrationConflict (preparedProviderBindingResourceKey binding)) pure installed
+        pure package
+
+{- | Mint an opaque dependency from one exact settled share and its backend.
+The retained action reobserves the backend when the dependency is used.
+-}
+withProviderShareDependency ::
+    StrongProviderBackend backendId ->
+    PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
+    ManagedProviderShareHandle scope planId backendId providerId shareId Provisioned ->
+    (ProviderShareDependency scope planId shareId -> result) ->
+    Either ReconcileError result
+withProviderShareDependency backend prepared managed@(ManagedProviderShareHandle origin handle receipt settledCall) consume = do
+    validateOwnershipReceipt handle receipt
+    let binding = preparedProviderShareBinding prepared
+        declared = preparedProviderShareHandle prepared
+        key = resourceHandleKey handle
+        mismatch = Conflict (ConflictDetail key "the exact prepared share and provider origin"
+            "a different backend, origin, share declaration, key, or generation"
+            "use the share settled from this backend and prepared operation")
+    unless (sameBackendBinding (providerBackendBinding backend) (providerOriginBackendBinding origin)
+        && providerOriginOwner origin == preparedProviderBindingOwner binding
+        && settledCall == preparedProviderBindingCallDigest binding
+        && key == resourceHandleKey declared
+        && resourceHandleGeneration handle == resourceHandleGeneration declared)
+        (Left mismatch)
+    pure (consume (LocalProviderShareDependency managed
+        (probeProviderShare backend prepared (resourceHandleGeneration handle))))
 
 {- | Publish one settled provider-derived share and a nonce-bound fresh share
 transaction for successor preconditions. The canonical package contains only
@@ -845,54 +905,64 @@ registerProviderShareDependencyPackage ::
     Text ->
     Word64 ->
     IO (Either ReconcileError (RuntimeDependencyPackage scope planId))
-registerProviderShareDependencyPackage backend execution scopeCommitment gate prepared managed route expiry = do
-    let binding = preparedProviderShareBinding prepared
-        runtime = stepExecutionRuntime execution
-    case () of
-        _
-            | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
-                pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another plan")))
-            | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
-                pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another operation")))
-            | otherwise ->
-                case mkProviderShareRuntimeDependencyPackage
-                    (stepExecutionPlanDigest execution)
-                    scopeCommitment
-                    (resourceHandleKey (preparedProviderShareHandle prepared))
-                    (stepExecutionFrame execution)
-                    (preparedProviderBindingOwner binding)
-                    (managedProviderShareGeneration managed)
-                    (preparedGateCommitment gate)
-                    (providerShareCommitment binding managed)
-                    route
-                    expiry of
-                    Left refusal -> pure (Left (Failure (failed "register provider share runtime dependency" refusal)))
-                    Right package -> do
-                        registered <- registerStepRuntimeDependencyPackage runtime package
-                        case registered of
-                            Left refusal -> pure (Left (Failure (failed "register provider share runtime dependency" refusal)))
-                            Right () -> do
-                                usedNonces <- newIORef []
-                                installed <-
-                                    replaceStepRuntimeDependencyService runtime package $ \request ->
-                                        case withRuntimeDependencyProbeRequest package request id of
-                                            Left refusal -> pure (Left refusal)
-                                            Right nonce -> do
-                                                replay <-
-                                                    atomicModifyIORef' usedNonces $ \seen ->
-                                                        if nonce `elem` seen
-                                                            then (seen, True)
-                                                            else (nonce : seen, False)
-                                                if replay
-                                                    then pure (Left "runtime dependency probe nonce has already been consumed")
-                                                    else
-                                                        either
-                                                            (Left . Text.pack . show)
-                                                            (Right . renderRuntimeDependencyProbeResponse package nonce)
-                                                            <$> probeProviderShare backend prepared (managedProviderShareGeneration managed)
-                                pure $ case installed of
-                                    Left refusal -> Left (Failure (failed "register provider share runtime dependency" refusal))
-                                    Right () -> Right package
+registerProviderShareDependencyPackage backend execution scopeCommitment gate prepared managed route expiry =
+    case withProviderShareDependency backend prepared managed id of
+        Left failure -> pure (Left failure)
+        Right dependency -> register dependency
+  where
+    register dependency = do
+        let binding = preparedProviderShareBinding prepared
+            runtime = stepExecutionRuntime execution
+        case () of
+            _
+                | preparedGatePlan gate /= preparedProviderBindingPlanDigest binding ->
+                    pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another plan")))
+                | preparedGateOperation gate /= preparedProviderBindingOperationKey binding ->
+                    pure (Left (Failure (failed "register provider share runtime dependency" "the producer gate names another operation")))
+                | otherwise ->
+                    case mkProviderShareRuntimeDependencyPackage
+                        (stepExecutionPlanDigest execution)
+                        scopeCommitment
+                        (resourceHandleKey (preparedProviderShareHandle prepared))
+                        (stepExecutionFrame execution)
+                        (preparedProviderBindingOwner binding)
+                        (managedProviderShareGeneration managed)
+                        (preparedGateCommitment gate)
+                        (providerShareCommitment binding managed)
+                        route
+                        expiry of
+                        Left refusal -> pure (Left (Failure (failed "register provider share runtime dependency" refusal)))
+                        Right package -> do
+                            registered <- registerStepRuntimeDependencyPackage runtime package
+                            case registered of
+                                Left refusal -> pure (Left (dependencyRegistrationConflict (resourceHandleKey (preparedProviderShareHandle prepared)) refusal))
+                                Right () -> do
+                                    usedNonces <- newIORef []
+                                    installed <-
+                                        registerStepRuntimeDependencyService runtime package $ \request ->
+                                            case withRuntimeDependencyProbeRequest package request id of
+                                                Left refusal -> pure (Left refusal)
+                                                Right nonce -> do
+                                                    replay <-
+                                                        atomicModifyIORef' usedNonces $ \seen ->
+                                                            if nonce `elem` seen
+                                                                then (seen, True)
+                                                                else (nonce : seen, False)
+                                                    if replay
+                                                        then pure (Left "runtime dependency probe nonce has already been consumed")
+                                                        else
+                                                            either
+                                                                (Left . Text.pack . show)
+                                                                (Right . renderRuntimeDependencyProbeResponse package nonce)
+                                                                <$> providerShareDependencyReprobe dependency
+                                    pure $ case installed of
+                                        Left refusal -> Left (dependencyRegistrationConflict (resourceHandleKey (preparedProviderShareHandle prepared)) refusal)
+                                        Right () -> Right package
+
+dependencyRegistrationConflict :: Text -> Text -> ReconcileError
+dependencyRegistrationConflict key refusal = Conflict (ConflictDetail key
+    "one exact canonical dependency package and retained live service" refusal
+    "reuse the exact package, route and invocation")
 
 providerReadyCommitment ::
     PreparedProviderBinding scope planId backendId providerId ->
@@ -923,77 +993,75 @@ providerCommitment domain fields =
     framed value = Text.pack (show (Text.length value)) <> ":" <> value
     digest = hash (ByteString.pack (Text.unpack (Text.concat (map framed ("hostbootstrap/provider-runtime/" <> domain <> "/v1" : fields))))) :: Digest SHA256
 
+-- The positive word is a native observation version, never a plan generation.
 probeRunningProvider ::
     StrongProviderBackend backendId ->
     ManagedProviderHandle scope planId backendId providerId Running ->
     IO (Either ReconcileError Word64)
-probeRunningProvider backend managed = do
-    observation <- case backend of
-        StrongDirectHostBackend _ cfg (DirectHostBackendSpec root _ image) -> do
-            permission <- admitObservedDirectRoot "reprobe the exact Direct provider root" root
-            case permission of
-                Just failure -> pure (ProviderReadyFailed failure)
-                Nothing -> do
-                    egress <- interpretHostCommand cfg (directEgressCommand image)
-                    pure $ case directReadyProbeFailure "reprobe Direct provider provisioning egress" egress of
-                        Just failure -> ProviderReadyFailed failure
-                        Nothing -> ProviderReadyAlready (managedProviderGeneration managed)
-        StrongDirectHostBackend _ _ _ ->
-            pure (ProviderReadyFailed (failed "reprobe Direct provider" "invalid Direct backend state"))
-        StrongIncusBackend _ cfg spec -> do
-            outcome <-
-                withOwnedProviderTransaction cfg spec (managedOriginOwner managed) $
-                    \session key owned -> readyOwnedInstance cfg session key owned
-            pure
-                ( readyObservation
-                    (managedProviderKey managed)
-                    (managedProviderGeneration managed)
-                    outcome
-                )
-        StrongLimaBackend _ cfg spec ->
-            observeLimaReady cfg spec (managedProviderGeneration managed)
-    pure (settleRunningProbe managed observation)
+probeRunningProvider backend managed =
+    fmap (fmap (identityObservationVersion . Text.unpack . objectIdentityText))
+        (observeRunningProviderIdentity backend managed)
+
+observeRunningProviderIdentity ::
+    StrongProviderBackend backendId ->
+    ManagedProviderHandle scope planId backendId providerId Running ->
+    IO (Either ReconcileError ObjectIdentity)
+observeRunningProviderIdentity backend managed = case backend of
+    StrongDirectHostBackend _ cfg (DirectHostBackendSpec root _ image) -> runExceptT $ do
+        before <- ExceptT (observeDirectProviderIdentity key root)
+        egress <- lift (interpretHostCommand cfg (directEgressCommand image))
+        maybe (pure ()) (throwE . Failure)
+            (directReadyProbeFailure "reprobe Direct provider provisioning egress" egress)
+        after <- ExceptT (observeDirectProviderIdentity key root)
+        unless (before == after) (throwE (nativeIdentityConflict key before after))
+        pure after
+    StrongDirectHostBackend _ _ _ ->
+        pure (Left (Failure (failed "reprobe Direct provider" "invalid Direct backend state")))
+    StrongIncusBackend _ cfg spec ->
+        fmap (nativeReadyIdentity key) $
+            withOwnedProviderTransaction cfg spec (managedOriginOwner managed) $
+                \session record owned -> readyOwnedInstance cfg session record owned
+    StrongLimaBackend _ cfg spec ->
+        fmap (nativeReadyIdentity key)
+            (withOwnedGuestVm spec (managedOriginOwner managed) (GuestVm.readyOwnedGuestVm cfg))
+  where
+    key = managedProviderKey managed
+
+-- Observe the plan-local Direct root; this claims no ownership of the host.
+observeDirectProviderIdentity :: Text -> FilePath -> IO (Either ReconcileError ObjectIdentity)
+observeDirectProviderIdentity key root = do
+    permission <- admitObservedDirectRoot "reprobe the exact Direct provider root" root
+    case permission of
+        Just failure -> pure (Left (Failure failure))
+        Nothing -> do
+            observed <- withOwnershipRow ownershipRowForHost (\row -> rowObserveIdentity row root)
+            pure $ case observed of
+                Left fault -> nativeReadyIdentity key (Left (ProviderOwnershipClause fault))
+                Right Nothing -> Left (Failure (failed "reprobe Direct provider" "the admitted root is absent"))
+                Right (Just identity) -> Right identity
+
+nativeReadyIdentity ::
+    Text -> Either ProviderOwnershipFault ProviderReadyOutcome -> Either ReconcileError ObjectIdentity
+nativeReadyIdentity key outcome = case outcome of
+    Right (ReadyStarted identity) -> Right identity
+    Right (ReadyAlready identity) -> Right identity
+    Right (ReadyNotAnswering reason) -> Left (Failure (failed "reprobe running provider" reason))
+    Left fault -> case ownedRefusal "reconcile provider ready" key fault of
+        RefusedForeign _ _ expected actual -> Left (Conflict (ConflictDetail key
+            ("identity=" <> Text.pack (show expected)) ("identity=" <> Text.pack (show actual))
+            "reconcile the replacement provider before any dependent mutation"))
+        RefusedAbsent -> Left (Failure (failed "reprobe running provider" "the provider is absent"))
+        RefusedConflict detail -> Left (Conflict detail)
+        RefusedUnsupported detail -> Left (Unsupported detail)
+        RefusedFailed detail -> Left (Failure detail)
+
+nativeIdentityConflict :: Text -> ObjectIdentity -> ObjectIdentity -> ReconcileError
+nativeIdentityConflict key expected actual = Conflict (ConflictDetail key
+    ("identity=" <> objectIdentityText expected) ("identity=" <> objectIdentityText actual)
+    "reconcile the provider identity before any dependent mutation")
 
 managedOriginOwner :: ManagedProviderHandle scope planId backendId providerId phase -> Text
 managedOriginOwner (ManagedProviderHandle origin _ _) = providerOriginOwner origin
-
-settleRunningProbe ::
-    ManagedProviderHandle scope planId backendId providerId Running ->
-    ProviderReadyObservation ->
-    Either ReconcileError Word64
-settleRunningProbe managed observation = case observation of
-    ProviderReadyObserved generation -> matching generation
-    ProviderReadyAlready generation -> matching generation
-    ProviderReadyNotReady reason ->
-        Left (Failure (FailureDetail "reprobe running provider" reason ReprobeBeforeRetry))
-    ProviderReadyAbsent ->
-        Left (Failure (FailureDetail "reprobe running provider" "the provider is absent" ReprobeBeforeRetry))
-    ProviderReadyReplaced generation foreignState ->
-        Left
-            ( Conflict
-                ( ConflictDetail
-                    (managedProviderKey managed)
-                    ("generation=" <> Text.pack (show (managedProviderGeneration managed)))
-                    ("replacement generation=" <> Text.pack (show generation) <> "; " <> Text.pack (show foreignState))
-                    "reconcile the replacement provider before any dependent mutation"
-                )
-            )
-    ProviderReadyConflict detail -> Left (Conflict detail)
-    ProviderReadyUnsupported detail -> Left (Unsupported detail)
-    ProviderReadyFailed detail -> Left (Failure detail)
-  where
-    matching generation
-        | generation == managedProviderGeneration managed = Right generation
-        | otherwise =
-            Left
-                ( Conflict
-                    ( ConflictDetail
-                        (managedProviderKey managed)
-                        ("generation=" <> Text.pack (show (managedProviderGeneration managed)))
-                        ("generation=" <> Text.pack (show generation))
-                        "reconcile the provider identity before any dependent mutation"
-                    )
-                )
 
 {- | Whether an exact Direct probe answered at all.
 
@@ -1045,78 +1113,32 @@ pollProviderReady cfg spec binding remaining = do
                         >> pollProviderReady cfg spec binding (remaining - 1)
         observation -> pure observation
 
+-- Every guest-VM operation reconstructs ordinary coordinates, then enters the
+-- same recorded transaction. WSL's global wall remains its separate typed owner.
+withOwnedGuestVm ::
+    ProviderBackendSpec ->
+    Text ->
+    (GuestVm.OwnedGuestVm -> IO (Either ProviderOwnershipFault value)) ->
+    IO (Either ProviderOwnershipFault value)
+withOwnedGuestVm (LimaBackendSpec provider envelope share _) owner action
+    | Context.cpu envelope > fromIntegral (maxBound :: Word64) =
+        pure (Left (ProviderOwnershipClause (OwnedObject.OwnershipMalformed
+            "the guest-VM CPU quantity exceeds its provider representation")))
+    | otherwise =
+        action (GuestVm.OwnedGuestVm provider
+            (ProviderSizing (fromIntegral (Context.cpu envelope)) (Text.unpack (Context.memory envelope)) (Text.unpack (Context.storage envelope)))
+            share owner)
+withOwnedGuestVm _ _ _ = pure (Left (ProviderOwnershipReport
+    (ProviderCommandUnrun "the guest-VM transaction received a non-VM backend")))
+
 runLimaProvision ::
     HostConfig ->
     ProviderBackendSpec ->
     PreparedProviderBinding scope planId backendId providerId ->
     IO ProviderProvisionObservation
-runLimaProvision cfg (LimaBackendSpec provider envelope share _) binding = do
-    existing <- observeLimaExists cfg provider
-    case existing of
-        Left failure -> pure (ProviderProvisionFailed failure)
-        Right True -> pure (ProviderProvisionAlreadyOwned generation)
-        Right False -> case planProviderProvision provider envelope (Just share) of
-            Left refusal -> pure (ProviderProvisionFailed (failed "provision Lima provider" (Text.pack (show refusal))))
-            Right effects -> do
-                launched <- runLimaEffects cfg effects
-                case launched of
-                    Left failure -> pure (ProviderProvisionFailed failure)
-                    Right () -> do
-                        present <- observeLimaExists cfg provider
-                        pure $ case present of
-                            Left failure -> ProviderProvisionFailed failure
-                            Right True -> ProviderProvisionCreated generation
-                            Right False -> ProviderProvisionFailed (failed "provision Lima provider" "the Lima instance is absent after a successful launch")
-  where
-    generation = preparedProviderBindingGeneration binding
-runLimaProvision _ _ binding =
-    pure
-        ( ProviderProvisionFailed
-            (failed "provision Lima provider" ("invalid Lima backend state for " <> preparedProviderBindingResourceKey binding))
-        )
-
-observeLimaExists :: HostConfig -> SubstrateProvider -> IO (Either FailureDetail Bool)
-observeLimaExists cfg provider =
-    foldExistsProbe
-        (pure (Left (failed "observe Lima provider" "the Lima backend received a Direct existence probe")))
-        observe
-        (providerExistsProbe provider)
-  where
-    observe tool args membership = do
-        captured <- interpretHostCommand cfg (hostCommand tool args)
-        pure $ case captured of
-            Left refusal -> Left (failed "observe Lima provider" (Text.pack refusal))
-            Right run -> case capturedExit run of
-                ExitSuccess -> Right (providerVmId provider `elem` membersOf membership (capturedStdout run))
-                ExitFailure code ->
-                    Left
-                        ( failed
-                            "observe Lima provider"
-                            ("the existence probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine (capturedStderr run)))
-                        )
-
-runLimaEffects :: HostConfig -> [HostEffect] -> IO (Either FailureDetail ())
-runLimaEffects _ [] = pure (Right ())
-runLimaEffects cfg (effect : remaining) = case effect of
-    RunHostCommand command -> do
-        captured <- interpretHostCommand cfg command
-        case captured of
-            Left refusal -> pure (Left (failed "run Lima provider effect" (Text.pack refusal)))
-            Right run -> case capturedExit run of
-                ExitSuccess -> runLimaEffects cfg remaining
-                ExitFailure code ->
-                    pure
-                        ( Left
-                            ( failed
-                                "run Lima provider effect"
-                                ("the provider command exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine (capturedStderr run)))
-                            )
-                        )
-    _ ->
-        pure
-            ( Left
-                (failed "run Lima provider effect" "the Lima backend received an effect outside its closed host-command vocabulary")
-            )
+runLimaProvision cfg spec binding =
+    provisionObservation binding <$> withOwnedGuestVm spec (preparedProviderBindingOwner binding)
+        (GuestVm.provisionOwnedGuestVm cfg)
 
 pollLimaReady ::
     HostConfig ->
@@ -1125,7 +1147,7 @@ pollLimaReady ::
     Int ->
     IO ProviderReadyObservation
 pollLimaReady cfg spec binding remaining = do
-    observation <- observeLimaReady cfg spec (preparedProviderBindingGeneration binding)
+    observation <- observeLimaReady cfg spec binding
     case observation of
         waiting@(ProviderReadyNotReady _)
             | remaining > 1 -> case seconds 1 of
@@ -1133,29 +1155,21 @@ pollLimaReady cfg spec binding remaining = do
                 Right delay -> providerBackendWait delay >> pollLimaReady cfg spec binding (remaining - 1)
         other -> pure other
 
-observeLimaReady :: HostConfig -> ProviderBackendSpec -> Word64 -> IO ProviderReadyObservation
-observeLimaReady cfg (LimaBackendSpec provider _ _ _) generation =
-    foldWaitProbe
-        (pure (ProviderReadyFailed (failed "reprobe Lima provider" "the Lima backend received a Direct readiness probe")))
-        observe
-        (providerWaitProbe provider)
-  where
-    observe tool args = do
-        captured <- interpretHostCommand cfg (hostCommand tool args)
-        pure $ case captured of
-            Left refusal -> ProviderReadyFailed (failed "reprobe Lima provider" (Text.pack refusal))
-            Right run -> case capturedExit run of
-                ExitSuccess -> ProviderReadyAlready generation
-                ExitFailure _ -> ProviderReadyNotReady (Text.pack (firstDiagnosticLine (capturedStderr run)))
-observeLimaReady _ _ _ =
-    pure (ProviderReadyFailed (failed "reprobe Lima provider" "invalid Lima backend state"))
+observeLimaReady ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    PreparedProviderBinding scope planId backendId providerId ->
+    IO ProviderReadyObservation
+observeLimaReady cfg spec binding =
+    readyObservation (preparedProviderBindingResourceKey binding) (preparedProviderBindingGeneration binding)
+        <$> withOwnedGuestVm spec (preparedProviderBindingOwner binding) (GuestVm.readyOwnedGuestVm cfg)
 
 observeGuestVmShare ::
     HostConfig ->
     ProviderBackendSpec ->
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     IO ProviderShareObservation
-observeGuestVmShare cfg (LimaBackendSpec provider _ retainedShare _) prepared
+observeGuestVmShare cfg spec@(LimaBackendSpec _ _ retainedShare _) prepared
     | source /= hpsHostPath retainedShare || target /= hpsGuestPath retainedShare =
         pure
             ( ProviderShareConflict
@@ -1167,14 +1181,18 @@ observeGuestVmShare cfg (LimaBackendSpec provider _ retainedShare _) prepared
                 )
             )
     | otherwise = do
-        captured <- runGuestVm cfg provider ["bash", "-lc", "test -d \"$1\" && test -w \"$1\"", "--", target]
+        directory <- runOwnedGuestVm cfg spec owner ["test", "-d", target]
+        captured <- case directory of
+            RawProviderExit ExitSuccess _ _ -> runOwnedGuestVm cfg spec owner ["test", "-w", target]
+            refusal -> pure refusal
         pure $ case captured of
             RawProviderExit ExitSuccess _ _ -> ProviderShareAlreadyReady generation
             RawProviderExit (ExitFailure code) _ err ->
                 ProviderShareFailed
-                    (failed "reprobe guest-VM provider share" ("the guest share probe exited " <> Text.pack (show code) <> ": " <> Text.pack (firstDiagnosticLine err)))
+                    (failed "reprobe guest-VM provider share" (providerReportFaultMessage (ProviderCommandExited code (Text.pack err))))
             RawProviderFailure refusal -> ProviderShareFailed (failed "reprobe guest-VM provider share" (Text.pack refusal))
   where
+    owner = preparedProviderBindingOwner (preparedProviderShareBinding prepared)
     shareSpec = preparedProviderShareSpec prepared
     source = providerShareHostPath shareSpec
     target = providerShareGuestPath shareSpec
@@ -1185,29 +1203,13 @@ observeGuestVmShare _ _ prepared =
             (failed "reprobe guest-VM provider share" ("invalid guest-VM backend state for " <> resourceHandleKey (preparedProviderShareHandle prepared)))
         )
 
-runGuestVm :: HostConfig -> SubstrateProvider -> [String] -> IO RawProviderOutcome
-runGuestVm cfg provider argv =
-    case providerFileTransfer provider of
-        LimaFileTransfer vm ->
-            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Lima (Lima.shellVMArgs vm argv))
-        Wsl2MountTransfer vm ->
-            rawProviderOutcome <$> interpretHostCommand cfg (hostCommand Wsl (Wsl2.wslExecArgs (Wsl2.wsl2Distro vm) argv))
-        _ -> pure (RawProviderFailure "the guest-VM backend retained a non-VM guest route")
+runOwnedGuestVm :: HostConfig -> ProviderBackendSpec -> Text -> [String] -> IO RawProviderOutcome
+runOwnedGuestVm cfg spec owner argv =
+    guestOutcome <$> withOwnedGuestVm spec owner (\owned -> GuestVm.execInOwnedGuestVm cfg owned argv)
 
-firstDiagnosticLine :: String -> String
-firstDiagnosticLine = takeWhile (/= '\n')
+-- ---------------------------------------------------------------------------
+-- Owned provider transactions
 
--- The clause-holding transactions ---------------------------------------------
-
-{- | Run one owned-instance transaction inside the store its state directory
-names.
-
-Clause 1 is opened here and released when this call returns, because one
-exclusive entry covers one whole transaction: a per-step entry would let another
-process act between a record and the mutation it authorizes. The Direct
-realization owns no instance at all, so it has no transaction to run and says so
-rather than opening a store it would never write to.
--}
 withOwnedProviderTransaction ::
     HostConfig ->
     ProviderBackendSpec ->
@@ -1292,7 +1294,7 @@ which of its own constructors carries each, which is five lines rather than five
 copies of this decision.
 -}
 data OwnedProviderRefusal
-    = RefusedForeign Word64 ForeignObservation
+    = RefusedForeign Word64 ForeignObservation Origin ObjectIdentity
     | RefusedAbsent
     | RefusedConflict ConflictDetail
     | RefusedUnsupported UnsupportedDetail
@@ -1301,11 +1303,11 @@ data OwnedProviderRefusal
 ownedRefusal :: Text -> Text -> ProviderOwnershipFault -> OwnedProviderRefusal
 ownedRefusal operation key fault = case fault of
     ProviderOwnershipStanding standing -> case standing of
-        InstanceUnderNoRecord observed -> refusedForeign observed
+        InstanceUnderNoRecord observed -> refusedForeign OriginAbsent observed
         InstanceUnderAnotherClaim expected observed ->
             RefusedConflict
                 (conflict key expected observed "inspect the instance's own owner claim")
-        InstanceReplaced _ observed -> refusedForeign observed
+        InstanceReplaced expected observed -> refusedForeign (OriginPresent expected) observed
         InstanceVanished _ -> RefusedAbsent
         RecordNotAClaimedObject described ->
             RefusedConflict
@@ -1315,7 +1317,7 @@ ownedRefusal operation key fault = case fault of
                     described
                     "inspect the durable record under this instance's key"
                 )
-        RecordNamesAPriorInstance observed -> refusedForeign observed
+        RecordNamesAPriorInstance observed -> refusedForeign OriginAbsent observed
     ProviderOwnershipClause clause ->
         ownershipFault
             (RefusedUnsupported . unsupported operation)
@@ -1335,19 +1337,21 @@ ownedRefusal operation key fault = case fault of
                     )
             )
             clause
+    ProviderOwnershipSizing declared observed ->
+        RefusedConflict (ConflictDetail key (declaredSizingText declared) (observedSizingText observed) sizingConflictRemedy)
     ProviderOwnershipReport reportFault ->
         RefusedFailed (failed operation (providerReportFaultMessage reportFault))
     ProviderOwnershipStore storeFailure ->
         RefusedFailed (failed operation (protectedErrorMessage storeFailure))
   where
-    refusedForeign observed =
+    refusedForeign expected observed =
         let rendered = Text.unpack (objectIdentityText observed)
-         in RefusedForeign (identityGeneration rendered) (foreignObservation key rendered)
+         in RefusedForeign (identityObservationVersion rendered) (foreignObservation key rendered) expected observed
 
 -- | One rendering of a conflict's side, so both sides read the same way.
 originSide :: Origin -> Text
 originSide OriginAbsent = "absent"
-originSide (OriginPresent identity) = "identity " <> objectIdentityText identity
+originSide (OriginPresent identity) = "identity=" <> objectIdentityText identity
 
 runProviderStopCall ::
     StrongProviderBackend backendId ->
@@ -1388,7 +1392,7 @@ classifyProviderStopCall prepared outcome =
             Right (StopAlreadyStopped _) -> ProviderAlreadyStopped generation
             Right (StopStillRunning reason) -> ProviderStopStillRunning reason
             Left fault -> case ownedRefusal "stop provider" key fault of
-                RefusedForeign foreignGeneration observed ->
+                RefusedForeign foreignGeneration observed _ _ ->
                     ProviderStopReplaced foreignGeneration observed
                 RefusedAbsent -> ProviderStopAbsent
                 RefusedConflict detail -> ProviderStopConflict detail
@@ -1456,7 +1460,47 @@ probeProviderShare ::
     Word64 ->
     IO (Either ReconcileError Word64)
 probeProviderShare backend prepared expectedGeneration = do
-    ProviderShareCallResult observation <- runProviderShareCall backend prepared
+    ProviderShareCallResult observation <- case backend of
+        StrongIncusBackend _ cfg spec -> do
+            let binding = preparedProviderShareBinding prepared
+                shareSpec = preparedProviderShareSpec prepared
+                owner = preparedProviderBindingOwner binding
+            outcome <- case providerOwnershipAddress spec owner of
+                Left fault -> pure (Left fault)
+                Right (_, _, owned) ->
+                    let share = OwnedProviderShare owned (shareDeviceName prepared)
+                            (providerShareHostPath shareSpec) (providerShareGuestPath shareSpec)
+                            (preparedShareBinding prepared)
+                     in withOwnedProviderTransaction cfg spec owner $ \session instanceKey ownedInstance -> do
+                            first <- observeOwnedShare cfg session share
+                            case first of
+                                Left fault -> pure (Left fault)
+                                Right identity -> do
+                                    mount <- execInOwnedInstance cfg session instanceKey ownedInstance "findmnt"
+                                        ["-n", "-o", "FSTYPE", "--mountpoint", providerShareGuestPath shareSpec]
+                                    case mount of
+                                        Left fault -> pure (Left fault)
+                                        Right report
+                                            | capturedExit report /= ExitSuccess
+                                                || lines (capturedStdout report) /= ["virtiofs"]
+                                                || not (null (capturedStderr report)) -> pure (Left guestShareNotReady)
+                                            | otherwise -> do
+                                                writeCheck <- execInOwnedInstance cfg session instanceKey ownedInstance "test"
+                                                    ["-w", providerShareGuestPath shareSpec]
+                                                case writeCheck of
+                                                    Left fault -> pure (Left fault)
+                                                    Right check
+                                                        | capturedExit check /= ExitSuccess
+                                                            || not (null (capturedStdout check))
+                                                            || not (null (capturedStderr check)) -> pure (Left guestShareNotReady)
+                                                        | otherwise -> do
+                                                            second <- observeOwnedShare cfg session share
+                                                            pure $ case second of
+                                                                Right current | current == identity -> Right identity
+                                                                Right _ -> Left guestShareNotReady
+                                                                Left fault -> Left fault
+            pure (classifyProviderShareCall prepared (ShareAlreadyAttached <$ outcome))
+        _ -> runProviderShareCall backend prepared
     pure $ case observation of
         ProviderShareAttached generation -> accept generation
         ProviderShareRepaired generation -> accept generation
@@ -1485,6 +1529,11 @@ probeProviderShare backend prepared expectedGeneration = do
                     )
                 )
 
+guestShareNotReady :: ProviderOwnershipFault
+guestShareNotReady = ProviderOwnershipClause
+    (OwnedObject.OwnershipProbeFailed "observe the guest share mount"
+        "the exact guest target is not a writable virtiofs mount")
+
 -- | What one share transaction means, as a total function of its answer.
 classifyProviderShareCall ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
@@ -1497,7 +1546,7 @@ classifyProviderShareCall prepared outcome =
             Right ShareRepaired -> ProviderShareRepaired shareGeneration
             Right ShareAlreadyAttached -> ProviderShareAlreadyReady shareGeneration
             Left fault -> case ownedRefusal "reconcile provider share" key fault of
-                RefusedForeign foreignGeneration observed ->
+                RefusedForeign foreignGeneration observed _ _ ->
                     ProviderShareProviderReplaced foreignGeneration observed
                 RefusedAbsent -> ProviderShareAbsent
                 RefusedConflict detail -> ProviderShareConflict detail
@@ -1515,15 +1564,14 @@ shareDeviceName prepared =
     shareDevicePrefix
         <> take shareDeviceDigestLength (ByteString.unpack (convertToBase Base16 digest))
   where
-    digest = hash (ByteString.pack (Text.unpack (preparedShareBinding prepared))) :: Digest SHA256
+    digest = hash (TextEncoding.encodeUtf8 (preparedShareBinding prepared)) :: Digest SHA256
 
-{- | The share device is named from the share binding digest, so the same
-prepared share always addresses the same device and a different binding never
-addresses it.  The name is bounded because it is a component of a POSIX
-unix-domain socket pathname (see 'maxIncusInstanceNameLength'); a truncated
-binding digest still names the device from the binding rather than from a
-pathname, and a same-named device carrying a different binding is refused by
-the share manifest before any mutation.
+{- | The share device is named from a bounded share-binding digest.
+The same prepared share addresses the same device. A truncated digest does
+not rule out collisions: the owned share transaction's exact device readback
+refuses a same-named device carrying another binding before mutation.
+The name is bounded because it is a component of a POSIX unix-domain socket
+pathname (see 'maxIncusInstanceNameLength').
 -}
 shareDevicePrefix :: String
 shareDevicePrefix = "hb-share-"
@@ -1551,7 +1599,7 @@ unixSocketPathLimit = 107
 
 {- | The instance name and the share device name share the one socket-pathname
 budget, and the device name is fixed by 'shareDeviceNameLength', so admission
-bounds the instance name by what remains.
+bounds the instance name's UTF-8 byte length by what remains.
 -}
 maxIncusInstanceNameLength :: Int
 maxIncusInstanceNameLength =
@@ -1694,7 +1742,7 @@ runRetainedProviderDelete backend = case backend of
 
 retainedProviderFault :: Text -> Text -> ProviderOwnershipFault -> ReconcileError
 retainedProviderFault operation key fault = case ownedRefusal operation key fault of
-    RefusedForeign _ observation ->
+    RefusedForeign _ observation _ _ ->
         Conflict
             ( ConflictDetail
                 key
@@ -1719,7 +1767,7 @@ classifyProviderDeleteCall prepared outcome =
             Right DeleteAlreadyRemoved -> ProviderAlreadyDeleted
             Right DeleteStillPresent -> ProviderDeleteStillPresent generation
             Left fault -> case ownedRefusal "delete provider" key fault of
-                RefusedForeign foreignGeneration observed ->
+                RefusedForeign foreignGeneration observed _ _ ->
                     ProviderDeleteReplaced foreignGeneration observed
                 RefusedAbsent ->
                     ProviderDeleteFailed
@@ -1746,34 +1794,12 @@ withProviderBoundExec ::
 withProviderBoundExec backend managed@(ManagedProviderHandle origin handle receipt) consume = do
     validateOwnershipReceipt handle receipt
     validateProviderOrigin backend managed
-    case backend of
-        StrongDirectHostBackend _ cfg spec ->
-            Right
-                ( consume
-                    ( bindProviderBoundExec
-                        (providerBoundRouteFor spec)
-                        (runBoundDirect cfg spec)
-                        providerBackendWait
-                    )
-                )
-        StrongIncusBackend _ cfg spec ->
-            Right
-                ( consume
-                    ( bindProviderBoundExec
-                        (providerBoundRouteFor spec)
-                        (runBoundIncus cfg spec (providerOriginOwner origin))
-                        providerBackendWait
-                    )
-                )
-        StrongLimaBackend _ cfg spec ->
-            Right
-                ( consume
-                    ( bindProviderBoundExec
-                        (providerBoundRouteFor spec)
-                        (runBoundLima cfg spec)
-                        providerBackendWait
-                    )
-                )
+    let (spec, run) = case backend of
+            StrongDirectHostBackend _ cfg retained -> (retained, runBoundDirect cfg retained)
+            StrongIncusBackend _ cfg retained -> (retained, runBoundIncus cfg retained (providerOriginOwner origin))
+            StrongLimaBackend _ cfg retained -> (retained, runBoundLima cfg retained (providerOriginOwner origin))
+    route <- providerBoundRouteFor spec
+    pure (consume (bindProviderBoundExec route run providerBackendWait))
 
 validateProviderOrigin ::
     StrongProviderBackend backendId ->
@@ -1822,14 +1848,20 @@ sameBackendBinding left right =
     providerBackendSemanticFingerprint left == providerBackendSemanticFingerprint right
         && providerBackendRealizationFingerprint left == providerBackendRealizationFingerprint right
 
-providerBoundRouteFor :: ProviderBackendSpec -> ProviderBoundRoute
+-- | Only the two admitted guest kinds describe a guest-VM route. Keep this
+-- closed match exhaustive so another provider kind requires an explicit route.
+providerBoundRouteFor :: ProviderBackendSpec -> Either ReconcileError ProviderBoundRoute
 providerBoundRouteFor spec = case spec of
-    IncusBackendSpec name image _ _ _ _ _ _ -> ProviderBoundIncusRoute name image
+    IncusBackendSpec name image _ _ _ _ _ _ -> Right (ProviderBoundIncusRoute name image)
     LimaBackendSpec provider _ _ _ -> case providerKind provider of
-        ProviderLima -> ProviderBoundLimaRoute (providerVmId provider)
-        ProviderWsl2 -> ProviderBoundWsl2Route (providerVmId provider)
-        _ -> ProviderBoundLimaRoute (providerVmId provider)
-    DirectHostBackendSpec root _ egressImage -> ProviderBoundDirectRoute root egressImage
+        ProviderLima -> Right (ProviderBoundLimaRoute (providerVmId provider))
+        ProviderWsl2 -> Right (ProviderBoundWsl2Route (providerVmId provider))
+        ProviderIncus -> invalidGuestKind
+        ProviderDirectHost -> invalidGuestKind
+    DirectHostBackendSpec root _ egressImage -> Right (ProviderBoundDirectRoute root egressImage)
+  where
+    invalidGuestKind =
+        Left (Failure (failed "bind provider route" "the guest-VM backend retained a non-VM provider kind"))
 
 runBoundDirect :: HostConfig -> ProviderBackendSpec -> ProviderProbeRequest -> IO RawProviderOutcome
 runBoundDirect cfg spec request = case (spec, providerProbeRequestView request) of
@@ -1876,15 +1908,15 @@ data DirectRootObservation = DirectRootObservation
 
 The only effect the admission has, and this binary's own: a delegated program
 would answer the same five questions in another language, which is the fork
-§ KK refuses.  A path that cannot be inspected at all is observed as the absence
-it is rather than as an exception, because "there is nothing there" is one of
-the answers the decision is written over.
+§ KK refuses.  Unavailable filesystem observations contribute refusing admission facts.
+An uncertain link check refuses an unfollowed directory, and failed
+canonicalization contributes no canonical-path fact.
 -}
 observeDirectRoot :: FilePath -> IO DirectRootObservation
 observeDirectRoot root = do
-    link <- quietly False (pathIsSymbolicLink root)
+    link <- quietly True (pathIsSymbolicLink root)
     directory <- quietly False (doesDirectoryExist root)
-    canonical <- quietly root (canonicalizePath root)
+    canonical <- quietly Nothing (Just <$> canonicalizePath root)
     accessible <-
         if directory
             then quietly False (fmap admits (getPermissions root))
@@ -1894,7 +1926,7 @@ observeDirectRoot root = do
             { directRootAbsolute = isAbsolute root
             , directRootSymbolicLink = link
             , directRootDirectory = directory
-            , directRootCanonical = equalFilePath canonical root
+            , directRootCanonical = directRootCanonicalFact root canonical
             , directRootAccessible = accessible
             }
   where
@@ -1903,6 +1935,10 @@ observeDirectRoot root = do
     quietly fallback action = do
         outcome <- try action
         pure (either (\failure -> const fallback (failure :: IOException)) id outcome)
+
+-- | An unavailable canonicalization supplies no canonical-root fact.
+directRootCanonicalFact :: FilePath -> Maybe FilePath -> Bool
+directRootCanonicalFact root = maybe False (equalFilePath root)
 
 {- | Whether the observed root is the exact canonical directory Direct admits.
 
@@ -1914,8 +1950,8 @@ admitted, and it publishes no origin and holds no clause.
 admitDirectRoot :: FilePath -> DirectRootObservation -> Either Text ()
 admitDirectRoot root observed
     | not (directRootAbsolute observed) = refuse "is not absolute on this host"
-    | directRootSymbolicLink observed = refuse "is a symbolic link rather than the directory it names"
     | not (directRootDirectory observed) = refuse "is not a directory"
+    | directRootSymbolicLink observed = refuse "is a symbolic link rather than the directory it names"
     | not (directRootCanonical observed) = refuse "is not the canonical path this host resolves it to"
     | not (directRootAccessible observed) = refuse "is not readable, writable, and searchable"
     | otherwise = Right ()
@@ -1976,24 +2012,31 @@ runBoundIncus cfg spec owner request = case providerProbeRequestView request of
 runBoundLima ::
     HostConfig ->
     ProviderBackendSpec ->
+    Text ->
     ProviderProbeRequest ->
     IO RawProviderOutcome
-runBoundLima cfg (LimaBackendSpec provider _ _ _) request =
+runBoundLima cfg spec@(LimaBackendSpec provider _ _ _) owner request =
     case providerProbeRequestView request of
         ProviderHostToolRequest tool argv
-            | (providerKind provider, tool) `elem` [(ProviderLima, Lima), (ProviderWsl2, Wsl)] ->
-                rawProviderOutcome <$> interpretHostCommand cfg (hostCommand tool argv)
+            | foldExistsProbe False (\retainedTool retainedArgv _ -> tool == retainedTool && argv == retainedArgv)
+                (providerExistsProbe provider) -> do
+                    observed <- withOwnedGuestVm spec owner (GuestVm.observeOwnedGuestVm cfg)
+                    pure $ case observed of
+                        Right () -> RawProviderExit ExitSuccess "" ""
+                        Left fault -> guestOutcome (Left fault)
+            | elem (providerKind provider, tool) [(ProviderLima, Lima), (ProviderWsl2, Wsl)] ->
+                pure (RawProviderFailure "the bound guest-VM backend refused an unknown host-tool vector")
         ProviderHostToolRequest _ _ ->
             pure (RawProviderFailure "the bound guest-VM backend refused a different host tool")
         ProviderDirectProbeRequest _ ->
             pure (RawProviderFailure "the bound guest-VM backend refused a Direct-host probe")
         ProviderProvisioningEgressProbe ->
-            runGuestVm cfg provider ["bash", "-lc", "getent hosts archive.ubuntu.com >/dev/null"]
+            runOwnedGuestVm cfg spec owner ["getent", "hosts", "archive.ubuntu.com"]
         ProviderGuestProbeRequest argv
-            | null argv || any ('\0' `elem`) argv ->
+            | null argv || any (elem '\0') argv ->
                 pure (RawProviderFailure "guest probe argv must be non-empty and contain no NUL")
-            | otherwise -> runGuestVm cfg provider argv
-runBoundLima _ _ _ = pure (RawProviderFailure "invalid Lima backend state")
+            | otherwise -> runOwnedGuestVm cfg spec owner argv
+runBoundLima _ _ _ _ = pure (RawProviderFailure "invalid Lima backend state")
 
 {- | What a command run inside the owned instance produced.
 
@@ -2006,11 +2049,11 @@ guestOutcome (Right run) =
     RawProviderExit (capturedExit run) (capturedStdout run) (capturedStderr run)
 guestOutcome (Left fault) =
     case ownedRefusal "run a command in the provider guest" "provider-guest" fault of
-        RefusedForeign _ observed ->
+        RefusedForeign _ _ expected observed ->
             RawProviderFailure
                 ( providerConflictMarker
-                    "managed-provider-identity"
-                    (foreignDetail observed)
+                    (originSide expected)
+                    (originSide (OriginPresent observed))
                     "provider-replaced"
                 )
         RefusedAbsent -> RawProviderFailure "the managed provider is absent"
@@ -2042,15 +2085,9 @@ unsupported = UnsupportedDetail
 failed :: Text -> Text -> FailureDetail
 failed operation reason = FailureDetail operation reason ReprobeBeforeRetry
 
-validWireToken :: String -> Bool
-validWireToken value =
-    not (null value)
-        && length value <= 240
-        && all (\character -> isAlphaNum character || character `elem` (":._/=-" :: String)) value
-
 providerConflictMarker :: Text -> Text -> Text -> String
 providerConflictMarker expected observed reason =
-    if all (validWireToken . Text.unpack) [expected, observed, reason]
+    if all (validConflictToken . Text.unpack) [expected, observed, reason]
         then
             "HB_PROVIDER_CONFLICT "
                 <> Text.unpack expected
@@ -2060,7 +2097,3 @@ providerConflictMarker expected observed reason =
                 <> Text.unpack reason
         else "HB_PROVIDER_CONFLICT bounded-token invalid-token invalid-conflict-marker"
 
-identityGeneration :: String -> Word64
-identityGeneration = max 1 . foldl step 1469598103934665603
-  where
-    step acc character = (acc `xor` fromIntegral (fromEnum character)) * 1099511628211

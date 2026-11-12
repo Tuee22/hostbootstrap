@@ -17,7 +17,7 @@ no platform primitive at all. The four clauses of
 a Windows host is the row beneath it (§ LL), so this driver consumes that row
 rather than a platform seam of its own:
 
-1. clause 1 is the wall's own 'ProtectedStore' entry, taken beside the target
+1. clause 1 is the wall's own protected-store entry, taken beside the target
    and released by the kernel when the process dies. It is the same exclusive
    entry the run's data root and generated config take, so there is one
    exclusive open beneath every host-local owner;
@@ -42,10 +42,8 @@ published.
 module HostBootstrap.Wsl2.GlobalWall.Host (
     -- * Where the one wall lives
     HostWallLocation,
-    openHostWallLocation,
     hostWallTargetPath,
-    hostWallProtectedStore,
-    hostWallActiveRecordKey,
+    hostWallOwnershipPresent,
 
     -- * Requests and results
     CurrentUserWallRequest,
@@ -66,6 +64,7 @@ module HostBootstrap.Wsl2.GlobalWall.Host (
 )
 where
 
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -75,37 +74,37 @@ import qualified Data.Text as Text
 import Data.Word (Word32, Word64, Word8)
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
-    OwnershipFault (OwnershipConflict),
+    OwnershipFault (OwnershipConflict, OwnershipOccupied),
     mkObjectIdentity,
     objectIdentityBytes,
     ownershipFault,
     ownershipFaultMessage,
  )
+import qualified HostBootstrap.Ownership.Object as Ownership
 import HostBootstrap.Ownership.Primitive (
+    OwnershipClause (ClauseBind, ClauseRecord),
     OwnershipPrimitive (
-        rowCloseHandle,
+        rowCapabilities,
         rowCreateFile,
         rowLinkNoReplace,
         rowObserveIdentity,
-        rowOpenExclusive,
-        rowReadObject,
         rowRemoveObject,
         rowSyncParent
     ),
     OwnershipRow,
+    clauseRefusal,
     withOwnershipRow,
+    withReobservedIdentity,
  )
+import qualified HostBootstrap.Ownership.Primitive as Ownership
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError,
     ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
-    ProtectedStore,
     RecordKey,
     compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
-    mkRecordKey,
-    openProtectedStore,
     protectedErrorMessage,
     readProtectedRecord,
     recordVersionWord,
@@ -113,73 +112,17 @@ import HostBootstrap.Protected (
  )
 import HostBootstrap.Wire.LittleEndian (word32LE, word64LE)
 import HostBootstrap.Wsl2.GlobalWall
+import HostBootstrap.Wsl2.GlobalWall.Location (
+    HostWallLocation,
+    hostWallActiveKey,
+    hostWallFenceKey,
+    hostWallOwnershipPresent,
+    hostWallStore,
+    hostWallTarget,
+    hostWallTargetPath,
+ )
 import HostBootstrap.Wsl2.GlobalWall.ConfigBytes
-
--- Where the wall lives ------------------------------------------------------------
-
-{- | The one managed @.wslconfig@ and the protected store that holds its
-clauses 1 and 2.
-
-The target is settled here rather than by the driver, so no caller input ever
-reaches a pathname and the driver never derives one.
--}
-data HostWallLocation = HostWallLocation
-    { hostWallTarget :: FilePath
-    , hostWallStore :: ProtectedStore
-    , hostWallActiveKey :: RecordKey
-    , hostWallFenceKey :: RecordKey
-    }
-
-hostWallTargetPath :: HostWallLocation -> FilePath
-hostWallTargetPath = hostWallTarget
-
-{- | The store the wall's clauses 1 and 2 are made of.
-
-Disclosed because the durable state an interruption leaves is a /value/: a
-fixture that needs to enter a crash-resume branch writes that value through this
-store and re-enters the ordinary entry point, rather than the driver carrying a
-branch that exists for a test (§ NN).
--}
-hostWallProtectedStore :: HostWallLocation -> ProtectedStore
-hostWallProtectedStore = hostWallStore
-
--- | The record key the active wall record lives under.
-hostWallActiveRecordKey :: HostWallLocation -> RecordKey
-hostWallActiveRecordKey = hostWallActiveKey
-
-{- | Open the wall's durable state beside the target it manages.
-
-The state directory is ordinary scaffolding; what is owned is the target, and
-the store is what clause 1 and clause 2 are made of.
--}
-openHostWallLocation ::
-    -- | the managed @.wslconfig@
-    FilePath ->
-    -- | the directory the wall keeps its protected store in
-    FilePath ->
-    IO (Either HostWallError HostWallLocation)
-openHostWallLocation target stateDirectory = do
-    opened <- openProtectedStore stateDirectory
-    pure $ do
-        store <- storeResult opened
-        active <- storeResult (mkRecordKey wallActiveRecordKey)
-        fence <- storeResult (mkRecordKey wallFenceRecordKey)
-        Right
-            HostWallLocation
-                { hostWallTarget = target
-                , hostWallStore = store
-                , hostWallActiveKey = active
-                , hostWallFenceKey = fence
-                }
-
-storeResult :: Either ProtectedError value -> Either HostWallError value
-storeResult = either (Left . fromStoreError) Right
-
-wallActiveRecordKey :: Text.Text
-wallActiveRecordKey = "wall.hostbootstrap-global.active"
-
-wallFenceRecordKey :: Text.Text
-wallFenceRecordKey = "wall.hostbootstrap-global.fence"
+import System.FilePath (takeDirectory)
 
 {- | Everything one transaction of the driver is entitled to: the row that holds
 the clauses, the target it is about, and the exclusive entry it runs inside.
@@ -418,13 +361,20 @@ inWallEntry ::
       IO (Either HostWallError result)
     ) ->
     IO (Either HostWallError result)
-inWallEntry row location use = do
-    outcome <-
-        withProtectedEntry (hostWallStore location) $ \session ->
-            Right <$> use (WallEntry row location session)
-    pure $ case outcome of
-        Left failure -> Left (fromStoreError failure)
-        Right inner -> inner
+inWallEntry row location use =
+    withOwnershipRow row $ \primitives ->
+        case clauseRefusal (rowCapabilities primitives) ClauseRecord of
+            Just refusal -> pure (Left (fromOwnershipFault refusal))
+            Nothing ->
+                case clauseRefusal (rowCapabilities primitives) ClauseBind of
+                    Just refusal -> pure (Left (fromOwnershipFault refusal))
+                    Nothing -> do
+                        outcome <-
+                            withProtectedEntry (hostWallStore location) $ \session ->
+                                Right <$> use (WallEntry row location session)
+                        pure $ case outcome of
+                            Left failure -> Left (fromStoreError failure)
+                            Right inner -> inner
 
 prepareFreshReceipt ::
     WallEntry session ->
@@ -453,12 +403,38 @@ prepareFreshReceipt entry request target fenceValue =
                                 claimed
                                 origin of
                                 Left err -> pure (Left (fromModelError err))
-                                Right withOrigin -> do
-                                    originStored <- storeReceipt entry withOrigin
-                                    pure
-                                        ( originStored
-                                            >> Right (SomeWallReceipt withOrigin)
-                                        )
+                                Right withOrigin
+                                    | maximumEncodedWallRecordBytes (wallReceiptRecord withOrigin) > maximumWallBytes ->
+                                        pure
+                                            ( Left
+                                                ( HostWallUnsupported
+                                                    "worst-case encoded active wall record exceeds the 16 MiB recoverable limit"
+                                                )
+                                            )
+                                    | otherwise -> do
+                                        originStored <- storeReceipt entry withOrigin
+                                        pure
+                                            ( originStored
+                                                >> Right (SomeWallReceipt withOrigin)
+                                            )
+
+-- | Reserve the future candidate and largest identity before publishing origin.
+-- Optional tags already occupy one byte in the base encoding; a present
+-- identity adds its four-byte length and bounded payload. Phase tags do not grow.
+maximumEncodedWallRecordBytes :: PersistedWallRecord -> Int
+maximumEncodedWallRecordBytes record =
+    ByteString.length
+        ( encodeWallRecord
+            record
+                { persistedStageCandidate = Just (stageCandidate record)
+                , persistedTargetIdentity = Nothing
+                }
+        )
+        + 4
+        + maximumWallIdentityBytes
+
+maximumWallIdentityBytes :: Int
+maximumWallIdentityBytes = 64
 
 resumeReceipt ::
     CurrentUserWallRequest ->
@@ -563,8 +539,8 @@ desiredForActive request active =
                 then Right (persistedDesiredBytes active)
                 else
                     Left
-                        ( HostWallJournalFailure
-                            "managed spec does not reproduce the desired bytes from the durable origin"
+                        ( fromModelError
+                            (InvalidWallJournal "managed spec does not reproduce the desired bytes from the durable origin")
                         )
 
 desiredFromOrigin ::
@@ -595,6 +571,10 @@ effectiveSpecIdentity request =
         Builder.byteString "HBWSL-MANAGED-SPEC02"
             <> putSized (requestSpecIdentity request)
             <> putSized (managedSpecIdentityBytes (requestManagedSpec request))
+
+refuseWallPhase :: WallJournalPhase -> String -> IO (Either HostWallError value)
+refuseWallPhase phase reason =
+    pure (Left (HostWallModelFailure (IllegalWallTransition phase reason)))
 
 driveApply ::
     WallEntry session ->
@@ -647,16 +627,13 @@ driveApply entry target = go (0 :: Int)
                                 Right applied -> do
                                     stored <- storeReceipt entry applied
                                     pure (stored >> Right (wallReceiptRecord applied))
-                    phase ->
-                        pure
-                            ( Left
-                                ( HostWallModelFailure
-                                    ( IllegalWallTransition
-                                        phase
-                                        "apply cannot take over a wall already in teardown"
-                                    )
-                                )
-                            )
+                    WallRestoreOutcomeUnknown ->
+                        refuseWallPhase WallRestoreOutcomeUnknown "apply cannot take over a wall already in teardown"
+                    WallRestored ->
+                        refuseWallPhase WallRestored "apply cannot take over a wall already in teardown"
+                    WallReleased ->
+                        refuseWallPhase WallReleased "apply cannot take over a wall already in teardown"
+
 
 driveStage ::
     WallEntry session ->
@@ -772,6 +749,8 @@ recoverDurablyBoundArmed entry boundPath armedPath receipt armedFile =
             deleted <- deleteWallFile entry armedFile
             pure (deleted >> Right ())
         WallStageBound
+            | Just (wallObjectIdentity armedFile) /= persistedTargetIdentity active ->
+                deleteWallFile entry armedFile
             | fileObservation (Just armedFile)
                 /= expectedStagedObservation active ->
                 pure
@@ -791,13 +770,21 @@ recoverDurablyBoundArmed entry boundPath armedPath receipt armedFile =
                 case linkResult of
                     Left err -> pure (Left err)
                     Right () -> deleteWallFile entry armedFile
-        phase ->
-            pure
-                ( Left
-                    ( HostWallModelFailure
-                        (IllegalWallTransition phase "unexpected armed-stage recovery phase")
-                    )
-                )
+        WallClaimed ->
+            refuseWallPhase WallClaimed "unexpected armed-stage recovery phase"
+        WallOriginRecorded ->
+            refuseWallPhase WallOriginRecorded "unexpected armed-stage recovery phase"
+        WallApplyOutcomeUnknown ->
+            refuseWallPhase WallApplyOutcomeUnknown "unexpected armed-stage recovery phase"
+        WallApplied ->
+            refuseWallPhase WallApplied "unexpected armed-stage recovery phase"
+        WallRestoreOutcomeUnknown ->
+            refuseWallPhase WallRestoreOutcomeUnknown "unexpected armed-stage recovery phase"
+        WallRestored ->
+            refuseWallPhase WallRestored "unexpected armed-stage recovery phase"
+        WallReleased ->
+            refuseWallPhase WallReleased "unexpected armed-stage recovery phase"
+
   where
     active = wallReceiptRecord receipt
 
@@ -916,41 +903,50 @@ driveApplying ::
 driveApplying entry steps continueApply target receipt =
     do
         recoveryStep <-
-            withApplyLayout entry target active $ \layout ->
-                case classifyWallApply receipt (applyObservation layout) of
-                    ApplyObservedDesired ->
-                        case settleWallApply active receipt (applyObservation layout) of
-                            Left err -> pure (Left (fromModelError err))
-                            Right applied -> do
-                                stored <- storeReceipt entry applied
-                                pure
-                                    ( stored
-                                        >> Right
-                                            (ApplyRecoveryDone (wallReceiptRecord applied))
-                                    )
-                    ApplyRetryPublication ->
-                        case persistedWallOrigin active of
-                            Nothing ->
-                                pure
-                                    (Left (HostWallJournalFailure "applying record has no origin"))
-                            Just OriginalAbsent ->
-                                publishStage layout
-                            Just origin@(OriginalPresent _ _) ->
-                                if observesExactOrigin origin (layoutApplyTarget layout)
-                                    then retainOrigin layout
-                                    else publishStage layout
-                    ApplyBlocked conflict ->
-                        pure (Left (HostWallConflict conflict))
-                    classification ->
-                        pure
-                            ( Left
-                                ( HostWallModelFailure
-                                    ( IllegalWallTransition
-                                        WallApplyOutcomeUnknown
-                                        ("unexpected apply recovery classification " ++ show classification)
-                                    )
-                                )
-                            )
+            withApplyLayout entry target active $ \layout -> do
+                repaired <-
+                    recoverDuplicateMove entry
+                        [ (expectedStagedObservation active, layoutApplyStage layout, layoutApplyTarget layout)
+                        , (expectedOriginObservation active, layoutApplyTarget layout, layoutApplyRetained layout)
+                        ]
+                case repaired of
+                    Left err -> pure (Left err)
+                    Right True -> pure (Right ApplyRecoveryContinue)
+                    Right False ->
+                        case classifyWallApply receipt (applyObservation layout) of
+                            ApplyObservedDesired ->
+                                case settleWallApply active receipt (applyObservation layout) of
+                                    Left err -> pure (Left (fromModelError err))
+                                    Right applied -> do
+                                        synced <- onRow entry (\row -> rowSyncParent row target)
+                                        stored <- case synced of
+                                            Left err -> pure (Left err)
+                                            Right () -> storeReceipt entry applied
+                                        pure
+                                            ( stored
+                                                >> Right
+                                                    (ApplyRecoveryDone (wallReceiptRecord applied))
+                                            )
+                            ApplyRetryPublication ->
+                                case persistedWallOrigin active of
+                                    Nothing ->
+                                        pure
+                                            (Left (HostWallJournalFailure "applying record has no origin"))
+                                    Just OriginalAbsent ->
+                                        publishStage layout
+                                    Just origin@(OriginalPresent _ _) ->
+                                        if observesExactOrigin origin (layoutApplyTarget layout)
+                                            then retainOrigin layout
+                                            else publishStage layout
+                            ApplyBlocked conflict ->
+                                pure (Left (HostWallConflict conflict))
+                            ApplyRetryFromOrigin ->
+                                unexpected ApplyRetryFromOrigin
+                            ApplyAlreadyApplied ->
+                                unexpected ApplyAlreadyApplied
+                            ApplyNotInProgress phase ->
+                                unexpected (ApplyNotInProgress phase)
+
         case recoveryStep of
             Left err -> pure (Left err)
             Right ApplyRecoveryContinue ->
@@ -958,6 +954,8 @@ driveApplying entry steps continueApply target receipt =
             Right (ApplyRecoveryDone record) -> pure (Right record)
   where
     active = wallReceiptRecord receipt
+    unexpected classification =
+        refuseWallPhase WallApplyOutcomeUnknown ("unexpected apply recovery classification " ++ show classification)
     publishStage layout =
         case layoutApplyStage layout of
             Nothing ->
@@ -1032,16 +1030,17 @@ driveRestore entry target = go (0 :: Int)
                                 (restoreObservation layout) of
                                 Left err -> pure (Left (fromModelError err))
                                 Right () -> clearReleased entry receipt
-                    phase ->
-                        pure
-                            ( Left
-                                ( HostWallModelFailure
-                                    ( IllegalWallTransition
-                                        phase
-                                        "restore requires a durably applied wall"
-                                    )
-                                )
-                            )
+                    WallClaimed ->
+                        refuseWallPhase WallClaimed "restore requires a durably applied wall"
+                    WallOriginRecorded ->
+                        refuseWallPhase WallOriginRecorded "restore requires a durably applied wall"
+                    WallStageCreateOutcomeUnknown ->
+                        refuseWallPhase WallStageCreateOutcomeUnknown "restore requires a durably applied wall"
+                    WallStageBound ->
+                        refuseWallPhase WallStageBound "restore requires a durably applied wall"
+                    WallApplyOutcomeUnknown ->
+                        refuseWallPhase WallApplyOutcomeUnknown "restore requires a durably applied wall"
+
 
 driveRestoring ::
     WallEntry session ->
@@ -1056,42 +1055,49 @@ driveRestoring ::
 driveRestoring entry steps continueRestore target receipt =
     do
         recoveryStep <-
-            withRestoreLayout entry target active $ \layout ->
-                case classifyWallRestore receipt (restoreObservation layout) of
-                    RestoreRetryFromApplied ->
-                        case persistedWallOrigin active of
-                            Nothing ->
-                                pure
-                                    (Left (HostWallJournalFailure "restoring record has no origin"))
-                            Just OriginalAbsent -> deleteManagedTarget layout
-                            Just (OriginalPresent _ _) -> retireManagedTarget layout
-                    RestoreRetryOriginPublication ->
-                        publishOrigin layout
-                    RestoreRetryManagedCleanup ->
-                        deleteRetiredManaged layout
-                    RestoreObservedOrigin ->
-                        runWithAuthority active receipt $ \authority ->
-                            case settleWallRestore
-                                active
-                                authority
-                                receipt
-                                (restoreObservation layout) of
-                                Left err -> pure (Left (fromModelError err))
-                                Right restored -> do
-                                    stored <- storeReceipt entry restored
-                                    pure (stored >> Right (RestoreRecoveryWith restored))
-                    RestoreBlocked conflict ->
-                        pure (Left (HostWallConflict conflict))
-                    classification ->
-                        pure
-                            ( Left
-                                ( HostWallModelFailure
-                                    ( IllegalWallTransition
-                                        WallRestoreOutcomeUnknown
-                                        ("unexpected restore recovery classification " ++ show classification)
-                                    )
-                                )
-                            )
+            withRestoreLayout entry target active $ \layout -> do
+                repaired <-
+                    recoverDuplicateMove entry
+                        [ (expectedStagedObservation active, layoutRestoreTarget layout, layoutRestoreRetired layout)
+                        , (expectedOriginObservation active, layoutRestoreRetained layout, layoutRestoreTarget layout)
+                        ]
+                case repaired of
+                    Left err -> pure (Left err)
+                    Right True -> pure (Right RestoreRecoverySame)
+                    Right False ->
+                        case classifyWallRestore receipt (restoreObservation layout) of
+                            RestoreRetryFromApplied ->
+                                case persistedWallOrigin active of
+                                    Nothing ->
+                                        pure
+                                            (Left (HostWallJournalFailure "restoring record has no origin"))
+                                    Just OriginalAbsent -> deleteManagedTarget layout
+                                    Just (OriginalPresent _ _) -> retireManagedTarget layout
+                            RestoreRetryOriginPublication ->
+                                publishOrigin layout
+                            RestoreRetryManagedCleanup ->
+                                deleteRetiredManaged layout
+                            RestoreObservedOrigin ->
+                                runWithAuthority active receipt $ \authority ->
+                                    case settleWallRestore
+                                        active
+                                        authority
+                                        receipt
+                                        (restoreObservation layout) of
+                                        Left err -> pure (Left (fromModelError err))
+                                        Right restored -> do
+                                            synced <- onRow entry (\row -> rowSyncParent row target)
+                                            stored <- case synced of
+                                                Left err -> pure (Left err)
+                                                Right () -> storeReceipt entry restored
+                                            pure (stored >> Right (RestoreRecoveryWith restored))
+                            RestoreBlocked conflict ->
+                                pure (Left (HostWallConflict conflict))
+                            RestoreAlreadyRestored ->
+                                unexpected RestoreAlreadyRestored
+                            RestoreNotInProgress phase ->
+                                unexpected (RestoreNotInProgress phase)
+
         case recoveryStep of
             Left err -> pure (Left err)
             Right RestoreRecoverySame ->
@@ -1100,6 +1106,8 @@ driveRestoring entry steps continueRestore target receipt =
                 continueRestore (steps + 1) nextReceipt
   where
     active = wallReceiptRecord receipt
+    unexpected classification =
+        refuseWallPhase WallRestoreOutcomeUnknown ("unexpected restore recovery classification " ++ show classification)
     deleteManagedTarget layout =
         case layoutRestoreTarget layout of
             Nothing ->
@@ -1232,6 +1240,27 @@ expectedStagedObservation record =
         Nothing -> ObservedAbsent
         Just identity -> ObservedPresent identity (persistedDesiredBytes record)
 
+-- | Resolve an interrupted link/unlink only from the journal's identity and bytes.
+-- A successful withdrawal is followed by a fresh layout observation before classification.
+recoverDuplicateMove ::
+    WallEntry session ->
+    [(WallObservation, Maybe WallFile, Maybe WallFile)] ->
+    IO (Either HostWallError Bool)
+recoverDuplicateMove _ [] = pure (Right False)
+recoverDuplicateMove entry ((expected@(ObservedPresent _ _), Just source, Just destination) : rest)
+    | fileObservation (Just source) == expected
+        && fileObservation (Just destination) == expected = do
+        withdrawn <- deleteWallFile entry source
+        pure (withdrawn >> Right True)
+    | otherwise = recoverDuplicateMove entry rest
+recoverDuplicateMove entry (_ : rest) = recoverDuplicateMove entry rest
+
+expectedOriginObservation :: PersistedWallRecord -> WallObservation
+expectedOriginObservation record =
+    case persistedWallOrigin record of
+        Just (OriginalPresent identity bytes) -> ObservedPresent identity bytes
+        _ -> ObservedAbsent
+
 observesExactOrigin :: WslConfigOrigin -> Maybe WallFile -> Bool
 observesExactOrigin OriginalAbsent Nothing = True
 observesExactOrigin (OriginalPresent identity bytes) (Just file) =
@@ -1361,24 +1390,30 @@ observeWallFile entry path = do
         Left err -> pure (Left err)
         Right Nothing -> pure (Right Nothing)
         Right (Just identity) -> do
-            contents <- readWholeObject entry path
-            pure $ case contents of
-                Left err -> Left err
-                Right bytes
-                    | ByteString.length bytes > maximumWallBytes ->
-                        Left
-                            ( HostWallUnsupported
-                                (path ++ " exceeds the 16 MiB adapter limit")
-                            )
-                    | otherwise ->
-                        Right
-                            ( Just
-                                WallFile
-                                    { wallFilePath = path
-                                    , wallObjectIdentity = identity
-                                    , wallFileBytes = bytes
-                                    }
-                            )
+            contents <- first fromOwnershipFault <$> Ownership.readWholeObject (entryRow entry) path
+            case contents of
+                Left err -> pure (Left err)
+                Right bytes -> do
+                    confirmed <- probeWallIdentity entry path
+                    pure $ case confirmed of
+                        Left err -> Left err
+                        Right observed
+                            | observed /= Just identity ->
+                                Left (HostWallBusy ("the wall object changed while read: " ++ path))
+                            | ByteString.length bytes > maximumWallBytes ->
+                                Left
+                                    ( HostWallUnsupported
+                                        (path ++ " exceeds the 16 MiB adapter limit")
+                                    )
+                            | otherwise ->
+                                Right
+                                    ( Just
+                                        WallFile
+                                            { wallFilePath = path
+                                            , wallObjectIdentity = identity
+                                            , wallFileBytes = bytes
+                                            }
+                                    )
 
 -- | Clause 3's identity read, once, through the row.
 probeWallIdentity ::
@@ -1387,26 +1422,6 @@ probeWallIdentity ::
     IO (Either HostWallError (Maybe ObjectIdentity))
 probeWallIdentity entry path =
     onRow entry (\row -> rowObserveIdentity row path)
-
-{- | Read one whole object through the row's exclusive open, closing the handle
-however the read went.
--}
-readWholeObject ::
-    WallEntry session ->
-    FilePath ->
-    IO (Either HostWallError ByteString)
-readWholeObject entry path =
-    onRow entry $ \row -> do
-        opened <- rowOpenExclusive row path
-        case opened of
-            Left fault -> pure (Left fault)
-            Right handle -> do
-                contents <- rowReadObject row handle
-                closed <- rowCloseHandle row handle
-                pure $ case (contents, closed) of
-                    (Left fault, _) -> Left fault
-                    (_, Left fault) -> Left fault
-                    (Right bytes, Right ()) -> Right bytes
 
 {- | Clause 4: remove an object only while the kernel still says it is the one
 observed.
@@ -1418,9 +1433,15 @@ deleteWallFile ::
     WallEntry session ->
     WallFile ->
     IO (Either HostWallError ())
-deleteWallFile entry file =
-    withConfirmedIdentity entry file $
-        onRow entry (\row -> rowRemoveObject row (wallFilePath file))
+deleteWallFile entry file = do
+    checked <-
+        withReobservedIdentity (entryRow entry) (wallFilePath file) (wallObjectIdentity file) $ \row -> do
+            removed <- rowRemoveObject row (wallFilePath file)
+            synced <- case removed of
+                Left fault -> pure (Left fault)
+                Right () -> rowSyncParent row (wallFilePath file)
+            pure (Right (first fromOwnershipFault synced))
+    pure (finishIdentityCheck (wallObjectIdentity file) checked)
 
 {- | Move the exact observed object to a destination that must not exist.
 
@@ -1434,64 +1455,62 @@ renameOpenFile ::
     WallFile ->
     FilePath ->
     IO (Either HostWallError ())
-renameOpenFile entry file destination =
-    withConfirmedIdentity entry file $ do
-        linked <- onRow entry (\row -> rowLinkNoReplace row (wallFilePath file) destination)
-        case linked of
-            Right () -> onRow entry (\row -> rowRemoveObject row (wallFilePath file))
-            Left err -> do
-                observed <- probeWallIdentity entry destination
-                pure $ case observed of
-                    Right (Just identity)
-                        | identity == wallObjectIdentity file -> Right ()
-                        | otherwise ->
-                            Left (HostWallConflict (UnexpectedTargetPresent identity))
-                    Right Nothing ->
-                        Left
-                            ( HostWallBusy
-                                ( "the no-replace move destination changed while reprobed: "
-                                    ++ destination
-                                )
-                            )
-                    Left _ -> Left err
+renameOpenFile entry file destination = do
+    checked <-
+        withReobservedIdentity (entryRow entry) (wallFilePath file) (wallObjectIdentity file) $ \row ->
+            Right <$> do
+                linked <- first fromOwnershipFault <$> rowLinkNoReplace row (wallFilePath file) destination
+                case linked of
+                    Right () -> withdrawSource
+                    Left err -> do
+                        observed <- probeWallIdentity entry destination
+                        case observed of
+                            Right (Just identity)
+                                | identity == wallObjectIdentity file -> withdrawSource
+                                | otherwise ->
+                                    pure (Left (HostWallConflict (UnexpectedTargetPresent identity)))
+                            Right Nothing ->
+                                pure
+                                    ( Left
+                                        ( HostWallBusy
+                                            ( "the no-replace move destination changed while reprobed: "
+                                                ++ destination
+                                            )
+                                        )
+                                    )
+                            Left _ -> pure (Left err)
+    pure (finishIdentityCheck (wallObjectIdentity file) checked)
+  where
+    -- One sync covers both names in a shared parent. Across parents the
+    -- destination is durable before withdrawing the source; deletion then
+    -- rechecks identity immediately before unlink and syncs the source parent.
+    withdrawSource
+        | takeDirectory destination == takeDirectory (wallFilePath file) =
+            deleteWallFile entry file
+        | otherwise = do
+            synced <- onRow entry (\row -> rowSyncParent row destination)
+            case synced of
+                Left err -> pure (Left err)
+                Right () -> deleteWallFile entry file
 
-{- | Re-observe an object's identity and refuse anything but the one this
-driver bound, then act.
-
-Every namespace act below goes through this, so clause 4 is written once rather
-than once per act.
--}
-withConfirmedIdentity ::
-    WallEntry session ->
-    WallFile ->
-    IO (Either HostWallError result) ->
-    IO (Either HostWallError result)
-withConfirmedIdentity entry file act = do
-    observed <- probeWallIdentity entry (wallFilePath file)
-    case observed of
-        Left err -> pure (Left err)
-        Right (Just identity)
-            | identity == wallObjectIdentity file -> act
-            | otherwise ->
-                pure
-                    ( Left
-                        ( HostWallConflict
-                            (TargetReplaced (wallObjectIdentity file) identity)
-                        )
-                    )
-        Right Nothing ->
-            pure
-                ( Left
-                    ( HostWallConflict
-                        (UnexpectedTargetAbsent (wallObjectIdentity file))
-                    )
-                )
+-- | Keep the wall's precise identity conflicts while preserving action errors.
+finishIdentityCheck ::
+    ObjectIdentity ->
+    Either OwnershipFault (Either HostWallError result) ->
+    Either HostWallError result
+finishIdentityCheck expected = either (Left . identityFault) id
+  where
+    identityFault fault = case fault of
+        OwnershipConflict report -> case Ownership.conflictObserved report of
+            Ownership.OriginAbsent -> HostWallConflict (UnexpectedTargetAbsent expected)
+            Ownership.OriginPresent actual -> HostWallConflict (TargetReplaced expected actual)
+        other -> fromOwnershipFault other
 
 {- | Create the private armed stage exclusively and read its identity.
 
-A name that is already taken is exact evidence of an unowned collision at this
-receipt's own never-reused stage name, so it is a conflict rather than
-something to adopt.
+Only OwnershipOccupied licenses a collision probe at this receipt's own
+never-reused stage name. Other faults, including a partial-write failure,
+remain the row's fault even when an object was left behind.
 -}
 createArmedStage ::
     WallEntry session ->
@@ -1499,14 +1518,15 @@ createArmedStage ::
     ByteString ->
     IO (Either HostWallError WallFile)
 createArmedStage entry path bytes = do
-    created <- onRow entry (\row -> rowCreateFile row path bytes)
+    created <- withOwnershipRow (entryRow entry) (\row -> rowCreateFile row path bytes)
     case created of
-        Left err -> do
+        Left fault@(OwnershipOccupied _) -> do
             observed <- probeWallIdentity entry path
             pure $ case observed of
                 Right (Just identity) ->
                     Left (HostWallConflict (UnboundStagePresent identity))
-                _ -> Left err
+                _ -> Left (fromOwnershipFault fault)
+        Left fault -> pure (Left (fromOwnershipFault fault))
         Right () -> do
             synced <- onRow entry (\row -> rowSyncParent row path)
             case synced of
@@ -1836,7 +1856,7 @@ bounds it rather than fixing one platform's width.
 getIdentity :: Decoder ObjectIdentity
 getIdentity = do
     bytes <- getSized
-    if ByteString.length bytes < 8 || ByteString.length bytes > 64
+    if ByteString.length bytes < 8 || ByteString.length bytes > maximumWallIdentityBytes
         then
             decoderFailure
                 "kernel identity evidence must be between 8 and 64 bytes"

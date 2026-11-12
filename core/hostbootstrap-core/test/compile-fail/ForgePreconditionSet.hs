@@ -1,15 +1,9 @@
-{- | The plan-owned dependency-snapshot traversal is the only producer of an
-'OperationPreconditionSet' (§ CC): a caller can neither build one directly nor
-assemble the observation list 'withPreparedOperation' used to accept.
--}
+-- A caller cannot import preparation's private observation representation.
 module ForgePreconditionSet where
 
-import HostBootstrap.Reconcile
+import HostBootstrap.Reconcile (OperationPreconditionSet)
 
-forgedSet :: OperationPreconditionSet scope planId id resource
-forgedSet = OperationPreconditionSet "core:deploy-kind" "call" []
-
-forgedProbeEntry ::
-    DependencySnapshot scope planId ->
-    DependencySnapshot scope planId
-forgedProbeEntry (DependencySnapshot entries) = DependencySnapshot entries
+retainedSet ::
+    OperationPreconditionSet scope planId id resource ->
+    OperationPreconditionSet scope planId id resource
+retainedSet = id

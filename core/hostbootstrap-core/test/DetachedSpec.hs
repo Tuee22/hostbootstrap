@@ -444,7 +444,6 @@ noProductionModuleClosesADescriptor =
     admitted root path =
         SourceGuard.repoRelativePath root path
             `elem` [ "core/hostbootstrap-core/src/HostBootstrap/Detached.hs"
-                   , "core/hostbootstrap-core/internal/colima-backend/HostBootstrap/Ensure/Colima/Backend/Runner.hs"
                    ]
 
 productionSourceRoots :: [FilePath]

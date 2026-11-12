@@ -22,9 +22,17 @@ module HostBootstrap.Cluster.Budget.Internal (
     providerBackend,
     withProviderKeyForBackend,
     ProviderWallReservation (..),
+    ProviderWallAuthority (..),
+    PreparedStorageWallCall (..),
+    StorageWallObservation (..),
+    StorageWallSettlementPermit,
+    withStorageWallSettlementPermitFromObservation,
+    withStorageWallSettlementPermit,
+    samePreparedStorageWallCall,
     PreparedProviderWallCall (..),
     samePreparedProviderWallCall,
     WallAcquireObservation (..),
+    SettledWallObservation (..),
     ProviderWallSettlementPermit,
     withProviderWallSettlementPermitFromObservation,
     withProviderWallSettlementPermit,
@@ -33,6 +41,8 @@ where
 
 import qualified Data.Text as Text
 import Data.Word (Word64)
+import qualified HostBootstrap.Cluster.Cordon.Foundation as Cordon
+import HostBootstrap.Cluster.Budget.Observation (WallAcquireObservation (..))
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     preparedGateAttempt,
@@ -106,6 +116,66 @@ data ProviderWallReservation scope planId budgetId provider capabilityId wallSpe
 
 type role ProviderWallReservation nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
 
+-- | The live provider wall's generative epoch and fence.
+data ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence
+    = ProviderWallAuthority Word64 Word64
+
+type role ProviderWallAuthority nominal nominal nominal nominal nominal nominal
+
+-- | The exact storage invocation and its journal reservation.
+data PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence
+    = PreparedStorageWallCall Cordon.StorageCordonMechanism [String] Integer
+        (ProviderWallReservation scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
+
+type role PreparedStorageWallCall nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+data StorageWallObservation
+    = StorageWallApplied Word64 Integer
+    | StorageWallAlreadyExact Word64 Integer
+    | StorageWallRefused ConflictDetail
+    | StorageWallFailed FailureDetail
+    | StorageWallUncertain String
+    deriving (Eq, Show)
+
+data StorageWallSettlementPermit scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence wallEpoch
+    = StorageWallSettlementPermit
+        (PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence)
+        (ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence)
+        StorageWallObservation
+
+type role StorageWallSettlementPermit nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal nominal
+
+samePreparedStorageWallCall ::
+    PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+    PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+    Bool
+samePreparedStorageWallCall
+    (PreparedStorageWallCall leftMechanism leftArgs leftCeiling (ProviderWallReservation lp lo ls lf la lv))
+    (PreparedStorageWallCall rightMechanism rightArgs rightCeiling (ProviderWallReservation rp ro rs rf ra rv)) =
+        leftMechanism == rightMechanism && leftArgs == rightArgs && leftCeiling == rightCeiling
+            && lp == rp && lo == ro && ls == rs && lf == rf && la == ra && lv == rv
+
+withStorageWallSettlementPermitFromObservation ::
+    PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+    PreparedGate ->
+    ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence ->
+    StorageWallObservation ->
+    (StorageWallSettlementPermit scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence wallEpoch -> result) ->
+    Either ReconcileError result
+withStorageWallSettlementPermitFromObservation prepared@(PreparedStorageWallCall _ _ _ (ProviderWallReservation plan operation session fence attempt version)) gate authority@(ProviderWallAuthority _ wallFence) observation consume
+    | preparedGatePlan gate /= plan || preparedGateOperation gate /= operation || preparedGateSession gate /= session
+        || preparedGateFence gate /= fence || preparedGateAttempt gate /= attempt || preparedGateJournalVersion gate /= version
+        || Text.null session || fence == 0 || attempt == 0 || version == 0 || wallFence /= fence =
+        Left (Conflict (ConflictDetail (preparedGateOperation gate) "the prepared storage call and live wall fence" "a different journal lineage or wall fence" "use the exact prepared call and live wall"))
+    | otherwise = Right (consume (StorageWallSettlementPermit prepared authority observation))
+
+withStorageWallSettlementPermit ::
+    StorageWallSettlementPermit scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence wallEpoch ->
+    (PreparedStorageWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence ->
+     ProviderWallAuthority scope planId provider wallSpecId wallEpoch fence -> StorageWallObservation -> result) ->
+    result
+withStorageWallSettlementPermit (StorageWallSettlementPermit prepared authority observation) consume = consume prepared authority observation
+
 -- | The exact call plus the journal lineage that admitted it.
 data PreparedProviderWallCall scope planId budgetId provider capabilityId wallSpecId workloadSetId partitionId reservationId fence
     = PreparedProviderWallCall
@@ -136,17 +206,11 @@ samePreparedProviderWallCall
             && leftAttempt == rightAttempt
             && leftVersion == rightVersion
 
-{- | Descriptive provider facts.  These constructors are intentionally public;
-no public function accepts one as settlement authority.
--}
-data WallAcquireObservation
-    = WallApplied Word64
-    | WallAlreadyExact Word64
-    | WallMigrated Word64 String
-    | WallRefused ConflictDetail
-    | WallAcquireFailed FailureDetail
-    | WallAcquireUncertain String
-    deriving (Eq, Show)
+-- | Successful observations admitted only with a positive epoch by the mint.
+data SettledWallObservation
+    = SettledApplied Word64
+    | SettledAlreadyExact Word64
+    | SettledMigrated Word64 String
 
 {- | A permit produced only by the package-private owning-backend bridge.
 
@@ -203,7 +267,7 @@ data
             partitionId
             reservationId
             fence ->
-        WallAcquireObservation ->
+        SettledWallObservation ->
         ProviderWallSettlementPermit
             scope
             planId
@@ -294,18 +358,20 @@ withProviderWallSettlementPermitFromObservation prepared gate operation precondi
             )
     | otherwise =
         case observation of
-            WallApplied epoch | epoch > 0 -> successful
-            WallAlreadyExact epoch | epoch > 0 -> successful
-            WallMigrated _ _ -> nonOwning "migrated"
+            WallApplied epoch | epoch > 0 -> successful (SettledApplied epoch)
+            WallAlreadyExact epoch | epoch > 0 -> successful (SettledAlreadyExact epoch)
+            WallMigrated epoch receipt | epoch > 0 -> successful (SettledMigrated epoch receipt)
             WallRefused _ -> nonOwning "conflict"
             WallAcquireFailed _ -> nonOwning "failure"
             WallAcquireUncertain _ -> nonOwning "uncertain"
-            _ -> nonOwning "invalid epoch"
+            WallApplied _ -> nonOwning "invalid epoch"
+            WallAlreadyExact _ -> nonOwning "invalid epoch"
+            WallMigrated _ _ -> nonOwning "invalid epoch"
   where
-    successful =
+    successful settled =
         Right
             ( consume
-                (ProviderWallSettlementPermit operation preconditions prepared observation)
+                (ProviderWallSettlementPermit operation preconditions prepared settled)
             )
     nonOwning branch =
         Left
@@ -363,7 +429,7 @@ withProviderWallSettlementPermit ::
         partitionId
         reservationId
         fence ->
-      WallAcquireObservation ->
+      SettledWallObservation ->
       result
     ) ->
     result

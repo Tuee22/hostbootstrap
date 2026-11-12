@@ -450,6 +450,7 @@ _FORMATTER_ROOTS: Final[tuple[tuple[str, ...], ...]] = (
     ("core", "hostbootstrap-core", "internal"),
     ("core", "hostbootstrap-core", "app"),
     ("core", "hostbootstrap-core", "test"),
+    ("core", "hostbootstrap-core", "provider-live"),
     ("demo", "src"),
     ("demo", "app"),
     ("demo", "test"),
@@ -470,7 +471,7 @@ _LINTER_ROOTS: Final[tuple[tuple[str, ...], ...]] = (
 #: somebody made rather than a file that quietly stopped being checked.
 _FORMATTER_UNREADABLE: Final[frozenset[str]] = frozenset(
     {
-        "core/hostbootstrap-core/src/HostBootstrap/Context.hs",
+        "core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Context.hs",
         "core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs",
         "core/hostbootstrap-core/src/HostBootstrap/Registry.hs",
         "core/hostbootstrap-core/internal/effect/HostBootstrap/Effect/Run.hs",

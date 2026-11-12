@@ -12,7 +12,7 @@ A container registry backed by an object store answers a blob request in one of
 two ways: it streams the bytes itself, or it returns @307@ with a @Location@
 pointing at the store. Distribution's default is to redirect. That default is
 correct when the client lives in the cluster and catastrophic when it does not —
-a host Docker client following a redirect to @minio.default.svc:9000@ cannot
+a host Docker client following a redirect to @object-store.default.svc:9000@ cannot
 resolve the name, and the push fails late, after every layer has uploaded, with
 an opaque error.
 

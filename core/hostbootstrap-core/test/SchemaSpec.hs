@@ -311,13 +311,28 @@ tests =
         , testCase "an admitted full envelope retains the codec scope and specification digest" $
             withProductionProjectCodec @ProjectConfig @FixtureProject $ \codec -> do
                 let cfg = defaultProjectConfig "demo" "." HostOrchestrator
-                    envelope = frameworkEnvelopeCodec (scopeKindOf (Proxy :: Proxy (V.Production FixtureProject))) codec
+                    envelope = frameworkEnvelopeCodec codec
                 admitted <- decodeFrameworkEnvelopeWithSettings envelope Dhall.defaultInputSettings (renderProjectCodecValue codec cfg)
                 admitted @?= cfg
                 let validation = inspectFullConfig envelope admitted
                 frameworkWireKind validation @?= FullProjectWire
                 frameworkScopeKind validation @?= ProductionScope
                 frameworkSpecDigest validation @?= projectCodecSpecDigest codec
+        , testCase "a Harness envelope derives its scope from the actual Harness codec" $
+            withFixtureHarnessAuthority $ \_project authority ->
+                withHarnessProjectCodec
+                    @ProjectConfig
+                    (V.harnessConfigAuthority authority)
+                    ( \codec -> do
+                        let cfg = defaultProjectConfig "demo" "." TestHarness
+                            envelope = frameworkEnvelopeCodec codec
+                        admitted <- decodeFrameworkEnvelopeWithSettings envelope Dhall.defaultInputSettings (renderProjectCodecValue codec cfg)
+                        admitted @?= cfg
+                        let validation = inspectFullConfig envelope admitted
+                        frameworkWireKind validation @?= FullProjectWire
+                        frameworkScopeKind validation @?= HarnessScope
+                        frameworkSpecDigest validation @?= projectCodecSpecDigest codec
+                    )
         , testCase "default role configs decode and re-render stably" $ do
             mapM_
                 ( \role -> do

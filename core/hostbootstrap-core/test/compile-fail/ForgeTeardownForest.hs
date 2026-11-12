@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module ForgeTeardownForest where
 
 import HostBootstrap.Authority (ProjectVerb (ProjectDestroy), VerbDestroy, VerbDown)
@@ -24,29 +26,8 @@ completedDownAsDestroy completed = completed
 forgedForest :: TeardownForest s p f VerbDestroy
 forgedForest = TeardownForest undefined []
 
--- An authorization point is authority to attempt one step of one forest.
-forgedPoint :: TeardownAuthorizationPoint s p f VerbDestroy
-forgedPoint = TeardownAuthorizationPoint
-
--- The completed-forest proof is minted only when every node settled.
-forgedCompleted :: CompletedTeardownForest s p f VerbDestroy
-forgedCompleted = CompletedTeardownForest ProjectDestroy "plan-1" "frame" []
-
--- The settled-child proof cannot be asserted: it is what stops a parent frame
--- being torn down while a child still needs it.
-forgedSettledChildren :: SettledChildren s p f
-forgedSettledChildren = SettledChildren []
-
--- Nor can the destroy-only pre-descent step.
-forgedPreDescent :: PreDescentStep s p f VerbDestroy
-forgedPreDescent = PreDescentStep
-
 -- `DestroySettled` is the settled half of Production closure. Asserting one
 -- would let a project release its mode with resources still acquired.
 forgedSettled :: DestroySettled s p
 forgedSettled = DestroySettled "plan-1" []
 
--- Progress has no public constructors, so neither branch can be wrapped or
--- skipped; `eliminateTeardownProgress` is the only reader.
-forgedProgress :: TeardownProgress s p f VerbDestroy
-forgedProgress = ProgressCompleted forgedCompleted

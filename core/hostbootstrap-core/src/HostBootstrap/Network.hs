@@ -10,11 +10,11 @@
 between them.
 
 A hostname is not evidence. @localhost:<runtime-port>@ is reachable from the host and
-meaningless inside a pod; @minio.default.svc:9000@ is reachable from a pod and
+meaningless inside a pod; @object-store.default.svc:9000@ is reachable from a pod and
 unresolvable on the host. Both are just strings, so any code that decides
 "can this client reach that endpoint?" by inspecting text is guessing — and the
 demo's registry did exactly that, redirecting a host Docker client to a
-cluster-only MinIO address it could never resolve.
+cluster-only object-store address it could never resolve.
 
 Here the scope is a type index. An 'Endpoint' carries the scope it lives in, a
 'NetworkClient' carries the scope it dials from, and 'Reachability' is a closed

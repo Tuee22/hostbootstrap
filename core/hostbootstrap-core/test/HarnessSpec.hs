@@ -79,6 +79,7 @@ import HostBootstrap.Step (
     observationDetail,
  )
 import ResourceRecordSpec (withCanonicalReleasedResourceFixture, withCanonicalResourceFixture)
+import qualified SourceGuard
 import System.Directory (
     copyFile,
     createDirectory,
@@ -89,6 +90,7 @@ import System.Directory (
     listDirectory,
     removeFile,
     renameDirectory,
+    renameFile,
  )
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die, exitSuccess, exitWith)
@@ -185,7 +187,45 @@ typedMatrixCases =
 
 suiteCases :: [TestTree]
 suiteCases =
-    [ testCase "emptySuite `all` renders 0/0 passed" $ do
+    [ testCase "scoped assertions receive the actual Harness authority" $
+        Fixture.withFixtureHarnessAuthority $ \_ authority -> do
+            let expected = V.harnessRunName authority
+                registered = [fixtureCase "a"]
+                scoped = ScopedTestSuite (pure (Right ())) registered $ \actual configBytes ->
+                    TestSuite (pure (Right ())) (\_ _ -> pure (V.harnessRunName actual, configBytes)) registered
+                        (\observed _ -> pure (if observed == (expected, "fixture-config") then Pass else Fail "wrong Harness run or config")) (pure ())
+                runScoped = ScopedConfigVariant (vid "v0") (cid "a" :| [])
+                    (\_ use -> use authority "fixture-config" (testingHarnessLifecycle (pure ()) (pure ())))
+            result <- runSuiteSelection passthroughOwnership scoped [runScoped]
+            case result of
+                Right (Report rows) -> lookup "[v0] a" rows @?= Just Pass
+                Left err -> assertFailure err
+    , testCase "scoped assertions cannot change their registered case set" $
+        Fixture.withFixtureHarnessAuthority $ \_ authority -> do
+            let scoped = ScopedTestSuite (pure (Right ())) [fixtureCase "a"] $ \_ _ ->
+                    TestSuite (pure (Right ())) (\_ _ -> pure ()) [fixtureCase "b"] (\_ _ -> pure Pass) (pure ())
+                runScoped = ScopedConfigVariant (vid "v0") (cid "a" :| [])
+                    (\_ use -> use authority "fixture-config" (testingHarnessLifecycle (pure ()) (pure ())))
+            result <- runSuiteSelection passthroughOwnership scoped [runScoped]
+            case result of
+                Right (Report rows) -> case lookup "[v0] a" rows of
+                    Just (LifecycleFailed reason) -> assertBool reason ("scoped suite changed its case registry" `isInfixOf` reason)
+                    other -> assertFailure ("expected scoped registry refusal, got " <> show other)
+                Left err -> assertFailure err
+    , testCase "scoped assertions refuse a lifecycle without Harness authority" $ do
+        forwards <- newIORef (0 :: Int)
+        let scoped = ScopedTestSuite (pure (Right ())) [fixtureCase "a"] $ \_ _ ->
+                TestSuite (pure (Right ())) (\_ _ -> pure ()) [fixtureCase "a"] (\_ _ -> pure Pass) (pure ())
+            unscoped = ConfigVariant (vid "v0") (cid "a" :| [])
+                (\_ use -> use (testingHarnessLifecycle (modifyIORef' forwards (+ 1)) (pure ())))
+        result <- runSuiteSelection passthroughOwnership scoped [unscoped]
+        case result of
+            Right (Report rows) -> case lookup "[v0] a" rows of
+                Just (LifecycleFailed reason) -> assertBool reason ("requires a Harness config authority" `isInfixOf` reason)
+                other -> assertFailure ("expected unscoped refusal, got " <> show other)
+            Left err -> assertFailure err
+        readIORef forwards >>= (@?= 0)
+    , testCase "emptySuite `all` renders 0/0 passed" $ do
         outcome <- runSuiteSelection passthroughOwnership emptySuite []
         case outcome of
             Right report -> assertBool "report card shows 0/0" ("0/0 passed" `isInfixOf` reportCard report)
@@ -248,6 +288,16 @@ suiteCases =
         -- A cause naming none of them stays an ordinary lifecycle failure rather
         -- than being guessed into one of the three.
         classifyLifecycleReason "docker: command not found" @?= Nothing
+        -- A marker counts only where the node row puts it: a conflict quoted later in the
+        -- message does not turn a refusal into a conflict, and a quoted "unsupported:" in
+        -- an ordinary failure does not turn it into a skip.
+        classifyLifecycleReason
+            "project up: [host] deploy-vm — launch: refused: existing volume conflict: owned by another project"
+            @?= Just
+                ( Refused
+                    "project up: [host] deploy-vm — launch: refused: existing volume conflict: owned by another project"
+                )
+        classifyLifecycleReason "docker build failed: unsupported: --platform flag" @?= Nothing
     , testCase "the observation the interpreter renders is the one the card classifies" $
         -- One shared marker, so a row printed by the chain and a row classified
         -- by the harness cannot drift apart.
@@ -293,7 +343,7 @@ suiteCases =
     , testCase "a restart-spanning case keeps one row across fresh same-run lifecycle generations" $ do
         events <- newIORef []
         let record event = modifyIORef' events (++ [event])
-            spanning = Case (cid "durable") 1 False AssertAcrossRestart
+            spanning = Case (cid "durable") AssertAcrossRestart
             suite =
                 TestSuite
                     (pure (Right ()))
@@ -776,7 +826,9 @@ production crash hook or in-process exception participates in this fixture.
 runRecoveryInterruptionProbe :: FilePath -> FilePath -> String -> IO ()
 runRecoveryInterruptionProbe stateRoot readyPath boundary =
     recoveryInterruptionSetup stateRoot boundary $ do
-        writeFile readyPath boundary
+        let pendingPath = readyPath ++ ".pending"
+        writeFile pendingPath boundary
+        renameFile pendingPath readyPath
         threadDelay 600000000
 
 -- | Reopen and drive the exact state published by 'runRecoveryInterruptionProbe'.
@@ -1622,10 +1674,23 @@ harnessIdentityRecoveryCase self directory projectName = do
 
 representationCases :: [TestTree]
 representationCases =
-    [ testCase "the harness and Core.dhall contain no parallel execution selector" $ do
+    [ testCase "a Case carries an id and a lifecycle only, with no per-case budget fields" $ do
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-        harness <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Harness.hs")
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        harnessPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness"
+        harness <- readFile harnessPath
+        mapM_
+            (\name -> SourceGuard.countHaskellIdentifier name harness @?= 0)
+            ["caseWeight", "caseIndivisible"]
+    , testCase "the harness and Core.dhall contain no parallel execution selector" $ do
+        cwd <- getCurrentDirectory
+        root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        harnessPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness"
+        harness <- TIO.readFile harnessPath
         core <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "dhall" </> "Core.dhall")
         let selectorType = "Run" <> "Model"
         mapM_
@@ -1635,8 +1700,12 @@ representationCases =
     , testCase "typed drafts stay pure and dead/stringly matrix plumbing is absent" $ do
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-        harness <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Harness.hs")
-        command <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Command.hs")
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        harnessPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness"
+        harness <- TIO.readFile harnessPath
+        commandPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command"
+        command <- TIO.readFile commandPath
         demoConfig <- TIO.readFile (root </> "demo" </> "src" </> "HostBootstrapDemo" </> "Config.hs")
         fixture <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "test" </> "Fixture.hs")
         assertBool "VariantDraft is exactly stable identity plus a pure typed payload" ("data VariantDraft a = VariantDraft VariantId a" `T.isInfixOf` harness)
@@ -1650,28 +1719,30 @@ representationCases =
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
         let packageRoot = root </> "core" </> "hostbootstrap-core"
-            sourceRoot = packageRoot </> "src" </> "HostBootstrap"
-            privateLifecycleRoot =
-                packageRoot
-                    </> "internal"
-                    </> "harness-lifecycle"
-                    </> "HostBootstrap"
-        harness <- TIO.readFile (sourceRoot </> "Harness.hs")
-        command <- TIO.readFile (sourceRoot </> "Command.hs")
-        internal <- TIO.readFile (privateLifecycleRoot </> "Harness" </> "Lifecycle" </> "Internal.hs")
-        ownership <- TIO.readFile (sourceRoot </> "Harness" </> "Ownership.hs")
-        ownershipInternal <- TIO.readFile (sourceRoot </> "Harness" </> "Ownership" </> "Internal.hs")
+        description <- SourceGuard.readPackageDescription
+        harnessPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness"
+        commandPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command"
+        internalPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness.Lifecycle.Internal"
+        ownershipPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness.Ownership"
+        ownershipInternalPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Harness.Ownership.Internal"
+        harness <- TIO.readFile harnessPath
+        command <- TIO.readFile commandPath
+        internal <- TIO.readFile internalPath
+        ownership <- TIO.readFile ownershipPath
+        ownershipInternal <- TIO.readFile ownershipInternalPath
         cabal <- TIO.readFile (packageRoot </> "hostbootstrap-core.cabal")
         demo <- TIO.readFile (root </> "demo" </> "src" </> "HostBootstrapDemo" </> "Commands.hs")
-        let mainLibrary = snd (T.breakOn "\nlibrary\n" cabal)
-            exposedSection = fst (T.breakOn "  other-modules:" mainLibrary)
-            ownershipExports = fst (T.breakOn ") where" ownership)
+        publicModules <- either assertFailure pure (SourceGuard.effectiveMainExposedModules (T.unpack cabal))
+        lifecycleComponent <-
+            maybe (assertFailure "the harness lifecycle component is absent") pure
+                (SourceGuard.namedStanza "library harness-lifecycle-internal" (T.unpack cabal))
+        let ownershipExports = fst (T.breakOn ") where" ownership)
         assertBool "HarnessLifecycle stays abstract at the public facade" (not ("HarnessLifecycle (..)" `T.isInfixOf` harness))
         assertBool "the raw lifecycle constructor stays out of the facade" (not ("    harnessLifecycle," `T.isInfixOf` harness))
         assertBool "the raw lifecycle constructor exists only at the private-component boundary" ("data HarnessLifecycle = HarnessLifecycle" `T.isInfixOf` internal)
-        assertBool "the constructor module is absent from the public library" (not ("HostBootstrap.Harness.Lifecycle.Internal" `T.isInfixOf` exposedSection))
-        assertBool "the constructor component is explicitly private" ("library harness-lifecycle-internal" `T.isInfixOf` cabal && "visibility: private" `T.isInfixOf` cabal)
-        assertBool "the close-control module is not exposed" (not ("HostBootstrap.Harness.Ownership.Internal" `T.isInfixOf` exposedSection))
+        assertBool "the constructor module is absent from the public library" ("HostBootstrap.Harness.Lifecycle.Internal" `notElem` publicModules)
+        SourceGuard.fieldValues "visibility" lifecycleComponent @?= ["private"]
+        assertBool "the close-control module is not exposed" ("HostBootstrap.Harness.Ownership.Internal" `notElem` publicModules)
         assertBool "the public ownership facade exposes no raw close action slot" (not ("stageOwnedHarnessClose" `T.isInfixOf` ownershipExports))
         mapM_
             ( \mutator ->
@@ -1718,7 +1789,10 @@ representationCases =
     , testCase "Harness command retains one exact plan and has no compatibility escape" $ do
         cwd <- getCurrentDirectory
         root <- findRepoRoot cwd >>= maybe (assertFailure ("could not locate repo root from " ++ cwd)) pure
-        command <- TIO.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Command.hs")
+        let packageRoot = root </> "core" </> "hostbootstrap-core"
+        description <- SourceGuard.readPackageDescription
+        commandPath <- SourceGuard.libraryModulePath packageRoot description "HostBootstrap.Command"
+        command <- TIO.readFile commandPath
         let start = "runTestRun selector = do"
             ending = "defaultInitArgs :: InitArgs"
             fromHarness = snd (T.breakOn start command)
@@ -1749,7 +1823,7 @@ representationCases =
         mapM_
             require
             [ "selectTestMatrix selector matrix"
-            , "variantWithLifecycle"
+            , "ScopedConfigVariant"
             , "withHarnessFinalizedProjectSpec"
             , "withHarnessLifecycleProfile"
             , "withProjectPlan profile runRoot validated drafts"
@@ -1765,7 +1839,7 @@ representationCases =
             , "withFreshHarnessInvocationFrom"
             , "rearmOwnedHarnessBoundClose closeControl freshCloseRoot freshMode freshLease"
             , "withRestartedBoundPlanSnapshot freshRoot freshLease verified freshPlan"
-            , "useLifecycle (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)"
+            , "useLifecycle authority (renderScopedProjectConfigBytes harnessCodec (validatedConfigValue validated)) (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)"
             , "`finally` removeGeneratedConfig"
             ]
         mapM_
@@ -1784,7 +1858,7 @@ representationCases =
             (appearsBefore "selectTestMatrix selector matrix" "withProjectPlan profile runRoot validated drafts" normalized)
         assertBool
             "the generated config must exist before exact lifecycle interpretation"
-            (appearsBefore "acquireOwnedRunConfig" "useLifecycle (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)" normalized)
+            (appearsBefore "acquireOwnedRunConfig" "useLifecycle authority (renderScopedProjectConfigBytes harnessCodec (validatedConfigValue validated)) (restartingHarnessLifecycle forwardAction restartAction finalReverseAction)" normalized)
         assertBool
             "the fail-closed binding sentinel must precede durable plan binding"
             (appearsBefore "beginOwnedHarnessBinding closeControl" "withPersistedPlanSnapshot rootAuthority unbound plan" normalized)
@@ -1843,7 +1917,7 @@ selector :: T.Text -> CaseSelector
 selector value = either (error . show) id (parseCaseSelector value)
 
 fixtureCase :: T.Text -> Case
-fixtureCase ident = Case (cid ident) 1 False AssertOnce
+fixtureCase ident = Case (cid ident) AssertOnce
 
 nonEmptyCaseIds :: [T.Text] -> NonEmpty CaseId
 nonEmptyCaseIds (first : rest) = cid first :| map cid rest

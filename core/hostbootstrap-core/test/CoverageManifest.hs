@@ -25,18 +25,24 @@ host gains a native subject, so it cannot silently lose those process cases.
 -}
 module CoverageManifest (tests) where
 
+import BuildAuthoritySpec (buildPosixFilesSupported, buildUnpairedNameSupported)
+import CLISpec (readOnlyRecordsSupported)
+import ColimaSpec (colimaLiveAvailable, contextNamespaceSupported, directoryReleaseSupported)
 import ConditionalCase (conditionalAction, readConditionalCompletions)
 import Control.Exception (IOException, try)
 import Control.Monad (forM_)
 import CordonSpec (nativeCapacitySupported, windowsCapacitySupported)
 import Data.List (intercalate, isPrefixOf)
 import qualified Data.Map.Strict as Map
+import HandoffSpec (siblingConfigSymlinksSupported, windowsChildGroupObservationSupported)
 import HostBootstrap.Ownership.Posix (posixOwnershipSupported)
+import OwnershipPosixSpec (foreignManifestOwnerSupported)
 import HostBootstrap.Ownership.Row (hostOwnershipSupported)
 import HostBootstrap.Ownership.Windows (windowsOwnershipSupported)
 import HostBootstrap.Wsl2.GlobalWall.Windows (windowsGlobalWallSupported)
 import HostToolSpec (windowsResolutionSupported)
 import LiftSpec (posixShellSupported)
+import ProjectPlanSpec (surrogateDirectorySupported)
 import ProviderAliasSpec (localGuestAliasSupported)
 import Test.Tasty (DependencyType (AllFinish), TestName, TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
@@ -69,7 +75,7 @@ everywhere and are therefore not declared here.
 
 The POSIX row maps the four ownership clauses onto @fcntl@ record locks,
 @device:inode@ identity, and link/rename namespace operations; the Windows row
-maps them onto @LockFileEx@, @BY_HANDLE_FILE_INFORMATION@, and the Win32
+maps them onto @LockFileEx@, @FILE_ID_INFO@, and the Win32
 namespace calls. Each is real where its primitives are and a total refusal
 where they are not, and every case below stays in the suite either way.
 
@@ -81,7 +87,110 @@ and described commands, so it holds on every gate host and is counted normally.
 -}
 manifest :: [ConditionalFamily]
 manifest =
-    [ posixFamily ["WslGlobalWallHostSpec", "apply over an absent origin"] 5 5
+    [ ConditionalFamily
+        { familyPath = ["CLISpec", "operator refusal precedes lifecycle work"]
+        , familyCases = 3
+        , familyRowCases = 3
+        , familyRowHolds = readOnlyRecordsSupported
+        , familyReason = "the effective principal or filesystem does not enforce a read-only records directory"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec"]
+        , familyCases = 300
+        , familyRowCases = 31
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason = "the direct-Colima native transaction and resolver fixtures require POSIX ownership primitives; a dedicated case asserts the Windows refusal"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "direct-Colima live lane"]
+        , familyCases = 1
+        , familyRowCases = 1
+        , familyRowHolds = colimaLiveAvailable
+        , familyReason = "the opt-in lane requires a requested native Apple Silicon host with Colima installed"
+        }
+    , hostWallFamily ["WslGlobalWallHostSpec", "apply over an absent origin"] 5 5
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native fixture resolution result"]
+        , familyCases = 2
+        , familyRowCases = 2
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason =
+            "the native fixture walker needs POSIX file identities, owner/mode policy and symbolic links;"
+                ++ " Windows asserts its actual apple-silicon-required result rather than manufacturing a ready toolchain"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native fixture backed owned settlement"]
+        , familyCases = 13
+        , familyRowCases = 13
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason =
+            "the static join takes the actual opaque ready result of the POSIX native fixture walker;"
+                ++ " Windows checks the actual native unsupported result without manufacturing ready authority"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native resolver install policy"]
+        , familyCases = 2
+        , familyRowCases = 2
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason = "installation dispatch consumes actual opaque ready/missing results from the native fixture walker; unavailable rows assert the real native refusal"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native Released namespace recovery"]
+        , familyCases = 16
+        , familyRowCases = 16
+        , familyRowHolds = contextNamespaceSupported
+        , familyReason = "actual retained namespace and parent-origin settlement uses the native manifest/release row; every unavailable branch asserts the real row refusal"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native context namespace recovery"]
+        , familyCases = 8
+        , familyRowCases = 8
+        , familyRowHolds = contextNamespaceSupported
+        , familyReason = "the actual namespace manifest and release rows execute against kernel temporaries; unavailable hosts assert their real manifest or release refusal"
+        }
+    , ConditionalFamily
+        { familyPath = ["ColimaSpec", "native directory release recovery"]
+        , familyCases = 4
+        , familyRowCases = 4
+        , familyRowHolds = directoryReleaseSupported
+        , familyReason = "the actual selected ownership row must hold both release and durable-record clauses; otherwise every case asserts its actual declared refusal"
+        }
+    , ConditionalFamily
+        { familyPath = ["HandoffSpec", "sibling config symlinks"]
+        , familyCases = 2
+        , familyRowCases = 2
+        , familyRowHolds = siblingConfigSymlinksSupported
+        , familyReason =
+            "actual symlink creation on the running binary's filesystem may refuse permission or support;"
+                ++ " both cases assert that exact creation observation while control and cleanup failures fail"
+        }
+    , ConditionalFamily
+        { familyPath = ["BuildAuthoritySpec", "POSIX native source files"]
+        , familyCases = 3
+        , familyRowCases = 3
+        , familyRowHolds = buildPosixFilesSupported
+        , familyReason =
+            "raw-byte fixture names and FIFO creation need native POSIX filesystem primitives;"
+                ++ " other hosts observe the existing POSIX row's typed unsupported result"
+        }
+    , ConditionalFamily
+        { familyPath = ["BuildAuthoritySpec", "Windows unpaired source names"]
+        , familyCases = 1
+        , familyRowCases = 1
+        , familyRowHolds = buildUnpairedNameSupported
+        , familyReason =
+            "the actual shared native UTF-16 filename probe may refuse InvalidArgument;"
+                ++ " control, enumeration and cleanup failures remain test failures"
+        }
+    , ConditionalFamily
+        { familyPath = ["indexed project-plan foundation", "canonical filesystem root encoding"]
+        , familyCases = 1
+        , familyRowCases = 1
+        , familyRowHolds = surrogateDirectorySupported
+        , familyReason =
+            "the actual createDirectory probe may refuse a lone-surrogate filename;"
+                ++ " DEVELOPMENT_PLAN/rationale.md#a-root-encoder-is-tested-through-a-real-filesystem-root"
+        }
     , ConditionalFamily
         { familyPath = ["LiftSpec", "shared shell quoting boundary"]
         , familyCases = 2
@@ -118,6 +227,24 @@ manifest =
         , familyReason = "Windows capacity uses native Win32 readers; other hosts assert each reader's typed unsupported result"
         }
     , ConditionalFamily
+        { familyPath = ["HandoffSpec", "native Windows child groups"]
+        , familyCases = 5
+        , familyRowCases = 5
+        , familyRowHolds = windowsChildGroupObservationSupported
+        , familyReason =
+            "native Windows kernel process-handle observations need Windows;"
+                ++ " other hosts assert the test-owned unsupported observation and local transaction/platform boundaries"
+        }
+    , ConditionalFamily
+        { familyPath = ["EffectSpec", "scoped POSIX child groups"]
+        , familyCases = 2
+        , familyRowCases = 2
+        , familyRowHolds = posixOwnershipSupported
+        , familyReason =
+            "captured POSIX process-group observations need native POSIX signal primitives;"
+                ++ " Windows asserts the existing unavailable POSIX observation result"
+        }
+    , ConditionalFamily
         { familyPath = ["EffectSpec", "bounded POSIX behavior"]
         , familyCases = 5
         , familyRowCases = 5
@@ -140,47 +267,71 @@ manifest =
         , familyRowHolds = posixOwnershipSupported
         , familyReason = "recursive destroy recovery uses the declared POSIX guest row; the native receiver refuses a different guest-root snapshot"
         }
-    , posixFamily ["WslGlobalWallHostSpec", "apply over a present origin"] 3 3
-    , posixFamily ["WslGlobalWallHostSpec", "ownership refusals"] 4 4
-    , posixFamily ["WslGlobalWallHostSpec", "crash resume"] 3 3
-    , posixFamily ["WslGlobalWallHostSpec", "the durable record codec"] 3 2
-    , -- The two ownership rows are not symmetric, and the numbers below say so
-      -- rather than hide it: POSIX declares 18 clauses and Windows 11. Seven
-      -- clauses the POSIX row asserts have no Windows counterpart --- four are
-      -- symbolic-link behaviours, and three are not platform-specific at all
-      -- ("a probe that cannot answer is a fault rather than an absence", "the
-      -- kernel releases the exclusion when the holding process dies", and
-      -- "removing an object that is not there is a fault rather than a silent
-      -- success"). Under § JJ a clause whose subject a host lacks asserts the
-      -- refusal its row declares; it does not disappear. So this asymmetry is a
-      -- coverage deficit in the Windows row, not a property of Windows, and these
-      -- counts freeze the deficit at its current size rather than endorsing it ---
-      -- a Windows row that loses another clause still fails here. Closing it is
-      -- owed work for the phase that owns the ownership seam, and it needs a
-      -- Windows gate host to write against.
-      ownershipRowFamily ["OwnershipPosixSpec", "identity"] 5 5
-    , ownershipRowFamily ["OwnershipPosixSpec", "creation and publication"] 5 5
-    , ownershipRowFamily ["OwnershipPosixSpec", "the exclusive open"] 4 4
+    , hostWallFamily ["WslGlobalWallHostSpec", "apply over a present origin"] 4 4
+    , hostWallFamily ["WslGlobalWallHostSpec", "ownership refusals"] 17 16
+    , hostWallFamily ["WslGlobalWallHostSpec", "crash resume"] 19 19
+    , hostWallFamily ["WslGlobalWallHostSpec", "the durable record codec"] 11 2
+    , -- Both rows keep their complete declared families on every gate host.
+      -- POSIX adds FIFO, mode-bit and cross-mount checks; Windows adds native
+      -- junction and ACL checks. Each unavailable row asserts its own refusal.
+      ownershipRowFamily ["OwnershipPosixSpec", "identity"] 6 6
+    , ownershipRowFamily ["OwnershipPosixSpec", "creation and publication"] 8 8
+    , ownershipRowFamily ["OwnershipPosixSpec", "the exclusive open"] 5 5
     , ownershipRowFamily ["OwnershipPosixSpec", "removal and durability"] 4 4
-    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "identity"] 3 3
-    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "creation and publication"] 4 4
-    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 2 2
-    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 2 2
+    , ownershipRowFamily ["OwnershipPosixSpec", "manifest walk"] 10 9
+    , ownershipRowFamily ["OwnershipPosixSpec", "raw manifest bytes"] 7 5
+    , ownershipRowFamily ["OwnershipPosixSpec", "manifest remainder"] 10 9
+    , ownershipRowFamily ["OwnershipPosixSpec", "parent traversal"] 4 4
+    , ownershipRowFamily ["OwnershipPosixSpec", "parent settlement"] 7 7
+    , ownershipRowFamily ["ColimaSpec", "namespace admission"] 3 1
+    , ownershipRowFamily ["ColimaSpec", "context parents"] 8 7
+    , ConditionalFamily
+        { familyPath = ["OwnershipPosixSpec", "foreign manifest owner"]
+        , familyCases = 1
+        , familyRowCases = 1
+        , familyRowHolds = foreignManifestOwnerSupported
+        , familyReason = "the foreign-owner fixture needs a POSIX effective user that can change a file's owner"
+        }
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "identity"] 7 7
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "creation and publication"] 6 6
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "the exclusive open"] 6 6
+    , ownershipWindowsRowFamily ["OwnershipWindowsSpec", "removal"] 5 5
     , ConditionalFamily
         { familyPath = ["ProviderAliasSpec", "the shipped guest alias ownership row"]
-        , familyCases = 5
-        , familyRowCases = 5
+        , familyCases = 21
+        , familyRowCases = 21
         , familyRowHolds = localGuestAliasSupported
         , familyReason =
-            "the shipped guest alias row needs POSIX symbolic links and no-replace hard links"
+            "the shipped guest alias row needs POSIX symbolic-link ownership and no-replace publication"
+        }
+    , ConditionalFamily
+        { familyPath = ["ProviderBackendSpec", "prepared guest alias acquisition"]
+        , familyCases = 6
+        , familyRowCases = 6
+        , familyRowHolds = localGuestAliasSupported
+        , familyReason = "the prepared alias acquisition uses the same POSIX symbolic-link ownership row as the shipped guest alias"
+        }
+    , ConditionalFamily
+        { familyPath = ["ProviderBackendSpec", "prepared guest alias release"]
+        , familyCases = 4
+        , familyRowCases = 4
+        , familyRowHolds = localGuestAliasSupported
+        , familyReason = "the prepared alias release uses the same POSIX symbolic-link ownership row as the shipped guest alias"
+        }
+    , ConditionalFamily
+        { familyPath = ["ProviderBackendSpec", "node guest alias route"]
+        , familyCases = 4
+        , familyRowCases = 4
+        , familyRowHolds = localGuestAliasSupported
+        , familyReason = "the node guest alias route uses the shipped POSIX symbolic-link ownership row"
         }
     , ConditionalFamily
         { familyPath = ["WslGlobalWallWindowsSpec"]
-        , familyCases = 4
-        , familyRowCases = 3
+        , familyCases = 7
+        , familyRowCases = 6
         , familyRowHolds = windowsGlobalWallSupported
         , familyReason =
-            "the Win32 row needs LockFileEx and BY_HANDLE_FILE_INFORMATION"
+            "the Windows entry points require profile admission and the native LockFileEx/FILE_ID_INFO row"
         }
     ]
   where
@@ -206,14 +357,14 @@ manifest =
                     ++ " LockFileEx byte-range locks, and CreateHardLinkW"
             }
 
-    posixFamily path cases rowCases =
+    hostWallFamily path cases rowCases =
         ConditionalFamily
             { familyPath = path
             , familyCases = cases
             , familyRowCases = rowCases
             , familyRowHolds = hostOwnershipSupported
             , familyReason =
-                "the POSIX row needs fcntl record locks and device:inode identity"
+                "the running host's ownership row supplies stable identities, exclusive opens, no-replace links and parent sync"
             }
 
 {- | Check the assembled suite against the manifest, and report what ran.

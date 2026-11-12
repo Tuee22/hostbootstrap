@@ -12,21 +12,21 @@ kernel. The four clauses are written once in
 beneath them.
 
 Each is a public @Win32@ type or wrapper, plus a narrow direct @kernel32@
-boundary for the two operations whose exact status drives a recovery decision.
+boundary for operations whose exact status drives a recovery decision.
 There is no C shim, no @c-sources@ block, and no private @Win32@ module:
 
-  * identity is @GetFileInformationByHandle@'s volume serial number and file
-    index, read through the vocabulary's one kernel-identity producer — the same
-    producer the POSIX row's @(st_dev, st_ino)@ goes through — so the two rows
-    cannot drift into meaning different things;
+  * identity requires GetVolumeInformationByHandleW to admit NTFS or ReFS on
+    the opened handle, then GetFileInformationByHandleEx's full FILE_ID_INFO:
+    the 64-bit volume serial and 128-bit file identifier, through the same
+    kernel-identity encoder as the POSIX row;
   * the exclusive open is @CreateFileW@ followed by @LockFileEx@ with
     @LOCKFILE_EXCLUSIVE_LOCK@ over a byte range. A Windows byte-range lock
     conflicts between handles even inside one process and is released by the
     kernel when the holding process dies, which is the property clause 1 rests
     on;
   * a file is created with @CREATE_NEW@, so a name that is taken is refused
-    rather than truncated, and with @FILE_FLAG_WRITE_THROUGH@, so the bytes and
-    the directory entry reach the disk rather than a cache;
+    rather than truncated, and with @FILE_FLAG_WRITE_THROUGH@ for its data;
+    the parent's namespace change is flushed separately;
   * publication is @CreateHardLinkW@, which publishes the written bytes under
     the final name in one kernel operation and fails when that name is taken.
 
@@ -36,11 +36,9 @@ directly denotes; a directory or reparse point offered where a regular object is
 required is 'OwnershipOccupied', because clause 3 binds what the kernel knows
 about an object and a link is a different object.
 
-There is no directory descriptor to flush on this kernel, so the parent's own
-durability is carried by the write-through creation and the link that publishes
-it rather than by a separate sync. The row still declares the capability,
-because the guarantee the clause needs is met — it is the mechanism that
-differs, which is exactly what a row is for.
+The parent directory is opened with GENERIC_WRITE and FILE_FLAG_BACKUP_SEMANTICS
+and flushed with FlushFileBuffers after a namespace change. A refused flush is
+a fault; file write-through does not substitute for the parent's own flush.
 
 The module is compiled on every host family and answers a total refusal where it
 cannot apply, so no package-description stanza excludes it from a build and the
@@ -50,9 +48,12 @@ module HostBootstrap.Ownership.Windows (
     windowsOwnershipRow,
     windowsOwnershipCapabilities,
     windowsOwnershipSupported,
+    windowsIdentityFilesystem,
 )
 where
 
+import Data.Text (Text)
+import qualified Data.Text as Text
 import HostBootstrap.Ownership.Object (OwnershipFault (OwnershipUnsupported))
 import HostBootstrap.Ownership.Primitive (
     OwnershipCapabilities (..),
@@ -63,16 +64,16 @@ import HostBootstrap.Ownership.Primitive (
  )
 
 #if defined(mingw32_HOST_OS)
-import Control.Exception (IOException, catch)
+import Control.Exception (IOException, catch, finally, mask)
 import Control.Monad (void)
 import Data.Bits ((.&.), (.|.))
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
-import Data.Text (Text)
-import qualified Data.Text as Text
 import Data.Word (Word32)
 import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Array (allocaArray)
 import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Storable (peekByteOff)
 import HostBootstrap.Ownership.Object
     ( ObjectIdentity
     , OwnershipFault (OwnershipOccupied, OwnershipProbeFailed)
@@ -80,8 +81,9 @@ import HostBootstrap.Ownership.Object
     )
 import System.Directory (createDirectory, removeDirectory, removeFile)
 import System.IO.Error (isAlreadyExistsError, isPermissionError, tryIOError)
+import System.FilePath (takeDirectory)
 import System.Win32.File
-    ( BY_HANDLE_FILE_INFORMATION (bhfiFileAttributes, bhfiFileIndex, bhfiSize, bhfiVolumeSerialNumber)
+    ( BY_HANDLE_FILE_INFORMATION (bhfiFileAttributes, bhfiSize)
     , cREATE_NEW
     , closeHandle
     , fILE_ATTRIBUTE_DIRECTORY
@@ -105,9 +107,7 @@ import System.Win32.File
     , win32_ReadFile
     , win32_WriteFile
     )
-import System.Win32.Types (HANDLE, LPCTSTR, getLastError, iNVALID_HANDLE_VALUE, withFilePath)
-#else
-import qualified Data.Text as Text
+import System.Win32.Types (HANDLE, LPCTSTR, getLastError, iNVALID_HANDLE_VALUE, peekTString, withFilePath)
 #endif
 
 {- | What this row declares it can hold, read off the row itself.
@@ -121,6 +121,19 @@ windowsOwnershipCapabilities = withOwnershipRow windowsOwnershipRow rowCapabilit
 -- | Whether this gate host's kernel can hold the row's obligations at all.
 windowsOwnershipSupported :: Bool
 windowsOwnershipSupported = holdsStableIdentity windowsOwnershipCapabilities
+
+{- | Admit only filesystems on which this row holds stable object identity.
+
+This is a policy over the filesystem name returned by the opened handle, not
+an inference from a drive letter or pathname. The complete FILE_ID_INFO is
+still required after admission, including ReFS's full 128-bit identifier.
+-}
+windowsIdentityFilesystem :: Text -> Maybe OwnershipFault
+windowsIdentityFilesystem filesystem
+    | filesystem == "NTFS" || filesystem == "ReFS" = Nothing
+    | otherwise =
+        Just
+            (OwnershipUnsupported ("stable object identity is unavailable on filesystem " <> filesystem))
 
 #if defined(mingw32_HOST_OS)
 
@@ -142,7 +155,6 @@ windowsOwnershipRow =
             { rowCapabilities =
                 OwnershipCapabilities
                     { holdsStableIdentity = True
-                    , holdsExclusiveOpen = True
                     , holdsNoReplacePublication = True
                     , holdsDurableParentSync = True
                     }
@@ -160,30 +172,61 @@ windowsOwnershipRow =
 -- ---------------------------------------------------------------------------
 -- The primitives
 
-{- | The volume serial number and file index of the object the name denotes.
+{- | The full FILE_ID_INFO identity on an admitted NTFS or ReFS filesystem.
 
 Opened without following a reparse point, so a name swapped for a link reads as
 a different object rather than as its target. An authoritative absence is
 @Right Nothing@; every other failure is a fault (§ CC).
 -}
 windowsObserveIdentity :: FilePath -> IO (Either OwnershipFault (Maybe ObjectIdentity))
-windowsObserveIdentity target = do
+windowsObserveIdentity target = mask $ \restore -> do
     opened <-
         openObject
             target
-            gENERIC_READ
+            fileReadAttributes
             (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
             oPEN_EXISTING
             observationFlags
     case opened of
         Left fault -> pure (Left fault)
-        Right Nothing -> pure (Right Nothing)
-        Right (Just handle) -> do
-            described <- describeHandle target handle
-            closeQuietly handle
-            pure $ case described of
-                Left fault -> Left fault
-                Right information -> fmap Just (identityOf information)
+        Right Nothing -> restore (confirmMissingIdentity target)
+        Right (Just handle) ->
+            finally
+                (restore (fmap (fmap Just) (identityOf target handle)))
+                (closeQuietly handle)
+
+-- | ERROR_PATH_NOT_FOUND also covers an existing non-directory ancestor.
+-- Walk upward until an actual directory or a failed probe answers the question.
+confirmMissingIdentity :: FilePath -> IO (Either OwnershipFault (Maybe ObjectIdentity))
+confirmMissingIdentity target = check (takeDirectory target)
+  where
+    check parent = mask $ \restore -> do
+        opened <-
+            openObject
+                parent
+                fileReadAttributes
+                (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
+                oPEN_EXISTING
+                parentDirectoryFlags
+        case opened of
+            Left fault -> pure (Left fault)
+            Right Nothing
+                | takeDirectory parent == parent ->
+                    pure (Left (OwnershipProbeFailed ("observe the identity of " <> subjectOf target) "no parent directory can be observed"))
+                | otherwise -> restore (check (takeDirectory parent))
+            Right (Just handle) ->
+                finally
+                    (restore $ do
+                        described <- describeHandle parent handle
+                        case described of
+                            Left fault -> pure (Left fault)
+                            Right information
+                                | isDirectoryObject information ->
+                                    fmap (fmap (const Nothing)) (identityOf parent handle)
+                                | otherwise ->
+                                    pure (Left (OwnershipProbeFailed ("observe the identity of " <> subjectOf target) "a parent path is not a directory"))
+                    )
+                    (closeQuietly handle)
 
 {- | Open one already-existing named object exclusively.
 
@@ -249,7 +292,7 @@ windowsCreateFile target bytes = do
     case opened of
         Left fault -> pure (Left fault)
         Right Nothing ->
-            pure (Left (OwnershipOccupied (subjectOf target <> " is already there")))
+            pure (Left (OwnershipProbeFailed ("create " <> subjectOf target) "the parent directory does not exist"))
         Right (Just handle) -> do
             written <- writeWholeHandle target handle bytes
             closeQuietly handle
@@ -347,15 +390,39 @@ windowsCloseHandle (WindowsOwnedHandle handle target) = do
             closeQuietly handle
             pure (Left (statusFault "release the exclusion on" target status))
 
-{- | The parent's own change, made durable.
+{- | Open and flush the parent directory after a namespace change.
 
-There is no directory descriptor to flush on this kernel. The creation and the
-publication above are write-through, so the entry the parent gained is already
-on the disk when they return, and this primitive has nothing left to do rather
-than something it cannot do.
+Write-through file contents do not flush a hard link, directory create or
+removal. A refused directory open or flush remains a fault.
 -}
 windowsSyncParent :: FilePath -> IO (Either OwnershipFault ())
-windowsSyncParent _target = pure (Right ())
+windowsSyncParent target = mask $ \restore -> do
+    opened <-
+        openObject
+            (takeDirectory target)
+            gENERIC_WRITE
+            (fILE_SHARE_READ .|. fILE_SHARE_WRITE .|. fILE_SHARE_DELETE)
+            oPEN_EXISTING
+            parentDirectoryFlags
+    case opened of
+        Left fault -> pure (Left fault)
+        Right Nothing ->
+            pure (Left (OwnershipProbeFailed ("open the parent of " <> subjectOf target) "the parent directory does not exist"))
+        Right (Just handle) ->
+            finally
+                (restore $ do
+                    flushed <- rawFlushFileBuffers handle
+                    if flushed
+                        then pure (Right ())
+                        else do
+                            status <- getLastError
+                            pure (Left (statusFault "flush the parent of" target status))
+                )
+                (closeQuietly handle)
+
+-- | Parent-directory operations do not follow a reparse point at that name.
+parentDirectoryFlags :: Word32
+parentDirectoryFlags = fILE_FLAG_BACKUP_SEMANTICS .|. fileFlagOpenReparsePoint
 
 -- ---------------------------------------------------------------------------
 -- Handles, identity, and status
@@ -406,11 +473,37 @@ describeHandle target handle =
     (Right <$> getFileInformationByHandle handle)
         `catch` \failure -> pure (Left (exceptionFault "describe" target failure))
 
-identityOf :: BY_HANDLE_FILE_INFORMATION -> Either OwnershipFault ObjectIdentity
-identityOf information =
-    mkKernelObjectIdentity
-        (fromIntegral (bhfiVolumeSerialNumber information))
-        (bhfiFileIndex information)
+-- | Read the full 128-bit identifier, including on ReFS.
+identityOf :: FilePath -> HANDLE -> IO (Either OwnershipFault ObjectIdentity)
+identityOf target handle =
+    allocaArray 261 $ \filesystemBuffer -> do
+        available <- rawGetVolumeInformationByHandleW handle nullPtr 0 nullPtr nullPtr nullPtr filesystemBuffer 261
+        if not available
+            then do
+                status <- getLastError
+                pure $ Left $
+                    if status == errorNotSupported
+                        then OwnershipUnsupported "this filesystem cannot report stable identity admission"
+                        else statusFault "read the filesystem of" target status
+            else do
+                filesystem <- Text.pack <$> peekTString filesystemBuffer
+                case windowsIdentityFilesystem filesystem of
+                    Just fault -> pure (Left fault)
+                    Nothing ->
+                        allocaBytes 24 $ \buffer -> do
+                            described <- rawGetFileInformationByHandleEx handle fileIdInformationClass buffer 24
+                            if not described
+                                then do
+                                    status <- getLastError
+                                    pure (Left (statusFault "read the identity of" target status))
+                                else do
+                                    volume <- peekByteOff buffer 0
+                                    object <- ByteString.packCStringLen (castPtr (plusPtr buffer 8), 16)
+                                    pure (mkKernelObjectIdentity volume object)
+
+fileReadAttributes, fileIdInformationClass :: Word32
+fileReadAttributes = 0x80
+fileIdInformationClass = 0x12
 
 isDirectoryObject :: BY_HANDLE_FILE_INFORMATION -> Bool
 isDirectoryObject information =
@@ -525,9 +618,9 @@ writeWholeHandle target handle bytes =
                             | otherwise -> go (offset + fromIntegral count)
          in go 0
 
-{- | The two direct @kernel32@ entry points this row needs.
+{- | The direct @kernel32@ entry points whose exact status the row reads.
 
-Both are here because the exact status they set is what separates a name that is
+They retain the exact status needed to distinguish a name that is
 taken from a filesystem that cannot hard-link at all, and the public wrappers
 lose that distinction.
 -}
@@ -537,6 +630,17 @@ foreign import capi unsafe "windows.h CreateFileW"
 
 foreign import capi unsafe "windows.h CreateHardLinkW"
     rawCreateHardLinkW :: LPCTSTR -> LPCTSTR -> Ptr () -> IO Bool
+
+-- Optional volume DWORD outputs are always null; only the filesystem name is read.
+foreign import capi unsafe "windows.h GetVolumeInformationByHandleW"
+    rawGetVolumeInformationByHandleW ::
+        HANDLE -> LPCTSTR -> Word32 -> Ptr () -> Ptr () -> Ptr () -> LPCTSTR -> Word32 -> IO Bool
+
+foreign import capi unsafe "windows.h GetFileInformationByHandleEx"
+    rawGetFileInformationByHandleEx :: HANDLE -> Word32 -> Ptr () -> Word32 -> IO Bool
+
+foreign import capi unsafe "windows.h FlushFileBuffers"
+    rawFlushFileBuffers :: HANDLE -> IO Bool
 
 errorFileNotFound, errorPathNotFound, errorAccessDenied :: Word32
 errorFileNotFound = 2
@@ -580,7 +684,6 @@ refusingPrimitives =
         { rowCapabilities =
             OwnershipCapabilities
                 { holdsStableIdentity = False
-                , holdsExclusiveOpen = False
                 , holdsNoReplacePublication = False
                 , holdsDurableParentSync = False
                 }

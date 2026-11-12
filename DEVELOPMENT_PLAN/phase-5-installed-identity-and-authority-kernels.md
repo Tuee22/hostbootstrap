@@ -29,7 +29,7 @@ reifier, which accepts exactly the currently allocated nonzero generation and ne
 ### Sprint 5.1: Closed verb and phase vocabulary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/binary_context_config.md`
@@ -57,7 +57,7 @@ None.
 ### Sprint 5.2: Generative installed project identity [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
 **Substrates**: none
@@ -240,7 +240,7 @@ None.
 ### Sprint 5.2d: Verified identity reaches the protected reservation kernel [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Session.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Authority/ProjectPlan.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SessionSpec.hs`
 **Substrates**: none
@@ -290,7 +290,7 @@ None.
 ### Sprint 5.3: Verified OS principal [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -339,7 +339,7 @@ None.
 ### Sprint 5.4: Broker epochs [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/LifecycleSpec.hs`,
 `core/hostbootstrap-core/test/CompileFailSpec.hs`,
@@ -378,8 +378,10 @@ Closure criteria, run by the host static gate (`cabal test all` from `core/`):
   existing-bound recovery that reaches `withRecordedEpoch`, and asserts the exact `ModeAuthorityFailure`
   reason ("the recorded broker generation has no allocation counter", and "the broker generation counter is
   malformed") with no authority minted.
-- A source guard pins the caller set of `withReifiedAllocatedBrokerEpochKernel` across
-  `core/hostbootstrap-core/src` to `HostBootstrap/Authority/Kernel.hs` and `HostBootstrap/Lifecycle/Mode.hs`.
+- A source guard pins the definition, import and application inventory of
+  `withReifiedAllocatedBrokerEpochKernel` across all declared library roots to
+  `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs` and
+  `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`.
 - Pinned compile-fail fixtures cover constructor opacity and nominal coercion. `OpenRecordedBrokerEpoch.hs`
   imports `withReifiedAllocatedBrokerEpochKernel` from `HostBootstrap.Authority` and from
   `HostBootstrap.Lifecycle.Mode` and pins "does not export 'withReifiedAllocatedBrokerEpochKernel'" for each.
@@ -405,7 +407,7 @@ None.
 ### Sprint 5.5: Scoped root invocation authority [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/ProjectScope.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
@@ -467,7 +469,7 @@ None.
 ### Sprint 5.6: Root-scope narrowing [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`
@@ -508,7 +510,7 @@ None.
 ### Sprint 5.7: Command authority vocabulary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Authority.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Authority.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Kernel.hs`,
 `core/hostbootstrap-core/internal/authority/HostBootstrap/Authority/Testing.hs`,
 `core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SourceGuard.hs`,
@@ -823,7 +825,7 @@ None. Which modules the `lifecycle-transaction-internal` stanza exposes beside t
 ### Sprint 5.12: Coordinate types at the prepared-gate boundary [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`
 **Substrates**: none

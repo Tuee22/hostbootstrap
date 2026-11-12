@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -31,10 +30,11 @@ outside a frame crossing, they are not.
 What the child does with a transaction is not this phase's to decide. This phase
 validates the crossing's structure and carries an answer; the phase that owns an
 object installs the interpreter that produces its outcome, and the interpreter
-is a parameter of the child entry rather than a branch here. A frame that cannot
-read the bytes it was handed answers a refusal rather than closing the pipe, so
-a parent learns that the far side declined instead of inferring it from a stream
-that ended.
+is a parameter of the child entry rather than a branch here. A decoded message
+with the wrong tag receives a refusal under its request identity. An undecodable
+stream has no trusted request identity and produces only a failing diagnostic.
+An interpreter's ordinary IO failure receives a fixed refusal before that same
+exception is rethrown; asynchronous exceptions keep their existing propagation.
 -}
 module HostBootstrap.Handoff.Transaction (
     -- * The far side
@@ -59,12 +59,13 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Effect.ChildGroup (
+    ChildGroup,
     askChildGroupToStop,
-    awaitChildExit,
+    awaitChildGroupExit,
     closeQuietly,
     killChildGroup,
-    launchMicros,
     terminationGraceMicros,
+    withChildGroupProcess,
  )
 import HostBootstrap.Handoff.Protocol (
     HandoffChannel,
@@ -95,12 +96,9 @@ import System.Process (
     CreateProcess (close_fds, create_group, std_err, std_in, std_out),
     ProcessHandle,
     StdStream (CreatePipe, Inherit),
-    getProcessExitCode,
     proc,
     waitForProcess,
-    withCreateProcess,
  )
-import System.Timeout (timeout)
 
 -- ---------------------------------------------------------------------------
 -- The far side
@@ -182,15 +180,17 @@ serveOneFrameTransaction (FrameInterpreter interpret) channel = do
         Left failure -> pure (Left (protocolFailure failure))
         Right message
             | protocolMessageTag message /= FrameTransactionTag ->
-                pure
-                    ( Left
-                        ( "expected a frame transaction, saw "
-                            <> Text.pack (show (protocolMessageTag message))
-                        )
+                refuseMessage
+                    message
+                    ( "expected a frame transaction, saw "
+                        <> Text.pack (show (protocolMessageTag message))
                     )
             | otherwise -> case protocolMessageFields message of
                 [transaction] -> do
-                    answered <- interpret transaction
+                    answered <-
+                        interpret transaction `Exception.catch` \(failure :: Exception.IOException) -> do
+                            _ <- sendRefusal channel (protocolMessageRequestId message) "the frame interpreter failed"
+                            Exception.throwIO failure
                     case answered of
                         Left detail ->
                             sendRefusal
@@ -200,12 +200,15 @@ serveOneFrameTransaction (FrameInterpreter interpret) channel = do
                         Right outcome ->
                             sendOutcome channel (protocolMessageRequestId message) outcome
                 fields ->
-                    pure
-                        ( Left
-                            ( "a frame transaction carries one field, saw "
-                                <> Text.pack (show (length fields))
-                            )
+                    refuseMessage
+                        message
+                        ( "a frame transaction carries one field, saw "
+                            <> Text.pack (show (length fields))
                         )
+  where
+    refuseMessage message detail = do
+        _ <- sendRefusal channel (protocolMessageRequestId message) (TextEncoding.encodeUtf8 detail)
+        pure (Left detail)
 
 {- | Carry back what the interpreter produced, in the frame it belongs in.
 
@@ -256,10 +259,9 @@ an exception, or asynchronous cancellation alike — the group is asked to stop,
 given a fixed grace, killed if it is still there, and reaped unconditionally,
 and every descriptor this bracket opened is closed.
 
-Ending the /group/ rather than the process is what makes a shell or provider
-the child launched go away with it. That is a platform row: it is compiled on
-every gate host and conditionalized only where it names a signal, so no host
-family loses this entry from the build (§ JJ).
+The platform rows belong to 'HostBootstrap.Effect.ChildGroup'; this owner calls
+that shared teardown without conditional compilation. The crossing has no
+deadline, and caller cancellation reaches the same process-tree cleanup (§ JJ).
 -}
 withFrameChildTransaction ::
     HostConfig ->
@@ -288,13 +290,13 @@ withFrameChildTransaction config self context transaction =
                         (hostToolProcessArguments tool executable arguments)
   where
     spawned executable arguments =
-        withCreateProcess (frameChildProcess executable arguments) $
-            \inbound outbound _ child ->
+        withChildGroupProcess (frameChildProcess executable arguments) $
+            \inbound outbound _ child group ->
                 case (inbound, outbound) of
                     (Just childStdin, Just childStdout) ->
                         Exception.bracket_
                             (pure ())
-                            (endChildGroup child childStdin childStdout)
+                            (endChildGroup group child childStdin childStdout)
                             (exchange childStdin childStdout)
                     _ ->
                         pure
@@ -303,14 +305,8 @@ withFrameChildTransaction config self context transaction =
                             )
 
     exchange childStdin childStdout = do
-        opened <- timeout launchMicros (handoffChannel childStdout childStdin)
-        case opened of
-            Nothing ->
-                pure
-                    ( Left
-                        (frameChildFailure "the child never opened its protocol channel")
-                    )
-            Just channel -> oneTransaction channel transaction
+        channel <- handoffChannel childStdout childStdin
+        oneTransaction channel transaction
 
 -- | The only process shape this owner ever launches.
 frameChildProcess :: FilePath -> [String] -> CreateProcess
@@ -430,17 +426,11 @@ reaped child is the only kind that is not a zombie — and the pipes are closed
 last, quietly, because a descriptor left open outlives the process that
 justified it.
 -}
-endChildGroup :: ProcessHandle -> Handle -> Handle -> IO ()
-endChildGroup child childStdin childStdout = do
-    finished <- getProcessExitCode child
-    case finished of
-        Just _ -> pure ()
-        Nothing -> do
-            askChildGroupToStop child
-            lingering <- awaitChildExit terminationGraceMicros child
-            case lingering of
-                Just _ -> pure ()
-                Nothing -> killChildGroup child
+endChildGroup :: ChildGroup -> ProcessHandle -> Handle -> Handle -> IO ()
+endChildGroup group child childStdin childStdout = do
+    askChildGroupToStop group
+    ended <- awaitChildGroupExit terminationGraceMicros group
+    if ended then pure () else killChildGroup group
     _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout

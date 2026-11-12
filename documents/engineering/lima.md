@@ -48,8 +48,9 @@ probes over raw outcomes; a private classifier reads each probe by its exit stat
 probe is retried, within a bounded policy (the classification table is in
 [incus](incus.md#provider-discovery)). Discovery runs after provider settlement when guest facts are needed; its generative capability
 is descriptive and indexed to the exact opaque managed provider/backend/generation, never mutation
-authority. Native Lima confirmation is recorded by the completed
-[Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md).
+authority. Native Lima confirmation belongs to the
+[Apple-Silicon-substrate phase](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md), whose
+current status and remaining acceptance runs are recorded in the development-plan index.
 
 Lima and WSL2 are **one guest-VM backend row**, not two. Both admit a declaration through the same
 guard sequence and both build the same backend specification value, so the construction is written once
@@ -57,6 +58,12 @@ and each realization is a value naming what actually differs: its host guard, it
 the tool it needs resolved, and how it spells itself and the thing it names in a refusal. A third
 guest-VM provider is another such value rather than another copy of the function. That is the substrate
 axis behaving as a lift rather than a fork, which is what the frame table asks for.
+
+Guest-route selection matches every closed provider kind explicitly. Lima and WSL2 select their
+own argument renderer; an Incus or Direct kind inside a guest-VM specification refuses before the
+bound execution continuation runs. There is no default Lima route. The backend identity includes the
+provider kind even when both tools resolve to the same executable path; the backend suite checks
+that shared-path case with the same VM name, resource envelope and share.
 
 The pure command shapes are:
 
@@ -80,9 +87,10 @@ host directory the guest sees, and the only one it can write.
 
 Deletion is prefix-guarded, and the guard is one computation every frame's removal goes through rather
 than one written per provider. A caller supplies the project guard prefix; this module supplies only what
-Lima calls the thing being removed and the argument vector for a name the guard has already admitted, so
-it cannot render a destructive command for a name the guard would have refused. A name outside the
-namespace refuses, and so do the two degenerate inputs that make the guard vacuous: an empty prefix, which
+Lima calls the thing being removed and the argument vector for a name the guard has already admitted.
+The row passes that admitted name through to its vector by convention; the callback's types do not
+enforce this. A name outside the namespace refuses, and so do the two degenerate inputs that make the
+guard vacuous: an empty prefix, which
 is a prefix of every name, and an empty instance name. `limactl stop` carries no such guard because it is
 non-destructive — it halts the instance and leaves it (and its disk) intact for a later `project up` to
 bring back to running.
@@ -91,7 +99,8 @@ bring back to running.
 
 The Lima VM lifecycle runs through the core `deploy-vm` step kind that the chain interprets, plus the
 project teardown that `project down` and `project destroy` drive. The same provider builders serve
-bring-up, stop, and teardown:
+bring-up, stop, and teardown. The table describes the dispatcher builder call sites; prepared
+backend operations enter the recorded transaction described below.
 
 | Phase | Lima builder | Effect | Driven by |
 |---|---|---|---|
@@ -105,7 +114,7 @@ bring-up, stop, and teardown:
   listed instance the forward route launches nothing and issues no `limactl start`: it polls the guest
   shell for up to 60 one-second attempts before the chain proceeds. Under a Harness test case a listed
   instance is refused instead, because the run expects a fresh guest. The code does not
-  observe/resize/refuse a stale CPU, memory, or disk wall. The
+  observe/resize/refuse a stale CPU, memory, or disk wall through those dispatcher call sites. The
   [canonical-quantities-and-reconcile-results phase](../../DEVELOPMENT_PLAN/phase-6-canonical-quantities-and-reconcile-results.md)
   supplies the lower result/capacity algebra, while the
   [host-providers-and-self-reference-lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
@@ -118,15 +127,30 @@ bring-up, stop, and teardown:
   recursive lifecycle visits every admitted child first, aggregates independent reverse failures, and
   deletes the plan's Lima instance only after its descendants settle.
 
-The Lima provider realization (`StrongLimaBackend`, shared with WSL2) holds none of the four ownership
-clauses; the [per-backend clause matrix](../architecture/ownership_invariant.md#per-backend-clause-matrix)
-records it as a gap. Lima ownership is the plan journal plus the guard prefix, and nothing more: no
-exclusive entry is taken, no origin record is published, no provider identity is bound, and no owner claim
-is written on the instance, unlike [Incus](incus.md#where-a-transaction-stands). Provisioning probes the
-planned name and reports an existing instance as already owned (`ProviderProvisionAlreadyOwned`), and
-deletion is addressed by name
-(`limactl delete <instance> --force`, then an existence check). A user's own Lima VM whose name carries the
-guard prefix is therefore adopted by `project up` and deleted, with its disk, by `project destroy`.
+The recorded provider realization (shared with WSL2) holds all four ownership clauses through
+the [guest-VM transaction](../architecture/ownership_invariant.md#per-backend-clause-matrix).
+It refuses an unrecorded or differently claimed VM, even when the configured name matches.
+Creation publishes origin before a create-only command; readiness starts an owned Stopped instance
+once and a Running instance zero times. The recorded backend checks the parent lease and current
+native identity around share probes, discovery and guest work. Forward stop/delete remain explicit
+Unsupported operations; the retained plan adapter owns reverse lifecycle. The older dispatcher
+builders described above are separate call sites whose adoption remains in the development plan.
+
+Owned provisioning through the recorded backend compares the native JSON listing's top-level
+`cpus`, `memory` and `disk` fields with the declared canonical budget. Memory and disk are
+integer bytes; the three fields must fit their native signed representation and the canonical
+positive bounds. Missing fields, fractions, zero/negative quantities, overflow and string-unit fields
+refuse. Creation configuration does not supply a missing native observation. The transaction re-enters
+the stored binding and checks the fresh claim and kernel directory identity before comparing.
+
+Equivalent quantities return `ProvisionAlreadyOwned` without another create/start or origin
+publication. CPU, memory or disk drift returns the shared typed `Conflict` with declared and observed
+quantities and destroy-and-reprovision as the remedy. The protected record, including its version,
+is unchanged on both equal and mismatching readback. Static cases exercise the total parser and
+compiled-client protocol with actual temporary directory identities; the
+[Apple Silicon acceptance](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md) owns real Lima
+confirmation.
+
 
 `limactl delete --force` removes the instance's own disk, but the demo's
 canonical `<project-root>/.data` is a host directory mounted into Lima and is not intentionally removed
@@ -188,14 +212,13 @@ through authenticated child entries:
 The VM-provider axis is tracked in the development plan
 ([host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)).
 
-Two gaps against this page's contract are owed by the
-[host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md). The Lima row adopts
-a same-named instance it cannot prove it created, where the target is to refuse one that carries no
-ownership marker of this project, as the Incus row refuses an instance under no record. And the forward
-`project up` issues no `limactl start` for a listed instance, so an instance `project down` stopped is not
-started again by the next `project up`; only the reverse reach step starts it.
+The recorded backend now refuses name-only adoption and starts an owned stopped VM before polling.
+The [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) records the
+shared backend's static ownership evidence. The [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md)
+owns the remaining dispatcher adoption. Native Apple lifecycle confirmation belongs to the
+terminal substrate acceptance.
 
-The completed Apple acceptance ran the full ten-row demo matrix through four fresh Lima guests. Each guest
+The recorded Apple acceptance run exercised the full ten-row demo matrix through four fresh Lima guests. Each guest
 used the admitted CPU/memory/disk wall, the writable durable share and shipped guest-alias row, pinned GHC,
 Docker, project-image build/check, cluster/workload lifecycle, host Metal daemon, and terminal deletion.
 Both variants also destroyed and recreated the guest within one run and read the same durable marker after
@@ -212,3 +235,28 @@ reattachment. Exact host/version/duration evidence lives in the
 - [demo runbook](../operations/demo_runbook.md) — the demo lifecycle that exercises the Lima VM steps.
 - [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) — the development plan for the
   VM-provider axis.
+
+The guest-VM backend admits command reports through the shared provider report classifier. Successful
+commands must be quiet on standard error and carry bounded, control-free output; ordinary non-zero
+readiness remains retryable. Static cases execute compiled CLI fixtures through the production command
+interpreter. The [host providers phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
+records shared report handling and recorded ownership behavior. Native Lima VM lifecycle confirmation
+belongs to the [Apple Silicon acceptance](../../DEVELOPMENT_PLAN/phase-26-apple-silicon-substrate.md).
+
+The ownership transaction's command vocabulary separates create-only from starting an existing
+instance. Creation receives structured configuration on stdin, including the record's claim in ordinary
+environment metadata, the admitted budget and one exact writable mount. Its image-only base introduces
+no default host-home mount. Native JSON observations retain the exact instance name, Running/Stopped
+state, absolute instance directory, creation claim and numeric CPU/memory/disk limits; the directory still needs a real kernel identity
+observation before it can be bound. Duplicate names, malformed fields, unknown states and controls
+refuse through the shared report boundary. This vocabulary alone grants no ownership or permission
+to run a command; the backend enters the recorded transaction before interpreting it.
+Lima's [create CLI](https://lima-vm.io/docs/reference/limactl_create/) documents stdin configuration,
+and its [instance schema](https://github.com/lima-vm/lima/blob/master/pkg/limatype/lima_instance.go)
+carries the observed directory and configuration fields.
+The recorded guest-VM driver now acquires an owned directory namespace and holds its lease around a
+separate protected VM-record entry. It records absence before create-only, binds the observed native
+instance-directory identity, and requires the exact creation claim on every admission. A lost create
+response leaves the origin record available for recovery without a second creation. Dependent guest
+commands check the parent lease and the native identity on both sides; a changed claim or replacement
+refuses. The backend route now uses this driver for each of its guest-VM effects.

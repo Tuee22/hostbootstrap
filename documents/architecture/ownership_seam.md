@@ -45,49 +45,35 @@ with, and the record re-entry starts from are all caller-supplied ([the clause t
 Host-local owners use the shared ownership primitives for kernel identity, exclusion, origin publication,
 no-replace linking, and identity-conditional release. The POSIX row opens objects through descriptors
 with no-follow flags, removes by name after an `lstat`, and classifies errno by symbolic constant. The
-Windows row uses no-follow handles, `LockFileEx`, file identity, and write-through file creation; its
-parent sync performs no IO (see the gaps below). `ownershipRowForHost` selects the native row as a build
-fact.
+Windows row uses no-follow handles, `LockFileEx`, full FILE_ID_INFO identity and write-through file
+creation; parent sync opens and flushes the parent directory. Native kernel cases exercise the wider
+identity and both parent-flush points; the owning phase records dated evidence. `ownershipRowForHost`
+selects the native row as a build fact.
+
+POSIX lock contention is classified only at the lock request: EACCES, EAGAIN and EBUSY there
+mean an occupied object; permission failures from opening, creating or observing are probe failures.
+A link across mounts or beyond the link-count limit is a situational probe failure, while a filesystem
+that supplies no hard link is unsupported. Acquired descriptors are masked through transfer and
+closed on an escaping exception, including before an exclusive handle is returned.
 
 Which backend holds which clause, and how, is the
 [per-backend clause matrix](ownership_invariant.md#per-backend-clause-matrix). A missing primitive is an
 explicit unsupported result, never a weaker ownership receipt.
 
-Clause tokens have nominal object and entry indices. The protected entry's rank-2 identity prevents evidence
-from moving between entries or outliving its transaction. Shipped requests are canonical bounded data; the
+Clause tokens have nominal object and entry indices. The protected entry's rank-2 identity prevents direct evidence
+values from moving between entries; its operational lifetime is addressed below. Shipped requests are canonical bounded data; the
 receiving binary performs the transaction using its own host row.
 
-Six gaps sit between this page's contract and the tree:
+Typed ownership effects enforce the protected entry's existing live-token and owner-thread floor.
+The hidden tokens carry their actual session through every successor; strict re-entry and every
+effectful clause path refuse retained closures after entry exit or on a foreign thread. Public
+evidence eliminators and nominal indices keep their existing signatures.
 
-- **Re-entry trusts the record it is handed.** `ObjectIdentity` and `OriginRecord` keep their
-  constructors private, but the public functions `mkObjectIdentity`, `parseObjectIdentityHex`,
-  `parseOriginRecord`, and `bindOriginRecord` validate shape only. `reenterOwnedObject` accepts any bound
-  record, so a caller that builds one from bytes holds release authority over whatever object currently
-  has that identity. Re-entry is sound only when the record was read back from the owner's own protected
-  store.
-- **The tape replaces a stored binding.** `publishFreshRecord` accepts a stored record whose kind and
-  origin match, whatever binding it carries, and `publishBoundRecord` then writes over the stored version
-  without comparing bindings, so a stale bound record is rebound rather than refused. The harness owners
-  and the shipped acts read the stored record before clause 2 and refuse or resume from it, which keeps
-  them clear of this.
-- **A foreign record is reported as malformed.** A well-formed record that belongs to another transaction
-  is refused with `OwnershipMalformed`, the case reserved for a record that cannot be interpreted, so a
-  caller cannot tell the two apart by case.
-- **The record reader is whitespace-tolerant.** Rendering is canonical, but reading splits the line on
-  any whitespace, so tabs, repeated or surrounding spaces, and a carriage return before the newline are
-  accepted rather than refused.
-- **The Windows row's parent sync does nothing.** The row declares `holdsDurableParentSync`, but its
-  `rowSyncParent` returns success without a kernel call. Only file creation passes
-  `FILE_FLAG_WRITE_THROUGH`, and a written file is flushed through its own handle; the hard link,
-  directory creation, and removals that change a parent's entries carry no write-through, so nothing
-  makes those name changes durable. The contract is a FlushFileBuffers on a handle opened on the parent
-  directory, with a refused flush reported as a fault.
-- **The host wall keeps its own clause-4 check.** The global host wall reaches the row's primitives
-  directly, and its identity-conditional removal and move run through its own `withConfirmedIdentity`
-  rather than an identity-conditional act the seam supplies, so the comparison clause 4 rests on is
-  written twice.
+Both whole-object owners consume the shared exception-safe handle scope. The wall and generated-config
+kernel cases interrupt actual reads, observe the retained handles closed, preserve exact ownership
+evidence and targets, and retry through their production operations.
 
-All six belong to the
+The shared read and its caller adoptions belong to the
 [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md),
 which owns the primitive seam. The [providers and lift phase](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md)
 owns provider realization and transport, the [cluster lifecycle phase](../../DEVELOPMENT_PLAN/phase-16-cluster-lifecycle-and-cordoning.md)
@@ -126,7 +112,8 @@ A transaction needs nouns, and they are stated once, without effects, in `HostBo
 - **One canonical record codec** — rendering writes one line of six single-space-separated tokens and one
   newline, so a record one owner writes is readable by every other and a version tag means one thing.
   Reading requires ASCII, exactly one newline-terminated line, the magic, the version, six tokens, and
-  well-formed hex in each identity, digest, or claim field; it splits that line on any whitespace. Every
+  well-formed hex in each identity, digest, or claim field,then exact byte equality with its re-rendering.
+  Tabs, repeated or surrounding spaces, and a carriage return before LF are refused. Every
   shape outside that is a refusal rather than a partially understood record, because a record an owner
   half-reads is the one input that could make it delete something it does not own.
 - **`OwnershipFault`** — the closed fault sum, with a total eliminator and a structured conflict report
@@ -169,9 +156,20 @@ than by a stand-in, which is what [testing](../engineering/testing.md) means by 
 | 1 — entering (`enterOwnedObject`) | `holdsStableIdentity` |
 | 2 — recording (`recordOwnedOrigin`) | `holdsStableIdentity`, `holdsDurableParentSync` |
 | 3 — binding (`bindOwnedIdentity`) | `holdsStableIdentity`, `holdsNoReplacePublication` |
-| 4 — releasing (`reenterOwnedObject`, `reobserveOwnedIdentity`) | `holdsStableIdentity` |
+| 4 — releasing (`reenterStoredOwnedObject`, `reobserveOwnedIdentity`) | `holdsStableIdentity` |
 
-`holdsExclusiveOpen` is declared by both rows and gates no clause.
+Mutating producers check the declaration of the row supplied to that call before any primitive.
+Directory creation applies ClauseRecord for its parent sync; file publication applies ClauseRecord
+and ClauseBind for parent sync and no-replace linking;object removal applies ClauseRecord before
+removal and parent sync. A token from an earlier row does not waive the current row's requirements.
+Re-entry and re-observation apply ClauseRelease to the identity comparison that precedes release.
+Partial-capability refusals mint no later token and invoke no publication or forget continuation.
+
+The shared kernel identity encoder takes a 64-bit volume word and raw object bytes. The volume
+comes first in little-endian order; the object is eight bytes on POSIX and the full sixteen-byte
+Windows file identifier. POSIX identities keep sixteen total bytes; Windows identities carry
+twenty-four. The producer validates these widths; the generic identity constructor keeps its
+broader bounded shape-only contract.
 
 ### Module map
 
@@ -195,8 +193,18 @@ The clause producers come in two faces ([the two faces](#the-two-faces)):
 | 2 | `recordOwnedOrigin` | `recordReportedOrigin` |
 | creation | `createOwnedDirectory`, `publishOwnedFile` | a described command, outside the seam |
 | 3 | `bindOwnedIdentity` | `bindReportedIdentity` |
-| re-entry | `reenterOwnedObject` | — |
+| re-entry | `reenterStoredOwnedObject` | — |
 | 4 | `reobserveOwnedIdentity`, `releaseOwnedObject` | `reobserveReportedIdentity`, `releaseReportedObject` |
+
+`recordReportedOrigin` takes an owner claim and records only a `ReportedObject` for that claim.
+
+`releaseOwnedObject` refuses a `ReportedObject` record before any kernel removal or record forgetting.
+Reported symbolic links are released through `releaseReportedObject`.
+
+The shipped symbolic-link interpreter obtains identity through the selected native row. It reads
+the identity before classifying kind and link target, then confirms the same identity afterward;
+a changed or vanished object is refused. It carries no separate device/inode encoding. An initial
+authoritative absence remains an absence, and a failed row probe remains a fault.
 
 ## The clause tokens
 
@@ -215,20 +223,25 @@ successor's recovery path — and clause 4 has to be reachable from the durable 
 from the token the binding minted. Re-entry takes an exclusive entry, a target, and the bound record the
 caller read back through its own store, and mints the same token; a record with no identity binding
 describes a transaction that never got past clause 2, so it authorizes no removal and mints nothing. The
-object index is introduced fresh, exactly as clause 1 introduces it, and the token still cannot outlive
-the entry.
+object index is introduced fresh, exactly as clause 1 introduces it. Direct values cannot cross entries,
+and an effect using a retained IO closure must still pass the actual entry's live owner-thread check.
+
+Re-entry requires the protected tape's abstract stored-read wrapper from this same nominal entry.
+An in-memory or parsed origin record has no route to either producer. Both faces share the bound-record
+projection; a missing binding mints no token. The kernel face checks release capability first, and the
+reported face refuses a kernel kind without taking a row or publishing a record.
 
 The tokens order the calls; they do not certify the values. `bindOwnedIdentity` and
 `bindReportedIdentity` take the identity as a parameter, `enterReportedObject` takes the observed origin
-as a parameter, and `reenterOwnedObject` takes the record as a parameter. An owner therefore passes the
+as a parameter, and the strict re-entry producers take protected stored-read evidence as a parameter. An owner therefore passes the
 identity its creating primitive returned or its classified command outcome, and re-enters only from a
 record its own store returned. Refusing a found object is likewise the owner's policy: the kernel
 creation primitives refuse a target that already exists, and the
 [per-backend clause matrix](ownership_invariant.md#per-backend-clause-matrix) states what each owner does
 with one.
 
-Both indices are nominal. `session` is the protected entry's own rank-2 variable, so a token cannot
-outlive the entry that authorized it and no second brand can disagree with it; `object` names which object
+Both indices are nominal. `session` is the protected entry's own rank-2 variable, so a token value cannot
+escape its entry's type scope and no second brand can disagree with it; `object` names which object
 the evidence is about. The target the owner named rides on the token too, so no producer takes a path
 argument and there is no call at which a matching token and a different path could be presented together.
 
@@ -236,10 +249,43 @@ The constructors live in one Cabal-private module whose only importers are the f
 abstract types and the seam that mints them. Compile-fail fixtures reject constructing each token,
 coercing either index, carrying one out of its entry, and importing the private module.
 
+## Stored read evidence
+
+The tape provides abstract `StoredOriginRecord session`, with a nominal entry index.
+`readStoredRecordUnder` is its sole mint and retains the origin body and exact protected version from
+the existing versioned decoder. Its projections permit inspection; there is no constructor or producer
+from a caller's bytes. The abstract type is also named by the public ownership facade. The main library re-exports the tape,
+so a downstream owner can read evidence under its own protected entry before strict re-entry; the
+constructor remains private.
+The projections are ordinary functions, so record-update syntax cannot change either the body or
+version of a sealed read.
+
+`reenterStoredOwnedObject` and `reenterStoredReportedObject` accept only this evidence from the
+same entry. They share the existing bound-record projection and preserve capability, unbound and
+reported-kind refusals. The reported route takes no row. These are the only re-entry producers.
+A guard walks physical production files and checks the exact export surface; violating module text
+demonstrates that an unconstrained producer definition or call is rejected.
+
+The data root and generated config consume the stored wrapper directly during release and
+retained-origin recovery. They project policy and payload data while keeping that same wrapper until
+strict re-entry. Unbound recovery, late identity/payload refusals and staging cleanup are retained.
+The shipped owner's ordinary file/directory give-back also consumes the wrapper read under its own
+tape. Its acquisition and symbolic-link inspection paths retain their decoded reads and wire policy.
+The provider's instance-claim re-entry also consumes its stored wrapper after checking the exact
+reported kind, owner claim, absent origin and bound identity. It republishes nothing and preserves a
+refused record's bytes/version. Cluster node-claim re-entry now consumes its own stored wrapper through the same exact kind, claim,
+absent-origin and identity checks, without republishing or rebinding. Colima also re-enters its stored profile/disk and directory records, preserving captured versions
+across destructive commands. Namespace children are cleared only inside the stored parent-directory
+re-entry: the parent's identity is re-observed, the admitted child's exact identity is checked through
+the shared conditional act, and the changed parent is synced. A manifest supplies observations, never
+a fabricated child origin record or a synthetic store publication. All six owners now use the strict
+producers, and neither unconstrained entrypoint exists.
+
 ## The record tape
 
-Every owner behind the seam supplies the same four store operations to it: publish a fresh origin
-record, publish the bound one, forget the record, and read it back decoded. Those four are the tape,
+Every owner behind the seam shares publication, binding, forget and read-back through one tape.
+The tape also supplies a raw protected-envelope read for acquisition checks that need presence,
+without interpreting an origin body. These operations are the tape,
 and they live once, in `HostBootstrap.Ownership.Tape`, over one session, one key, and one
 `RecordSubject`. The subject is a pair of phrases — what this owner calls its record, and what it
 calls the act of binding an identity to it — so the refusals every owner emits read in its own
@@ -250,27 +296,59 @@ The tape's operations are the ones the transaction actually needs and no more:
 | Operation | What it settles |
 |---|---|
 | `publishFreshRecord` | clause 2's first write, idempotent when the record already there is this transaction's own |
-| `publishBoundRecord` | clause 3's re-publication, against the exact version read back inside the entry |
+| `publishBoundRecord` | clause 3's binding over the exact unbound form; identical bound bytes retain their version |
+| `forgetRecordAtVersion` | deletion only against a retained version; absence or a changed version is a refusal |
 | `forgetRecord` | clause 4's settlement, where an already-absent record is the state asked for rather than a refusal |
-| `readRecordUnder` | the decoded record, with a store failure and a malformed record kept distinct |
+| `readRawRecordUnder` | the protected envelope without interpreting its body, with the owner's store-error variant |
+| `readVersionedRecordUnder` | the decoded origin and protected version from the same envelope read |
+| `readRecordUnder` | the decoded record, with malformed envelope/body state distinguished from other store failures |
 
-Idempotence is a property of the transaction rather than a convenience. The binding is the single
-field a later clause adds, so `publishFreshRecord` decides by kind and origin alone: a stored record
-whose kind and origin match this one is taken as this transaction's own earlier write and publishing
-again is a no-op, whatever binding it carries; a record that differs in kind or origin, or does not
-parse, belongs to someone else and is refused with `OwnershipMalformed`, never overwritten. That refusal
-is one message, so the same condition cannot produce two different answers depending on which owner
-observed it. `publishBoundRecord` then writes over the exact stored version without comparing bindings,
-so the store does not refuse a rebinding: an owner that must not rebind reads and resolves the stored
-record before clause 2, as the harness owners and the shipped acts do ([Current Status](#current-status)).
+Fresh publication is idempotent only over byte-identical records. A stored record with the same
+kind and origin but an existing binding belongs to another transaction and remains intact.
+Bound publication swaps only over its exact unbound form; identical bound bytes are a no-op
+that preserves the store version. Every other well-formed record is refused as OwnershipOccupied,
+using the subject-specific message rather than an unused key argument.
+
+An uninterpretable store envelope or origin body is OwnershipMalformed. Fresh publication, bound
+publication, read-back and forget all preserve that state for diagnosis; forget does not erase an
+invalid origin body. Other store failures remain OwnershipProbeFailed with their attempted operation.
+Decoded read-back lifts store failures through the owner's fromStoreFault; publish and forget
+classify those failures with storeFault before their OwnershipFault result reaches the carrier.
 
 The two error layers collapse through one class rather than ten hand-written lifts.
 `OwnershipCarrier` has exactly two methods — `fromClauseFault` and `fromStoreFault`, each into the
 owner's own closed error sum. `carryClause` collapses a clause producer's refusal and the domain result
-nested inside it; `carryStore` carries a bare clause result (`OwnershipFault`) into the domain sum.
-A store fault (`ProtectedError`) is lifted by `fromStoreFault` itself, which `readRecordUnder` applies.
+nested inside it; `carryClauseFault` carries a bare clause result (`OwnershipFault`) into the domain sum.
+All carrier callers use that name; no forwarding spelling remains. The harness owners use
+`readRawRecordUnder` for their acquisition presence check and decoded read-back for recovery.
+Their forget continuations return the tape's OwnershipFault directly, without converting a domain
+error back into a probe failure.
+A store fault (`ProtectedError`) is lifted by `fromStoreFault` in the raw reader.
+`readVersionedRecordUnder` performs the shared origin decode through `fromClauseFault`;
+`readRecordUnder` projects only the decoded body from that same result.
+Colima reads every reported and directory origin through its matching tape subject. Cleanup retains
+the original protected version across the destructive command and calls `forgetRecordAtVersion`,
+so a later write is refused rather than deleted as current state. Both forget routes share origin
+validation and one conditional-delete site; ordinary forget accepts settled absence, while an
+explicit retained version requires that version still to exist. Colima's separate stage/manifest
+multi-record protocol keeps its raw store operations.
+
 An owner therefore declares its instance and its subject, and keeps only what is genuinely its own:
 its removal-set policy, its payload rules, and its create-then-bind path.
+
+Reported re-entry uses `reenterStoredReportedObject` over a held protected entry and its sealed
+stored read. It projects the exact target, record and identity without a row or publication.
+Unbound records are malformed; kernel records are unsupported. Kernel re-entry keeps its capability
+check and shares only the bound projection. The input type proves the tape read under this nominal
+entry; the caller still validates the exact claim and subject. Provider, cluster and Colima reported
+callers use this route. The tape refuses any different stored record on fresh publication,
+including a record that already carries a binding.
+
+Kernel re-observation and `withReobservedIdentity` share one exact identity comparison. The
+conditional act checks the release capability before observing, refuses absence or replacement,
+and passes the same row's primitives to the act only on a match. The host wall's delete and move
+use it, preserving their specific absent/replaced conflicts and existing action errors. Observation
+and mutation remain separate kernel calls with the declared same-privilege replacement window.
 
 ## The two faces
 
@@ -298,6 +376,13 @@ by application. And the reported face's release forgets the record only over a r
 removal happened outside this process, so the answer that comes back after it is what decides whether the
 record is forgotten at all. A target still present is a conflict, because a record forgotten over a
 surviving object is exactly the orphan clause 4 exists to prevent.
+
+An interrupted reported removal can leave a bound durable record after the object is gone.
+`resumeReportedRemoval` accepts that retained `Bound` token and a fresh absence under the same
+live protected entry. It performs clause-4 cleanup only over absence; every present identity is a
+conflict. The ordinary `reobserveReportedIdentity` precondition still admits exactly the bound
+identity before a removal is issued. Provider recovery validates its child share records, takes the
+fresh instance observation, and retires the shares before the instance record.
 
 The kernel producers refuse a record describing an object another authority owns, and the reported face's
 own creating command is not the seam's to run — which is the same rule as ever, seen from the other side:
@@ -345,6 +430,30 @@ An object is owned by the kernel that can lock it, so a transaction addressed to
 frame. The row carries the transaction to a process of this same binary there and reads back one outcome.
 That process runs `runShippedOwnership` over its own `ownershipRowForHost`.
 
+Private frame entries share `HostBootstrap.CLI.interpretFrameTransaction`. Cluster exposure
+recognizes its own request first; ownership handles the remaining bytes. The suite's real
+child entry imports this production dispatcher. Its process-group fixture wrapper handles
+that probe alone and delegates ordinary transactions to the shared route. Local crossing
+cases therefore exercise the same dispatch as a project binary.
+
+The frame table's ownership column is descriptive: it names the outer host's build row or
+the crossed frame's POSIX row. Production routing belongs to the lift transport. The column
+mints no authority to ship or run a transaction, and no production module consults it for that choice.
+
+The transaction is abstract. Its authority root, owned object and symbolic-link destination have
+three distinct opaque types: `ShippedAuthorityPath`, `ShippedTargetPath` and
+`ShippedLinkTargetPath`. Their producers share one validation over nonempty absolute Unicode
+scalar paths, refusing NUL and surrogate escapes. `mkShippedOwnership` requires the authority
+and object roles; the two symbolic-link acts require the destination role. Guest paths use POSIX
+grammar, while an empty context retains the outer host's fully absolute native grammar, including
+Windows. The receiver checks every path present in the act against its own grammar before creating
+or opening the authority store. Invalid input refuses before any platform-specific act is attempted.
+The codec uses the same admitted-path reader for all three roles, preserving the existing six tags
+and length-framed UTF-8 fields.
+A guest alias spec retains these admitted roles. Its `guestAliasLinkTarget` view supplies the
+validated destination to prepared calls and the demo's compatibility consumer, so neither needs a
+partial conversion from a descriptive path string.
+
 Three properties make it a transport rather than a workflow:
 
 - **One invocation per transaction.** The receiving process lives exactly as long as the lock it holds, so
@@ -357,7 +466,10 @@ Three properties make it a transport rather than a workflow:
   the row adds no second answer to "cross into this frame". The crossing, its sanitizing, its private
   protocol channel, and its process-group bracket are the authenticated-handoff boundary's, which carries
   one opaque transaction out and one opaque outcome back and interprets neither; the ownership
-  interpreter is installed into that entry rather than beside it.
+  interpreter is installed into that entry rather than beside it. ProviderSpec scans every public
+  and private source module and pins the six consumers of the primitive renderers, including their
+  placement-aware variants. Outside the lift and its context, the same guard refuses crossing-command
+  literals, including escaped spellings. Constructed positive and negative cases validate that predicate.
 - **A closed set of acts.** Observe, take a directory, take a file, and generic give-back are joined by
   symbolic-link take and give-back for the guest-alias owner. The symbolic-link acts are available only
   in a POSIX frame; a Windows binary answers them with `OwnershipUnsupported`. There is no act that runs a
@@ -365,12 +477,46 @@ Three properties make it a transport rather than a workflow:
   ([§ KK](../../DEVELOPMENT_PLAN/development_plan_standards.md#kk-one-effect-vocabulary-and-no-scripts)),
   and an act that could run a string would make the row a shell again.
 
-Both directions are exact values. The transaction is length-framed rather than delimited, because a target
-path and a payload are arbitrary bytes and a delimiter would let one of them describe the next field; the
-outcome carries the closed fault sum itself, so a refusal that crosses a frame is the refusal that was
+Both directions are exact values. Paths travel as UTF-8 text and only the payload is arbitrary bytes.
+The transaction is length-framed rather than delimited, so neither kind of field can describe the next;
+the outcome carries the closed fault sum itself, so a refusal that crosses a frame is the refusal that was
 made rather than a rendering of one. A transaction a frame cannot read is answered with an encoded refusal
 rather than a closed pipe, so a caller learns that the far side declined instead of inferring it from a
 stream that ended.
+
+Observation records nothing, but opening an absent authority store creates its directories and identity
+file before the act runs.
+
+A repeated directory or file take reads the sealed record under its protected entry. The
+record must describe the requested kind and payload and an absent origin. A bound record
+is re-entered through the ownership seam and its identity observed again before the
+interpreter returns `ShippedObjectTaken`. A missing or replaced object yields the exact
+`OwnershipConflict`; the retry preserves the stored record and any replacement object.
+
+An unbound absent-origin directory record describes an interrupted take. Take and give-back
+use the same observation under the protected entry to resolve it. With the target absent,
+take creates and binds the directory using the exact unbound record's idempotent publication;
+give-back forgets that record. A present target yields `OwnershipConflict` with recovery
+guidance and preserves its identity, contents and exact protected record/version.
+
+The near side returns `Either ShippedFailure ShippedOutcome`. `ShippedCrossingFailed` retains
+a transport diagnostic, `ShippedOutcomeUndecodable` retains the diagnostic for an unreadable
+answer, and `ShippedFrameRefused` retains the owning frame's exact `OwnershipFault`.
+`classifyShippedOutcome` makes this total decision over the actual transport result.
+Alias acquisition and release share `shippedAliasFailureRecovery`: only the frame's decoded
+`OwnershipMalformed` refusal is `DoNotRetry`. A crossing failure, unreadable answer or
+inapplicable decoded outcome requires a fresh observation before retry.
+
+The decoder applies one 4 MiB ceiling to every length-framed field, including paths.
+Field admission can be narrower, as it is for the identity's 1-to-64-byte width.
+The encoder writes fields without enforcing that ceiling; the transport's whole-message
+bound is separate. Text fields require UTF-8, while file payloads and identities retain bytes.
+Malformed widths, text and origin tags are answered in the closed malformed-input fault.
+
+The kernel cases check actual protected-record bindings and versions, staging cleanup and
+the exact occupied or replacement conflict. A refused occupied take leaves its key vacant,
+so a later take after the operator removes the object succeeds. Alias release forgets its
+record, allowing another take to create a new link.
 
 The shipped codec is platform-neutral: its shared `HostBootstrap.Wire.LittleEndian` reader is available
 on Windows as well as POSIX. A kernel-specific refusal does not remove the request or outcome decoder.
@@ -409,8 +555,20 @@ the two places where an owner's shape bears on the seam itself.
 
 - **The global host wall** composes the row's primitives under its own driver and keeps both names of a
   publication, for the reason above. Its fence is its protected store's never-reused record version
-  rather than a counter file. Its re-observation before a removal or move is its own copy of clause 4's
-  comparison ([Current Status](#current-status)).
+  rather than a counter file. Its location representation, raw opener and store/key access are in the
+  [private location module](../../core/hostbootstrap-core/internal/ownership/HostBootstrap/Wsl2/GlobalWall/Location.hs).
+  Windows derives the paths from the admitted profile; the driver and real-store fixtures share that
+  private representation. The public facade keeps opaque target reporting and read-only presence.
+  Its read-only `hostWallOwnershipPresent` projection reads the canonical
+  active key inside a live protected entry and returns presence only; the demo uses that projection
+  for teardown instead of raw location access. It returns no mutation authority. Its re-observation
+  before a removal or move is its own copy of clause 4's comparison ([Current Status](#current-status)).
+  Its raw-row driver first applies the existing capability classifier. Armed-stage creation treats only
+  an occupied fault as a collision; other failures propagate unchanged. The first active store reserves
+  the future candidate and largest codec identity, so later journal phases remain within 16 MiB.
+  A matching spec with irreproducible desired bytes is an InvalidWallJournal.
+  Guard cases replace the object after actual payload read and before identity confirmation; they do
+  not claim to exclude replacement inside the later namespace primitive.
 - **The provider-guest alias** owns a symbolic link, which no row primitive publishes. Its acts live in
   [`HostBootstrap.Ownership.Shipped`](../../core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs),
   outside the `OwnershipPrimitive` record: the far side observes, creates, publishes, and removes the link
@@ -456,3 +614,123 @@ gate produced it.
 - [development_plan_standards.md § EE](../../DEVELOPMENT_PLAN/development_plan_standards.md#ee-opaque-capabilities-and-phase-indexed-lifecycle-state)
   and [§ LL](../../DEVELOPMENT_PLAN/development_plan_standards.md#ll-the-frame-table-the-substrate-axis-is-a-lift-not-a-fork)
   — the plan's statements of the clauses and of the frame table.
+
+
+## Object scope and the reported source boundary
+
+The kernel and reported entry producers each introduce a fresh rank-2 object index.
+EscapeOwnedObjectIndex and EscapeReportedObjectIndex attempt to return Entered session escaped
+directly from those continuations; the compiler rejects the fresh object/escaped mismatch.
+The session-index fixtures hold the other axis separately.
+
+The reported-face source guard covers its producer region, strict stored re-entry and the shared
+bound-record projection. Its vocabulary includes every current OwnershipPrimitive field, row
+construction/capability access and kernel-producer delegates. A field-inventory check rejects an
+uncovered primitive field, and per-name violating module texts exercise the same guard.
+This is a property of the guarded source definitions; the IO callbacks remain the caller's.
+
+## Live entry for typed clause effects
+
+The protected store's read-only `verifyProtectedSession` consumes the same private live token and owner
+thread as record access, without a filesystem probe. Every hidden `Entered`, `Recorded`, `Bound` and
+`Releasable` carries that actual session in a positional constructor. Their public eliminators still
+disclose the target and ownership evidence; no public constructor or updatable session field exists.
+
+Both entry faces and both strict stored re-entry routes check the live entry. Recording, creating,
+publishing, binding, kernel re-observation and both releases follow the same check through their
+shared evidence helpers before any row primitive or supplied callback. Existing capability refusals
+still run first. Expired and foreign-thread errors retain the protected store's precise diagnostic,
+mapped by `storeFault` with the attempted operation `use the ownership entry`.
+
+Pure identity comparison may project a successor after expiry, but the successor retains the revoked
+session and authorizes no later typed effect. Raw rows and `withReobservedIdentity` take ordinary paths
+and identities below this typed authority boundary; arbitrary caller IO and raw row calls remain the
+caller's responsibility.
+
+`OwnershipSpec` retains delayed closures for all thirteen entry/successor IO paths, after normal and
+exceptional exit and on a foreign thread. Divergent rows/callbacks prove refusal ordering. A separate
+actual host-row case creates, publishes and binds a real file, refuses foreign-thread and expired
+release while preserving bytes, identity and protected envelope, then settles removal and versioned
+forget through a fresh live entry. The source guard follows every shared live-entry helper, and the
+reported-face guard follows those helpers without admitting an ownership primitive.
+
+## Scoped whole-object read
+
+`Primitive.readWholeObject` takes one raw ownership row and target and returns bytes or the original
+domain fault; it returns no handle and mints no origin authority. It masks acquisition and transfer to
+cleanup, restores the caller's masking state for payload reading, and closes every successfully opened
+handle before returning or throwing.
+
+A thrown read exception is rethrown even if cleanup also throws. With typed results, a read fault wins
+a typed close fault, while a successful read reports a failed close. A thrown close exception after a
+normal read still propagates. An open refusal reaches neither read nor close. The public export pin
+admits only the byte-read function, and the reported-face guard includes its name among kernel
+delegations it refuses.
+
+`OwnershipSpec` opens actual temporary files through the host row. A retained closure performs a real
+row read on the same handle after each exit and observes the closed-handle fault. Cases cover bytes,
+typed read/close priority, synchronous read failure with failing cleanup, actual `throwTo` interruption
+of a worker read, actual open refusal and cleanup exception after success. The asynchronous case joins
+the worker before inspecting the handle, and masking-state observations check acquisition/read/close.
+No close-call counter stands in for resource closure.
+
+The host wall delegates byte reading to the shared scope and retains its own fault mapping, post-read
+identity confirmation and 16 MiB limit. Its local handle transaction is absent. A host-row case
+interrupts both active-wall re-apply and restore reads, observes the actual handle closed, preserves
+target bytes/identity and the exact active/protected envelopes, then retries through the normal driver
+and restores the original identity/bytes. Its conditional family declares the added case on every host.
+
+Generated-config payload verification uses the same scope; its local readThroughRow transaction and
+raw open/read/close imports are absent. Actual release and recovery interruption cases retain the file's
+bytes and kernel identity and the exact protected record/version, then retry to restore absence and
+forget the record. Payload digest, post-read identity, staging-withdrawal and domain fault policy stay
+with the owner.
+
+The physical production census holds readWholeObject's sole definition in Primitive. Its violating
+copied-definition control fails the same checker, and both owner source guards hold delegation and
+absence of local transactions. These checks are bounded source properties alongside the actual kernel
+handle and retry evidence.
+
+## Creating from the recorded origin
+
+The directory/file creating producers check their declared row capabilities, then require the
+recorded origin to be OriginAbsent before inspecting its kind. OriginPresent is occupied and reaches
+no creating primitive. Clause 3 therefore binds an object this run creates rather than replacing the
+meaning of a recorded pre-existing object after its name disappears.
+
+File publication preserves a failed staging-create fault and removes nothing: an exclusive-create
+failure does not prove that this run owns the staging name. Once staging creation succeeds, a failed
+no-replace link attempts staging withdrawal best-effort and returns the original link fault even if
+withdrawal returns a typed fault. A foreign target remains intact. The generated-config owner's
+generation-scoped partial-write cleanup retains its responsibility for failed creation.
+
+## Shared computation sites
+
+The ownership source guard walks physical Haskell files under the core's src and internal roots,
+including files not registered in Cabal. It checks lexical identifiers, prefix definitions and foreign
+import declarations. Ordinary stat metadata in build, socket and executable probes does not encode
+ownership identity and remains outside that identity rule. String/comment mentions are not calls.
+
+| Source home | Shared computation | Owning phase |
+|---|---|---|
+| Ownership.Object | Origin codec and kernel identity encoder | [Ownership clauses and reservations](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) |
+| Ownership.Tape | Origin codec consumers | [Ownership clauses and reservations](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) |
+| Ownership.Posix and Ownership.Windows | Kernel identity and no-replace link primitives | [Ownership clauses and reservations](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) |
+| Ownership.Primitive | Re-observation and the identity-conditional act | [Ownership clauses and reservations](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md) |
+| Ownership.Shipped | Symbolic-link identity/publication | [Host providers and lift](../../DEVELOPMENT_PLAN/phase-15-host-providers-and-the-lift.md) |
+| Config.Install.Native | Config-install no-replace publication | [Dhall configuration and project model](../../DEVELOPMENT_PLAN/phase-7-dhall-configuration-and-project-model.md) |
+
+The checker confines ownership kernel encoding to its vocabulary and declared row/act homes,
+no-replace links to their declared primitive homes, and origin codec references to Object/Tape.
+It holds the shared act and codec definitions at their actual homes. A different prefix definition
+that invokes rowObserveIdentity and rowRemoveObject or rowLinkNoReplace is refused. Row-assembly and
+refusal records bind their fields rather than invoking selectors; that syntax is distinct from effects.
+A refusal-like function name provides no exemption for a real copied act.
+In-memory violating and neutral module texts exercise the same checker. This is a guard over the
+declared source shapes, not a proof about effects hidden behind arbitrary aliases.
+
+`resumeOwnedRemoval` is the kernel counterpart of reported-removal recovery. It consumes a retained
+Bound token under the live entry, requires both release and durable-record capabilities, and
+accepts only a created kernel object's record. A fresh kernel absence permits parent-directory
+synchronization followed by record forgetting. A present identity, reported object or found-state
+origin refuses. Ordinary re-observation and release continue to require the bound object present.

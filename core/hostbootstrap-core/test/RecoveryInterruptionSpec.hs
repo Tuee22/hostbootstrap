@@ -1,6 +1,7 @@
 module RecoveryInterruptionSpec (tests) where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (bracket, finally)
 import Control.Monad (unless)
 import qualified RecursiveLifecycleSpec
 import System.Directory (doesFileExist)
@@ -8,7 +9,7 @@ import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (spawnProcess, terminateProcess, waitForProcess)
+import System.Process (ProcessHandle, spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 
@@ -30,11 +31,13 @@ destroySettlementCase =
             RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
                 RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 let readyPath = root </> "destroy-ready"
-                producer <- RecursiveLifecycleSpec.spawnDestroyInterruptionProbe root readyPath
-                awaitFile readyPath
-                readFile readyPath >>= (@?= "destroy-settled")
-                terminateProcess producer
-                _ <- waitForProcess producer
+                bracket
+                    (RecursiveLifecycleSpec.spawnDestroyInterruptionProbe root readyPath)
+                    terminateAndReap
+                    ( \_ -> do
+                        awaitFile readyPath
+                        readFile readyPath >>= (@?= "destroy-settled")
+                    )
                 RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 RecursiveLifecycleSpec.runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
 
@@ -46,14 +49,13 @@ boundaryCase boundary expectedEvents =
             let readyPath = root </> "ready"
                 resultPath = root </> "result"
                 eventsPath = root </> "recovery.events"
-            producer <-
-                spawnProcess
-                    self
-                    ["--hostbootstrap-recovery-interruption-probe", root, readyPath, boundary]
-            awaitFile readyPath
-            readFile readyPath >>= (@?= boundary)
-            terminateProcess producer
-            _ <- waitForProcess producer
+            bracket
+                (spawnProcess self ["--hostbootstrap-recovery-interruption-probe", root, readyPath, boundary])
+                terminateAndReap
+                ( \_ -> do
+                    awaitFile readyPath
+                    readFile readyPath >>= (@?= boundary)
+                )
             successor <-
                 spawnProcess
                     self
@@ -69,8 +71,14 @@ boundaryCase boundary expectedEvents =
                     doesFileExist eventsPath >>= (@?= True)
                     lines <$> readFile eventsPath >>= (@?= expected)
 
+terminateAndReap :: ProcessHandle -> IO ()
+terminateAndReap producer =
+    terminateProcess producer `finally` (waitForProcess producer >> pure ())
+
+-- | Wait for a subprocess sentinel. A probe that runs a real lifecycle verb needs tens of seconds on
+-- a loaded or virtualized host, so the bound is a minute rather than the seconds a quiet host needs.
 awaitFile :: FilePath -> IO ()
-awaitFile path = go (200 :: Int)
+awaitFile path = go (2400 :: Int)
   where
     go 0 = assertFailure ("timed out waiting for subprocess sentinel " ++ path)
     go remaining = do
