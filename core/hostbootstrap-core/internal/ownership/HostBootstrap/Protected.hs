@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -44,6 +45,7 @@ module HostBootstrap.Protected (
     -- * The store
     ProtectedStore,
     openProtectedStore,
+    openExistingProtectedStore,
     protectedStoreRoot,
     ProtectedStoreIdentity,
     protectedStoreIdentity,
@@ -85,7 +87,7 @@ module HostBootstrap.Protected (
 ) where
 
 import Control.Concurrent (ThreadId, myThreadId)
-import Control.Concurrent.MVar (MVar, newMVar, putMVar, tryTakeMVar, withMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, putMVar, tryTakeMVar, withMVar)
 import Control.Exception (Handler (Handler), IOException, SomeException, bracket, catches, displayException, finally, fromException, mask, onException, toException)
 import Control.Exception.Safe (try)
 import qualified Control.Exception.Safe as Safe
@@ -99,12 +101,19 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Protected.Publication (syncPublishedFile, renamePublishedFile, syncPublishedParent)
+import HostBootstrap.Protected.Publication (
+    syncPublishedFile, renamePublishedFile, syncPublishedParent,
+#if defined(mingw32_HOST_OS)
+    windowsPublishedPath,
+#endif
+ )
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IO.Handle.Lock (FileLockingNotSupported, LockMode (ExclusiveLock), hLock, hTryLock)
 import GHC.IO.Exception (IOErrorType (UnsupportedOperation))
 import System.Directory (
+    canonicalizePath,
     createDirectoryIfMissing,
+    doesDirectoryExist,
     doesFileExist,
     listDirectory,
     makeAbsolute,
@@ -113,23 +122,34 @@ import System.Directory (
 import System.FilePath ((<.>), (</>))
 import System.IO (
     BufferMode (NoBuffering),
-    IOMode (ReadWriteMode),
     hClose,
     hFlush,
     hSetBuffering,
-    openFile,
     withFile,
  )
 import qualified System.IO as IO
 import System.IO.Error (ioeGetErrorType, isDoesNotExistError, isPermissionError)
+import System.IO.Unsafe (unsafePerformIO)
 #if !defined(mingw32_HOST_OS)
+import System.Posix.Files (deviceID, fileID, getFdStatus, getFileStatus)
 import System.Posix.IO (
-    FdOption (CloseOnExec),
+    OpenFileFlags (cloexec, creat),
+    OpenMode (ReadWrite),
     closeFd,
+    defaultFileFlags,
     fdToHandle,
-    handleToFd,
-    setFdOption,
+    openFd,
  )
+#else
+import System.IO (IOMode (ReadWriteMode), openFile)
+import Data.Bits ((.|.))
+import Data.Word (Word32)
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Array (allocaArray)
+import Foreign.Ptr (Ptr, castPtr, nullPtr, plusPtr)
+import Foreign.Storable (peekByteOff)
+import System.Win32.File (closeHandle, createFile, fILE_ATTRIBUTE_NORMAL, fILE_SHARE_READ, fILE_SHARE_WRITE, gENERIC_READ, gENERIC_WRITE, oPEN_EXISTING)
+import System.Win32.Types (HANDLE, LPCTSTR, hANDLEToHandle, peekTString)
 #endif
 
 -- The store --------------------------------------------------------------------
@@ -143,6 +163,7 @@ data ProtectedStore = ProtectedStore
     , storeIdentity :: ProtectedStoreIdentity
     , storeMutex :: MVar ()
     , storeHolder :: IORef (Maybe ThreadId)
+    , storeLockIdentity :: Maybe (Word64, ByteString)
     }
 
 -- | The store's durable generative identity, written once when it is created.
@@ -161,6 +182,41 @@ protectedStoreRoot = storeRoot
 protectedStoreIdentity :: ProtectedStore -> ProtectedStoreIdentity
 protectedStoreIdentity = storeIdentity
 
+-- Independent handles to one directory must share the in-process
+-- lock: POSIX record locks alone do not exclude threads in the same process.
+-- The registry keeps each lock for the process lifetime so a waiter can never
+-- race replacement of the exclusion domain.
+{-# NOINLINE processStoreLocks #-}
+processStoreLocks :: MVar [(FilePath, (MVar (), IORef (Maybe ThreadId)))]
+processStoreLocks = unsafePerformIO (newMVar [])
+
+storeProcessLock :: FilePath -> IO (MVar (), IORef (Maybe ThreadId))
+storeProcessLock rawKey = modifyMVar processStoreLocks $ \locks ->
+    case lookup key locks of
+        Just existing -> pure (locks, existing)
+        Nothing -> do
+            mutex <- newMVar ()
+            holder <- newIORef Nothing
+            let entry = (mutex, holder)
+            pure ((key, entry) : locks, entry)
+  where
+#if defined(mingw32_HOST_OS)
+    key = map toLower rawKey
+#else
+    key = rawKey
+#endif
+
+-- On POSIX, directory identity also covers aliases introduced by bind mounts.
+directoryLockKey :: FilePath -> IO String
+#if defined(mingw32_HOST_OS)
+directoryLockKey root = map toLower <$> canonicalizePath root
+#else
+directoryLockKey root = do
+    canonicalRoot <- canonicalizePath root
+    status <- getFileStatus canonicalRoot
+    pure (show (deviceID status) <> ":" <> show (fileID status))
+#endif
+
 {- | Open (creating if necessary) the protected store under an absolute
 directory. The identity file is created exactly once and read thereafter, so
 every later process observes the same store identity — and a store that was
@@ -175,11 +231,34 @@ openProtectedStore rawRoot
         outcome <- tryProtectedIO $ do
             root <- makeAbsolute rawRoot
             createDirectoryIfMissing True (root </> recordsDirectory)
-            mutex <- newMVar ()
-            holder <- newIORef Nothing
+            rootKey <- directoryLockKey root
+            (mutex, holder) <- storeProcessLock ("store:" <> rootKey)
             identity <- establishIdentity root mutex holder
-            pure (fmap (\value -> ProtectedStore root value mutex holder) identity)
+            pure (fmap (\value -> ProtectedStore root value mutex holder Nothing) identity)
         pure (either (Left . classifyProtectedException "open the protected store") id outcome)
+
+-- | Open only an established store. Neither this open nor its entries create
+-- a missing root, records directory, identity envelope, or lock file.
+openExistingProtectedStore :: FilePath -> IO (Either ProtectedError ProtectedStore)
+openExistingProtectedStore rawRoot
+    | null rawRoot = pure (Left (ProtectedInvalid "the protected store root must not be empty"))
+    | otherwise = do
+        outcome <- tryProtectedIO $ do
+            root <- makeAbsolute rawRoot
+            recordsPresent <- doesDirectoryExist (root </> recordsDirectory)
+            if not recordsPresent
+                then pure (Left (ProtectedInvalid "the existing protected store records directory is absent"))
+                else do
+                    identity <- readIdentity (root </> identityFileName)
+                    case identity of
+                        Left failure -> pure (Left failure)
+                        Right Nothing -> pure (Left (ProtectedInvalid "the existing protected store identity is absent"))
+                        Right (Just value) -> do
+                            lockIdentity <- existingLockIdentityAtPath (root </> lockFileName)
+                            rootKey <- directoryLockKey root
+                            (mutex, holder) <- storeProcessLock ("store:" <> rootKey)
+                            pure (Right (ProtectedStore root value mutex holder (Just lockIdentity)))
+        pure (either (Left . classifyProtectedException "open the existing protected store") id outcome)
 
 recordsDirectory :: FilePath
 recordsDirectory = "records"
@@ -289,6 +368,24 @@ withFreshProtectedSession store action = mask $ \restore -> do
     restore (action (ProtectedSession store owner live))
         `finally` writeIORef live False
 
+-- Existing-only callers recheck the store envelope while holding the same
+-- exclusive lock as ordinary entries, before handing out a live session.
+withCurrentProtectedSession ::
+    ProtectedStore -> (forall session. ProtectedSession session -> IO (Either ProtectedError result)) ->
+    IO (Either ProtectedError result)
+withCurrentProtectedSession store action
+    | storeLockIdentity store == Nothing = withFreshProtectedSession store action
+    | otherwise = do
+        recordsPresent <- doesDirectoryExist (storeRoot store </> recordsDirectory)
+        identity <- readIdentity (storeRoot store </> identityFileName)
+        currentLock <- existingLockIdentityAtPath (storeRoot store </> lockFileName)
+        case identity of
+            Left failure -> pure (Left failure)
+            Right (Just current)
+                | recordsPresent && current == storeIdentity store && Just currentLock == storeLockIdentity store ->
+                    withFreshProtectedSession store action
+            _ -> pure (Left (ProtectedInvalid "the existing protected store identity, lock, or records directory changed"))
+
 -- | Check this entry's existing live token and owner thread, without filesystem effects.
 verifyProtectedSession :: ProtectedSession session -> IO (Either ProtectedError ())
 verifyProtectedSession session =
@@ -354,11 +451,11 @@ withProtectedEntry store action = do
         else do
             outcome <-
                 tryProtectedIO
-                    ( withStoreLock
+                    ( withStoreLockUsing (storeLockOpener store)
                         (storeRoot store)
                         (storeMutex store)
                         (storeHolder store)
-                        (withFreshProtectedSession store action)
+                        (withCurrentProtectedSession store action)
                     )
             pure (either (Left . classifyProtectedException "enter the protected store") id outcome)
 
@@ -387,11 +484,11 @@ tryProtectedEntry store action = do
         else do
             outcome <-
                 tryProtectedIO
-                    ( tryStoreLock
+                    ( tryStoreLock (storeLockOpener store)
                         (storeRoot store)
                         (storeMutex store)
                         (storeHolder store)
-                        (withFreshProtectedSession store action)
+                        (withCurrentProtectedSession store action)
                     )
             pure $ case outcome of
                 Left failure -> Left (classifyProtectedException "enter the protected store" failure)
@@ -399,12 +496,13 @@ tryProtectedEntry store action = do
                 Right (Just inner) -> fmap Just inner
 
 tryStoreLock ::
+    (FilePath -> IO IO.Handle) ->
     FilePath ->
     MVar () ->
     IORef (Maybe ThreadId) ->
     IO result ->
     IO (Maybe result)
-tryStoreLock root mutex holder action = Safe.mask $ \restore ->
+tryStoreLock openHandle root mutex holder action = Safe.mask $ \restore ->
     bracket (tryTakeMVar mutex) restoreMutex $ \acquired ->
         case acquired of
             Nothing -> pure Nothing
@@ -413,7 +511,7 @@ tryStoreLock root mutex holder action = Safe.mask $ \restore ->
     restoreMutex Nothing = pure ()
     restoreMutex (Just ()) = putMVar mutex ()
     open = do
-        handle <- openLockHandle (root </> lockFileName)
+        handle <- openHandle (root </> lockFileName)
         taken <-
             (hSetBuffering handle NoBuffering >> hTryLock handle ExclusiveLock)
                 `onException` hClose handle
@@ -452,21 +550,32 @@ withRunLiveness ::
 withRunLiveness store name body = case mkRecordKey name of
     Left refusal -> pure (Left refusal)
     Right key -> mask $ \restore -> do
-        -- Only supported acquisition failures become a typed store refusal. Body
-        -- exceptions propagate, with the handle closed even at the handoff.
-        prepared <- tryProtectedIO (acquire key)
+        -- The process lock closes the gap in POSIX record locks between two
+        -- independently opened handles in this process.
+        prepared <- tryProtectedIO (claim key)
         case prepared of
             Left failure -> pure (Left (classifyProtectedException "take the run liveness lock" failure))
-            Right (handle, False) -> do
-                hClose handle
+            Right Nothing -> pure (Right Nothing)
+            Right (Just (mutex, handle, False)) -> do
+                hClose handle `finally` putMVar mutex ()
                 pure (Right Nothing)
-            Right (handle, True) ->
-                (Right . Just <$> restore body) `finally` hClose handle
+            Right (Just (mutex, handle, True)) ->
+                (Right . Just <$> restore body) `finally` (hClose handle `finally` putMVar mutex ())
   where
-    acquire key = do
+    claim key = do
         let directory = protectedStoreRoot store </> livenessDirectoryName
+            file = Text.unpack (recordKeyText key) <.> "lock"
         createDirectoryIfMissing True directory
-        handle <- openLockHandle (directory </> Text.unpack (recordKeyText key) <.> "lock")
+        directoryKey <- directoryLockKey directory
+        (mutex, _) <- storeProcessLock ("liveness:" <> directoryKey <> ":" <> file)
+        token <- tryTakeMVar mutex
+        case token of
+            Nothing -> pure Nothing
+            Just () -> do
+                (handle, taken) <- acquire directory file `onException` putMVar mutex ()
+                pure (Just (mutex, handle, taken))
+    acquire directory file = do
+        handle <- openLockHandle (directory </> file)
         (do
             hSetBuffering handle NoBuffering
             taken <- hTryLock handle ExclusiveLock
@@ -481,12 +590,24 @@ per-process), the kernel lock, and the holder marker that turns an accidental
 re-entry into an explicit refusal rather than a deadlock.
 -}
 withStoreLock :: FilePath -> MVar () -> IORef (Maybe ThreadId) -> IO result -> IO result
-withStoreLock root mutex holder action =
+withStoreLock = withStoreLockUsing openLockHandle
+
+storeLockOpener :: ProtectedStore -> FilePath -> IO IO.Handle
+storeLockOpener store path = case storeLockIdentity store of
+    Nothing -> openLockHandle path
+    Just expected -> do
+        (handle, actual) <- openExistingLockHandle path
+        if actual == expected
+            then pure handle
+            else hClose handle >> ioError (userError "the existing protected store lock was replaced")
+
+withStoreLockUsing :: (FilePath -> IO IO.Handle) -> FilePath -> MVar () -> IORef (Maybe ThreadId) -> IO result -> IO result
+withStoreLockUsing openHandle root mutex holder action =
     withMVar mutex $ \() ->
         bracket acquire release (const action)
   where
     acquire = do
-        handle <- openLockHandle (root </> lockFileName)
+        handle <- openHandle (root </> lockFileName)
         (hSetBuffering handle NoBuffering >> hLock handle ExclusiveLock)
             `onException` hClose handle
         self <- myThreadId
@@ -506,18 +627,74 @@ Windows @openFile@ handles are non-inheritable; its row is deliberately a total
 no-op rather than a missing platform definition.
 -}
 openLockHandle :: FilePath -> IO IO.Handle
-openLockHandle path = do
-    handle <- openFile path ReadWriteMode
-    markCloseOnExec handle `onException` hClose handle
-
-markCloseOnExec :: IO.Handle -> IO IO.Handle
 #if defined(mingw32_HOST_OS)
-markCloseOnExec = pure
+openLockHandle path = openFile path ReadWriteMode
 #else
-markCloseOnExec handle = do
-    descriptor <- handleToFd handle
-    (setFdOption descriptor CloseOnExec True >> fdToHandle descriptor)
-        `onException` closeFd descriptor
+-- The open itself carries O_CLOEXEC. Setting it afterwards leaves a window in
+-- which a child forked by another thread inherits the descriptor and keeps the
+-- kernel lock alive after its owner releases it.
+openLockHandle path = do
+    descriptor <- openFd path ReadWrite defaultFileFlags{cloexec = True, creat = Just 0o666}
+    fdToHandle descriptor `onException` closeFd descriptor
+#endif
+
+-- Open the same lock for read/write without the create flag. An exclusive
+-- Linux OFD lock requires a writable descriptor even for a read-only probe.
+openExistingLockHandle :: FilePath -> IO (IO.Handle, (Word64, ByteString))
+#if defined(mingw32_HOST_OS)
+openExistingLockHandle path = do
+    native <- openExistingWindowsLock path
+    (do
+        identity <- existingWindowsLockIdentity native
+        handle <- hANDLEToHandle native
+        pure (handle, identity)) `onException` closeHandle native
+
+openExistingWindowsLock :: FilePath -> IO HANDLE
+openExistingWindowsLock path = do
+    nativePath <- windowsPublishedPath path
+    createFile nativePath (gENERIC_READ .|. gENERIC_WRITE) (fILE_SHARE_READ .|. fILE_SHARE_WRITE)
+        Nothing oPEN_EXISTING fILE_ATTRIBUTE_NORMAL Nothing
+
+existingLockIdentityAtPath :: FilePath -> IO (Word64, ByteString)
+existingLockIdentityAtPath path = bracket (openExistingWindowsLock path) closeHandle existingWindowsLockIdentity
+
+existingWindowsLockIdentity :: HANDLE -> IO (Word64, ByteString)
+existingWindowsLockIdentity native = allocaArray 261 $ \filesystemBuffer -> do
+    available <- existingLockVolumeInfo native nullPtr 0 nullPtr nullPtr nullPtr filesystemBuffer 261
+    if not available
+        then ioError (userError "the existing lock filesystem could not be identified")
+        else do
+            filesystem <- peekTString filesystemBuffer
+            if filesystem /= "NTFS" && filesystem /= "ReFS"
+                then ioError (userError "the existing lock filesystem has no admitted stable identity")
+                else allocaBytes 24 $ \buffer -> do
+                    described <- existingLockFileInfo native 0x12 buffer 24
+                    if not described
+                        then ioError (userError "the existing lock identity could not be read")
+                        else do
+                            volume <- peekByteOff buffer 0
+                            object <- ByteString.packCStringLen (castPtr (plusPtr buffer 8), 16)
+                            pure (volume, object)
+
+foreign import capi unsafe "windows.h GetVolumeInformationByHandleW"
+    existingLockVolumeInfo :: HANDLE -> LPCTSTR -> Word32 -> Ptr () -> Ptr () -> Ptr () -> LPCTSTR -> Word32 -> IO Bool
+
+foreign import capi unsafe "windows.h GetFileInformationByHandleEx"
+    existingLockFileInfo :: HANDLE -> Word32 -> Ptr () -> Word32 -> IO Bool
+#else
+openExistingLockHandle path = do
+    descriptor <- openFd path ReadWrite defaultFileFlags{cloexec = True}
+    (do
+        status <- getFdStatus descriptor
+        handle <- fdToHandle descriptor
+        pure (handle, (fromIntegral (deviceID status), ByteStringChar8.pack (show (fileID status))))) `onException` closeFd descriptor
+
+-- A path stat avoids opening and closing a second descriptor while a
+-- process-scoped POSIX record lock is held.
+existingLockIdentityAtPath :: FilePath -> IO (Word64, ByteString)
+existingLockIdentityAtPath path = do
+    status <- getFileStatus path
+    pure (fromIntegral (deviceID status), ByteStringChar8.pack (show (fileID status)))
 #endif
 
 -- Records -------------------------------------------------------------------------
@@ -768,20 +945,22 @@ compareAndSwapProtectedRecord session key expectation bytes = withActiveProtecte
         Left failure -> pure (Left failure)
         Right current -> case reconcileExpectation key expectation current of
             Left failure -> pure (Left failure)
-            Right () -> do
-                let next = RecordVersion (successorVersion current)
-                outcome <-
-                    try
-                        ( publishBytes
-                            (recordPath store key)
-                            (encodeRecord next bytes)
+            Right () -> case successorVersion current of
+                Nothing -> pure (Left (ProtectedInvalid "protected record version is exhausted"))
+                Just nextVersion -> do
+                    let next = RecordVersion nextVersion
+                    outcome <-
+                        try
+                            ( publishBytes
+                                (recordPath store key)
+                                (encodeRecord next bytes)
+                            )
+                    pure
+                        ( either
+                            (Left . mutationFailure "publish a protected record")
+                            (const (Right next))
+                            outcome
                         )
-                pure
-                    ( either
-                        (Left . mutationFailure "publish a protected record")
-                        (const (Right next))
-                        outcome
-                    )
 
 -- | Delete a record only if it still matches @expectation@ (clause 4's shape).
 compareAndDeleteProtectedRecord ::
@@ -833,10 +1012,13 @@ reconcileExpectation key expectation current =
         (ExpectVersion expected, Nothing) ->
             Left (ProtectedVersionMismatch (recordKeyText key) (Just expected) Nothing)
 
-successorVersion :: Maybe ProtectedRecord -> Word64
-successorVersion Nothing = 1
-successorVersion (Just record) =
-    recordVersionWord (protectedRecordVersion record) + 1
+successorVersion :: Maybe ProtectedRecord -> Maybe Word64
+successorVersion Nothing = Just 1
+successorVersion (Just record)
+    | version == maxBound = Nothing
+    | otherwise = Just (version + 1)
+  where
+    version = recordVersionWord (protectedRecordVersion record)
 
 -- The on-disk record shape --------------------------------------------------------
 
@@ -861,9 +1043,9 @@ decodeRecord key raw =
             | otherwise -> case ByteStringChar8.words header of
                 [magic, version]
                     | magic /= recordMagic -> malformed "unknown record magic"
-                    | otherwise -> case ByteStringChar8.readInt version of
+                    | otherwise -> case ByteStringChar8.readInteger version of
                         Just (parsed, remainder)
-                            | ByteString.null remainder && parsed > 0 ->
+                            | ByteString.null remainder && parsed > 0 && parsed <= toInteger (maxBound :: Word64) ->
                                 Right
                                     ( ProtectedRecord
                                         (RecordVersion (fromIntegral parsed))

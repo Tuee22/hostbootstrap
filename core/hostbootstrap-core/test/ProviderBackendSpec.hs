@@ -24,6 +24,7 @@ import qualified Data.Aeson as Aeson
 import Data.Aeson ((.=))
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Lazy as LazyBytes
+import Data.Either (isLeft)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (sort)
 import qualified Data.List.NonEmpty as NonEmpty
@@ -151,7 +152,7 @@ tests :: TestTree
 tests =
     testGroup
         "ProviderBackendSpec"
-        ([wslFractionalDiskCase] <> limaSizingCases <> incusSizingCases <> guestVmTransactionCases <> guestVmReportCases <> retainedOperationCases <> providerSourceCases <> provisionAndReadinessCases <> portableCases <> backendAdmissionCases <> retainedClientCases <> lifecycleCases <> discoveryCases <> providerRecordCases <> aliasPreparationCases <> aliasBackendAdmissionCases <> [testGroup "prepared guest alias acquisition" aliasAcquisitionCases, testGroup "prepared guest alias release" aliasReleaseCases, testGroup "node guest alias route" nodeAliasCases])
+        ([wslFractionalDiskCase, drvFsCorrespondenceCases] <> limaSizingCases <> incusSizingCases <> guestVmTransactionCases <> guestVmReportCases <> retainedOperationCases <> providerSourceCases <> provisionAndReadinessCases <> portableCases <> backendAdmissionCases <> retainedClientCases <> lifecycleCases <> discoveryCases <> providerRecordCases <> aliasPreparationCases <> aliasBackendAdmissionCases <> [testGroup "prepared guest alias acquisition" aliasAcquisitionCases, testGroup "prepared guest alias release" aliasReleaseCases, testGroup "node guest alias route" nodeAliasCases])
 
 {- | Keep the provider's decisions in the binary and its effects in argv.
 
@@ -272,7 +273,34 @@ limaSizingCases =
 -- | Raw client limits exercise the entered owner and the prepared result mapping.
 incusSizingCases :: [TestTree]
 incusSizingCases =
-    [ testCase "owned Incus sizing equals the declaration without mutation" $
+    [ testCase "Incus dependency readiness observes a stopped instance without starting it" $
+        withFakeHost $ \host -> do
+            config <- resolvedHostConfig
+            store <- openProtectedStore (statePath host) >>= expectRight
+            let owned = providerRecordInstance vmName
+            key <- provisionRecordInstance config store owned
+            identity <- providerRecordBinding host key
+            running <- withProviderOwnershipEntry store $ \session -> Owned.probeRunningOwnedInstance config session key owned
+            running @?= Owned.ReadyAlready identity
+            _ <- withProviderOwnershipEntry store $ \session -> Owned.stopOwnedInstance config session key owned
+            before <- recordedGuestInvocations (hostRoot host)
+            stopped <- withProviderOwnershipEntry store $ \session -> Owned.probeRunningOwnedInstance config session key owned
+            stopped @?= Owned.ReadyNotAnswering "the owned provider is stopped"
+            recordedGuestInvocations (hostRoot host) >>= (@?= before)
+            FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= ["launch", "stop"])
+    , testCase "Incus dependency readiness refuses replacement during the guest probe" $
+        withFakeHost $ \host -> do
+            config <- resolvedHostConfig
+            store <- openProtectedStore (statePath host) >>= expectRight
+            let owned = providerRecordInstance vmName
+            key <- provisionRecordInstance config store owned
+            writeFile (replaceAfterGuestProbePath (hostRoot host)) "once\n"
+            result <- expectRight =<< withProtectedEntry store (\session -> Right <$> Owned.probeRunningOwnedInstance config session key owned)
+            case result of
+                Left _ -> pure ()
+                Right _ -> assertFailure "replacement during a dependency probe was accepted"
+            FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= ["launch"])
+    , testCase "owned Incus sizing equals the declaration without mutation" $
         withFakeHost $ \host -> withBackend host $ \backend ->
             withProvisionedProvider backend $ \_ _ prepared _ -> do
                 records <- snapshotProviderRecords host
@@ -920,7 +948,71 @@ refused label expected result = case result of
 guestVmTransactionCases :: [TestTree]
 guestVmTransactionCases =
     [ testGroup "recorded guest VM transaction"
-        [ nativeGuestCase "fresh creation binds the actual native directory" $ \cfg owned root -> do
+        [ nativeGuestCase "existing-only guest probes refuse missing admission without creating state" $ \cfg owned root -> do
+            let authority = hpsHostPath (GuestVm.ownedGuestVmShare owned) </> ".provider-state"
+            doesPathExist authority >>= (@?= False)
+            assertGuestVmRefused =<< GuestVm.probeExistingRunningOwnedGuestVm cfg owned
+            assertGuestVmRefused =<< GuestVm.execInExistingOwnedGuestVm cfg owned ["true"]
+            doesPathExist authority >>= (@?= False)
+            doesPathExist (GuestVm.ownedGuestVmNamespace owned) >>= (@?= False)
+            FakeProvider.recordedProviderCommands root >>= (@?= [])
+        , nativeGuestCase "existing-only guest probes reenter the recorded running guest" $ \cfg owned root -> do
+            identity <- readyGuestVm cfg owned
+            before <- guestVmStoredRecord owned
+            GuestVm.probeExistingRunningOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyAlready identity))
+            result <- GuestVm.execInExistingOwnedGuestVm cfg owned ["true"] >>= expectRight
+            capturedExit result @?= ExitSuccess
+            guestVmStoredRecord owned >>= (@?= before)
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create", "lima-start"])
+        , nativeGuestCase "existing-only guest execution refuses a stopped guest without starting it" $ \cfg owned root -> do
+            _ <- createGuestVm cfg owned
+            before <- guestVmStoredRecord owned
+            assertGuestVmRefused =<< GuestVm.execInExistingOwnedGuestVm cfg owned ["true"]
+            guestVmInvocations root >>= (@?= [])
+            guestVmStoredRecord owned >>= (@?= before)
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create"])
+        , nativeGuestCase "existing-only guest probes refuse a missing nested store" $ \cfg owned root -> do
+            _ <- readyGuestVm cfg owned
+            let records = GuestVm.ownedGuestVmRecordDirectory owned
+            renameDirectory records (records <> ".saved")
+            before <- FakeProvider.recordedProviderCommands root
+            assertGuestVmRefused =<< GuestVm.probeExistingRunningOwnedGuestVm cfg owned
+            doesPathExist records >>= (@?= False)
+            FakeProvider.recordedProviderCommands root >>= (@?= before)
+        , nativeGuestCase "existing-only share observation proves the running guest's configured writable mount" $ \cfg owned root -> do
+            _ <- readyGuestVm cfg owned
+            before <- guestVmStoredRecord owned
+            GuestVm.observeExistingOwnedGuestShare cfg owned >>= (@?= Right "42:1:2:41ed")
+            guestVmStoredRecord owned >>= (@?= before)
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create", "lima-start"])
+        , nativeGuestCase "existing-only share observation refuses a stopped guest without starting it" $ \cfg owned root -> do
+            _ <- createGuestVm cfg owned
+            assertGuestVmRefused =<< GuestVm.observeExistingOwnedGuestShare cfg owned
+            guestVmInvocations root >>= (@?= [])
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create"])
+        , nativeGuestCase "existing-only share observation refuses missing admission without creating state" $ \cfg owned root -> do
+            let authority = hpsHostPath (GuestVm.ownedGuestVmShare owned) </> ".provider-state"
+            assertGuestVmRefused =<< GuestVm.observeExistingOwnedGuestShare cfg owned
+            doesPathExist authority >>= (@?= False)
+            doesPathExist (GuestVm.ownedGuestVmNamespace owned) >>= (@?= False)
+            FakeProvider.recordedProviderCommands root >>= (@?= [])
+        , testGroup "existing-only share observation refuses a configured mount that does not correspond"
+            [ nativeGuestCase label $ \cfg owned root -> do
+                _ <- readyGuestVm cfg owned
+                FakeProvider.setLimaConfigValue root vmName "mounts" (mounts (hpsHostPath (GuestVm.ownedGuestVmShare owned)))
+                before <- guestVmInvocations root
+                assertGuestVmRefused =<< GuestVm.observeExistingOwnedGuestShare cfg owned
+                guestVmInvocations root >>= (@?= before)
+                FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create", "lima-start"])
+            | (label, mounts) <-
+                [ ("another host source", \_ -> Aeson.toJSON [limaMount "/elsewhere" (Just shareGuestPath) True])
+                , ("a read-only mount", \source -> Aeson.toJSON [limaMount source (Just shareGuestPath) False])
+                , ("no mount at the target", \source -> Aeson.toJSON [limaMount source (Just "/srv/other") True])
+                , ("a repeated target", \source -> Aeson.toJSON (replicate 2 (limaMount source (Just shareGuestPath) True)))
+                , ("an inadmissible mount", \source -> Aeson.toJSON [limaMount source (Just shareGuestPath) True, limaMount "~" Nothing True])
+                ]
+            ]
+        , nativeGuestCase "fresh creation binds the actual native directory" $ \cfg owned root -> do
             identity <- createGuestVm cfg owned
             actual <- aliasKernelIdentity (FakeProvider.limaInstanceDirectory root vmName)
             identity @?= actual
@@ -941,6 +1033,18 @@ guestVmTransactionCases =
             GuestVm.readyOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyStarted identity))
             GuestVm.readyOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyAlready identity))
             FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create", "lima-start"])
+        , nativeGuestCase "dependency readiness observes a stopped guest without starting it" $ \cfg owned root -> do
+            identity <- createGuestVm cfg owned
+            GuestVm.probeRunningOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyNotAnswering "the owned guest VM is not running"))
+            guestVmInvocations root >>= (@?= [])
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create"])
+            GuestVm.readyOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyStarted identity))
+            GuestVm.probeRunningOwnedGuestVm cfg owned >>= (@?= Right (Owned.ReadyAlready identity))
+            FakeProvider.recordedProviderMutations root >>= (@?= ["lima-create", "lima-start"])
+            FakeProvider.replaceLimaDirectory root vmName
+            before <- guestVmInvocations root
+            assertGuestVmRefused =<< GuestVm.probeRunningOwnedGuestVm cfg owned
+            guestVmInvocations root >>= (@?= before)
         , nativeGuestCase "a listed unmarked instance receives no mutation" $ \cfg owned root -> do
             plantUnmarkedLima root
             configBefore <- readFile' (FakeProvider.limaInstanceDirectory root vmName </> "creation.json")
@@ -1527,13 +1631,17 @@ retainedClientCases =
             spec <- expectRight (construct config state)
             alternate <- expectRight (construct altered state)
             assertBool "a different client kept the same realization fingerprint" (spec /= alternate)
-            matched <- discoverStrongProviderBackend config spec (const (pure ()))
-            matched @?= Right ()
+            share <- expectRight (mkProviderShareSpec state "/guest")
+            projected <- expectRight (withResolvedProviderBinding config spec (\binding -> providerShareCallDigest binding share))
+            matched <- discoverStrongProviderBackend config spec (\backend -> pure (providerShareCallDigest (providerBackendBinding backend) share))
+            matched @?= Right projected
             forM_ [altered, config{hcToolPaths = Map.empty}] $ \substituted -> do
+                let projectedRefusal = withResolvedProviderBinding substituted spec (const ())
                 result <-
                     discoverStrongProviderBackend substituted spec $ \backend ->
                         withProvisionedProvider (ProviderUnderTest backend) $ \_ _ _ _ -> pure ()
                 refused (Text.pack label) "the resolved client executable differs from the admitted provider backend" result
+                projectedRefusal @?= result
                 doesPathExist state >>= (@?= False)
                 FakeProvider.recordedProviderCommands (hostRoot host) >>= (@?= [])
                 FakeProvider.recordedProviderMutations (hostRoot host) >>= (@?= [])
@@ -1591,12 +1699,14 @@ providerRecordCases =
                 readFile (sourceRoot </> "HostBootstrap" </> "Substrate" </> "Provider" </> "Backend.hs")
         let instanceEntry =
                 unlines
-                    [ "withOwnedProviderTransaction _cfg spec owner transaction ="
+                    [ "withOwnedProviderTransactionMode existingOnly _cfg spec owner transaction ="
                     , "case providerOwnershipAddress spec owner of"
                     , "Left fault -> pure (Left fault)"
                     , "Right (stateDirectory, key, owned) -> do"
-                    , "opened <- openProtectedStore stateDirectory"
+                    , "opened <- (if existingOnly then openExistingProtectedStore else openProtectedStore) stateDirectory"
                     ]
+            normalEntry = "withOwnedProviderTransaction = withOwnedProviderTransactionMode False"
+            existingEntry = "withExistingOwnedProviderTransaction = withOwnedProviderTransactionMode True"
             shareEntry =
                 unlines
                     [ "withOwnedShareTransaction cfg spec owner device binding source target ="
@@ -1612,6 +1722,8 @@ providerRecordCases =
                     , "data OwnedProviderRefusal"
                     ]
         SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens instanceEntry) source @?= 1
+        SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens normalEntry) source @?= 1
+        SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens existingEntry) source @?= 1
         SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens shareEntry) source @?= 1
     , testCase "invalid provider declarations create no store directory or provider mutation" $
         withFakeHost $ \host -> do
@@ -4081,6 +4193,14 @@ backendGuest root name role argv
         present <- doesFileExist path
         answer <- if present then readFile' path else pure "virtiofs\n"
         pure (RawProviderExit ExitSuccess answer "")
+    | (role, argv) `elem` [(sampleRole, ["findmnt", "-n", "-o", "ID", "-T", sampleTarget]) | (sampleRole, sampleTarget) <- shareSamples] = do
+        let path = FakeProvider.providerToolStatePath root </> "root-share-mount-id"
+        present <- doesFileExist path
+        answer <- if present then readFile' path else pure "42\n"
+        pure (RawProviderExit ExitSuccess answer "")
+    | (role, argv) `elem` [(sampleRole, ["stat", "-Lc", "%d:%i:%f", "--", sampleTarget]) | (sampleRole, sampleTarget) <- shareSamples] =
+        pure (RawProviderExit ExitSuccess "1:2:41ed\n" "")
+    | role == "backend", argv == ["test", "-d", "/guest"] = pure (RawProviderExit ExitSuccess "" "")
     | ["test", "-w", _] <- argv = pure (RawProviderExit ExitSuccess "" "")
     | role == "lima" && elem argv
         [["test", "-d", shareGuestPath], ["test", "-w", shareGuestPath], ["getent", "hosts", "archive.ubuntu.com"]] =
@@ -4105,6 +4225,9 @@ backendGuest root name role argv
                         writeFile (notReadyBudgetPath root) (show (remaining - 1) <> "\n")
                         pure (RawProviderExit (ExitFailure 1) "" "not ready: the guest is not answering yet\n")
                     else pure (RawProviderExit ExitSuccess "" "")
+  where
+    -- The roles whose share target a mount and directory identity sample may name.
+    shareSamples = [("backend", "/guest"), ("lima", shareGuestPath)]
 
 -- | Raw answers consumed by guest processes, after lifecycle setup has completed.
 guestProbeScriptPath :: FilePath -> FilePath
@@ -4356,3 +4479,40 @@ resolveNested2 = either (assertFailure . show) resolveEitherIO
 
 resolveNested3 :: Either ReconcileError (Either ReconcileError (Either ReconcileError (IO result))) -> IO result
 resolveNested3 = either (assertFailure . show) (either (assertFailure . show) resolveEitherIO)
+
+-- | One native Lima mount entry, as the provider's configuration reports it.
+limaMount :: FilePath -> Maybe FilePath -> Bool -> Aeson.Value
+limaMount location point isWritable =
+    Aeson.object (["location" Aeson..= location, "writable" Aeson..= isWritable] <> maybe [] (\target -> ["mountPoint" Aeson..= target]) point)
+
+-- findmnt's answer for a WSL guest target, checked against the declared Windows source.
+drvFsCorrespondenceCases :: TestTree
+drvFsCorrespondenceCases =
+    testGroup "WSL DrvFs share correspondence"
+        ( [ testCase "the drive's 9p DrvFs mount at /mnt/<drive> corresponds" $
+                GuestVm.classifyDrvFsCorrespondence host guest (answer drvFsRow) @?= Right ()
+          , testCase "a lower-case host drive and a bare drive path correspond" $
+                GuestVm.classifyDrvFsCorrespondence "c:\\Users\\hb\\project" guest
+                    (answer "/mnt/c 9p rw,noatime,aname=drvfs;path=C:;uid=1000")
+                    @?= Right ()
+          ]
+            <> [ testCase ("refuses " <> label) $
+                    assertBool "the DrvFs answer was accepted" (isLeft (GuestVm.classifyDrvFsCorrespondence source target captured))
+               | (label, source, target, captured) <-
+                    [ ("another drive's mount", host, guest, answer "/mnt/c 9p rw,aname=drvfs;path=D:\\;uid=1000")
+                    , ("a non-DrvFs 9p mount", host, guest, answer "/mnt/c 9p rw,aname=other;path=C:\\")
+                    , ("a native guest filesystem", host, guest, answer "/mnt/c ext4 rw,relatime")
+                    , ("a mount at another point", host, guest, answer "/mnt/d 9p rw,aname=drvfs;path=C:\\")
+                    , ("a guest target that is not the source's projection", host, "/mnt/c/Users/hb/other", answer drvFsRow)
+                    , ("a host source without a drive", "\\\\server\\share\\project", guest, answer drvFsRow)
+                    , ("a failed findmnt", host, guest, CapturedRun (ExitFailure 1) "" "findmnt: no such target")
+                    , ("a noisy findmnt", host, guest, CapturedRun ExitSuccess drvFsRow "warning")
+                    , ("several rows", host, guest, answer (drvFsRow <> "\n" <> drvFsRow))
+                    ]
+               ]
+        )
+  where
+    host = "C:\\Users\\hb\\project"
+    guest = "/mnt/c/Users/hb/project"
+    drvFsRow = "/mnt/c 9p rw,noatime,dirsync,aname=drvfs;path=C:\\;uid=1000;gid=1000;symlinkroot=/mnt/"
+    answer out = CapturedRun ExitSuccess out ""

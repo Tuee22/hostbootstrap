@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withNvkindClusterFixtureM, withHarnessClusterFixtureM, withPlannedClusterFixture, withChartWorkloadFixture, withAppliedFixtureCordon) where
+module ClusterReconcileSpec (tests, FixtureScope, withClusterFixtureM, withClusterPlanFixtureM, withNvkindClusterFixtureM, withHarnessClusterFixtureM, withPlannedClusterFixture, withChartWorkloadFixture, withAppliedFixtureCordon) where
 
 import Control.Monad (forM, forM_)
 import qualified Data.ByteString.Char8 as ByteStringChar8

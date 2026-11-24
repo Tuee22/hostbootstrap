@@ -143,8 +143,8 @@ withRootedReceiptConfirmationKernel ::
 {-# OPAQUE withRootedReceiptConfirmationKernel #-}
 withRootedReceiptConfirmationKernel runtime session request completion signedReceipt receive use =
     withTerminalRootedSession "confirm a terminal receipt" runtime session $
-        \_verbName path token ordinal _predecessor ->
-            case admit path token ordinal of
+        \_verbName path token ordinal predecessor ->
+            case admit path token ordinal predecessor of
                 Left failure -> pure (Left failure)
                 Right () -> do
                     received <- receive
@@ -152,7 +152,8 @@ withRootedReceiptConfirmationKernel runtime session request completion signedRec
                         Left failure -> pure (Left failure)
                         Right () -> use (childConfigDigest signedReceipt)
   where
-    admit path token ordinal = do
+    admit path token ordinal predecessor = do
+        require "the completion differs from the session predecessor" (predecessor == Just completion)
         require "the confirmed completion digest is empty" (not (Text.null completion))
         echoed <- terminalRequest False request
         require

@@ -1,7 +1,6 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE RoleAnnotations #-}
 {-# LANGUAGE NoMonoLocalBinds #-}
 
 {- | The root-owned recursive plan catalog.
@@ -24,12 +23,18 @@ root entry that persists the manifest holds the only durable authority.
 -}
 module HostBootstrap.Lifecycle.RootedPlan (
     RootedPlanCatalog,
+    ParentFrameId (..),
+    ChildFrameId (..),
+    RawLiftRoute (..),
+    StrippedLiftRoute (..),
+    ConfigDigest (..),
+    PayloadDigest (..),
     withRootedPlanCatalogKernel,
     withRootedPlanCatalogRootKernel,
     withRootedPlanCatalogEntriesKernel,
     withRootedPlanCatalogEntriesContinuationKernel,
-    withRootedPlanCatalogEntryKernel,
     withRootedPlanCatalogEdgeKernel,
+    rootedPlanCatalogChildRoutesKernel,
     rootedPlanCatalogRecordIdentityKernel,
     rootedPlanCatalogManifestKernel,
     rootedPlanCatalogManifestMatchesKernel,
@@ -46,6 +51,8 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority.Kernel (
     RootInvocationAuthority,
+    brokerEpochWord,
+    rootAuthorityEpoch,
     rootAuthorityProjectName,
     rootAuthorityStoreIdentity,
  )
@@ -73,7 +80,8 @@ import HostBootstrap.Lifecycle.Plan (
     topologyFrameOrderKernel,
     topologyKernel,
  )
-import HostBootstrap.Lift.Context (LiftContext)
+import HostBootstrap.Lifecycle.RootedPlan.Internal (ParentFrameId (..), ChildFrameId (..), RawLiftRoute (..), StrippedLiftRoute (..), ConfigDigest (..), PayloadDigest (..), RootedPlanCatalog (..))
+import HostBootstrap.Lift.Context (LiftContext, liftContextFromLayers, liftLayers)
 import HostBootstrap.ProjectPlan.Construct.Internal (FinalizedProjectSpec)
 import HostBootstrap.ProjectPlan.Frame (
     CurrentFrame,
@@ -84,47 +92,11 @@ import HostBootstrap.ProjectPlan.Frame (
 import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
 import HostBootstrap.Step (OperationKey, operationKeyText)
 
-{- | The exact recursive catalog for one root plan and one invocation broker
-generation.
-
-The base carries the root's retained evidence; every extension carries one
-admitted descent edge together with the complete target evidence a later
-package or storeless executor needs.  The four indices are nominal, so a
-catalog admitted for one scope, root plan, broker generation, or construction
-cannot be relabelled as another with 'coerce'.
--}
-data RootedPlanCatalog scope rootPlanId brokerGeneration catalogId where
-    RootedPlanCatalogRoot ::
-        (ProjectCfg cfg) =>
-        FinalizedProjectSpec scope specDigest cfg ->
-        RootInvocationAuthority scope brokerGeneration verb ->
-        ProjectPlan scope specDigest rootPlanId rootConfigId cfg ->
-        CurrentFrame scope rootPlanId rootFrame ->
-        ValidatedLifecycleContext scope specDigest rootPlanId rootConfigId rootFrame ->
-        RootedPlanCatalog scope rootPlanId brokerGeneration catalogId
-    RootedPlanCatalogDescent ::
-        (ProjectCfg cfg) =>
-        RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
-        ProjectPlan scope specDigest childPlanId childConfigId cfg ->
-        PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
-        CurrentFrame scope childPlanId childFrame ->
-        Text ->
-        Text ->
-        LiftContext ->
-        LiftContext ->
-        ByteString ->
-        Text ->
-        Text ->
-        [OperationKey] ->
-        RootedPlanCatalog scope rootPlanId brokerGeneration catalogId
-
-type role RootedPlanCatalog nominal nominal nominal nominal
-
 {- | Construct the catalog for one root frame.
 
 The supplied current frame must be the lifecycle context's own root-resident
 frame and its admitted context's endpoint, and the invocation authority must
-name the same installed project and durable store identity the root plan
+name the same installed project, durable store identity, and broker epoch the root plan
 retains.  Only then does the shared immediate-target kernel project each
 declared descent in turn, each level's admitted target becoming the next
 level's parent, until a frame declares no further descent.  The recursion is
@@ -160,6 +132,8 @@ withRootedPlanCatalogKernel finalized authority rootPlan rootCurrent lifecycle u
             pure (refusal "root invocation authority names another installed project")
         | rootAuthorityStoreIdentity authority /= projectPlanProfileStoreIdentityKernel rootPlan =
             pure (refusal "root invocation authority names another durable store identity")
+        | brokerEpochWord (rootAuthorityEpoch authority) /= projectPlanProfileEpochKernel rootPlan =
+            pure (refusal "root invocation authority names another broker epoch")
         | otherwise =
             descendRootedPlanCatalogKernel
                 finalized
@@ -205,13 +179,13 @@ descendRootedPlanCatalogKernel finalized budget catalog plan current context use
                 targetPlan
                 binding
                 targetCurrent
-                parentFrame
-                childFrame
-                raw
-                route
+                (ParentFrameId parentFrame)
+                (ChildFrameId childFrame)
+                (RawLiftRoute raw)
+                (StrippedLiftRoute route)
                 payload
-                configDigest
-                payloadDigest
+                (ConfigDigest configDigest)
+                (PayloadDigest payloadDigest)
                 (projectedNodeKeys plan parentFrame)
             )
             targetPlan
@@ -265,13 +239,13 @@ withRootedPlanCatalogEntriesKernel ::
       ProjectPlan scope specDigest childPlanId childConfigId cfg ->
       PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
       CurrentFrame scope childPlanId childFrame ->
-      Text ->
-      Text ->
-      LiftContext ->
-      LiftContext ->
+      ParentFrameId ->
+      ChildFrameId ->
+      RawLiftRoute ->
+      StrippedLiftRoute ->
       ByteString ->
-      Text ->
-      Text ->
+      ConfigDigest ->
+      PayloadDigest ->
       [OperationKey] ->
       result
     ) ->
@@ -299,13 +273,13 @@ withRootedPlanCatalogEntriesContinuationKernel ::
       ProjectPlan scope specDigest childPlanId childConfigId cfg ->
       PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
       CurrentFrame scope childPlanId childFrame ->
-      Text ->
-      Text ->
-      LiftContext ->
-      LiftContext ->
+      ParentFrameId ->
+      ChildFrameId ->
+      RawLiftRoute ->
+      StrippedLiftRoute ->
       ByteString ->
-      Text ->
-      Text ->
+      ConfigDigest ->
+      PayloadDigest ->
       [OperationKey] ->
       state ->
       (state -> IO (Either Text ())) ->
@@ -320,38 +294,6 @@ withRootedPlanCatalogEntriesContinuationKernel catalog initial visit done =
     walk (RootedPlanCatalogDescent ancestors plan binding current parent child raw route payload configDigest payloadDigest keys) state continue =
         walk ancestors state $ \next ->
             visit plan binding current parent child raw route payload configDigest payloadDigest keys next continue
-
-{- | Select the single entry whose admitted child frame is the requested one.
-
-Selection is a fold over the catalog itself; there is no row, index, or entry
-value a caller can hold independently of it.
--}
-withRootedPlanCatalogEntryKernel ::
-    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
-    Text ->
-    ( forall specDigest childPlanDigest childPlanId childConfigId childFrame cfg.
-      (ProjectCfg cfg) =>
-      ProjectPlan scope specDigest childPlanId childConfigId cfg ->
-      PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
-      CurrentFrame scope childPlanId childFrame ->
-      Text ->
-      Text ->
-      LiftContext ->
-      LiftContext ->
-      ByteString ->
-      Text ->
-      Text ->
-      [OperationKey] ->
-      result
-    ) ->
-    Maybe result
-withRootedPlanCatalogEntryKernel catalog requested use = select catalog
-  where
-    select (RootedPlanCatalogRoot _ _ _ _ _) = Nothing
-    select (RootedPlanCatalogDescent ancestors plan binding current parent child raw route payload configDigest payloadDigest keys)
-        | child == requested =
-            Just (use plan binding current parent child raw route payload configDigest payloadDigest keys)
-        | otherwise = select ancestors
 
 {- | Select the one admitted descent edge a storeless forward package may be
 produced for, together with the parent level's own retained evidence.
@@ -373,21 +315,46 @@ independently constructible value.  The parent level contributes only its own
 frame identity: the parent plan is what the rechecks are made against, never
 what the continuation receives.
 -}
+{- | Each admitted descent's child frame with its route from the root frame,
+root-first.
+
+A descent's own route is one stripped edge from its parent. The route from the
+root composes the stripped edges of its whole ancestry, so a frame below the
+root's immediate child is reached through every frame above it, never along its
+single edge from the root. A catalog whose edges do not chain from the root
+frame, or whose composed layers are not a lift context, refuses.
+-}
+rootedPlanCatalogChildRoutesKernel ::
+    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> Either Text [(ChildFrameId, LiftContext)]
+rootedPlanCatalogChildRoutesKernel catalog =
+    withRootedPlanCatalogRootKernel catalog (\_ _ _ rootCurrent _ -> chain (currentFrameId rootCurrent) [] edges)
+  where
+    edges =
+        withRootedPlanCatalogEntriesKernel catalog $ \_ _ _ (ParentFrameId parent) child@(ChildFrameId childName) _ (StrippedLiftRoute route) _ _ _ _ ->
+            (parent, (child, childName), liftLayers route)
+    chain _ _ [] = Right []
+    chain expected prefix ((parent, (child, childName), layers) : rest)
+        | parent /= expected = refusal "the catalog's descent edges do not chain from the root frame"
+        | otherwise = do
+            let composed = prefix ++ layers
+            route <- either (const (refusal "the composed root route is not a lift context")) Right (liftContextFromLayers composed)
+            ((child, route) :) <$> chain childName composed rest
+
 withRootedPlanCatalogEdgeKernel ::
     RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
-    Text ->
-    Text ->
+    ParentFrameId ->
+    ChildFrameId ->
     ( forall parentPlanId parentFrame specDigest childPlanDigest childPlanId childConfigId childFrame cfg.
       (ProjectCfg cfg) =>
       CurrentFrame scope parentPlanId parentFrame ->
       ProjectPlan scope specDigest childPlanId childConfigId cfg ->
       PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
       CurrentFrame scope childPlanId childFrame ->
-      LiftContext ->
-      LiftContext ->
+      RawLiftRoute ->
+      StrippedLiftRoute ->
       ByteString ->
-      Text ->
-      Text ->
+      ConfigDigest ->
+      PayloadDigest ->
       [OperationKey] ->
       result
     ) ->
@@ -406,16 +373,16 @@ withRootedPlanCatalogEdgeKernel catalog requestedParent requestedChild use =
                 ancestors
                 (admit ancestors plan binding current parent child raw route payload configDigest payloadDigest keys : collected)
 
-    admit ancestors plan binding current parent child raw route payload configDigest payloadDigest keys
+    admit ancestors plan binding current parent@(ParentFrameId parentName) (ChildFrameId childName) raw@(RawLiftRoute rawContext) route payload configDigest payloadDigest keys
         | parent /= requestedParent = refusal "the admitted edge names another parent frame"
         | otherwise = withRootedPlanCatalogFrameKernel ancestors joinParent
       where
         joinParent parentPlan parentCurrent
-            | currentFrameId parentCurrent /= parent =
+            | currentFrameId parentCurrent /= parentName =
                 refusal "the admitted parent frame is not its own retained current frame"
-            | topologyDescentFromKernel (topologyKernel parentPlan) parent /= Just (child, raw) =
+            | topologyDescentFromKernel (topologyKernel parentPlan) parentName /= Just (childName, rawContext) =
                 refusal "the parent plan declares no such descent out of the admitted parent frame"
-            | projectedNodeKeys parentPlan parent /= keys =
+            | projectedNodeKeys parentPlan parentName /= keys =
                 refusal "the admitted projected node keys are not the parent plan's own"
             | otherwise =
                 Right
@@ -507,7 +474,7 @@ rootedPlanCatalogManifestKernel catalog
       where
         snapshot = renderSnapshotKernel plan
 
-    manifestEntry plan binding _current parent child _raw _route _payload configDigest payloadDigest keys =
+    manifestEntry plan binding _current (ParentFrameId parent) (ChildFrameId child) _raw _route _payload (ConfigDigest configDigest) (PayloadDigest payloadDigest) keys =
         ByteString.concat
             [ manifestText parent
             , manifestText child

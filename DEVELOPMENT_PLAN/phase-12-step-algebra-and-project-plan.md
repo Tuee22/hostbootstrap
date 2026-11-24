@@ -1264,7 +1264,7 @@ sprint; they are not a forward dependency for this sprint's scoped closure.
   to the snapshot leaf and restricted trusted Mode importer; the public stable view erases its indices without granting authority. The kernel
   exports the type abstractly, as it does `PlanDigestBinding` and `BoundPlanSnapshot`, so no kernel importer
   can relabel the brand.
-- The canonical format (`canonicalPlanSnapshotFormatVersion`, version 8, whose standalone-activation field
+- The canonical format (`canonicalPlanSnapshotFormatVersion`, version 9, whose standalone-activation field
   the worked-demo phase owns) length-frames the exact canonical root as a big-endian 64-bit byte count followed
   by big-endian 32-bit `Char` code points,
   length-frames all other variable-width values, explicitly counts collections, and binds the specification

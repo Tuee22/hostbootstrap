@@ -335,6 +335,32 @@ library reverse-root-intent-internal
     , hostbootstrap-core:authority-internal
     , hostbootstrap-core:ownership-internal
 
+library reverse-descent-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/reverse-descent
+  exposed-modules: HostBootstrap.Teardown.Preparation
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , text
+
+-- The storeless reverse child executor, private to the package and its tests.
+library reverse-executor-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/reverse-executor
+  exposed-modules:
+      HostBootstrap.Command.Child.Reverse.Internal
+      HostBootstrap.Teardown.Executor.Internal
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , safe-exceptions
+    , text
+    , hostbootstrap-core:handoff-implementation-internal
+    , hostbootstrap-core:reverse-descent-internal
+
 library handoff-implementation-internal
   import: warnings
   visibility: private
@@ -370,19 +396,24 @@ library handoff-implementation-internal
       HostBootstrap.Lifecycle.Dependency.Internal
       HostBootstrap.Lifecycle.Execution
       HostBootstrap.Lifecycle.Execution.Internal
+      HostBootstrap.Lifecycle.FrameExecutor
+      HostBootstrap.Lifecycle.FrameRole
       HostBootstrap.Lifecycle.Mode
       HostBootstrap.Lifecycle.Plan
       HostBootstrap.Lifecycle.Prepared
       HostBootstrap.Lifecycle.Prepared.Internal
       HostBootstrap.Lifecycle.ResourceRecord
       HostBootstrap.Lifecycle.Rooted
+      HostBootstrap.Lifecycle.Rooted.Node
       HostBootstrap.Lifecycle.Rooted.Receipt
       HostBootstrap.Lifecycle.RootedPlan
+      HostBootstrap.Lifecycle.RootedPlan.Testing
       HostBootstrap.Lifecycle.Session
       HostBootstrap.Lift.Context
       HostBootstrap.ProjectPlan
       HostBootstrap.ProjectPlan.Construct.Internal
       HostBootstrap.ProjectPlan.Frame
+      HostBootstrap.ProjectPlan.Handoff.Internal
       HostBootstrap.ProjectPlan.Projection.Internal
       HostBootstrap.ProjectRoot
       HostBootstrap.RoleLifecycle
@@ -396,10 +427,12 @@ library handoff-implementation-internal
       HostBootstrap.Config.Class.Internal
       HostBootstrap.Config.Fields.Internal
       HostBootstrap.Lifecycle.Recovery
+      HostBootstrap.Lifecycle.RootedPlan.Internal
       HostBootstrap.Lifecycle.Transaction
       HostBootstrap.Service.Internal
   build-depends:
       base >=4.18 && <5
+    , hostbootstrap-core:reverse-descent-internal
     , bytestring
     , containers
     , crypton <1.1
@@ -423,6 +456,16 @@ library handoff-implementation-internal
   if os(windows)
     build-depends:
         Win32
+
+library harness-close-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/harness-close
+  exposed-modules: HostBootstrap.Harness.Ownership.Internal
+  build-depends:
+      base >=4.18 && <5
+    , hostbootstrap-core:authority-internal
+    , hostbootstrap-core:handoff-implementation-internal
 
 library cluster-ownership-internal
   import: warnings
@@ -450,6 +493,30 @@ library cluster-ownership-internal
     , hostbootstrap-core:ownership-internal
     , safe-exceptions
     , temporary
+    , text
+
+library failed-up-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/failed-up
+  exposed-modules: HostBootstrap.Authority.FailedUp.Internal
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , hostbootstrap-core:handoff-implementation-internal
+    , text
+
+library handoff-completion-internal
+  import: warnings
+  visibility: private
+  hs-source-dirs: internal/handoff-completion
+  exposed-modules:
+      HostBootstrap.Handoff.Completion
+      HostBootstrap.Handoff.TerminalReport
+  build-depends:
+      base >=4.18 && <5
+    , bytestring
+    , hostbootstrap-core:handoff-implementation-internal
     , text
 
 library
@@ -518,7 +585,6 @@ library
       HostBootstrap.DocValidator
   other-modules:
       HostBootstrap.CLI.Bare
-      HostBootstrap.Authority.FailedUp.Internal
       HostBootstrap.Cluster.Backend.Internal
       HostBootstrap.Command.Child
       HostBootstrap.Command.Child.Reverse
@@ -526,19 +592,12 @@ library
       HostBootstrap.Cluster.Budget.Internal
       HostBootstrap.Cluster.Observation.Internal
       HostBootstrap.Cluster.Workload
-      HostBootstrap.Harness.Ownership.Internal
-      HostBootstrap.Handoff.Completion
       HostBootstrap.Handoff.Process
       HostBootstrap.Handoff.Process.Route
-      HostBootstrap.Handoff.TerminalReport
-      HostBootstrap.Lifecycle.FrameExecutor
-      HostBootstrap.Lifecycle.Rooted.Node
       HostBootstrap.ProjectPlan.Child.Internal
-      HostBootstrap.ProjectPlan.Handoff.Internal
       HostBootstrap.Substrate.Provider.Internal
       HostBootstrap.Substrate.Provider.Dependency.Internal
       HostBootstrap.Substrate.Provider.Observation.Internal
-      HostBootstrap.Teardown.Executor.Internal
   build-depends:
       aeson
     , base >=4.18 && <5
@@ -558,7 +617,10 @@ library
     , hostbootstrap-core:effect-internal
     , hostbootstrap-core:effect-command-internal
     , hostbootstrap-core:harness-lifecycle-internal
+    , hostbootstrap-core:harness-close-internal
     , hostbootstrap-core:handoff-implementation-internal
+    , hostbootstrap-core:handoff-completion-internal
+    , hostbootstrap-core:failed-up-internal
     , hostbootstrap-core:lifecycle-representation-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:colima-ownership-internal
@@ -567,6 +629,8 @@ library
     , hostbootstrap-core:plan-resource-internal
     , hostbootstrap-core:readiness-internal
     , hostbootstrap-core:reconcile-error-internal
+    , hostbootstrap-core:reverse-descent-internal
+    , hostbootstrap-core:reverse-executor-internal
     , hostbootstrap-core:provider-start-internal
     , hostbootstrap-core:wall-observation-internal
     , memory
@@ -757,10 +821,15 @@ test-suite hostbootstrap-core-test
     , hostbootstrap-core:cluster-exposure-internal
     , hostbootstrap-core:cluster-ownership-internal
     , hostbootstrap-core:harness-lifecycle-internal
+    , hostbootstrap-core:harness-close-internal
     , hostbootstrap-core:handoff-implementation-internal
+    , hostbootstrap-core:handoff-completion-internal
+    , hostbootstrap-core:failed-up-internal
     , hostbootstrap-core:lifecycle-representation-internal
     , hostbootstrap-core:lifecycle-dependency-internal
     , hostbootstrap-core:lifecycle-transaction-internal
+    , hostbootstrap-core:reverse-descent-internal
+    , hostbootstrap-core:reverse-executor-internal
     , hostbootstrap-core:reverse-root-intent-internal
     , hostbootstrap-core:colima-backend-internal
     , hostbootstrap-core:colima-ownership-internal
@@ -782,8 +851,25 @@ test-suite hostbootstrap-core-test
         , HostBootstrap.Handoff.Protocol
         , HostBootstrap.Handoff.Receiver
         , HostBootstrap.Handoff.Relay
+        , HostBootstrap.Handoff.Runtime as TestHandoffRuntime
         , HostBootstrap.Handoff.Internal
         , HostBootstrap.Handoff.Rooted
+        , HostBootstrap.Lifecycle.Plan as TestLifecyclePlan
+        , HostBootstrap.Lifecycle.FrameExecutor as TestFrameExecutor
+        , HostBootstrap.Lifecycle.Rooted as TestRootedSession
+        , HostBootstrap.Lifecycle.Rooted.Node as TestRootedNode
+        , HostBootstrap.Lifecycle.Rooted.Receipt as TestRootedReceipt
+        , HostBootstrap.Lifecycle.Prepared.Internal as TestPreparedGate
+        , HostBootstrap.Lifecycle.RootedPlan as TestRootedPlan
+        , HostBootstrap.Lifecycle.RootedPlan.Testing as TestCatalogFixtures
+        , HostBootstrap.ProjectPlan.Handoff.Internal as TestForwardHandoff
+        , HostBootstrap.ProjectPlan.Construct.Internal as TestFinalizedSpec
+        , HostBootstrap.Teardown as TestTeardown
+        , HostBootstrap.Teardown.Internal as TestTeardownInternal
+        )
+    , hostbootstrap-core:reverse-executor-internal
+        ( HostBootstrap.Command.Child.Reverse.Internal as TestReversePolicy
+        , HostBootstrap.Teardown.Executor.Internal as TestTeardownExecutor
         )
   if !os(windows)
     build-depends:

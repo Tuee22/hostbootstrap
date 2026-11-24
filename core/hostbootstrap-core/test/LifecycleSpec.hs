@@ -6,7 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module LifecycleSpec (tests) where
+module LifecycleSpec (tests, solePrepareRecord, changePrepareModeEpoch, replaceRawRecord, deleteRecord, advanceRecordVersion) where
 
 import Control.Exception (SomeException, bracket_, displayException, evaluate, try)
 import Data.Bits ((.&.), shiftR)
@@ -28,7 +28,7 @@ import qualified Fixture
 import HostBootstrap.Authority
     ( AuthorityError (..)
     , InstalledProjectIdentity
-    , ProjectVerb (ProjectUp)
+    , ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp)
     , RootInvocationAuthority
     , VerbUp
     , brokerEpochWord
@@ -62,11 +62,13 @@ import HostBootstrap.Lifecycle.Mode
     , NormalActiveRecovery
     , OpenRevisionKind (..)
     , ProductionMode
+    , ProductionRoot
     , ProjectModeLease
     , UnboundRunLease
     , VerifiedPlanSnapshot
     , bindRunLease
     , bindRunLeaseWithPlanRecovery
+    , authorizeProductionPreEffect
     , boundInvocationRecoveryRevisionKind
     , boundInvocationRecoveryRunText
     , boundRunLeasePlanDigest
@@ -88,6 +90,7 @@ import HostBootstrap.Lifecycle.Mode
     , productionRootUnboundLease
     , projectModeLeaseEpoch
     , recordProductionInvocationAcknowledgment
+    , terminalizeExistingBoundReverseRootKernel
     , recoveredProductionProfileCanonicalBytes
     , recoveredProductionProfileConfigDigest
     , recoveredProductionProfileEpoch
@@ -107,6 +110,7 @@ import HostBootstrap.Lifecycle.Mode
     , withRecoveredProductionLifecycleProfile
     )
 import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields, preparedGateJournalVersion)
+import HostBootstrap.Lifecycle.ReverseRootIntent (ReverseRootIntent (..), encodeReverseRootIntent)
 import qualified HostBootstrap.Lifecycle.Session as Session
 import qualified HostBootstrap.Lifecycle.Session.Testing as Transaction
 import HostBootstrap.ProjectPlan
@@ -118,9 +122,11 @@ import HostBootstrap.ProjectPlan
     , stablePlanSnapshotBytes
     , stablePlanSnapshotConfigDigest
     , stablePlanSnapshotDigest
+    , stablePlanSnapshotRoot
     , stablePlanSnapshotSpecDigest
     )
 import HostBootstrap.ProjectPlan.Construct (withProjectPlan)
+import HostBootstrap.ProjectPlan.Frame (withCurrentFrame)
 import HostBootstrap.ProjectPlan.Snapshot
     ( BoundPlanSnapshot
     , PlanDigestBinding
@@ -161,6 +167,7 @@ import HostBootstrap.Protected
 import HostBootstrap.Step
     ( StepFrame (StepFrame)
     , StepObservation (StepChanged)
+    , ReversePolicy (ProjectManagedReverse)
     , StepPlan
     , contextInitStep
     , ensureStep
@@ -169,9 +176,12 @@ import HostBootstrap.Step
     , descendsVia
     , mkStepPlan
     , providerResourceAtCurrentFrame
+    , projectStep
+    , projectStepId
     )
 import HostBootstrap.Reconcile (stepExecutionFor)
 import HostBootstrap.Substrate (Arch (..), Substrate (..), SubstrateName (..))
+import qualified HostBootstrap.Teardown as Teardown
 import qualified SourceGuard
 import System.Directory
     ( createDirectory
@@ -220,6 +230,7 @@ tests =
         , testGroup "multi-node cordon" nodeCordonCases
         , testGroup "never-delete-.data" dataInvariantCases
         , testGroup "persisted project snapshots" snapshotPersistenceCases
+        , testGroup "reverse-terminalization-evidence" reverseTerminalizationEvidenceCases
         , testGroup "existing bound Production snapshots" existingBoundSnapshotCases
         , testGroup "recovered Production lifecycle profile" recoveredProductionProfileCases
         , testGroup "recovery journal bookkeeping" recoveryJournalBookkeepingCases
@@ -326,6 +337,7 @@ livePrepareCases =
             sessionExports <- maybe (assertFailure "Session has no explicit export list") pure (SourceGuard.moduleExportTokens "HostBootstrap.Lifecycle.Session" session)
             modeExports <- maybe (assertFailure "Mode has no explicit export list") pure (SourceGuard.moduleExportTokens "HostBootstrap.Lifecycle.Mode" mode)
             retains "Session exports the fixed entry" "withLifecyclePrepareEntry" sessionExports
+            retains "Session exports the teardown entry" "withLifecycleTeardownPrepareEntry" sessionExports
             retains "Mode reexports the same fixed entry" "withLifecyclePrepareEntry" modeExports
             retains "the cursor stays abstract" "LifecycleCursor ," sessionExports
             assertBool "no cursor constructor is public" (not (SourceGuard.haskellTokens "LifecycleCursor (" `isInfixOf` sessionExports))
@@ -336,6 +348,11 @@ livePrepareCases =
             retains "the fixed entry links authority and cursor indices"
                 "withLifecyclePrepareEntry :: ProtectedSession session -> CommandAuthority scope planId frame brokerGeneration verb ExecutePhase -> LifecycleCursor scope planId frame brokerGeneration verb ExecutePhase -> Text -> IO (Either SessionError result) -> IO (Either SessionError result)"
                 sessionTokens
+            retains "the teardown entry links teardown authority and cursor indices"
+                "withLifecycleTeardownPrepareEntry :: ProtectedSession session -> CommandAuthority scope planId frame brokerGeneration verb TeardownPhase -> LifecycleCursor scope planId frame brokerGeneration verb TeardownPhase -> Text -> IO (Either SessionError result) -> IO (Either SessionError result)"
+                sessionTokens
+            retains "both entries share the live validation" "withLifecyclePrepareEntry = withLifecyclePreparedEntry" sessionTokens
+            retains "teardown uses the same live validation" "withLifecycleTeardownPrepareEntry = withLifecyclePreparedEntry" sessionTokens
             retains "the private cursor retains the rank-2 original validator"
                 "LifecyclePhase phase -> (forall session. ProtectedSession session -> IO (Either SessionError ())) -> LifecycleCursor scope planId frame brokerGeneration verb phase"
                 sessionTokens
@@ -344,7 +361,7 @@ livePrepareCases =
                 "openAcquisitionJournalKernel admission store session validateLiveBinding coordinates" admission
             retains "the retained validator checks the actual allocated broker"
                 "allocated <- validateAllocatedBrokerEpochKernel session epoch" admission
-            entry <- body "withLifecyclePrepareEntry" session
+            entry <- body "withLifecyclePreparedEntry" session
             retains "live checks refuse before the continuation"
                 "live <- validateLive session case live of Left failure -> pure (Left failure) Right () -> do current <- validateCurrentLifecycleCursor session cursor case current of Left failure -> pure (Left failure) Right () -> action" entry
             mapM_
@@ -803,6 +820,285 @@ dataInvariantCases =
         teardown Delete (prod{derivedStatePath = "relative", dataPath = rootPath </> ".data"}) @?= refusal
         teardown Delete (prod{derivedStatePath = ""}) @?= refusal
     ]
+
+reverseTerminalizationEvidenceCases :: [TestTree]
+reverseTerminalizationEvidenceCases =
+    [ testCase "a closed-session proof for another plan is refused without mutation" $
+        withPersistedSnapshotPlanUsing (Just 2) (const reverseEvidenceStepPlan) $ \store project root unbound plan -> do
+            let snapshot = renderSnapshot plan
+                config =
+                    Fixture.defaultProjectConfig
+                        (installedProjectName project)
+                        (Text.pack (stablePlanSnapshotRoot snapshot))
+                        Context.HostOrchestrator
+                otherDigest = "another-plan"
+            frameAction <- either (fail . show) pure $
+                withCurrentFrame plan (Fixture.context config) $ \current _ _ -> do
+                    let projection = Teardown.teardownPlan plan current ProjectDown
+                    forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                    completed <- completeReverseEvidenceForest forest
+                    settled <- either (fail . show) pure (Teardown.verifySubtreeSettled projection completed)
+                    closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session otherDigest)
+                    closed <- either (fail . show) (either (fail . show) pure) closedResult
+                    outcome <- withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ -> do
+                        seedCommittedReverseIntent False store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch root))
+                        before <- protectedRecordImage store
+                        result <- terminalizeExistingBoundReverseRootKernel store project ProjectDown bound closed settled Nothing
+                        result
+                            @?= Left (ModeEvidenceMismatch "closed-session plan" (boundRunLeasePlanDigest bound) otherDigest)
+                        protectedRecordImage store >>= (@?= before)
+                    outcome @?= Right ()
+            frameAction
+    , testCase "destroy without a settled closure is refused without mutation" $
+        withPersistedSnapshotPlanUsing (Just 2) (const reverseEvidenceStepPlan) $ \store project root unbound plan -> do
+            let snapshot = renderSnapshot plan
+                config =
+                    Fixture.defaultProjectConfig
+                        (installedProjectName project)
+                        (Text.pack (stablePlanSnapshotRoot snapshot))
+                        Context.HostOrchestrator
+                digest = stablePlanSnapshotDigest snapshot
+            frameAction <- either (fail . show) pure $
+                withCurrentFrame plan (Fixture.context config) $ \current _ _ -> do
+                    let projection = Teardown.teardownPlan plan current ProjectDestroy
+                    forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                    completed <- completeReverseEvidenceForest forest
+                    settled <- either (fail . show) pure (Teardown.verifySubtreeSettled projection completed)
+                    closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session digest)
+                    closed <- either (fail . show) (either (fail . show) pure) closedResult
+                    outcome <- withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ -> do
+                        seedCommittedReverseIntent True store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch root))
+                        before <- protectedRecordImage store
+                        result <- terminalizeExistingBoundReverseRootKernel store project ProjectDestroy bound closed settled Nothing
+                        result @?= Left (ModeEvidenceMismatch "destroy-settled closure" "present" "absent")
+                        protectedRecordImage store >>= (@?= before)
+                    outcome @?= Right ()
+            frameAction
+    , testCase "up settlement is refused as reverse terminalization without mutation" $
+        withPersistedSnapshotPlanUsing (Just 2) (const reverseEvidenceStepPlan) $ \store project root unbound plan -> do
+            let snapshot = renderSnapshot plan
+                config =
+                    Fixture.defaultProjectConfig
+                        (installedProjectName project)
+                        (Text.pack (stablePlanSnapshotRoot snapshot))
+                        Context.HostOrchestrator
+                digest = stablePlanSnapshotDigest snapshot
+            frameAction <- either (fail . show) pure $
+                withCurrentFrame plan (Fixture.context config) $ \current _ _ -> do
+                    projection <- either (fail . show) pure (Teardown.failedUpTeardownPlanKernel plan current ["project:reverse-evidence"])
+                    forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                    completed <- completeReverseEvidenceForest forest
+                    settled <- either (fail . show) pure (Teardown.verifySubtreeSettled projection completed)
+                    closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session digest)
+                    closed <- either (fail . show) (either (fail . show) pure) closedResult
+                    outcome <- withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ -> do
+                        seedCommittedReverseIntent False store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch root))
+                        before <- protectedRecordImage store
+                        result <- terminalizeExistingBoundReverseRootKernel store project ProjectUp bound closed settled Nothing
+                        result @?= Left (ModeWrongRecoveryScope "reverse terminal" "up")
+                        protectedRecordImage store >>= (@?= before)
+                    outcome @?= Right ()
+            frameAction
+    , testCase "a settled subtree from another plan is refused without mutation" $
+        withPersistedSnapshotPlanUsing (Just 2) (const reverseEvidenceStepPlan) $ \store project root unbound plan ->
+            withPersistedSnapshotPlanUsing Nothing (const reverseEvidenceStepPlan) $ \_ otherProject _ _ otherPlan -> do
+                let snapshot = renderSnapshot plan
+                    otherSnapshot = renderSnapshot otherPlan
+                    otherConfig =
+                        Fixture.defaultProjectConfig
+                            (installedProjectName otherProject)
+                            (Text.pack (stablePlanSnapshotRoot otherSnapshot))
+                            Context.HostOrchestrator
+                    digest = stablePlanSnapshotDigest snapshot
+                    otherDigest = stablePlanSnapshotDigest otherSnapshot
+                assertBool "the fixtures must represent different plans" (digest /= otherDigest)
+                frameAction <- either (fail . show) pure $
+                    withCurrentFrame otherPlan (Fixture.context otherConfig) $ \current _ _ -> do
+                        let projection = Teardown.teardownPlan otherPlan current ProjectDown
+                        forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                        completed <- completeReverseEvidenceForest forest
+                        settled <- either (fail . show) pure (Teardown.verifySubtreeSettled projection completed)
+                        closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session digest)
+                        closed <- either (fail . show) (either (fail . show) pure) closedResult
+                        outcome <- withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ -> do
+                            seedCommittedReverseIntent False store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch root))
+                            before <- protectedRecordImage store
+                            -- Deliberately cross the nominal test boundary to exercise the runtime digest check.
+                            result <- terminalizeExistingBoundReverseRootKernel store project ProjectDown bound closed (unsafeCoerce settled) Nothing
+                            result @?= Left (ModeEvidenceMismatch "settled plan" digest otherDigest)
+                            protectedRecordImage store >>= (@?= before)
+                        outcome @?= Right ()
+                frameAction
+    , closureRefusalCase "down refuses a destroy closure" ProjectDown False "down destroy closure" "absent" "present"
+    , closureRefusalCase "destroy refuses a pre-effect closure" ProjectDestroy True "destroy closure" "settled" "pre-effect"
+    , testCase "a child settlement cannot terminalize the committed root intent" $
+        withPersistedSnapshotPlanUsing (Just 2) (const childReverseEvidenceStepPlan) $ \store project root unbound plan -> do
+            let snapshot = renderSnapshot plan
+                digest = stablePlanSnapshotDigest snapshot
+                config =
+                    Fixture.defaultProjectConfig
+                        (installedProjectName project)
+                        (Text.pack (stablePlanSnapshotRoot snapshot))
+                        Context.HostOrchestrator
+            frameAction <- either (fail . show) pure $
+                withCurrentFrame plan (Fixture.context config) $ \current _ _ -> do
+                    let projection = Teardown.teardownPlan plan current ProjectDown
+                    forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                    closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session digest)
+                    closed <- either (fail . show) (either (fail . show) pure) closedResult
+                    outcome <- withPersistedPlanSnapshot root unbound plan $ \_ _ _ bound _ -> do
+                        seedCommittedReverseIntent False store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch root))
+                        before <- protectedRecordImage store
+                        Teardown.eliminateTeardownProgress
+                            (Teardown.nextTeardownWork forest)
+                            (const (fail "expected child descent"))
+                            ( \point ->
+                                Teardown.withTeardownAuthorization
+                                    point
+                                    (const (fail "unexpected pre-descent work"))
+                                    ( \_ work ->
+                                        Teardown.eliminateTeardownWork
+                                            work
+                                            (const (fail "expected child descent, found local work"))
+                                            ( \descent ->
+                                                Teardown.withDescentWorkSubtree descent $ \childProjection -> do
+                                                    childForest <- either (fail . show) pure (Teardown.openTeardownForest childProjection)
+                                                    completed <- completeReverseEvidenceForest childForest
+                                                    settled <- either (fail . show) pure (Teardown.verifySubtreeSettled childProjection completed)
+                                                    result <- terminalizeExistingBoundReverseRootKernel store project ProjectDown bound closed settled Nothing
+                                                    result @?= Left (ModeEvidenceMismatch "settled frame" "host-orchestrator-0" "vm-orchestrator-1")
+                                                    protectedRecordImage store >>= (@?= before)
+                                            )
+                                    )
+                            )
+                    outcome @?= Right ()
+            frameAction
+    ]
+
+closureRefusalCase :: String -> ProjectVerb verb -> Bool -> Text.Text -> Text.Text -> Text.Text -> TestTree
+closureRefusalCase label verb isDestroy subject expected observed = testCase label $
+    Fixture.withFixtureInstalledProject $ \project ->
+        withPersistedSnapshotPlanWithRoot project (Just 2) (const reverseEvidenceStepPlan) $ \store _ productionRoot unbound plan -> do
+            closure <- authorizeProductionPreEffect productionRoot >>= either (fail . show) pure
+            let snapshot = renderSnapshot plan
+                config =
+                    Fixture.defaultProjectConfig
+                        (installedProjectName project)
+                        (Text.pack (stablePlanSnapshotRoot snapshot))
+                        Context.HostOrchestrator
+                digest = stablePlanSnapshotDigest snapshot
+            frameAction <- either (fail . show) pure $
+                withCurrentFrame plan (Fixture.context config) $ \current _ _ -> do
+                    let projection = Teardown.teardownPlan plan current verb
+                    forest <- either (fail . show) pure (Teardown.openTeardownForest projection)
+                    completed <- completeReverseEvidenceForest forest
+                    settled <- either (fail . show) pure (Teardown.verifySubtreeSettled projection completed)
+                    closedResult <- withProtectedEntry store (\session -> Right <$> Session.verifyAllSessionsClosed session digest)
+                    closed <- either (fail . show) (either (fail . show) pure) closedResult
+                    outcome <- withPersistedPlanSnapshot (productionRootAuthority productionRoot) unbound plan $ \_ _ _ bound _ -> do
+                        seedCommittedReverseIntent isDestroy store project unbound snapshot (brokerEpochWord (rootAuthorityEpoch (productionRootAuthority productionRoot)))
+                        before <- protectedRecordImage store
+                        result <- terminalizeExistingBoundReverseRootKernel store project verb bound closed settled (Just closure)
+                        result @?= Left (ModeEvidenceMismatch subject expected observed)
+                        protectedRecordImage store >>= (@?= before)
+                    outcome @?= Right ()
+            frameAction
+
+reverseEvidenceStepPlan :: StepPlan
+reverseEvidenceStepPlan =
+    either (error . show) id $
+        mkStepPlan
+            [ projectStep
+                (either error id (projectStepId "reverse-evidence"))
+                ProjectManagedReverse
+                "reverse evidence"
+                (StepFrame "host-orchestrator-0" "Host")
+                (const (pure StepChanged))
+            ]
+
+childReverseEvidenceStepPlan :: StepPlan
+childReverseEvidenceStepPlan =
+    either (error . show) id $
+        mkStepPlan
+            [ descendsVia localContext $
+                deployVMStep "provider" (StepFrame "host-orchestrator-0" "Host") (const (pure StepChanged))
+            , projectStep
+                (either error id (projectStepId "reverse-child"))
+                ProjectManagedReverse
+                "reverse child"
+                (StepFrame "vm-orchestrator-1" "VM")
+                (const (pure StepChanged))
+            ]
+
+seedCommittedReverseIntent ::
+    Bool ->
+    ProtectedStore ->
+    InstalledProjectIdentity projectId ->
+    UnboundRunLease (Production projectId) generation ->
+    StablePlanSnapshot ->
+    Word64 ->
+    IO ()
+seedCommittedReverseIntent isDestroy store project unbound snapshot epoch = do
+    let name = fixtureRecordName (installedProjectName project)
+        key text = either (error . show) id (mkRecordKey text)
+        modeKey = key ("mode." <> name)
+        intentKey = key ("reverse-root." <> name <> ".production")
+        acquisitionKey = key "fixture.reverse-acquisition"
+        cursorKey = key "fixture.reverse-cursor"
+    mode <- requireRecord store modeKey
+    lease <- requireRecord store (leaseKey project unbound)
+    let modeVersion = recordVersionWord (protectedRecordVersion mode)
+        leaseVersion = recordVersionWord (protectedRecordVersion lease)
+        common =
+            ( installedProjectName project
+            , protectedStoreIdentityText (protectedStoreIdentity store)
+            , unboundRunLeaseRunText unbound
+            , 1
+            , stablePlanSnapshotSpecDigest snapshot
+            , stablePlanSnapshotConfigDigest snapshot
+            , stablePlanSnapshotDigest snapshot
+            , stablePlanSnapshotBytes snapshot
+            , 1
+            , acquisitionKey
+            , 1
+            , "acquisition"
+            , cursorKey
+            , 1
+            , "cursor"
+            , "host-orchestrator-0"
+            , 0
+            , modeVersion
+            , protectedRecordBytes mode
+            , leaseVersion
+            , protectedRecordBytes lease
+            )
+        pending
+            | isDestroy = encodeReverseRootIntent (ReverseRootDestroyPending common :: ReverseRootIntent () () Authority.VerbDestroy)
+            | otherwise = encodeReverseRootIntent (ReverseRootDownPending common :: ReverseRootIntent () () Authority.VerbDown)
+        committed
+            | isDestroy = encodeReverseRootIntent (ReverseRootDestroyCommitted common epoch modeVersion (protectedRecordBytes mode) leaseVersion (protectedRecordBytes lease) :: ReverseRootIntent () () Authority.VerbDestroy)
+            | otherwise = encodeReverseRootIntent (ReverseRootDownCommitted common epoch modeVersion (protectedRecordBytes mode) leaseVersion (protectedRecordBytes lease) :: ReverseRootIntent () () Authority.VerbDown)
+    writeRawRecord store intentKey pending
+    replaceRawRecord store intentKey committed
+
+completeReverseEvidenceForest ::
+    Teardown.TeardownForest scope planId frame verb ->
+    IO (Teardown.CompletedTeardownForest scope planId frame verb)
+completeReverseEvidenceForest forest =
+    Teardown.eliminateTeardownProgress
+        (Teardown.nextTeardownWork forest)
+        pure
+        ( \point ->
+            Teardown.withTeardownAuthorization
+                point
+                (const (fail "unexpected pre-descent work"))
+                ( \_ work ->
+                    Teardown.eliminateTeardownWork
+                        work
+                        (\local -> completeReverseEvidenceForest (Teardown.attemptLocalWork local Teardown.TeardownReleased))
+                        (const (fail "unexpected child descent"))
+                )
+        )
 
 snapshotPersistenceCases :: [TestTree]
 snapshotPersistenceCases =
@@ -1700,8 +1996,8 @@ mutateFirstCanonicalStep mutate bytes = do
     countOffset <- maybe (assertFailure "the canonical step count is absent") pure (canonicalStepCountOffset bytes)
     canonicalWordAt bytes countOffset @?= Just 2
     let firstOffset = countOffset + 8
-        secondHeader = canonicalTextFrame "step" <> encodedWord 14 <> canonicalTextFrame "ordinal" <> encodedWord 2
-        firstHeader = canonicalTextFrame "step" <> encodedWord 14 <> canonicalTextFrame "ordinal" <> encodedWord 1
+        secondHeader = canonicalTextFrame "step" <> encodedWord 20 <> canonicalTextFrame "ordinal" <> encodedWord 2
+        firstHeader = canonicalTextFrame "step" <> encodedWord 20 <> canonicalTextFrame "ordinal" <> encodedWord 1
         (first, remainder) = ByteString.breakSubstring secondHeader (ByteString.drop firstOffset bytes)
     assertBool "the rich fixture's first step header changed" (firstHeader `ByteString.isPrefixOf` first)
     assertBool "the rich fixture has no second outer step" (not (ByteString.null remainder))
@@ -2739,6 +3035,24 @@ withPersistedSnapshotPlanForProject ::
     ) ->
     IO result
 withPersistedSnapshotPlanForProject project initialCounter planBuilder use =
+    withPersistedSnapshotPlanWithRoot project initialCounter planBuilder $ \store installed productionRoot unbound plan ->
+        use store installed (productionRootAuthority productionRoot) unbound plan
+
+withPersistedSnapshotPlanWithRoot ::
+    forall projectId result.
+    InstalledProjectIdentity projectId ->
+    Maybe Word64 ->
+    (FilePath -> StepPlan) ->
+    ( forall brokerGeneration specDigest configId planId.
+      ProtectedStore ->
+      InstalledProjectIdentity projectId ->
+      ProductionRoot projectId brokerGeneration VerbUp ->
+      UnboundRunLease (Production projectId) brokerGeneration ->
+      ProjectPlan (Production projectId) specDigest planId configId Fixture.ProjectConfig ->
+      IO result
+    ) ->
+    IO result
+withPersistedSnapshotPlanWithRoot project initialCounter planBuilder use =
     withSystemTempDirectory "hostbootstrap-persisted-project-plan" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
         case initialCounter of
@@ -2777,7 +3091,7 @@ withPersistedSnapshotPlanForProject project initialCounter planBuilder use =
                                                     ( use
                                                         store
                                                         project
-                                                        (productionRootAuthority productionRoot)
+                                                        productionRoot
                                                         unbound
                                                     )
                                         either fail pure validated

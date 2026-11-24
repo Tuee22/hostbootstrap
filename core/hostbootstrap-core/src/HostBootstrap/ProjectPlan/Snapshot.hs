@@ -63,6 +63,7 @@ import HostBootstrap.Lifecycle.Mode (
     planSnapshotSpecDigest,
     planSnapshotStoreIdentity,
     validateFreshPlanSnapshotEvidence,
+    validateRestartedPlanSnapshotEvidence,
     verifyIndexedPlanSnapshot,
     withBoundPlanSnapshotKernel,
     withFreshExistingBoundReverseRootKernel,
@@ -258,6 +259,7 @@ withRestartedBoundPlanSnapshot root bound verified plan use =
     binding = mintPlanDigestBindingKernel indexed (planSnapshotPlanDigest verified)
     boundSnapshot = mintBoundPlanSnapshotKernel indexed binding
     validate = do
+        validateRestartedPlanSnapshotEvidence root bound plan
         match "root project" (rootAuthorityProjectName root) (projectPlanProfileProjectNameKernel plan)
         match "root store" (rootAuthorityStoreIdentity root) (projectPlanProfileStoreIdentityKernel plan)
         matchWord "root epoch" (brokerEpochWord (rootAuthorityEpoch root)) (projectPlanProfileEpochKernel plan)

@@ -170,7 +170,9 @@ runTestSuite args = do
     case args of
         ("--hostbootstrap-lift-probe" : mode) -> runLiftProbe mode
         ["--hostbootstrap-frame-io-failure-probe"] -> HandoffSpec.runFrameInterpreterFailureProbe
-        ["--hostbootstrap-private-protocol-stdio-probe"] -> HandoffSpec.runPrivateProtocolStdioProbe
+        ["--hostbootstrap-private-protocol-stdio-probe"] -> HandoffSpec.runPrivateProtocolStdioProbe "normal"
+        ["--hostbootstrap-private-protocol-stdio-probe", mode] -> HandoffSpec.runPrivateProtocolStdioProbe mode
+        ["--hostbootstrap-isolated-receiver-probe", mode] -> HandoffSpec.runIsolatedReceiverProbe mode
         -- The capacity fixture is an actual described sysctl process. Select its
         -- exact protocol before inherited provider/cluster fixture variables.
         ["-n", "hw.ncpu"] -> putStrLn "2"
@@ -196,10 +198,18 @@ runTestSuite args = do
             CLISpec.runIdentityMismatchProbe
         ["--hostbootstrap-recursive-lifecycle-child"] ->
             RecursiveLifecycleSpec.runLifecycleChild
+        ["--hostbootstrap-recursive-frame-child"] ->
+            RecursiveLifecycleSpec.runLifecycleFrameChild
         ["--hostbootstrap-recursive-lifecycle-root", verb] ->
             RecursiveLifecycleSpec.runLifecycleRoot verb
+        ["--hostbootstrap-recursive-cancellation-probe"] ->
+            RecursiveLifecycleSpec.runCancellationProbe
+        ["--hostbootstrap-routed-live-probe"] ->
+            RecursiveLifecycleSpec.runRoutedLiveProbe
         ["--hostbootstrap-destroy-interruption-probe", readyPath] ->
             RecursiveLifecycleSpec.runDestroyInterruptionProbe readyPath
+        ["--hostbootstrap-adopted-interruption-probe", readyPath] ->
+            RecursiveLifecycleSpec.runAdoptedInterruptionProbe readyPath
         -- A separate process attempting the protected store's exclusive entry,
         -- so cross-process exclusion is proved with the production primitive.
         ["--hostbootstrap-protected-entry-probe", storeRoot] ->

@@ -61,6 +61,32 @@ module HostBootstrap.Step (
     declaresProviderResource,
     stepProviderResourceDeclarations,
     providerResourceDeclarationTargetsChild,
+    ProviderProbeDescription (..),
+    declaresProviderProbe,
+    stepProviderProbeDescriptions,
+    ShareProbeDescription (..),
+    declaresShareProbe,
+    stepShareProbeDescriptions,
+    AliasProbeDescription (..),
+    declaresAliasProbe,
+    stepAliasProbeDescriptions,
+    ClusterObjectProbeDescription (..),
+    declaresClusterObjectProbe,
+    stepClusterObjectProbeDescriptions,
+    declaresEmptyChildFrame,
+    stepEmptyChildFrames,
+    DelayedEffectGuarantee (..),
+    RecoveryObservation (..),
+    RecoveryObserver,
+    mkRecoveryObserver,
+    recoveryObserverIdentity,
+    recoveryObserverRevision,
+    observesRecoveryWith,
+    stepRecoveryObserver,
+    BoundRecoveryObservation,
+    boundRecoveryObservationResult,
+    observeStepRecovery,
+    admitRecoveryObservation,
 
     -- * Plan-authored chart workload declaration
     declaresChartWorkloadResource,
@@ -73,6 +99,9 @@ module HostBootstrap.Step (
     -- * Opaque steps
     Step,
     StepAction,
+    EffectPreflight,
+    declaresEffectPreflight,
+    stepEffectPreflight,
     StepObservation (..),
     observationSucceeded,
     observationDetail,
@@ -139,12 +168,15 @@ import Data.Kind (Type)
 import Data.List (elemIndex, group, isPrefixOf, sort)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty as NonEmpty
+import Control.Exception (SomeException, displayException, try)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lift.Context (LiftContext)
+import System.FilePath (isAbsolute)
+import qualified System.FilePath.Posix as Posix
 
 {- | What a step's forward action receives (§ U).
 
@@ -168,6 +200,9 @@ this gate/session pairing is enforced by those runtime checks (§ U).
 type StepAction =
     forall (scope :: Type) (planId :: Type).
     StepExecution scope planId -> IO StepObservation
+
+-- | Pure descriptive preparation; the result does not authorize an effect.
+type EffectPreflight = HostConfig -> Either Text [(Text, Text, Text)]
 
 {- | What one step's action observed about its own node.
 
@@ -426,8 +461,16 @@ data Step = Step
     operation key, or one two steps claim.
     -}
     , internalProviderResourceDeclarations :: [ProviderResourceDeclaration]
+    , internalProviderProbeDescriptions :: [ProviderProbeDescription]
+    , internalShareProbeDescriptions :: [ShareProbeDescription]
+    , internalAliasProbeDescriptions :: [AliasProbeDescription]
+    , internalClusterObjectProbeDescriptions :: [ClusterObjectProbeDescription]
+    , internalEmptyChildFrames :: [StepFrame]
     , internalChartWorkloadResourceDeclarations :: [(Text, Text, Text, Text, Text, Text, Text, Text, Text, [Text])]
     , internalServiceActivationDeclarations :: [(Text, Text, [Text])]
+    , internalEffectPreflight :: Maybe EffectPreflight
+    , internalRecoveryObserver :: Maybe RecoveryObserver
+    -- ^ The step's optional read-only recovery observer; absent leaves an interrupted effect unresolved.
     }
 
 {- | A closed provider-resource declaration attached to its authoring
@@ -460,6 +503,197 @@ providerResourceDeclarationTargetsChild declaration =
     case declaration of
         ProviderResourceAtCurrentFrame -> False
         ProviderResourceAtImmediateChild -> True
+
+{- | Closed, non-secret provider inputs retained for a root-owned probe.
+
+These descriptions are plan data, not a backend, observation, or authority.
+The host tool itself is discovered in the frame that performs the probe.
+-}
+data ProviderProbeDescription
+    = DirectProviderProbe FilePath Text
+    | IncusProviderProbe Text Text Text FilePath Word64 Text Text
+    | LimaProviderProbe Text Word64 Text Text FilePath FilePath
+    | Wsl2ProviderProbe Text Word64 Text Text FilePath FilePath
+    deriving (Eq, Show)
+
+declaresProviderProbe :: ProviderProbeDescription -> Step -> Step
+declaresProviderProbe description step =
+    step{internalProviderProbeDescriptions = internalProviderProbeDescriptions step ++ [description]}
+
+stepProviderProbeDescriptions :: Step -> [ProviderProbeDescription]
+stepProviderProbeDescriptions = internalProviderProbeDescriptions
+
+-- | Descriptive host and guest paths for one plan-owned durable share.
+data ShareProbeDescription = ShareProbeDescription FilePath FilePath
+    deriving (Eq, Show)
+
+declaresShareProbe :: ShareProbeDescription -> Step -> Step
+declaresShareProbe description step =
+    step{internalShareProbeDescriptions = internalShareProbeDescriptions step ++ [description]}
+
+stepShareProbeDescriptions :: Step -> [ShareProbeDescription]
+stepShareProbeDescriptions = internalShareProbeDescriptions
+
+-- | The guest alias path and its exact link target for one plan-owned share.
+-- Both are guest paths; the target is the declaring share's guest path.
+data AliasProbeDescription = AliasProbeDescription FilePath FilePath
+    deriving (Eq, Show)
+
+declaresAliasProbe :: AliasProbeDescription -> Step -> Step
+declaresAliasProbe description step =
+    step{internalAliasProbeDescriptions = internalAliasProbeDescriptions step ++ [description]}
+
+stepAliasProbeDescriptions :: Step -> [AliasProbeDescription]
+stepAliasProbeDescriptions = internalAliasProbeDescriptions
+
+{- | The one cluster workload object a plan-owned in-cluster resource is: the
+cluster's runtime state directory and name in the frame that holds it, and the
+object's namespace, closed kind (@deployment@ or @statefulset@) and name.
+-}
+data ClusterObjectProbeDescription = ClusterObjectProbeDescription FilePath Text Text Text Text
+    deriving (Eq, Show)
+
+declaresClusterObjectProbe :: ClusterObjectProbeDescription -> Step -> Step
+declaresClusterObjectProbe description step =
+    step{internalClusterObjectProbeDescriptions = internalClusterObjectProbeDescriptions step ++ [description]}
+
+stepClusterObjectProbeDescriptions :: Step -> [ClusterObjectProbeDescription]
+stepClusterObjectProbeDescriptions = internalClusterObjectProbeDescriptions
+
+{- | Name the terminal child frame this descending step enters, when that frame
+has no step of its own. Only the innermost step-bearing frame's descending step
+may declare one; the frame then has no node and no descent, and the plan digest
+binds its identity.
+-}
+declaresEmptyChildFrame :: StepFrame -> Step -> Step
+declaresEmptyChildFrame frame step =
+    step{internalEmptyChildFrames = internalEmptyChildFrames step ++ [frame]}
+
+stepEmptyChildFrames :: Step -> [StepFrame]
+stepEmptyChildFrames = internalEmptyChildFrames
+
+{- | Whether an effect's own execution mechanism proves that nothing it started
+can still land after the observation. Ordinary process exit proves nothing.
+-}
+data DelayedEffectGuarantee
+    = -- | the mechanism rules out a delayed effect, so an observed absence is real
+      NoDelayedEffect
+    | -- | an effect may still land later, so absence can only be inconclusive
+      DelayedEffectPossible
+    deriving (Eq, Show)
+
+-- | What a recovery observer reports about its exact operation's effect.
+data RecoveryObservation
+    = RecoveryEffectAbsent
+    | -- | the effect is present, carrying its managed identity
+      RecoveryEffectPresent Text
+    | -- | something is present that the plan does not own
+      RecoveryEffectForeign Text
+    | RecoveryInconclusive Text
+    deriving (Eq, Show)
+
+{- | A plan-bound, read-only recovery observer. It is identified and revised so
+the admitted plan binds exactly which observer may speak for the step; its
+check receives only the step's operation key and frame, never an execution,
+gate, store or reverse authority, so it cannot perform an effect or mint
+settlement.
+-}
+data RecoveryObserver = RecoveryObserver Text Word64 DelayedEffectGuarantee (Text -> Text -> IO RecoveryObservation)
+
+mkRecoveryObserver ::
+    Text -> Word64 -> DelayedEffectGuarantee -> (Text -> Text -> IO RecoveryObservation) -> Either String RecoveryObserver
+mkRecoveryObserver identity revision guarantee check
+    | Text.null identity = Left "a recovery observer needs a non-empty identity"
+    | revision == 0 = Left "a recovery observer revision must be positive"
+    | otherwise = Right (RecoveryObserver identity revision guarantee check)
+
+recoveryObserverIdentity :: RecoveryObserver -> Text
+recoveryObserverIdentity (RecoveryObserver identity _ _ _) = identity
+
+recoveryObserverRevision :: RecoveryObserver -> Word64
+recoveryObserverRevision (RecoveryObserver _ revision _ _) = revision
+
+-- | Attach one pure effect description without running the step action.
+declaresEffectPreflight :: EffectPreflight -> Step -> Step
+declaresEffectPreflight preflight step = case internalEffectPreflight step of
+    Nothing -> step{internalEffectPreflight = Just preflight}
+    Just _ -> error "a step declares at most one effect preflight"
+
+-- | An absent preflight is explicit; evaluating a present one grants no authority.
+stepEffectPreflight :: Step -> HostConfig -> Maybe (Either Text [(Text, Text, Text)])
+stepEffectPreflight step host = ($ host) <$> internalEffectPreflight step
+
+-- | Attach the step's one recovery observer; a second is a construction conflict.
+observesRecoveryWith :: RecoveryObserver -> Step -> Step
+observesRecoveryWith observer step = case internalRecoveryObserver step of
+    Nothing -> step{internalRecoveryObserver = Just observer}
+    Just _ -> error "a step declares at most one recovery observer"
+
+stepRecoveryObserver :: Step -> Maybe RecoveryObserver
+stepRecoveryObserver = internalRecoveryObserver
+
+{- | One observation bound to the exact operation, frame, observer identity and
+revision that produced it. It grants nothing: only 'admitRecoveryObservation'
+against the admitted step yields its result.
+-}
+data BoundRecoveryObservation = BoundRecoveryObservation Text Text Text Word64 RecoveryObservation
+    deriving (Eq, Show)
+
+boundRecoveryObservationResult :: BoundRecoveryObservation -> RecoveryObservation
+boundRecoveryObservationResult (BoundRecoveryObservation _ _ _ _ result) = result
+
+{- | Run the step's observer for its own operation and frame. A step without an
+observer stays unresolved ('Nothing'). An absence from an observer whose
+mechanism cannot rule out a delayed effect, and any exception, are
+inconclusive.
+-}
+observeStepRecovery :: Step -> IO (Maybe BoundRecoveryObservation)
+observeStepRecovery step = case internalRecoveryObserver step of
+    Nothing -> pure Nothing
+    Just (RecoveryObserver identity revision guarantee check) -> do
+        let operation = Text.pack (operationKeyText (stepOperationKey step))
+            frame = Text.pack (frameId (stepFrame step))
+        attempted <- try (check operation frame)
+        let observed = case attempted of
+                Left exception -> RecoveryInconclusive (Text.pack ("the recovery observer raised: " <> displayException (exception :: SomeException)))
+                Right RecoveryEffectAbsent
+                    | guarantee == DelayedEffectPossible -> RecoveryInconclusive "the effect may still land after the observation"
+                Right result -> result
+        pure (Just (BoundRecoveryObservation operation frame identity revision observed))
+
+{- | Admit an observation only for the exact admitted step that declares the same
+observer identity and revision; another operation or frame is foreign, another
+observer or revision is stale, and a step without an observer has none to admit.
+-}
+admitRecoveryObservation :: Step -> BoundRecoveryObservation -> Either Text RecoveryObservation
+admitRecoveryObservation step (BoundRecoveryObservation operation frame identity revision observed) =
+    case internalRecoveryObserver step of
+        Nothing -> Left "the step has no recovery observer"
+        Just (RecoveryObserver expectedIdentity expectedRevision _ _)
+            | operation /= Text.pack (operationKeyText (stepOperationKey step))
+                || frame /= Text.pack (frameId (stepFrame step)) ->
+                Left "the recovery observation names another operation or frame"
+            | identity /= expectedIdentity || revision /= expectedRevision ->
+                Left "the recovery observation came from another observer or revision"
+            | otherwise -> Right observed
+
+validProviderProbe :: ProviderProbeDescription -> Bool
+validProviderProbe description = case description of
+    DirectProviderProbe root image -> nativePath root && field image
+    IncusProviderProbe name image guardPrefix state cpu memory storage ->
+        all field [name, image, guardPrefix, memory, storage] && nativePath state && cpu > 0
+    LimaProviderProbe name cpu memory storage host guest -> guestVm name cpu memory storage host guest
+    Wsl2ProviderProbe name cpu memory storage host guest -> guestVm name cpu memory storage host guest
+  where
+    field value = not (Text.null value) && Text.length value <= 32768 && not (Text.any (== '\0') value)
+    nativePath path = isAbsolute path && length path <= 32768 && '\0' `notElem` path
+    guestVm name cpu memory storage host guest =
+        all field [name, memory, storage]
+            && cpu > 0
+            && nativePath host
+            && Posix.isAbsolute guest
+            && length guest <= 32768
+            && '\0' `notElem` guest
 
 declaresChartWorkloadResource ::
     Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> Text -> [Text] -> Step -> Step
@@ -713,6 +947,10 @@ data StepPlanError
       DuplicateFrameDescent String Int
     | -- | the innermost frame has nowhere to descend to
       DescentFromInnermostFrame String
+    | -- | an empty child frame is declared other than once on the innermost frame's descending step
+      MisplacedEmptyChildFrame Int
+    | -- | the declared empty child frame reuses a frame identity or has an empty one
+      InvalidEmptyChildFrame String
     | -- | a post-handoff hook runs after the descent; it cannot declare one
       DescentOnPostHandoffStep Int
     | -- | more than one 'reversedBy' was declared for the same step
@@ -725,6 +963,18 @@ data StepPlanError
       DuplicateProjectedOperation String
     | DuplicateProviderResourceDeclaration StepIdentity Int
     | ProviderResourceChildWithoutUniqueDescent StepIdentity
+    | DuplicateProviderProbeDescription StepIdentity Int
+    | ProviderProbeWithoutResource StepIdentity
+    | InvalidProviderProbeDescription StepIdentity
+    | DuplicateShareProbeDescription StepIdentity Int
+    | ShareProbeWithoutResource StepIdentity
+    | InvalidShareProbeDescription StepIdentity
+    | DuplicateAliasProbeDescription StepIdentity Int
+    | AliasProbeWithoutShare StepIdentity
+    | InvalidAliasProbeDescription StepIdentity
+    | DuplicateClusterObjectProbeDescription StepIdentity Int
+    | ClusterObjectProbeWithoutResource StepIdentity
+    | InvalidClusterObjectProbeDescription StepIdentity
     deriving (Eq, Show)
 
 {- | Validate the exact declared sequence. Normal steps must form contiguous
@@ -758,6 +1008,8 @@ mkStepPlan steps@(firstStep : remainingSteps)
         Left (NonContiguousFrameReturn fid normalFrameIds)
     | Just index <- postHandoffDescent =
         Left (DescentOnPostHandoffStep index)
+    | Just failure <- emptyChildFailure =
+        Left failure
     | Just failure <- descentFailure =
         Left failure
     | Just failure <- reverseFailure =
@@ -765,6 +1017,14 @@ mkStepPlan steps@(firstStep : remainingSteps)
     | Just failure <- projectionFailure =
         Left failure
     | Just failure <- providerDeclarationFailure =
+        Left failure
+    | Just failure <- providerProbeFailure =
+        Left failure
+    | Just failure <- shareProbeFailure =
+        Left failure
+    | Just failure <- aliasProbeFailure =
+        Left failure
+    | Just failure <- clusterObjectProbeFailure =
         Left failure
     | otherwise = Right (StepPlan (firstStep :| remainingSteps))
   where
@@ -869,6 +1129,74 @@ mkStepPlan steps@(firstStep : remainingSteps)
             | step <- steps
             , let declarations = stepProviderResourceDeclarations step
             ]
+    providerProbeFailure =
+        firstJust
+            [ case stepProviderProbeDescriptions step of
+                [] -> Nothing
+                [description]
+                    | null (stepProviderResourceDeclarations step) && stepIdentity step /= CoreStepIdentity DeployVMId ->
+                        Just (ProviderProbeWithoutResource (stepIdentity step))
+                    | not (validProviderProbe description) -> Just (InvalidProviderProbeDescription (stepIdentity step))
+                    | otherwise -> Nothing
+                descriptions -> Just (DuplicateProviderProbeDescription (stepIdentity step) (length descriptions))
+            | step <- steps
+            ]
+    shareProbeFailure =
+        firstJust
+            [ case stepShareProbeDescriptions step of
+                [] -> Nothing
+                [ShareProbeDescription host guest]
+                    | stepIdentity step /= CoreStepIdentity CopySourceId -> Just (ShareProbeWithoutResource (stepIdentity step))
+                    | not (validSharePath isAbsolute host && validSharePath Posix.isAbsolute guest) -> Just (InvalidShareProbeDescription (stepIdentity step))
+                    | otherwise -> Nothing
+                descriptions -> Just (DuplicateShareProbeDescription (stepIdentity step) (length descriptions))
+            | step <- steps
+            ]
+    validSharePath absolute path = absolute path && length path <= 32768 && '\0' `notElem` path
+    -- The alias links to its own share's guest path, so it is declared only beside that share.
+    -- Only the in-cluster object-store and registry resources are cluster objects.
+    clusterObjectProbeFailure =
+        firstJust
+            [ case stepClusterObjectProbeDescriptions step of
+                [] -> Nothing
+                [ClusterObjectProbeDescription state cluster namespace kind name]
+                    | operationKeyText (stepOperationKey step) `notElem` ["project:deploy-object-store", "project:deploy-registry", "core:deploy-kind", "core:deploy-chart"] ->
+                        Just (ClusterObjectProbeWithoutResource (stepIdentity step))
+                    | not (validSharePath Posix.isAbsolute state)
+                        || not (dnsLabel cluster) || not (dnsLabel namespace) || not (dnsLabel name)
+                        || not (closedKind step (operationKeyText (stepOperationKey step)) kind namespace name) ->
+                        Just (InvalidClusterObjectProbeDescription (stepIdentity step))
+                    | otherwise -> Nothing
+                descriptions -> Just (DuplicateClusterObjectProbeDescription (stepIdentity step) (length descriptions))
+            | step <- steps
+            ]
+    -- A cluster node names one namespace (its own name in its namespace field);
+    -- a chart node names one workload its own admitted chart declares as an
+    -- effect, in the chart's namespace; any other workload node names a workload.
+    closedKind step key kind namespace name
+        | key == "core:deploy-kind" = kind == "namespace" && namespace == name
+        | key == "core:deploy-chart" = case stepChartWorkloadResourceDeclarations step of
+            [(_, _, chartNamespace, _, _, _, _, _, _, effects)] ->
+                kind `elem` ["deployment", "statefulset"] && namespace == chartNamespace && (kind <> ":" <> name) `elem` effects
+            _ -> False
+        | otherwise = kind `elem` ["deployment", "statefulset"]
+    dnsLabel value =
+        not (Text.null value) && Text.length value <= 63
+            && Text.all (\character -> character `elem` ['a' .. 'z'] || character `elem` ['0' .. '9'] || character == '-') value
+            && Text.head value /= '-' && Text.last value /= '-'
+    aliasProbeFailure =
+        firstJust
+            [ case (stepAliasProbeDescriptions step, stepShareProbeDescriptions step) of
+                ([], _) -> Nothing
+                ([AliasProbeDescription alias target], [ShareProbeDescription _ guest])
+                    | not (validSharePath Posix.isAbsolute alias && validSharePath Posix.isAbsolute target)
+                        || target /= guest || alias == target ->
+                        Just (InvalidAliasProbeDescription (stepIdentity step))
+                    | otherwise -> Nothing
+                ([_], _) -> Just (AliasProbeWithoutShare (stepIdentity step))
+                (descriptions, _) -> Just (DuplicateAliasProbeDescription (stepIdentity step) (length descriptions))
+            | step <- steps
+            ]
     frameDescentCount fid =
         length
             [ context
@@ -890,10 +1218,23 @@ mkStepPlan steps@(firstStep : remainingSteps)
     stripSegment segment value
         | (segment ++ "/") `isPrefixOf` value = Just (drop (length segment + 1) value)
         | otherwise = Nothing
+    -- An empty child frame belongs only to a descending step of the innermost
+    -- step-bearing frame, once, under an identity no step-bearing frame uses.
+    emptyChildDeclarations = [(index, step, frame) | (index, step) <- zip [1 :: Int ..] steps, frame <- stepEmptyChildFrames step]
+    innermostFrameId = last descentFrameIds
+    emptyChildFailure = case emptyChildDeclarations of
+        [] -> Nothing
+        [(index, declaring, frame)]
+            | isPostHandoffStep declaring || frameId (stepFrame declaring) /= innermostFrameId || null (stepDescents declaring) ->
+                Just (MisplacedEmptyChildFrame index)
+            | null (frameId frame) || null (frameLabel frame) || frameId frame `elem` descentFrameIds ->
+                Just (InvalidEmptyChildFrame (frameId frame))
+            | otherwise -> Nothing
+        (_ : (index, _, _) : _) -> Just (MisplacedEmptyChildFrame index)
     descentFailure = firstJust (map descentFailureFor (zip [1 :: Int ..] descentFrameIds))
     descentFailureFor (position, fid)
         | position == length descentFrameIds =
-            if declared > 0 then Just (DescentFromInnermostFrame fid) else Nothing
+            if declared > 0 && (declared > 1 || null emptyChildDeclarations) then Just (DescentFromInnermostFrame fid) else Nothing
         | declared == 0 = Just (MissingFrameDescent fid)
         | declared > 1 = Just (DuplicateFrameDescent fid declared)
         | otherwise = Nothing
@@ -940,10 +1281,12 @@ because 'mkStepPlan' refuses a post-handoff step naming a frame no normal step
 declared — so a plan of nothing but post-handoff steps does not exist.
 -}
 chainFrames :: StepPlan -> NonEmpty StepFrame
-chainFrames plan = stepFrame firstStep :| foldl addFrame [] normalRest
+chainFrames plan = stepFrame firstStep :| (foldl addFrame [] normalRest ++ emptyChild)
   where
     firstStep :| rest = stepPlanSteps plan
     normalRest = takeWhile (not . isPostHandoffStep) rest
+    -- Admission allows at most one, on the innermost frame's descending step.
+    emptyChild = take 1 (concatMap stepEmptyChildFrames (firstStep : normalRest))
     addFrame frames step
         | frameId (stepFrame step) `elem` map frameId (stepFrame firstStep : frames) = frames
         | otherwise = frames ++ [stepFrame step]
@@ -1027,6 +1370,13 @@ coreStep identity reversePolicy label frame action =
         []
         []
         []
+        []
+        []
+        []
+        []
+        []
+        Nothing
+        Nothing
 
 deployVMStep :: String -> StepFrame -> StepAction -> Step
 deployVMStep = coreStep DeployVMId ProjectManagedReverse
@@ -1080,3 +1430,10 @@ projectStep identity reversePolicy label frame action =
         []
         []
         []
+        []
+        []
+        []
+        []
+        []
+        Nothing
+        Nothing

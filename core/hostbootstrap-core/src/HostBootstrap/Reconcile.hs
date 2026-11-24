@@ -155,15 +155,17 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     carriedResourceKey,
     carriedResourceObservationVersion,
     carriedResourceOwnershipOperation,
-    executionNodeDependencyKeys,
     mintPlanExecutionPackage,
     mintSettledCarriedResource,
     mintStepExecution,
     pushCarriedResource,
+    planExecutionPackageResourceDependencies,
+    planExecutionPackageResourceMembers,
     readCarriedResources,
     stepExecutionFrame,
     stepExecutionNode,
     stepExecutionOperationKey,
+    stepExecutionPackage,
     stepExecutionPlanDigest,
     stepExecutionRuntime,
     stepRuntimeCarrier,
@@ -179,11 +181,13 @@ import HostBootstrap.Lifecycle.Plan (
     canonicalPlanSnapshotRoot,
     canonicalPlanSnapshotSpecDigest,
     chartWorkloadResourceKeyKernel,
-    plannedResourceFamilyKeysKernel,
+    forwardKernel,
+    plannedResourceDependencyKindsKernel,
+    plannedResourceMembersKernel,
     plannedResourceKindKeyKernel,
     plannedResourcePlanDigestKernel,
+    plannedStepOperationKeyKernel,
     projectPlanExecutionTermsKernel,
-    projectPlanStepPlanKernel,
     withChartWorkloadResourceDetailsKernel,
     withCompatibilityNodeGuestAliasProjectionKernel,
     withCompatibilityNodeResourceOfKindKernel,
@@ -235,14 +239,7 @@ import HostBootstrap.Reconcile.ProviderStart.Internal (
     ProviderStartProjectionAuthority (..),
     FreshManagedPhaseAuthority (..),
  )
-import HostBootstrap.Step (
-    StepPlan,
-    operationKeyText,
-    stepDependencies,
-    stepIdentity,
-    stepOperationKey,
-    stepPlanSteps,
- )
+import HostBootstrap.Step (operationKeyText)
 
 {- | Project an execution descriptor from an admitted plan and its indexed node.
 
@@ -283,6 +280,8 @@ stepExecutionFor plan cfg runtime plannedStep =
                 , executionNodeProjectedKeys = projected
                 , executionNodeChartWorkload = chartWorkload
                 }
+            (either (Left . Text.pack . show) Right (plannedResourceDependencyKindsKernel plan plannedStep))
+            (either (Left . Text.pack . show) Right (plannedResourceMembersKernel plan plannedStep))
 
 -- | The one low-level descriptor constructor path.
 mintProjectedStepExecution ::
@@ -641,9 +640,6 @@ plannedResourcePlanDigest = plannedResourcePlanDigestKernel
 {- | The closed plan-kernel resource-family set used to filter dependency
 descriptors.  Reconciliation consumes it; it cannot extend the relation.
 -}
-plannedResourceFamilyKeys :: [Text]
-plannedResourceFamilyKeys = plannedResourceFamilyKeysKernel
-
 -- The plan owns family keys; this closed relation supplies each family's
 -- baseline readiness condition without duplicating those keys here.
 resourceEdgeReadinessKind :: Text -> Maybe ProbeKernel.BackendProbeKind
@@ -655,6 +651,14 @@ resourceEdgeReadinessKind key
     | key == plannedResourceKindKeyKernel RegistryResourceKind = Just ProbeKernel.RegistryServingKind
     | key == plannedResourceKindKeyKernel ClusterResourceKind = Just ProbeKernel.ClusterApiKind
     | otherwise = Nothing
+
+resourceDependencyKind :: (Text, Bool) -> (Text, Maybe ProbeKernel.BackendProbeKind)
+resourceDependencyKind (key, isProvider)
+    | isProvider = (key, Just ProbeKernel.ProviderRespondingKind)
+    | otherwise = (key, resourceEdgeReadinessKind key)
+
+dependencyProjectionFailure :: Text -> Either ReconcileError value
+dependencyProjectionFailure detail = Left (Failure (FailureDetail "plan resource dependencies" detail DoNotRetry))
 
 {- | Resolve a resource __this node may name__ as a planned resource (§ CC):
 either its own, or one member of its exact ordered plan prefix.
@@ -676,11 +680,12 @@ withNodeResourceOfKind ::
       result
     ) ->
     Either ReconcileError result
-withNodeResourceOfKind execution resourceKind requestedKey consume =
+withNodeResourceOfKind execution resourceKind requestedKey consume = do
+    resources <- either dependencyProjectionFailure Right (planExecutionPackageResourceMembers (stepExecutionPackage execution))
     mapPlanProjection
         ( withCompatibilityNodeResourceOfKindKernel
             (stepExecutionPlanDigest execution)
-            (nodeResources execution)
+            resources
             resourceKind
             requestedKey
             consume
@@ -716,11 +721,12 @@ withNodeGuestAliasProjection ::
       result
     ) ->
     Either ReconcileError result
-withNodeGuestAliasProjection execution provider share consume =
+withNodeGuestAliasProjection execution provider share consume = do
+    resources <- either dependencyProjectionFailure Right (planExecutionPackageResourceMembers (stepExecutionPackage execution))
     mapPlanProjection
         ( withCompatibilityNodeGuestAliasProjectionKernel
             (stepExecutionPlanDigest execution)
-            (nodeResources execution)
+            [(key, frame) | (key, frame, _) <- resources]
             (executionNodeProjectedKeys (stepExecutionNode execution))
             provider
             share
@@ -924,17 +930,9 @@ plannedNodeDescriptor execution planned handle callDigest
             )
     | nullText callDigest =
         Left (Failure (FailureDetail "plan operation" "call digest is empty" DoNotRetry))
-    | otherwise =
-        Right
-            ( OperationDescriptor
-                (plannedResourcePlanDigest planned)
-                (plannedResourceKey planned)
-                callDigest
-                [ (key, resourceEdgeReadinessKind key)
-                | key <- executionNodeDependencyKeys (stepExecutionNode execution)
-                , key `elem` plannedResourceFamilyKeys
-                ]
-            )
+    | otherwise = do
+        dependencies <- either dependencyProjectionFailure Right (planExecutionPackageResourceDependencies (stepExecutionPackage execution))
+        Right (OperationDescriptor (plannedResourcePlanDigest planned) (plannedResourceKey planned) callDigest (map resourceDependencyKind dependencies))
 
 {- | Every resource this node may name, in plan order: its dependency prefix
 followed by its own.
@@ -1379,7 +1377,7 @@ plannedProjectOperation ::
         ReconcileError
         (OperationDescriptor scope planId id resource Observed Provisioned)
 plannedProjectOperation plan =
-    plannedOperationFromGraph (projectPlanStepPlanKernel plan)
+    plannedOperationFromGraph plan
 
 {- | Produce a managed phase descriptor from the exact admitted project plan.
 
@@ -1402,13 +1400,13 @@ plannedProjectPhaseOperation plan planned handle receipt transition callDigest =
     validateOwnershipReceipt handle receipt
     validatePhaseTransitionBinding handle transition
     plannedOperationFromGraph
-        (projectPlanStepPlanKernel plan)
+        plan
         planned
         handle
         callDigest
 
 plannedOperationFromGraph ::
-    StepPlan ->
+    ProjectPlan scope specDigest planId configId cfg ->
     PlannedResource scope planId id resource frame ->
     ResourceHandle scope planId id resource ownership phase ->
     Text ->
@@ -1432,30 +1430,14 @@ plannedOperationFromGraph plan planned handle callDigest
         Nothing ->
             Left
                 (Failure (FailureDetail "plan operation" "planned target disappeared" DoNotRetry))
-        Just step ->
-            Right
-                ( OperationDescriptor
-                    (plannedResourcePlanDigest planned)
-                    (plannedResourceKey planned)
-                    callDigest
-                    -- The exact ordered *resource-bearing* prefix (§ CC).  The
-                    -- validated prefix may also contain steps that own no plan
-                    -- resource; those have no managed handle to observe, so including
-                    -- them would make the edge set unsatisfiable rather than stricter.
-                    [ (key, resourceEdgeReadinessKind key)
-                    | dependencyIdentity <- stepDependencies plan step
-                    , dependency <-
-                        maybeToList
-                            (find ((== dependencyIdentity) . stepIdentity) (NonEmpty.toList (stepPlanSteps plan)))
-                    , let key = Text.pack (operationKeyText (stepOperationKey dependency))
-                    , key `elem` plannedResourceFamilyKeys
-                    ]
-                )
+        Just step -> do
+            dependencies <- either (dependencyProjectionFailure . Text.pack . show) Right (plannedResourceDependencyKindsKernel plan step)
+            Right (OperationDescriptor (plannedResourcePlanDigest planned) (plannedResourceKey planned) callDigest (map resourceDependencyKind dependencies))
   where
     targetStep =
         find
-            ((== Text.unpack (plannedResourceKey planned)) . operationKeyText . stepOperationKey)
-            (NonEmpty.toList (stepPlanSteps plan))
+            ((== Text.unpack (plannedResourceKey planned)) . operationKeyText . plannedStepOperationKeyKernel)
+            (NonEmpty.toList (forwardKernel plan))
 
 {- | Prepare the synthetic provider-guest alias operation from the exact sealed
 alias -> durable-share edge.  Unlike 'plannedOperation', this operation is a
@@ -1791,7 +1773,7 @@ plannedProjectProviderStartOperation ::
         ReconcileError
         (OperationDescriptor scope planId providerResourceId ProviderResource Observed Running)
 plannedProjectProviderStartOperation plan =
-    plannedOperationFromGraph (projectPlanStepPlanKernel plan)
+    plannedOperationFromGraph plan
 
 {- | Project the prepared journal pair only for a package-private owning
 settlement bridge.  The first argument's module is not exposed by Cabal, so an
@@ -2776,6 +2758,3 @@ nullText = (== "")
 showText :: (Show value) => value -> Text
 showText = Text.pack . show
 
-maybeToList :: Maybe value -> [value]
-maybeToList Nothing = []
-maybeToList (Just value) = [value]

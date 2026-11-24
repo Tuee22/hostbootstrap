@@ -11,6 +11,7 @@ module HarnessSpec (
 ) where
 
 import Control.Concurrent (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
+import qualified CLISpec
 import Control.Exception (AsyncException (ThreadKilled), SomeException, finally, throwIO, throwTo, try)
 import Control.Monad (when)
 import Data.ByteString (ByteString)
@@ -96,7 +97,7 @@ import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), die, exitSuccess, exitWith)
 import System.FilePath (takeExtension, (</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process (spawnProcess, terminateProcess, waitForProcess)
+import System.Process (ProcessHandle, getProcessExitCode, spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
@@ -105,6 +106,7 @@ tests =
     testGroup
         "HarnessSpec"
         [ testGroup "per-case isolation + teardown" matrixCases
+        , testCase "failed-Up defers acquired core cluster cleanup to the Harness reverse owner" CLISpec.harnessCoreFailedUpCase
         , testGroup "typed test matrix" typedMatrixCases
         , testGroup "test-suite selection" suiteCases
         , testGroup "test-data ownership" ownershipCases
@@ -1181,11 +1183,15 @@ inModeEntry store action = do
 {- | Wait for a probe process to announce readiness. The probe writes the file
 only after it holds both the run and its generated config, so the parent never
 kills it before there is any state to abandon.
+
+The wait ends on the probe's own outcome, readiness or exit, not on a short
+clock: a loaded host can start the probe slowly. The two-minute bound is only
+a backstop against a probe that neither announces nor exits.
 -}
-awaitFile :: FilePath -> IO ()
-awaitFile path = go (600 :: Int)
+awaitFile :: ProcessHandle -> FilePath -> IO ()
+awaitFile probe path = go (6000 :: Int)
   where
-    go 0 = assertFailure ("the probe never announced readiness at " ++ path)
+    go 0 = assertFailure ("the probe neither announced readiness nor exited at " ++ path)
     go remaining = do
         present <- doesFileExist path
         if present
@@ -1194,7 +1200,11 @@ awaitFile path = go (600 :: Int)
                 -- non-empty read so a zero-length observation cannot race it.
                 contents <- readFile path
                 if null contents then retry remaining else pure ()
-            else retry remaining
+            else do
+                exited <- getProcessExitCode probe
+                case exited of
+                    Just code -> assertFailure ("the probe exited with " ++ show code ++ " before announcing readiness at " ++ path)
+                    Nothing -> retry remaining
     retry remaining = threadDelay 20000 >> go (remaining - 1)
 
 ownershipCases :: [TestTree]
@@ -1481,7 +1491,7 @@ ownershipCases =
                 spawnProcess
                     self
                     ["--hostbootstrap-harness-abandon-probe", root, readyPath]
-            awaitFile readyPath
+            awaitFile probe readyPath
             configPath <- readFile readyPath
             terminateProcess probe
             _ <- waitForProcess probe
@@ -1652,7 +1662,7 @@ harnessIdentityRecoveryCase self directory projectName = do
     let inspect attempt = do
             child <- spawnProcess uniqueBinary ["--hostbootstrap-harness-identity-probe", uniqueRoot, uniqueReady attempt]
             ( do
-                awaitFile (uniqueReady attempt)
+                awaitFile child (uniqueReady attempt)
                 generations <- listDirectory (uniqueRoot </> ".test_data")
                 run <- case generations of
                     [one] -> pure (T.pack one)

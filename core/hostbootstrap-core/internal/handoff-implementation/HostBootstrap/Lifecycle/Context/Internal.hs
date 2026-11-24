@@ -16,7 +16,6 @@ module HostBootstrap.Lifecycle.Context.Internal (
     LifecycleContextError (..),
     mintValidatedLifecycleContext,
     withValidatedRootLifecycleContext,
-    withValidatedNestedLifecycleContext,
     lifecycleContextErrorMessage,
 )
 where
@@ -74,7 +73,6 @@ data LifecycleContextError
     | LifecycleContextStoreIdentityMismatch Text Text
     | LifecycleContextFrameError FrameError
     | LifecycleContextRootFrameRequired Text
-    | LifecycleContextNestedFrameRequired Text
     deriving (Eq, Show)
 
 {- | Retain the jointly admitted frame package and classify its structural position.
@@ -127,28 +125,6 @@ withValidatedRootLifecycleContext
             LifecycleNestedFrame ->
                 Left (LifecycleContextRootFrameRequired (currentFrameId current))
 
-{- | Borrow the exact retained evidence only when this frame is a non-root
-member of the admitted plan topology.
--}
-withValidatedNestedLifecycleContext ::
-    ValidatedLifecycleContext scope specDigest planId configId frame ->
-    ( forall rootId.
-      CanonicalProjectRoot scope rootId ->
-      ProtectedStore ->
-      CurrentFrame scope planId frame ->
-      ProjectFrame scope specDigest planId configId frame ->
-      ValidatedContext scope planId frame ->
-      result
-    ) ->
-    Either LifecycleContextError result
-withValidatedNestedLifecycleContext
-    (ValidatedLifecycleContext root store current projectFrame validated membership)
-    use =
-        case membership of
-            LifecycleRootFrame ->
-                Left (LifecycleContextNestedFrameRequired (currentFrameId current))
-            LifecycleNestedFrame -> Right (use root store current projectFrame validated)
-
 -- | Render one stable, single-line lifecycle-context admission diagnostic.
 lifecycleContextErrorMessage :: LifecycleContextError -> String
 lifecycleContextErrorMessage failure =
@@ -167,8 +143,6 @@ lifecycleContextErrorMessage failure =
             "lifecycle context: frame admission failed: " ++ show detail
         LifecycleContextRootFrameRequired frame ->
             "lifecycle context: root frame required, got " ++ show (Text.unpack frame)
-        LifecycleContextNestedFrameRequired frame ->
-            "lifecycle context: nested frame required, got " ++ show (Text.unpack frame)
   where
     mismatch label expected actual =
         "lifecycle context: "

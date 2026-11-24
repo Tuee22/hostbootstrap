@@ -66,6 +66,7 @@ module HostBootstrap.Substrate.Provider.Ownership (
     -- * The transactions
     provisionOwnedInstance,
     readyOwnedInstance,
+    probeRunningOwnedInstance,
     stopOwnedInstance,
     deleteOwnedInstance,
     deleteRetainedOwnedInstance,
@@ -556,6 +557,22 @@ readyOwnedInstance cfg session key owned = do
                         case restanding of
                             Left fault -> pure (Left fault)
                             Right (restarted, _) -> probeGuest cfg session key owned (ReadyStarted restarted)
+            Nothing -> pure (Left (unlistedOwnedInstance owned))
+
+-- | Observe the exact owned instance without starting or repairing it.
+probeRunningOwnedInstance ::
+    HostConfig ->
+    ProtectedSession session ->
+    RecordKey ->
+    OwnedProviderInstance ->
+    IO (Either ProviderOwnershipFault ProviderReadyOutcome)
+probeRunningOwnedInstance cfg session key owned = do
+    entered <- ownedStanding cfg session key owned
+    case entered of
+        Left fault -> pure (Left fault)
+        Right (identity, observation) -> case fmap listedState (observedListing observation) of
+            Just ProviderRunning -> probeGuest cfg session key owned (ReadyAlready identity)
+            Just ProviderStopped -> pure (Right (ReadyNotAnswering "the owned provider is stopped"))
             Nothing -> pure (Left (unlistedOwnedInstance owned))
 
 {- | Ask the guest whether it answers, through the one in-instance runner.

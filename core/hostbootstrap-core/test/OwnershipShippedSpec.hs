@@ -281,7 +281,7 @@ linkTargetPathTests =
                     encodeShippedOwnership transaction @?= wire
                     decodeShippedOwnership wire @?= Right transaction
             | path <- ["/var/tmp/destination", "C:\\hostbootstrap\\destination", "/var/tmp/\x03BB"]
-            , (tag, act) <- [(4, ShipTakeSymbolicLink), (5, ShipGiveBackSymbolicLink)]
+            , (tag, act) <- [(4, ShipTakeSymbolicLink), (5, ShipGiveBackSymbolicLink), (6, ShipObserveSymbolicLink)]
             ]
     , testCase "empty, relative, NUL and surrogate symbolic-link targets are refused" $
         sequence_
@@ -294,7 +294,7 @@ linkTargetPathTests =
                in expectMalformed
                     "invalid link-target wire"
                     (decodeShippedOwnership (rawTransaction tag "/authority" "shipped.spec.object" "/owned" <> field))
-            | tag <- [4, 5]
+            | tag <- [4, 5, 6]
             , path <- ["", "relative/destination", "C:relative", "/destination\0tail", "\255"]
             ]
     , testCase "both symbolic-link acts refuse a wrong-frame payload before store creation" $
@@ -314,7 +314,7 @@ linkTargetPathTests =
                     other -> assertFailure ("expected a symbolic-link target frame refusal, got " <> show other)
                 after <- doesPathExist (frameAuthority frame)
                 assertBool "wrong-frame link target created no authority store" (not after)
-            | act <- [ShipTakeSymbolicLink, ShipGiveBackSymbolicLink]
+            | act <- [ShipTakeSymbolicLink, ShipGiveBackSymbolicLink, ShipObserveSymbolicLink]
             ]
     ]
 
@@ -330,6 +330,7 @@ transactionCodecTests =
             , ShipGiveBackObject
             , ShipTakeSymbolicLink (fixtureLinkTarget "/srv/project-data")
             , ShipGiveBackSymbolicLink (fixtureLinkTarget "/srv/project-data")
+            , ShipObserveSymbolicLink (fixtureLinkTarget "/srv/project-data")
             ]
     , testCase "an unknown format is refused, never guessed" $
         expectMalformed "an unknown format" (decodeShippedOwnership "not a transaction at all")
@@ -498,7 +499,56 @@ outcomeCodecTests =
 
 directoryLeaseTests :: [TestTree]
 directoryLeaseTests =
-    [ leaseCase "fresh acquisition binds the real directory and admits nested use" $ \frame -> do
+    [ leaseCase "existing-only lease refuses absent authority without creating anything" $ \frame -> do
+        calls <- newIORef (0 :: Int)
+        outcome <- withExistingShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \_ ->
+            modifyIORef' calls (+ 1)
+        case outcome of
+            Left _ -> pure ()
+            Right _ -> assertFailure "absent authority was admitted"
+        readIORef calls >>= (@?= 0)
+        doesPathExist (frameAuthority frame) >>= (@?= False)
+        doesPathExist (frameTarget frame) >>= (@?= False)
+    , leaseCase "existing-only lease retains record and excludes another process" $ \frame -> do
+        identity <- expectTaken =<< runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
+        before <- recordForFrame frame
+        outcome <- withExistingShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \lease -> do
+            probeDirectoryEntry frame >>= (@?= (ExitFailure 3, "", ""))
+            useShippedDirectoryLease lease (observeIdentity (frameTarget frame))
+        outcome @?= Right (Right identity)
+        recordForFrame frame >>= (@?= before)
+        probeDirectoryEntry frame >>= (@?= (ExitSuccess, "", ""))
+    , leaseCase "existing-only lease refuses a replaced directory" $ \frame -> do
+        original <- expectTaken =<< runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
+        before <- recordForFrame frame
+        replacement <- replaceLeaseDirectory frame
+        calls <- newIORef (0 :: Int)
+        outcome <- withExistingShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \_ ->
+            modifyIORef' calls (+ 1)
+        assertLeaseIdentityConflict frame original replacement outcome
+        readIORef calls >>= (@?= 0)
+        recordForFrame frame >>= (@?= before)
+    , leaseCase "existing-only lease refuses an unbound record without repair" $ \frame -> do
+        publishUnboundDirectoryForFrame frame
+        before <- recordForFrame frame
+        calls <- newIORef (0 :: Int)
+        outcome <- withExistingShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \_ ->
+            modifyIORef' calls (+ 1)
+        case outcome of
+            Left _ -> pure ()
+            Right _ -> assertFailure "unbound record was admitted"
+        readIORef calls >>= (@?= 0)
+        recordForFrame frame >>= (@?= before)
+        doesPathExist (frameTarget frame) >>= (@?= False)
+    , leaseCase "existing-only lease detects replacement during the callback" $ \frame -> do
+        original <- expectTaken =<< runShippedOwnership ownershipRowForHost (transactionFor frame ShipTakeDirectory)
+        replacement <- newIORef Nothing
+        outcome <- withExistingShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \_ -> do
+            changed <- replaceLeaseDirectory frame
+            modifyIORef' replacement (const (Just changed))
+        observed <- maybe (assertFailure "callback did not run") pure =<< readIORef replacement
+        assertLeaseIdentityConflict frame original observed outcome
+    , leaseCase "fresh acquisition binds the real directory and admits nested use" $ \frame -> do
         outcome <- withShippedDirectoryLease ownershipRowForHost (transactionFor frame ShipTakeDirectory) $ \lease -> do
             doesDirectoryExist (frameTarget frame) >>= (@?= True)
             nested <- useShippedDirectoryLease lease (pure (41 :: Int))
@@ -860,6 +910,29 @@ interpreterTests =
         assertBool "the managed symbolic link was removed" (not remaining)
         targetRemaining <- doesDirectoryExist (frameLinkTarget frame)
         assertBool "the symbolic link target was not removed" targetRemaining
+    , symbolicLinkCase "existing-only symbolic-link observation reports the bound link and repairs nothing" $ \frame -> do
+        createDirectory (frameLinkTarget frame)
+        let linkTarget = fixtureLinkTarget (frameLinkTarget frame)
+            observe = runShippedOwnership ownershipRowForHost (transactionFor frame (ShipObserveSymbolicLink linkTarget))
+            refusedWith label outcome = case outcome of
+                ShippedRefused _ -> pure ()
+                other -> assertFailure ("expected " <> label <> " to refuse, got " <> show other)
+        refusedWith "an absent authority" =<< observe
+        doesPathExist (frameAuthority frame) >>= (@?= False)
+        created <- runShippedOwnership ownershipRowForHost (transactionFor frame (ShipTakeSymbolicLink linkTarget))
+        identity <- case created of
+            ShippedSymbolicLinkCreated value -> pure value
+            other -> assertFailure ("expected a created symbolic link, got " <> show other)
+        before <- recordForFrame frame
+        observe >>= (@?= ShippedSymbolicLinkRetained identity)
+        recordForFrame frame >>= (@?= before)
+        removeFile (frameTarget frame)
+        createFileLink (frameLinkTarget frame) (frameTarget frame)
+        refusedWith "a replaced link" =<< observe
+        removeFile (frameTarget frame)
+        refusedWith "a removed link" =<< observe
+        doesPathExist (frameTarget frame) >>= (@?= False)
+        recordForFrame frame >>= (@?= before)
     , symbolicLinkCase "kernel give-back refuses a reported symbolic link" $ \frame -> do
         createDirectory (frameLinkTarget frame)
         created <- runShippedOwnership ownershipRowForHost

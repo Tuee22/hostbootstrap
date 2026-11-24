@@ -11,7 +11,6 @@ import HostBootstrap.Lifecycle.Session (
     rootedPlanCatalogRecordIdentityKernel,
     withRootedPlanCatalogEdgeKernel,
     withRootedPlanCatalogEntriesKernel,
-    withRootedPlanCatalogEntryKernel,
     withRootedPlanCatalogFrameKernel,
     withRootedPlanCatalogKernel,
     withRootedPlanCatalogRootKernel,

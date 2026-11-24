@@ -69,12 +69,9 @@ module HostBootstrap.Cluster.Reconcile (
     reprobeClusterReadiness,
     clusterReadinessProbe,
     withClusterReadinessResourceHandle,
-    runExactClusterCleanupKernel,
 )
 where
 
-import Control.Exception (SomeException, displayException)
-import Control.Exception.Safe (try)
 import Crypto.Hash (Digest, SHA256, hash)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString (ByteString)
@@ -83,7 +80,6 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Authority (ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp))
 import HostBootstrap.Cluster.Cordon.Foundation (
     ResourceBudget,
     budgetCpu,
@@ -132,14 +128,9 @@ import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     preparedGateJournalVersion,
-    preparedGateOperation,
-    preparedGatePlan,
  )
 import HostBootstrap.ProjectPlan (
     ClusterResource,
-    ProjectPlan,
-    renderSnapshot,
-    stablePlanSnapshotDigest,
  )
 import qualified HostBootstrap.Lifecycle.Dependency.Internal as Dependency
 import qualified HostBootstrap.Readiness.Kernel as ProbeKernel
@@ -185,13 +176,6 @@ import HostBootstrap.Substrate.Provider.Dependency.Internal (
     providerShareDependencyProbe,
     runningProviderDependencyHandle,
     runningProviderDependencyProbe,
- )
-import HostBootstrap.Teardown (
-    LocalWork,
-    TeardownAction (DeleteCluster),
-    TeardownOutcome (TeardownFailed, TeardownReleased),
-    localWorkAction,
-    localWorkKey,
  )
 
 {- | The complete prepared reconcile.  Every source-package identity remains a
@@ -906,38 +890,6 @@ reprobeClusterReadiness (ClusterReadiness managed reprobe) = do
     ClusterReadinessCallResult version observation _ <- reprobe
     pure (settleClusterReadinessObservation managed version observation)
 reprobeClusterReadiness (RecoveredClusterReadiness _ reprobe) = reprobe
-
--- | Descriptive, non-authorizing projection of a strong cleanup result.
-{- | Run the one core-managed cluster cleanup selected by an exact reverse entry.
-
-The durable gate and local work must name the same admitted plan and operation.
-The closed verb chooses the effect; callers cannot pass a retain/delete flag.
--}
-runExactClusterCleanupKernel ::
-    ProjectPlan scope specDigest planId configId cfg ->
-    ProjectVerb verb ->
-    PreparedGate ->
-    LocalWork scope planId frame verb ->
-    IO () ->
-    IO () ->
-    IO TeardownOutcome
-runExactClusterCleanupKernel plan verb gate local runDown runDestroy
-    | preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan) =
-        pure (TeardownFailed "cluster cleanup: the durable gate names another plan")
-    | preparedGateOperation gate /= localWorkKey local =
-        pure (TeardownFailed "cluster cleanup: the durable gate names another operation")
-    | localWorkAction local /= DeleteCluster =
-        pure (TeardownFailed "cluster cleanup: the reverse work is not the plan's cluster action")
-    | otherwise = case verb of
-        ProjectUp -> pure (TeardownFailed "cluster cleanup: project up has no cleanup policy")
-        ProjectDown -> run runDown
-        ProjectDestroy -> run runDestroy
-  where
-    run action = do
-        attempted <- try action
-        pure $ case attempted of
-            Left exception -> TeardownFailed (displayException (exception :: SomeException))
-            Right () -> TeardownReleased
 
 sameObservedResource ::
     ResourceHandle scope planId id resource ownershipA phaseA ->

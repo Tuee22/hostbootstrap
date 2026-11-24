@@ -260,7 +260,7 @@ fixtureSpecWithCheckCode progName checkAction =
                         ( \request ->
                             case request of
                                 ProductionAssembly args ->
-                                    pureConfigAssembly (Fixture.projectInit (T.pack progName) args)
+                                    Fixture.projectInit (T.pack progName) args
                                 HarnessAssembly _ _ _ _ ->
                                     pureConfigAssembly
                                         ( Fixture.defaultProjectConfig
@@ -999,6 +999,19 @@ tests =
                 binary cfgContext @?= projectName
                 contextKind cfgContext @?= ImageBuildContainer
                 sourceRoot cfgContext @?= "/workspace/demo"
+        , testCase "project init refuses incompatible roles without publishing a config" $
+            withSystemTempDirectory "hostbootstrap-config-init-role-refusal" $ \dir -> do
+                projectName <- executableProjectName
+                let path = dir </> T.unpack projectName <> ".dhall"
+                (result, diagnostic) <-
+                    captureSiblingGateStderr $
+                        withArgs
+                            ["project", "init", "--role", "daemon", "--also-role", "one-shot", "--output", path]
+                            (runHostBootstrapCLI (fixtureSpec (T.unpack projectName)))
+                result @?= Left (ExitFailure 1)
+                assertBool "the assembler's role refusal is reported" $
+                    T.pack (contextErrorMessage (ContextRoleAdditionRefused Daemon OneShotJob)) `T.isInfixOf` diagnostic
+                doesFileExist path >>= (@?= False)
         , testCase "project init supplies the project defaults for omitted knobs" $
             withSystemTempDirectory "hostbootstrap-config-init-defaults" $ \dir -> do
                 projectName <- executableProjectName
@@ -1577,7 +1590,7 @@ lifecycleContextAdmissionTests =
                         ( \removed ->
                             assertBool (name <> " retains " <> removed) (removed `notElem` tokens)
                         )
-        , testCase "private source separates root and nested refinement without a public projection" $ do
+        , testCase "private source refines root evidence without a public projection or nested eliminator" $ do
             cwd <- getCurrentDirectory
             repoRoot <-
                 findRepoRoot cwd
@@ -1631,14 +1644,6 @@ lifecycleContextAdmissionTests =
                 "root refusal of nested evidence"
                 "LifecycleNestedFrame -> Left (LifecycleContextRootFrameRequired (currentFrameId current))"
                 internal
-            require
-                "nested-only evidence branch"
-                "LifecycleNestedFrame -> Right (use root store current projectFrame validated)"
-                internal
-            require
-                "nested refusal of root evidence"
-                "LifecycleRootFrame -> Left (LifecycleContextNestedFrameRequired (currentFrameId current))"
-                internal
             forbid "root eliminator" "withValidatedRootLifecycleContext" facade
             forbid "nested eliminator" "withValidatedNestedLifecycleContext" facade
             forbid "path-only protected-store reopen" "openProtectedStore" facade
@@ -1674,10 +1679,7 @@ lifecycleContextErrorRows =
       , LifecycleContextRootFrameRequired "nested-frame"
       , "lifecycle context: root frame required, got \"nested-frame\""
       )
-    , ( "LifecycleContextNestedFrameRequired"
-      , LifecycleContextNestedFrameRequired "root-frame"
-      , "lifecycle context: nested frame required, got \"root-frame\""
-      )
+
     ]
 
 withLifecycleContextPlan ::

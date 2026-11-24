@@ -56,6 +56,8 @@ module HostBootstrap.CLI (
     addSteps,
     addServices,
     addForwardChildPlan,
+    ParentFrameId (..),
+    ChildFrameId (..),
     finalizeProjectSpec,
     projectServiceVariantNames,
     projectArtifactNames,
@@ -63,6 +65,7 @@ module HostBootstrap.CLI (
     runHostBootstrapCLI,
     runBareHostBootstrapCLI,
     interpretFrameTransaction,
+    interpretProjectFrameTransaction,
 )
 where
 
@@ -86,9 +89,9 @@ import HostBootstrap.CLI.Bare (
     bareTestInit,
  )
 import HostBootstrap.Cluster.Exposure.Internal (runExposureRelayEntry)
-import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure)
+import HostBootstrap.Cluster.Shipped (interpretShippedClusterExposure, interpretShippedClusterObject)
 import HostBootstrap.Command (coreCommands)
-import HostBootstrap.Command.Child (lifecycleChildArguments, runForwardLifecycleChild)
+import HostBootstrap.Command.Child (interpretShippedRecoveryObservation, lifecycleChildArguments, runForwardLifecycleChild)
 import HostBootstrap.Config.Class (
     AssemblyRequest (..),
     ConfigAssembly,
@@ -99,7 +102,6 @@ import HostBootstrap.Config.Class (
     configInputPath,
     runConfigAssembly,
  )
-import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import HostBootstrap.Config.Vocab (Production)
 import HostBootstrap.Dhall.Gen (
     CodecWitness,
@@ -123,6 +125,8 @@ import HostBootstrap.ProjectPlan.Construct (
     FinalizedProjectSpec,
     withFinalizedProjectSpec,
  )
+import HostBootstrap.Lifecycle.FrameRole (ChildFrameId (..), ParentFrameId (..))
+import HostBootstrap.ProjectPlan.Construct.Internal (refuseForwardChildPlan)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot)
 import HostBootstrap.Service (
     ServiceRegistry,
@@ -171,8 +175,8 @@ data ProjectSpec cfg tcfg = ProjectSpec
     , psForwardChildPlan ::
         forall scope.
         cfg scope ->
-        Text ->
-        Text ->
+        ParentFrameId ->
+        ChildFrameId ->
         LiftContext ->
         Either String (FilePath, cfg scope, StepPlan)
     , psTestInit :: InitArgs -> tcfg
@@ -212,8 +216,8 @@ data ProjectSpecBuilder cfg tcfg = ProjectSpecBuilder
     , pbForwardChildPlan ::
         forall scope.
         cfg scope ->
-        Text ->
-        Text ->
+        ParentFrameId ->
+        ChildFrameId ->
         LiftContext ->
         Either String (FilePath, cfg scope, StepPlan)
     , pbForwardChildPlanCount :: Int
@@ -321,8 +325,8 @@ installation remains a closed validation state rather than unbounded input.
 addForwardChildPlan ::
     ( forall scope.
       cfg scope ->
-      Text ->
-      Text ->
+      ParentFrameId ->
+      ChildFrameId ->
       LiftContext ->
       Either String (FilePath, cfg scope, StepPlan)
     ) ->
@@ -401,15 +405,6 @@ projectStepPlan ::
     Either StepPlanError StepPlan
 projectStepPlan = psStepPlan
 
-refuseForwardChildPlan ::
-    cfg scope ->
-    Text ->
-    Text ->
-    LiftContext ->
-    Either String (FilePath, cfg scope, StepPlan)
-refuseForwardChildPlan _ _ _ _ =
-    Left "forward-child projection is unavailable"
-
 {- | Run the host-bootstrap CLI for @progName@, extending the core command tree
 with a validated project spec.
 -}
@@ -433,7 +428,6 @@ runHostBootstrapCLI progName spec = do
                         either die pure assembled
                 withProductionProjectCodec @cfg @projectId $ \baseCodec ->
                     withFinalizedProjectSpec
-                        ProductionScope
                         baseCodec
                         (psServices spec)
                         (psStepPlan spec)
@@ -469,7 +463,6 @@ runBareHostBootstrapCLI progName = do
             \(project :: InstalledProjectIdentity projectId) ->
                 withProductionProjectCodec @BareConfig @projectId $ \baseCodec ->
                     withFinalizedProjectSpec
-                        ProductionScope
                         baseCodec
                         emptyServiceRegistry
                         (bareStepPlan progName)
@@ -538,7 +531,7 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
                                 if argv == lifecycleChildArguments
                                     then runForwardLifecycleChild project finalizedSpec
                                     else case classifyFrameChild argv of
-                                        Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry
+                                        Just entry -> runFrameChildEntry (frameInterpreter (interpretProjectFrameTransaction finalizedSpec)) entry
                                         Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)
   where
     allCommands =
@@ -573,12 +566,22 @@ runCLI project finalizedSpec testCodec progName projectArtifacts testSuite check
 Child entries share this route. Cluster exposure recognizes its own request
 first; the ownership interpreter answers the remaining bytes.
 -}
+{- | The project binary's frame interpreter. The shipped recovery observation runs
+this project's own read-only observers; every other act is the closed core set.
+-}
+interpretProjectFrameTransaction ::
+    (ProjectCfg cfg) => FinalizedProjectSpec scope specDigest cfg -> ByteString -> IO (Either Text ByteString)
+interpretProjectFrameTransaction finalized raw =
+    interpretShippedRecoveryObservation finalized raw >>= maybe (interpretFrameTransaction raw) pure
+
 interpretFrameTransaction :: ByteString -> IO (Either Text ByteString)
 interpretFrameTransaction raw = do
     clusterExposure <- interpretShippedClusterExposure raw
     case clusterExposure of
         Just outcome -> pure outcome
-        Nothing -> interpretShippedOwnership raw
+        Nothing -> do
+            clusterObject <- interpretShippedClusterObject raw
+            maybe (interpretShippedOwnership raw) pure clusterObject
 
 duplicates :: (Ord a) => [a] -> [a]
 duplicates names = [name | name : _ : _ <- group (sort names)]

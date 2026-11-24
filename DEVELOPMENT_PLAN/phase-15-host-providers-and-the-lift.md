@@ -14,7 +14,7 @@ and
 Incus — the suite is built by the ordinary gate on every host and decides at runtime whether its
 subject is present
 **Gate kind**: deferred
-**Gate evidence**: 2026-11-09 ; hostbootstrap-linux-d, Ubuntu 24.04.5 x86_64 under WSL2, Linux 6.18.54.1-microsoft-standard-WSL2, UID 1000, KVM API 12, Incus 6.0.0, GHC 9.12.4 and Cabal 3.16.1.0 ; `cabal test all` and `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all --test-show-details=direct` from `core/` ; pass ; covers 5e418496d4448417780495331bbcceed6e0c3fbaf24b9490b689c5db2810dec4
+**Gate evidence**: 2026-11-20 ; hostbootstrap-linux, Ubuntu 24.04.5 x86_64 on dedicated Hyper-V, nested KVM, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all -j2 --test-show-details=direct --test-option=--hide-successes` and `HOSTBOOTSTRAP_PROVIDER_LIVE_CONFIRM=incus-direct-host cabal test all -j2 --test-show-details=direct --test-option=--hide-successes` from `core/` ; pass ; covers 4b5e01c64299f4ce25e37038395db60fce8276f579d8978af851816285e5b77c
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Incus.hs`
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider.hs`
 `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider`
@@ -6476,9 +6476,9 @@ result directories under `D:/CodexScratch/hostbootstrap-test-temp/`.
 
 None.
 
-### Sprint 15.50t: Refresh provider evidence after provider-live formatting [Active]
+### Sprint 15.50t: Refresh provider evidence after provider-live formatting [Done]
 
-**Status**: Active
+**Status**: Done
 **Implementation**: none; this sprint revalidates the composed phase gate
 **Substrates**: linux-cpu
 **Docs to update**: `DEVELOPMENT_PLAN/README.md`
@@ -6494,18 +6494,521 @@ image's `fourmolu` (formatting only, owed by the source-gate sprint that adds th
 
 #### Validation
 
-Not yet run. The edit is evidence expiry, not a design-error reopening (§ C).
+On 2026-11-11, both declared gate legs passed on the dedicated SSD-backed WSL2 distribution:
+the ordinary and confirmed runs each passed all 5,337 core cases, and the confirmed provider-live
+component passed the Incus lifecycle/share/alias/restart/delete and Direct refusal checks. The
+source was the host-mounted working tree; the standard `dist-newstyle` path was bind-mounted to
+the distribution's SSD-backed build directory. The instance list and provider-live temporary roots
+were empty afterward, and the Incus service was stopped. The covered-path digest was measured with
+`HostBootstrap.Digest.measurePathSetDigest` and is recorded in the gate evidence above. The WSL2
+utility VM had 24 CPUs, 64 GB memory and 4 GB swap; the distribution's virtual disk was on `C:`.
 
 #### Remaining Work
 
-- Run both declared phase-gate legs on the Linux gate host and record the `**Gate evidence**` row.
+None.
+
+### Sprint 15.51: Observe running providers without starting them [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Ownership.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/GuestVm.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/readiness.md`
+
+#### Objective
+
+Ensure a provider dependency readiness probe observes the exact running provider without starting it.
+
+#### Deliverables
+
+- Separate read-only Incus and guest-VM readiness observation from the prepared start operation and use it for provider dependency reprobes.
+- Refuse a stopped or replaced provider without a start command or dependent guest launch.
+
+#### Validation
+
+Exercise stopped, running, and replaced provider cases in `ProviderBackendSpec`, then run the host static gate.
+
+On 2026-11-16, the Windows Python legs passed: `hostbootstrap.check_code` passed and
+`hostbootstrap.test_all` passed all 384 cases. The first WSL2 `dependency` selection exposed a
+fixture-trigger mismatch in the new Incus replacement case; the trigger was corrected and the selection
+then passed all 59 cases, including stopped and replaced provider checks. The ordinary core gate
+subsequently failed one of 5,527 cases; its retained Cabal summary omitted the individual diagnostic.
+The documentation-validator selection passed all 22 cases afterward. The demo's 169 own tests passed,
+but its core suite also failed one of 5,527 cases. The public export-pin selection passed all 42 cases.
+A diagnostic rerun with `TASTY_HIDE_SUCCESSES=1`
+stopped before tests because Tasty rejected that value; it was restarted with `--test-option=--hide-successes`
+so that any failure diagnostic is retained. In parallel, the complete `ProviderBackendSpec` group passed
+243 cases and `ProviderSpec` passed 37. The diagnostic full run identified its sole failure as the
+`ProjectPlanSpec` audited plan-kernel importer list: the private rooted selector had added the
+`HostBootstrap.Lifecycle.Rooted` importer without adding it to that list. The list now records that
+reviewed importer; its focused check passed. On 2026-11-16 the demo Haskell gate passed 169 demo cases
+and all 5,527 core cases; the separate core gate passed all 5,527 cases on SSD-backed WSL2 with GHC
+9.12.4. Both used the host-mounted working tree. Live confirmation is owned by Sprint 15.52.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.52: Confirm read-only provider readiness on linux-cpu [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Confirm the provider gate after the readiness-probe change and refresh covered-path evidence.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record their environment, cleanup, and covered-path digest.
+
+#### Validation
+
+Run the declared ordinary and live Incus/Direct phase gate on the dedicated linux-cpu host.
+
+On 2026-11-16 the ordinary core leg passed all 5,527 cases in 954.67 seconds. The confirmed live leg
+passed all 5,527 core cases in 921.98 seconds and the provider-live component passed its prepared Incus
+lifecycle, share, alias, restart and delete route and mutation-free Direct refusal. Both ran on the
+dedicated SSD-backed WSL2 distribution with the host repository bind-mounted; `/dev/kvm` was accessible
+to UID 1000 and Incus 6.0.0 used its default storage pool. The initial and final instance lists were
+empty, no provider test roots remained, and the Incus service was returned to inactive with its socket
+still active as found. The covered-path digest matched before and after the run and is recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.53: Refresh provider evidence after root observation adoption [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Revalidate the provider phase after a covered backend change and refresh its evidence digest.
+
+#### Deliverables
+
+- Run both declared phase-gate legs on the dedicated linux-cpu host and record their evidence and cleanup.
+
+#### Validation
+
+Run the ordinary core gate and the confirmed live Incus/Direct gate, then measure the covered-path digest.
+
+On 2026-11-16 both declared gates passed on the dedicated SSD-backed WSL2 linux-cpu host. The ordinary
+core suite passed all 5,532 cases in 1,261.43 seconds; the confirmed live run passed all 5,532 core cases
+in 1,304.48 seconds and the prepared Incus lifecycle, share, alias, restart and delete and mutation-free
+Direct refusal. Separate SSD-backed build caches allowed both legs to run concurrently. The first ordinary
+run found a pinned importer list that was corrected before both full reruns; 45 receipt-filtered cases
+also passed. The instance list was empty before and after, no provider-live temporary roots remained, and
+the Incus service was returned to inactive with its socket active. The covered-path digest was identical
+during and after the successful runs and is recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.54: Refresh provider evidence after share observation [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a1's changes to the covered provider implementation.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record their environment, cleanup, and covered-path digest.
+
+#### Validation
+
+2026-11-16: the ordinary core gate and confirmed live Incus/Direct provider gate were run on
+`hostbootstrap-linux-ssd` (Ubuntu 24.04.5 x86_64, KVM, Incus 6.0.0, GHC 9.12.4, Cabal 3.16.1.0).
+The dedicated Incus daemon had no pre-existing instances before the live run.
+The confirmed provider-live suite passed its Incus lifecycle/share/alias/restart/delete and Direct
+refusal cases. Both full core suites were interrupted without summaries when WSL stopped; Windows
+recorded a low-virtual-memory event at that time. Those runs are incomplete.
+After that lane, `incus list` showed no instances; the Incus service was stopped again, leaving its
+previously active socket in place.
+The restarted ordinary `cabal test all` gate passed all 5,547 cases in 1,187.60 seconds. The repeated
+confirmed-provider command's live provider suite passed again, left no Incus
+instances, and the Incus service was stopped. Its full core suite was interrupted again when WSL
+stopped at 13:16; Windows recorded another low-virtual-memory event. This second confirmed-provider
+command is incomplete and must be rerun after host virtual-memory pressure is resolved.
+2026-11-16: prepared dedicated Hyper-V `hostbootstrap-linux` with 8 vCPUs, 32 GiB fixed RAM,
+8 GiB guest swap and a 256 GiB maximum dynamic VHDX on C:. Its guest has GHC 9.12.4, Cabal
+3.16.1.0 and nested `/dev/kvm`. The live checkout is exposed over a loopback-only temporary SFTP
+connection and bind-mounted in the guest; host-to-guest and guest-to-host changes were observed,
+and hashes of an unstaged file and an untracked file matched. Rename, symlink, hard-link and
+cross-process lock probes passed. The mount is case-insensitive and does not preserve a guest chmod;
+the checkout has no tracked or untracked case-folded name collisions. Build outputs and test temporary
+state use the guest filesystem, so the gate must establish whether the mount is sufficient for source reads.
+The full core gate has started with its build directory in
+the VM; the confirmed live provider gate remains owed.
+During setup the guest reported 31 GiB RAM, 8 GiB swap and 231 GiB free on its 247 GiB root;
+`kvm-ok` confirmed acceleration. Incus 6.0.0, QEMU, OVMF and Docker were installed in the guest,
+and the Ubuntu 24.04 Incus VM image was cached for the live gate.
+The initial Hyper-V core gate failed 834 of 5,547 cases (6,104.48 seconds). A representative
+`TeardownSpec` failure reports that the running test executable has no matching Cabal plan row:
+the external `--builddir` placed that plan outside the `core/dist-newstyle` path the suite inspects.
+Bind-mount the VM-owned build directory at the expected path, verify the affected case, then rerun
+the full gate; this run is not passing evidence.
+The guest-owned build directory is now bound at `core/dist-newstyle` over the live checkout mount;
+the formerly failing `TeardownSpec` case passed under that normal Cabal layout (1/1). The full gate
+is running again to establish the remaining cases.
+2026-11-17: a focused live-provider preflight first refused missing `virtiofsd`; after installation,
+Incus initially lacked QEMU capability because its daemon predated QEMU installation. Restarting the
+guest's Incus service refreshed its capability inventory. The focused live-provider executable then
+passed the Incus lifecycle/share/alias/restart/delete and Direct refusal cases, leaving no Incus
+instances. This focused run does not replace the declared confirmed-provider gate.
+2026-11-17: the corrected-layout ordinary gate completed in 7,261.38 seconds with one
+failure among 5,547 cases. `EffectSpec / the tree carries no script` could not read the
+filesystem probe symlink: the SFTP share reported its relative target as `/renamed`,
+rather than `renamed`. The previous symlink probe did not verify dereferencing and was
+insufficient. Repair and verify the share semantics, then rerun the complete phase gate.
+The temporary SFTP server was corrected to preserve relative symlink targets; the guest
+then read the same target and contents as the Windows checkout. The formerly failing
+`EffectSpec / the tree carries no script` passed in isolation (1/1, 21.71 seconds).
+2026-11-17: the complete ordinary `cabal test all -j2 --test-show-details=direct
+--test-option=--hide-successes` gate passed on the corrected Hyper-V mount: the core
+suite passed all 5,547 tests in 7,276.11 seconds, and the unconfirmed provider suite
+completed its not-requested check. The confirmed-provider command subsequently passed its
+live Incus lifecycle/share/alias/restart/delete and Direct refusal suite on the same VM;
+its full core suite passed all 5,547 tests in 7,281.41 seconds. `incus list` was empty
+after the live suite. The covered paths measured `ff2b21157a45881961e78c3aaa0ef4c5e1576969445e3fb9ca9015f109d7882b`
+using SHA-256 with the framing and exclusions specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.55: Refresh provider evidence after existing-only guest entry [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a1's changes to covered guest-provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+Run both declared phase-gate legs on the dedicated Linux Hyper-V VM.
+2026-11-17: the focused existing-only selection passed 11 cases, the sealed public export
+selection passed 27 cases, and the governed-documentation validator passed. The complete
+ordinary `cabal test all -j2 --test-show-details=direct --test-option=--hide-successes` gate
+passed all 5,550 core cases in 6,776.80 seconds. On 2026-11-18 UTC, the confirmed command's
+live Incus lifecycle/share/alias/restart/delete and Direct refusal suite passed, and its full
+core suite passed all 5,550 cases in 6,789.75 seconds. The Incus instance list was empty
+afterward, and the guest's Incus service and socket were stopped. The covered paths measured
+`39f25d2093440de8cbd1dc36a23c5c902a1db13a1888e2f429d19a89006ea07b` using the framing and
+exclusions specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.56: Refresh evidence after existing-only Incus observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a1's covered Incus observer change.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+The rooted Incus observer compiled on the dedicated Linux Hyper-V VM. Its first focused test
+build found a missing test import; after correction both rooted Incus cases passed. The existing
+rooted Lima and WSL2 provider cases and the governed-documentation validator also passed. The
+ordinary phase-gate leg ran on 2026-11-18 UTC on the dedicated Linux VM and its core suite failed.
+Cabal's generated summary did not retain the failing case. The harness's retained command output
+identified one failure among 5,551 tests: `provider share address admission precedes every
+store-opening route` expected the old inline store-opening sequence. The provider transaction now
+delegates both its normal and existing-only entries to a common helper; the source guard has been
+updated to check both delegations and admission before either store opener. During
+the run the VM reported 20 GiB of its 247 GiB filesystem used, 1.5 GiB of 31 GiB memory used and
+no swap used; the C: host volume had approximately 1.1 TiB free at that observation.
+The ordinary leg was restarted with detailed output retained by the command harness; an initial
+launch found no `cabal` on the non-login shell's PATH. The corrected retry was stopped after the
+original failure was recovered and before updating its known failing assertion.
+The corrected `provider share address admission precedes every store-opening route` selection
+then passed (1 test, 0.69 seconds). The complete ordinary gate subsequently passed on 2026-11-18:
+5,551 core tests in 6,684.31 seconds and the unconfirmed provider-live baseline. The confirmed
+Incus gate was started with an empty Incus instance list. Its live-provider suite passed the
+prepared Incus lifecycle, share, alias, restart and deletion and the mutation-free Direct refusal;
+the instance list was empty afterward. Its full core suite passed all 5,551 tests in 6,622.21
+seconds. The covered-path digest was remeasured after both passes, and the dedicated Incus service
+and socket were stopped.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.57: Refresh evidence after stopped-guest probe refusal [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/GuestVm.hs`,
+`core/hostbootstrap-core/test/ProviderBackendSpec.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Revalidate the provider gate after existing-only guest execution is restricted to an observed-running
+owned guest.
+
+#### Deliverables
+
+- Refuse a stopped guest without launching it, and retain the existing running-guest behavior.
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+The stopped-guest guard compiled on the dedicated Linux Hyper-V VM. The `existing-only` selection
+passed all 12 cases in 0.24 seconds, including the new stopped-guest no-launch regression and the
+retained running-guest case. The ordinary gate passed on 2026-11-18 UTC: all 5,552 core tests in
+6,620.13 seconds and the unconfirmed provider-live baseline. The confirmed Incus leg ran from
+15:25:30 to 18:02:11 UTC on 2026-11-18 with no pre-existing Incus instances. Its live-provider suite
+passed the prepared Incus lifecycle, share, alias, restart and deletion and the mutation-free Direct
+refusal, and its full core suite passed all 5,552 tests in 6,981.03 seconds. The Incus instance list
+was empty afterward, and the dedicated Incus service and socket were stopped. The covered paths
+measured `f2752edcf28272cfe63c5cdc80d0cc8e3e77d389468bd479beee13090cecf10f` using the framing and
+exclusions specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.58: Refresh evidence after Lima share correspondence [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Report.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/GuestVm.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a1's Lima mount correspondence and existing-only share
+observation in covered provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, nested KVM, Incus 6.0.0,
+GHC 9.12.4, Cabal 3.16.1.0). The ordinary leg ran from 19:48:12 to 22:22:36 UTC on 2026-11-18 and passed all
+5,567 core tests in 6,818.54 seconds and the unconfirmed provider-live baseline. The confirmed leg ran from
+22:22:38 UTC on 2026-11-18 to 00:57:42 UTC on 2026-11-19 with an empty Incus instance list; its live-provider
+suite passed the prepared Incus lifecycle, share, alias, restart and deletion and the mutation-free Direct
+refusal, and its full core suite passed all 5,567 tests in 6,877.18 seconds. The instance list was empty
+afterward and the dedicated Incus service and socket were stopped. The covered paths measured
+`8905617cd2773e4c338efd96c85edd08adf4acee241d9d5e5d956cab657e6129` using the framing and exclusions
+specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.59: Refresh evidence after WSL2 running observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Report.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Command.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/GuestVm.hs`,
+`core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a2's WSL2 running observation and DrvFs correspondence in covered
+provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, nested KVM, Incus 6.0.0,
+GHC 9.12.4, Cabal 3.16.1.0) on 2026-11-19 UTC. The ordinary leg ran from 02:50:59 to 05:23:52 and passed all
+5,586 core tests in 6,733.92 seconds and the unconfirmed provider-live baseline. The confirmed leg ran from
+05:23:53 to 07:57:12 with an empty Incus instance list; its live-provider suite passed the prepared Incus
+lifecycle, share, alias, restart and deletion and the mutation-free Direct refusal, and its full core suite
+passed all 5,586 tests in 6,775.92 seconds. The instance list was empty afterward and the dedicated Incus
+service and socket were stopped. The covered paths measured
+`f7597cb3971980dd6f7b96e650af22484933c5f688d508718402b8d46e623fa9` using the framing and exclusions
+specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.60: Refresh evidence after planned root share observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2c's planned root share observation in covered provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+The ordinary leg ran on the dedicated Linux VM from 10:07:01 to 12:41:01 UTC on 2026-11-19: the
+unconfirmed provider-live baseline passed and the core suite failed 1 of 5,587 tests, `AuthoritySpec` "run
+liveness is close-on-exec and cannot be retained by a provider child". Sprint 4.7 owns the lock-open race
+it exposed. The confirmed leg was stopped during its startup; the Incus instance list was empty and the
+Incus service and socket were stopped. Both legs re-ran after Sprint 4.7 on 2026-11-19 UTC. The ordinary leg
+ran from 14:09:28 to 16:43:32 and passed all 5,587 core tests in 6,810.19 seconds and the unconfirmed
+provider-live baseline. The confirmed leg ran from 16:43:34 to 19:19:11 with an empty Incus instance list; its
+live-provider suite passed the prepared Incus lifecycle, share, alias, restart and deletion and the
+mutation-free Direct refusal, and its full core suite passed all 5,587 tests in 6,895.07 seconds. The instance
+list was empty afterward and the dedicated Incus service and socket were stopped. The covered paths measured
+`fad3c7025131d35bfd351b83cf9339a5514b6c2ae75c6fd2e13938f146a87d13` using the framing and exclusions
+specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.61: Refresh evidence after root alias observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b3c's root alias observation in covered provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, nested KVM, Incus 6.0.0,
+GHC 9.12.4, Cabal 3.16.1.0) on 2026-11-20 UTC. The ordinary leg ran from 00:23:50 to 02:57:15 and passed all
+5,591 core tests in 6,757.45 seconds and the unconfirmed provider-live baseline. The confirmed leg ran from
+02:57:16 to 05:30:51 with an empty Incus instance list; its live-provider suite passed the prepared Incus
+lifecycle, share, alias, restart and deletion and the mutation-free Direct refusal, and its full core suite
+passed all 5,591 tests in 6,794.08 seconds. The instance list was empty afterward and the dedicated Incus
+service and socket were stopped. The covered paths measured
+`40f2ceaccc67c354e378dbbee36b9b38858daf35c5e49f38007924454c859f18` using the framing and exclusions
+specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.62: Refresh evidence after root Docker observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b4's root Docker observation in covered provider code.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, nested KVM, Incus 6.0.0,
+GHC 9.12.4, Cabal 3.16.1.0) on 2026-11-20 UTC. The ordinary leg ran from 07:52:10 to 10:26:33 and passed all
+5,592 core tests in 6,823.22 seconds and the unconfirmed provider-live baseline. The confirmed leg ran from
+10:26:34 to 13:00:28 with an empty Incus instance list; its live-provider suite passed the prepared Incus
+lifecycle, share, alias, restart and deletion and the mutation-free Direct refusal, and its full core suite
+passed all 5,592 tests in 6,804.09 seconds. The instance list was empty afterward and the dedicated Incus
+service and socket were stopped. The covered paths measured
+`4b5e01c64299f4ce25e37038395db60fce8276f579d8978af851816285e5b77c` using the framing and exclusions
+specified by `HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 15.63: Refresh provider evidence after pure backend binding [Active]
+
+**Status**: Active
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore the deferred evidence expired by Sprint 17.71h's pure provider-binding projection in a covered path.
+This is evidence expiry, not a design-error reopening.
+
+#### Deliverables
+
+- Run both declared phase-gate legs and record the covered-path digest and cleanup.
+
+#### Validation
+
+2026-11-23: The provider binding change passed four focused admission cases and all 266 provider backend cases
+on native Windows. The documentation validator correctly reports that the prior covered-path digest has expired.
+The complete phase gate and fresh digest are outstanding. The dedicated Ubuntu VirtualBox guest was restarted
+with nested hardware virtualization enabled; it still exposes neither `/dev/kvm` nor the AMD `svm` CPU flag.
+VirtualBox reports falling back to the Windows hypervisor because AMD-V is unavailable, while other VMs are
+running. The required native Linux/x86_64 KVM and Incus leg is therefore unmet on this configuration. The VM
+was shut down and its previous nested-virtualization setting restored. After correcting the phase and README
+status entries, all 22 `DocValidatorSpec` cases passed on native Windows.
+
+2026-11-24: After the Windows host rebooted, the dedicated VirtualBox VM was started headless with
+nested hardware virtualization enabled and rechecked through its guest agent. The x86_64 guest still
+reported no `/dev/kvm` and no `svm` CPU flag. It was shut down cleanly and its prior nested setting
+restored. The other VirtualBox VMs were left running. The ordinary gate passed on native Windows
+with `cabal test all -j1 --test-option=-j1 --test-option=--hide-successes`: all 5,641 core tests
+passed in 847.31 seconds, and the unconfirmed provider-live baseline passed. The separate
+Linux/KVM/Incus leg remains unmet.
+
+#### Remaining Work
+
+- Run the confirmed Linux/KVM/Incus gate on a suitable host, record the digest and cleanup, and close the phase.
 
 ## Remaining Work
 
-Evidence expiry, not a design-error reopening (§ C): the `provider-live` modules this phase covers were
-formatted, which changed the `**Evidence covers**` digest. Sprint 15.50t owes the re-run of this phase's
-declared gate — `cabal test all` and the `incus-direct-host` live confirmation from `core/` on the Linux
-gate host — and a re-recorded `**Gate evidence**` row.
+- Sprint 15.63: Run the confirmed Linux/KVM/Incus gate and record the current covered-path digest.
 
 ## Documentation Requirements
 

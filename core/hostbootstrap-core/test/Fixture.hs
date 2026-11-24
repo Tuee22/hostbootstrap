@@ -12,15 +12,10 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NoMonoLocalBinds #-}
 
-{- | A core-internal project-config instance used by the core test suite.
+{- | A minimal 'ProjectCfg' instance for the core's generic test machinery.
 
-The core is generic over a project's config type (the 'ProjectCfg' class); the
-concrete config record lives in a consumer (the demo). The core tests need a
-concrete 'ProjectCfg' to exercise the generic command/CLI machinery and the
-generic sibling loader, so this module supplies a faithful in-test instance
-(the same four-field shape the demo's @ProjectConfig@ has, so its reflected
-Dhall schema and decode round-trips are equivalent coverage of what moved out
-of core).
+The worked demo consumer separately tests its refined project configuration
+schema and decoding behavior.
 -}
 module Fixture (
     FixtureProject,
@@ -81,11 +76,14 @@ import qualified HostBootstrap.Authority as Authority
 import qualified HostBootstrap.Authority.ProjectPlan as ProjectAuthority
 import HostBootstrap.Cluster.Budget (BudgetCfg (..))
 import HostBootstrap.Config.Class (
+    ConfigAssembly,
     ExistingOutputPolicy (..),
     InitArgs (..),
     ProjectCfg (..),
     ProjectCodec,
     TestCfg (..),
+    failConfigAssembly,
+    pureConfigAssembly,
     withMappedProjectCodec,
     withProjectCodec,
  )
@@ -108,6 +106,7 @@ import HostBootstrap.Harness.Ownership (
     protectedProjectRunOwnership,
     withOwnedHarnessRoot,
  )
+import qualified HostBootstrap.CLI as CLI
 import qualified HostBootstrap.Lifecycle.Context as LifecycleContext
 import HostBootstrap.Lifecycle.Mode (
     AcquisitionJournal,
@@ -138,7 +137,7 @@ import HostBootstrap.Lifecycle.Mode (
  )
 import HostBootstrap.Lifecycle.Session (verifyAllSessionsClosed)
 import qualified HostBootstrap.Lifecycle.Snapshot.Core as SnapshotCore (StablePlanSnapshot (StablePlanSnapshot))
-import HostBootstrap.Lift.Context (LiftContext, localContext)
+import HostBootstrap.Lift.Context (LiftContext, LiftLayer (..), liftLayers, localContext)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     planDraftsFromValidatedBuilder,
@@ -1026,8 +1025,8 @@ projection coverage in unrelated fixtures.
 -}
 refusingForwardChildPlan ::
     ProjectConfig scope ->
-    Text ->
-    Text ->
+    CLI.ParentFrameId ->
+    CLI.ChildFrameId ->
     LiftContext ->
     Either String (FilePath, ProjectConfig scope, StepPlan)
 refusingForwardChildPlan _ _ _ _ =
@@ -1048,15 +1047,21 @@ projectingForwardChildPlan ::
     FilePath ->
     [Step] ->
     ProjectConfig scope ->
-    Text ->
-    Text ->
+    CLI.ParentFrameId ->
+    CLI.ChildFrameId ->
     LiftContext ->
     Either String (FilePath, ProjectConfig scope, StepPlan)
-projectingForwardChildPlan descriptor steps parent _parentFrame _childFrame _route = do
-    childConfig <-
-        deriveProjectConfigForKind Context.VMOrchestrator parent (T.pack descriptor)
+projectingForwardChildPlan descriptor steps parent _parentFrame _childFrame route = do
+    childContext <- case liftLayers route of
+        [ViaVM _] -> Right (Context.deriveVMContextWithProvider Context.IncusVMProvider (context parent) root)
+        [ViaLimaVM _] -> Right (Context.deriveVMContextWithProvider Context.LimaVMProvider (context parent) root)
+        [ViaWsl2VM _] -> Right (Context.deriveVMContextWithProvider Context.Wsl2VMProvider (context parent) root)
+        [ViaContainer _] -> Right (Context.deriveLinuxGpuContainerContext (context parent) root)
+        _ -> Left "the fixture requires one projected layer"
     childPlan <- either (Left . show) Right (mkStepPlan steps)
-    Right (descriptor, childConfig, childPlan)
+    Right (descriptor, parent{context = childContext}, childPlan)
+  where
+    root = T.pack descriptor
 
 defaultResources :: Resources
 defaultResources = Resources{cpu = 4, memory = "8GiB", storage = "20GiB"}
@@ -1170,7 +1175,7 @@ deriveProjectConfigForKind kind parent root
 default-bearing function: interpret the parsed flags into a 'ProjectConfig',
 filling omitted knobs from the fixture defaults.
 -}
-projectInit :: Text -> InitArgs -> ProjectConfig scope
+projectInit :: Text -> InitArgs -> ConfigAssembly scope (ProjectConfig scope)
 projectInit projectName args =
     let cfgResources =
             Resources
@@ -1191,8 +1196,8 @@ projectInit projectName args =
                 cfgDeploy
                 args.role
      in case foldM (flip Context.addRole) baseCfg.context args.alsoRoles of
-            Left err -> error (Context.contextErrorMessage err)
-            Right ctx -> baseCfg{context = ctx}
+            Left err -> failConfigAssembly (Context.contextErrorMessage err)
+            Right ctx -> pureConfigAssembly (baseCfg{context = ctx})
 
 -- | A defaultless 'InitArgs' for a chosen role (used by the spec builders).
 initArgsFor :: Context.ContextKind -> InitArgs

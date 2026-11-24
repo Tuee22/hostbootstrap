@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module EscapeChildProjectPlanIdentity where
 
 import Data.List.NonEmpty (NonEmpty)
@@ -48,6 +50,7 @@ escapeChildPlanIdentity ::
 escapeChildPlanIdentity verb handoff wire config drafts =
     withChildProjectPlan
         verb
+        "host"
         handoff
         wire
         config

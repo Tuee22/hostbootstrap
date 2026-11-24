@@ -39,10 +39,8 @@ protected store.
 -}
 module HostBootstrap.Handoff.Process.Route (
     LifecycleProcessRoute,
-    ChannelInteractivity (..),
     withForwardLifecycleProcessRouteKernel,
     withNestedForwardLifecycleProcessRouteKernel,
-    withRecoveryLifecycleProcessRouteKernel,
     withRecoveryLifecycleProcessRouteForKernel,
     withLifecycleProcessRouteLaunchKernel,
     withLifecycleChildOpeningKernel,
@@ -56,7 +54,7 @@ import Data.Maybe (isNothing)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Authority (ProjectVerb)
-import HostBootstrap.Config.Vocab (Mount, readOnly, source, target)
+import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Handoff (
     HandoffBindingInput,
     ProjectVerificationKey,
@@ -67,7 +65,7 @@ import HostBootstrap.Handoff (
     requestedPhase,
     withVerifiedRootedLifecycleResponse,
  )
-import HostBootstrap.Handoff.Recovery (RecoveryChildPackage, withRecoveryChildPackageKernel)
+import HostBootstrap.Handoff.Recovery (withRecoveryChildPackageKernel)
 import HostBootstrap.Handoff.Rooted (
     renderRootedLifecycleRequestKernel,
     rootedOpenFrameRequestKernel,
@@ -95,22 +93,19 @@ import HostBootstrap.ProjectPlan.Handoff.Internal (
     CatalogForwardHandoff,
     withCatalogForwardProcessInputsKernel,
  )
+import HostBootstrap.Teardown.Internal (ReverseDescent, withReverseDescentProcessInputsKernel)
 
 {- | One sanitized child invocation and the exchange it may carry.
 
-The eight indices are all nominal, and three of them — the parent frame, the
-child frame, and the session — are minted by a derivation or an opening rather
-than named by a caller, so a route derived for one edge is not a route for
-another even where every rendered argument agrees.
+The seven indices are nominal. Derivation introduces fresh parent and child
+indices; those indices do not encode or independently verify frame names.
+The admitted binding input supplies the frame names retained in the route.
 
 An admitted route holds the closed verb, the two frame names its edge joins,
 and the launch it renders: the host tool the outermost dispatch names, the
-exact argument vector, and whether that shape keeps standard input attached.
-An opened route nests exactly that admitted route and adds the four
-coordinates the root selected plus the digest of the complete response that
-selected them. Nothing in either constructor is a store, session, journal,
-signing key, descriptor, or process handle, and there is no function from a
-route to one.
+exact argument vector, and whether that shape carries Docker's @-i@ argument.
+The frame's opening is separate from this route. The route holds no store,
+session, journal, signing key, descriptor, or process handle.
 -}
 data LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb where
     LifecycleProcessRoute ::
@@ -127,16 +122,9 @@ type role LifecycleProcessRoute nominal nominal nominal nominal nominal nominal 
 instance Show (LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb) where
     show LifecycleProcessRoute{} = "LifecycleProcessRoute <launch>"
 
-{- | Whether a rendered launch keeps the child's standard input attached.
-
-The provider shapes differ in exactly this and in nothing else a caller may
-read: a Docker container is run interactively because the root's request and
-response bytes travel on the descriptor it keeps open, and the three VM
-providers are run noninteractively because nothing on the far side of them
-reads that descriptor. The distinction is spelled out in the doctrine because
-it matters, and it was a bare 'Bool' at four construction sites and one borrow
-site — which is to say the only thing telling a reader which case a 'True'
-named was the position it sat in.
+{- | Whether the terminal container shape includes Docker's @-i@ argument.
+Every provider receives the protocol through piped standard input; VM shapes
+do not require that Docker-specific flag. This distinction stays in the route.
 -}
 data ChannelInteractivity
     = InteractiveChannel
@@ -160,7 +148,7 @@ data AdmittedEdge = AdmittedEdge Text Text AdmittedLaunch
 layer asks for. Only that terminal layer decides the channel, so
 interactivity travels out of the recursion rather than into it.
 -}
-data AdmittedLayers = AdmittedLayers [LiftLayer] ChannelInteractivity
+data AdmittedLayers = AdmittedLayers [LiftLayer] (Maybe ValidatedPath) ChannelInteractivity
 
 {- | Text that has passed the closed argument grammar, and text that has
 passed it and is an absolute delimiter-free path besides.
@@ -237,68 +225,25 @@ withNestedForwardLifecycleProcessRouteKernel runtime route input verb targetBina
             Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity)) ->
                 use (LifecycleProcessRoute verb parent child tool argv interactivity)
 
-{- | Derive the reverse route that carries one recovery package's child.
-
-The package is the authenticated-handoff phase's canonical two-frame value
-(DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md), so its own codec has
-already refused an empty configuration or adapter; what this kernel adds is
-that a route may not be derived for a package carrying neither. The lift route
-and binding input are the reverse edge's plan-owned pair, and the phase they
-must name is teardown, which is what keeps a forward descent from being
-relaunched through the reverse producer.
--}
-withRecoveryLifecycleProcessRouteKernel ::
-    RecoveryChildPackage ->
-    LiftContext ->
-    HandoffBindingInput ->
-    ProjectVerb verb ->
-    Text ->
-    ( forall scope rootPlanId brokerGeneration catalogId parent child.
-      LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
-      IO (Either Text ())
-    ) ->
-    IO (Either Text ())
-{-# OPAQUE withRecoveryLifecycleProcessRouteKernel #-}
-withRecoveryLifecycleProcessRouteKernel package route input verb targetBinary use =
-    case admitted of
-        Left failure -> pure (Left failure)
-        Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity)) ->
-            use (LifecycleProcessRoute verb parent child tool argv interactivity)
-  where
-    admitted = do
-        withRecoveryChildPackageKernel package $ \childConfig adapter -> do
-            require
-                "the recovery package carries no child configuration"
-                (not (ByteString.null childConfig))
-            require
-                "the recovery package carries no recovery adapter"
-                (not (ByteString.null adapter))
-        derive verb "teardown" (withoutConfigDelivery route) input targetBinary
-
-{- | Select the route's nominal lineage from witness-only proxy arguments.
-The proxies carry no authority or runtime value; they prevent an otherwise
-rank-polymorphic recovery route from losing the prepared caller's indices.
+{- | Derive a reverse route from one prepared descent. Its package, lift,
+binding input and verb remain coupled to that descent's nominal lineage.
 -}
 withRecoveryLifecycleProcessRouteForKernel ::
-    proxyScope scope ->
-    proxyBroker brokerGeneration ->
-    RecoveryChildPackage ->
-    LiftContext ->
-    HandoffBindingInput ->
-    ProjectVerb verb ->
+    ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId ->
     Text ->
     ( forall rootPlanId catalogId parent child.
       LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
       IO (Either Text ())
     ) ->
     IO (Either Text ())
-withRecoveryLifecycleProcessRouteForKernel _ _ package route input verb targetBinary use =
-    case admitted of
-        Left failure -> pure (Left failure)
-        Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity)) ->
-            use (LifecycleProcessRoute verb parent child tool argv interactivity)
+withRecoveryLifecycleProcessRouteForKernel descent targetBinary use =
+    withReverseDescentProcessInputsKernel descent $ \package route input verb ->
+        case admitted package route input verb of
+            Left failure -> pure (Left failure)
+            Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity)) ->
+                use (LifecycleProcessRoute verb parent child tool argv interactivity)
   where
-    admitted = do
+    admitted package route input verb = do
         withRecoveryChildPackageKernel package $ \childConfig adapter -> do
             require "the recovery package carries no child configuration" (not (ByteString.null childConfig))
             require "the recovery package carries no recovery adapter" (not (ByteString.null adapter))
@@ -328,6 +273,8 @@ derive verb phase route input targetBinary = do
     require
         ("the admitted edge is not a " <> phase <> "-phase descent")
         (requestedPhase input == phase)
+    require "a forward process route must carry exactly one lift layer"
+        (phase /= "execute" || length (liftLayers route) == 1)
     launch <- sanitizedLaunch route child targetBinary (subcommand verb)
     pure (AdmittedEdge parent child launch)
   where
@@ -346,10 +293,9 @@ subcommand _verb = ["--hostbootstrap-lifecycle-child"]
 {- | Render the closed single-layer or root-relative lifecycle route grammar.
 
 Catalog edges have one layer; reverse recovery may retain several VM layers
-and an optional terminal container. A Docker container keeps standard input
-attached and runs at @/@, and the three VM providers run noninteractively at
-@/@, reaching root through noninteractive sudo where the guest's default user
-is not root.
+and an optional terminal container. A Docker container carries @-i@ and runs at
+@/@; the VM providers run at @/@, reaching root through noninteractive sudo
+where the guest's default user is not root. Every provider receives piped input.
 
 What the shapes have in common on the other side is that nothing a plan
 authored reaches them. Container extra arguments, a configuration delivery, a
@@ -366,20 +312,20 @@ sanitizedLaunch route child targetBinary inner = case liftLayers route of
         admitted <- admittedContainer child container
         folded [ViaContainer admitted] "" inner InteractiveChannel
     [ViaVM vm] -> do
-        _ <- sanitizedPath "the admitted target binary" targetBinary
-        _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
-        folded [ViaVM vm] targetBinary inner NoninteractiveChannel
+        binary <- sanitizedPath "the admitted target binary" targetBinary
+        name <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+        folded [ViaVM vm{vmName = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel
     [ViaLimaVM vm] -> do
-        _ <- sanitizedPath "the admitted target binary" targetBinary
-        _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
-        folded [ViaLimaVM vm] targetBinary inner NoninteractiveChannel
+        binary <- sanitizedPath "the admitted target binary" targetBinary
+        name <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+        folded [ViaLimaVM vm{limaName = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel
     [ViaWsl2VM vm] -> do
-        _ <- sanitizedPath "the admitted target binary" targetBinary
-        _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
-        folded [ViaWsl2VM vm] targetBinary inner NoninteractiveChannel
+        binary <- sanitizedPath "the admitted target binary" targetBinary
+        name <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+        folded [ViaWsl2VM vm{wsl2Distro = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel
     layers@(_ : _ : _) -> do
-        AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary
-        folded admitted targetBinary inner interactivity
+        AdmittedLayers admitted binary interactivity <- validateComposedLayers child layers targetBinary
+        folded admitted (maybe "" admittedPathText binary) inner interactivity
     _ -> Left (routeFailure "a process route carries exactly one plan-owned lift layer")
 
 {- | Validate the root-relative route used when the rooted reverse coordinator
@@ -394,29 +340,29 @@ validateComposedLayers child layers targetBinary = go layers
     go [ViaContainer container] = do
         require "a container layer needs no target binary path" (Text.null targetBinary)
         admitted <- admittedContainer child container
-        pure (AdmittedLayers [ViaContainer admitted] InteractiveChannel)
-    go [ViaVM vm] = validateTerminalVm "Incus instance" (Text.pack (vmName vm)) (ViaVM vm)
-    go [ViaLimaVM vm] = validateTerminalVm "Lima instance" (Text.pack (limaName vm)) (ViaLimaVM vm)
-    go [ViaWsl2VM vm] = validateTerminalVm "WSL distribution" (Text.pack (wsl2Distro vm)) (ViaWsl2VM vm)
+        pure (AdmittedLayers [ViaContainer admitted] Nothing InteractiveChannel)
+    go [ViaVM vm] = validateTerminalVm "Incus instance" (Text.pack (vmName vm)) (\name -> ViaVM vm{vmName = Text.unpack (admittedText name)})
+    go [ViaLimaVM vm] = validateTerminalVm "Lima instance" (Text.pack (limaName vm)) (\name -> ViaLimaVM vm{limaName = Text.unpack (admittedText name)})
+    go [ViaWsl2VM vm] = validateTerminalVm "WSL distribution" (Text.pack (wsl2Distro vm)) (\name -> ViaWsl2VM vm{wsl2Distro = Text.unpack (admittedText name)})
     go (ViaVM vm : rest) = do
-        _ <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
-        AdmittedLayers admitted interactivity <- go rest
-        pure (AdmittedLayers (ViaVM vm : admitted) interactivity)
+        name <- sanitizedArgument "the admitted Incus instance" (Text.pack (vmName vm))
+        AdmittedLayers admitted binary interactivity <- go rest
+        pure (AdmittedLayers (ViaVM vm{vmName = Text.unpack (admittedText name)} : admitted) binary interactivity)
     go (ViaLimaVM vm : rest) = do
-        _ <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
-        AdmittedLayers admitted interactivity <- go rest
-        pure (AdmittedLayers (ViaLimaVM vm : admitted) interactivity)
+        name <- sanitizedArgument "the admitted Lima instance" (Text.pack (limaName vm))
+        AdmittedLayers admitted binary interactivity <- go rest
+        pure (AdmittedLayers (ViaLimaVM vm{limaName = Text.unpack (admittedText name)} : admitted) binary interactivity)
     go (ViaWsl2VM vm : rest) = do
-        _ <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
-        AdmittedLayers admitted interactivity <- go rest
-        pure (AdmittedLayers (ViaWsl2VM vm : admitted) interactivity)
+        name <- sanitizedArgument "the admitted WSL distribution" (Text.pack (wsl2Distro vm))
+        AdmittedLayers admitted binary interactivity <- go rest
+        pure (AdmittedLayers (ViaWsl2VM vm{wsl2Distro = Text.unpack (admittedText name)} : admitted) binary interactivity)
     go (ViaContainer _ : _) =
         Left (routeFailure "a container layer is terminal in a composed process route")
 
     validateTerminalVm label name layer = do
-        _ <- sanitizedPath "the admitted target binary" targetBinary
-        _ <- sanitizedArgument ("the admitted " <> label) name
-        pure (AdmittedLayers [layer] NoninteractiveChannel)
+        binary <- sanitizedPath "the admitted target binary" targetBinary
+        admitted <- sanitizedArgument ("the admitted " <> label) name
+        pure (AdmittedLayers [layer admitted] (Just binary) NoninteractiveChannel)
 
 admittedContainer :: Text -> ContainerLift -> Either Text ContainerLift
 admittedContainer child container = do
@@ -430,14 +376,16 @@ admittedContainer child container = do
         "the admitted container layer outlives its own exchange"
         (clRemoveAfter container)
     frame <- sanitizedArgument "the admitted child frame" child
-    _ <- sanitizedArgument "the admitted container image" (Text.pack (clImage container))
-    _ <- traverse sanitizedMount (clMounts container)
+    image <- sanitizedArgument "the admitted container image" (Text.pack (clImage container))
+    mounts <- traverse sanitizedMount (clMounts container)
     let placementArgs = case clPlacement container of
             ProviderGuestContainer -> []
             DirectHostContainer -> ["-e", "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"]
     pure
         container
-            { clExtraArgs =
+            { clImage = Text.unpack (admittedText image)
+            , clMounts = mounts
+            , clExtraArgs =
                 [ "-i"
                 , "--network=host"
                 , "-e"
@@ -458,18 +406,16 @@ folded layers binary inner interactivity = do
         DispatchTool tool argv -> Right (AdmittedLaunch tool (map Text.pack argv) interactivity)
         _ -> Left (routeFailure "a process route must cross exactly one frame")
 
-{- | Admit one bind mount as two arguments, or refuse it.
+{- | Admit one bind mount for the shared Lift renderer, or refuse it.
 
 Both halves must be absolute and free of the delimiter the rendered pair uses,
 so a source or target cannot smuggle a further mount option past the colon.
 -}
-sanitizedMount :: Mount -> Either Text [Text]
+sanitizedMount :: Mount -> Either Text Mount
 sanitizedMount mount = do
     from <- sanitizedPath "the admitted mount source" (source mount)
     to <- sanitizedPath "the admitted mount target" (target mount)
-    pure ["-v", rendered from to <> (if readOnly mount then ":ro" else "")]
-  where
-    rendered from to = admittedPathText from <> ":" <> admittedPathText to
+    pure (Mount (admittedPathText from) (admittedPathText to) (readOnly mount))
 
 sanitizedPath :: Text -> Text -> Either Text ValidatedPath
 sanitizedPath label value = do
@@ -481,8 +427,7 @@ sanitizedPath label value = do
 
 {- | Admit one derived argument against the closed grammar.
 
-An argument that is empty, carries whitespace, reads as an option, or names
-one of the overrides this route exists to exclude is refused rather than
+An argument that is empty, carries whitespace, or reads as an option is refused rather than
 escaped, because a route that has to quote its own arguments is a route whose
 shape is no longer fixed.
 -}
@@ -491,37 +436,21 @@ sanitizedArgument label value = do
     require (label <> " is empty") (not (Text.null value))
     require (label <> " carries whitespace") (not (Text.any isSpace value))
     require (label <> " reads as an option or a separator") (not ("-" `Text.isPrefixOf` value))
-    require (label <> " names a rejected override") (value `notElem` rejectedOverrides)
     pure (ValidatedArgument value)
-
--- | The overrides a sanitized route never renders and never accepts.
-rejectedOverrides :: [Text]
-rejectedOverrides =
-    [ "--"
-    , "--attach"
-    , "--detach"
-    , "--entrypoint"
-    , "--interactive"
-    , "--preserve-fds"
-    , "--sig-proxy"
-    , "--stop-signal"
-    , "--tty"
-    , "--workdir"
-    ]
 
 {- | Borrow the launch this route renders, and nothing else.
 
-The continuation receives the host tool, the exact argument vector, and
-whether the shape keeps standard input attached. It receives no frame, verb,
+The continuation receives the host tool and exact argument vector. The process
+owner pipes standard input for every provider. It receives no frame, verb,
 coordinate, or route value, and its result is fixed.
 -}
 withLifecycleProcessRouteLaunchKernel ::
     LifecycleProcessRoute scope rootPlanId brokerGeneration catalogId parent child verb ->
-    (HostTool -> [Text] -> ChannelInteractivity -> IO (Either Text ())) ->
+    (HostTool -> [Text] -> IO (Either Text ())) ->
     IO (Either Text ())
 {-# OPAQUE withLifecycleProcessRouteLaunchKernel #-}
 withLifecycleProcessRouteLaunchKernel route use = case route of
-    LifecycleProcessRoute _ _ _ tool argv interactivity -> use tool argv interactivity
+    LifecycleProcessRoute _ _ _ tool argv _ -> use tool argv
 
 {- | Raise this frame's own opening and admit the answer to it.
 

@@ -31,6 +31,8 @@ as the canonical statement.
 Store-backed re-entry has an abstract `StoredOriginRecord session` input with a nominal entry
 index. Only the tape's `readStoredRecordUnder` mints it, from an actual decoded protected read and
 its exact version. The dedicated kernel and reported producers refuse in-memory data by type.
+Protected record versions span positive `Word64` values; a write at the maximum refuses before
+publication rather than wrapping the version.
 They are the only re-entry producers; physical production-source and exact export guards forbid
 unconstrained entrypoints. Every owner retains the actual wrapper until strict re-entry.
 The projections are ordinary functions, so record-update syntax cannot change either the body or
@@ -171,9 +173,14 @@ service process may intentionally outlive its launcher, but it is not thereby an
 protected-store entry or project-wide liveness extent. On POSIX the store sets `FD_CLOEXEC`; the Windows
 handle row is already non-inheritable.
 
-The protected store's entry uses `base`'s portable `hLock`, together with an in-process mutex. Its
-nonblocking entry first tries that mutex, then `hTryLock`; contention from another thread or process
-returns absence. The holding thread's own re-entry is a typed `ProtectedInvalid` refusal.
+The protected store's entry uses `base`'s portable `hLock`, together with a process-wide mutex keyed by
+directory identity on POSIX and the canonical directory path on Windows. Independently opened handles,
+including equivalent paths, share that mutex
+and holder marker. Its nonblocking entry first tries the mutex, then `hTryLock`; contention from another
+thread or process returns absence. The holding thread's own re-entry is a typed `ProtectedInvalid` refusal.
+An existing-only open and entry share that same lock, but refuse a missing records directory, identity,
+or lock rather than creating one. They compare the opened lock's native identity and recheck the store
+identity under that lock before admitting a session.
 
 Each admitted `ProtectedSession` carries a nominal provenance index and a fresh private extent token.
 The token records its owner thread and is revoked before the entry unlocks. Read, list, compare-and-swap,
@@ -194,6 +201,13 @@ explicit absence marker, keyed by a generative nonce. Absence is a recorded fact
 from a missing backup. This clause is what makes restore correct after a crash between the first write
 and the run's completion — without it, a retry can record generated content as the original and
 teardown then restores that content instead of the user's state.
+
+The root command reservation that precedes a root entry's first write keeps two failures apart. When the
+evidence the root retains disagrees with itself — a verb, digest, canonical bytes, project, store, broker
+epoch, journal scope or run lease, lease/journal agreement, topology membership, cursor or context frame,
+placement, or a lifecycle context that is not the root's own — `authorizeRootProject` refuses with
+`AuthorityEvidenceMismatch` ("the retained root evidence does not match: …") and writes no invocation
+record. `AuthorityMalformedBinding` is kept for a durable authority record whose bytes are themselves corrupt.
 
 The protected store publishes a closed temporary in the destination directory, synchronizes its data,
 renames it atomically, and synchronizes the parent directory on POSIX. Windows uses `flushFileBuffers`
@@ -696,6 +710,9 @@ whose gate produced it.
 A local directory can enclose dependent work through the opaque `ShippedDirectoryLease`.
 `withShippedDirectoryLease` uses the ordinary shipped directory acquisition, reads its bound record
 from the same protected entry, and keeps that entry open throughout its callback.
+`withExistingShippedDirectoryLease` instead enters only an existing protected store and requires an
+already-bound absent-origin directory record. It neither creates nor repairs the authority, record,
+or directory, and refuses absent, stale, foreign, or replaced ownership before dependent work.
 `useShippedDirectoryLease` checks that thread's live entry and the directory's current kernel identity
 before and after an action. An escaped closure or another thread receives a refusal before the action.
 This lease preserves directory ownership across a dependent transaction; it does not release the

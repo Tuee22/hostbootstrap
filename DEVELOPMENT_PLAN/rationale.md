@@ -959,7 +959,7 @@ and resolved-tool boundary. A descriptor that can represent only one command ref
 
 Delivery retains only its write path and projection payload. Canonical binding records that destination
 and the payload digest, so changing either changes the binding without recording the raw projection.
-This two-field record belongs to canonical snapshot format 8. The versioned parser refuses format 7
+This two-field record belongs to canonical snapshot format 9. The versioned parser refuses earlier formats
 rather than interpreting a different record shape under the same version. Tests recover an actual
 persisted delivering plan and refuse rehashed incompatible shapes before yielding evidence.
 

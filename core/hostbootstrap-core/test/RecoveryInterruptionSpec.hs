@@ -7,11 +7,12 @@ import qualified RecursiveLifecycleSpec
 import System.Directory (doesFileExist)
 import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitSuccess))
-import System.FilePath ((</>))
+import System.FilePath (takeFileName, (</>))
+import qualified Data.Text as Text
 import System.IO.Temp (withSystemTempDirectory)
 import System.Process (ProcessHandle, spawnProcess, terminateProcess, waitForProcess)
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
+import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 tests :: TestTree
 tests =
@@ -22,6 +23,8 @@ tests =
         , boundaryCase "migration-committed" Nothing
         , boundaryCase "closing-persisted" Nothing
         , destroySettlementCase
+        , adoptedReverseRestartCase
+        , unknownReverseRestartCase
         ]
 
 destroySettlementCase :: TestTree
@@ -40,6 +43,49 @@ destroySettlementCase =
                     )
                 RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
                 RecursiveLifecycleSpec.runPublicProcess root False "destroy" >>= (@?= ExitSuccess)
+
+adoptedReverseRestartCase :: TestTree
+adoptedReverseRestartCase =
+    testCase "reverse restart after Adopted replays without a second effect" $
+        RecursiveLifecycleSpec.withLocalGuestFrame ["recovery-interruption"] $
+            RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
+                RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                let readyPath = root </> "adopted-ready"
+                bracket
+                    (RecursiveLifecycleSpec.spawnAdoptedInterruptionProbe root readyPath)
+                    terminateAndReap
+                    (\_ -> do
+                        awaitFile readyPath
+                        readFile readyPath >>= (@?= "container-adopted")
+                        executable <- (root </>) . takeFileName <$> getExecutablePath
+                        before <- RecursiveLifecycleSpec.fixtureAuthorityImage root executable
+                        contender <- RecursiveLifecycleSpec.runPublicProcess root False "destroy"
+                        assertBool "a live reverse invocation must exclude recovery" (contender /= ExitSuccess)
+                        RecursiveLifecycleSpec.fixtureAuthorityImage root executable >>= (@?= before))
+                restarted <- RecursiveLifecycleSpec.runPublicProcess root False "destroy"
+                unless (restarted == ExitSuccess) $ do
+                    executable <- (root </>) . takeFileName <$> getExecutablePath
+                    image <- RecursiveLifecycleSpec.fixtureAuthorityImage root executable
+                    let sessions = filter (Text.isPrefixOf (Text.pack "session.") . fst) image
+                    prior <- readFile (readyPath <> ".sessions")
+                    assertFailure ("restart failed " <> show restarted <> "; sessions at interruption: " <> prior <> "; sessions after restart: " <> show sessions)
+                attempts <- lines <$> readFile (root </> "reverse-attempts")
+                length (filter (== "container") attempts) @?= 1
+
+unknownReverseRestartCase :: TestTree
+unknownReverseRestartCase =
+    testCase "reverse restart refuses an unknown child effect without repeating it" $
+        RecursiveLifecycleSpec.withLocalGuestFrame ["recovery-interruption"] $
+            RecursiveLifecycleSpec.withFixtureEnvironment False $ \root _ -> do
+                RecursiveLifecycleSpec.runPublicProcess root False "up" >>= (@?= ExitSuccess)
+                interrupted <- RecursiveLifecycleSpec.runCrashReverseProcess root
+                assertBool "the interrupted effect must fail" (interrupted /= ExitSuccess)
+                before <- lines <$> readFile (root </> "reverse-attempts")
+                length (filter (== "container") before) @?= 1
+                restarted <- RecursiveLifecycleSpec.runPublicProcess root False "destroy"
+                assertBool "an unknown effect must refuse recovery" (restarted /= ExitSuccess)
+                after <- lines <$> readFile (root </> "reverse-attempts")
+                length (filter (== "container") after) @?= 1
 
 boundaryCase :: String -> Maybe [String] -> TestTree
 boundaryCase boundary expectedEvents =

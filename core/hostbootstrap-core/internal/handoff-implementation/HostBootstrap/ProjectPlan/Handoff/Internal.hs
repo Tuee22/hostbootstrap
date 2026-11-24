@@ -8,20 +8,13 @@
 
 Descriptor, context, configuration, and target-plan validation belong to the
 shared immediate-target projection kernel.  This module owns only the exact
-lifecycle-context join, the two sealed packages, and their fixed-unit
-eliminators.
+catalog-admitted package and its fixed-unit eliminator.
 
-The immediate 'PlannedForwardHandoff' is the inert single-edge foundation: one
-parent frame projects its own declared descent and retains the lifecycle
-context it was admitted under.  'CatalogForwardHandoff' is the storeless
-package a recursive descent edge authorizes: it is produced only from an edge
-the root-owned plan catalog already admitted, retains no lifecycle context, and
-carries no store, catalog row, process, or effect authority.
+'CatalogForwardHandoff' is the storeless package a recursive descent edge
+authorizes: it is produced only from an edge the root-owned plan catalog
+already admitted and carries no store, process, or effect authority.
 -}
 module HostBootstrap.ProjectPlan.Handoff.Internal (
-    PlannedForwardHandoff,
-    withPlannedForwardHandoffKernel,
-    withPlannedForwardProcessInputsKernel,
     CatalogForwardHandoff,
     withCatalogForwardHandoffKernel,
     withCatalogForwardProcessInputsKernel,
@@ -30,7 +23,6 @@ where
 
 import Data.ByteString (ByteString)
 import Data.Text (Text)
-import qualified Data.Text as Text
 import HostBootstrap.Config.Class (ProjectCfg (cfgContext))
 import HostBootstrap.Config.Schema (
     validatedConfigDigest,
@@ -43,12 +35,6 @@ import HostBootstrap.Handoff (
     HandoffPayloadKind (NarrowedProjectConfig),
     childConfigDigest,
  )
-import HostBootstrap.Lifecycle.Context.Internal (
-    LifecycleContextError (LifecycleContextRootFrameRequired),
-    ValidatedLifecycleContext,
-    withValidatedNestedLifecycleContext,
-    withValidatedRootLifecycleContext,
- )
 import HostBootstrap.Lifecycle.Plan (
     PlanDigestBinding,
     ProjectPlan,
@@ -60,161 +46,19 @@ import HostBootstrap.Lifecycle.Plan (
 import HostBootstrap.Lifecycle.RootedPlan (
     RootedPlanCatalog,
     withRootedPlanCatalogEdgeKernel,
+    ParentFrameId (ParentFrameId),
+    ChildFrameId (ChildFrameId),
+    RawLiftRoute (RawLiftRoute),
+    StrippedLiftRoute (StrippedLiftRoute),
+    ConfigDigest (ConfigDigest),
+    PayloadDigest (PayloadDigest),
  )
 import HostBootstrap.Lift.Context (LiftContext, liftLayers)
-import HostBootstrap.ProjectPlan.Construct.Internal (FinalizedProjectSpec)
 import HostBootstrap.ProjectPlan.Frame (
     CurrentFrame,
     currentFrameId,
-    projectFrameId,
-    validatedContextValue,
  )
-import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
 import HostBootstrap.Step (OperationKey)
-
-data
-    PlannedForwardHandoff
-        scope
-        specDigest
-        parentPlanId
-        parentConfigId
-        parentFrame
-        childPlanDigest
-        childConfigId
-        childFrame
-    where
-    PlannedForwardHandoff ::
-        ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
-        CurrentFrame scope parentPlanId parentFrame ->
-        ValidatedLifecycleContext
-            scope
-            specDigest
-            parentPlanId
-            parentConfigId
-            parentFrame ->
-        ProjectPlan scope specDigest childPlanId childConfigId cfg ->
-        PlanDigestBinding scope specDigest childPlanDigest childPlanId ->
-        CurrentFrame scope childPlanId childFrame ->
-        LiftContext ->
-        LiftContext ->
-        HandoffBindingInput ->
-        ByteString ->
-        PlannedForwardHandoff
-            scope
-            specDigest
-            parentPlanId
-            parentConfigId
-            parentFrame
-            childPlanDigest
-            childConfigId
-            childFrame
-
-type role PlannedForwardHandoff nominal nominal nominal nominal nominal nominal nominal nominal
-
-withPlannedForwardHandoffKernel ::
-    (ProjectCfg cfg) =>
-    FinalizedProjectSpec scope specDigest cfg ->
-    ProjectPlan scope specDigest parentPlanId parentConfigId cfg ->
-    CurrentFrame scope parentPlanId parentFrame ->
-    ValidatedLifecycleContext
-        scope
-        specDigest
-        parentPlanId
-        parentConfigId
-        parentFrame ->
-    ( forall childPlanDigest childConfigId childFrame.
-      PlannedForwardHandoff
-        scope
-        specDigest
-        parentPlanId
-        parentConfigId
-        parentFrame
-        childPlanDigest
-        childConfigId
-        childFrame ->
-      IO (Either Text ())
-    ) ->
-    IO (Either Text ())
-withPlannedForwardHandoffKernel finalized parent suppliedCurrent lifecycle use =
-    case withValidatedRootLifecycleContext lifecycle borrow of
-        Right action -> flatten action
-        Left (LifecycleContextRootFrameRequired _) ->
-            either
-                (pure . Left . failureText "lifecycle context")
-                flatten
-                (withValidatedNestedLifecycleContext lifecycle borrow)
-        Left failure -> pure (Left (failureText "lifecycle context" failure))
-  where
-    borrow _ _ retainedCurrent projectFrame validated =
-        admitLifecycle retainedCurrent (projectFrameId projectFrame) (validatedContextValue validated)
-
-    admitLifecycle retainedCurrent projectId parentContext
-        | suppliedId /= retainedId || suppliedId /= projectId =
-            pure (refusal "parent frame evidence differs")
-        | otherwise =
-            withImmediateTargetKernel finalized parent suppliedCurrent parentContext sealPlanned
-      where
-        suppliedId = currentFrameId suppliedCurrent
-        retainedId = currentFrameId retainedCurrent
-
-    sealPlanned targetPlan binding targetCurrent _child _parentFrame _childFrame raw route payload _configDigest _payloadDigest input =
-        runPlannedForward
-            ( PlannedForwardHandoff
-                parent
-                suppliedCurrent
-                lifecycle
-                targetPlan
-                binding
-                targetCurrent
-                raw
-                route
-                input
-                payload
-            )
-            use
-
-    flatten action =
-        action >>= either (\failure -> failure `seq` pure (Left failure)) (\() -> pure (Right ()))
-
-withPlannedForwardProcessInputsKernel ::
-    PlannedForwardHandoff
-        scope
-        specDigest
-        parentPlanId
-        parentConfigId
-        parentFrame
-        childPlanDigest
-        childConfigId
-        childFrame ->
-    (LiftContext -> HandoffBindingInput -> ByteString -> IO (Either Text ())) ->
-    IO (Either Text ())
-withPlannedForwardProcessInputsKernel planned use = runPlannedForward planned expose
-  where
-    expose (PlannedForwardHandoff _ _ _ _ _ _ _ route input payload) = use route input payload
-
-runPlannedForward ::
-    PlannedForwardHandoff a b c d e f g h ->
-    (PlannedForwardHandoff a b c d e f g h -> result) ->
-    result
-runPlannedForward planned@(PlannedForwardHandoff parent current lifecycle targetPlan binding child raw route input payload) use =
-    parent `seq`
-        current `seq`
-            lifecycle `seq`
-                targetPlan `seq`
-                    binding `seq`
-                        child `seq`
-                            raw `seq`
-                                route `seq`
-                                    input `seq`
-                                        payload `seq`
-                                            use planned
-
-refusal :: Text -> Either Text value
-refusal detail = Left ("planned forward handoff: " <> detail)
-
-failureText :: (Show failure) => Text -> failure -> Text
-failureText label failure =
-    "planned forward handoff: " <> label <> " refused: " <> Text.pack (show failure)
 
 {- | The storeless forward package one catalog-admitted descent edge
 authorizes.
@@ -304,11 +148,11 @@ withCatalogForwardHandoffKernel ::
     ) ->
     IO (Either Text ())
 withCatalogForwardHandoffKernel catalog requestedParent requestedChild use =
-    case withRootedPlanCatalogEdgeKernel catalog requestedParent requestedChild sealCatalog of
+    case withRootedPlanCatalogEdgeKernel catalog (ParentFrameId requestedParent) (ChildFrameId requestedChild) sealCatalog of
         Left failure -> pure (Left (catalogFailure failure))
         Right action -> action
   where
-    sealCatalog parentCurrent childPlan binding childCurrent raw route payload configDigest payloadDigest keys
+    sealCatalog parentCurrent childPlan binding childCurrent (RawLiftRoute raw) (StrippedLiftRoute route) payload (ConfigDigest configDigest) (PayloadDigest payloadDigest) keys
         | currentFrameId childCurrent /= requestedChild =
             pure (catalogRefusal "the admitted child frame differs from its own retained current frame")
         | Context.currentFrame (cfgContext (validatedConfigValue childConfig)) /= requestedChild =

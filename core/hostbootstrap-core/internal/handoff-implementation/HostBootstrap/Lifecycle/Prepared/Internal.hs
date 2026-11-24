@@ -10,6 +10,8 @@ module HostBootstrap.Lifecycle.Prepared.Internal (
     GateFence (..),
     GateAttempt (..),
     GateJournalVersion (..),
+    GateUnknownPhase (..),
+    GateCallDigest (..),
     GateCatalogIdentity (..),
     GateFrame (..),
     GateSupersessionGeneration (..),
@@ -18,13 +20,21 @@ module HostBootstrap.Lifecycle.Prepared.Internal (
     preparedGateOperation,
     preparedGateSession,
     preparedGateFence,
+    preparedGateSupersessionGeneration,
     preparedGateAttempt,
     preparedGateJournalVersion,
+    preparedGateEffect,
+    bindPreparedGateEffect,
     mintPreparedGate,
+    mintRoutedPreparedGate,
     PreparedNodeGrant,
-    renderPreparedGatePackageKernel,
+    renderFencedPreparedGatePackageKernel,
     renderPreparedGatePackagesKernel,
-    readPreparedGatePackageKernel,
+    readFencedPreparedGatePackageKernel,
+    renderEffectPreparedGatePackageKernel,
+    readEffectPreparedGatePackageKernel,
+    renderEffectProposalsKernel,
+    readEffectProposalsKernel,
     readPreparedGatePackagesKernel,
     renderPreparedNodeKeysKernel,
     mintPreparedNodeGrantKernel,
@@ -36,6 +46,7 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
+import Data.List (nub)
 import Data.Text (Text)
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
@@ -69,6 +80,13 @@ newtype GateAttempt = GateAttempt Word64
 newtype GateJournalVersion = GateJournalVersion Word64
     deriving (Eq, Show)
 
+-- | The journaled unknown transition and the digest of the effect it permits.
+newtype GateUnknownPhase = GateUnknownPhase Text
+    deriving (Eq, Show)
+
+newtype GateCallDigest = GateCallDigest Text
+    deriving (Eq, Show)
+
 -- | The catalog a rooted gate package names.
 newtype GateCatalogIdentity = GateCatalogIdentity Text
     deriving (Eq, Show)
@@ -95,11 +113,11 @@ This module is internal to the package. The public
 "HostBootstrap.Lifecycle.Prepared" module keeps the constructor and minting
 function hidden and exposes only ordinary coordinate readers.
 -}
-data PreparedGate = PreparedGate Text Text Text Word64 Word64 Word64
+data PreparedGate = PreparedGate Text Text Text Word64 (Maybe Word64) Word64 Word64 (Maybe (GateUnknownPhase, GateCallDigest))
     deriving (Eq)
 
 instance Show PreparedGate where
-    showsPrec precedence (PreparedGate plan operation session fence attempt journalVersion) =
+    showsPrec precedence (PreparedGate plan operation session fence supersession attempt journalVersion _) =
         showParen (precedence > 10) $
             showString "PreparedGate {preparedGatePlan = "
                 . shows plan
@@ -109,6 +127,7 @@ instance Show PreparedGate where
                 . shows session
                 . showString ", preparedGateFence = "
                 . shows fence
+                . maybe id (\generation -> showString ", preparedGateSupersessionGeneration = " . shows generation) supersession
                 . showString ", preparedGateAttempt = "
                 . shows attempt
                 . showString ", preparedGateJournalVersion = "
@@ -116,22 +135,34 @@ instance Show PreparedGate where
                 . showString "}"
 
 preparedGatePlan :: PreparedGate -> Text
-preparedGatePlan (PreparedGate plan _ _ _ _ _) = plan
+preparedGatePlan (PreparedGate plan _ _ _ _ _ _ _) = plan
 
 preparedGateOperation :: PreparedGate -> Text
-preparedGateOperation (PreparedGate _ operation _ _ _ _) = operation
+preparedGateOperation (PreparedGate _ operation _ _ _ _ _ _) = operation
 
 preparedGateSession :: PreparedGate -> Text
-preparedGateSession (PreparedGate _ _ session _ _ _) = session
+preparedGateSession (PreparedGate _ _ session _ _ _ _ _) = session
 
 preparedGateFence :: PreparedGate -> Word64
-preparedGateFence (PreparedGate _ _ _ fence _ _) = fence
+preparedGateFence (PreparedGate _ _ _ fence _ _ _ _) = fence
+
+preparedGateSupersessionGeneration :: PreparedGate -> Maybe Word64
+preparedGateSupersessionGeneration (PreparedGate _ _ _ _ generation _ _ _) = generation
 
 preparedGateAttempt :: PreparedGate -> Word64
-preparedGateAttempt (PreparedGate _ _ _ _ attempt _) = attempt
+preparedGateAttempt (PreparedGate _ _ _ _ _ attempt _ _) = attempt
 
 preparedGateJournalVersion :: PreparedGate -> Word64
-preparedGateJournalVersion (PreparedGate _ _ _ _ _ journalVersion) = journalVersion
+preparedGateJournalVersion (PreparedGate _ _ _ _ _ _ journalVersion _) = journalVersion
+
+-- | Coordinates of the journaled effect, when the producer has bound them.
+preparedGateEffect :: PreparedGate -> Maybe (GateUnknownPhase, GateCallDigest)
+preparedGateEffect (PreparedGate _ _ _ _ _ _ _ effect) = effect
+
+-- | Attach coordinates read from the same committed record as this gate.
+bindPreparedGateEffect :: GateUnknownPhase -> GateCallDigest -> PreparedGate -> PreparedGate
+bindPreparedGateEffect phase digest (PreparedGate plan operation session fence supersession attempt version _) =
+    PreparedGate plan operation session fence supersession attempt version (Just (phase, digest))
 
 -- | Package-internal constructor used only after the durable write commits.
 mintPreparedGate ::
@@ -149,13 +180,33 @@ mintPreparedGate
     (GateFence fence)
     (GateAttempt attempt)
     (GateJournalVersion journalVersion) =
-        PreparedGate plan operation session fence attempt journalVersion
+        PreparedGate plan operation session fence Nothing attempt journalVersion Nothing
+
+-- | Mint a routed gate without treating its broker generation as a fence epoch.
+mintRoutedPreparedGate ::
+    GatePlanDigest ->
+    GateOperationKey ->
+    GateSession ->
+    GateSupersessionGeneration ->
+    GateFence ->
+    GateAttempt ->
+    GateJournalVersion ->
+    PreparedGate
+mintRoutedPreparedGate
+    (GatePlanDigest plan)
+    (GateOperationKey operation)
+    (GateSession session)
+    (GateSupersessionGeneration generation)
+    (GateFence fence)
+    (GateAttempt attempt)
+    (GateJournalVersion journalVersion) =
+        PreparedGate plan operation session fence (Just generation) attempt journalVersion Nothing
 
 {- | One root-owned authorization to run exactly one node's local effect.
 
 A grant is what a storeless frame executor is given instead of the store. It
-carries the canonical signed response the root already produced, the node it
-authorizes, that node's ordered dependencies, and the gate packages proving
+carries the node it authorizes, that node's ordered dependencies, and the gate
+packages proving
 every durable unknown row was published and read back first. It carries no
 store handle, journal state, session record, permit, or compare-and-swap
 operation, so holding one lets a frame know it may act and know nothing about
@@ -192,44 +243,133 @@ data
 type role PreparedNodeGrant nominal nominal nominal nominal nominal nominal nominal nominal
 
 instance Show (PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb) where
-    show _ = "PreparedNodeGrant <root-signed>"
+    show _ = "PreparedNodeGrant <prepared>"
 
-{- | Frame one operation's gate coordinates canonically.
-
-Every variable-width value is length-framed and every fixed-width one is a
-big-endian word, so the bytes are canonical rather than delimiter-joined. The
-supersession generation stands where an ordinary operation gate carries its
-fence epoch: for rooted work the broker generation is what invalidates a prior
-permit, so it is the coordinate a stale package is caught by.
--}
-renderPreparedGatePackageKernel ::
-    GatePlanDigest ->
-    GateCatalogIdentity ->
-    GateFrame ->
-    GateSession ->
-    GateSupersessionGeneration ->
-    GateAttempt ->
-    GateJournalVersion ->
-    ByteString
-renderPreparedGatePackageKernel
-    (GatePlanDigest planDigest)
-    (GateCatalogIdentity catalogIdentity)
-    (GateFrame frame)
-    (GateSession session)
-    (GateSupersessionGeneration generation)
-    (GateAttempt attempt)
-    (GateJournalVersion journalVersion) =
+-- | Version 3 carries the operation fence independently of the broker generation.
+renderFencedPreparedGatePackageKernel ::
+    GatePlanDigest -> GateCatalogIdentity -> GateFrame -> GateSession -> GateOperationKey ->
+    GateSupersessionGeneration -> GateFence -> GateAttempt -> GateJournalVersion -> ByteString
+renderFencedPreparedGatePackageKernel
+    (GatePlanDigest plan) (GateCatalogIdentity catalog) (GateFrame frame) (GateSession session)
+    (GateOperationKey operation) (GateSupersessionGeneration generation) (GateFence fence)
+    (GateAttempt attempt) (GateJournalVersion journalVersion) =
         ByteString.concat
             [ framed "hostbootstrap/prepared-node-gate"
-            , framedWord 1
-            , framed planDigest
-            , framed catalogIdentity
+            , framedWord 3
+            , framed plan
+            , framed catalog
             , framed frame
             , framed session
+            , framed operation
             , framedWord generation
+            , framedWord fence
             , framedWord attempt
             , framedWord journalVersion
             ]
+
+-- | Decode the complete canonical fence-bearing form, refusing absent authority.
+readFencedPreparedGatePackageKernel ::
+    ByteString -> Either Text (Text, Text, Text, Text, Text, Word64, Word64, Word64, Word64)
+readFencedPreparedGatePackageKernel raw = do
+    fields <- takeFrames 11 raw
+    case fields of
+        [domain, version, plan, catalog, frame, session, operation, generation, fence, attempt, journalVersion] -> do
+            requireGate (domain == "hostbootstrap/prepared-node-gate") "has the wrong gate package domain"
+            requireGate (version == wordBytes 3) "has the wrong gate package version"
+            decoded <-
+                (,,,,,,,,)
+                    <$> gateText "plan digest" plan
+                    <*> gateText "catalog identity" catalog
+                    <*> gateText "frame" frame
+                    <*> gateText "session" session
+                    <*> gateText "operation key" operation
+                    <*> gateWord "supersession generation" generation
+                    <*> gateWord "operation fence" fence
+                    <*> gateWord "attempt" attempt
+                    <*> gateWord "journal version" journalVersion
+            let (planName, catalogName, frameName, sessionName, operationName, epoch, fenceEpoch, attemptCount, rowVersion) = decoded
+            requireGate (epoch > 0) "has a zero supersession generation"
+            requireGate (fenceEpoch > 0) "has a zero operation fence"
+            requireGate (attemptCount > 0) "has a zero attempt"
+            requireGate (rowVersion > 0) "has a zero journal version"
+            requireGate
+                ( renderFencedPreparedGatePackageKernel
+                    (GatePlanDigest planName) (GateCatalogIdentity catalogName) (GateFrame frameName)
+                    (GateSession sessionName) (GateOperationKey operationName) (GateSupersessionGeneration epoch)
+                    (GateFence fenceEpoch) (GateAttempt attemptCount) (GateJournalVersion rowVersion) == raw
+                )
+                "is not a canonical gate package"
+            pure decoded
+        _ -> Left (gateFailure "has the wrong gate package field count")
+
+-- | Extend a validated fenced package with the exact recorded effect coordinates.
+renderEffectPreparedGatePackageKernel ::
+    ByteString -> GateUnknownPhase -> GateCallDigest -> Either Text ByteString
+renderEffectPreparedGatePackageKernel fenced (GateUnknownPhase phase) (GateCallDigest digest) = do
+    _ <- readFencedPreparedGatePackageKernel fenced
+    _ <- gateText "unknown phase" (TextEncoding.encodeUtf8 phase)
+    _ <- gateText "call digest" (TextEncoding.encodeUtf8 digest)
+    requireGate (ByteString.length (TextEncoding.encodeUtf8 phase) <= fromIntegral maxGateFieldBytes) "has an oversized unknown phase"
+    requireGate (ByteString.length (TextEncoding.encodeUtf8 digest) <= fromIntegral maxGateFieldBytes) "has an oversized call digest"
+    fields <- takeFrames 11 fenced
+    case fields of
+        domain : _version : rest ->
+            Right (ByteString.concat (map frame' (domain : wordBytes 4 : rest)) <> framed phase <> framed digest)
+        _ -> Left (gateFailure "has the wrong gate package field count")
+
+-- | Recover the fenced package and effect from a complete canonical package.
+readEffectPreparedGatePackageKernel ::
+    ByteString -> Either Text (ByteString, GateUnknownPhase, GateCallDigest)
+readEffectPreparedGatePackageKernel raw = do
+    fields <- takeFrames 13 raw
+    case fields of
+        [domain, version, plan, catalog, frame, session, operation, generation, fence, attempt, journalVersion, phase, digest] -> do
+            requireGate (version == wordBytes 4) "has the wrong gate package version"
+            let fenced = ByteString.concat (map frame' [domain, wordBytes 3, plan, catalog, frame, session, operation, generation, fence, attempt, journalVersion])
+            _ <- readFencedPreparedGatePackageKernel fenced
+            unknown <- GateUnknownPhase <$> gateText "unknown phase" phase
+            call <- GateCallDigest <$> gateText "call digest" digest
+            canonical <- renderEffectPreparedGatePackageKernel fenced unknown call
+            requireGate (canonical == raw) "is not a canonical gate package"
+            pure (fenced, unknown, call)
+        _ -> Left (gateFailure "has the wrong gate package field count")
+
+-- | Encode ordered descriptive effects; these bytes grant no authority.
+renderEffectProposalsKernel :: [(GateOperationKey, GateUnknownPhase, GateCallDigest)] -> Either Text ByteString
+renderEffectProposalsKernel proposals = do
+    let keys = [key | (key, _, _) <- proposals]
+        fields = concat [[key, phase, digest] | (GateOperationKey key, GateUnknownPhase phase, GateCallDigest digest) <- proposals]
+    requireGate (not (null proposals) && length proposals <= maxGatePackages && length keys == length (nub keys)) "has invalid or duplicate effect operations"
+    mapM_ validate fields
+    pure (ByteString.concat ([framed "hostbootstrap/effect-proposals", framedWord 1, framedWord (fromIntegral (length proposals))] ++ map framed fields))
+  where
+    validate value = do
+        let bytes = TextEncoding.encodeUtf8 value
+        _ <- gateText "effect coordinate" bytes
+        requireGate (ByteString.length bytes <= fromIntegral maxGateFieldBytes && not (ByteString.elem 9 bytes)) "has an invalid effect coordinate"
+
+-- | Decode and re-render the complete bounded ordered proposal.
+readEffectProposalsKernel :: ByteString -> Either Text [(GateOperationKey, GateUnknownPhase, GateCallDigest)]
+readEffectProposalsKernel raw = do
+    (domain, afterDomain) <- takeFrame raw
+    (version, afterVersion) <- takeFrame afterDomain
+    (count, remaining) <- takeFrame afterVersion
+    requireGate (domain == "hostbootstrap/effect-proposals" && version == wordBytes 1) "has the wrong effect proposal domain or version"
+    declared <- gateWord "effect count" count
+    requireGate (declared > 0 && declared <= fromIntegral maxGatePackages) "has an invalid effect count"
+    fields <- takeFrames (3 * fromIntegral declared) remaining
+    proposals <- decode fields
+    canonical <- renderEffectProposalsKernel proposals
+    requireGate (canonical == raw) "is not a canonical effect proposal"
+    pure proposals
+  where
+    decode [] = Right []
+    decode (key : phase : digest : rest) = do
+        operation <- GateOperationKey <$> gateText "operation key" key
+        unknown <- GateUnknownPhase <$> gateText "unknown phase" phase
+        call <- GateCallDigest <$> gateText "call digest" digest
+        ((operation, unknown, call) :) <$> decode rest
+    decode _ = Left (gateFailure "has the wrong effect proposal field count")
 
 {- | Frame one ordered operation-key list canonically.
 
@@ -249,63 +389,6 @@ renderPreparedNodeKeysKernel keys =
           ]
             ++ map framed keys
         )
-
-{- | Read back exactly the seven coordinates one gate package frames.
-
-A storeless frame has no journal to read an attempt or a version off, so the
-only place those two coordinates exist for it is inside the package the root
-already signed. Reading them is therefore not a way around the durable write —
-it is how a frame that never touches the store learns what the store recorded.
-
-The decode is strict and canonical: the domain and version must be the exact
-ones this module renders, every field must be present with nothing trailing,
-and re-rendering the decoded coordinates must reproduce the input byte for
-byte. So a package that decodes here is the one the root rendered rather than
-one that merely parses into the same shape.
--}
-readPreparedGatePackageKernel ::
-    ByteString ->
-    Either Text (Text, Text, Text, Text, Word64, Word64, Word64)
-readPreparedGatePackageKernel raw = do
-    fields <- takeFrames 9 raw
-    case fields of
-        [ domain
-            , version
-            , planDigest
-            , catalogIdentity
-            , frame
-            , session
-            , generation
-            , attempt
-            , journalVersion
-            ] -> do
-                requireGate (domain == "hostbootstrap/prepared-node-gate") "has the wrong gate package domain"
-                requireGate (version == wordBytes 1) "has the wrong gate package version"
-                decoded <-
-                    (,,,,,,)
-                        <$> gateText "plan digest" planDigest
-                        <*> gateText "catalog identity" catalogIdentity
-                        <*> gateText "frame" frame
-                        <*> gateText "session" session
-                        <*> gateWord "supersession generation" generation
-                        <*> gateWord "attempt" attempt
-                        <*> gateWord "journal version" journalVersion
-                let (planName, catalogName, frameName, sessionName, epoch, attemptCount, rowVersion) =
-                        decoded
-                requireGate
-                    ( renderPreparedGatePackageKernel
-                        (GatePlanDigest planName)
-                        (GateCatalogIdentity catalogName)
-                        (GateFrame frameName)
-                        (GateSession sessionName)
-                        (GateSupersessionGeneration epoch)
-                        (GateAttempt attemptCount)
-                        (GateJournalVersion rowVersion)
-                        == raw
-                    )
-                    "is not a canonical gate package"
-                pure decoded
-        _ -> Left (gateFailure "has the wrong gate package field count")
 
 {- | Read back an ordered list of gate packages against its explicit count.
 

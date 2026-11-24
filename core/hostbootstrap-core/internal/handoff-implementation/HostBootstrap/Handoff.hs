@@ -138,6 +138,7 @@ module HostBootstrap.Handoff (
     recoveryResponseFields,
     recoveryResponseFromFields,
     signRecoveryWireKernel,
+    signFailedUpRecoveryWireKernel,
     VerifiedRecoveryWire,
     verifiedRecoveryWireBytes,
     withVerifiedRecoveryWire,
@@ -171,6 +172,7 @@ module HostBootstrap.Handoff (
     registerHandoffEdge,
     registerAdmittedHandoffEdge,
     registerRecoverableAdmittedHandoffEdgeKernel,
+    registerFailedUpRecoverableHandoffEdgeKernel,
 
     -- * Offer, challenge, grant
     HandoffToken,
@@ -219,7 +221,6 @@ module HostBootstrap.Handoff (
     prepareLifecycleAcknowledgementKernel,
     adoptLifecycleAcknowledgementKernel,
     rehydrateAdoptedLifecycleReportKernel,
-    rehydrateAdoptedLifecycleAcknowledgementKernel,
 
     -- * Failures
     HandoffError (..),
@@ -243,6 +244,7 @@ import Data.Word (Word64, Word8)
 import HostBootstrap.Authority (
     InstalledProjectIdentity,
     ProjectVerb,
+    VerbUp,
     RootInvocationAuthority,
     brokerEpochWord,
     installedProjectName,
@@ -261,7 +263,11 @@ import HostBootstrap.Config.Vocab (
 import HostBootstrap.Digest (frameWire, sha256Hex)
 import HostBootstrap.Handoff.Internal (
     RecoverySigningKernel,
+    RecoveryExactReadback (..),
+    RecoveryTokenReadback (..),
     RegisteredEdgeRereadResult (..),
+    classifyRecoveryExactReadback,
+    classifyRecoveryTokenReadback,
     classifyRegisteredEdgeReread,
     consumeRecoverySigningKernel,
     consumeRootedLifecycleResponseSigningKernel,
@@ -788,12 +794,17 @@ adoptLifecycleAcknowledgementKernel kernel =
                 Right True -> Right <$> fresh
                 Right False -> Right <$> replay
 
-{- | Read the exact report retained by one parent Adopted row.
+{- | Read the report retained by an Adopted row for the same lifecycle edge.
 
-The binding determines the sole parent-row key. Absence and the two live
-pre-adoption versions are ordinary misses so a caller may resume the process;
-an exact version-three row yields its canonical report, and every malformed or
-later row refuses. No token, offer, or acknowledgement is reopened.
+Parent rows are scanned because an adopted report may carry a previous token
+binding for that edge. Pre-adoption versions are ordinary misses; one canonical
+version-three matching row yields its binding and report. Rows whose decoded
+binding names another edge are skipped; duplicate matches, malformed matching
+rows, and later matching versions refuse. A row whose binding cannot be decoded
+is attributable to this edge only by its key: under this binding's own exact
+key it refuses, and under any other key it cannot be this edge's current row and
+is skipped, so an unrelated corrupt row no longer blocks recovery. No token,
+offer, or acknowledgement is reopened.
 -}
 rehydrateAdoptedLifecycleReportKernel ::
     RecoverySigningKernel ->
@@ -803,14 +814,14 @@ rehydrateAdoptedLifecycleReportKernel ::
 {-# OPAQUE rehydrateAdoptedLifecycleReportKernel #-}
 rehydrateAdoptedLifecycleReportKernel kernel =
     case consumeRecoverySigningKernel kernel () of
-        () -> \store bindingBytes -> case parentMaterial store bindingBytes of
+        () -> \store bindingBytes -> case (,) <$> parentMaterial store bindingBytes <*> lifecycleRecordKey "parent" bindingBytes of
             Left failure -> pure (Left failure)
-            Right expected -> inLifecycleEntry store $ \session -> do
+            Right (expected, ownKey) -> inLifecycleEntry store $ \session -> do
                 listed <- listProtectedRecords session
                 case listed of
                     Left failure -> pure (Left (HandoffStoreFailure failure))
                     Right keys -> do
-                        candidates <- traverse (candidate session expected) (filter isParentKey keys)
+                        candidates <- traverse (candidate session expected ownKey) (filter isParentKey keys)
                         pure $ case sequence candidates of
                             Left failure -> Left failure
                             Right rows -> case [row | Just row <- rows] of
@@ -827,20 +838,33 @@ rehydrateAdoptedLifecycleReportKernel kernel =
 
     isParentKey key = "lifecycle-parent." `Text.isPrefixOf` recordKeyText key
 
-    candidate session expected key = do
+    candidate session expected ownKey key = do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (HandoffStoreFailure failure)
             Right Nothing -> Right Nothing
             Right (Just record)
                 | recordVersionWord (protectedRecordVersion record) < 3 -> Right Nothing
-                | recordVersionWord (protectedRecordVersion record) == 3 -> do
-                    row@(bindingBytes, _report) <- adoptedReport (protectedRecordBytes record)
-                    binding <- decodeHandoffBinding bindingBytes
-                    expectedKey <- lifecycleRecordKey "parent" bindingBytes
-                    requireLifecycle (key == expectedKey) "the adopted lifecycle row key differs"
-                    pure (if sameLifecycleEdge expected binding then Just row else Nothing)
-                | otherwise -> lifecycleRowConflict
+                | otherwise -> case storedEdgeBinding (protectedRecordBytes record) of
+                    Nothing
+                        | key == ownKey -> lifecycleRowConflict
+                        | otherwise -> Right Nothing
+                    Just (bindingBytes, binding) ->
+                      if not (sameLifecycleEdge expected binding)
+                        then Right Nothing
+                        else do
+                            requireLifecycle (recordVersionWord (protectedRecordVersion record) == 3) "the adopted lifecycle row version differs"
+                            row <- adoptedReport (protectedRecordBytes record)
+                            expectedKey <- lifecycleRecordKey "parent" bindingBytes
+                            requireLifecycle (key == expectedKey) "the adopted lifecycle row key differs"
+                            pure (Just row)
+
+    -- The row's own binding, when its frames and binding decode.
+    storedEdgeBinding raw = case takeExactFrames 7 raw of
+        Right [_, _, _, _, storedBinding, _, _] -> case decodeHandoffBinding storedBinding of
+            Right binding -> Just (storedBinding, binding)
+            Left _ -> Nothing
+        _ -> Nothing
 
     adoptedReport raw = do
         fields <- takeExactFrames 7 raw
@@ -871,47 +895,6 @@ rehydrateAdoptedLifecycleReportKernel kernel =
             , handoffVerb expected == handoffVerb observed
             , handoffPhase expected == handoffPhase observed
             ]
-
-{- | Read one exact parent Adopted row without reopening its offer or token.
-
-The row could only have reached version three through authenticated live
-adoption. Rehydration therefore proves its complete binding/report/
-acknowledgement bytes and store identity, performs no write, and releases only
-the canonical acknowledgement after the protected entry closes.
--}
-rehydrateAdoptedLifecycleAcknowledgementKernel ::
-    RecoverySigningKernel ->
-    ProtectedStore ->
-    ByteString ->
-    ByteString ->
-    (ByteString -> IO (Either Text ())) ->
-    IO (Either HandoffError (Either Text ()))
-{-# OPAQUE rehydrateAdoptedLifecycleAcknowledgementKernel #-}
-rehydrateAdoptedLifecycleAcknowledgementKernel kernel =
-    case consumeRecoverySigningKernel kernel () of
-        () -> \store bindingBytes report use ->
-            case material store bindingBytes report of
-                Left failure -> pure (Left failure)
-                Right (key, acknowledgement, adopted) -> do
-                    checked <- inLifecycleEntry store $ \session -> do
-                        observed <- readProtectedRecord session key
-                        pure $ case observed of
-                            Left failure -> Left (HandoffStoreFailure failure)
-                            Right (Just record) | exactLifecycleRow 3 adopted record -> Right ()
-                            _ -> lifecycleRowConflict
-                    either (pure . Left) (const (Right <$> use acknowledgement)) checked
-  where
-    material store bindingBytes report = do
-        reportBinding <- lifecycleReportBinding report
-        requireLifecycle (reportBinding == bindingBytes) "the adopted lifecycle report names another binding"
-        binding <- decodeHandoffBinding bindingBytes
-        requireLifecycle
-            (handoffStoreIdentity binding == protectedStoreIdentityText (protectedStoreIdentity store))
-            "the adopted lifecycle binding names another protected store"
-        acknowledgement <- renderLifecycleAcknowledgement report
-        key <- lifecycleRecordKey "parent" bindingBytes
-        adopted <- lifecycleDurableRow "parent" "adopted" bindingBytes report acknowledgement
-        pure (key, acknowledgement, adopted)
 
 lifecycleChildMaterial ::
     ProtectedStore ->
@@ -3129,13 +3112,77 @@ signRecoveryWireKernel ::
                 )
             )
         )
+signFailedUpRecoveryWireKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration VerbUp ->
+    IO (Either rejection ByteString) ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        VerbUp
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            ( Either
+                rejection
+                ( RecoveryWireGrant
+                    scope
+                    brokerGeneration
+                    VerbUp
+                    planDigest
+                    parentFrame
+                    childFrame
+                    recoveryWireDigest
+                )
+            )
+        )
 {-# OPAQUE signRecoveryWireKernel #-}
-signRecoveryWireKernel kernel =
+signRecoveryWireKernel = signRecoveryWireWithAdmission False
+
+-- Only the prepared failed-Up reverse coordinator may use this private-kernel route.
+signFailedUpRecoveryWireKernel = signRecoveryWireWithAdmission True
+
+signRecoveryWireWithAdmission ::
+    Bool ->
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    IO (Either rejection ByteString) ->
+    RecoveryProjectionBinding
+        scope
+        brokerGeneration
+        verb
+        planDigest
+        parentFrame
+        childFrame
+        recoveryWireDigest ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            ( Either
+                rejection
+                ( RecoveryWireGrant
+                    scope
+                    brokerGeneration
+                    verb
+                    planDigest
+                    parentFrame
+                    childFrame
+                    recoveryWireDigest
+                )
+            )
+        )
+signRecoveryWireWithAdmission allowFailedUp kernel =
     kernel `seq` consumeRecoverySigningKernel kernel sign
   where
     sign broker admission binding wire =
         withActiveRootBroker broker $
-            case validateRecoverySigningEnvelopeActive broker binding wire of
+            case validateRecoverySigningEnvelopeActive allowFailedUp broker binding wire of
                 Left failure -> pure (Left failure)
                 Right () -> do
                     admitted <- admission
@@ -3154,6 +3201,7 @@ signRecoveryWireKernel kernel =
                                 fmap (fmap Right) (signValidatedRecoveryWireActive broker binding wire)
 
 validateRecoverySigningEnvelopeActive ::
+    Bool ->
     RootBroker scope brokerGeneration verb ->
     RecoveryProjectionBinding
         scope
@@ -3165,8 +3213,8 @@ validateRecoverySigningEnvelopeActive ::
         recoveryWireDigest ->
     ByteString ->
     Either HandoffError ()
-validateRecoverySigningEnvelopeActive broker binding wire
-    | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
+validateRecoverySigningEnvelopeActive allowFailedUp broker binding wire
+    | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" && not (allowFailedUp && brokerVerbName broker == "up") =
         Left (HandoffRecoveryVerbInvalid (brokerVerbName broker))
     | recoveryProjectionInstalledProject binding /= brokerProjectName broker =
         Left (HandoffBindingMismatch "the recovery projection names a different installed project than the live root broker")
@@ -3406,8 +3454,36 @@ registerRecoverableAdmittedHandoffEdgeKernel ::
             HandoffError
             (Either rejection (BrokerRelay scope brokerGeneration, HandoffToken))
         )
+registerFailedUpRecoverableHandoffEdgeKernel ::
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration VerbUp ->
+    IO (Either rejection ()) ->
+    HandoffBindingInput ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            (Either rejection (BrokerRelay scope brokerGeneration, HandoffToken))
+        )
 {-# OPAQUE registerRecoverableAdmittedHandoffEdgeKernel #-}
-registerRecoverableAdmittedHandoffEdgeKernel kernel =
+registerRecoverableAdmittedHandoffEdgeKernel = registerRecoverableHandoffEdgeWithAdmission False
+
+-- The caller must supply the exact admission from a prepared failed-Up descent.
+registerFailedUpRecoverableHandoffEdgeKernel = registerRecoverableHandoffEdgeWithAdmission True
+
+registerRecoverableHandoffEdgeWithAdmission ::
+    Bool ->
+    RecoverySigningKernel ->
+    RootBroker scope brokerGeneration verb ->
+    IO (Either rejection ()) ->
+    HandoffBindingInput ->
+    ByteString ->
+    IO
+        ( Either
+            HandoffError
+            (Either rejection (BrokerRelay scope brokerGeneration, HandoffToken))
+        )
+registerRecoverableHandoffEdgeWithAdmission allowFailedUp kernel =
     kernel `seq` consumeRecoverySigningKernel kernel recover
   where
     recover broker admission input adapter = withActiveRootBroker broker $
@@ -3441,7 +3517,7 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
 
     recoveryOpenIdentity broker input adapter
         | requestedPayloadKind input /= RecoveryAdapterWire = mismatch "recoverable open requires recovery-adapter-wire"
-        | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" =
+        | brokerVerbName broker /= "down" && brokerVerbName broker /= "destroy" && not (allowFailedUp && brokerVerbName broker == "up") =
             Left (HandoffRecoveryVerbInvalid (brokerVerbName broker))
         | any Text.null [requestedSpecDigest input, requestedPlanRevision input, requestedParentFrame input, requestedChildFrame input] =
             mismatch "the recoverable-open binding input contains an empty coordinate"
@@ -3620,22 +3696,22 @@ registerRecoverableAdmittedHandoffEdgeKernel kernel =
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (HandoffStoreFailure failure)
-            Right (Just record)
-                | protectedRecordVersion record == version
-                , protectedRecordBytes record == bytes ->
-                    Right ()
-            _ -> conflict
+            Right record ->
+                case classifyRecoveryExactReadback (recordVersionWord version) bytes (recordFacts <$> record) of
+                    RecoveryExactMatch -> Right ()
+                    RecoveryExactChanged -> conflict
 
     readToken session key binding conflict = do
         observed <- readProtectedRecord session key
         pure $ case observed of
             Left failure -> Left (HandoffStoreFailure failure)
-            Right (Just record)
-                | recordVersionWord (protectedRecordVersion record) == 1
-                , protectedRecordBytes record == plannedEdgeRecord binding ->
-                    Right ()
-                | "granted:" `ByteString.isPrefixOf` protectedRecordBytes record -> Left HandoffTokenConsumed
-            _ -> conflict
+            Right record ->
+                case classifyRecoveryTokenReadback (plannedEdgeRecord binding) (recordFacts <$> record) of
+                    RecoveryTokenPlanned -> Right ()
+                    RecoveryTokenConsumed -> Left HandoffTokenConsumed
+                    RecoveryTokenChanged -> conflict
+
+    recordFacts record = (recordVersionWord (protectedRecordVersion record), protectedRecordBytes record)
 
     require True = Right ()
     require False = Left (HandoffBindingMismatch "the recoverable-open map is malformed or conflicting")
@@ -4161,7 +4237,7 @@ withVerifiedRecoveryHandoff verb projection grant handoff use
         Left (HandoffBindingMismatch "the authenticated payload is not a recovery adapter wire")
     | handoffVerb binding /= projectVerbName verb =
         Left (HandoffBindingMismatch "the recovery handoff does not authorize the requested verb")
-    | handoffVerb binding /= "down" && handoffVerb binding /= "destroy" =
+    | handoffVerb binding /= "up" && handoffVerb binding /= "down" && handoffVerb binding /= "destroy" =
         Left (HandoffRecoveryVerbInvalid (handoffVerb binding))
     | handoffPhase binding /= "teardown" =
         Left (HandoffBindingMismatch "the recovery handoff is not in the teardown phase")

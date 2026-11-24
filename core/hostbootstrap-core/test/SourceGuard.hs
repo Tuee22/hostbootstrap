@@ -19,6 +19,7 @@ module SourceGuard (
     haskellDefinitionNames,
     haskellDefinitionTokens,
     haskellDefinitionClauseTokens,
+    topLevelNamedDeclarations,
     nullaryDataConstructorNames,
     recordFieldNames,
     haskellTokens,
@@ -168,6 +169,14 @@ balancedTokens closing = go [closing] []
 -- create a spurious declaration; keep literal tokens intact.
 sourceBlocks :: String -> [[String]]
 sourceBlocks = map haskellTokens . sourceTextBlocks
+
+-- | Named type and class declarations, excluding role annotations and imports.
+topLevelNamedDeclarations :: String -> [[String]]
+topLevelNamedDeclarations = filter named . sourceBlocks
+  where
+    named ("type" : "role" : _) = False
+    named (keyword : _) = keyword `elem` ["data", "newtype", "type", "class", "pattern"]
+    named [] = False
 
 sourceTextBlocks :: String -> [String]
 sourceTextBlocks = map unlines . blocks . lines . maskHaskellComments
@@ -323,7 +332,7 @@ readLibrarySources packageRoot description = do
             Just name -> pure (name, path, source)
             Nothing -> assertFailure ("library source has no module declaration: " <> path)
 
--- | Registered Main modules and its one named successor owner, excluding other private and DATA units.
+-- | Registered Main modules and their named implementation owners, excluding unrelated private and DATA units.
 -- This component-scoped registration inventory is not an independent physical-file census.
 mainImplementationSources :: FilePath -> String -> IO [(String, FilePath, String)]
 mainImplementationSources packageRoot description = do
@@ -350,9 +359,9 @@ mainImplementationSources packageRoot description = do
 mainImplementationOwners :: String -> Either String [(String, String)]
 mainImplementationOwners description = do
     mainBody <- maybe (Left "the main library stanza is absent") Right (mainLibraryStanza description)
-    let owners = ("library", mainBody) :
-            maybe [] (\body -> [("library handoff-implementation-internal", body)])
-                (namedStanza "library handoff-implementation-internal" description)
+    let owners = ("library", mainBody) : concatMap namedOwner
+            ["library handoff-implementation-internal", "library handoff-completion-internal", "library failed-up-internal"]
+        namedOwner name = maybe [] (\body -> [(name, body)]) (namedStanza name description)
     registrations <- concat <$> traverse
         ( \(owner, body) -> do
             names <- moduleFieldsWithCommon description ["exposed-modules", "other-modules"] body

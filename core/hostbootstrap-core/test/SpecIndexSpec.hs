@@ -8,18 +8,17 @@ hidden constructor, and both hidden owners accept exactly one authority: the
 digest-equality token minted by 'HostBootstrap.Config.Schema.Internal'.
 
 Neither kernel has a public facade, so these are exact source and Cabal
-placement guards.  The behavioural join — reindex on equal digests, refusal
-on unequal digests, preservation of every retained term — is reached through
-the recovered finalized specification the next sprint threads into both root
-@project up@ entries.
+placement guards.  `ProjectPlanSpec` exercises the recovered-inputs join, equal-digest reindex,
+unequal-digest refusal, and preservation of retained terms. This module holds
+placement and source-shape guards.
 -}
 module SpecIndexSpec (tests) where
 
+import Control.Exception (SomeException, try)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import SourceGuard (
     fieldModules,
     mainLibraryStanza,
-    normalizeWhitespace,
  )
 import qualified SourceGuard
 import System.FilePath ((</>))
@@ -30,41 +29,14 @@ tests :: TestTree
 tests =
     testGroup
         "specification-index carriers"
-        [ testCase "one reader enumerates the main library, and the package declares every module" $ do
-            -- Every guard below asks the shared reader which modules Main and
-            -- its implementation owner declare. The answer is checkable without a frozen
-            -- number: each module it names has a file, and each file under its
-            -- source roots is named by some component of the package — the
-            -- main library, or one of the private sublibraries that expose a
-            -- module out of the same tree. A reader that under-reads a field
-            -- reports the difference as a named set rather than as an absence.
-            (declared, present, description) <- SourceGuard.withPackageSourceIn [] $ \packageRoot _ -> do
-                cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-                librarySource <- requiredMainLibraryStanza cabalSource
-                named <- sort <$> either assertFailure pure (SourceGuard.mainImplementationModuleNames cabalSource)
-                sort (SourceGuard.fieldValues "hs-source-dirs" librarySource)
-                    @?= sort librarySourceDirectories
-                modules <- SourceGuard.readLibrarySources packageRoot cabalSource
-                let present = sort
-                        [ name
-                        | (name, path, _) <- modules
-                        , let relative = SourceGuard.repoRelativePath packageRoot path
-                        , any (\directory -> (directory <> "/") `isPrefixOf` relative) implementationSourceDirectories
-                        ]
-                pure (named, present, cabalSource)
-            assertBool
-                ( "the production implementation declares "
-                    <> show (length declared)
-                    <> " modules, and "
-                    <> show (filter (`notElem` present) declared)
-                    <> " of them have no file under its source roots"
-                )
-                (all (`elem` present) declared)
-            assertBool
-                ( "the package description names no component for "
-                    <> show (filter (\name -> not (name `isInfixOf` description)) present)
-                )
-                (all (`isInfixOf` description) present)
+        [ testCase "source guards ignore comments and retain constructor exports" $ do
+            contains <- try (assertContains "comment-only evidence" "critical = True" "-- critical = True\nactual = False") :: IO (Either SomeException ())
+            ordered <- try (assertFragmentsInOrder "comment-only order" ["first", "second"] "first = ()\n-- second\nlast = ()") :: IO (Either SomeException ())
+            case (contains, ordered) of
+                (Left _, Left _) -> pure ()
+                _ -> assertFailure "comment-only fragments satisfied a source guard"
+            fmap exportedNames (SourceGuard.moduleExportTokens "Example" "module Example (ProjectCodec (..)) where")
+                @?= Just ["ProjectCodec", "(", "..", ")"]
         , testCase "the installed project codec keeps one hidden owner and one relabelling authority" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 ownerPath <- requiredModulePath packageRoot "HostBootstrap.Config.Class.Internal"
@@ -76,9 +48,9 @@ tests =
                 publicExports <- readPublicModuleExports packageRoot
                 ownerExports <-
                     requiredModuleExports "HostBootstrap.Config.Class.Internal" ownerSource
-                let owner = normalizeWhitespace ownerSource
+                let owner = ownerSource
                 exportedNames ownerExports
-                    @?= ["ProjectCodec", "reindexProjectCodecKernel"]
+                    @?= ["ProjectCodec", "(", "..", ")", "reindexProjectCodecKernel"]
                 assertHiddenModule
                     "HostBootstrap.Config.Class.Internal"
                     cabalSource
@@ -154,14 +126,14 @@ tests =
                         SourceGuard.countHaskellIdentifier identifier (ownerSource ++ serviceSource) @?= 0
                     )
                     ["ServiceHandler", "LegacyServiceAction", "serviceDefinition", "withSelectedServiceRequest", "selectServiceAction"]
-                let owner = normalizeWhitespace ownerSource
+                let owner = ownerSource
                 exportedNames ownerExports
-                    @?= [ "ServiceId"
+                    @?= [ "ServiceId", "(", "..", ")"
                         , "ProgramServiceHandler"
-                        , "ServiceResourceBackend"
-                        , "ServiceAction"
-                        , "FinalizedServiceDefinition"
-                        , "FinalizedServiceRegistry"
+                        , "ServiceResourceBackend", "(", "..", ")"
+                        , "ServiceAction", "(", "..", ")"
+                        , "FinalizedServiceDefinition", "(", "..", ")"
+                        , "FinalizedServiceRegistry", "(", "..", ")"
                         , "reindexFinalizedServiceRegistryKernel"
                         ]
                 assertHiddenModule
@@ -235,7 +207,15 @@ tests =
                 librarySource <- requiredMainLibraryStanza cabalSource
                 sources <- readProductionSources packageRoot
                 publicExports <- readPublicModuleExports packageRoot
-                let token = normalizeWhitespace tokenSource
+                tokenExports <- requiredModuleExports "HostBootstrap.Config.Schema.Internal" tokenSource
+                let token = tokenSource
+                SourceGuard.countHaskellTokenSequence ["RecoverySpecReindex", "(", "..", ")"] (unwords tokenExports) @?= 0
+                length (filter (== "RecoverySpecReindex") tokenExports) @?= 1
+                mapM_ (\(name, _, source) -> do
+                    SourceGuard.countHaskellTokenSequence ["RecoverySpecReindex", "(", "..", ")"] source @?= 0
+                    SourceGuard.countHaskellIdentifier "RecoverySpecReindex" source @?=
+                        if name `elem` ["HostBootstrap.Config.Class.Internal", "HostBootstrap.ProjectPlan.Construct.Internal", "HostBootstrap.Service.Internal"] then 2 else 0)
+                    [entry | entry@(_, _, source) <- sources, SourceGuard.importsModule "HostBootstrap.Config.Schema.Internal" source]
                 assertHiddenModule
                     "HostBootstrap.Config.Schema.Internal"
                     cabalSource
@@ -279,11 +259,11 @@ tests =
                 serviceExports <-
                     requiredModuleExports "HostBootstrap.Service" serviceSource
                 exportedNames classExports
-                    @?= [ "ProjectCfg"
-                        , "TestCfg"
-                        , "ExistingOutputPolicy"
-                        , "InitArgs"
-                        , "AssemblyRequest"
+                    @?= [ "ProjectCfg", "(", "..", ")"
+                        , "TestCfg", "(", "..", ")"
+                        , "ExistingOutputPolicy", "(", "..", ")"
+                        , "InitArgs", "(", "..", ")"
+                        , "AssemblyRequest", "(", "..", ")"
                         , "ConfigAssembly"
                         , "ConfigInput"
                         , "configInput"
@@ -310,11 +290,11 @@ tests =
                         , "serviceIdText"
                         , "ServiceDefinition"
                         , "ProgramServiceHandler"
-                        , "ServiceResourceBackend"
+                        , "ServiceResourceBackend", "(", "..", ")"
                         , "serviceProgramDefinition"
                         , "serviceDeclaredEffects"
                         , "ServiceRegistry"
-                        , "ServiceRegistryError"
+                        , "ServiceRegistryError", "(", "..", ")"
                         , "emptyServiceRegistry"
                         , "singletonServiceRegistry"
                         , "serviceRegistry"
@@ -329,12 +309,12 @@ tests =
                         , "ServiceActivationRevision"
                         , "serviceActivationRevision"
                         , "serviceActivationRevisionPath"
-                        , "ServiceActivationError"
+                        , "ServiceActivationError", "(", "..", ")"
                         , "serviceActivationErrorMessage"
                         , "installServiceActivationRevision"
                         , "installRelayedServiceActivationRevision"
                         , "withInstalledServiceActivation"
-                        , "ServiceRuntimeError"
+                        , "ServiceRuntimeError", "(", "..", ")"
                         , "serviceRuntimeErrorMessage"
                         , "runInstalledServiceProgram"
                         ]
@@ -412,7 +392,7 @@ assertHiddenModule moduleName cabalSource librarySource = do
         )
 
 exportedNames :: [String] -> [String]
-exportedNames = filter (`notElem` [",", "(", ")", ".."])
+exportedNames = filter (/= ",")
 
 importersOf :: String -> [(String, FilePath, String)] -> [String]
 importersOf moduleName sources =
@@ -428,7 +408,13 @@ withPackageSourceRoot = SourceGuard.withPackageSourceIn ["src"]
 readProductionSources :: FilePath -> IO [(String, FilePath, String)]
 readProductionSources packageRoot = do
     description <- readFile (packageRoot </> "hostbootstrap-core.cabal")
-    SourceGuard.mainImplementationSources packageRoot description
+    sources <- SourceGuard.readLibrarySources packageRoot description
+    pure
+        [ entry
+        | entry@(_, path, _) <- sources
+        , let relative = SourceGuard.repoRelativePath packageRoot path
+        , any (\directory -> (directory <> "/") `isPrefixOf` relative) implementationSourceDirectories
+        ]
 
 readPublicModuleExports :: FilePath -> IO [(String, [String])]
 readPublicModuleExports packageRoot = do
@@ -447,7 +433,31 @@ readPublicModuleExports packageRoot = do
                     pure
                     (lookup moduleName sourceByModule)
             exports <- requiredModuleExports moduleName source
-            pure (moduleName, exports)
+            expanded <- if "module" `elem` exports
+                then do
+                    reviewed <- case moduleName of
+                        "HostBootstrap.Effect" -> pure ["HostBootstrap.Effect.Vocabulary", "HostBootstrap.Effect.Interpreter"]
+                        "HostBootstrap.Substrate.Provider" -> pure ["HostBootstrap.Effect.Vocabulary"]
+                        _ -> assertFailure (moduleName <> " uses an unreviewed module re-export")
+                    length (filter (== "module") exports) @?= length reviewed
+                    assertBool (moduleName <> " changed its reviewed re-exports")
+                        (all (`isInfixOf` exports)
+                            [SourceGuard.haskellTokens ("module " <> name) | name <- reviewed])
+                    concat <$> traverse
+                        (\name -> do
+                            reexported <- maybe (assertFailure ("missing re-exported module " <> name)) pure (lookup name sourceByModule)
+                            tokens <- requiredModuleExports name reexported
+                            assertBool (name <> " uses a nested module re-export") ("module" `notElem` tokens)
+                            pure tokens)
+                        reviewed
+                else pure []
+            mapM_ (\name -> assertBool (moduleName <> " exposes constructor of " <> name)
+                (not ([name, "(", "..", ")"] `isInfixOf` exports)))
+                [ "ProjectCodec", "ServiceId", "ServiceDefinition", "ServiceRegistry"
+                , "ServiceActivationRevision", "FinalizedServiceRegistry", "FinalizedServiceDefinition"
+                , "RecoverySpecReindex"
+                ]
+            pure (moduleName, exports <> expanded)
         )
         exposed
 
@@ -461,7 +471,7 @@ librarySourceDirectories = ["src", "internal/cluster-backend"]
 
 -- | Independently enumerated physical roots of Main and its production implementation owner.
 implementationSourceDirectories :: [FilePath]
-implementationSourceDirectories = ["src", "internal/cluster-backend", "internal/handoff-implementation"]
+implementationSourceDirectories = librarySourceDirectories <> ["internal/handoff-implementation", "internal/handoff-completion"]
 
 requiredModulePath :: FilePath -> String -> IO FilePath
 requiredModulePath packageRoot moduleName = do
@@ -506,20 +516,18 @@ assertContains :: String -> String -> String -> IO ()
 assertContains label expected source =
     assertBool
         (label <> " is missing source shape: " <> show expected)
-        (expected `isInfixOf` source)
+        (SourceGuard.haskellTokens expected `isInfixOf` SourceGuard.haskellTokens source)
 
 assertFragmentsInOrder :: String -> [String] -> String -> IO ()
-assertFragmentsInOrder label fragments source = go source fragments
+assertFragmentsInOrder label fragments source = go (SourceGuard.haskellTokens source) fragments
   where
     go _ [] = pure ()
     go remainingSource (fragment : remaining) =
-        case dropThrough fragment remainingSource of
-            Nothing ->
-                assertFailure
-                    (label <> " is missing or misorders source shape: " <> show fragment)
+        case dropThrough (SourceGuard.haskellTokens fragment) remainingSource of
+            Nothing -> assertFailure (label <> " is missing or misorders source shape: " <> show fragment)
             Just after -> go after remaining
 
-dropThrough :: String -> String -> Maybe String
+dropThrough :: Eq token => [token] -> [token] -> Maybe [token]
 dropThrough needle = go
   where
     go [] = Nothing

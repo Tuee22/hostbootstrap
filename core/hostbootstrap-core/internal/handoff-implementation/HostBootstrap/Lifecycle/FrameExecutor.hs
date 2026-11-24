@@ -39,7 +39,9 @@ whose next request fails to pair.
 -}
 module HostBootstrap.Lifecycle.FrameExecutor (
     FrameExecutor,
+    FrameRequest (..),
     withOpenedFrameExecutorKernel,
+    withOpenedReverseFrameExecutorKernel,
     withOpenedFrameExecutorForPlanKernel,
     withFrameExecutorRequestKernel,
     withAdvancedFrameExecutorKernel,
@@ -64,10 +66,13 @@ import HostBootstrap.Handoff (
     withVerifiedRootedLifecycleResponse,
  )
 import HostBootstrap.Handoff.Rooted (
+    readReversePreparedGateEnvelopeKernel,
     renderRootedLifecycleRequestKernel,
     rootedCloseFrameRequestKernel,
     rootedDescendResultRequestKernel,
     rootedNextNodeRequestKernel,
+    rootedLifecycleRequestFromWireKernel,
+    withRootedLifecycleRequestKernel,
     rootedReceiptConfirmRequestKernel,
     rootedSettleNodeRequestKernel,
     withRootedLifecycleResponseKernel,
@@ -88,9 +93,10 @@ import HostBootstrap.Lifecycle.Prepared.Internal (
     GateOperationKey (GateOperationKey),
     GatePlanDigest (GatePlanDigest),
     GateSession (GateSession),
+    GateSupersessionGeneration (GateSupersessionGeneration),
     PreparedGate,
-    mintPreparedGate,
-    readPreparedGatePackageKernel,
+    mintRoutedPreparedGate,
+    readFencedPreparedGatePackageKernel,
     readPreparedGatePackagesKernel,
     renderPreparedGatePackagesKernel,
     renderPreparedNodeKeysKernel,
@@ -98,11 +104,11 @@ import HostBootstrap.Lifecycle.Prepared.Internal (
 
 {- | One nested frame's place in its root-owned exchange.
 
-The seven indices are all nominal, and five of them are minted by the opening
-rather than chosen: a frame cannot name its own root plan, broker generation,
-catalog, frame, or session index and be handed an executor for it, so one
-frame's executor is not another's even where every retained value happens to
-agree.
+The seven indices are all nominal. The fresh-carrier opening introduces the
+root-plan, broker-generation, catalog, frame, and session indices. The
+carrier-bound opening inherits the root-plan index from its supplied
+@ResourceCarrier scope rootPlanId@ and introduces the other four. Executors
+from different openings remain distinct even when retained values agree.
 
 The retained values are the verified root scope, the closed invocation verb,
 the frame's own name, plan digest, and plan nodes, its frame-local carrier, and
@@ -110,6 +116,8 @@ the four coordinates the root selected. The carrier is indexed by the same
 scope and frame index, so a handle acquired in one frame is unreadable in
 another even though the erased form carries no index of its own.
 -}
+data FrameDirection = ForwardFrame | ReverseFrame
+
 data
     FrameExecutor
         scope
@@ -123,10 +131,12 @@ data
     FrameExecutor ::
         AuthenticatedRootScope scope ->
         ProjectVerb verb ->
+        FrameDirection ->
         Text ->
         Text ->
         [ExecutionNode] ->
         ResourceCarrier scope rootPlanId ->
+        Maybe Text ->
         [Text] ->
         Text ->
         Text ->
@@ -177,24 +187,26 @@ withOpenedFrameExecutorKernel ::
     IO (Either Text ())
 {-# OPAQUE withOpenedFrameExecutorKernel #-}
 withOpenedFrameExecutorKernel key scope verb frameName planDigest nodes request signedOpened use =
-    case admitOpenedFrame key frameName planDigest nodes request signedOpened of
+    openFrameExecutor ForwardFrame key scope verb frameName planDigest nodes request signedOpened use
+
+withOpenedReverseFrameExecutorKernel ::
+    ProjectVerificationKey -> AuthenticatedRootScope scope -> ProjectVerb verb -> Text -> Text -> [ExecutionNode] ->
+    ByteString -> ByteString ->
+    (forall rootPlanId brokerGeneration catalogId frame sessionId. FrameExecutor scope rootPlanId brokerGeneration catalogId frame sessionId verb -> IO (Either Text ())) ->
+    IO (Either Text ())
+withOpenedReverseFrameExecutorKernel = openFrameExecutor ReverseFrame
+
+openFrameExecutor ::
+    FrameDirection -> ProjectVerificationKey -> AuthenticatedRootScope scope -> ProjectVerb verb -> Text -> Text -> [ExecutionNode] ->
+    ByteString -> ByteString ->
+    (forall rootPlanId brokerGeneration catalogId frame sessionId. FrameExecutor scope rootPlanId brokerGeneration catalogId frame sessionId verb -> IO (Either Text ())) ->
+    IO (Either Text ())
+openFrameExecutor direction key scope verb frameName planDigest nodes request signedOpened use =
+    case admitOpenedFrame False key frameName planDigest nodes request signedOpened of
         Left failure -> pure (Left failure)
         Right (path, session, stage, ordinal) -> do
             carrier <- newResourceCarrier
-            use
-                ( FrameExecutor
-                    scope
-                    verb
-                    frameName
-                    planDigest
-                    nodes
-                    carrier
-                    path
-                    session
-                    stage
-                    ordinal
-                    (childConfigDigest signedOpened)
-                )
+            use (FrameExecutor scope verb direction frameName planDigest nodes carrier Nothing path session stage ordinal (childConfigDigest signedOpened))
 
 withOpenedFrameExecutorForPlanKernel ::
     ProjectVerificationKey ->
@@ -213,15 +225,16 @@ withOpenedFrameExecutorForPlanKernel ::
     IO (Either Text ())
 {-# OPAQUE withOpenedFrameExecutorForPlanKernel #-}
 withOpenedFrameExecutorForPlanKernel key scope verb frameName planDigest nodes carrier request signedOpened use =
-    case admitOpenedFrame key frameName planDigest nodes request signedOpened of
+    -- A forward frame may hold no node: only the root's catalog proof then settles it.
+    case admitOpenedFrame True key frameName planDigest nodes request signedOpened of
         Left failure -> pure (Left failure)
         Right (path, session, stage, ordinal) ->
-            use (FrameExecutor scope verb frameName planDigest nodes carrier path session stage ordinal (childConfigDigest signedOpened))
-admitOpenedFrame :: ProjectVerificationKey -> Text -> Text -> [ExecutionNode] -> ByteString -> ByteString -> Either Text ([Text], Text, Text, Word64)
-admitOpenedFrame key frameName planDigest nodes request signedOpened = do
+            use (FrameExecutor scope verb ForwardFrame frameName planDigest nodes carrier Nothing path session stage ordinal (childConfigDigest signedOpened))
+admitOpenedFrame :: Bool -> ProjectVerificationKey -> Text -> Text -> [ExecutionNode] -> ByteString -> ByteString -> Either Text ([Text], Text, Text, Word64)
+admitOpenedFrame allowEmpty key frameName planDigest nodes request signedOpened = do
     require "the executing frame is empty" (not (Text.null frameName))
     require "the frame plan digest is empty" (not (Text.null planDigest))
-    require "the frame plan has no execution node" (not (null nodes))
+    require "the frame plan has no execution node" (allowEmpty || not (null nodes))
     require
         "a supplied execution node belongs to another frame"
         (all ((== frameName) . executionNodeFrame) nodes)
@@ -229,20 +242,30 @@ admitOpenedFrame key frameName planDigest nodes request signedOpened = do
         "the frame plan carries one operation key twice"
         (length keys == length (nub keys))
     verified <- verifiedResponse key request signedOpened
-    withRootedLifecycleResponseKernel
+    (path, session, stage, ordinal) <- withRootedLifecycleResponseKernel
         verified
-        (\_ path session stage ordinal _ -> Right (path, session, stage, ordinal))
+        (\_ answerPath answerSession answerStage answerOrdinal _ -> Right (answerPath, answerSession, answerStage, answerOrdinal))
         (\_ _ _ _ _ _ _ _ _ _ _ -> beforeOpened)
         (\_ _ _ _ _ _ _ _ -> beforeOpened)
         (\_ _ _ _ _ _ _ _ -> beforeOpened)
         (\_ _ _ _ _ _ _ _ -> beforeOpened)
         (\_ _ _ _ _ _ _ _ -> beforeOpened)
         (\_ _ _ _ _ _ _ _ -> beforeOpened)
+    require "the opened path does not end at the executing frame" (not (null path) && last path == frameName)
+    pure (path, session, stage, ordinal)
   where
     keys = map executionNodeOperationKey nodes
 
     beforeOpened =
         Left (executorFailure "only a verified Opened response opens a frame executor")
+
+-- | The closed post-open requests and their required observation bodies.
+data FrameRequest
+    = FrameNextNode
+    | FrameCloseFrame
+    | FrameReceiptConfirm
+    | FrameSettleNode ByteString
+    | FrameDescendResult ByteString
 
 {- | Build this frame's next request from coordinates it did not choose.
 
@@ -252,7 +275,7 @@ request outside them and none at all that produces an @OpenFrame@ — an executo
 exists only because one was already answered.
 
 Every echoed coordinate is the executor's own retained one. The caller supplies
-the fresh nonce and, for the one body-bearing family, the observation; it
+the fresh nonce and, for either body-bearing family, the observation; it
 supplies no path, session, stage, ordinal, or predecessor, so holding an
 executor is not a way to move the exchange to a position the root has not yet
 selected.
@@ -263,50 +286,28 @@ receiving an executor, coordinate, plan, node, or carrier.
 -}
 withFrameExecutorRequestKernel ::
     FrameExecutor scope rootPlanId brokerGeneration catalogId frame sessionId verb ->
-    Text ->
+    FrameRequest ->
     ByteString ->
-    Maybe ByteString ->
     (ByteString -> IO (Either Text ())) ->
     IO (Either Text ())
 {-# OPAQUE withFrameExecutorRequestKernel #-}
-withFrameExecutorRequestKernel executor family nonce body use =
+withFrameExecutorRequestKernel executor family nonce use =
     case built of
         Left failure -> pure (Left failure)
         Right request -> use (renderRootedLifecycleRequestKernel request)
   where
-    FrameExecutor _ _ _ _ _ _ path session stage ordinal predecessor = executor
-    built = case (family, body) of
-        ("next-node", Nothing) ->
+    FrameExecutor _ _ _ _ _ _ _ _ path session stage ordinal predecessor = executor
+    built = case family of
+        FrameNextNode ->
             wire (rootedNextNodeRequestKernel path session stage ordinal nonce predecessor)
-        ("close-frame", Nothing) ->
+        FrameCloseFrame ->
             wire (rootedCloseFrameRequestKernel path session stage ordinal nonce predecessor)
-        ("receipt-confirm", Nothing) ->
+        FrameReceiptConfirm ->
             wire (rootedReceiptConfirmRequestKernel path session stage ordinal nonce predecessor)
-        ("descend-result", Just observation) ->
-            wire
-                ( rootedDescendResultRequestKernel
-                    path
-                    session
-                    stage
-                    ordinal
-                    nonce
-                    predecessor
-                    observation
-                )
-        ("settle-node", Just observation) ->
-            wire
-                ( rootedSettleNodeRequestKernel
-                    path
-                    session
-                    stage
-                    ordinal
-                    nonce
-                    predecessor
-                    observation
-                )
-        (_, Just _) ->
-            Left (executorFailure "only settle-node and descend-result requests carry observation bodies")
-        _ -> Left (executorFailure "a frame executor raises no request outside its five families")
+        FrameDescendResult observation ->
+            wire (rootedDescendResultRequestKernel path session stage ordinal nonce predecessor observation)
+        FrameSettleNode observation ->
+            wire (rootedSettleNodeRequestKernel path session stage ordinal nonce predecessor observation)
     wire = either (Left . executorFailure) Right
 
 {- | Advance to the successor the verified response selected.
@@ -338,32 +339,40 @@ withAdvancedFrameExecutorKernel executor key request signedResponse use =
         Left failure -> pure (Left failure)
         Right successor -> use successor
   where
-    FrameExecutor scope verb frameName planDigest nodes carrier path session _ ordinal _ = executor
+    FrameExecutor scope verb direction frameName planDigest nodes carrier catalog path session _ ordinal _ = executor
     advanced = do
         verified <- verifiedResponse key request signedResponse
-        (responsePath, responseSession, successorStage, successorOrdinal) <-
+        (responsePath, responseSession, successorStage, successorOrdinal, preparedPackage) <-
             withRootedLifecycleResponseKernel
                 verified
                 (\_ _ _ _ _ _ -> afterOpened)
-                (\_ p s st o _ _ _ _ _ _ -> Right (p, s, st, o))
-                (\_ p s st o _ _ _ -> Right (p, s, st, o))
-                (\_ p s st o _ _ _ -> Right (p, s, st, o))
-                (\_ p s st o _ _ _ -> Right (p, s, st, o))
-                (\_ p s st o _ _ _ -> Right (p, s, st, o))
-                (\_ p s st o _ _ _ -> Right (p, s, st, o))
+                (\_ p s st o _ _ _ operationGate _ _ -> Right (p, s, st, o, Just operationGate))
+                (\_ p s st o _ _ _ -> Right (p, s, st, o, Nothing))
+                (\_ p s st o _ _ _ -> Right (p, s, st, o, Nothing))
+                (\_ p s st o _ _ _ -> Right (p, s, st, o, Nothing))
+                (\_ p s st o _ _ _ -> Right (p, s, st, o, Nothing))
+                (\_ p s st o _ _ _ -> Right (p, s, st, o, Nothing))
         require "the verified response echoes another requester path" (responsePath == path)
         require "the verified response echoes another session" (responseSession == session)
         require
             "the verified response does not select a successor ordinal"
             (successorOrdinal > ordinal)
+        nextCatalog <- case preparedPackage of
+            Nothing -> Right catalog
+            Just package -> do
+                (_, packageCatalog, _, _, _, _, _, _, _) <- readFencedPreparedGatePackageKernel =<< frameOperationPackage direction package
+                require "a gate package names another catalog" (maybe True (== packageCatalog) catalog)
+                pure (Just packageCatalog)
         pure
             ( FrameExecutor
                 scope
                 verb
+                direction
                 frameName
                 planDigest
                 nodes
                 carrier
+                nextCatalog
                 path
                 session
                 successorStage
@@ -411,6 +420,7 @@ withExecutedFrameNodeKernel ::
       PreparedGate ->
       [PreparedGate] ->
       ResourceCarrier scope rootPlanId ->
+      Maybe ByteString ->
       IO (Either Text ByteString)
     ) ->
     (ByteString -> IO (Either Text ())) ->
@@ -419,8 +429,8 @@ withExecutedFrameNodeKernel ::
 withExecutedFrameNodeKernel executor key request signedPrepared run use =
     case admit of
         Left failure -> pure (Left failure)
-        Right (node, gate, projected) -> do
-            observed <- run node gate projected carrier
+        Right (node, gate, projected, resourcePredecessor) -> do
+            observed <- run node gate projected carrier resourcePredecessor
             case observed of
                 Left failure -> pure (Left failure)
                 Right observation
@@ -428,15 +438,29 @@ withExecutedFrameNodeKernel executor key request signedPrepared run use =
                         pure (Left (executorFailure "the local effect returned an empty observation"))
                     | otherwise -> use observation
   where
-    FrameExecutor _ _ frameName planDigest nodes carrier path session _ _ _ = executor
+    FrameExecutor _ _ direction frameName planDigest nodes carrier catalog path session stage ordinal predecessor = executor
 
     admit = do
         verified <- verifiedResponse key request signedPrepared
-        (responsePath, responseSession, authorized, dependencies, operationGate, projectedGates) <-
+        decodedRequest <- either (Left . executorFailure) Right (rootedLifecycleRequestFromWireKernel request)
+        (requestPath, requestSession, requestStage, requestOrdinal, requestPredecessor) <-
+            withRootedLifecycleRequestKernel decodedRequest
+                (const outsidePrepared)
+                (\p sessionName requestStageName requestOrdinalNumber _ prior -> Right (p, sessionName, requestStageName, requestOrdinalNumber, prior))
+                (\_ _ _ _ _ _ _ -> outsidePrepared)
+                (\_ _ _ _ _ _ _ -> outsidePrepared)
+                (\_ _ _ _ _ _ -> outsidePrepared)
+                (\_ _ _ _ _ _ -> outsidePrepared)
+        require "the request echoes another requester path" (requestPath == path)
+        require "the request echoes another session" (requestSession == session)
+        require "the request echoes another stage" (requestStage == stage)
+        require "the request echoes another ordinal" (requestOrdinal == ordinal)
+        require "the request echoes another predecessor" (requestPredecessor == predecessor)
+        (responsePath, responseSession, successorOrdinal, authorized, dependencies, operationGate, projectedGates) <-
             withRootedLifecycleResponseKernel
                 verified
                 (\_ _ _ _ _ _ -> outsidePrepared)
-                (\_ p s _ _ _ n d o g _ -> Right (p, s, n, d, o, g))
+                (\_ p s _ nextOrdinal _ n d o g _ -> Right (p, s, nextOrdinal, n, d, o, g))
                 (\_ _ _ _ _ _ _ _ -> outsidePrepared)
                 (\_ _ _ _ _ _ _ _ -> outsidePrepared)
                 (\_ _ _ _ _ _ _ _ -> outsidePrepared)
@@ -444,6 +468,7 @@ withExecutedFrameNodeKernel executor key request signedPrepared run use =
                 (\_ _ _ _ _ _ _ _ -> outsidePrepared)
         require "the Prepared response echoes another requester path" (responsePath == path)
         require "the Prepared response echoes another session" (responseSession == session)
+        require "the Prepared response does not select a successor ordinal" (successorOrdinal > ordinal)
         node <-
             maybe
                 (Left (executorFailure "the authorized node is not one of this frame's plan nodes"))
@@ -462,26 +487,35 @@ withExecutedFrameNodeKernel executor key request signedPrepared run use =
         require
             "the projected gates are not this node's own projections"
             (length packages == length (executionNodeProjectedKeys node))
-        gate <- gateFor (executionNodeOperationKey node) operationGate
-        projected <- traverse (uncurry gateFor) (zip (executionNodeProjectedKeys node) packages)
-        pure (node, gate, projected)
+        (operationPackage, resourcePredecessor) <- case direction of
+            ForwardFrame -> Right (operationGate, Nothing)
+            ReverseFrame -> readReversePreparedGateEnvelopeKernel operationGate
+        (_, operationCatalog, _, _, _, operationGeneration, operationFence, _, _) <- readFencedPreparedGatePackageKernel operationPackage
+        require "a gate package names another catalog" (maybe True (== operationCatalog) catalog)
+        gate <- gateFor operationCatalog operationGeneration operationFence (executionNodeOperationKey node) operationPackage
+        projected <- traverse (uncurry (gateFor operationCatalog operationGeneration operationFence)) (zip (executionNodeProjectedKeys node) packages)
+        pure (node, gate, projected, resourcePredecessor)
 
     outsidePrepared =
         Left (executorFailure "only a verified Prepared response authorizes a local effect")
 
-    gateFor operation package = do
-        (packagePlan, _catalog, packageFrame, packageSession, generation, attempt, journalVersion) <-
-            readPreparedGatePackageKernel package
+    gateFor expectedCatalog expectedGeneration expectedFence operation package = do
+        (packagePlan, packageCatalog, packageFrame, packageSession, packageOperation, generation, fence, attempt, journalVersion) <-
+            readFencedPreparedGatePackageKernel package
+        require "a gate package names another catalog" (packageCatalog == expectedCatalog)
+        require "a gate package names another operation" (packageOperation == operation)
         require "a gate package names another plan" (packagePlan == planDigest)
         require "a gate package names another frame" (packageFrame == frameName)
         require "a gate package names another session" (packageSession == session)
-        require "a gate package carries a zero supersession generation" (generation > 0)
+        require "a gate package carries another supersession generation" (generation == expectedGeneration)
+        require "a gate package carries another operation fence" (fence == expectedFence)
         pure
-            ( mintPreparedGate
+            ( mintRoutedPreparedGate
                 (GatePlanDigest packagePlan)
                 (GateOperationKey operation)
                 (GateSession packageSession)
-                (GateFence generation)
+                (GateSupersessionGeneration generation)
+                (GateFence fence)
                 (GateAttempt attempt)
                 (GateJournalVersion journalVersion)
             )
@@ -509,3 +543,7 @@ require detail False = Left (executorFailure detail)
 
 executorFailure :: Text -> Text
 executorFailure detail = "frame executor: " <> detail
+
+frameOperationPackage :: FrameDirection -> ByteString -> Either Text ByteString
+frameOperationPackage ForwardFrame package = Right package
+frameOperationPackage ReverseFrame package = fst <$> readReversePreparedGateEnvelopeKernel package

@@ -21,6 +21,7 @@ module HostBootstrap.CLI.Bare (
     bareClusterLiveSuite,
 #ifdef HOSTBOOTSTRAP_BARE_TESTING
     bareWithRunForTesting,
+    bareWithNodeImageForTesting,
 #endif
 )
 where
@@ -118,10 +119,12 @@ import HostBootstrap.Step (
     StepObservation (..),
     StepPlan,
     StepPlanError (..),
+    ProviderProbeDescription (..),
     TeardownOutcome (..),
     deployKindStep,
     deployVMStep,
     declaresProviderResource,
+    declaresProviderProbe,
     providerResourceAtCurrentFrame,
     mkStepPlan,
     reversedBy,
@@ -145,6 +148,9 @@ instance BudgetCfg BareConfig where
 #ifdef HOSTBOOTSTRAP_BARE_TESTING
 bareWithRunForTesting :: Text -> BareConfig scope -> BareConfig scope
 bareWithRunForTesting runName cfg = cfg{bareHarnessRun = Just runName}
+
+bareWithNodeImageForTesting :: Text -> BareConfig scope -> BareConfig scope
+bareWithNodeImageForTesting image cfg = cfg{bareNodeImage = image}
 #endif
 
 newtype BareTestConfig = BareTestConfig {runClusterLive :: Bool}
@@ -238,20 +244,25 @@ bareStepPlan progName canonicalRoot cfg = case bareHarnessRun cfg of
         Left _ -> Left EmptyStepPlan
         Right profile -> mkStepPlan
             [ declaresProviderResource providerResourceAtCurrentFrame $
+                declaresProviderProbe providerDescription $
                 reversedBy (\_ _ -> pure TeardownReleased) $
-                    deployVMStep "reserve the live gate's Direct host provider" frame (bareProviderAction cfg root runName)
+                    deployVMStep "reserve the live gate's Direct host provider" frame (bareProviderAction providerDescription runName)
             , bareClusterStep progName cfg root runName profile
             ]
   where
     root = canonicalProjectRootPath canonicalRoot
+    providerDescription = DirectProviderProbe root (bareNodeImage cfg)
     frame = StepFrame (T.unpack (Context.currentFrame (bareContext cfg))) "metal"
 
-bareProviderAction :: BareConfig configScope -> FilePath -> Text -> StepAction
-bareProviderAction config root runName execution = do
+bareProviderAction :: ProviderProbeDescription -> Text -> StepAction
+bareProviderAction description runName execution = do
+    (root, image) <- case description of
+        DirectProviderProbe target image -> pure (target, image)
+        _ -> failBare "cluster-live: provider description is not Direct"
     let host = stepExecutionHostConfig execution
     gate <- stepExecutionPreparedGate execution >>= maybe (failBare "cluster-live: provider gate is absent") pure
     when (preparedGateJournalVersion gate > maxBound - 1024) (failBare "cluster-live: dependency lifetime overflows")
-    spec <- either (failBare . show) pure (PB.mkDirectHostBackendSpec host root (T.unpack (bareNodeImage config)))
+    spec <- either (failBare . show) pure (PB.mkDirectHostBackendSpec host root (T.unpack image))
     discovered <- PB.discoverStrongProviderBackend host spec $ \backend -> do
         action <- either (failBare . show) pure $ withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned -> do
             observing <- either (failBare . show) pure $ withNodeObservedResource execution planned (preparedGateFence gate) (preparedGateJournalVersion gate) $ \observed -> do

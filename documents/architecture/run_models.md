@@ -188,10 +188,8 @@ return a non-authoritative view. It must not independently choose behavior.
 ## Launch Channel Shape
 
 A descent edge adds one execution-shape fact the four names above do not carry: whether the argument
-vector rendered for the child keeps that child's standard input attached. A Docker container is launched
-interactively, because the root's request and response bytes travel on the descriptor it keeps open; the
-Incus, Lima, and WSL2 providers are launched noninteractively, because nothing on the far side of them
-reads that descriptor. A descent edge is a single lift layer. A composed route, which the rooted reverse
+vector is the Docker container shape with `-i`. Every provider receives the protocol through piped standard
+input; VM shapes do not require Docker's flag. A descent edge is a single lift layer. A composed route, which the rooted reverse
 coordinator uses to reach a descendant below its immediate child, keeps each layer's closed checks,
 admits a container only as its terminal layer, and takes its channel from that terminal layer.
 
@@ -202,7 +200,8 @@ grammar as `ValidatedArgument`, and an admitted absolute delimiter-free path as 
 "this text passed the grammar" is a property of the value a renderer receives rather than of the order
 in which two functions were called. Like the four names, none of this is a configuration input or a
 second dispatch selector: the route is derived from a catalog-admitted package, and the distinction
-names a rendering the plan cannot influence.
+names a rendering the plan cannot influence. The process owner borrows only the tool and vector and pipes
+standard input for every provider.
 
 The route's host tool is resolved to an absolute path before anything is spawned, so a bare command name
 cannot be executed even if one reached the argument vector. That resolution reads the typed host

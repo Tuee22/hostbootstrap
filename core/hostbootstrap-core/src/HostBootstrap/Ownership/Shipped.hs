@@ -76,6 +76,7 @@ module HostBootstrap.Ownership.Shipped (
     -- * A local directory's live ownership extent
     ShippedDirectoryLease,
     withShippedDirectoryLease,
+    withExistingShippedDirectoryLease,
     useShippedDirectoryLease,
 )
 where
@@ -160,6 +161,7 @@ import HostBootstrap.Protected (
     ProtectedSession,
     RecordKey,
     mkRecordKey,
+    openExistingProtectedStore,
     openProtectedStore,
     protectedErrorMessage,
     recordKeyText,
@@ -286,6 +288,9 @@ data ShippedAct
       ShipTakeSymbolicLink ShippedLinkTargetPath
     | -- | clause 4 over that symbolic link and its exact target
       ShipGiveBackSymbolicLink ShippedLinkTargetPath
+    | -- | report the symbolic link this frame already bound, from an existing
+      -- authority only; it records, publishes, repairs and creates nothing
+      ShipObserveSymbolicLink ShippedLinkTargetPath
     deriving (Eq, Show)
 
 linkTargetOf :: ShippedAct -> Maybe ShippedLinkTargetPath
@@ -295,6 +300,7 @@ linkTargetOf (ShipTakeFile _) = Nothing
 linkTargetOf ShipGiveBackObject = Nothing
 linkTargetOf (ShipTakeSymbolicLink target) = Just target
 linkTargetOf (ShipGiveBackSymbolicLink target) = Just target
+linkTargetOf (ShipObserveSymbolicLink target) = Just target
 
 -- ---------------------------------------------------------------------------
 -- The outcome
@@ -396,14 +402,25 @@ not a second way to own something — it is the same way, run somewhere else.
 runShippedOwnership :: OwnershipRow -> ShippedOwnership -> IO ShippedOutcome
 runShippedOwnership row transaction =
     either ShippedRefused id
-        <$> withShippedEntry transaction (\session -> Right <$> inEntry row transaction session)
+        <$> withShippedEntryMode (observesExistingOnly (shippedAct transaction)) transaction
+            (\session -> Right <$> inEntry row transaction session)
+  where
+    observesExistingOnly (ShipObserveSymbolicLink _) = True
+    observesExistingOnly _ = False
 
 -- | The same receiving-frame validation and entry surround both local uses.
 withShippedEntry ::
     ShippedOwnership ->
     (forall session. ProtectedSession session -> IO (Either OwnershipFault result)) ->
     IO (Either OwnershipFault result)
-withShippedEntry transaction action
+withShippedEntry = withShippedEntryMode False
+
+withShippedEntryMode ::
+    Bool ->
+    ShippedOwnership ->
+    (forall session. ProtectedSession session -> IO (Either OwnershipFault result)) ->
+    IO (Either OwnershipFault result)
+withShippedEntryMode existingOnly transaction action
     | not (HostPath.isAbsolute authority) =
         pure (Left (OwnershipMalformed "the authority path is not absolute in the receiving frame"))
     | not (HostPath.isAbsolute target) =
@@ -411,7 +428,7 @@ withShippedEntry transaction action
     | maybe False (not . HostPath.isAbsolute . shippedLinkTargetPath) (linkTargetOf (shippedAct transaction)) =
         pure (Left (OwnershipMalformed "the symbolic link target is not absolute in the receiving frame"))
     | otherwise = do
-        opened <- openProtectedStore authority
+        opened <- (if existingOnly then openExistingProtectedStore else openProtectedStore) authority
         case opened of
             Left failure -> pure (Left (storeFault "open this frame's ownership authority" failure))
             Right store -> do
@@ -473,6 +490,36 @@ withShippedDirectoryLease row transaction consume
   where
     target = shippedTargetPath (shippedTarget transaction)
 
+{- | Reenter an already-bound directory without creating or repairing state.
+
+The existing protected store and its record must both remain valid while the
+callback runs. The lease checks the directory identity around the callback.
+-}
+withExistingShippedDirectoryLease ::
+    OwnershipRow ->
+    ShippedOwnership ->
+    (forall lease. ShippedDirectoryLease lease -> IO result) ->
+    IO (Either OwnershipFault result)
+withExistingShippedDirectoryLease row transaction consume
+    | shippedAct transaction /= ShipTakeDirectory =
+        pure (Left (OwnershipMalformed "a directory lease requires a directory-take transaction"))
+    | otherwise =
+        withShippedEntryMode True transaction $ \session -> do
+            current <- readStoredRecordUnder (shippedTape session) (shippedRecord transaction)
+            case current of
+                Left fault -> pure (Left fault)
+                Right (Just stored)
+                    | let record = storedOriginRecord stored
+                    , originRecordKind record == OwnedDirectory
+                    , originRecordOrigin record == OriginAbsent
+                    , Just _ <- originRecordBinding record ->
+                        reenterStoredOwnedObject row session target stored $ \bound ->
+                            let lease = ShippedDirectoryLease row bound
+                             in useShippedDirectoryLease lease (consume lease)
+                _ -> pure (Left (OwnershipMalformed "the directory has no matching bound record"))
+  where
+    target = shippedTargetPath (shippedTarget transaction)
+
 {- | Run an action only under this thread's live entry and exact directory.
 
 The protected session checks its owner thread and liveness before the kernel
@@ -502,6 +549,7 @@ inEntry row transaction session = case shippedAct transaction of
     ShipGiveBackObject -> giveBack
     ShipTakeSymbolicLink linkTarget -> takeSymbolicLink (shippedLinkTargetPath linkTarget)
     ShipGiveBackSymbolicLink linkTarget -> giveBackSymbolicLink (shippedLinkTargetPath linkTarget)
+    ShipObserveSymbolicLink linkTarget -> observeBoundSymbolicLink (shippedLinkTargetPath linkTarget)
   where
     key = shippedRecord transaction
     target = shippedTargetPath (shippedTarget transaction)
@@ -628,6 +676,25 @@ inEntry row transaction session = case shippedAct transaction of
                                     (fmap (const ShippedObjectGivenBack))
                                     (releaseOwnedObject row token (forget session key))
                     pure (settle outcome)
+
+    -- The bound record and the live link must agree; nothing is cleaned up,
+    -- republished or recorded, so an interrupted or replaced link refuses.
+    observeBoundSymbolicLink linkTarget = do
+        stored <- readBoundRecord session key
+        case stored of
+            Left fault -> pure (ShippedRefused fault)
+            Right Nothing -> pure (ShippedRefused (OwnershipMalformed "this frame holds no record for the symbolic link"))
+            Right (Just record) -> case validateSymbolicLinkRecord linkTarget record of
+                Left fault -> pure (ShippedRefused fault)
+                Right Nothing ->
+                    pure (ShippedRefused (OwnershipMalformed "this frame's symbolic-link record is not yet bound"))
+                Right (Just identity) -> do
+                    observed <- observeSymbolicLink target linkTarget
+                    pure $ case observed of
+                        Left fault -> ShippedRefused fault
+                        Right (SymbolicLinkExact current)
+                            | current == identity -> ShippedSymbolicLinkRetained identity
+                        Right present -> ShippedRefused (symbolicLinkIdentityConflict target identity present)
 
     takeSymbolicLink linkTarget = do
         stored <- readBoundRecord session key
@@ -1112,6 +1179,7 @@ encodeShippedOwnership transaction =
     payloadField (ShipTakeFile payload) = sized (payloadBytes payload)
     payloadField (ShipTakeSymbolicLink target) = sized (asciiBytes (Text.pack (shippedLinkTargetPath target)))
     payloadField (ShipGiveBackSymbolicLink target) = sized (asciiBytes (Text.pack (shippedLinkTargetPath target)))
+    payloadField (ShipObserveSymbolicLink target) = sized (asciiBytes (Text.pack (shippedLinkTargetPath target)))
     payloadField _ = mempty
 
 decodeShippedOwnership :: ByteString -> Either OwnershipFault ShippedOwnership
@@ -1128,6 +1196,7 @@ decodeShippedOwnership raw = runExact "ownership transaction" raw $ do
         3 -> pure ShipGiveBackObject
         4 -> ShipTakeSymbolicLink <$> getAdmittedPath mkShippedLinkTargetPath "the symbolic link's target"
         5 -> ShipGiveBackSymbolicLink <$> getAdmittedPath mkShippedLinkTargetPath "the symbolic link's target"
+        6 -> ShipObserveSymbolicLink <$> getAdmittedPath mkShippedLinkTargetPath "the symbolic link's target"
         _ -> refuse "the ownership transaction names an unknown act"
     key <- case mkRecordKey rawKey of
         Left failure ->
@@ -1181,6 +1250,7 @@ actTag (ShipTakeFile _) = 2
 actTag ShipGiveBackObject = 3
 actTag (ShipTakeSymbolicLink _) = 4
 actTag (ShipGiveBackSymbolicLink _) = 5
+actTag (ShipObserveSymbolicLink _) = 6
 
 {- | The closed fault sum, on the wire.
 

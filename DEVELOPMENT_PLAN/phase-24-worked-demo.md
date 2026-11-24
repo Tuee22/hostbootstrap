@@ -507,7 +507,7 @@ implemented. Together with Sprint 24.6a, the complete core host-static gate pass
 ### Sprint 24.6a: Plan-indexed recursive frame carrier [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`
 **Production modules**: `HostBootstrap.Lifecycle.FrameExecutor`, `HostBootstrap.Command.Child` (2; cap 3)
 **Sprint budget**: no new named type; at most 200 production Haskell lines.
@@ -3341,7 +3341,7 @@ complete workload sequence succeeded.
 **Status**: Active
 **Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command/Child.hs`,
 `core/hostbootstrap-core/src/HostBootstrap/Command/Child/Reverse.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Teardown/Executor/Internal.hs`,
+`core/hostbootstrap-core/internal/reverse-executor/HostBootstrap/Teardown/Executor/Internal.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`, `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`
 **Production modules**: `HostBootstrap.Command.Child`, `HostBootstrap.Command.Child.Reverse`,
@@ -6693,6 +6693,33 @@ The sprint closes when these cases exist and pass in `cabal test hostbootstrap-d
   `powerShellQuoteArg` cases Sprint 3.6 adds. Add `powerShellQuoteArg` to `retiredQuoterSpellings`, and drop the
   `Quote.hs` exemption from the PowerShell-quoter guard.
 
+### Sprint 24.80: Confirm root cluster cleanup on the live Linux substrate [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Command.hs`, `demo/`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/engineering/cluster_lifecycle.md`, `documents/engineering/testing.md`
+
+#### Objective
+
+Confirm the root-local prepared cluster and chart cleanup against an owned live cluster and its real tools.
+
+#### Deliverables
+
+- Verify Down and Destroy release only the exact owned cluster and do not repeat a completed release.
+- Verify absent chart ownership is retained, corrupt ownership refuses, and failed Up unwinds a reached
+  owned cluster without bypassing the prepared gate.
+- Record the actual substrate, commands, observed ownership and resource state, and cleanup of the fixture.
+
+#### Validation
+
+Run the declared live Linux substrate gate and the host static gate; use a dedicated owned cluster and the
+real provider tools, not executables substituted on `PATH`.
+
+#### Remaining Work
+
+Run and record the live cases and the declared gate, repairing any failures they reveal.
+
 ## Remaining Work
 
 - Sprint 24.1: export getters instead of the refined config record fields (with a compile-fail fixture), typed
@@ -6802,6 +6829,7 @@ The sprint closes when these cases exist and pass in `cabal test hostbootstrap-d
   `HostBootstrap.Detached`, with no PowerShell text in the demo.
 - Sprint 24.79: the whole-module interpreter-argv guard over `Commands.hs`, scoped to argument vectors, and
   the core `powerShellQuoteArg` deleted.
+- Sprint 24.80: verify prepared root cluster and chart cleanup against real tools on an owned Linux cluster.
 
 ## Documentation Requirements
 

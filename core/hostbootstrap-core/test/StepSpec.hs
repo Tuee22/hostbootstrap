@@ -2,10 +2,16 @@
 
 module StepSpec (tests) where
 
+import Control.Exception (ErrorCall (ErrorCall), throwIO)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf, nub)
+import qualified Data.Text as Text
 import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.Map.Strict as Map
 import HostBootstrap.DocValidator (findRepoRoot)
 import HostBootstrap.Lift (localContext)
+import HostBootstrap.HostConfig (HostConfig (HostConfig))
+import HostBootstrap.Substrate (Arch (Amd64), Substrate (Substrate), SubstrateName (LinuxCpu))
 import HostBootstrap.Step
 import qualified SourceGuard
 import System.Directory (getCurrentDirectory)
@@ -27,7 +33,24 @@ tests =
         , testGroup "projected operations" projectionCases
         , testGroup "provider resource declarations" providerDeclarationCases
         , testGroup "step observations" observationCases
+        , testGroup "recovery observers" recoveryObserverCases
+        , testGroup "effect preflight" effectPreflightCases
         ]
+
+effectPreflightCases :: [TestTree]
+effectPreflightCases =
+    [ testCase "an undeclared preflight remains absent" $ do
+        let host = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+        stepEffectPreflight (copySourceStep "copy" metal noop) host @?= Nothing
+    , testCase "preflight returns its exact proposal without running the step action" $ do
+        calls <- newIORef (0 :: Int)
+        let host = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+            action _ = modifyIORef' calls (+ 1) >> pure StepChanged
+            step = declaresEffectPreflight (const (Right [("core:copy-source", "ReservationOutcomeUnknown", "digest")]))
+                (copySourceStep "copy" metal action)
+        stepEffectPreflight step host @?= Just (Right [("core:copy-source", "ReservationOutcomeUnknown", "digest")])
+        readIORef calls >>= (@?= 0)
+    ]
 
 providerDeclarationCases :: [TestTree]
 providerDeclarationCases =
@@ -734,3 +757,58 @@ fixtureProjectStepId = either error id . projectStepId
 
 expectPlan :: [Step] -> StepPlan
 expectPlan = either (error . show) id . mkStepPlan
+
+recoveryObserverCases :: [TestTree]
+recoveryObserverCases =
+    [ testCase "an observer sees exactly its own operation and frame and binds its result to them" $ do
+        seen <- newIORef []
+        observer <- either assertFailure pure $
+            mkRecoveryObserver "vm-inspector" 3 NoDelayedEffect $ \operation frame -> do
+                modifyIORef' seen (++ [(operation, frame)])
+                pure (RecoveryEffectPresent "vm-123")
+        let step = observesRecoveryWith observer (deployVMStep "launch" (StepFrame "host" "Host") (const (pure StepChanged)))
+        observed <- observeStepRecovery step >>= maybe (assertFailure "an observer produced no observation") pure
+        readIORef seen >>= (@?= [("core:deploy-vm", "host")])
+        boundRecoveryObservationResult observed @?= RecoveryEffectPresent "vm-123"
+        admitRecoveryObservation step observed @?= Right (RecoveryEffectPresent "vm-123")
+        fmap recoveryObserverIdentity (stepRecoveryObserver step) @?= Just "vm-inspector"
+        fmap recoveryObserverRevision (stepRecoveryObserver step) @?= Just 3
+    , testCase "a step without an observer stays unresolved and admits nothing" $ do
+        let bare = deployVMStep "launch" (StepFrame "host" "Host") (const (pure StepChanged))
+        observeStepRecovery bare >>= (@?= Nothing)
+        observer <- either assertFailure pure (mkRecoveryObserver "vm-inspector" 1 NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent))
+        observed <- observeStepRecovery (observesRecoveryWith observer bare) >>= maybe (assertFailure "no observation") pure
+        admitRecoveryObservation bare observed @?= Left "the step has no recovery observer"
+    , testCase "foreign and stale observations refuse against the admitted step" $ do
+        observer <- either assertFailure pure (mkRecoveryObserver "vm-inspector" 2 NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent))
+        newer <- either assertFailure pure (mkRecoveryObserver "vm-inspector" 3 NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent))
+        other <- either assertFailure pure (mkRecoveryObserver "other-inspector" 2 NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent))
+        let host = StepFrame "host" "Host"
+            launch = observesRecoveryWith observer (deployVMStep "launch" host (const (pure StepChanged)))
+            elsewhere = observesRecoveryWith observer (deployVMStep "launch" (StepFrame "guest" "Guest") (const (pure StepChanged)))
+            build = observesRecoveryWith observer (buildPbStep "build" host (const (pure StepChanged)))
+        fromBuild <- observeStepRecovery build >>= maybe (assertFailure "no observation") pure
+        fromGuest <- observeStepRecovery elsewhere >>= maybe (assertFailure "no observation") pure
+        admitRecoveryObservation launch fromBuild @?= Left "the recovery observation names another operation or frame"
+        admitRecoveryObservation launch fromGuest @?= Left "the recovery observation names another operation or frame"
+        fromNewer <- observeStepRecovery (observesRecoveryWith newer (deployVMStep "launch" host (const (pure StepChanged)))) >>= maybe (assertFailure "no observation") pure
+        fromOther <- observeStepRecovery (observesRecoveryWith other (deployVMStep "launch" host (const (pure StepChanged)))) >>= maybe (assertFailure "no observation") pure
+        admitRecoveryObservation launch fromNewer @?= Left "the recovery observation came from another observer or revision"
+        admitRecoveryObservation launch fromOther @?= Left "the recovery observation came from another observer or revision"
+    , testCase "absence is usable only when the mechanism rules out a delayed effect" $ do
+        let host = StepFrame "host" "Host"
+        bounded <- either assertFailure pure (mkRecoveryObserver "bounded" 1 NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent))
+        unbounded <- either assertFailure pure (mkRecoveryObserver "process-exit" 1 DelayedEffectPossible (\_ _ -> pure RecoveryEffectAbsent))
+        raising <- either assertFailure pure (mkRecoveryObserver "raising" 1 NoDelayedEffect (\_ _ -> throwIO (ErrorCall "probe crashed")))
+        let observe observer = observeStepRecovery (observesRecoveryWith observer (deployVMStep "launch" host (const (pure StepChanged)))) >>= maybe (assertFailure "no observation") (pure . boundRecoveryObservationResult)
+        observe bounded >>= (@?= RecoveryEffectAbsent)
+        observe unbounded >>= (@?= RecoveryInconclusive "the effect may still land after the observation")
+        raised <- observe raising
+        case raised of
+            RecoveryInconclusive detail -> assertBool (Text.unpack detail) ("probe crashed" `Text.isInfixOf` detail)
+            other -> assertFailure ("an exception was not inconclusive: " <> show other)
+    , testCase "an observer needs a non-empty identity and a positive revision" $ do
+        let check _ _ = pure RecoveryEffectAbsent
+        either (const (pure ())) (const (assertFailure "an unnamed observer was accepted")) (mkRecoveryObserver "" 1 NoDelayedEffect check)
+        either (const (pure ())) (const (assertFailure "a zero revision was accepted")) (mkRecoveryObserver "named" 0 NoDelayedEffect check)
+    ]

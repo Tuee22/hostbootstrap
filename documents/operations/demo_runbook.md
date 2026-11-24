@@ -141,10 +141,6 @@ Operator-significant boundaries are:
   § P forbids, and the [worked-demo phase](../../DEVELOPMENT_PLAN/phase-24-worked-demo.md) owes its deletion
   (see [Down and Destroy](#down-and-destroy));
 - bare Linux has no runtime storage quota or image-GC wall;
-- `project up --dry-run` takes Production mode authority before it renders, so it refuses while a Harness
-  run holds the mode; the
-  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owes a
-  render path that takes no mode, lease, or snapshot authority;
 - terminal hardware acceptance follows each substrate's declared gate; current completion and dated
   evidence are recorded in the [development-plan index](../../DEVELOPMENT_PLAN/README.md).
 
@@ -192,10 +188,9 @@ hostbootstrap-demo context schema
 hostbootstrap-demo context render [--artifact NAME]
 ```
 
-Use `project up --dry-run` to render the selected step chain without executing any step. It is not yet
-read-only: it enters the Production path, opens the protected authority store, and acquires or retains
-Production mode before rendering, so it refuses while a Harness run holds the mode (see
-[the core library's current status](../architecture/hostbootstrap_core_library.md#current-status)).
+Use `project up --dry-run` to render the selected step chain without executing any step. It is read-only: it
+opens no protected authority store and takes no Production mode, so it neither refuses while a Harness run holds
+the mode nor blocks a later `test run`, `project down`, or `project destroy`.
 
 ## Bring-up Chain
 

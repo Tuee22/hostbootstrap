@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -13,9 +14,15 @@ store and settles nothing durably.
 module HostBootstrap.Command.Child (
     lifecycleChildArguments,
     runForwardLifecycleChild,
+    interpretShippedRecoveryObservation,
 )
 where
 
+#if !defined(mingw32_HOST_OS)
+import Control.Concurrent (myThreadId, throwTo)
+import Control.Exception (AsyncException (UserInterrupt), bracket)
+#endif
+import Control.Exception (displayException, fromException)
 import Control.Exception.Safe (tryAny)
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
@@ -32,7 +39,7 @@ import HostBootstrap.Authority (
     ProjectVerb (ProjectUp),
     VerbUp,
  )
-import HostBootstrap.Command.Child.Reverse (recoveryProfileName, runCoreManagedReverse)
+import HostBootstrap.Command.Child.Reverse (recoveryProfileName, reverseDescentBody, reverseObservation, runCoreManagedReverse)
 import HostBootstrap.Config.Authority.Internal (mintAuthenticatedHarnessConfigAuthority)
 import HostBootstrap.Config.Class (
     ProjectCfg (cfgContext),
@@ -100,25 +107,43 @@ import HostBootstrap.Handoff.Relay (
     relayErrorMessage,
     withNestedRecursiveHandoffRuntimeKernel,
  )
-import HostBootstrap.Handoff.Rooted (withRootedLifecycleResponseKernel)
+import HostBootstrap.Handoff.Rooted (
+    RecoveryObservationRequest (..),
+    RootedRecoveryObservation (..),
+    RootedRecoveryResult (..),
+    isRecoveryObservationRequestKernel,
+    readRecoveryObservationRequestKernel,
+    renderRootedRecoveryObservationKernel,
+    RootedNodeObservation (..), RootedProjectedObservation (..),
+    readRootedNodeObservationKernel,
+    renderRootedNodeObservationKernel,
+    withRootedLifecycleResponseKernel,
+ )
 import HostBootstrap.Handoff.Runtime (RecursiveHandoffRuntime)
+import HostBootstrap.Harness (SafetyRefusal (SafetyRefusal))
 import HostBootstrap.HostConfig (HostConfig, buildHostConfig)
 import HostBootstrap.Lifecycle.Execution.Internal (
     ExecutionNode (..),
     ResourceCarrier,
+    carriedResourceKey,
+    carriedResourceSettlement,
     newResourceCarrier,
+    readCarriedResources,
+    stepRuntimeOpenGates, stepRuntimeTakenGates,
     newStepRuntime,
     openStepRuntimeGate,
     replaceStepRuntimeActivationSigningService,
     setStepRuntimeOwnGate,
  )
+import HostBootstrap.Lifecycle.Prepared.Internal (PreparedGate, preparedGateOperation)
 import HostBootstrap.Lifecycle.FrameExecutor (
     FrameExecutor,
+    FrameRequest (..),
     withAdvancedFrameExecutorKernel,
     withExecutedFrameNodeKernel,
     withFrameExecutorRequestKernel,
     withOpenedFrameExecutorForPlanKernel,
-    withOpenedFrameExecutorKernel,
+    withOpenedReverseFrameExecutorKernel,
  )
 import HostBootstrap.Lifecycle.Plan (PlannedStep, plannedStepStepKernel)
 import qualified HostBootstrap.Lifecycle.Plan as LifecyclePlan
@@ -151,7 +176,20 @@ import HostBootstrap.ProjectPlan.Frame (CurrentFrame, withCurrentFrame)
 import HostBootstrap.ProjectPlan.Projection.Internal (withImmediateTargetKernel)
 import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
 import HostBootstrap.Reconcile (stepExecutionFor)
-import HostBootstrap.Step (Step, StepObservation, TeardownOutcome, observationDetail, observationSucceeded, runStep)
+import HostBootstrap.Step (
+    RecoveryObservation (RecoveryEffectAbsent, RecoveryEffectForeign, RecoveryEffectPresent, RecoveryInconclusive),
+    Step,
+    StepObservation (StepRefused),
+    TeardownOutcome,
+    boundRecoveryObservationResult,
+    observationDetail,
+    observationSucceeded,
+    observeStepRecovery,
+    recoveryObserverIdentity,
+    recoveryObserverRevision,
+    runStep,
+    stepRecoveryObserver,
+ )
 import HostBootstrap.Substrate (detect)
 import HostBootstrap.Teardown (
     LocalWork,
@@ -169,6 +207,9 @@ import HostBootstrap.Teardown.Executor.Internal (
  )
 import System.Environment (getExecutablePath)
 import System.Exit (die)
+#if !defined(mingw32_HOST_OS)
+import System.Posix.Signals (Handler (Catch), installHandler, sigTERM)
+#endif
 
 -- | The coordinate-free private process entry rendered by the lifecycle route.
 lifecycleChildArguments :: [String]
@@ -180,7 +221,7 @@ runForwardLifecycleChild ::
     InstalledProjectIdentity projectId ->
     FinalizedProjectSpec (Production projectId) specDigest cfg ->
     IO ()
-runForwardLifecycleChild project finalized = do
+runForwardLifecycleChild project finalized = withTerminationCleanup $ do
     executable <- getExecutablePath
     loadedKey <- installedVerificationKey (executable <> ".handoff.pub")
     key <- either (die . handoffErrorMessage) pure loadedKey
@@ -193,6 +234,21 @@ runForwardLifecycleChild project finalized = do
             (runHarness key finalized)
             (runHarnessRecovery key finalized)
     either (die . receiverErrorMessage) pure received
+
+-- A lifecycle child owns any further process groups it descends into. Turn the
+-- parent's graceful stop into an asynchronous exception so those scoped groups
+-- unwind before this process exits. The private entry owns this signal handler.
+withTerminationCleanup :: IO a -> IO a
+#if defined(mingw32_HOST_OS)
+withTerminationCleanup action = action
+#else
+withTerminationCleanup action = do
+    owner <- myThreadId
+    bracket
+        (installHandler sigTERM (Catch (throwTo owner UserInterrupt)) Nothing)
+        (\previous -> installHandler sigTERM previous Nothing >> pure ())
+        (\_ -> action)
+#endif
 
 runHarness ::
     (ProjectCfg cfg) =>
@@ -292,13 +348,16 @@ runScopedRecovery key finalized descent sendReport =
             Right package -> withRecoveryChildPackageKernel package $ \childConfig packageAdapter ->
                 if packageAdapter /= adapter
                     then pure (Left "reverse child: the verified adapter differs from its package")
-                    else do
+                    else case TextEncoding.decodeUtf8' childConfig of
+                      -- A lenient decode would replace invalid bytes before the codec saw them.
+                      Left _ -> pure (Left "reverse child: the child config is not UTF-8")
+                      Right configText -> do
                         decoded <-
                             tryAny
                                 ( decodeProjectCodecWithSettings
                                     (finalizedProjectCodec finalized)
                                     Dhall.defaultInputSettings
-                                    (TextEncoding.decodeUtf8 childConfig)
+                                    configText
                                 )
                         case decoded of
                             Left _ -> pure (Left "reverse child: the installed codec rejected the child config")
@@ -312,6 +371,104 @@ runScopedRecovery key finalized descent sendReport =
                                             value
                                             (\_wire config -> admitReverse key finalized edge verb adapter config sendReport)
                                     pure $ either (Left . Text.pack) id admitted
+
+{- | Interpret the shipped recovery-observation act in an operation's own frame.
+
+The act carries no authority. The frame re-admits its plan from the installed
+finalized spec and the act's canonical child config, under the act's plan
+coordinates, and requires the local frame, the admitted operation, and the step's
+observer identity and revision to be exactly the ones named. It then runs only
+that read-only observer and answers with the canonical recovery-observation
+record; it never runs the step's action or reverse effect and opens no
+protected store. Another act's bytes fall through ('Nothing').
+-}
+interpretShippedRecoveryObservation ::
+    (ProjectCfg cfg) =>
+    FinalizedProjectSpec scope specDigest cfg ->
+    ByteString ->
+    IO (Maybe (Either Text ByteString))
+interpretShippedRecoveryObservation finalized raw
+    | not (isRecoveryObservationRequestKernel raw) = pure Nothing
+    | otherwise = Just <$> case readRecoveryObservationRequestKernel raw of
+        Left failure -> pure (Left ("recovery observation: " <> failure))
+        Right request -> observe request
+  where
+    observe request@(RecoveryObservationRequest _ _ _ _ _ _ _ _ _ _ _ childConfig) =
+        case TextEncoding.decodeUtf8' childConfig of
+            Left _ -> pure (Left "recovery observation: the child config is not UTF-8")
+            Right configText -> do
+                decoded <-
+                    tryAny
+                        ( decodeProjectCodecWithSettings
+                            (finalizedProjectCodec finalized)
+                            Dhall.defaultInputSettings
+                            configText
+                        )
+                case decoded of
+                    Left _ -> pure (Left "recovery observation: the installed codec rejected the child config")
+                    Right value
+                        | renderScopedProjectConfigBytes (finalizedProjectCodec finalized) value /= childConfig ->
+                            pure (Left "recovery observation: the child config is not canonical")
+                        | otherwise -> do
+                            admitted <-
+                                withValidatedConfig
+                                    (finalizedProjectCodec finalized)
+                                    value
+                                    (\_wire config -> recoveryObservationInFrame finalized request config)
+                            pure (either (Left . Text.pack) id admitted)
+
+-- | Re-admit the exact plan under the act's coordinates in this frame.
+recoveryObservationInFrame ::
+    (ProjectCfg cfg) =>
+    FinalizedProjectSpec scope specDigest cfg ->
+    RecoveryObservationRequest ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    IO (Either Text ByteString)
+recoveryObservationInFrame finalized request@(RecoveryObservationRequest profile epoch project store digest _ _ _ _ _ _ _) config = do
+    let context = cfgContext (validatedConfigValue config)
+    configPath <- siblingProjectConfigPath (Context.project context)
+    rooted <-
+        withCanonicalProjectRoot configPath (Text.unpack (Context.sourceRoot context)) $ \root ->
+            case projectPlanDrafts finalized root config of
+                Left failure -> pure (Left ("recovery observation: " <> Text.pack (show failure)))
+                Right drafts ->
+                    case LifecyclePlan.withChildProjectPlanKernel profile epoch project store digest config drafts (\plan _ -> observeAdmittedStep request context plan) of
+                        Left failure -> pure (Left ("recovery observation: " <> Text.pack (show failure)))
+                        Right action -> action
+    pure (either (Left . Text.pack . show) id rooted)
+
+-- | Run only the named step's own observer, after every coordinate matches.
+observeAdmittedStep ::
+    RecoveryObservationRequest ->
+    Context.BinaryContext ->
+    ProjectPlan scope specDigest planId configId cfg ->
+    IO (Either Text ByteString)
+observeAdmittedStep (RecoveryObservationRequest _ _ _ _ _ frame operation version attempt observer revision _) context plan
+    | Context.currentFrame context /= frame =
+        pure (Left "recovery observation: the local frame differs from the requested frame")
+    | otherwise =
+        case [ plannedStepStepKernel planned
+             | planned <- NonEmpty.toList (forward plan)
+             , Text.pack (operationKeyText (plannedStepOperationKey planned)) == operation
+             , plannedStepFrameId planned == frame
+             ] of
+            [step] -> case stepRecoveryObserver step of
+                Just declared
+                    | recoveryObserverIdentity declared == observer && recoveryObserverRevision declared == revision -> do
+                        observed <- observeStepRecovery step
+                        pure $ case observed of
+                            Nothing -> Left "recovery observation: the step has no recovery observer"
+                            Just bound ->
+                                renderRootedRecoveryObservationKernel
+                                    (RootedRecoveryObservation operation version attempt observer revision (onWire (boundRecoveryObservationResult bound)))
+                _ -> pure (Left "recovery observation: the step's observer differs from the requested one")
+            _ -> pure (Left "recovery observation: the frame has no such admitted operation")
+  where
+    onWire result = case result of
+        RecoveryEffectAbsent -> RootedRecoveryAbsent
+        RecoveryEffectPresent identity -> RootedRecoveryPresent identity
+        RecoveryEffectForeign identity -> RootedRecoveryForeign identity
+        RecoveryInconclusive reason -> RootedRecoveryInconclusive reason
 
 admitReverse ::
     (ProjectCfg cfg) =>
@@ -378,7 +535,7 @@ openReverseFrame key edge host root context verb plan forest sendReport =
     withNestedRecursiveHandoffRuntimeKernel edge verb $ \runtime link -> do
         nonce <- freshNonce
         withLifecycleChildOpeningKernel runtime key nonce (carry key link) $ \request signedOpened ->
-            withOpenedFrameExecutorKernel
+            withOpenedReverseFrameExecutorKernel
                 key
                 (receivedEdgeAuthenticatedRootScope edge)
                 verb
@@ -398,7 +555,7 @@ driveReverse ::
     ProjectVerificationKey ->
     BrokerLink scope linkGeneration ->
     HostConfig ->
-    (LocalWork scope planId frame verb -> IO TeardownOutcome) ->
+    (PreparedGate -> LocalWork scope planId frame verb -> IO TeardownOutcome) ->
     TeardownForest scope planId frame verb ->
     (ByteString -> IO (Either ReceiverError ())) ->
     FrameExecutor scope rootPlanId executorGeneration catalogId executorFrame sessionId verb ->
@@ -406,7 +563,7 @@ driveReverse ::
 driveReverse key link host runCoreManaged forest sendReport executor =
     eliminateTeardownProgress (nextTeardownWork forest) (const requestClose) (const requestNext)
   where
-    requestNext = sendExecutorRequest executor "next-node" Nothing $ \exactRequest signed ->
+    requestNext = sendExecutorRequest executor FrameNextNode $ \exactRequest signed ->
         case responseView key exactRequest signed of
             Left failure -> pure (Left failure)
             Right ("prepared", _) -> do
@@ -416,13 +573,16 @@ driveReverse key link host runCoreManaged forest sendReport executor =
                     key
                     exactRequest
                     signed
-                    ( \node _own _projected _carrier -> do
-                        advanced <- runStorelessReversePreparedKernel host runCoreManaged forest (executionNodeOperationKey node)
+                    ( \node own _projected _carrier predecessor -> do
+                        advanced <- runStorelessReversePreparedKernel host runCoreManaged (reverseObservation node own predecessor) forest own (executionNodeOperationKey node)
                         case advanced of
                             Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
-                            Right (successor, observation) -> do
-                                writeIORef successorRef (Just successor)
-                                pure (Right observation)
+                            Right (successor, observation) ->
+                                case reverseObservation node own predecessor observation of
+                                    Left failure -> pure (Left failure)
+                                    Right encoded -> do
+                                        writeIORef successorRef (Just successor)
+                                        pure (Right encoded)
                     )
                     ( \observation -> do
                         successor <- readIORef successorRef
@@ -430,7 +590,7 @@ driveReverse key link host runCoreManaged forest sendReport executor =
                             Nothing -> pure (Left "reverse child: local work produced no successor")
                             Just advancedForest ->
                                 withAdvancedFrameExecutorKernel executor key exactRequest signed $ \prepared ->
-                                    sendExecutorRequest prepared "settle-node" (Just observation) $ \settleRequest settled ->
+                                    sendExecutorRequest prepared (FrameSettleNode observation) $ \settleRequest settled ->
                                         case responseView key settleRequest settled of
                                             Right ("settled", _) ->
                                                 withAdvancedFrameExecutorKernel prepared key settleRequest settled $ \advanced ->
@@ -445,7 +605,7 @@ driveReverse key link host runCoreManaged forest sendReport executor =
                         Left failure -> pure (Left (Text.pack (teardownErrorMessage failure)))
                         Right advancedForest ->
                             withAdvancedFrameExecutorKernel executor key exactRequest signed $ \descending ->
-                                sendExecutorRequest descending "descend-result" (Just observations) $ \resultRequest settled ->
+                                sendExecutorRequest descending (FrameDescendResult observations) $ \resultRequest settled ->
                                     case responseView key resultRequest settled of
                                         Right ("settled", _) ->
                                             withAdvancedFrameExecutorKernel descending key resultRequest settled $ \advanced ->
@@ -455,11 +615,11 @@ driveReverse key link host runCoreManaged forest sendReport executor =
             Right ("refused", detail) -> pure (Left ("reverse child: root refused NextNode: " <> decode detail))
             Right (family, _) -> unexpected "next-node" family
 
-    requestClose = sendExecutorRequest executor "close-frame" Nothing $ \closeRequest completedResponse ->
+    requestClose = sendExecutorRequest executor FrameCloseFrame $ \closeRequest completedResponse ->
         case responseView key closeRequest completedResponse of
             Right ("frame-complete", report) ->
                 withAdvancedFrameExecutorKernel executor key closeRequest completedResponse $ \completedFrame ->
-                    sendExecutorRequest completedFrame "receipt-confirm" Nothing $ \receiptRequest receipt ->
+                    sendExecutorRequest completedFrame FrameReceiptConfirm $ \receiptRequest receipt ->
                         case responseView key receiptRequest receipt of
                             Right ("receipt-recorded", _) ->
                                 either (Left . Text.pack . receiverErrorMessage) Right <$> sendReport report
@@ -469,24 +629,14 @@ driveReverse key link host runCoreManaged forest sendReport executor =
             Right (family, _) -> unexpected "close-frame" family
             Left failure -> pure (Left failure)
 
-    sendExecutorRequest active family body continuation = do
+    sendExecutorRequest active family continuation = do
         nonce <- freshNonce
-        withFrameExecutorRequestKernel active family nonce body $ \exactRequest -> do
+        withFrameExecutorRequestKernel active family nonce $ \exactRequest -> do
             answered <- carryRaw key link exactRequest
             either (pure . Left) (continuation exactRequest) answered
     unexpected requestFamily responseFamily =
         pure (Left ("reverse child: " <> requestFamily <> " received " <> responseFamily))
     decode = TextEncoding.decodeUtf8Lenient
-
-reverseDescentBody :: ByteString -> Either Text (Text, ByteString)
-reverseDescentBody body = do
-    (childBytes, afterChild) <- either (Left . Text.pack . handoffErrorMessage) Right (takeHandoffFrame body)
-    (observations, trailing) <- either (Left . Text.pack . handoffErrorMessage) Right (takeHandoffFrame afterChild)
-    if ByteString.null trailing
-        then case TextEncoding.decodeUtf8' childBytes of
-            Left _ -> Left "reverse child: Descend names a non-UTF-8 child frame"
-            Right child -> Right (child, observations)
-        else Left "reverse child: Descend has trailing bytes"
 
 runProduction ::
     (ProjectCfg cfg) =>
@@ -540,7 +690,7 @@ runConfig key finalized edge _authenticated sendReport wire config = do
                         wire
                         config
                         ( \handoff ->
-                            withChildProjectPlan ProjectUp handoff wire config drafts $ \_authority plan _binding -> do
+                            withChildProjectPlan ProjectUp (Context.currentFrame context) handoff wire config drafts $ \_authority plan _binding -> do
                                 case withCurrentFrame
                                     plan
                                     context
@@ -644,6 +794,7 @@ drive ::
     IO (Either Text ())
 drive key runtime link host finalized config plan current carrier planDigest local completed descended failed executor sendReport
     | failed /= Nothing = requestClose
+    -- A genuinely empty frame closes at once: the root opened it already settled.
     | length completed == length local && (descended || noDescent) = requestClose
     | otherwise = requestNext
   where
@@ -651,7 +802,7 @@ drive key runtime link host finalized config plan current carrier planDigest loc
         Nothing -> True
         Just _ -> False
     frameName = Context.currentFrame (cfgContext (validatedConfigValue config))
-    requestNext = sendExecutorRequest executor "next-node" Nothing $ \exactRequest signed ->
+    requestNext = sendExecutorRequest executor FrameNextNode $ \exactRequest signed ->
         case responseView key exactRequest signed of
             Left failure -> pure (Left failure)
             Right ("prepared", nodeBytes) ->
@@ -660,7 +811,7 @@ drive key runtime link host finalized config plan current carrier planDigest loc
                     Right operation ->
                         withExecutedFrameNodeKernel executor key exactRequest signed (runLocal operation) $ \observation ->
                             withAdvancedFrameExecutorKernel executor key exactRequest signed $ \prepared ->
-                                sendExecutorRequest prepared "settle-node" (Just observation) $ \settleRequest settled ->
+                                sendExecutorRequest prepared (FrameSettleNode observation) $ \settleRequest settled ->
                                     case responseView key settleRequest settled of
                                         Right ("settled", _) ->
                                             withAdvancedFrameExecutorKernel prepared key settleRequest settled $ \advanced ->
@@ -673,7 +824,7 @@ drive key runtime link host finalized config plan current carrier planDigest loc
             Right ("descend", body) ->
                 withAdvancedFrameExecutorKernel executor key exactRequest signed $ \descending -> do
                     nested <- runNested body
-                    sendExecutorRequest descending "descend-result" (Just (descentObservation nested)) $ \resultRequest settled ->
+                    sendExecutorRequest descending (FrameDescendResult (descentObservation nested)) $ \resultRequest settled ->
                         case responseView key resultRequest settled of
                             Right ("settled", _) ->
                                 withAdvancedFrameExecutorKernel descending key resultRequest settled $ \advanced ->
@@ -685,40 +836,62 @@ drive key runtime link host finalized config plan current carrier planDigest loc
             Right ("refused", detail) -> pure (Left ("forward child: root refused NextNode: " <> decode detail))
             Right (family, _) -> unexpected "next-node" family
 
-    requestClose = sendExecutorRequest executor "close-frame" Nothing $ \closeRequest completedResponse ->
+    requestClose = sendExecutorRequest executor FrameCloseFrame $ \closeRequest completedResponse ->
         case responseView key closeRequest completedResponse of
             Right ("frame-complete", report) ->
                 withAdvancedFrameExecutorKernel executor key closeRequest completedResponse $ \completedFrame ->
-                    sendExecutorRequest completedFrame "receipt-confirm" Nothing $ \receiptRequest receipt ->
+                    sendExecutorRequest completedFrame FrameReceiptConfirm $ \receiptRequest receipt ->
                         case responseView key receiptRequest receipt of
                             Right ("receipt-recorded", _) ->
-                                sendReport report >>= \sent ->
-                                    pure $ case sent of
-                                        Left sendFailure -> Left (Text.pack (receiverErrorMessage sendFailure))
-                                        Right () -> maybe (Right ()) Left failed
+                                sendReport report >>= \sent -> pure $
+                                    either (Left . Text.pack . receiverErrorMessage) (const (maybe (Right ()) Left failed)) sent
                             Right (family, _) -> unexpected "receipt-confirm" family
                             Left failure -> pure (Left failure)
             Right ("refused", detail) -> pure (Left ("forward child: root refused CloseFrame: " <> decode detail))
             Right (family, _) -> unexpected "close-frame" family
             Left failure -> pure (Left failure)
 
-    sendExecutorRequest activeExecutor family body continuation = do
+    sendExecutorRequest activeExecutor family continuation = do
         nonce <- freshNonce
-        withFrameExecutorRequestKernel activeExecutor family nonce body $ \exactRequest -> do
+        withFrameExecutorRequestKernel activeExecutor family nonce $ \exactRequest -> do
             answered <- carryRaw key link exactRequest
             either (pure . Left) (continuation exactRequest) answered
 
-    runLocal operation node own projected runtimeCarrier =
+    runLocal operation node own projected runtimeCarrier _predecessor =
         case [(step, planned) | (candidate, step, planned) <- local, candidate == node] of
             [(step, planned)] -> do
                 stepRuntime <- newStepRuntime runtimeCarrier
                 setStepRuntimeOwnGate stepRuntime own
                 mapM_ (openStepRuntimeGate stepRuntime) projected
-                observed <-
-                    runStep
-                        step
-                        (stepExecutionFor plan host stepRuntime planned)
-                pure (Right (renderObservation operation observed))
+                result <- tryAny (runStep step (stepExecutionFor plan host stepRuntime planned))
+                let (succeeded, detail) = case result of
+                        Right observed -> (observationSucceeded observed, observationDetail observed)
+                        Left exception -> case fromException exception of
+                            Just (SafetyRefusal reason) -> (False, observationDetail (StepRefused (Text.pack reason)))
+                            Nothing -> (False, Text.pack (displayException exception))
+                taken <- stepRuntimeTakenGates stepRuntime
+                available <- stepRuntimeOpenGates stepRuntime
+                resources <- readCarriedResources runtimeCarrier
+                let settlementFor resourceKey =
+                        case filter ((== resourceKey) . carriedResourceKey) resources of
+                            [] -> Right Nothing
+                            [resource] -> case carriedResourceSettlement resource of
+                                Nothing -> Left "forward child: managed resource has no durable settlement"
+                                Just value -> Right (Just value)
+                            _ -> Left "forward child: duplicate carried resource settlement"
+                    evidence projectionKey =
+                        let takenMatches = filter ((== projectionKey) . preparedGateOperation) taken
+                            availableMatches = filter ((== projectionKey) . preparedGateOperation) available
+                         in case (takenMatches, availableMatches) of
+                                ([_], []) -> RootedProjectedObservation projectionKey True <$> settlementFor projectionKey
+                                ([], [_]) -> Right (RootedProjectedObservation projectionKey False Nothing)
+                                _ -> Left "forward child: projected gate state does not match the node"
+                pure $ do
+                    ownSettlement <- settlementFor operation
+                    projectedEvidence <- traverse evidence (executionNodeProjectedKeys node)
+                    let ownEvidence = RootedProjectedObservation operation True ownSettlement
+                    renderRootedNodeObservationKernel
+                        (RootedNodeObservation operation succeeded detail (ownEvidence : projectedEvidence))
             _ -> pure (Left "forward child: the prepared node is not uniquely present in the local plan")
 
     unexpected requestFamily responseFamily =
@@ -767,28 +940,8 @@ drive key runtime link host finalized config plan current carrier planDigest loc
 
 nodeObservationFailure :: ByteString -> Either Text (Maybe Text)
 nodeObservationFailure raw = do
-    (domain, afterDomain) <- takeFrame "observation domain" raw
-    (_operation, afterOperation) <- takeFrame "observation operation" afterDomain
-    (status, afterStatus) <- takeFrame "observation status" afterOperation
-    (detailBytes, trailing) <- takeFrame "observation detail" afterStatus
-    if domain /= "hostbootstrap/forward-node-observation/v1"
-        then Left "forward child: the observation domain differs"
-        else
-            if not (ByteString.null trailing)
-                then Left "forward child: the observation has trailing fields"
-                else case status of
-                    "succeeded" -> Right Nothing
-                    "failed" -> case TextEncoding.decodeUtf8' detailBytes of
-                        Left _ -> Left "forward child: the observation failure is not UTF-8"
-                        Right detail
-                            | Text.null detail -> Left "forward child: the observation failure is empty"
-                            | otherwise -> Right (Just detail)
-                    _ -> Left "forward child: the observation status is unknown"
-  where
-    takeFrame field bytes =
-        case takeHandoffFrame bytes of
-            Left failure -> Left ("forward child: " <> field <> ": " <> Text.pack (handoffErrorMessage failure))
-            Right value -> Right value
+    RootedNodeObservation _ succeeded detail _ <- readRootedNodeObservationKernel raw
+    pure (if succeeded then Nothing else Just detail)
 
 plannedNode :: PlannedStep scope planId configId config -> (ExecutionNode, Step, PlannedStep scope planId configId config)
 plannedNode planned =
@@ -809,13 +962,6 @@ plannedNode planned =
   where
     step = plannedStepStepKernel planned
     key = Text.pack (operationKeyText (plannedStepOperationKey planned))
-
-renderObservation :: Text -> StepObservation -> ByteString
-renderObservation operation observed =
-    frameWire "hostbootstrap/forward-node-observation/v1"
-        <> frameWire (TextEncoding.encodeUtf8 operation)
-        <> frameWire (if observationSucceeded observed then "succeeded" else "failed")
-        <> frameWire (TextEncoding.encodeUtf8 (observationDetail observed))
 
 responseView :: ProjectVerificationKey -> ByteString -> ByteString -> Either Text (Text, ByteString)
 responseView key request signed = do

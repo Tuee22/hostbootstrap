@@ -153,6 +153,8 @@ tests =
                 assertExactDescriptorProduction
             , testCase "node resource projection admits own and prefix resources only" $
                 assertExactNodeResources
+            , testCase "project-declared provider remains a dependency in both descriptor paths" $
+                assertDeclaredProviderDependency
             , testCase "another operation's descriptor in the same plan refuses before the callback" $
                 assertSamePlanDescriptorOperationBoundary
             , testCase "another frame's descriptor with the same operation refuses before the callback" $
@@ -1937,6 +1939,40 @@ plannedEdgeSummary =
                                         )
                             )
             nodes -> fail ("expected two dependency-plan nodes, got " ++ show (length nodes))
+
+assertDeclaredProviderDependency :: IO ()
+assertDeclaredProviderDependency =
+    Fixture.withFixtureProjectPlan plan $ \admitted ->
+        case NonEmpty.toList (forward admitted) of
+            [_provider, shareNode] -> do
+                carrier <- ExecutionCore.newResourceCarrierCore
+                runtime <- ExecutionCore.newStepRuntimeCore carrier
+                let execution = stepExecutionFor admitted exactExecutionHostConfig runtime shareNode
+                withNodeResourceOfKind execution ProviderResourceKind "project:direct-provider"
+                    (\provider -> (plannedResourceKey provider, plannedResourceFrame provider))
+                    @?= Right ("project:direct-provider", "guest")
+                case withNodeResourceOfKind execution DurableShareResourceKind "project:direct-provider" (const ()) of
+                    Left (Conflict _) -> pure ()
+                    Left (Failure _) -> pure ()
+                    other -> assertFailure ("expected provider kind refusal, got " <> show other)
+                case withPlannedResourceOfKind admitted DurableShareResourceKind (plannedStepOperationKey shareNode) $ \share -> do
+                    let planDescriptor = joinReconcile $
+                            withObservedPlannedResource admitted share 5 7 $ \observed ->
+                                operationDescriptorDependencies <$> plannedOperation admitted share observed "share:mount"
+                        nodeDescriptor = joinReconcile $
+                            withNodeObservedResource execution share 5 7 $ \observed ->
+                                operationDescriptorDependencies <$> plannedNodeOperation execution share observed "share:mount"
+                    (planDescriptor, nodeDescriptor) @?= (Right ["project:direct-provider"], Right ["project:direct-provider"]) of
+                    Left failure -> assertFailure (show failure)
+                    Right action -> action
+            nodes -> assertFailure ("expected provider and share nodes, got " <> show (length nodes))
+  where
+    plan = planFrom
+        [ descendsVia localContext $
+            declaresProviderResource providerResourceAtImmediateChild $
+                projectStep (either error id (projectStepId "direct-provider")) ProjectManagedReverse "provider" exactExecutionFrame (const (pure StepChanged))
+        , copySourceStep "share" (StepFrame "guest" "Guest") (const (pure StepChanged))
+        ]
 
 {- | A plan shaped like the worked demo's: a project-owned @ensure@ fragment that
 carries no plan resource, then the provider, then the durable share.

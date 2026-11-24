@@ -44,6 +44,8 @@ tests =
         , testGroup "native Lima sizing" limaSizingTests
         , testGroup "provider sizing" sizingTests
         , testGroup "native Lima instance reports" limaReportTests
+        , testGroup "native Lima mounts" limaMountTests
+        , testGroup "native WSL running listings" wslRunningTests
         , testGroup "native WSL location claims" wslLocationTests
         , testGroup "what counts as an answer at all" answerTests
         , testGroup "the instance listing" listingTests
@@ -604,3 +606,67 @@ nativeRefusalTests =
   where
     conflict = Reconcile.Conflict (Reconcile.ConflictDetail "provider" "before" "after" "reconcile")
     conflictWire = "[\"hostbootstrap/provider-native-refusal/v1\",\"conflict\",\"provider\",\"before\",\"after\",\"reconcile\"]"
+
+-- The configured mounts are the provider's own statement of host/guest correspondence.
+limaMountTests :: [TestTree]
+limaMountTests =
+    [ testCase "configured mounts keep location, default mount point and write policy" $ do
+        native <- expectLimaReport (classifyLimaInstanceReport "demo" (jsonRows [withMounts
+            [ Aeson.object ["location" .= ("/host/share/" :: String), "mountPoint" .= ("/guest/share" :: String), "writable" .= True]
+            , Aeson.object ["location" .= ("/host/plain" :: String)]
+            , Aeson.object ["location" .= ("/host/null" :: String), "mountPoint" .= Aeson.Null, "writable" .= Aeson.Null]
+            ]]))
+        limaInstanceMounts native @?= Right
+            [ LimaMount "/host/share" "/guest/share" True
+            , LimaMount "/host/plain" "/host/plain" False
+            , LimaMount "/host/null" "/host/null" False
+            ]
+    , testCase "a row without configured mounts reports none" $ do
+        native <- expectLimaReport (classifyLimaInstanceReport "demo" (jsonRows [limaRow "demo" "Running" "/native/demo" Nothing []]))
+        limaInstanceMounts native @?= Right []
+    , testCase "a malformed mount entry makes the row unreadable" $
+        assertUnreadable "not valid native JSON" (classifyLimaInstanceReport "demo" (jsonRows [withMounts
+            [Aeson.object ["mountPoint" .= ("/guest" :: String)]]]))
+    ]
+        <> [ testCase ("an inadmissible mount path refuses correspondence but keeps the instance: " <> label) $ do
+                native <- expectLimaReport (classifyLimaInstanceReport "demo" (jsonRows [withMounts [mount]]))
+                limaInstanceListing native @?= ProviderListing "demo" ProviderRunning
+                limaInstanceMounts native @?= Left "a Lima mount is not a bounded absolute path"
+           | (label, mount) <-
+                [ ("home-relative location", Aeson.object ["location" .= ("~" :: String)])
+                , ("relative mount point", Aeson.object ["location" .= ("/host" :: String), "mountPoint" .= ("guest" :: String)])
+                , ("traversal", Aeson.object ["location" .= ("/host/../etc" :: String)])
+                , ("control", Aeson.object ["location" .= ("/host/\ESC" :: String)])
+                ]
+           ]
+  where
+    withMounts mounts = case limaRow "demo" "Running" "/native/demo" Nothing [] of
+        Aeson.Object row -> Aeson.Object (AesonMap.insert "config" (Aeson.object ["mounts" .= mounts]) row)
+        other -> other
+
+-- wsl.exe's UTF-16LE listing reaches the classifier through the lenient UTF-8 capture.
+wslRunningTests :: [TestTree]
+wslRunningTests =
+    [ testCase "an ASCII UTF-16LE listing naming the distribution observes it running" $
+        classifyWslRunningReport "hb-owned" (ok (utf16 "other\r\nhb-owned\r\n")) @?= Right True
+    , testCase "a UTF-8 listing (WSL_UTF8) naming the distribution observes it running" $
+        classifyWslRunningReport "hb-owned" (ok "hb-owned\r\n") @?= Right True
+    , testCase "a listing without the exact distribution does not observe it running" $ do
+        classifyWslRunningReport "hb-owned" (ok (utf16 "hb-owned-other\r\n")) @?= Right False
+        classifyWslRunningReport "hb-owned" (ok "") @?= Right False
+    , testCase "a nonzero listing exit is a fault, not an observation" $
+        classifyWslRunningReport "hb-owned" (Right (CapturedRun (ExitFailure 1) (utf16 "There are no running distributions.\r\n") ""))
+            @?= Left (ProviderCommandExited 1 "no diagnostic")
+    , testCase "an unrun listing remains unrun" $
+        classifyWslRunningReport "hb-owned" (Left "no client") @?= Left (ProviderCommandUnrun "no client")
+    , testCase "a noisy listing success is refused" $
+        classifyWslRunningReport "hb-owned" (Right (CapturedRun ExitSuccess "hb-owned\n" "warning\n"))
+            @?= Left (ProviderCommandNoisy "warning")
+    , testCase "NULs outside the ASCII UTF-16LE shape are unreadable" $
+        assertUnreadable "neither ASCII UTF-16LE nor UTF-8" (classifyWslRunningReport "hb-owned" (ok "h\0b\0\0-"))
+    , testCase "a control character inside a listed name is unreadable" $
+        assertUnreadable "control character" (classifyWslRunningReport "hb-owned" (ok (utf16 "hb\ESCowned\r\n")))
+    ]
+  where
+    utf16 :: String -> String
+    utf16 = concatMap (\character -> [character, '\0'])

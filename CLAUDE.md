@@ -221,15 +221,25 @@ this project (§ KK); the repository carries no script. **On macOS/Linux, run th
 of this applies. Full mechanism, root cause, and how to install the two files on a fresh Windows
 machine: [documents/engineering/durable_windows_runs.md](documents/engineering/durable_windows_runs.md).
 
-## WSL2 for Kubernetes work on Windows
+## VirtualBox for Linux validation on Windows
 
-When doing Kubernetes work on Windows (Kind clusters, Docker, Helm, the Linux substrate's live gates), assistants
-have **total freedom to configure WSL2 to do what the work needs** — starting and stopping services, running them as
-root through `wsl -u root`, installing or reconfiguring packages, and changing that distribution's own settings —
-**provided it is done in a dedicated WSL2 instance for hostbootstrap** (for example `hostbootstrap-linux-d`). Never
-configure, start, stop, or write into a distribution that belongs to the user or to another project; leave their
-state exactly as found. Record what was configured in the dated evidence of the sprint it served, and put a service
-back (for example, stop Docker) when the run is done unless the work needs it left running.
+Use a dedicated hostbootstrap Linux VirtualBox VM for Linux validation and Kubernetes work on Windows, not a VM
+belonging to the user or another project. Size VM CPU, memory, swap and storage with host headroom and use
+dedicated storage, aiming to avoid resource contention with other projects. Proof of cross-project CPU, memory
+or storage isolation is not a validation prerequisite. Keep hostbootstrap VM disks, build caches,
+temporary files and gate artifacts on the SSD (`C:` on this host), not the `D:` hard disk.
+
+Expose the live Windows checkout to the VM and bind mount it into the Linux workspace. Verify source identity,
+bidirectional visibility of fresh changes including unstaged and untracked files, and required filesystem
+semantics. A clone or copy is not a substitute. Keep build outputs and state on dedicated VM storage.
+
+Install and configure all dependencies and services required by the selected work in the VM, including Docker,
+Kind and Helm when needed. Use host credentials when required, preserving originals and placing any necessary
+copies in restricted private VM storage; never print credentials or alter host credentials or configuration.
+The specific base-image credential restriction below still applies to publication. Do not disturb other VMs,
+projects or existing sessions. Record configuration, allocations and observed usage when practical in sprint
+evidence; stop services after the run unless the work needs them left running. If required mount semantics
+cannot be verified, report Linux validation unmet.
 
 ## Base image: rebuild → republish → pull
 

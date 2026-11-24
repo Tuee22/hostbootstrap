@@ -1353,7 +1353,7 @@ reconstruct the cataloged target plan, but it cannot open or relabel the root ac
 child-plan cursor from it, or choose a durable operation set.
 Existing bound invocations reconstruct only the plan identity named by their verified
 snapshot; fresh admission is reserved for an absent Production mode or the exact unbound retry state.
-Canonical snapshot format 8 retains the exact root through a big-endian 64-bit byte length and
+Canonical snapshot format 9 retains the exact root through a big-endian 64-bit byte length and
 big-endian 32-bit `Char` code points. `IndexedPlanSnapshot` is abstract at the kernel export boundary;
 its stable public projection is non-authorizing. Existing-bound structural admission preserves both
 the snapshot record key and kernel reason in `ModeMalformedCanonicalSnapshot`, refusing before
@@ -1654,7 +1654,7 @@ consumer for Harness: it retains the exact Harness-scoped plan across generated-
 interprets root Up through the same hidden fixed entry and retains the separate teardown route, and exposes no project-lifecycle
 callback through `TestSuite`.
 
-The current stable snapshot format (version 8, `canonicalPlanSnapshotFormatVersion`; the decoder refuses
+The current stable snapshot format (version 9, `canonicalPlanSnapshotFormatVersion`; the decoder refuses
 any other version) binds that exact canonical root into the canonical bytes and
 content-derived digest as a bounded, length-framed stream of big-endian 32-bit `Char` code points. The
 structural parser exactly decodes the root, rejects empty, partial, NUL, oversized, and out-of-range

@@ -1025,6 +1025,9 @@ Resolve a bound abandoned run that acquired resources by driving its recovered f
   bound snapshot and complete rehydrated set.
 - The driver consumes one verified recovery handoff for each foreign cursor and settles every child before its
   parent, using exact recovered resources and no backend call for a released member.
+- Recovery selects a phase 17 rooted release checkpoint through the verified abandoned session, validates its
+  coordinates and resource transition under current authority, and reconciles it with the journal and
+  durable resource before deciding whether another backend release is required.
 - The production `test run` command path (`Command.hs` → `protectedProjectRunOwnership`) installs a real
   `RecoveredResourceExecutor` that dispatches each owned resource of a foreign frame through
   `withRecoveredChildProjectionBinding` and the authenticated recovery handoff (Sprint 18.15), and each
@@ -1084,6 +1087,9 @@ all 2,359 tests on linux-cpu, including governed documentation validation.
   With the refusing executor, any abandoned bound `test run` holding one owned resource fails every sweep with
   "no recovered backend is installed" and the lease, mode, and records stay stuck. Delete
   `refusingRecoveredResourceExecutor` once no caller remains.
+- Reconstruct and validate an interrupted rooted release checkpoint against the abandoned session and current
+  recovery authority; converge the matching journal and resource without repeating an already-proved release,
+  and refuse foreign, stale, incomplete, or contradictory evidence without changing it.
 - Add the production-bracket two-frame `HarnessSpec` case, the read-back assertions in `RecoverySpec`'s
   recorded-release case, the tightened backend-refusal match, and the foreign-plan and unknown-adapter
   `driveRecoveredForest` cases named in Validation.
@@ -1268,6 +1274,8 @@ Expose deterministic process-death boundaries for every recovery transition the 
 
 - A subprocess fixture publishes a durable ready sentinel and can be killed after owned-resource settlement,
   migration freeze, migration commit, destroy settlement, or persisted `Closing`.
+- A rooted reverse-release fixture kills the producer after its checkpoint and before each subsequent resource
+  or journal write, then verifies restarted recovery consumes the checkpoint without a duplicate effect.
 - The successor opens the same protected store and verifies exact-once convergence, old-permit refusal,
   child-first release, terminal lease/mode state, and no duplicate effect after real process termination.
 - Fixtures use managed temporary artifacts and captured output, create no `.log` or authority bypass, and fail
@@ -1321,6 +1329,7 @@ non-empty or the producer has exited (reporting its exit code), with a longer bu
 
 - Rebuild the `owned-resource-settled` probe over a two-frame owned forest killed between the child and parent
   releases, and pin the cross-process events `["vm", "host"]`.
+- Add rooted release checkpoint kill points and assert exact recovery and resource state at each write boundary.
 - Rebuild the `migration-frozen` and `migration-committed` probes on the real `withPlanMigration` and
   `commitMigrationActivation` brackets over a Production root (replacing `abandonBoundRunWithMigration`'s
   synthetic revision records), with successors that assert convergence through the Production migration
@@ -1662,7 +1671,120 @@ type when the sprint closes, then reverted).
   `ForgeInvocationCloseKey.hs`, and `ForgeRecoveredForestSettled.hs` under `test/compile-fail`, and register each
   in `CompileFailSpec` with its "Illegal term-level use of the type constructor '<Type>'" phrase.
 
+### Sprint 18.26: Attribute legacy rooted settlements [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`,
+`documents/architecture/lifecycle_state_model.md`
+
+#### Objective
+
+Recover an existing unscoped rooted settlement only when retained authority proves its exact attempt.
+
+#### Deliverables
+
+- Preserve the original row and admit a later attempt only from sufficient durable attribution.
+- Refuse ambiguous, malformed, or foreign legacy evidence without writing or repeating an unknown effect.
+
+#### Validation
+
+Exercise matching legacy replay, a proven completed failure followed by a distinct retry, and ambiguous
+or unknown-effect refusals with unchanged protected images; run the host static gate.
+
+#### Remaining Work
+
+Construct the attribution from retained session and journal evidence, add the named store-backed and
+process-boundary cases, and run the declared gate.
+
+### Sprint 18.27: Attribute legacy recovered session generations [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`
+
+#### Objective
+
+Recover a legacy closed session marked `recovered` only when retained durable evidence proves its original
+broker generation and exact session identity.
+
+#### Deliverables
+
+- Attribute and migrate a legacy marker only from an exact, independently verified durable predecessor.
+- Refuse absent, ambiguous, malformed, or conflicting attribution without modifying the store or repeating an effect.
+
+#### Validation
+
+Exercise proven attribution and refusal of ambiguous or missing generation evidence with store-image checks;
+run the host static gate.
+
+#### Remaining Work
+
+Construct the attribution and migration, add the named cases, and run the declared gate.
+
+### Sprint 18.28: Attribute legacy reverse-source commitments [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`
+
+#### Objective
+
+Recover an existing reverse intent without a source-session commitment only where independent retained
+evidence proves its exact source session and operation records.
+
+#### Deliverables
+
+- Publish a commitment only from an exact, independently verified source set and retained intent.
+- Refuse ambiguous, missing, changed, or conflicting evidence without writes or repeated effects.
+
+#### Validation
+
+Cover attributable and unattributable intents, exact replay, and store-image refusals; run the host static gate.
+
+#### Remaining Work
+
+Implement the attribution, add the named cases, and run the declared gate.
+
+### Sprint 18.29: Attribute legacy root outcome details [Planned]
+
+**Status**: Planned
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Recovery.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`
+
+#### Objective
+
+Attribute a legacy root reverse outcome only when independent retained evidence proves its exact kind and
+detail; the old terminal phase alone does not distinguish failure from refusal or retain foreign detail.
+
+#### Deliverables
+
+- Recover an exact outcome only from independently verified evidence under the existing recovery authority.
+- Refuse ambiguous or missing evidence without changing the store or repeating an effect.
+
+#### Validation
+
+Cover attributable and unattributable outcomes, exact replay, and unchanged-store refusals; run the host
+static gate.
+
+#### Remaining Work
+
+Implement attribution, add the named cases, and run the declared gate.
+
 ## Remaining Work
+
+- Sprint 18.26: attribute legacy unscoped rooted settlements before admitting a distinct retry.
+- Sprint 18.27: attribute legacy recovered-session generations without guessing.
+- Sprint 18.28: attribute legacy reverse-source commitments without guessing.
+- Sprint 18.29: attribute legacy root outcome details without guessing.
 
 - Sprint 18.1: harness lease close and mode release as one durable step; split-close, malformed-lease, and
   stale-proof cases.
@@ -1691,12 +1813,12 @@ type when the sprint closes, then reverted).
   plan/membership/adapter/sibling/corrupted-frame cases.
 - Sprint 18.15: receiver consumes the recovered-frame adapter wire; exact-wire and verified round-trip cases.
 - Sprint 18.16: production executor replaces `refusingRecoveredResourceExecutor`, the executor seam leaves the
-  public API, recovery failures are reported as they occur, and recorded-release refusal cases.
+  public API, recovery failures are reported as they occur, and rooted release checkpoints are reconciled.
 - Sprint 18.17: invocation close checks the stored mode epoch and the exact lease; close refusal cases.
 - Sprint 18.18: malformed reverse-root intent and pre-effect release failures are reported; plan-digest,
   coordinator-idle, Production transaction interruption, and exact pre-effect exception cases.
-- Sprint 18.19: interruption probes over a two-frame forest and the real migration brackets, with one exact
-  successor result per boundary, in-flight kill points, and race-free sentinels.
+- Sprint 18.19: interruption probes over a two-frame forest, rooted release checkpoints, and the real migration
+  brackets, with one exact successor result per boundary, in-flight kill points, and race-free sentinels.
 - Sprint 18.20: Production `up` carries a differing plan through the migration barrier.
 - Sprint 18.21: `withDurableFrozenMigration` re-mints the frozen capability from durable state, and Production
   recovery dispatches interrupted migrations by recorded revision kind.

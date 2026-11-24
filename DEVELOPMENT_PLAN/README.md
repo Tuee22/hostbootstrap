@@ -54,16 +54,16 @@ its row here.
 | 12 | [Step algebra and the project plan](phase-12-step-algebra-and-project-plan.md) | Done | linux-cpu | — |
 | 13 | [Authenticated handoff and child admission](phase-13-authenticated-handoff-and-child-admission.md) | Done | linux-cpu | — |
 | 14 | [Ownership clauses and reservations](phase-14-ownership-clauses-and-reservations.md) | Done | linux-cpu | — |
-| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | Sprint 15.50t; 1 Active |
+| 15 | [Host providers and the lift](phase-15-host-providers-and-the-lift.md) | Active | linux-cpu | Sprint 15.63; 1 Active |
 | 16 | [Cluster lifecycle, budgets, and cordoning](phase-16-cluster-lifecycle-and-cordoning.md) | Done | linux-cpu | — |
-| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | Sprint 17.13; 41 Active, 12 Planned |
-| 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | Sprint 18.1; 19 Active, 6 Planned |
+| 17 | [Recursive lifecycle command](phase-17-recursive-lifecycle-command.md) | Active | linux-cpu | Sprint 17.71h; 1 Active, 6 Planned |
+| 18 | [Recovery and migration](phase-18-recovery-and-migration.md) | Active | linux-cpu | Sprint 18.1; 19 Active, 10 Planned |
 | 19 | [Test harness and run ownership](phase-19-test-harness-and-run-ownership.md) | Active | linux-cpu | Sprint 19.1; 3 Active, 7 Planned |
 | 20 | [`test` and `context` commands](phase-20-test-and-context-commands.md) | Active | linux-cpu | Sprint 20.10; 1 Active |
 | 21 | [Composition and network algebra](phase-21-composition-and-network-algebra.md) | Active | linux-cpu | Sprint 21.1; 3 Active, 7 Planned |
 | 22 | [Service runtime](phase-22-service-runtime.md) | Active | linux-cpu | Sprint 22.1; 3 Active, 8 Planned |
 | 23 | [Base image and warm store](phase-23-base-image-and-warm-store.md) | Active | linux-cpu | Sprint 23.3; 4 Active |
-| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.1; 37 Active, 29 Planned |
+| 24 | [The worked demo](phase-24-worked-demo.md) | Active | linux-cpu | Sprint 24.1; 37 Active, 30 Planned |
 | 25 | [Documentation reconciliation](phase-25-documentation-reconciliation.md) | Active | — | Sprint 25.4; 3 Active, 10 Planned |
 | 26 | [Apple Silicon substrate](phase-26-apple-silicon-substrate.md) | Active | **apple-silicon** | Sprint 26.8; 1 Active |
 | 27 | [NVIDIA GPU substrate](phase-27-nvidia-gpu-substrate.md) | Active | **nvidia** | Sprint 27.11; 1 Active |
@@ -72,14 +72,17 @@ its row here.
 
 ## The current frontier
 
-Phases 0 through 14 and 16 are `Done`; phases 15 and 17 through 29 are `Active`. A `Done` phase whose
-covered source a later sprint edits expires its evidence (§ C) and owes its gate again; phase 16 was reopened that way by
-a `hostbootstrap-core.cabal` edit and closed again on 2026-11-10 once the baseline phases that edit its covered paths
-settled. Phase 15 was reopened the same way on 2026-11-10 by the `provider-live` formatting, and Sprint 15.50t owes its re-run. Each Active baseline phase owes
-code changes and behavioural tests that its own contracts name. Its `## Remaining Work` lists the owing
-sprints; each owing sprint's `#### Remaining Work` names the change and the case that proves it, and its
-`#### Validation` names the cases that close it. Work resumes at phase 17, the lowest Active phase that owes code, and
-proceeds in numerical order; inside a phase, the Active sprints come before the Planned ones.
+Phases 0 through 16 are `Done`; phases 17 through 29 are `Active`. Sprint 4.7 made the store's lock open
+close-on-exec atomically after a failed gate leg exposed the race. Phase 15's provider gate was last re-run on
+2026-11-20 in Sprint 15.62, and phase 16's cluster gate on 2026-11-23 in Sprint 16.91. Later edits to covered paths
+expire the resulting evidence and require another run.
+A `Done` phase whose covered source a later sprint edits expires its evidence (§ C) and owes its gate again,
+so a phase 17 sprint that edits provider code reopens phase 15 and names the phase 15 sprint that re-runs it.
+Each Active baseline phase owes code changes and behavioural tests that its own contracts name. Its
+`## Remaining Work` lists the owing sprints; each owing sprint's `#### Remaining Work` names the change and
+the case that proves it, and its `#### Validation` names the cases that close it. Work resumes at phase 17,
+the lowest Active phase, and proceeds in numerical order; inside a phase, the Active sprints come before the
+Planned ones.
 
 
 Phases 26 and 28 each owe the live accelerator-daemon kill-and-restart that the worked demo hands to

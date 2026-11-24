@@ -43,7 +43,14 @@
   `mkStepPlan` preserves exact declaration order and rejects empty plans, duplicate typed
   identities, conflicting frame labels, non-contiguous `A → B → A` returns, a post-handoff suffix that
   does not unwind deepest participating frame first, and any frame that does not declare exactly one
-  descent (none, for the innermost) before any admitted project plan is returned.
+  descent (none, for the innermost) before any admitted project plan is returned. The one exception is a
+  declared empty terminal child: `declaresEmptyChildFrame` on the innermost step-bearing frame's descending
+  step names a frame with no step, which the plan digest binds and the topology places last with no node and
+  no descent; it is refused on any other step, twice, without a descent, or under a reused identity.
+  A step may carry one plan-bound, read-only `RecoveryObserver` whose identity and revision the plan digest binds.
+  Its check sees only the step's own operation and frame; its bound result is admitted only against that admitted
+  step and observer revision, and an absence counts only when the observer declares that no delayed effect can
+  land.
   `Step.isPostHandoffStep` exhaustively classifies every core and project step kind. Validation and frame
   partitioning use it directly; the plan facade applies it to its retained raw step, so interpretation
   and validation share one decision. A new step kind requires a classification before the warning-clean
@@ -114,12 +121,21 @@ selection changes which decoder receives a wire; it supplies no authority from t
 
 The recursive coordinator extends this finalized-project boundary without giving a child durable authority. A real
 project installs `addForwardChildPlan` exactly once; the exact `FinalizedProjectSpec` retains that
-scope-polymorphic projector and the bare default refuses. Cabal-hidden
+scope-polymorphic projector and the bare default refuses. Its parent and child frame identifiers use distinct
+`ParentFrameId` and `ChildFrameId` types, so a projector cannot exchange their roles. Cabal-hidden
 `withFinalizedForwardChildProjectionKernel` invokes only the retained projector, canonically validates the
 projected configuration through the exact finalized codec, discards the wire, and supplies only the target
 descriptor/path, exact `ValidatedConfig`, and opaque `StepPlan` to a fixed callback. The existing hidden
-exact-package producer retains `HandoffBindingInput` in `PlannedForwardHandoff`, exposes no live binding or
-caller-polymorphic result, has no process caller, and grants no runtime authority.
+catalog-admitted package retains the exact `HandoffBindingInput`, exposes no live binding or
+caller-polymorphic result, and grants no runtime authority.
+The core test fixture supplies a minimal project config for generic machinery; the demo separately tests its
+own refined schema. Fixture initialization uses `failConfigAssembly` for an incompatible role combination,
+so the command reports the refusal before publishing a configuration file.
+The private finalized-plan owner supplies the bare default refusal; the CLI uses that same function when
+constructing the bare plan. A real one-layer catalog admission exercises the projector retained by the
+finalized project before the first effect.
+Specification-index source guards scan each production implementation root, preserve constructor-export
+syntax, and check the contents of reviewed public module re-exports when looking for hidden authorities.
 
 Canonical snapshot data and the opaque stable reporting wrapper share one production private
 `HostBootstrap.Lifecycle.Snapshot.Core` representation. The plan kernel still owns admission and canonical
@@ -605,7 +621,7 @@ invariants; the full host static gate is canonical in
 | Runtime executable identity matches the declared project before dispatch | [CLISpec](../../core/hostbootstrap-core/test/CLISpec.hs): mismatching-name subprocess with valid arguments and matching-name control; [AuthoritySpec](../../core/hostbootstrap-core/test/AuthoritySpec.hs) |
 | Raw `ProjectSpec`, `Step`, and unfinished-builder dispatch are unrepresentable | compile-fail [RawProjectSpec](../../core/hostbootstrap-core/test/compile-fail/RawProjectSpec.hs), [RawStep](../../core/hostbootstrap-core/test/compile-fail/RawStep.hs), [DispatchUnfinishedBuilder](../../core/hostbootstrap-core/test/compile-fail/DispatchUnfinishedBuilder.hs) |
 | `mkStepPlan` ordering, duplicate, and descent rules | [StepSpec](../../core/hostbootstrap-core/test/StepSpec.hs), [ProjectPlanSpec](../../core/hostbootstrap-core/test/ProjectPlanSpec.hs) |
-| Recovered-specification bridge and reindex kernels, including an empty service registry | [ProjectPlanSpec](../../core/hostbootstrap-core/test/ProjectPlanSpec.hs); compile-fail [OpenFinalizedServiceRegistryReindex](../../core/hostbootstrap-core/test/compile-fail/OpenFinalizedServiceRegistryReindex.hs), [CoerceFinalizedProjectSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceFinalizedProjectSpec.hs), [CoerceProjectCodecSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceProjectCodecSpec.hs) |
+| Recovered-specification bridge and reindex kernels, including empty registries, mismatched registry carriers, and canonical recovered draft bytes | [ProjectPlanSpec](../../core/hostbootstrap-core/test/ProjectPlanSpec.hs); compile-fail [OpenFinalizedServiceRegistryReindex](../../core/hostbootstrap-core/test/compile-fail/OpenFinalizedServiceRegistryReindex.hs), [CoerceFinalizedProjectSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceFinalizedProjectSpec.hs), [CoerceProjectCodecSpec](../../core/hostbootstrap-core/test/compile-fail/CoerceProjectCodecSpec.hs) |
 | Harness config never becomes Production; plaintext only under the matching run | compile-fail [HarnessConfigAsProduction](../../core/hostbootstrap-core/test/compile-fail/HarnessConfigAsProduction.hs), [ProductionPlaintext](../../core/hostbootstrap-core/test/compile-fail/ProductionPlaintext.hs), [CrossRunPlaintext](../../core/hostbootstrap-core/test/compile-fail/CrossRunPlaintext.hs), [ForgeHarnessAuthority](../../core/hostbootstrap-core/test/compile-fail/ForgeHarnessAuthority.hs); [SchemaSpec](../../core/hostbootstrap-core/test/SchemaSpec.hs) |
 | Harness root and config authority cannot be coerced to another run | compile-fail [CoerceHarnessAuthorityRun](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessAuthorityRun.hs), [CoerceHarnessConfigAuthorityRun](../../core/hostbootstrap-core/test/compile-fail/CoerceHarnessConfigAuthorityRun.hs) |
 | Typed test matrix validation | [HarnessSpec](../../core/hostbootstrap-core/test/HarnessSpec.hs) |

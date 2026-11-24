@@ -40,6 +40,28 @@ module HostBootstrap.Handoff.Rooted (
     renderRootedPayloadBindingKernel,
     renderRootedPayloadUnsignedKernel,
     renderRootedPayloadUnsignedPartsKernel,
+    RootedProjectedObservation (..),
+    RootedNodeObservation (..),
+    renderRootedNodeObservationKernel,
+    readRootedNodeObservationKernel,
+    readRootedNodeObservationForPlanKernel,
+    RootedReverseResource (..),
+    RootedReverseObservation (..),
+    renderRootedReverseObservationKernel,
+    readRootedReverseObservationForPlanKernel,
+    renderReversePreparedGateEnvelopeKernel,
+    readReversePreparedGateEnvelopeKernel,
+    renderRecoveryObserveEnvelopeKernel,
+    readRecoveryObserveEnvelopeKernel,
+    RootedRecoveryResult (..),
+    RootedRecoveryObservation (..),
+    renderRootedRecoveryObservationKernel,
+    readRootedRecoveryObservationKernel,
+    admitRootedRecoveryObservationKernel,
+    RecoveryObservationRequest (..),
+    renderRecoveryObservationRequestKernel,
+    readRecoveryObservationRequestKernel,
+    isRecoveryObservationRequestKernel,
     RootedLifecycleRequest,
     rootedOpenFrameRequestKernel,
     rootedNextNodeRequestKernel,
@@ -76,6 +98,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64, Word8)
+import HostBootstrap.Lifecycle.Prepared.Internal (readFencedPreparedGatePackageKernel)
 
 -- | One checked complete-payload digest. This descriptive data grants no authority.
 newtype PayloadDigest = PayloadDigest Text
@@ -1010,3 +1033,414 @@ withRootedLifecycleResponseKernel response onOpened onPrepared onDescend onSettl
     FrameComplete digest path session stage ordinal nonce body signature -> onComplete digest path session stage ordinal nonce body signature
     ReceiptRecorded digest path session stage ordinal nonce completion signature -> onReceipt digest path session stage ordinal nonce completion signature
     Refused digest path session stage ordinal nonce detail signature -> onRefused digest path session stage ordinal nonce detail signature
+
+
+-- | Frame an already-fenced gate and its optional resource predecessor.
+renderReversePreparedGateEnvelopeKernel :: ByteString -> Maybe ByteString -> Either Text ByteString
+renderReversePreparedGateEnvelopeKernel gate predecessor = do
+    _ <- readFencedPreparedGatePackageKernel gate
+    case predecessor of
+        Just bytes -> require (not (ByteString.null bytes)) "has an empty reverse predecessor"
+        Nothing -> pure ()
+    let presence = case predecessor of
+            Nothing -> rootedFrame "absent"
+            Just bytes -> rootedFrame "present" <> rootedFrame bytes
+        encoded = rootedFrame "hostbootstrap/reverse-prepared-gate/v1" <> rootedFrame gate <> rootedFrame presence
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized reverse gate envelope"
+    pure encoded
+
+-- | Decode the bounded, canonical envelope without granting authority.
+readReversePreparedGateEnvelopeKernel :: ByteString -> Either Text (ByteString, Maybe ByteString)
+readReversePreparedGateEnvelopeKernel raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized reverse gate envelope"
+    (domain, a) <- takeRootedFrame raw
+    require (domain == "hostbootstrap/reverse-prepared-gate/v1") "has another reverse gate envelope domain"
+    (gate, b) <- takeRootedFrame a
+    (presenceRaw, trailing) <- takeRootedFrame b
+    require (ByteString.null trailing) "has trailing reverse gate envelope fields"
+    (presence, payload) <- takeRootedFrame presenceRaw
+    predecessor <- case presence of
+        "absent" -> require (ByteString.null payload) "has trailing absent predecessor fields" >> pure Nothing
+        "present" -> do
+            (bytes, rest) <- takeRootedFrame payload
+            require (ByteString.null rest) "has trailing predecessor fields"
+            pure (Just bytes)
+        _ -> Left "has an invalid reverse predecessor state"
+    canonical <- renderReversePreparedGateEnvelopeKernel gate predecessor
+    require (canonical == raw) "is not a canonical reverse gate envelope"
+    pure (gate, predecessor)
+
+-- | Ask the child to run only its retained recovery observer for one exact gate.
+renderRecoveryObserveEnvelopeKernel :: ByteString -> Either Text ByteString
+renderRecoveryObserveEnvelopeKernel gate = do
+    _ <- readFencedPreparedGatePackageKernel gate
+    let encoded = rootedFrame "hostbootstrap/recovery-observe/v1" <> rootedFrame gate
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized recovery observe envelope"
+    pure encoded
+
+-- | Decode the bounded, canonical observe envelope without granting authority.
+readRecoveryObserveEnvelopeKernel :: ByteString -> Either Text ByteString
+readRecoveryObserveEnvelopeKernel raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized recovery observe envelope"
+    (domain, a) <- takeRootedFrame raw
+    require (domain == "hostbootstrap/recovery-observe/v1") "has another recovery observe envelope domain"
+    (gate, trailing) <- takeRootedFrame a
+    require (ByteString.null trailing) "has trailing recovery observe envelope fields"
+    canonical <- renderRecoveryObserveEnvelopeKernel gate
+    require (canonical == raw) "is not a canonical recovery observe envelope"
+    pure gate
+
+-- | The closed result a recovery observer reports, on the wire.
+data RootedRecoveryResult
+    = RootedRecoveryAbsent
+    | RootedRecoveryPresent Text
+    | RootedRecoveryForeign Text
+    | RootedRecoveryInconclusive Text
+    deriving (Eq, Show)
+
+{- | One recovery observation as the child reports it: the exact operation,
+record version and attempt of the gate it answers, the observer identity and
+revision that produced it, and the closed result. It settles nothing.
+-}
+data RootedRecoveryObservation = RootedRecoveryObservation Text Word64 Word64 Text Word64 RootedRecoveryResult
+    deriving (Eq, Show)
+
+renderRootedRecoveryObservationKernel :: RootedRecoveryObservation -> Either Text ByteString
+renderRootedRecoveryObservationKernel (RootedRecoveryObservation operation version attempt observer revision result) = do
+    requireLifecycleText "recovery operation" operation
+    requireLifecycleText "recovery observer" observer
+    require (version > 0 && attempt > 0 && revision > 0) "has a zero recovery coordinate"
+    (tag, detail) <- case result of
+        RootedRecoveryAbsent -> Right ("absent", "")
+        RootedRecoveryPresent identity -> named "present" identity
+        RootedRecoveryForeign identity -> named "foreign" identity
+        RootedRecoveryInconclusive reason -> named "inconclusive" reason
+    let encoded =
+            ByteString.concat
+                ( map
+                    rootedFrame
+                    [ "hostbootstrap/rooted-recovery-observation/v1"
+                    , TextEncoding.encodeUtf8 operation
+                    , ByteString.pack (word64BigEndian version)
+                    , ByteString.pack (word64BigEndian attempt)
+                    , TextEncoding.encodeUtf8 observer
+                    , ByteString.pack (word64BigEndian revision)
+                    , tag
+                    , detail
+                    ]
+                )
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized recovery observation"
+    pure encoded
+  where
+    named tag text = do
+        requireLifecycleText "recovery detail" text
+        Right (tag, TextEncoding.encodeUtf8 text)
+
+-- | Strictly decode one canonical recovery observation.
+readRootedRecoveryObservationKernel :: ByteString -> Either Text RootedRecoveryObservation
+readRootedRecoveryObservationKernel raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized recovery observation"
+    frames <- collectRecoveryFrames raw
+    observation <- case frames of
+        [domain, operationRaw, versionRaw, attemptRaw, observerRaw, revisionRaw, tag, detailRaw] -> do
+            require (domain == "hostbootstrap/rooted-recovery-observation/v1") "has another recovery observation domain"
+            operation <- decodeLifecycleText "recovery operation" operationRaw
+            version <- decodeLifecycleOrdinal versionRaw
+            attempt <- decodeLifecycleOrdinal attemptRaw
+            observer <- decodeLifecycleText "recovery observer" observerRaw
+            revision <- decodeLifecycleOrdinal revisionRaw
+            result <- case tag of
+                "absent" -> require (ByteString.null detailRaw) "has detail on an absent recovery result" >> Right RootedRecoveryAbsent
+                "present" -> RootedRecoveryPresent <$> decodeLifecycleText "recovery detail" detailRaw
+                "foreign" -> RootedRecoveryForeign <$> decodeLifecycleText "recovery detail" detailRaw
+                "inconclusive" -> RootedRecoveryInconclusive <$> decodeLifecycleText "recovery detail" detailRaw
+                _ -> Left "has an unknown recovery result"
+            Right (RootedRecoveryObservation operation version attempt observer revision result)
+        _ -> Left "does not have exactly eight recovery observation fields"
+    canonical <- renderRootedRecoveryObservationKernel observation
+    require (canonical == raw) "is not a canonical recovery observation"
+    pure observation
+  where
+    collectRecoveryFrames bytes
+        | ByteString.null bytes = Right []
+        | otherwise = do
+            (field, rest) <- takeRootedFrame bytes
+            (field :) <$> collectRecoveryFrames rest
+
+{- | Admit an observation only for the exact gate and observer it must answer:
+the operation, record version, attempt, observer identity and revision must
+all match. A mismatch refuses; admission settles nothing.
+-}
+admitRootedRecoveryObservationKernel ::
+    Text -> Word64 -> Word64 -> Text -> Word64 -> RootedRecoveryObservation -> Either Text RootedRecoveryResult
+admitRootedRecoveryObservationKernel operation version attempt observer revision (RootedRecoveryObservation observedOperation observedVersion observedAttempt observedObserver observedRevision result)
+    | observedOperation /= operation = Left "the recovery observation names another operation"
+    | observedVersion /= version || observedAttempt /= attempt = Left "the recovery observation answers another record version or attempt"
+    | observedObserver /= observer || observedRevision /= revision = Left "the recovery observation came from another observer or revision"
+    | otherwise = Right result
+
+{- | The shipped recovery-observation act. It names the exact plan coordinates
+the frame re-admits its plan under (profile, profile epoch, installed project,
+store identity and plan digest), the frame and operation, the unresolved row's
+record version and attempt, the observer identity and revision the plan binds,
+and the frame's canonical child config. It carries no authority.
+-}
+data RecoveryObservationRequest = RecoveryObservationRequest Text Word64 Text Text Text Text Text Word64 Word64 Text Word64 ByteString
+    deriving (Eq, Show)
+
+recoveryObservationRequestDomain :: ByteString
+recoveryObservationRequestDomain = "hostbootstrap/recovery-observation/request/v1"
+
+renderRecoveryObservationRequestKernel :: RecoveryObservationRequest -> Either Text ByteString
+renderRecoveryObservationRequestKernel (RecoveryObservationRequest profile epoch project store digest frame operation version attempt observer revision config) = do
+    mapM_ (uncurry requireLifecycleText)
+        [("recovery profile", profile), ("recovery project", project), ("recovery store", store), ("recovery plan digest", digest)
+        , ("recovery frame", frame), ("recovery operation", operation), ("recovery observer", observer)]
+    require (epoch > 0 && version > 0 && attempt > 0 && revision > 0) "has a zero recovery request coordinate"
+    require (not (ByteString.null config)) "has an empty recovery child config"
+    let word = ByteString.pack . word64BigEndian
+        encoded =
+            ByteString.concat
+                ( map rootedFrame
+                    [ recoveryObservationRequestDomain
+                    , TextEncoding.encodeUtf8 profile, word epoch, TextEncoding.encodeUtf8 project, TextEncoding.encodeUtf8 store
+                    , TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frame, TextEncoding.encodeUtf8 operation
+                    , word version, word attempt, TextEncoding.encodeUtf8 observer, word revision, config
+                    ]
+                )
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized recovery observation request"
+    pure encoded
+
+-- | Whether the bytes claim the recovery-observation act; other acts fall through.
+isRecoveryObservationRequestKernel :: ByteString -> Bool
+isRecoveryObservationRequestKernel raw = case takeRootedFrame raw of
+    Right (domain, _) -> domain == recoveryObservationRequestDomain
+    Left _ -> False
+
+-- | Strictly decode one canonical recovery-observation act.
+readRecoveryObservationRequestKernel :: ByteString -> Either Text RecoveryObservationRequest
+readRecoveryObservationRequestKernel raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized recovery observation request"
+    frames <- collectFrames raw
+    request <- case frames of
+        [domain, profileRaw, epochRaw, projectRaw, storeRaw, digestRaw, frameRaw, operationRaw, versionRaw, attemptRaw, observerRaw, revisionRaw, config] -> do
+            require (domain == recoveryObservationRequestDomain) "has another recovery observation request domain"
+            RecoveryObservationRequest
+                <$> decodeLifecycleText "recovery profile" profileRaw
+                <*> decodeLifecycleOrdinal epochRaw
+                <*> decodeLifecycleText "recovery project" projectRaw
+                <*> decodeLifecycleText "recovery store" storeRaw
+                <*> decodeLifecycleText "recovery plan digest" digestRaw
+                <*> decodeLifecycleText "recovery frame" frameRaw
+                <*> decodeLifecycleText "recovery operation" operationRaw
+                <*> decodeLifecycleOrdinal versionRaw
+                <*> decodeLifecycleOrdinal attemptRaw
+                <*> decodeLifecycleText "recovery observer" observerRaw
+                <*> decodeLifecycleOrdinal revisionRaw
+                <*> pure config
+        _ -> Left "does not have exactly thirteen recovery observation request fields"
+    canonical <- renderRecoveryObservationRequestKernel request
+    require (canonical == raw) "is not a canonical recovery observation request"
+    pure request
+  where
+    collectFrames bytes
+        | ByteString.null bytes = Right []
+        | otherwise = do
+            (field, rest) <- takeRootedFrame bytes
+            (field :) <$> collectFrames rest
+
+-- | One descriptive reverse transition over an exact predecessor.
+data RootedReverseResource = RootedReverseResource Text Text ByteString ByteString
+    deriving (Eq, Show)
+
+-- | A reverse outcome and the exact durable transitions it reports.
+data RootedReverseObservation = RootedReverseObservation Text ByteString [RootedReverseResource]
+    deriving (Eq, Show)
+
+renderRootedReverseObservationKernel :: RootedReverseObservation -> Either Text ByteString
+renderRootedReverseObservationKernel (RootedReverseObservation operation observation resources) = do
+    requireLifecycleText "reverse operation" operation
+    require (not (ByteString.null observation)) "has an empty reverse observation"
+    require (length resources <= rootedLifecyclePathLimit + 1) "has too many reverse resource transitions"
+    let keys = [key | RootedReverseResource _ key _ _ <- resources]
+    require (length keys == length (unique keys)) "has duplicate reverse resource transitions"
+    mapM_ validate resources
+    let encoded = ByteString.concat
+            [ rootedFrame "hostbootstrap/reverse-node-observation/v1"
+            , rootedFrame (TextEncoding.encodeUtf8 operation)
+            , rootedFrame observation
+            , rootedFrame (ByteString.concat (map encode resources))
+            ]
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized reverse observation"
+    pure encoded
+  where
+    unique [] = []
+    unique (key : rest) = key : unique (filter (/= key) rest)
+    validate (RootedReverseResource frame key previous successor) = do
+        requireLifecycleText "reverse resource frame" frame
+        requireLifecycleText "reverse resource key" key
+        require (not (ByteString.null previous) && not (ByteString.null successor)) "has an empty reverse resource transition"
+    encode (RootedReverseResource frame key previous successor) = rootedFrame $ ByteString.concat
+        [ rootedFrame (TextEncoding.encodeUtf8 frame)
+        , rootedFrame (TextEncoding.encodeUtf8 key)
+        , rootedFrame previous
+        , rootedFrame successor
+        ]
+
+-- | Decode only the ordered resource subset belonging to this exact node and frame.
+readRootedReverseObservationForPlanKernel :: Text -> Text -> [Text] -> ByteString -> Either Text RootedReverseObservation
+readRootedReverseObservationForPlanKernel frame operation allowed raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized reverse observation"
+    (domain, a) <- takeRootedFrame raw
+    require (domain == "hostbootstrap/reverse-node-observation/v1") "has another reverse observation domain"
+    (operationRaw, b) <- takeRootedFrame a
+    (observation, c) <- takeRootedFrame b
+    (resourceRaw, trailing) <- takeRootedFrame c
+    require (ByteString.null trailing) "has trailing reverse observation fields"
+    actualOperation <- decodeLifecycleText "reverse operation" operationRaw
+    resources <- readResources 0 resourceRaw
+    let result = RootedReverseObservation actualOperation observation resources
+        keys = [key | RootedReverseResource _ key _ _ <- resources]
+    canonical <- renderRootedReverseObservationKernel result
+    require (canonical == raw) "has noncanonical reverse observation bytes"
+    require (actualOperation == operation) "the reverse observation names another operation"
+    require (all (\(RootedReverseResource actual _ _ _) -> actual == frame) resources) "a reverse resource names another frame"
+    require (filter (`elem` keys) allowed == keys) "the reverse resources differ from the admitted order or membership"
+    pure result
+  where
+    readResources count bytes
+        | ByteString.null bytes = Right []
+        | count >= rootedLifecyclePathLimit + 1 = Left "has too many reverse resource transitions"
+        | otherwise = do
+            (row, rest) <- takeRootedFrame bytes
+            (frameRaw, a) <- takeRootedFrame row
+            (keyRaw, b) <- takeRootedFrame a
+            (previous, c) <- takeRootedFrame b
+            (successor, trailing) <- takeRootedFrame c
+            require (ByteString.null trailing) "has trailing reverse resource fields"
+            resourceFrame <- decodeLifecycleText "reverse resource frame" frameRaw
+            key <- decodeLifecycleText "reverse resource key" keyRaw
+            (RootedReverseResource resourceFrame key previous successor :) <$> readResources (count + 1) rest
+
+-- | A projected gate's use and optional durable resource settlement.
+data RootedProjectedObservation = RootedProjectedObservation
+    Text Bool (Maybe (Text, Maybe ByteString, ByteString))
+    deriving (Eq, Show)
+
+-- | The complete observation returned by one forward frame node.
+data RootedNodeObservation = RootedNodeObservation
+    Text Bool Text [RootedProjectedObservation]
+    deriving (Eq, Show)
+
+-- | Render bounded, canonical node and projection evidence.
+renderRootedNodeObservationKernel :: RootedNodeObservation -> Either Text ByteString
+renderRootedNodeObservationKernel (RootedNodeObservation operation succeeded detail projections) = do
+    requireLifecycleText "observation operation" operation
+    require (succeeded || not (Text.null detail)) "has an empty failure detail"
+    require (length projections <= rootedLifecyclePathLimit + 1) "has too many projected observations"
+    let keys = [key | RootedProjectedObservation key _ _ <- projections]
+    require (length keys == length (unique keys)) "has duplicate projected observations"
+    mapM_ validateProjection projections
+    let encoded = ByteString.concat
+            [ rootedFrame "hostbootstrap/forward-node-observation/v2"
+            , rootedFrame (TextEncoding.encodeUtf8 operation)
+            , rootedFrame (if succeeded then "succeeded" else "failed")
+            , rootedFrame (TextEncoding.encodeUtf8 detail)
+            , rootedFrame (ByteString.concat (map renderProjection projections))
+            ]
+    require (ByteString.length encoded <= rootedLifecycleBodyLimit) "has an oversized node observation"
+    pure encoded
+  where
+    unique [] = []
+    unique (key : rest) = key : unique (filter (/= key) rest)
+    validateProjection (RootedProjectedObservation key taken settlement) = do
+        requireLifecycleText "projected operation" key
+        require (taken || settlement == Nothing) "an unused projection has a resource settlement"
+        case settlement of
+            Nothing -> pure ()
+            Just (frame, _, bytes) -> do
+                requireLifecycleText "resource frame" frame
+                require (not (ByteString.null bytes)) "has an empty resource settlement"
+    renderProjection (RootedProjectedObservation key taken settlement) = rootedFrame $ ByteString.concat
+        [ rootedFrame (TextEncoding.encodeUtf8 key)
+        , rootedFrame (if taken then "taken" else "unused")
+        , rootedFrame (case settlement of
+            Nothing -> rootedFrame "none"
+            Just (frame, previous, bytes) -> ByteString.concat
+                [ rootedFrame "resource"
+                , rootedFrame (TextEncoding.encodeUtf8 frame)
+                , rootedFrame (case previous of Nothing -> rootedFrame "absent"; Just old -> rootedFrame "present" <> rootedFrame old)
+                , rootedFrame bytes
+                ])
+        ]
+
+-- | Reject malformed, noncanonical, or oversized node observation bytes.
+readRootedNodeObservationKernel :: ByteString -> Either Text RootedNodeObservation
+readRootedNodeObservationKernel raw = do
+    require (ByteString.length raw <= rootedLifecycleBodyLimit) "has an oversized node observation"
+    (domain, a) <- takeRootedFrame raw
+    require (domain == "hostbootstrap/forward-node-observation/v2") "has another node observation domain"
+    (operationRaw, b) <- takeRootedFrame a
+    (status, c) <- takeRootedFrame b
+    (detailRaw, d) <- takeRootedFrame c
+    (projectedRaw, trailing) <- takeRootedFrame d
+    require (ByteString.null trailing) "has trailing node observation fields"
+    operation <- decodeLifecycleText "observation operation" operationRaw
+    succeeded <- case status of "succeeded" -> Right True; "failed" -> Right False; _ -> Left "has an invalid node outcome"
+    detail <- either (const (Left "has non-UTF-8 observation detail")) Right (TextEncoding.decodeUtf8' detailRaw)
+    projections <- readProjections projectedRaw
+    let result = RootedNodeObservation operation succeeded detail projections
+    canonical <- renderRootedNodeObservationKernel result
+    require (canonical == raw) "has noncanonical node observation bytes"
+    pure result
+  where
+    readProjections bytes = go 0 bytes
+    go count bytes
+        | ByteString.null bytes = Right []
+        | count >= rootedLifecyclePathLimit + 1 = Left "has too many projected observations"
+        | otherwise = do
+            (row, rest) <- takeRootedFrame bytes
+            projection <- readProjection row
+            (projection :) <$> go (count + 1) rest
+    readProjection row = do
+        (keyRaw, a) <- takeRootedFrame row
+        (useRaw, b) <- takeRootedFrame a
+        (settlementRaw, trailing) <- takeRootedFrame b
+        require (ByteString.null trailing) "has trailing projected observation fields"
+        key <- decodeLifecycleText "projected operation" keyRaw
+        taken <- case useRaw of "taken" -> Right True; "unused" -> Right False; _ -> Left "has an invalid projected gate state"
+        (kind, payload) <- takeRootedFrame settlementRaw
+        settlement <- case kind of
+            "none" -> require (ByteString.null payload) "has trailing empty settlement fields" >> pure Nothing
+            "resource" -> do
+                (frameRaw, x) <- takeRootedFrame payload
+                (previousRaw, y) <- takeRootedFrame x
+                (bytes, end) <- takeRootedFrame y
+                require (ByteString.null end) "has trailing resource settlement fields"
+                frame <- decodeLifecycleText "resource frame" frameRaw
+                (presence, oldPayload) <- takeRootedFrame previousRaw
+                previous <- case presence of
+                    "absent" -> require (ByteString.null oldPayload) "has trailing absent predecessor fields" >> pure Nothing
+                    "present" -> do
+                        (old, afterOld) <- takeRootedFrame oldPayload
+                        require (ByteString.null afterOld) "has trailing predecessor fields"
+                        pure (Just old)
+                    _ -> Left "has an invalid predecessor state"
+                pure (Just (frame, previous, bytes))
+            _ -> Left "has an invalid resource settlement kind"
+        pure (RootedProjectedObservation key taken settlement)
+
+-- | Admit a node report only for the exact node and ordered projections in its plan.
+readRootedNodeObservationForPlanKernel :: Text -> Text -> [Text] -> ByteString -> Either Text RootedNodeObservation
+readRootedNodeObservationForPlanKernel frame node projections raw = do
+    report@(RootedNodeObservation operation _ _ entries) <- readRootedNodeObservationKernel raw
+    require (operation == node) "the observation names another node"
+    require ([key | RootedProjectedObservation key _ _ <- entries] == node : projections) "the observation names other node or projected operations"
+    require (case entries of RootedProjectedObservation _ True _ : _ -> True; _ -> False) "the node gate was not taken"
+    require (all (belongsToFrame frame) entries) "a resource settlement names another frame"
+    pure report
+  where
+    belongsToFrame expected (RootedProjectedObservation _ _ settlement) =
+        case settlement of
+            Nothing -> True
+            Just (observed, _, _) -> observed == expected

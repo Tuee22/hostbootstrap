@@ -13,8 +13,9 @@ and then reopening the store, exactly as an interrupted invocation leaves it.
 -}
 module SessionSpec (tests, runFenceDelayProbe, withInterruptedProductionTransaction) where
 
+import ConditionalCase (conditionalCase)
 import Control.Concurrent (forkFinally, newEmptyMVar, putMVar, takeMVar, threadDelay)
-import Control.Exception (ErrorCall (..), SomeException, evaluate, try)
+import Control.Exception (ErrorCall (..), SomeException, bracket, evaluate, try)
 import Control.Monad (forM_)
 import qualified Crypto.Hash as Hash
 import Data.ByteString (ByteString)
@@ -43,7 +44,6 @@ import qualified HostBootstrap.Authority as Authority
 import HostBootstrap.Authority.Kernel (CommandFrameName (..), CommandPlanDigest (..), commandReservationKernel)
 import qualified HostBootstrap.Authority.Testing as AuthorityFixture
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec))
-import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import HostBootstrap.Config.Schema (withValidatedConfig)
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Context as Context
@@ -92,6 +92,7 @@ import HostBootstrap.Lifecycle.Mode (
     withTeardownLifecycleCursor,
  )
 import HostBootstrap.Lifecycle.Prepared (decodeFields, encodeFields)
+import qualified TestPreparedGate as PreparedEffect
 import qualified HostBootstrap.Lifecycle.Prepared as Prepared
 import HostBootstrap.Lifecycle.Session hiding (
     AcquisitionJournal,
@@ -198,6 +199,9 @@ import System.Directory (
     doesDirectoryExist,
     doesFileExist,
     listDirectory,
+    getPermissions,
+    setPermissions,
+    Permissions (writable),
     removePathForcibly,
  )
 import System.Environment (getExecutablePath)
@@ -205,6 +209,7 @@ import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitSuccess, exitWith)
 import System.FilePath (takeDirectory, (</>))
 import System.IO.Error (ioeGetErrorString)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import System.Process (readProcessWithExitCode)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
@@ -2042,7 +2047,6 @@ withAcquisitionPlanFixtureForConfigUsing openIdentity stepPlan configFor verb us
                                         ( \profile ->
                                             withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
                                                 withFinalizedProjectSpec
-                                                    ProductionScope
                                                     baseCodec
                                                     emptyServiceRegistry
                                                     (\_ _ -> Right stepPlan)
@@ -2194,7 +2198,6 @@ attemptRecoveredAcquisitionFor stepPlan store project projectRoot use = do
                             ( \profile ->
                                 withProductionProjectCodec @Fixture.ProjectConfig $ \baseCodec ->
                                     withFinalizedProjectSpec
-                                        ProductionScope
                                         baseCodec
                                         emptyServiceRegistry
                                         (\_ _ -> Right stepPlan)
@@ -2441,14 +2444,73 @@ journalTests :: [TestTree]
 journalTests =
     [ testCase "rooted durable coordinates remain bounded and distinct at maximum input size" $ do
         let long suffix = Text.replicate 4096 suffix
-        frameKey <- expect (rootedFrameSessionKeyKernel (long "p") (long "c") (long "f"))
-        unknownKey <- expect (rootedNodeUnknownKeyKernel (long "p") (long "c") (long "f") (long "o"))
-        settlementKey <- expect (rootedSettlementKeyKernel (long "p") (long "c") (long "f") (long "n") 18446744073709551615)
-        changedSettlement <- expect (rootedSettlementKeyKernel (long "p") (long "c") (long "f") (long "n") 18446744073709551614)
-        mapM_
-            (\key -> assertBool "a rooted record key exceeded the protected-store bound" (Text.length (recordKeyText key) <= 200))
-            [frameKey, unknownKey, settlementKey]
-        assertBool "different settlement ordinals shared one durable key" (recordKeyText settlementKey /= recordKeyText changedSettlement)
+            p = long "p"; c = long "c"; f = long "f"; n = long "n"
+        keys <- mapM expect
+            [ rootedFrameSessionKeyKernel p c f
+            , rootedFrameSessionKeyKernel (p <> "x") c f
+            , rootedFrameSessionKeyKernel p (c <> "x") f
+            , rootedFrameSessionKeyKernel p c (f <> "x")
+            , rootedDirectFrameSessionKeyKernel p c f
+            , rootedDirectFrameSessionKeyKernel (p <> "x") c f
+            , rootedDirectFrameSessionKeyKernel p (c <> "x") f
+            , rootedDirectFrameSessionKeyKernel p c (f <> "x")
+            , rootedSettlementKeyKernel p c f "session" n maxBound
+            , rootedSettlementKeyKernel (p <> "x") c f "session" n maxBound
+            , rootedSettlementKeyKernel p (c <> "x") f "session" n maxBound
+            , rootedSettlementKeyKernel p c (f <> "x") "session" n maxBound
+            , rootedSettlementKeyKernel p c f "session" (n <> "x") maxBound
+            , rootedSettlementKeyKernel p c f "other-session" n maxBound
+            , rootedSettlementKeyKernel p c f "session" n (maxBound - 1)
+            , rootedFrameSessionKeyKernel "ab" "c" "f"
+            , rootedFrameSessionKeyKernel "a" "bc" "f"
+            , rootedSettlementKeyKernel "ab" "c" "f" "session" "n" 1
+            , rootedSettlementKeyKernel "a" "bc" "f" "session" "n" 1
+            , rootedFrameSessionKeyKernel "p" "c" "f"
+            , rootedSettlementKeyKernel "p" "c" "f" "session" "n" 1
+            ]
+        mapM_ (\key -> assertBool "a rooted record key exceeded the protected-store bound" (Text.length (recordKeyText key) <= 200)) keys
+        length (nub (map recordKeyText keys)) @?= length keys
+    , testCase "rooted session rows retain exact opening and attachment" $
+        withStore $ \store -> runEntry store $ \session -> do
+            key <- expect' (rootedFrameSessionKeyKernel "lineage" "catalog" "frame")
+            (version, bytes) <- expect' =<< openRootedFrameSessionRecordKernel session key "opened"
+            bytes @?= "opened"
+            recordVersionWord version @?= 1
+            (sameVersion, sameBytes) <- expect' =<< openRootedFrameSessionRecordKernel session key "foreign"
+            (sameVersion, sameBytes) @?= (version, "opened")
+            attachRootedFrameSessionRecordKernel session key version "foreign" "attached"
+                >>= (@?= Left (SessionRecordCorrupt "the rooted frame session row conflicts"))
+            attachedVersion <- expect' =<< attachRootedFrameSessionRecordKernel session key version "opened" "attached"
+            recordVersionWord attachedVersion @?= 2
+            cancelOpenedRootedFrameSessionRecordKernel session key version "opened"
+                >>= (@?= Left (SessionRecordCorrupt "only the exact unattached rooted frame session can be cancelled"))
+            retained <- expect' =<< readProtectedRecord session key
+            fmap protectedRecordBytes retained @?= Just "attached"
+            missing <- expect' (rootedFrameSessionKeyKernel "lineage" "catalog" "missing")
+            cancelOpenedRootedFrameSessionRecordKernel session missing version "opened"
+                >>= (@?= Left (SessionRecordCorrupt "the rooted frame session row is absent"))
+            pure (Right ())
+    , conditionalCase ["SessionSpec", "read-only rooted session"] (os /= "mingw32") "rooted session publication retains the store error"
+        (withStore $ \store -> do
+            key <- expect (rootedFrameSessionKeyKernel "lineage" "catalog" "denied")
+            attachKey <- expect (rootedFrameSessionKeyKernel "lineage" "catalog" "attach-denied")
+            (openedVersion, _) <- expect =<< inEntry store (\session -> openRootedFrameSessionRecordKernel session attachKey "opened")
+            let records = protectedStoreRoot store </> "records"
+            permissions <- getPermissions records
+            (opened, attached) <- bracket (setPermissions records permissions{writable = False}) (const (setPermissions records permissions)) $ \_ -> do
+                first <- inEntry store (\session -> openRootedFrameSessionRecordKernel session key "opened")
+                second <- inEntry store (\session -> attachRootedFrameSessionRecordKernel session attachKey openedVersion "opened" "attached")
+                pure (first, second)
+            case opened of
+                Left (SessionStoreFailure _) -> pure ()
+                other -> assertFailure ("expected the opening publication failure, got " <> show other)
+            case attached of
+                Left (SessionStoreFailure _) -> pure ()
+                other -> assertFailure ("expected the attachment publication failure, got " <> show other)
+            current <- expect =<< expect =<< inEntry store (\session -> Right <$> readProtectedRecord session attachKey)
+            fmap protectedRecordBytes current @?= Just "opened"
+        )
+        (pure ())
     , testCase "opening the journal twice observes one version, it does not reset it" $
         withStore $ \store -> do
             first <- inEntry store (\s -> openProjectJournal s plan)
@@ -3284,7 +3346,30 @@ preparedFixtureAddressTests =
 
 prepareTests :: [TestTree]
 prepareTests =
-    [ testCase "a prepare records the unknown phase before the adapter runs" $
+    [ testCase "an effect-aware gate comes from the committed phase and call digest" $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            result <- inEntry store $ \session ->
+                withPreparedGateForEffect session sess epoch fence "op-1" "ReservationOutcomeUnknown" "call-digest" permit $ \gate next -> do
+                    key <- expect (testOperationKey (sessionIdText (operationSessionId sess)) "op-1")
+                    recorded <- expect =<< readTransactionRecord session key
+                    target <- maybe (assertFailure "the effect record is missing") pure recorded
+                    transactionRecordPayload target @?= encodeFields ["ReservationOutcomeUnknown", sessionIdText (operationSessionId sess), "1", "1", "call-digest"]
+                    PreparedEffect.preparedGateEffect gate @?= Just
+                        (PreparedEffect.GateUnknownPhase "ReservationOutcomeUnknown", PreparedEffect.GateCallDigest "call-digest")
+                    pure (Right next)
+            _ <- expect result
+            pure ()
+    , testCase "an effect-aware gate rejects invalid call digests before writing" $
+        withStore $ \store -> do
+            SomePrepareInput epoch sess fence permit <- prepareInputFixture store
+            before <- protectedImage store
+            mapM_ (\digest -> do
+                result <- inEntry store $ \session ->
+                    withPreparedGateForEffect session sess epoch fence "op-1" "ReservationOutcomeUnknown" digest permit $ \_ _ -> pure (Right ())
+                result @?= Left (SessionPreparedGateMismatch "invalid call digest")
+                protectedImage store >>= (@?= before)) ["", "bad\tdigest"]
+    , testCase "a prepare records the unknown phase before the adapter runs" $
         withStore $ \store -> runEntry store $ \s ->
             withPrepared s $ \_ sess fence gate permit -> do
                 preparedGateAttemptIs gate 1
@@ -3319,8 +3404,11 @@ prepareTests =
     , testCase "the consumed journal version cannot acknowledge twice" $
         withStore $ \store -> runEntry store $ \s ->
             withPrepared s $ \_ sess _ gate permit -> do
+                validatePreparedGateForSettlementKernel s sess gate permit >>= (@?= Right ())
                 advance <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
                 next <- withOperationAdvance advance (\() p -> pure p)
+                preflight <- validatePreparedGateForSettlementKernel s sess gate next
+                assertBool "the consumed gate fails the settlement preflight" (case preflight of Left _ -> True; Right _ -> False)
                 again <- acknowledgeOutcome s sess gate "Committed" () next
                 case again of
                     Left (SessionStaleJournalVersion consumed actual) ->
@@ -3491,6 +3579,9 @@ prepareTests =
                     pure (Right ())
             blocked @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
             readIORef callbacks >>= (@?= 0)
+            protectedImage store >>= (@?= before)
+            preflight <- inEntry store (\session -> verifyNoUnknownSessionOperations session plan)
+            preflight @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
             protectedImage store >>= (@?= before)
     , testCase "a terminally closed project refuses every prepare" $
         withStore $ \store -> runEntry store $ \s ->
@@ -3881,8 +3972,67 @@ admissionTests =
             manifest <- expect =<< inEntry reopened (\s -> verifySessionManifest s plan)
             manifestPlanDigest manifest @?= plan
             map (sessionIdText . manifestSessionId) (manifestSessions manifest) @?= ["session-a"]
+            map manifestSessionGeneration (manifestSessions manifest) @?= [Just 1]
             map manifestSessionOperations (manifestSessions manifest) @?= [["op-1", "op-2"]]
             manifestOperationCount manifest @?= 2
+    , testCase "manifest operation phase follows the exact session and settled outcome" $
+        withStore $ \store -> do
+            runEntry store $ \session ->
+                withPrepared session $ \_ sess _ gate permit -> do
+                    let sid = operationSessionId sess
+                        operation = preparedGateOperation gate
+                    before <- expect' =<< readManifestOperationPhase session plan sid operation
+                    before @?= Just "EffectOutcomeUnknown"
+                    absent <- expect' =<< readManifestOperationPhase session plan sid "another-operation"
+                    absent @?= Nothing
+                    advanced <- expect' =<< acknowledgeOutcome session sess gate "Released" () permit
+                    next <- withOperationAdvance advanced (\() p -> pure p)
+                    _ <- expect' =<< closeOperationSession session sess next
+                    after <- expect' =<< readManifestOperationPhase session plan sid operation
+                    after @?= Just "Released"
+                    pure (Right ())
+    , testCase "root outcome detail is gated by its matching acknowledged operation" $
+        withStore $ \store -> do
+            runEntry store $ \session ->
+                withPrepared session $ \_ sess _ gate permit -> do
+                    let sid = operationSessionId sess
+                        operation = preparedGateOperation gate
+                        detail = "foreign\towner\nretained"
+                    _ <- expect' =<< recordRootOperationOutcome session sess gate permit "foreign" detail
+                    before <- readRootOperationOutcome session plan sid operation
+                    assertBool "an outcome row without acknowledgement is not settled" (not (isRight before))
+                    advanced <- expect' =<< acknowledgeOutcome session sess gate "ObservedForeign" () permit
+                    next <- withOperationAdvance advanced (\() p -> pure p)
+                    _ <- expect' =<< closeOperationSession session sess next
+                    after <- expect' =<< readRootOperationOutcome session plan sid operation
+                    after @?= Just ("foreign", detail)
+                    pure (Right ())
+            (key, _) <- soleRecordWithPrefix store "root-outcome."
+            _ <- rewriteRecordBytes store key id
+            manifest <- expect =<< inEntry store (\session -> verifySessionManifest session plan)
+            case manifestSessions manifest of
+                [member] -> do
+                    refused <- inEntry store (\session -> readRootOperationOutcome session plan (manifestSessionId member) "op-1")
+                    assertBool "a rewritten outcome record is refused" (not (isRight refused))
+                _ -> assertFailure "expected the exact recorded session"
+    , testCase "source commitment binds session and operation versions" $
+        withStore $ \store -> do
+            runEntry store $ \session ->
+                withPrepared session $ \_ sess _ gate permit -> do
+                    advanced <- expect' =<< acknowledgeOutcome session sess gate "Committed" () permit
+                    next <- withOperationAdvance advanced (\() p -> pure p)
+                    _ <- expect' =<< closeOperationSession session sess next
+                    pure (Right ())
+            (count, initial) <- expect =<< inEntry store (\session -> sourceSessionCommitment session plan 1)
+            count @?= 1
+            (sessionKey, _) <- soleRecordWithPrefix store "session."
+            _ <- rewriteRecordBytes store sessionKey id
+            (_, changedSession) <- expect =<< inEntry store (\session -> sourceSessionCommitment session plan 1)
+            assertBool "rewriting the source session changes its commitment" (changedSession /= initial)
+            (operationKey, _) <- soleRecordWithPrefix store "op."
+            _ <- rewriteRecordBytes store operationKey id
+            (_, changedOperation) <- expect =<< inEntry store (\session -> sourceSessionCommitment session plan 1)
+            assertBool "rewriting a source operation changes its commitment" (changedOperation /= changedSession)
     , testGroup
         "namespaced operation recovery"
         [ testCase (Text.unpack sessionName) $
@@ -4017,14 +4167,18 @@ admissionTests =
             assertBool "a fresh session opens after interpretation" (isRight fresh)
     , testCase "committed work is left alone rather than rewritten" $
         withStore $ \store -> do
-            _ <- inEntry store $ \s ->
+            _ <- expect =<< inEntry store (\s ->
                 withPrepared s $ \_ sess _ gate permit -> do
                     _ <- expect' =<< acknowledgeOutcome s sess gate "Committed" () permit
-                    pure (Right ())
+                    pure (Right ()))
             reopened <- reopenStore store
+            before <- Map.filterWithKey (\key _ -> "op." `Text.isPrefixOf` key) <$> protectedImage reopened
+            Map.size before @?= 1
             interpreted <- expect =<< inEntry reopened (\s -> interpretHere s)
             interpretedRecoveryOperations interpreted
                 @?= [OperationAlreadySettled "op-1" "Committed"]
+            after <- Map.filterWithKey (\key _ -> "op." `Text.isPrefixOf` key) <$> protectedImage reopened
+            after @?= before
     , testCase "an unrecognised phase blocks the interpretation instead of being swept" $
         withStore $ \store -> do
             _ <- unknownOperationFixture store
@@ -4035,6 +4189,98 @@ admissionTests =
             outcome <- inEntry store $ \session -> withEpoch session $ \epoch ->
                 (() <$) <$> interpretRecordedSessions session epoch manifest fenced permit
             outcome @?= Left (SessionUnclassifiedPhase "op-1" "SomeFuturePhase")
+            protectedImage store >>= (@?= before)
+    , testCase "unresolved manifest observations retain exact protected operation coordinates" $
+        withStore $ \store -> do
+            (sid, expectedVersion) <- expect =<< inEntry store (\session ->
+                withPrepared session $ \_ opened _ gate _ ->
+                    pure (Right (operationSessionId opened, preparedGateJournalVersion gate)))
+            before <- protectedImage store
+            found <- expect =<< inEntry store (\session -> findUnresolvedSessionOperations session plan)
+            map unresolvedOperationFields found @?=
+                [(plan, sid, "op-1", "EffectOutcomeUnknown", expectedVersion,
+                    encodeFields ["EffectOutcomeUnknown", sessionIdText sid, "1", "1"])]
+            protectedImage store >>= (@?= before)
+            refusal <- inEntry store (\session -> verifyNoUnknownSessionOperations session plan)
+            refusal @?= Left (SessionUnclassifiedPhase "op-1" "EffectOutcomeUnknown")
+            protectedImage store >>= (@?= before)
+    , testCase "a recovery observation names the unresolved row's attempt and only annotates its own refusal" $
+        withStore $ \store -> do
+            _ <- expect =<< inEntry store (\session -> withPrepared session $ \_ _ _ _ _ -> pure (Right ()))
+            before <- protectedImage store
+            found <- expect =<< inEntry store (\session -> findUnresolvedSessionOperations session plan)
+            map unresolvedOperationAttempt found @?= [Just 1]
+            refusal <- inEntry store (\session -> verifyNoUnknownSessionOperations session plan)
+            failure <- either pure (const (assertFailure "the unresolved row passed the preflight")) refusal
+            let bare = sessionErrorMessage failure
+                observed = [((plan, "op-1"), "its effect present as fixture-identity")]
+            describeUnresolvedRefusal plan [] failure @?= bare
+            describeUnresolvedRefusal "another-plan" observed failure @?= bare
+            describeUnresolvedRefusal plan [((plan, "op-2"), "its effect absent")] failure @?= bare
+            describeUnresolvedRefusal plan observed failure
+                @?= bare <> "; its recovery observer reported its effect present as fixture-identity, which recovery does not yet settle"
+            describeUnresolvedRefusal plan observed (SessionRecordCorrupt "x") @?= sessionErrorMessage (SessionRecordCorrupt "x")
+            protectedImage store >>= (@?= before)
+    , testCase "the shared recovery preflight admits an interrupted row only once its own outcome is recorded" $
+        withStore $ \store -> do
+            _ <- inEntry store $ \s ->
+                withPrepared s $ \_ sess _ gate permit -> do
+                    blocked <- verifyNoUnknownSessionOperations s plan
+                    blocked @?= Left (SessionUnclassifiedPhase "op-1" "EffectOutcomeUnknown")
+                    _ <- expect' =<< acknowledgeOutcome s sess gate "EffectAbsent" () permit
+                    pure (Right ())
+            reopened <- reopenStore store
+            admitted <- inEntry reopened (\s -> verifyNoUnknownSessionOperations s plan)
+            admitted @?= Right ()
+            found <- expect =<< inEntry reopened (\s -> findUnresolvedSessionOperations s plan)
+            map unresolvedOperationFields found @?= []
+    , testCase "a recorded recovery absence settles only the exact row, once, and recovery then abandons it" $
+        withStore $ \store -> do
+            _ <- expect =<< inEntry store (\session -> withPrepared session $ \_ _ _ _ _ -> pure (Right ()))
+            [row] <- expect =<< inEntry store (\session -> findUnresolvedSessionOperations session plan)
+            before <- protectedImage store
+            -- Another attempt, managed presence, a foreign effect and an inconclusive
+            -- answer each refuse without writing.
+            forM_
+                [ (2, RecoveryVerdictAbsent)
+                , (1, RecoveryVerdictPresent "managed")
+                , (1, RecoveryVerdictForeign "foreign")
+                , (1, RecoveryVerdictInconclusive "may still land")
+                ]
+                $ \(attempt, verdict) -> do
+                    refused <- inEntry store (\session -> recordRecoveryObservation session row attempt verdict)
+                    case refused of
+                        Left SessionOutcomePhaseRefused{} -> pure ()
+                        other -> assertFailure ("expected a refused observation, got " <> show other)
+                    protectedImage store >>= (@?= before)
+            settled <- inEntry store (\session -> recordRecoveryObservation session row 1 RecoveryVerdictAbsent)
+            settled @?= Right ()
+            remaining <- expect =<< inEntry store (\session -> findUnresolvedSessionOperations session plan)
+            map unresolvedOperationFields remaining @?= []
+            inEntry store (\session -> verifyNoUnknownSessionOperations session plan) >>= (@?= Right ())
+            -- A replay of the same snapshot (a crash after the write) finds another version.
+            afterSettle <- protectedImage store
+            replayed <- inEntry store (\session -> recordRecoveryObservation session row 1 RecoveryVerdictAbsent)
+            case replayed of
+                Left SessionStaleJournalVersion{} -> pure ()
+                other -> assertFailure ("expected a stale replay, got " <> show other)
+            protectedImage store >>= (@?= afterSettle)
+            reopened <- reopenStore store
+            interpreted <- expect =<< inEntry reopened (\s -> interpretHere s)
+            interpretedRecoveryOperations interpreted
+                @?= [OperationAbandonedRetryable "op-1" "EffectAbsent"]
+    , testCase "a recovery absence observed under a superseded fence is not recorded" $
+        withStore $ \store -> do
+            _ <- expect =<< inEntry store (\session -> withPrepared session $ \_ _ _ _ _ -> pure (Right ()))
+            [row] <- expect =<< inEntry store (\session -> findUnresolvedSessionOperations session plan)
+            _ <- expect =<< inEntry store (\session -> do
+                permit <- expect' =<< openProjectJournal session plan
+                fenceOldPermits session permit)
+            before <- protectedImage store
+            refused <- inEntry store (\session -> recordRecoveryObservation session row 1 RecoveryVerdictAbsent)
+            case refused of
+                Left SessionFenceSuperseded{} -> pure ()
+                other -> assertFailure ("expected a superseded fence, got " <> show other)
             protectedImage store >>= (@?= before)
     , testCase "an interrupted effect is settled as abandoned under the new fence" $
         withStore $ \store -> do
@@ -5114,6 +5360,9 @@ openSessionRecoveryCase point =
             recovered <- expect swept
             recoveredSessionCount recovered @?= 1
             recoveredContinuableCount recovered @?= 0
+            manifest <- expect =<< inEntry reopened (\session -> verifySessionManifest session plan)
+            map manifestSessionGeneration (manifestSessions manifest) @?= [Just 1]
+            expect =<< inEntry reopened (\session -> verifySourceSessionGenerations session plan 1)
 
 registerIntentRecoveryCase :: InterruptionPoint -> TestTree
 registerIntentRecoveryCase point =

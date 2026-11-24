@@ -62,7 +62,7 @@ import HostBootstrap.Build (
     verifyBuildInvocation,
  )
 import HostBootstrap.Chain (
-    renderChain,
+    renderChainPreview,
  )
 import HostBootstrap.Cluster.Backend (releaseRecordedClusterExposure, releaseRetainedCluster, runVerifiedChartWorkloadCleanupCall)
 import HostBootstrap.Cluster.Lifecycle (
@@ -220,6 +220,7 @@ import HostBootstrap.Lifecycle.Mode (
     withProductionRoot,
     withRecoveredProductionLifecycleProfile,
  )
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, preparedGateOperation, preparedGatePlan)
 import HostBootstrap.Lifecycle.Session (sessionErrorMessage, verifyAllSessionsClosed)
 import HostBootstrap.Lift (
     InVMSelfPath (InVMSelfPath),
@@ -229,6 +230,7 @@ import HostBootstrap.Lift (
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
     forward,
+    withProjectPlanPreview,
     plannedStepFrameId,
     plannedStepIdentity,
     renderSnapshot,
@@ -300,7 +302,7 @@ import Numeric.Natural (Natural)
 import Options.Applicative
 import System.Directory (doesFileExist, getCurrentDirectory, makeAbsolute, withCurrentDirectory)
 import System.Environment (getExecutablePath, lookupEnv)
-import System.Exit (die)
+import System.Exit (die, exitSuccess)
 import System.FilePath (isAbsolute, normalise, takeDirectory, (</>))
 import Text.Read (readMaybe)
 
@@ -670,9 +672,12 @@ testCommand codec project productionSpec testCodec progName suite assemblyInputs
                                                                                                                                                                     throwIO (SafetyRefusal (refusalDetail failure))
                                                                                                                                                                 Left _ ->
                                                                                                                                                                     throwIO (LifecycleFailure (lateRefusal failure))
-                                                                                                                                            runHarnessFailed rollbackAcquiredRef host local =
+                                                                                                                                            runHarnessFailed rollbackAcquiredRef host _gate local =
                                                                                                                                                 case Teardown.localWorkRun local of
                                                                                                                                                     Just _ -> do
+                                                                                                                                                        writeIORef rollbackAcquiredRef True
+                                                                                                                                                        pure (Step.TeardownForeignRetained "deferred to the Harness reverse owner")
+                                                                                                                                                    Nothing | Teardown.localWorkPolicy local == Step.CoreManagedReverse -> do
                                                                                                                                                         writeIORef rollbackAcquiredRef True
                                                                                                                                                         pure (Step.TeardownForeignRetained "deferred to the Harness reverse owner")
                                                                                                                                                     Nothing -> runFailedDeclared host local
@@ -1302,16 +1307,22 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         withSiblingValidatedProjectConfigRoot codec (T.pack progName) Context.HostOrchestratorCommand [] $ \_wire validated ctx root -> do
             unless (null (Context.parentChain ctx)) $
                 die "project up: operator entry requires the root frame; invoke this command from the installed root binary"
-            unless dryRun $ do
-                executable <- getExecutablePath
-                installedIdentity <- validateInstalledIdentity executable
-                either die pure installedIdentity
+            -- A preview renders the chain an admission would run from the
+            -- validated config alone and exits before the protected store is
+            -- opened: it takes no Production mode, writes no lease, re-arms no
+            -- closed invocation and consumes no lifecycle-profile slot.
+            when dryRun $ do
+                case projectPlanDrafts finalizedSpec root validated >>= \drafts -> withProjectPlanPreview root validated drafts renderChainPreview of
+                    Left failure -> die ("project up --dry-run: " ++ show failure)
+                    Right rendered -> putStr rendered
+                exitSuccess
+            executable <- getExecutablePath
+            installedIdentity <- validateInstalledIdentity executable
+            either die pure installedIdentity
             store <- openAuthorityStore root
             recovered <-
                 withRecoveredProductionPlan store root validated ctx $ \recoveredSpec rootAuthority _modeLease lease verified bound binding plan current _frame admittedContext ->
-                    if dryRun
-                        then putStr (renderChain plan)
-                        else do
+                    do
                             lifecycle <-
                                 LifecycleContext.withValidatedLifecycleContext
                                     root
@@ -1345,9 +1356,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                 Left failure
                     | startsFreshProductionInvocation failure ->
                         withFreshProductionPlan store root validated ctx Authority.ProjectUp $ \productionRoot plan current _frame admittedContext ->
-                            if dryRun
-                                then putStr (renderChain plan)
-                                else do
+                            do
                                     let rootAuthority = productionRootAuthority productionRoot
                                         unbound = productionRootUnboundLease productionRoot
                                     lifecycle <-
@@ -1685,19 +1694,25 @@ projectCommandGroup project finalizedSpec progName initBuilder =
             (die "project up: the finalized specification is not the bound plan snapshot's")
         let runFailedLocal ::
                 forall localPlanId localFrame.
+                PreparedGate ->
                 Teardown.LocalWork (V.Production projectId) localPlanId localFrame Authority.VerbUp ->
                 IO Step.TeardownOutcome
-            runFailedLocal local =
+            runFailedLocal gate local =
                 case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
                     (Just declared, _) -> guardedFailed (declared cfg (Teardown.localWorkAction local))
                     (Nothing, Step.CoreManagedReverse) ->
                         case Teardown.localWorkAction local of
-                            Step.DeleteCluster ->
-                                guardedFailed $ do
-                                    withCurrentDirectory
-                                        (canonicalProjectRootPath root)
-                                        (releaseRetainedClusterLifecycle cfg (planForRoot root admittedContext))
-                                    pure Step.TeardownReleased
+                            Step.DeleteCluster
+                                | preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan) ->
+                                    pure (Step.TeardownFailed "cluster cleanup: the durable gate names another plan")
+                                | preparedGateOperation gate /= Teardown.localWorkKey local ->
+                                    pure (Step.TeardownFailed "cluster cleanup: the durable gate names another operation")
+                                | otherwise ->
+                                    guardedFailed $ do
+                                        withCurrentDirectory
+                                            (canonicalProjectRootPath root)
+                                            (releaseRetainedClusterLifecycle cfg (planForRoot root admittedContext))
+                                        pure Step.TeardownReleased
                             _ -> pure (Step.TeardownForeignRetained "released with the cluster that contains it")
                     (Nothing, _) -> pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
             guardedFailed effect = do
@@ -1743,6 +1758,8 @@ projectCommandGroup project finalizedSpec progName initBuilder =
         ran <-
             withRootProjectReverseLifecycleEntry
                 store
+                cfg
+                self
                 project
                 root
                 finalizedSpec
@@ -1765,9 +1782,10 @@ projectCommandGroup project finalizedSpec progName initBuilder =
             forall planId frame localSpec localConfigId localCfg.
             ProtectedStore ->
             ProjectPlan (V.Production projectId) localSpec planId localConfigId localCfg ->
+            PreparedGate ->
             Teardown.LocalWork (V.Production projectId) planId frame verb ->
             IO Step.TeardownOutcome
-        runSealedLocal store plan local =
+        runSealedLocal store plan gate local =
             case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
                 (Just declared, _) ->
                     guardedReverse (declared cfg (Teardown.localWorkAction local))
@@ -1777,14 +1795,21 @@ projectCommandGroup project finalizedSpec progName initBuilder =
                             case verb of
                                 Authority.ProjectUp ->
                                     pure (Step.TeardownFailed "project up cannot execute reverse cluster work")
-                                Authority.ProjectDown -> runCluster
-                                Authority.ProjectDestroy -> runCluster
+                                Authority.ProjectDown -> runCluster plan gate local
+                                Authority.ProjectDestroy -> runCluster plan gate local
                         _ -> runCoreManagedChart store plan local
                 (Nothing, _) ->
                     pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
 
-        runCluster =
-            guardedReverse $ do
+        runCluster ::
+            forall planId frame localSpec localConfigId localCfg cleanupVerb.
+            ProjectPlan (V.Production projectId) localSpec planId localConfigId localCfg ->
+            PreparedGate ->
+            Teardown.LocalWork (V.Production projectId) planId frame cleanupVerb ->
+            IO Step.TeardownOutcome
+        runCluster plan gate local = case rootClusterGateFailure plan gate local of
+            Just failure -> pure (Step.TeardownFailed failure)
+            Nothing -> guardedReverse $ do
                 withCurrentDirectory
                     (canonicalProjectRootPath root)
                     (releaseRetainedClusterLifecycle cfg (planForRoot root ctx))
@@ -1852,13 +1877,7 @@ projectCommandGroup project finalizedSpec progName initBuilder =
     dieAuthority :: String -> IO a
     dieAuthority reason = die ("project: " ++ reason)
 
-{- | Run the exact current-frame @up@ transaction shared by Production and
-Harness command dispatch.
-
-The returned failure is still descriptive rather than authorizing.  Callers
-decide whether it is a Production command failure or a Harness report outcome;
-neither can replace any of the indexed evidence consumed here.
--}
+-- | Run a declared local reverse or retain a node with no local release.
 runFailedDeclared ::
     HostConfig ->
     Teardown.LocalWork scope planId frame Authority.VerbUp ->
@@ -1872,6 +1891,13 @@ runFailedDeclared cfg local =
                 Left exc -> Step.TeardownFailed (displayException (exc :: SomeException))
         Nothing -> pure (Step.TeardownForeignRetained "the node acquired nothing this frame must release")
 
+{- | Run the exact current-frame @up@ transaction shared by Production and
+Harness command dispatch.
+
+The returned failure is still descriptive rather than authorizing. Callers
+decide whether it is a Production command failure or a Harness report outcome;
+neither can replace any of the indexed evidence consumed here.
+-}
 runExactProjectUp ::
     forall scope specDigest planDigest planId configId cfg frame brokerGeneration projectId.
     (ProjectCfg cfg) =>
@@ -1879,7 +1905,7 @@ runExactProjectUp ::
     SelfRef ->
     HandoffScope scope ->
     IO (Either String ProjectSigningKey) ->
-    (forall localPlanId localFrame. Teardown.LocalWork scope localPlanId localFrame Authority.VerbUp -> IO Step.TeardownOutcome) ->
+    (forall localPlanId localFrame. PreparedGate -> Teardown.LocalWork scope localPlanId localFrame Authority.VerbUp -> IO Step.TeardownOutcome) ->
     FinalizedProjectSpec scope specDigest cfg ->
     Authority.RootInvocationAuthority scope brokerGeneration Authority.VerbUp ->
     BoundRunLease scope specDigest planDigest brokerGeneration ->
@@ -1903,6 +1929,12 @@ runExactProjectUp cfg self handoffScope loadSigningKey runFailedLocal exactSpec 
         lifecycleContext
         project
         (runRootProjectUpLifecycleEntry cfg self handoffScope loadSigningKey loadActivationSigningKey runFailedLocal)
+
+rootClusterGateFailure :: ProjectPlan scope specDigest planId configId cfg -> PreparedGate -> Teardown.LocalWork scope planId frame verb -> Maybe String
+rootClusterGateFailure plan gate local
+    | preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan) = Just "cluster cleanup: the durable gate names another plan"
+    | preparedGateOperation gate /= Teardown.localWorkKey local = Just "cluster cleanup: the durable gate names another operation"
+    | otherwise = Nothing
 
 {- | Drive one already-rotated Harness destroy generation through the same
 authenticated recursive reverse coordinator used by Production.
@@ -1967,14 +1999,17 @@ runExactHarnessDestroyProjection cfg profile self handoffScope store exactSpec r
     runLocal ::
         forall localSpec localConfigId localCfg.
         ProjectPlan scope localSpec planId localConfigId localCfg ->
+        PreparedGate ->
         Teardown.LocalWork scope planId frame Authority.VerbDestroy ->
         IO Step.TeardownOutcome
-    runLocal exactPlan local =
+    runLocal exactPlan gate local =
         case (Teardown.localWorkRun local, Teardown.localWorkPolicy local) of
             (Just declared, _) -> guardedReverse (declared cfg (Teardown.localWorkAction local))
             (Nothing, Step.CoreManagedReverse) ->
                 case Teardown.localWorkAction local of
                     Step.DeleteCluster
+                        | Just failure <- rootClusterGateFailure exactPlan gate local ->
+                            pure (Step.TeardownFailed failure)
                         | currentFrameOwnsCluster ctx exactPlan ->
                             guardedReverse $ do
                                 withCurrentDirectory

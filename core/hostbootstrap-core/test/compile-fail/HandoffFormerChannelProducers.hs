@@ -7,7 +7,6 @@ import HostBootstrap.Handoff (
     handoffChannel,
     protocolMessageRequestId,
     readProtocolMessage,
-    stdioHandoffChannel,
     writeProtocolMessage,
  )
 

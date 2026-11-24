@@ -1,5 +1,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RoleAnnotations #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 -- | Hidden ownership and child-projection kernel for finalized project specs.
 module HostBootstrap.ProjectPlan.Construct.Internal (
@@ -11,9 +13,11 @@ module HostBootstrap.ProjectPlan.Construct.Internal (
     withFinalizedProjectSpecPartsKernel,
     withFinalizedForwardChildProjectionKernel,
     reindexFinalizedProjectSpecKernel,
+    refuseForwardChildPlan,
 )
 where
 
+import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Config.Class (
@@ -21,7 +25,7 @@ import HostBootstrap.Config.Class (
     ProjectCodec,
  )
 import HostBootstrap.Config.Class.Internal (reindexProjectCodecKernel)
-import HostBootstrap.Config.Fields (ScopeKind (HarnessScope))
+import HostBootstrap.Config.Fields (KnownScopeKind (scopeKindOf))
 import HostBootstrap.Config.Schema (
     ValidatedConfig,
     validatedConfigValue,
@@ -40,8 +44,14 @@ import HostBootstrap.Service (
     ServiceRegistry,
     withFinalizedServiceRegistry,
  )
+import HostBootstrap.Lifecycle.FrameRole (ChildFrameId, ParentFrameId)
 import HostBootstrap.Service.Internal (reindexFinalizedServiceRegistryKernel)
 import HostBootstrap.Step (StepPlan, StepPlanError)
+
+-- | Default for a finalized project that cannot project a forward child.
+refuseForwardChildPlan ::
+    cfg scope -> ParentFrameId -> ChildFrameId -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)
+refuseForwardChildPlan _ _ _ _ = Left "forward-child projection is unavailable"
 
 {- | One jointly finalized runtime view and its exact static definition.
 
@@ -59,8 +69,8 @@ data FinalizedProjectSpec scope specDigest cfg
           Either StepPlanError StepPlan
         )
         ( cfg scope ->
-          Text ->
-          Text ->
+          ParentFrameId ->
+          ChildFrameId ->
           LiftContext ->
           Either String (FilePath, cfg scope, StepPlan)
         )
@@ -72,8 +82,8 @@ data FinalizedProjectSpec scope specDigest cfg
         )
         ( forall planScope.
           cfg planScope ->
-          Text ->
-          Text ->
+          ParentFrameId ->
+          ChildFrameId ->
           LiftContext ->
           Either String (FilePath, cfg planScope, StepPlan)
         )
@@ -81,7 +91,8 @@ data FinalizedProjectSpec scope specDigest cfg
 type role FinalizedProjectSpec nominal nominal nominal
 
 withFinalizedProjectSpecKernel ::
-    ScopeKind ->
+    forall scope specDigest cfg result.
+    (KnownScopeKind scope) =>
     ProjectCodec scope specDigest cfg ->
     ServiceRegistry cfg ->
     ( forall planScope rootId.
@@ -91,8 +102,8 @@ withFinalizedProjectSpecKernel ::
     ) ->
     ( forall planScope.
       cfg planScope ->
-      Text ->
-      Text ->
+      ParentFrameId ->
+      ChildFrameId ->
       LiftContext ->
       Either String (FilePath, cfg planScope, StepPlan)
     ) ->
@@ -102,14 +113,13 @@ withFinalizedProjectSpecKernel ::
     ) ->
     result
 withFinalizedProjectSpecKernel
-    scopeKind
     baseCodec
     staticServices
     staticPlanBuilder
     staticProjector
     use =
         withFinalizedServiceRegistry
-            scopeKind
+            (scopeKindOf (Proxy @scope))
             baseCodec
             staticServices
             ( \finalCodec finalServices ->
@@ -143,7 +153,6 @@ withHarnessFinalizedProjectSpecKernel
     use =
         withHarnessProjectCodec authority $ \baseCodec ->
             withFinalizedProjectSpecKernel
-                HarnessScope
                 baseCodec
                 staticServices
                 staticPlanBuilder
@@ -222,8 +231,8 @@ validated child config, and projected step plan.
 withFinalizedForwardChildProjectionKernel ::
     FinalizedProjectSpec scope specDigest cfg ->
     ValidatedConfig scope specDigest parentConfigId (cfg scope) ->
-    Text ->
-    Text ->
+    ParentFrameId ->
+    ChildFrameId ->
     LiftContext ->
     ( forall childConfigId.
       FilePath ->

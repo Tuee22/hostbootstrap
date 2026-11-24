@@ -45,6 +45,7 @@ module HostBootstrap.Cluster.Backend (
     discoverStrongClusterBackend,
     runClusterReconcileCall,
     releaseRetainedCluster,
+    releaseRetainedClusterFenced,
     runClusterCordonCall,
     ClusterStatusObservation (..),
     runClusterStatusCall,
@@ -84,6 +85,7 @@ module HostBootstrap.Cluster.Backend (
     recordedClusterExposureHostPort,
     observeRecordedClusterExposure,
     releaseRecordedClusterExposure,
+    releaseRecordedClusterExposureFenced,
 )
 where
 
@@ -123,6 +125,8 @@ import HostBootstrap.Cluster.Lifecycle (
     ExposureIntent,
     PlanOwnedClusterConfig,
     clusterKubeconfigPath,
+    profileFromPlanName,
+    resolvePlan,
     retainedClusterProjection,
     retainedClusterName,
     retainedClusterNodeNames,
@@ -234,8 +238,12 @@ import HostBootstrap.Lifecycle.Execution.Internal (
 import HostBootstrap.Lifecycle.Prepared (
     PreparedGate,
     preparedGateCommitment,
+    preparedGateFence,
+    preparedGateOperation,
     preparedGatePlan,
+    preparedGateSession,
  )
+import HostBootstrap.Lifecycle.Prepared.Internal (preparedGateSupersessionGeneration)
 import HostBootstrap.Network.Port (Port, mkPort, portNumber)
 import HostBootstrap.Ownership.Object (ObjectIdentity, Origin (OriginAbsent, OriginPresent))
 import HostBootstrap.ProjectPlan (ChartWorkloadResource)
@@ -688,7 +696,31 @@ identities are re-read under one protected entry, and only those identities can
 reach the destructive driver call.
 -}
 releaseRetainedCluster :: HostConfig -> ClusterPlan -> IO (Either ReconcileError ())
-releaseRetainedCluster cfg plan =
+releaseRetainedCluster cfg plan = releaseRetainedClusterWithFence cfg plan Nothing
+
+releaseRetainedClusterFenced :: HostConfig -> ProjectPlan.ProjectPlan scope specDigest planId configId cfg -> PreparedGate -> IO (Either ReconcileError ())
+releaseRetainedClusterFenced cfg plan gate = case admittedCleanupCluster plan gate of
+    Left failure -> pure (Left failure)
+    Right cluster -> releaseRetainedClusterWithFence cfg cluster (Just gate)
+
+-- The gate chooses the admitted plan; the plan alone chooses the target.
+-- Do not accept a caller-supplied ClusterPlan beside that authority.
+admittedCleanupCluster :: ProjectPlan.ProjectPlan scope specDigest planId configId cfg -> PreparedGate -> Either ReconcileError ClusterPlan
+admittedCleanupCluster plan gate
+    | preparedGatePlan gate /= ProjectPlan.stablePlanSnapshotDigest snapshot
+        || preparedGateOperation gate /= "core:deploy-kind"
+        || preparedGateFence gate == 0
+        || maybe True (== 0) (preparedGateSupersessionGeneration gate)
+        || Text.null (preparedGateSession gate) =
+        Left (Conflict (ConflictDetail "cluster cleanup" "the admitted plan and operation" "a different routed gate" "use the gate issued for this plan and cluster operation"))
+    | otherwise = case profileFromPlanName (ProjectPlan.projectPlanProfileName plan) of
+        Left failure -> Left (Failure (FailureDetail "resolve routed cluster cleanup" (Text.pack (show failure)) DoNotRetry))
+        Right profile -> Right (resolvePlan (Text.unpack (ProjectPlan.projectPlanProjectName plan)) (ProjectPlan.stablePlanSnapshotRoot snapshot) profile)
+  where
+    snapshot = ProjectPlan.renderSnapshot plan
+
+releaseRetainedClusterWithFence :: HostConfig -> ClusterPlan -> Maybe PreparedGate -> IO (Either ReconcileError ())
+releaseRetainedClusterWithFence cfg plan gate =
     case retainedClusterNodeNames retained of
         [] -> pure (Left (Failure (FailureDetail "release retained cluster" "the retained cluster plan declares no nodes" DoNotRetry)))
         nodes -> case clusterCallTarget (retainedClusterName retained) stateDirectory nodes Nothing Nothing "retained-record" of
@@ -706,15 +738,57 @@ releaseRetainedCluster cfg plan =
                 Left failure -> pure (Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry)))
                 Right store -> do
                     outcome <-
-                        withProtectedEntry store $ \session ->
-                            Right <$> releaseClusterAfterExposure cfg session key owned
+                        withProtectedEntry store $ \session -> do
+                            admitted <- admitClusterCleanupFence session gate
+                            case admitted of
+                                Left failure -> pure (Right (Left failure))
+                                Right () -> do
+                                    released <- releaseClusterAfterExposure cfg session key owned
+                                    pure (Right (case released of
+                                        Left fault -> Left (Failure (FailureDetail "release retained cluster" (Owned.clusterOwnershipFaultMessage fault) ReprobeBeforeRetry))
+                                        Right (Left reason) -> Left (Failure (FailureDetail "release retained cluster" reason DoNotRetry))
+                                        Right (Right Owned.ClusterReleased) -> Right ()
+                                        Right (Right Owned.ClusterAlreadyReleased) -> Right ()
+                                        Right (Right Owned.ClusterStillPresent) -> Left (Failure (FailureDetail "release retained cluster" "the runtime still reports an owned node" ReprobeBeforeRetry))))
                     pure $ case outcome of
                         Left failure -> Left (Failure (FailureDetail "release retained cluster" (protectedErrorMessage failure) ReprobeBeforeRetry))
-                        Right (Left fault) -> Left (Failure (FailureDetail "release retained cluster" (Owned.clusterOwnershipFaultMessage fault) ReprobeBeforeRetry))
-                        Right (Right (Left reason)) -> Left (Failure (FailureDetail "release retained cluster" reason DoNotRetry))
-                        Right (Right (Right Owned.ClusterReleased)) -> Right ()
-                        Right (Right (Right Owned.ClusterAlreadyReleased)) -> Right ()
-                        Right (Right (Right Owned.ClusterStillPresent)) -> Left (Failure (FailureDetail "release retained cluster" "the runtime still reports an owned node" ReprobeBeforeRetry))
+                        Right result -> result
+
+-- | Record the greatest routed cleanup fence while holding the cluster ownership lock.
+-- A target can reject an older request after observing its successor; coordination
+-- with root supersession before that observation remains a separate obligation.
+admitClusterCleanupFence :: ProtectedSession session -> Maybe PreparedGate -> IO (Either ReconcileError ())
+admitClusterCleanupFence _ Nothing = pure (Right ())
+admitClusterCleanupFence session (Just gate) =
+    case (preparedGateSupersessionGeneration gate, mkRecordKey "routed-cluster-cleanup-fence") of
+        (Just generation, Right key)
+            | generation > 0 && preparedGateFence gate > 0
+            , not (Text.null (preparedGateSession gate))
+            , not (Text.null (preparedGatePlan gate))
+            , preparedGateOperation gate == "core:deploy-kind" -> do
+                let incoming = (generation, preparedGateFence gate, preparedGateSession gate, preparedGatePlan gate, preparedGateOperation gate)
+                    bytes = TextEncoding.encodeUtf8 (Text.pack (show incoming))
+                existing <- readProtectedRecord session key
+                case existing of
+                    Left failure -> pure (storeExposureFailure "read routed cleanup fence" failure)
+                    Right Nothing -> write key ExpectAbsent bytes
+                    Right (Just record) ->
+                        case TextEncoding.decodeUtf8' (protectedRecordBytes record) of
+                            Left _ -> pure (refuse "the recorded routed fence is not UTF-8")
+                            Right text -> case readMaybe (Text.unpack text) of
+                                Nothing -> pure (refuse "the recorded routed fence is malformed")
+                                Just previous@(oldGeneration, oldFence, _, _, _)
+                                    | Text.pack (show previous) /= text -> pure (refuse "the recorded routed fence is not canonical")
+                                    | (generation, preparedGateFence gate) < (oldGeneration, oldFence) -> pure (refuse "the routed cleanup fence has been superseded")
+                                    | (generation, preparedGateFence gate) == (oldGeneration, oldFence) ->
+                                        pure (if previous == incoming then Right () else refuse "the routed fence names another session or operation")
+                                    | otherwise -> write key (ExpectVersion (protectedRecordVersion record)) bytes
+        _ -> pure (refuse "the routed cleanup gate is incomplete or names another operation")
+  where
+    write key expectation bytes = do
+        written <- compareAndSwapProtectedRecord session key expectation bytes
+        pure (either (storeExposureFailure "publish routed cleanup fence") (const (Right ())) written)
+    refuse reason = Left (Conflict (ConflictDetail "cluster cleanup" "current routed cleanup fence" "stale or invalid routed cleanup fence" reason))
 
 releaseClusterAfterExposure ::
     HostConfig ->
@@ -1429,7 +1503,15 @@ loopback mapping set provide the four ownership clauses; no caller supplies a
 container name or port.
 -}
 releaseRecordedClusterExposure :: HostConfig -> ClusterPlan -> IO (Either ReconcileError ())
-releaseRecordedClusterExposure cfg plan =
+releaseRecordedClusterExposure cfg plan = releaseRecordedClusterExposureWithFence cfg plan Nothing
+
+releaseRecordedClusterExposureFenced :: HostConfig -> ProjectPlan.ProjectPlan scope specDigest planId configId cfg -> PreparedGate -> IO (Either ReconcileError ())
+releaseRecordedClusterExposureFenced cfg plan gate = case admittedCleanupCluster plan gate of
+    Left failure -> pure (Left failure)
+    Right cluster -> releaseRecordedClusterExposureWithFence cfg cluster (Just gate)
+
+releaseRecordedClusterExposureWithFence :: HostConfig -> ClusterPlan -> Maybe PreparedGate -> IO (Either ReconcileError ())
+releaseRecordedClusterExposureWithFence cfg plan gate =
     case clusterExposureRecordKey (clusterName plan) of
         Left failure -> pure (storeExposureFailure "open recorded exposure record" failure)
         Right key -> do
@@ -1437,7 +1519,11 @@ releaseRecordedClusterExposure cfg plan =
             case opened of
                 Left failure -> pure (storeExposureFailure "open recorded exposure store" failure)
                 Right store -> do
-                    released <- withProtectedEntry store (\session -> Right <$> releaseRecorded session key)
+                    released <- withProtectedEntry store (\session -> do
+                        admitted <- admitClusterCleanupFence session gate
+                        case admitted of
+                            Left failure -> pure (Right (Left failure))
+                            Right () -> Right <$> releaseRecorded session key)
                     pure $ case released of
                         Left failure -> storeExposureFailure "lock recorded exposure" failure
                         Right result -> result

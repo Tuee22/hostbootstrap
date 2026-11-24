@@ -8,5 +8,5 @@ import HostBootstrap.Handoff.Process.Route (
     withForwardLifecycleProcessRouteKernel,
     withLifecycleChildOpeningKernel,
     withLifecycleProcessRouteLaunchKernel,
-    withRecoveryLifecycleProcessRouteKernel,
+    withRecoveryLifecycleProcessRouteForKernel,
  )

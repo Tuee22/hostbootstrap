@@ -6,9 +6,8 @@ Phase 11 (prepared operations and preconditions)
 **Substrates**: linux-cpu
 **Gate**: `cabal test all` from `core/`
 **Gate kind**: self-verifying
-**Gate evidence**: 2026-11-03 ; Linux x86_64 gate container
-hostbootstrap-plan-gate-20261029 on Windows/WSL2, GHC 9.12.4, Cabal 3.16.1.0 ;
-`cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` ;
+**Gate evidence**: 2026-11-16 ; hostbootstrap-linux-ssd, Ubuntu 24.04.5 x86_64 on WSL2, GHC 9.12.4, Cabal 3.16.1.0 ;
+`cabal test all -j4 --test-show-details=direct --test-option=--hide-successes` from `core/` ;
 pass ; covers in-gate
 
 > **Purpose**: Define the four Locked-Origin Identity Ownership clauses once, supply the one seam that
@@ -5204,6 +5203,36 @@ The scoped plan/README diff check passes.
 
 None.
 
+
+### Sprint 14.45: Reenter an existing owned directory without acquiring it [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Ownership/Shipped.hs`,
+`core/hostbootstrap-core/test/OwnershipShippedSpec.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Hold a lease on an already-bound owned directory without creating or repairing its authority, record, or target.
+
+#### Deliverables
+
+- An existing-only lease enters the existing authority store, reads the exact bound directory record, and
+  reobserves the native identity before and after the callback.
+- Missing, foreign, stale, or replaced ownership refuses without creating state or running the callback.
+
+#### Validation
+
+2026-11-16: `OwnershipShippedSpec` passed all 86 cases on the dedicated Linux WSL2 host, including
+existing-only retained, absent, unbound, replaced, and contended directory leases. `EffectSpec`
+passed all 53 cases. On Windows, `hostbootstrap.check_code` and all 384 `hostbootstrap.test_all`
+cases passed. The phase gate from `core/` passed all 5,547 cases (1,278.22s); the `demo/`
+host-static leg passed its 171 cases and all 5,547 core cases (1,295.37s).
+
+#### Remaining Work
+
+None.
 
 ## Remaining Work
 

@@ -20,7 +20,6 @@ module HostBootstrap.Handoff.Protocol (
     writeProtocolMessage,
     HandoffChannel,
     handoffChannel,
-    stdioHandoffChannel,
     withPrivateProtocolStdio,
     channelReceive,
     channelSend,
@@ -327,12 +326,6 @@ handoffChannel inbound outbound = do
     hSetBinaryMode outbound True
     hSetBuffering outbound (BlockBuffering Nothing)
     pure (HandoffChannel{channelInbound = inbound, channelOutbound = outbound})
-
-{- | The channel a receiving binary is launched with: @stdin@ inbound,
-@stdout@ outbound.
--}
-stdioHandoffChannel :: IO HandoffChannel
-stdioHandoffChannel = handoffChannel stdin stdout
 
 {- | Hold a private protocol channel over the process's own standard streams,
 with the global ones pointed away from it for the callback's whole life.

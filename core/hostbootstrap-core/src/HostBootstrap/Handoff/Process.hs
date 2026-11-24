@@ -24,7 +24,7 @@ Signalling the group rather than the process is what makes a shell or provider
 the child launched go away with it.
 
 What the bracket deliberately does not own is a deadline over the work itself.
-Its constants bound the launch and the termination grace; the relay bounds the
+Its constant bounds the termination grace; the relay bounds the
 frames a peer owes immediately. Between admission and the completed report sits
 whatever the admitted backend effect takes, and that effect has its own closed
 policy — one wall-clock deadline across it would turn every slow provisioning
@@ -57,7 +57,6 @@ where
 
 import qualified Control.Exception as Exception
 import Data.ByteString (ByteString)
-import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Word (Word64)
@@ -67,7 +66,6 @@ import HostBootstrap.Effect.ChildGroup (
     awaitChildGroupExit,
     closeQuietly,
     killChildGroup,
-    launchMicros,
     terminationGraceMicros,
     withChildGroupProcess,
  )
@@ -103,10 +101,7 @@ import HostBootstrap.Lifecycle.Execution.Internal (
     replaceStepRuntimeDependencyService,
     stepRuntimeDependencyPackages,
  )
-import HostBootstrap.Teardown.Internal (
-    ReverseDescent,
-    withReverseDescentProcessInputsKernel,
- )
+import HostBootstrap.Teardown.Internal (ReverseDescent)
 import System.Exit (ExitCode)
 import System.IO (Handle)
 import System.Process (
@@ -319,25 +314,15 @@ withReverseLifecycleChildProcess config link route request descent =
             withAcknowledgedBoundReverseLifecycleCompletionKernel bound report persist $
                 \_ -> pure (Right ())
 
-withPreparedReverseLifecycleChildProcess config link request targetBinary descent = do
-    withReverseDescentProcessInputsKernel descent $ \package route input verb ->
-        withRecoveryLifecycleProcessRouteForKernel
-            (Proxy :: Proxy scope)
-            (Proxy :: Proxy brokerGeneration)
-            package
-            route
-            input
-            verb
-            targetBinary
-            $ \processRoute ->
-                withReverseLifecycleChildProcess config link processRoute request descent
+withPreparedReverseLifecycleChildProcess config link request targetBinary descent =
+    withRecoveryLifecycleProcessRouteForKernel descent targetBinary $ \processRoute ->
+        withReverseLifecycleChildProcess config link processRoute request descent
 
 {- | Hold one child, its pipes, and its group for exactly one exchange.
 
 The route decides what runs: its host tool is resolved to an absolute path
 through the installed configuration, so a bare command name cannot be executed
-even if one reached the argument vector, and an already opened route refuses
-before a process exists. Standard error is inherited deliberately — it is where
+even if one reached the argument vector. Standard error is inherited deliberately — it is where
 the isolated child sends everything that is not a protocol frame.
 
 Resolution goes through 'resolveInstalled' rather than the pure lookup, because
@@ -350,7 +335,7 @@ withLifecycleChild ::
     (HandoffChannel -> IO (Either RelayError ())) ->
     IO (Either Text ())
 withLifecycleChild config route serve =
-    withLifecycleProcessRouteLaunchKernel route $ \tool argv _interactivity -> do
+    withLifecycleProcessRouteLaunchKernel route $ \tool argv -> do
         resolved <- resolveInstalled config tool
         case resolved of
             Nothing ->
@@ -370,12 +355,23 @@ withLifecycleChild config route serve =
                                 Exception.bracket_
                                     (pure ())
                                     (terminateChildGroup group child childStdin childStdout)
-                                    (exchange childStdin childStdout serve)
+                                    (do
+                                        result <- exchange childStdin childStdout serve
+                                        case result of
+                                            Right () -> do
+                                                _ <- timeout terminationGraceMicros (waitForProcess child)
+                                                pure result
+                                            Left _ -> pure result
+                                    )
                             _ ->
                                 pure (Left (processFailure "the child was launched without its own pipes"))
                 ) ::
                 IO (Either Exception.SomeException (Either Text ()))
-        pure (either (Left . processFailure . Text.pack . Exception.displayException) id attempted)
+        case attempted of
+            Left failure -> case Exception.fromException failure :: Maybe Exception.SomeAsyncException of
+                Just _ -> Exception.throwIO failure
+                Nothing -> pure (Left (processFailure (Text.pack (Exception.displayException failure))))
+            Right result -> pure result
 
 -- | The only process shape this owner ever launches.
 childProcess :: FilePath -> [String] -> CreateProcess
@@ -390,10 +386,8 @@ childProcess executable arguments =
 
 {- | Run the exchange on the child's own pipes and report only rooted completion.
 
-The launch is bounded, because a child that never reaches its first frame is
-indistinguishable from one that never started. Everything after that is the
-relay's to bound: it limits the frames the child owes immediately and leaves
-the admitted work alone.
+The relay bounds the frames the child owes immediately and leaves admitted work
+to its own policy.
 -}
 exchange ::
     Handle ->
@@ -401,38 +395,32 @@ exchange ::
     (HandoffChannel -> IO (Either RelayError ())) ->
     IO (Either Text ())
 exchange childStdin childStdout serve = do
-    opened <- timeout launchMicros (handoffChannel childStdout childStdin)
-    case opened of
-        Nothing -> pure (Left (processFailure "the child never opened its protocol channel"))
-        Just channel -> do
-            attempted <- Exception.try (serve channel)
-            pure $ case attempted of
-                Left (failure :: Exception.SomeException) ->
-                    Left
-                        ( processFailure
-                            ( "the rooted relay service raised an exception: "
-                                <> Text.pack (Exception.displayException failure)
-                            )
-                        )
-                Right served -> either (Left . processFailure . Text.pack . relayErrorMessage) Right served
+    channel <- handoffChannel childStdout childStdin
+    attempted <- Exception.try (serve channel)
+    case attempted of
+        Left (failure :: Exception.SomeException) ->
+            case Exception.fromException failure :: Maybe Exception.SomeAsyncException of
+                Just _ -> Exception.throwIO failure
+                Nothing -> pure (Left (processFailure ("the rooted relay service raised an exception: " <> Text.pack (Exception.displayException failure))))
+        Right served -> pure (either (Left . processFailure . Text.pack . relayErrorMessage) Right served)
 
 {- | End the child's whole group, then reap it, whatever happened above.
 
 The group is signalled rather than the process, so a shell, provider, or nested
-tool the child launched goes away with it. Termination is attempted first and
-escalated only if the group is still present after the grace, because a child
-that is finishing an effect deserves the chance to finish it; the escalation
-exists because a child that is not finishing anything must not become the
-operator's problem. The wait is unconditional — a reaped child is the only kind
+tool the child launched goes away with it. An already absent group needs no
+signal; a remaining group gets TERM and then KILL if it survives the grace.
+The wait is unconditional — a reaped child is the only kind
 that is not a zombie — and the pipes are closed last, quietly, because a
 descriptor left open outlives the process that justified it.
 -}
 terminateChildGroup :: ChildGroup -> ProcessHandle -> Handle -> Handle -> IO ()
 terminateChildGroup group child childStdin childStdout = do
-    askChildGroupToStop group
-    ended <- awaitChildGroupExit terminationGraceMicros group
-    if ended then pure () else killChildGroup group
-    _ <- Exception.try (waitForProcess child) :: IO (Either Exception.SomeException ExitCode)
+    alreadyEnded <- awaitChildGroupExit 0 group
+    if alreadyEnded then pure () else do
+        askChildGroupToStop group
+        ended <- awaitChildGroupExit terminationGraceMicros group
+        if ended then pure () else killChildGroup group
+    _ <- Exception.try (waitForProcess child) :: IO (Either Exception.IOException ExitCode)
     closeQuietly childStdin
     closeQuietly childStdout
 

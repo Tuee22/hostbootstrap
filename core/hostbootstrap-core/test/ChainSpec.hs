@@ -14,7 +14,7 @@ import qualified Data.ByteString as ByteString
 import Data.Char (isAlphaNum)
 import Data.Foldable (toList)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, sort)
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TextEncoding
@@ -51,6 +51,7 @@ import HostBootstrap.Lifecycle.Execution (
     stepExecutionPlanDigest,
     stepExecutionPreparedGate,
     stepExecutionProjectedOperations,
+    stepExecutionSignActivationManifest,
     stepExecutionTakeProjectedGate,
  )
 import HostBootstrap.Lifecycle.Mode (
@@ -99,7 +100,7 @@ import HostBootstrap.ProjectRoot (
     withCanonicalProjectRoot,
  )
 import HostBootstrap.Protected (
-    Expectation (ExpectAbsent),
+    Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError (ProtectedIOFailure),
     ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
     ProtectedSession,
@@ -498,7 +499,31 @@ store is locked while the effect runs.
 -}
 entryPolicyCases :: [TestTree]
 entryPolicyCases =
-    [ testCase "a two-frame descent runs between pre and post handoff nodes" $ do
+    [ testCase "a failed node returns the exact reached and unresolved operation prefix" $ do
+        later <- newIORef (0 :: Int)
+        let reverseAction _ _ = pure TeardownReleased
+            graph _ frame = expectPlan
+                [ reversedBy reverseAction $
+                    projectStep (fixtureProjectStepId "prefix-first") ProjectManagedReverse "first" frame (\_ -> pure StepChanged)
+                , projectsOperation "project:prefix-failed/relation" $ reversedBy reverseAction $
+                    projectStep (fixtureProjectStepId "prefix-failed") ProjectManagedReverse "failed" frame
+                        (\_ -> pure (StepConflict "ready" "failed" "fixture failure"))
+                , projectStep (fixtureProjectStepId "prefix-later") ProjectManagedReverse "later" frame
+                    (\_ -> modifyIORef' later (+ 1) >> pure StepChanged)
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            outcome <- runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor (\_ _ _ _ -> pure (Right ()))
+            let expected = ["project:prefix-first", "project:prefix-failed", "project:prefix-failed/relation"]
+            case outcome of
+                Left (detail, reached, unresolved) -> do
+                    assertBool detail ("fixture failure" `isInfixOf` detail)
+                    reached @?= expected
+                    unresolved @?= expected
+                Right () -> assertFailure "the failing node succeeded"
+            readIORef later >>= (@?= 0)
+    , testCase "a two-frame descent runs between pre and post handoff nodes" $ do
         observed <- newIORef ([] :: [T.Text])
         let record :: T.Text -> StepAction
             record label _ = modifyIORef' observed (++ [label]) >> pure StepChanged
@@ -520,6 +545,35 @@ entryPolicyCases =
                 pure (Right ())
             outcome @?= Right ()
             readIORef observed >>= (@?= ["pre", "child", "post"])
+    , testCase "a failed descent does not guess a corrupt live session closed" $ do
+        let graph _ frame = expectPlan
+                [ deployVMStep "launch" frame noop
+                , copySourceStep "copy" frame noop
+                , descendsVia (vmContext (inVM vm emptyVMStack)) (buildPbStep "pre" frame noop)
+                , contextInitStep "child" vmFrame noop
+                ]
+        Fixture.withFixtureRootChainEvidence graph $ \store plan authority cursor -> do
+            host <- directChainHostConfig
+            exactSelf <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+            changed <- newIORef Nothing
+            outcome <- runChainFromFrameWithDescentFailure host exactSelf store plan authority cursor $ \_ _ _ _ -> do
+                keys <- expectSuccess =<< withProtectedEntry store listProtectedRecords
+                key <- case filter (T.isPrefixOf "session." . recordKeyText) keys of
+                    [one] -> pure one
+                    _ -> assertFailure "expected one live Chain session"
+                found <- expectSuccess =<< withProtectedEntry store (\entry -> readProtectedRecord entry key)
+                record <- maybe (assertFailure "the live Chain session disappeared") pure found
+                _ <- expectSuccess =<< withProtectedEntry store (\entry -> compareAndSwapProtectedRecord entry key (ExpectVersion (protectedRecordVersion record)) "malformed session")
+                writeIORef changed (Just key)
+                pure (Left "fixture descent failure")
+            assertBool "the original failure and close refusal are both reported" $ case outcome of
+                Left (reason, _, _) -> "fixture descent failure" `isInfixOf` reason && "closing the forward session failed" `isInfixOf` reason
+                Right () -> False
+            key <- readIORef changed >>= maybe (assertFailure "the descent was not reached") pure
+            after <- expectSuccess =<< withProtectedEntry store (\entry -> readProtectedRecord entry key)
+            fmap protectedRecordBytes after @?= Just "malformed session"
+            checked <- expectSuccess =<< withProtectedEntry store (\entry -> Right <$> verifyAllSessionsClosed entry (stablePlanSnapshotDigest (renderSnapshot plan)))
+            assertBool "the corrupt session is not certified closed" (case checked of Left _ -> True; Right _ -> False)
     , testCase "a foreign supplied store refuses before opening the chain journal" $ do
         callbacks <- newIORef (0 :: Int)
         let graph = entryPolicyGraph callbacks
@@ -930,7 +984,19 @@ transactionCases =
             -- refuses to retry it rather than blocking on an unclassifiable
             -- record.
             settled <- withProtectedEntry store readOperationPhases
-            either (assertFailure . show) (@?= ["StepObservedTerminal"]) settled
+            either (assertFailure . show) ((@?= ["ObservedForeign", "StepObservedTerminal"]) . sort) settled
+    , testCase "a single-frame step refuses activation signing without a service" $
+        withChainStore $ \store project -> do
+            called <- newIORef False
+            outcome <- runFrom store project
+                [ countingProbe "activation-signing-absent" $ \execution -> do
+                    result <- stepExecutionSignActivationManifest execution "fixture manifest"
+                    result @?= Left "runtime activation signing service is absent"
+                    writeIORef called True
+                    pure StepChanged
+                ]
+            outcome @?= Right ()
+            readIORef called >>= (@?= True)
     , testCase "a returned refusal closes its exact session without registering later nodes" $
         withChainStore $ \store project -> do
             ran <- newIORef (0 :: Int)
@@ -948,8 +1014,8 @@ transactionCases =
             assertLeft "the returned refusal unexpectedly succeeded" outcome
             readIORef ran >>= (@?= 1)
             phases <- withProtectedEntry store readOperationPhases
-            either (assertFailure . show) (@?= ["StepObservedTerminal"]) phases
-            readRequiredPlanDigest digest >>= assertExactlyOneClosedSession store
+            either (assertFailure . show) ((@?= ["ObservedForeign", "StepObservedTerminal"]) . sort) phases
+            readRequiredPlanDigest digest >>= assertClosedSessionsCount store 2
     , testCase "a thrown safety refusal closes its exact session before the public command reports failure" $
         withChainStore $ \store project -> do
             ran <- newIORef (0 :: Int)
@@ -1149,7 +1215,7 @@ projectionCases =
             settled <- withProtectedEntry store readOperationPhases
             either
                 (assertFailure . show)
-                (@?= replicate 2 "StepObservedTerminal")
+                ((@?= ["ObservedForeign", "StepObservedTerminal", "StepObservedTerminal"]) . sort)
                 settled
     , testCase "a declared projection the node never takes leaves the session unable to close" $ do
         projected <- newIORef ([] :: [[T.Text]])
@@ -1620,7 +1686,10 @@ recordedPhase raw = case decodeFields raw of
     _ -> ""
 
 assertExactlyOneClosedSession :: ProtectedStore -> T.Text -> IO ()
-assertExactlyOneClosedSession store planDigest = do
+assertExactlyOneClosedSession store = assertClosedSessionsCount store 1
+
+assertClosedSessionsCount :: ProtectedStore -> Int -> T.Text -> IO ()
+assertClosedSessionsCount store expected planDigest = do
     entered <-
         withProtectedEntry store $ \session -> do
             verified <- verifyAllSessionsClosed session planDigest
@@ -1628,7 +1697,7 @@ assertExactlyOneClosedSession store planDigest = do
     case entered of
         Left failure -> assertFailure (show failure)
         Right (Left failure) -> assertFailure (sessionErrorMessage failure)
-        Right (Right count) -> count @?= 1
+        Right (Right count) -> count @?= expected
 
 -- | One exact current-frame node running an explicit action.
 countingProbe :: String -> (forall scope planId. StepExecution scope planId -> IO StepObservation) -> Step
@@ -1770,7 +1839,7 @@ chainAssemble ::
     ConfigAssembly scope (Fixture.ProjectConfig scope)
 chainAssemble root request = case request of
     ProductionAssembly args ->
-        pureConfigAssembly (Fixture.projectInit "chain-fixture" args)
+        Fixture.projectInit "chain-fixture" args
     HarnessAssembly _authority _root _testConfig _variant ->
         pureConfigAssembly
             ( Fixture.defaultProjectConfig

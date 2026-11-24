@@ -30,6 +30,7 @@ module HostBootstrap.ProjectPlan (
     PlanError (..),
     planDraftsFromValidatedBuilder,
     forward,
+    withProjectPlanPreview,
     plannedStepLabel,
     plannedStepFrameId,
     plannedStepFrameLabel,
@@ -89,6 +90,7 @@ import HostBootstrap.Config.Schema (
 import HostBootstrap.HostConfig (HostConfig)
 import HostBootstrap.Lifecycle.Execution (StepExecution)
 import HostBootstrap.Lifecycle.Plan (
+    withPreviewPlannedStepsKernel,
     ChartWorkloadResource,
     ClusterResource,
     DerivedTopology,
@@ -195,6 +197,18 @@ forward ::
     ProjectPlan scope specDigest planId configId cfg ->
     NonEmpty (PlannedStep scope planId configId (cfg scope))
 forward = forwardKernel
+
+{- | The forward projection an admission at this root would build, without a
+lifecycle profile or Production authority. Its planned steps carry a fresh plan
+identity no admitted plan or execution shares, so they render but never run.
+-}
+withProjectPlanPreview ::
+    CanonicalProjectRoot scope rootId ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
+    (forall planId. NonEmpty (PlannedStep scope planId configId (cfg scope)) -> a) ->
+    Either PlanError a
+withProjectPlanPreview = withPreviewPlannedStepsKernel
 
 plannedStepLabel :: PlannedStep scope planId configId config -> Text
 plannedStepLabel = plannedStepLabelKernel

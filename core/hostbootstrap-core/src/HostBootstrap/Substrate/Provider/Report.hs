@@ -67,8 +67,11 @@ module HostBootstrap.Substrate.Provider.Report (
     limaInstanceDirectory,
     limaInstanceClaim,
     limaInstanceSizing,
+    limaInstanceMounts,
+    LimaMount (..),
     classifyLimaInstanceReport,
     wslLocationClaim,
+    classifyWslRunningReport,
 
     -- * The bounds a report is admitted under
     providerReportLineBound,
@@ -83,6 +86,7 @@ import qualified Data.ByteString.Lazy as LazyBytes
 import Data.Aeson ((.:), (.:?), (.!=))
 import qualified Data.Aeson.Types as Aeson
 import Data.List (stripPrefix)
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 import Data.Char (GeneralCategory (Format), generalCategory, isAlphaNum, isControl)
 import Data.Int (Int64)
@@ -425,6 +429,21 @@ data LimaInstanceReport = LimaInstanceReport
     , limaInstanceDirectory :: FilePath
     , limaInstanceClaim :: ProviderConfigValue
     , limaInstanceSizing :: ResourceBudget
+    , limaInstanceMounts :: Either Text [LimaMount]
+    -- ^ The configured mounts, or why one is not an admissible path. Only a
+    -- share correspondence check reads them, so an unreadable mount refuses
+    -- that check without hiding the instance from lifecycle observation.
+    } deriving (Eq, Show)
+
+{- | One host directory the native Lima configuration mounts into its guest.
+
+An unset mount point is Lima's documented default, the host location itself.
+Both paths are bounded absolute POSIX paths without a trailing separator.
+-}
+data LimaMount = LimaMount
+    { limaMountLocation :: FilePath
+    , limaMountPoint :: FilePath
+    , limaMountWritable :: Bool
     } deriving (Eq, Show)
 
 {- | Read native newline-delimited JSON through the common stream boundary.
@@ -445,12 +464,12 @@ classifyLimaInstanceReport wanted captured = do
             [row] -> Just <$> admitRow row
             _ -> unreadable "the Lima report repeats the exact instance name"
   where
-    rowName (name, _, _, _, _, _) = name
+    rowName (name, _, _, _, _, _, _) = name
     validName name = not (null name) && length name <= providerConfigValueBound && all (not . reportControl) name
     parseRow line = case Aeson.eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack line)) >>= Aeson.parseEither nativeRow of
         Left _ -> unreadable "the Lima instance row is not valid native JSON"
         Right row -> Right row
-    admitRow (name, state, directory, claim, errors, sizing)
+    admitRow (name, state, directory, claim, errors, sizing, mounts)
         | not (null errors) = unreadable "the Lima instance reports native errors"
         | length directory > 4096 || not (PosixPath.isAbsolute directory)
             || any reportControl directory
@@ -470,23 +489,72 @@ classifyLimaInstanceReport wanted captured = do
                         unreadable "the Lima creation claim is not bounded control-free text"
                     | otherwise -> Right (ProviderConfigValue (Text.pack value))
             budget <- nativeBudget sizing
-            Right (LimaInstanceReport (ProviderListing name running) directory carried budget)
+            Right (LimaInstanceReport (ProviderListing name running) directory carried budget (traverse admitMount mounts))
     nativeBudget (Just cores, Just memory, Just disk)
         | cores <= 0 = unreadable "the Lima native CPU count is not positive"
         | otherwise = case mkResourceBudget (fromIntegral cores) (toInteger memory) (toInteger disk) of
             Left failure -> unreadable ("invalid Lima sizing: " <> Text.pack (show failure))
             Right budget -> Right budget
     nativeBudget _ = unreadable "the Lima instance omits native sizing"
+    admitMount (location, point, writable)
+        | admissible location && maybe True admissible point =
+            Right (LimaMount (canonical location) (canonical (fromMaybe location point)) writable)
+        | otherwise = Left "a Lima mount is not a bounded absolute path"
+    canonical = PosixPath.dropTrailingPathSeparator
+    admissible path =
+        not (null path) && length path <= 4096 && PosixPath.isAbsolute path
+            && not (any reportControl path)
+            && not (any (`elem` [".", ".."]) (PosixPath.splitDirectories path))
 
-nativeRow :: Aeson.Value -> Aeson.Parser (String, String, FilePath, Maybe String, [String], (Maybe Int64, Maybe Int64, Maybe Int64))
+{- | Whether the exact distribution appears in WSL's running-distribution listing.
+
+@wsl.exe@ writes UTF-16LE unless @WSL_UTF8@ is set, and the effect layer decodes
+captured bytes as lenient UTF-8, so an ASCII UTF-16LE listing arrives with a NUL
+after every character. That shape is narrowed back to its characters; output
+holding no NUL is read as written; anything else is unreadable rather than
+guessed at. The narrowed report then passes the common stream boundary, so a
+nonzero exit (which is also how WSL reports that nothing is running), a noisy
+success, or a control character is a fault, never an observation of running.
+-}
+classifyWslRunningReport :: String -> Either String CapturedRun -> Either ProviderReportFault Bool
+classifyWslRunningReport wanted captured = do
+    narrowed <- traverse narrowRun captured
+    rows <- classifyProviderReport providerConfigValueBound narrowed
+    Right (wanted `elem` filter (not . null) rows)
+  where
+    narrowRun run = do
+        text <- narrow (capturedStdout run)
+        Right run{capturedStdout = filter (/= '\r') text}
+    narrow raw
+        | '\0' `notElem` raw = Right raw
+        | even (length raw), all (== '\0') (everyOther (drop 1 raw)) = Right (everyOther raw)
+        | otherwise = unreadable "the WSL running listing is neither ASCII UTF-16LE nor UTF-8 text"
+    everyOther (character : _ : rest) = character : everyOther rest
+    everyOther rest = rest
+
+type NativeLimaMount = (FilePath, Maybe FilePath, Bool)
+
+nativeRow ::
+    Aeson.Value ->
+    Aeson.Parser (String, String, FilePath, Maybe String, [String], (Maybe Int64, Maybe Int64, Maybe Int64), [NativeLimaMount])
 nativeRow = Aeson.withObject "Lima instance" $ \row -> do
     config <- row .:? "config"
-    environment <- case config of
-        Nothing -> pure Map.empty
-        Just settings -> settings .:? "env" .!= Map.empty
-    (,,,,,) <$> row .: "name" <*> row .: "status" <*> row .: "dir"
+    (environment, mounts) <- case config of
+        Nothing -> pure (Map.empty, [])
+        Just settings -> do
+            environment <- settings .:? "env" .!= Map.empty
+            declared <- settings .:? "mounts" .!= []
+            mounts <- traverse nativeMount declared
+            pure (environment, mounts)
+    (,,,,,,) <$> row .: "name" <*> row .: "status" <*> row .: "dir"
         <*> pure (Map.lookup limaOwnerEnvironmentKey environment) <*> (row .:? "errors" .!= [])
         <*> ((,,) <$> row .:? "cpus" <*> row .:? "memory" <*> row .:? "disk")
+        <*> pure mounts
+  where
+    -- Lima reports an unset write policy as null; only an explicit true is writable.
+    nativeMount = Aeson.withObject "Lima mount" $ \mount -> do
+        writable <- mount .:? "writable"
+        (,,) <$> mount .: "location" <*> mount .:? "mountPoint" <*> pure (writable == Just True)
 
 {- | The claim of the exact owned WSL location, never of a listed name alone.
 

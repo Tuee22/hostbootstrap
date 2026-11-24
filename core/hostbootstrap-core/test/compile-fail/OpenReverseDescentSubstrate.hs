@@ -10,7 +10,6 @@ import HostBootstrap.Teardown (
     withReverseDescentLiftContextKernel,
     withVerifiedBoundReverseDescentObservationsKernel,
     withVerifiedBoundReverseDescentReportKernel,
-    withVerifiedReverseAdapterKernel,
  )
 
 hiddenReverseDescentSubstrate :: ()

@@ -128,10 +128,6 @@
 
 These gaps between the tree and the contract this page states are open:
 
-- `project up --dry-run` opens the protected store and takes or recovers Production mode authority before it
-  renders, as described in [hostbootstrap_core_library](hostbootstrap_core_library.md#current-status); the
-  [recursive-lifecycle-command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md) owes a
-  dry-run path that takes no mode, lease, or snapshot authority.
 - The failed-Up authority module still exports an uncalled retry producer, its root-local producer does not
   yet refuse a frame other than the catalog root's, and its report check counts `descent/<child>` settlement
   rows as operations, so a failed frame whose deeper descent failed refuses its own cleanup. The
@@ -318,11 +314,11 @@ Static tests inspect the actual commands, archive bytes, stage order and cleanup
 establish live Docker extraction, entry-point execution or container absence.
 
 `ConfigDelivery` contains only its write destination and projection payload; invocation belongs to the
-image entry point. Canonical snapshot format 8 binds a two-field delivery record containing `write-path`
+image entry point. Canonical snapshot format 10 binds a two-field delivery record containing `write-path`
 and `payload-digest`. The payload itself remains absent from those snapshot bytes. The parser consumes
-that same shape and refuses format 7 rather than reinterpreting its former executable coordinate.
+that same shape and refuses earlier formats rather than reinterpreting their coordinates.
 Canonical lift binding reads the ordinary `liftLayers` view, preserving the `lift-layers` tag, list count,
-layer order and member coordinates under the same format-8 byte, digest and parser contract.
+layer order and member coordinates under the same format-10 byte, digest and parser contract.
 
 A raw leaf in that container contributes its executable name and arguments after the image; they are
 arguments to the image's project-binary entry point. At the local frame, raw leaves instead require an
@@ -339,8 +335,8 @@ for which launches keep tini as PID 1.
 
 `project up` reconciles managed resources through exact prepared adapters. Convenience `IO ()` actions
 report completion only and do not mint readiness or ownership evidence. `project up --dry-run`
-renders the same admitted plan and runs no step, but it first takes Production mode authority as an effectful
-`up` does (see [Current Status](#current-status)).
+renders the step plan the same admission would build and runs no step; it opens no protected store and takes no
+mode, lease, snapshot, or lifecycle-profile authority.
 `project down` stops service/VM frames and deletes kind clusters while preserving durable state; provider
 VMs use provider stop, while kind clusters use `kind delete cluster`. The exact pure library route is
 
@@ -383,6 +379,11 @@ catalog, every frame journal, and all prepare, settle, replay, completion, and r
 return bounded observations through the closed rooted protocol; they never receive a durable cursor,
 `CommandAuthority`, raw record key, or store operation.
 
+A synchronous exception from a forward child step becomes a failed node observation; a safety refusal keeps
+its refusal classification. The child sends that observation for root settlement and closes the failed frame
+through the terminal-report and receipt exchange. Asynchronous cancellation still propagates to the process
+owner, which reaps the active child group.
+
 Root journal admission and retained-journal validation use the same named immutable acquisition binding.
 The validator also consumes the independently expected typed verb: the checked command verb for root
 authorization and the source root's Up verb for reverse recovery. Durable resume reports the exact differing
@@ -396,7 +397,12 @@ The implemented reverse foundation preserves the frame phantom through `Teardown
 closed `LocalWork`/`DescentWork`, completion, and `SubtreeSettled`. A private verb-tagged root intent
 protocol records or resumes exact Down/Destroy source coordinates under root liveness. Durable Prepared and
 Bound reverse-descent rows retain the exact plan-owned adapter and edge, support exact retry and token-free
-rehydration, and expose no child execution authority. Canonical reports, semantic completion, root-resident
+rehydration, and expose no child execution authority. Recovery of an interrupted operation uses the same exchange: the root asks through a
+recovery-observe envelope around the exact gate package, and the child answers in its settle body with a canonical
+recovery-observation record naming the operation, record version, attempt, observer identity and revision, and a
+closed result; admission refuses any mismatch and settles nothing. The adapter has one renderer, `renderReverseAdapterKernel` in the private
+reverse-descent library, which both the root producer and the storeless child verifier call, so the two cannot
+drift and the child executor needs no root substrate. Canonical reports, semantic completion, root-resident
 parent acknowledgement, keyless routing, finalized child projection, and inert planned-forward packaging are
 also implemented lower substrate. A prepared reverse descent opens only its retained child projection,
 and its rooted service retains the exact Offer and advances one forest through root-owned pre-descent,
@@ -404,12 +410,11 @@ child-executed local settlement, completed deeper descent, canonical close, and 
 
 Recursive admission is implemented on that same footing. One shared immediate-target kernel,
 `withImmediateTargetKernel`, which takes no `ValidatedLifecycleContext`, owns descriptor, context,
-configuration, and target-plan validation for a single declared descent, and both the
-inert planned-forward package and the recursive catalog delegate to it.
+configuration, and target-plan validation for a single declared descent, and the recursive catalog delegates to it.
 
 That projection workflow reads route shape through `liftLayers`. Edge selection and child-context
 derivation require exactly one layer; direct-host rebasing requires both compared routes to be singleton
-containers before its mount checks. Payload comparison also retains its singleton-container boundary.
+containers, including equal placement, before its mount checks. Payload comparison also retains its singleton-container boundary.
 Delivery stripping invokes `mapTerminalContainer` only inside that same singleton guard, leaving every
 other route, including a VM prefix followed by a container, unchanged. Source guards hold direct-host
 rebasing, refusal ordering and the other private checks; the public Linux proxy fixture exercises
@@ -418,7 +423,7 @@ fixture refusal.
 
 `RootedPlanCatalog` joins the root's
 finalized specification, invocation authority, plan, current frame, and root-resident lifecycle context,
-rechecks root residency and the authority's installed project and store identity, and then admits each
+rechecks root residency and the authority's installed project, store identity, and broker epoch, and then admits each
 declared edge in turn — each level's admitted target becoming the next level's parent — until a frame
 declares no further descent. The recursion is bounded by deliberate ceilings rather than by its
 representation: the catalog's canonical manifest admits at most 64 entries and 65,536 bytes, and a rooted
@@ -439,9 +444,10 @@ and its validated configuration's endpoint, the retained child plan digest must 
 still renders and the digest its binding carries, and the retained configuration and payload digests must
 equal one another and the digest the canonical payload still hashes to. Both the retained raw route and
 the stripped launch route must also have exactly one layer, read through ordinary `liftLayers`.
-The private zero/multiple-layer rechecks are source-guard evidence: immediate-target catalog projection
-already blocks those malformed inputs before producing the opaque entry. The public Linux proxy
-fixture traverses the accepted VM and container edges.
+A private test fixture injects inconsistent evidence into a real admitted edge and checks all seven
+forward-package refusals, including a route with no layer; source guards retain the multiple-layer shape.
+Immediate-target projection blocks malformed inputs before producing an ordinary opaque entry. The public
+Linux proxy fixture traverses the accepted VM and container edges.
 
 The package's eight indices are nominal; it retains no lifecycle context, parent plan, or specification
 index, and its one eliminator exposes only the
@@ -458,7 +464,7 @@ the table above can consume supplied input as a configuration archive before sta
 carry plan-authored extra arguments, and inherit whatever descriptors the host frame held; the rooted
 lifecycle protocol travels on exactly those descriptors, so a route that does any of that is a channel
 somebody else is also writing to. `LifecycleProcessRoute` is therefore derived from a catalog forward package
-or a recovery package and its plan-owned lift route rather than assembled, and it renders exactly one
+or a prepared reverse descent, which retains its recovery package and plan-owned lift route, and it renders exactly one
 argument vector per provider: Docker keeps standard input attached and runs at `/`, while Incus, Lima, and
 WSL run noninteractively at `/`, reaching root through noninteractive sudo where the guest's default user is
 not already root. Its closed grammar refuses `ConfigDelivery`, container extra arguments, a container that
@@ -470,7 +476,8 @@ Every rendered path is absolute and free of the mount delimiter.
 
 Route derivation reads `liftLayers` and clears valid terminal delivery through `mapTerminalContainer`.
 Existing frame, phase and launch-grammar checks retain their order; only their validated, sanitized
-single or composed layer lists enter `liftContextFromLayers` before the lifecycle fold. The closed
+single or composed layer lists enter `liftContextFromLayers` before the lifecycle fold. Forward routes
+admit exactly one layer; reverse descent may carry a root-relative composition. The closed
 context already fixes terminal placement. The private composed-list validator retains its prefix-name
 checks and nonterminal-container refusal before any later terminal-delivery policy check.
 The native Linux proxy fixture exercises accepted immediate and composed routes. Lima/WSL vectors and
@@ -484,27 +491,25 @@ exercises that container arm from its VM child. Source review holds the fallback
 root-to-VM selection belongs to a separate lifecycle-entry helper. Native Windows retains the fixture's
 declared guest-row and canonical-root refusal.
 
-The forward lifecycle coordinator shares one `liftLayers`-based target selector between normal child
-launch and failed-Up unwind. Exactly one container yields an empty target; every other shape retains
-the `SelfRef` guest path through `selfRefInVMPath`. Recorded Linux public-up argv exercises that guest
-coordinate at the root-to-VM boundary and the separate `Command.Child` container launch. Source review
-holds the forward selector's exact-single-container arm, while the existing failed-Up recovery controls
-regress its second caller. The reverse-root selector remains independent.
-
-The independent reverse-root selector reads the last layer through `liftLayers`. A final `ViaContainer`,
-including one after a VM prefix, selects an empty target; other endings retain the `SelfRef` guest path.
-Down and Destroy use that rule for the complete retained root-relative route. Recorded Linux public-down
-argv exercises both the VM guest-coordinate arm and the composed Incus/Docker image-entry arm; native
-Windows retains the declared fixture refusal.
+The root forward, failed-Up, and reverse coordinators share one target selector. It reads the last layer
+through `liftLayers`: a final `ViaContainer`, including one after a VM prefix, selects an empty target for
+the image entry point; other endings retain the `SelfRef` guest path. Recorded Linux public-up argv
+exercises the root-to-VM coordinate and the separate `Command.Child` container launch. Public-down argv
+exercises both the VM guest-coordinate arm and the composed Incus/Docker image-entry arm; native Windows
+retains the declared fixture refusal.
 
 Launching that route is one bracket's whole job. The owner resolves the route's host tool to an absolute
 path through the installed configuration, spawns it into a new process group with private stdin/stdout pipes
 and inherited stderr, hands those pipes to the relay for the exchange's lifetime, runs the fixed completion
-operation for the edge's direction, and reaps. Everything that could leave something behind is in the
-release path: group TERM, a fixed grace, group KILL if the group is still there, an unconditional wait, and
-only then the pipes closed. It bounds the launch and the grace and nothing else — the relay bounds the frames
-a peer owes immediately, and the wait between admission and the completed report belongs to the admitted
-effect's own policy — and it treats neither EOF nor a zero exit as completion.
+operation for the edge's direction, and reaps. After successful completion the child has a bounded chance to
+exit naturally; refusal, failure, and cancellation enter cleanup immediately. A remaining group receives
+TERM, a fixed grace, and KILL if still present, followed by an unconditional wait and pipe closure. The
+group identity remains available after the leader exits, so surviving descendants are included. On POSIX the
+private lifecycle child converts TERM into an asynchronous exception in its owner, allowing its own nested
+process-group brackets to unwind before it exits. An interrupted prepared effect remains unknown and a later
+Destroy refuses it until its outcome can be established. The relay
+bounds the frames a peer owes immediately, while the wait between admission and the completed report belongs
+to the admitted effect's own policy. Neither EOF nor a zero exit establishes completion.
 
 The same bracket may install one provider reprobe endpoint by narrowing its existing `BrokerLink` for the
 duration of the lexical provider kernel and child process. The child-side client uses only the authenticated
@@ -571,11 +576,16 @@ the recovery adapter only from the plan's own reverse projection, then joins the
 neutral constructor. The complete package is what the prepared record frames, what the binding input's
 child-configuration digest names, and what the offer payload must equal, so an adapter-only reverse input
 cannot be persisted or offered. The package and child-configuration digests are derived and compared
-separately and a conflation refuses. Both root reverse entries retain the catalog they were admitted under —
+separately and a conflation refuses. The private preparation decision checks the retained facts before the
+root kernel enters the protected store; the kernel alone performs reauthorization, cursor validation, and
+record publication. The prepared record is read back before the continuation runs; the continuation can
+reopen the store and observe its exact version. Both root reverse entries retain the catalog they were admitted under —
 constructed by the same recursion the forward entry admits, and writing no durable manifest, which the Up
 entry alone owns. The private relay's reverse route is that durable transition wrapped in the ordinary
 four-field Offer exchange: it opens the complete package recoverably through the frame's own keyless link,
-proves payload, token, and opened binding agree, records the Bound row, and only then routes the exact Offer
+proves payload, token, and opened binding agree, and checks the lifecycle scope against the canonical signed
+Production or Harness spelling. An unknown scope has no matching offer. It records the Bound row and only then
+routes the exact Offer
 to the already-installed root signer and serves the existing challenge loop. The route accepts no payload
 argument of its own, so an adapter alone is unrepresentable there rather than rejected, and a repeated
 attempt recovers the binding and token the root already minted instead of opening a second edge.
@@ -608,7 +618,13 @@ acknowledgements remain. Grant first retains the exact Offer in the prepared fra
 derives the child terminal origin from the same prepared lineage and binding, publishes only the canonical
 completed report, and retains verified `SubtreeSettled` through receipt. After the child transmits that exact
 report, the existing process owner validates Bound and durably adopts it before returning. A mismatched Offer,
-observation, descent result, report, or receipt advances no forest.
+observation, descent result, report, or receipt advances no forest. A failed-Up unwind uses a separate
+Up-indexed reverse link installed only inside the already prepared descent. Its recoverable opening and
+recovery signing consume that descent's edge and adapter admissions; the ordinary recovery kernels continue
+to refuse Up. The child orders reached operations against its own plan before rebuilding and checking the
+exact reverse adapter. Preparation rows keyed by session permit a direct reverse opening to coexist with its
+forward session even when their paths coincide, and a completed authenticated unwind does not trigger a
+second root unwind.
 
 The root command frame and a descent's parent frame are separate nominal coordinates. A prepared reverse
 descent existentially retains the root lifecycle context, teardown cursor, and command authority while its
@@ -668,8 +684,15 @@ sealed Process/Receiver bracket, opens one `RootedFrameSession` per exact frame,
 `PreparedNodeGrant` only after durable Unknown. Observations settle at the root, and terminal receipt follows
 Published → signed `FrameComplete` → `ReceiptConfirm` → Received → signed `ReceiptRecorded`. Successful
 reverse completion then terminalizes and rearms the durable root intent; failed-Up unwind uses the same
-durable Prepared/Bound child-first recovery driver while the Up command and cursor remain at Execute. The
-forward failure and reverse unwind publish separate canonical terminal records; cleanup failure does not
+durable Prepared/Bound child-first recovery driver while the Up command and cursor remain at Execute.
+
+The storeless child checks that each possible local outcome can be encoded in its actual rooted observation
+wrapper before executing the effect. A synchronous callback exception becomes a failed observation; empty or
+reserved failure details get a nonempty placeholder, and oversized details are shortened at a valid UTF-8
+boundary until that wrapper accepts them. Asynchronous process interruption remains an unknown effect for
+recovery. A later signed refusal is independently fitted to its smaller text limit before signing.
+
+Forward failure and reverse unwind publish separate canonical terminal records; cleanup failure does not
 replace the retained original error. The forest carries every frame level, and each exact child must produce its matching subtree settlement;
 a memoized raw result cannot settle a deeper frame. Cleanup aggregates failures, and neither
 verb places the plan's data path in its cluster-teardown removal set — `down`'s removal set is empty and
@@ -939,6 +962,8 @@ A project has one lifecycle representation. `mkStepPlan` validates the authoring
 `ProjectPlan` retains the exact configuration, resources, dependency edges, topology, descent projectors,
 operation keys, and reverse policies. Rendering, forward execution, recursive catalog construction, and
 teardown consume projections of that same plan. A separate list of cleanup commands is not a second plan.
+Forward-child admission uses the projector installed with the finalized project; a bare plan supplies the
+private default that refuses forward-child projection.
 
 The pure reverse projection is non-authorizing. The root entry joins it to exact snapshot, lease, journal,
 cursor, and command evidence. `TeardownForest` exposes closed local/descent work and preserves the opening

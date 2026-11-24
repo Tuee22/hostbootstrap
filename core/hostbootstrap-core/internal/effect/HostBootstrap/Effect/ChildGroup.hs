@@ -16,7 +16,6 @@ module HostBootstrap.Effect.ChildGroup (
     killChildGroup,
     awaitChildGroupExit,
     closeQuietly,
-    launchMicros,
     terminationGraceMicros,
     pollMicros,
 )
@@ -95,16 +94,21 @@ captureChildGroup child = do
 releaseChildGroup :: ChildGroup -> IO ()
 #if defined(mingw32_HOST_OS)
 releaseChildGroup group@(ChildGroup _ _ job) = Exception.mask_ $
-    (killChildGroup group >> void (awaitChildGroupExit terminationGraceMicros group))
+    (do
+        ended <- awaitChildGroupExit 0 group
+        if ended then pure () else killChildGroup group >> void (awaitChildGroupExit terminationGraceMicros group)
+    )
         `Exception.finally` closePHANDLE job
 #else
 releaseChildGroup group = Exception.mask_ $
     stop `Exception.finally` finishRemaining
   where
     stop = do
-        askChildGroupToStop group
-        ended <- awaitChildGroupExit terminationGraceMicros group
-        if ended then pure () else killAndObserve
+        alreadyEnded <- awaitChildGroupExit 0 group
+        if alreadyEnded then pure () else do
+            askChildGroupToStop group
+            ended <- awaitChildGroupExit terminationGraceMicros group
+            if ended then pure () else killAndObserve
     finishRemaining = do
         present <- posixGroupPresent group
         if present then killAndObserve else pure ()
@@ -197,10 +201,6 @@ closeQuietly :: Handle -> IO ()
 closeQuietly handle = do
     closed <- Exception.try (hClose handle)
     either (\(_ :: Exception.IOException) -> pure ()) pure closed
-
--- | How long a child has to exist at all.
-launchMicros :: Int
-launchMicros = 30 * 1000000
 
 -- | How long a signalled group has to finish before it is killed.
 terminationGraceMicros :: Int

@@ -407,6 +407,17 @@ WSL drvfs already exposes the Windows project directory below `/mnt/<drive>/...`
 needed. The provider waits for that path and reconciles the stable Docker-visible alias
 `/var/tmp/hostbootstrap-demo-data`, which is then carried through kind and the pod.
 
+A root share observation reenters the existing guest record without creating it and never starts the
+distribution. Registration carries no run state, and invoking a stopped distribution launches it, so each
+guest command of the observation is preceded by `wsl --list --running --quiet`, which lists without
+launching. That report passes the bounded provider-report boundary: its UTF-16LE text is narrowed from the
+NUL-padded capture, and a nonzero exit — also how WSL reports that nothing is running — is a refusal, not
+an observation. The cordon's membership probe tokenises the same listing more leniently because it only
+decides whether a shutdown is safe to skip. Correspondence comes from the guest's mount: `findmnt` must
+report the guest target on the 9p DrvFs mount of exactly the host source's drive at `/mnt/<drive>`, and the
+target must be the source's projection there. The listing cannot exclude a distribution stopping between
+it and the next guest command.
+
 The common prepared alias backend is the `StrongAliasBackend` that `discoverStrongAliasBackend` mints
 from the exact opaque managed WSL provider and share authorities. It ships one closed symbolic-link act
 to the project binary already installed in the guest, so there is no guest interpreter program and no

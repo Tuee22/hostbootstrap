@@ -93,6 +93,9 @@ so value cases exercise its actual plan and kubeconfig argument functions withou
 Assertion refusals retain their reason in the report. The ordinary
 exact reverse then proves labelled-node absence plus survival of the run's durable sentinel.
 
+The protected-store cases exercise independently opened handles to the same canonical directory, distinct
+stores, and an out-of-process contender, so the in-process and kernel exclusion boundaries are both checked.
+
 The host static gate is not the complete quality gate: it runs neither `fourmolu` nor `hlint`. Those run
 in the repository source gate that `base build` and `base build-and-push` run on the host before Docker,
 in a derived image's `check-code`, and in the base image's tool smoke;

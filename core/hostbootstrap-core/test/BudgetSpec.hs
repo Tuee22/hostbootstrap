@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module BudgetSpec (tests) where
+module BudgetSpec (tests, withRoutedReservationFixture) where
 
 import CompileFailSpec (withPrivateBudgetKernel)
 import Control.Monad (forM, forM_)
@@ -1010,6 +1010,26 @@ reservationGateSummary gateCase =
                                                 withProviderWallReservation plan providerResource wall partition gate $ \reservation ->
                                                     providerWallCallFence
                                                         <$> prepareProviderWallCall "demo" wall partition reservation
+
+-- | Supply an actual fence-dependent provider reservation to a routed-gate test.
+withRoutedReservationFixture :: (Text.Text -> Text.Text -> (PreparedGate -> Either BudgetError Word64) -> IO result) -> IO result
+withRoutedReservationFixture consume =
+    withBudgetProjectPlan $ \plan providerResource clusterResource -> do
+        let reserve gate = do
+                workload <- mkWorkload clusterResource 1 1 gib gib
+                overhead <- mapBudgetError (mkResourceBudget 1 gib gib)
+                sliceBudget <- mapBudgetError (mkResourceBudget 6 (10 * gib) (80 * gib))
+                minimumBudget <- mapBudgetError (mkResourceBudget 1 gib gib)
+                request <- mkSliceRequest providerResource sliceBudget minimumBudget
+                joinBudget $ withValidatedBudget plan $ \validated ->
+                    withProviderBudgetCapability plan providerResource LimaProviderKey $ \capability ->
+                        joinBudget $ admitProviderBudget validated capability $ \wall effective ->
+                            joinBudget $ withPlannedWorkloadSet plan [workload] $ \workloads -> do
+                                fit <- verifyPlannedWorkloadFit effective workloads
+                                joinBudget $ withBudgetPartition effective fit overhead (request :| []) $ \partition _slices ->
+                                    joinBudget $ withProviderWallReservation plan providerResource wall partition gate $ \reservation ->
+                                        providerWallCallFence <$> prepareProviderWallCall "demo" wall partition reservation
+        consume (stablePlanSnapshotDigest (renderSnapshot plan)) (plannedResourceKey providerResource) reserve
 
 exactProviderGate ::
     ProjectPlan scope specDigest planId configId cfg ->

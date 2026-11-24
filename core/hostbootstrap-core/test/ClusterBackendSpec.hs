@@ -17,6 +17,7 @@ import ClusterReconcileSpec (
     withAppliedFixtureCordon,
     withChartWorkloadFixture,
     withClusterFixtureM,
+    withClusterPlanFixtureM,
     withHarnessClusterFixtureM,
     withNvkindClusterFixtureM,
  )
@@ -30,6 +31,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import qualified FakeCluster
+import qualified TestPreparedGate
 import qualified SourceGuard
 import SealedExportInventory (pinnedPrivateExportLists)
 import HostBootstrap.CLI.Bare.Runtime (runtimeExposureAssertionWith)
@@ -70,6 +72,7 @@ import HostBootstrap.Protected (
     openProtectedStore,
     withProtectedEntry,
  )
+import qualified HostBootstrap.ProjectPlan as ProjectPlan
 import HostBootstrap.Reconcile
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
 import System.Directory (canonicalizePath, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory, removeFile)
@@ -454,6 +457,85 @@ joinCases =
         case outcome of
             Right (Right (), [], [], mutations) -> mutations @?= ["create", "delete"]
             other -> assertFailure ("expected retained cluster release, got " <> show other)
+    , testCase "routed cleanup refuses a fence older than the cluster has observed" $ do
+        outcome <- withBackend $ \cfg root ->
+            withClusterPlanFixtureM $ \plan prepared -> do
+                backend <- requireBackend cfg prepared
+                declare root prepared
+                _ <- runClusterReconcileCall backend prepared
+                let gate generation fence = TestPreparedGate.mintRoutedPreparedGate
+                        (TestPreparedGate.GatePlanDigest (ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan))) (TestPreparedGate.GateOperationKey "core:deploy-kind")
+                        (TestPreparedGate.GateSession "session") (TestPreparedGate.GateSupersessionGeneration generation)
+                        (TestPreparedGate.GateFence fence) (TestPreparedGate.GateAttempt 1) (TestPreparedGate.GateJournalVersion 1)
+                    newer = gate 5 2
+                    older = gate 5 1
+                    oldGeneration = gate 4 99
+                    wrongPlan = TestPreparedGate.mintRoutedPreparedGate
+                        (TestPreparedGate.GatePlanDigest "another-plan") (TestPreparedGate.GateOperationKey "core:deploy-kind")
+                        (TestPreparedGate.GateSession "session") (TestPreparedGate.GateSupersessionGeneration 5)
+                        (TestPreparedGate.GateFence 2) (TestPreparedGate.GateAttempt 1) (TestPreparedGate.GateJournalVersion 1)
+                beforeRecords <- recordsUnder (preparedClusterStateDirectory prepared)
+                beforeMutations <- FakeCluster.recordedClusterMutations root
+                rejectedExposure <- releaseRecordedClusterExposureFenced cfg plan wrongPlan
+                rejectedCluster <- releaseRetainedClusterFenced cfg plan wrongPlan
+                assertBool "another plan's gate cannot release exposure" (case rejectedExposure of Left _ -> True; Right () -> False)
+                assertBool "another plan's gate cannot release the cluster" (case rejectedCluster of Left _ -> True; Right () -> False)
+                recordsUnder (preparedClusterStateDirectory prepared) >>= (@?= beforeRecords)
+                FakeCluster.recordedClusterMutations root >>= (@?= beforeMutations)
+                otherPlan <- withClusterPlanFixtureM $ \other otherPrepared -> do
+                    existed <- doesDirectoryExist (preparedClusterStateDirectory otherPrepared)
+                    wrongExposure <- releaseRecordedClusterExposureFenced cfg other newer
+                    wrongCluster <- releaseRetainedClusterFenced cfg other newer
+                    let unfenced = TestPreparedGate.mintPreparedGate
+                            (TestPreparedGate.GatePlanDigest (ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot other)))
+                            (TestPreparedGate.GateOperationKey "core:deploy-kind") (TestPreparedGate.GateSession "session")
+                            (TestPreparedGate.GateFence 2) (TestPreparedGate.GateAttempt 1) (TestPreparedGate.GateJournalVersion 1)
+                    incomplete <- releaseRetainedClusterFenced cfg other unfenced
+                    assertBool "a valid gate cannot release another plan's exposure" (case wrongExposure of Left _ -> True; Right () -> False)
+                    assertBool "a valid gate cannot release another plan's cluster" (case wrongCluster of Left _ -> True; Right () -> False)
+                    assertBool "an unfenced gate cannot create target state" (case incomplete of Left _ -> True; Right () -> False)
+                    doesDirectoryExist (preparedClusterStateDirectory otherPrepared) >>= (@?= existed)
+                    FakeCluster.recordedClusterMutations root >>= (@?= beforeMutations)
+                    pure (Right ())
+                otherPlan @?= Right ()
+                releaseRecordedClusterExposureFenced cfg plan newer >>= (@?= Right ())
+                before <- FakeCluster.recordedClusterMutations root
+                stale <- releaseRetainedClusterFenced cfg plan older
+                assertBool "older fence refused" (case stale of Left _ -> True; Right () -> False)
+                FakeCluster.recordedClusterMutations root >>= (@?= before)
+                staleGeneration <- releaseRetainedClusterFenced cfg plan oldGeneration
+                assertBool "older broker generation refused" (case staleGeneration of Left _ -> True; Right () -> False)
+                FakeCluster.recordedClusterMutations root >>= (@?= before)
+                releaseRetainedClusterFenced cfg plan newer >>= (@?= Right ())
+                FakeCluster.recordedClusterMutations root >>= (@?= ["create", "delete"])
+                pure (Right ())
+        outcome @?= Right ()
+    , testCase "routed cleanup refuses a corrupt recorded fence before deletion" $ do
+        outcome <- withBackend $ \cfg root ->
+            withClusterPlanFixtureM $ \plan prepared -> do
+                backend <- requireBackend cfg prepared
+                declare root prepared
+                _ <- runClusterReconcileCall backend prepared
+                let stateRoot = preparedClusterStateDirectory prepared
+                    gate = TestPreparedGate.mintRoutedPreparedGate
+                        (TestPreparedGate.GatePlanDigest (ProjectPlan.stablePlanSnapshotDigest (ProjectPlan.renderSnapshot plan))) (TestPreparedGate.GateOperationKey "core:deploy-kind")
+                        (TestPreparedGate.GateSession "session") (TestPreparedGate.GateSupersessionGeneration 5)
+                        (TestPreparedGate.GateFence 2) (TestPreparedGate.GateAttempt 1) (TestPreparedGate.GateJournalVersion 1)
+                releaseRecordedClusterExposureFenced cfg plan gate >>= (@?= Right ())
+                store <- either (assertFailure . show) pure =<< openProtectedStore stateRoot
+                key <- either (assertFailure . show) pure (mkRecordKey "routed-cluster-cleanup-fence")
+                changed <- withProtectedEntry store $ \session -> do
+                    existing <- either (assertFailure . show) pure =<< readProtectedRecord session key
+                    record <- maybe (assertFailure "fence record missing") pure existing
+                    _ <- either (assertFailure . show) pure =<< compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) "not a fence"
+                    pure (Right ())
+                either (assertFailure . show) pure changed
+                before <- FakeCluster.recordedClusterMutations root
+                refused <- releaseRetainedClusterFenced cfg plan gate
+                assertBool "corrupt fence refused" (case refused of Left _ -> True; Right () -> False)
+                FakeCluster.recordedClusterMutations root >>= (@?= before)
+                pure (Right ())
+        outcome @?= Right ()
     , testCase "retained cleanup re-probes a successful modeled delete whose node remains" $ do
         outcome <- withBackend $ \cfg root ->
             withClusterFixtureM $ \prepared -> do
@@ -735,7 +817,10 @@ sourceCases =
               , "clusterExposureRecordKey name"
               ] $ \sequenceText ->
             SourceGuard.countHaskellTokenSequence (SourceGuard.haskellTokens sequenceText) (unwords target) @?= 1
-        retained <- either assertFailure pure (SourceGuard.haskellDefinitionTokens "releaseRetainedCluster" source)
+        wrapper <- either assertFailure pure (SourceGuard.haskellDefinitionTokens "releaseRetainedCluster" source)
+        SourceGuard.countHaskellTokenSequence
+            (SourceGuard.haskellTokens "releaseRetainedClusterWithFence cfg plan Nothing") (unwords wrapper) @?= 1
+        retained <- either assertFailure pure (SourceGuard.haskellDefinitionTokens "releaseRetainedClusterWithFence" source)
         SourceGuard.countHaskellTokenSequence
             (SourceGuard.haskellTokens "clusterCallTarget (retainedClusterName retained) stateDirectory nodes Nothing Nothing")
             (unwords retained) @?= 1
@@ -934,14 +1019,18 @@ sourceCases =
             assertBool ("retained release does not use its coordinate: " <> coordinate) (coordinate `isInfixOf` release)
         forM_ ["dataPath", "planOwnedClusterDurableRoot", "clusterName plan", "clusterNodeNames plan", "clusterRuntimeStateDirectory", "clusterKubeconfigPath"] $ \accessor ->
             assertBool ("retained release reads beyond its projection: " <> accessor) (not (accessor `isInfixOf` release))
-    , testCase "only retained cluster cleanup and the lifecycle gate remain" $ do
+    , testCase "only retained cluster cleanup through the adopted durable gate remains" $ do
         backend <- backendSource
         root <- repositoryRoot
         reconcile <- Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Cluster" </> "Reconcile.hs")
         forM_ [backend, reconcile] $ \source ->
             forM_ ["PreparedClusterCleanup", "runClusterCleanupCall", "settleClusterCleanup"] $ \unused ->
                 assertBool ("an unused cleanup authority is defined or named: " <> unused) (not (unused `isInfixOf` source))
-        assertBool "the production lifecycle cleanup gate disappeared" ("runExactClusterCleanupKernel ::" `isInfixOf` reconcile)
+        -- One root cleanup path remains: the adopted durable gate. The former exact-cleanup
+        -- producer and its uncalled root-entry caller are gone and must not return.
+        entry <- Text.unpack . TextEncoding.decodeUtf8 <$> ByteString.readFile (root </> "core" </> "hostbootstrap-core" </> "src" </> "HostBootstrap" </> "Command" </> "LifecycleEntry.hs")
+        assertBool "the unused exact cleanup producer is defined or named" (not ("runExactClusterCleanupKernel" `isInfixOf` reconcile))
+        assertBool "the uncalled root cleanup caller is defined or named" (not ("runPreparedRootClusterCleanupKernel" `isInfixOf` entry))
     , testCase "the hidden backend component retains capability data and no injected executor" $ do
         root <- repositoryRoot
         let internalPath = root </> "core" </> "hostbootstrap-core" </> "internal" </> "cluster-backend" </> "HostBootstrap" </> "Cluster" </> "Backend" </> "Internal.hs"

@@ -10,6 +10,10 @@
 **Gate evidence**: 2026-10-26 ; `DESKTOP-R6BTBVS`, native x86_64 Windows 11 10.0.26300.9457, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-options=--hide-successes` from `core/` and `demo/`, `poetry run python -m hostbootstrap.check_code` and `poetry run python -m hostbootstrap.test_all` from the root ; pass ; covers in-gate
 
 **Gate evidence**: 2026-11-07 ; hostbootstrap-linux-d, native x86_64 Ubuntu 24.04.5 on WSL2 Linux 6.18.54.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-11-12 ; hostbootstrap-linux-ssd, x86_64 Ubuntu 24.04.5 on WSL2 Linux 6.18.58.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all -j12` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-11-13 ; hostbootstrap-linux-ssd, x86_64 Ubuntu 24.04.5 on WSL2 Linux 6.18.58.1-microsoft-standard-WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all -j8 --test-show-details=direct --test-option=--hide-successes` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-11-16 ; hostbootstrap-linux-ssd, x86_64 Ubuntu 24.04.5 on WSL2, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all -j4 --test-show-details=direct --test-option=--hide-successes` from `core/` ; pass ; covers in-gate
+**Gate evidence**: 2026-11-19 ; native x86_64 Windows 11 Pro 10.0.26300, GHC 9.12.4, Cabal 3.16.1.0 ; `cabal test all --test-show-details=direct --test-option=--hide-successes` from `core/` ; pass ; covers in-gate
 
 > **Purpose**: Provide the one durable, exclusively entered, versioned record store every later ownership,
 > authority, and lifecycle decision is made inside.
@@ -47,6 +51,8 @@ One exclusive entry, one versioned record type, one compare-and-swap.
   `withProtectedEntry` or `tryProtectedEntry` from the holding thread is refused with `ProtectedInvalid`
   ("not re-entrant") instead of deadlocking. `tryProtectedEntry` never blocks: it returns `Right Nothing`
   when another process or another thread of this process holds the entry.
+- Independently opened handles to the same store share one process-wide exclusion domain, including when
+  opened through equivalent paths. Separate stores remain independent.
 - `ProtectedSession` has a private constructor and nominal session index. Its per-entry token names the
   holding thread and is revoked before unlocking. Every record operation and the writable-store probe
   require that live token on its owner thread. Rank-2 provenance alone does not prevent an ordinary IO
@@ -62,6 +68,8 @@ One exclusive entry, one versioned record type, one compare-and-swap.
 - `compareAndSwapProtectedRecord` and `compareAndDeleteProtectedRecord` take an `Expectation`
   (`ExpectAbsent` or `ExpectVersion`), so every write states what it believed; `readProtectedRecord`
   returns the observed version or absence the caller then states.
+- Record versions cover the full positive `Word64` range. A compare-and-swap at the maximum version
+  refuses without changing the record; malformed or out-of-range versions are rejected.
 - `listProtectedRecords` enumerates at one store version, so a fold sees a consistent set.
 - A malformed record is a typed `ProtectedMalformedRecord`, never silently ignored: a missing header
   terminator, an unknown magic, a version that is not a positive integer, and a header that is not exactly
@@ -108,6 +116,17 @@ exceptions and asynchronous interruption also refuse before IO. Constructor and 
 compile-fail fixtures passed with their pinned diagnostics.
 
 Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+On 2026-11-12 the full-width version and malformed-header cases passed, and the complete Linux/WSL2
+core gate passed all 5,341 cases. The full-width case reads a version above the signed boundary and
+the maximum `Word64`, then confirms a write at the maximum refuses without changing the record.
+
+On 2026-11-13, the focused `protected` selection passed 66 cases on the dedicated Linux/WSL2
+instance after the directory-identity change. A compiled probe opened the same store through a
+directory and its bind mount: a peer thread's nonblocking protected entry and a nested run-liveness
+attempt through the alias both returned contention. The bind mount and temporary probe were removed.
+The rebuilt core test executable's `supersession` selection also passed both cases, including a
+cleanup lease contested through an independently opened store handle.
+The complete phase gate subsequently passed 5,407 core cases in 810.01 seconds as recorded above.
 
 #### Remaining Work
 
@@ -117,7 +136,7 @@ None.
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
-`core/hostbootstrap-core/test/AuthoritySpec.hs`
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/CLISpec.hs`
 **Substrates**: linux-cpu
 **Docs to update**: `documents/architecture/ownership_invariant.md`
 
@@ -139,7 +158,8 @@ Make "the owner of this record is still alive" an observable fact.
 - This is the primitive that makes an abandoned-record sweep sound. Without it a live owner's record is
   indistinguishable from a dead one's, and a starting run can take a project another run still owns — see
   [rationale.md](rationale.md).
-- A live holder refuses the peer *before* the peer acquires anything.
+- A live holder refuses the peer *before* the peer acquires anything, including a peer using an
+  independently opened handle in the same process.
 
 #### Validation
 
@@ -167,6 +187,11 @@ peer probe, invalid-name no-body cases, close-on-exec child, timeout and 200 int
 acquisitions all ran.
 
 Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+On 2026-11-13 a focused liveness run exposed a CLI fixture that expected an IO failure for an
+in-process holder. The corrected fixture expects the same typed contention as a peer-process holder;
+the focused liveness selection then passed all 11 cases. The full phase gate subsequently passed as
+recorded above.
 
 #### Remaining Work
 
@@ -594,6 +619,79 @@ maximum-length key beyond MAX_PATH, complete CAS/read/reopen behaviour and publi
 guards. No physical power-loss experiment or macOS runtime confirmation is claimed.
 
 Validated on 2026-10-26 in the complete Linux CPU and native Windows core gates recorded above.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.6: Enter an existing protected store without creating it [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`,
+`core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected/Publication.hs`,
+`core/hostbootstrap-core/test/AuthoritySpec.hs`, `core/hostbootstrap-core/test/SealedExportInventory.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/ownership_invariant.md`
+
+#### Objective
+
+Open and exclusively enter an already-established protected store without creating directories, identity,
+or lock files when any part is absent.
+
+#### Deliverables
+
+- An existing-only store entry uses the same process and operating-system lock as ordinary entries and
+  refuses an absent or replaced identity or lock before its callback runs.
+- Both blocking and nonblocking entries retain that existing-only behavior on all supported host families.
+
+#### Validation
+
+`AuthoritySpec` cases "existing-only protected entry refuses missing or replaced state without creating it",
+"existing-only protected entry supports long absolute paths", and
+"existing-only protected lock is not inherited by a launched child" exercise admission, contention, and
+inheritance boundaries. The host
+static gate passes, and the phase closes on its declared core gate.
+
+On 2026-11-16, dedicated SSD-backed WSL2 passed all three existing-only cases, 364 `AuthoritySpec`, 53
+`EffectSpec`, 22 `DocValidatorSpec`, and 140 indexed plan cases. The full host static gate passed: `core/`
+passed 5,542 cases in 1,309.68 seconds; `demo/` passed its demo suite and 5,542 core cases in 1,281.67 seconds;
+both Windows Python checks passed, including all 384 tests. Native Windows checks also confirmed long-path
+entry, refusal of missing or replaced locks without recreation, and contention with ordinary entries.
+
+#### Remaining Work
+
+None.
+
+### Sprint 4.7: Open kernel-lock descriptors close-on-exec atomically [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/internal/ownership/HostBootstrap/Protected.hs`
+**Substrates**: linux-cpu
+**Docs to update**: none
+
+#### Objective
+
+Make the store and run-liveness lock descriptors non-inheritable from the moment they are opened.
+
+#### Deliverables
+
+- On POSIX hosts the ordinary lock open carries `O_CLOEXEC` in the `open` call itself, as the existing-only
+  open already does, so a child forked by another thread can never inherit a lock descriptor and keep the
+  kernel lock alive after its owner releases it. Windows handles were already non-inheritable.
+
+#### Validation
+
+The 2026-11-19 ordinary phase 15 gate leg on the dedicated Linux VM failed one case, `AuthoritySpec` "run
+liveness is close-on-exec and cannot be retained by a provider child": the liveness lock was still held after
+its owner returned. The lock had been opened with `openFile` and marked close-on-exec by a later `fcntl`, a
+window in which a concurrently forked child of the parallel test suite could inherit it. The case and the
+other liveness and protected-store cases exercise the atomic open; the phase closes on its declared core gate.
+
+2026-11-19: on the dedicated Linux VM (Ubuntu 24.04.5 x86_64, GHC 9.12.4) the `liveness`, `the protected store`
+and `AuthoritySpec` selection passed all 370 cases. Natively on Windows 11 Pro 10.0.26300 x86_64 the complete
+host static gate passed: `core/` passed 5,587 core tests in 801.59 seconds; `demo/` passed 172 demo and 5,587
+core tests; `check_code` passed and `test_all` passed 384 tests. Sprint 15.60's re-run carries the full core
+suite on Linux.
 
 #### Remaining Work
 

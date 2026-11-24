@@ -40,6 +40,8 @@ by authority ownership:
 | Reverse traversal | [Teardown](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Teardown.hs) | Same-plan reverse forest and complete settlement evidence |
 | Durable multi-record publication | [Lifecycle.Transaction](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Transaction.hs) | Canonical target roles, exact predecessors, and idempotent successors |
 
+Catalog construction refuses a root authority whose broker epoch differs from the retained root plan.
+
 The linked modules are the signature reference. This document describes their contracts without maintaining
 a second set of illustrative signatures that can drift from the compiled API.
 
@@ -80,7 +82,7 @@ These boundaries fall short of the contracts below:
 - `PreparedGate` has three producers. The two production mints are `withPreparedGate` in
   [Lifecycle.Session](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs) (the root's journal
   admission) and the frame executor's local reification in
-  [Lifecycle.FrameExecutor](../../core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs), both
+  [Lifecycle.FrameExecutor](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs), both
   through the package-private `mintPreparedGate`. The third, `recordDurableUnknown`, is exported unchecked from
   the Cabal-exposed [Lifecycle.Prepared](../../core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared.hs)
   and has no caller under `src/`. A holder of a `ProtectedSession` can call it with a record key and coordinates
@@ -141,16 +143,101 @@ non-contiguous frame segments, and invalid descent structure before execution. `
 plan-derived topology to the descriptive binary context and generates matching frame evidence. Decoded
 context fields alone grant no lifecycle authority.
 
-Canonical snapshot format 8 frames the exact root with a big-endian 64-bit byte count and big-endian
+Canonical snapshot format 10 frames the exact root with a big-endian 64-bit byte count and big-endian
 32-bit `Char` code points. The kernel exports `IndexedPlanSnapshot` abstractly; the public stable view
 is descriptive. Existing-bound structural refusal preserves the snapshot record key and kernel reason
 in `ModeMalformedCanonicalSnapshot`, before callbacks or protected-record mutation. Structural
 admission accepts only an absolute root. Reconciliation consumes that same admitted `ProjectPlan`;
 the plan kernel alone owns the canonical encoder.
 
+Provider probe descriptions are included in each step's canonical bytes. They describe the target and
+grant no authority or readiness evidence. Version 9 snapshots are refused before callbacks or protected
+record mutation; they are not silently reinterpreted as version 10.
+The bare live-gate plan supplies its Direct provider description to both the plan declaration and
+the backend constructor, so the recorded target and the target used for provisioning share one source.
+The demo's root VM plan likewise retains the selected Incus, Lima, or WSL2 target and its canonical
+host root. Its VM action checks the retained description against its selected provider and configuration
+before provisioning, and constructs the backend from the admitted description. Child-local plans are
+independently projected in their own frames and do not reconstruct the host-only target.
+For the demo Direct route, the root plan declares the canonical root and configured base image;
+the reservation checks the host's selected image and constructs its backend from that declaration.
+
+Share probe descriptions retain the exact host and guest paths as plan data; they do not themselves
+establish a share identity or readiness.
+
+For a root provider observation, the backend derives the owner from the admitted plan, resource, and
+generation in the exact current protected record, then independently observes the described provider.
+It retains the native identity and can recheck that identity and the protected record. This observation
+does not itself grant a lifecycle operation; grant-time integration remains a separate plan obligation.
+
+The worked demo's copy-source node declares its share probe from the same planned share its backend uses: the
+profile's durable root under the canonical project root and the selected provider's guest projection of it.
+The copy-source executor recomputes that share and refuses a declaration naming any other host or guest path.
+The same node declares its guest alias: the stable Docker-visible alias path and its link target, which plan
+admission requires to be that share's guest path. The root recovers the declaration only from the exact alias
+probe identity, and the executor refuses any alias declaration other than the one its backend reconciles.
+A root alias observation takes the alias, its share, the share's provider and the guest frame from that plan,
+requires the exact alias and share records to be current on both sides of the guest call, and ships the
+read-only symbolic-link observation to the plan-described guest frame. It reports only the identity the
+guest's record bound; a replaced or removed link refuses and is not repaired, and a Direct provider has no
+guest alias frame.
+
+A root share observation reconstructs the provider and share binding from the same admitted plan and the
+exact current provider and share records, then observes the host source, the provider, and the guest target
+without preparing a mutation. Incus and guest-VM observations reenter an existing provider store and
+directory lease and refuse rather than create either. Host/guest correspondence comes from the provider's
+own configuration or mount: the Incus share device, the one writable Lima mount whose location is the
+declared host source and whose mount point is the guest target, or the WSL2 DrvFs mount of the host source's
+drive. A guest is sampled only while its owned instance is observed running, so a stopped guest is refused
+rather than started; WSL2 is observed in its running-distribution listing before each guest command.
+The forward root coordinator observes the root plan's own declared share this way before every child-frame
+grant: `observePlannedRootShare` derives the share identity from the plan's copy-source node, reads the exact
+provider and share records from the protected store at that moment, and a missing, foreign, released or
+unready share refuses the grant. A plan that declares no share is unaffected. After the share, the same gate
+observes each guest alias the plan declares: the alias identities come from the plan's own alias probes, the
+alias and share records are read at that moment, and a missing, replaced or removed alias refuses the grant.
+A root Docker observation accepts only a Docker resource of the admitted plan in the root's own frame, requires
+its record to be current around the daemon query, and takes the daemon identity from one bounded line; a
+Docker resource in a child frame is behind that frame's boundary and is refused rather than observed.
+Across that boundary the frame holding a cluster answers one closed, read-only object request: the cluster's
+state directory and name and one workload's namespace, kind and name. It derives the kubeconfig from the
+cluster's own state, applies nothing, and reports only the object's UID and resource version.
+The object-store node declares that object in the admitted plan: the cluster's state directory as the provider
+guest sees it, the cluster's name, and the `object-store` Deployment's namespace, kind and name, which the root
+recovers only from the exact object-store identity. The registry node declares its `registry` Deployment the same way, and the cluster node declares its
+`kube-system` namespace, whose UID the cluster's own API server assigned at creation and so identifies the cluster. The
+chart node declares one workload its admitted chart lists among its effects, in the chart's namespace. Before every child grant
+the root observes each cluster, object store, registry and chart workload the granted node depends on, through the route its own plan's share provider fixes: shipped to that provider's
+guest, or read in the root's own frame. The record must be current and unreleased on both sides of the query, and
+a recheck refuses a changed UID or resource version. An undeclared store behind a guest frame is refused; the
+Direct chain's store lies in the root's own frame, declares no object and is left to its node's readiness probe.
+A declared empty terminal frame has no grant to prepare. The root proves from its own catalog that the exact
+selected frame has no node and no descent and opens it already `settled`; the frame then closes, and the forward
+report kernel accepts completion only from that root-issued stage.
+Each grant is then prepared against the node's plan-derived prerequisites, its resource dependencies and itself,
+rechecked against the root's retained or current rows in the protected entry that publishes Unknown; a root
+refusal there closes the frame's operation session and answers with the signed refusal, so failed-Up cleanup
+still opens.
+
 An executing step receives `StepExecution`, containing its own operation identity and validated dependency
 prefix. Its own and projected prepared gates come from the interpreter's journal admission. A step cannot
 choose an unrelated plan operation or replace its dependency set with caller-supplied observations.
+The private root plan projection derives resource coordinates from the admitted node: ordinary resources
+use their resource-bearing prefix, chart workloads select their declared cluster, and provider guest aliases
+select their declared durable share. A provider declaration can place its resource in the immediate child
+frame. The coordinates identify the same resource whether it already exists or is newly acquired; they do
+not establish its current existence or readiness. The execution package carries the same admitted resource
+identities, kinds and frames, so local descriptor construction and resource lookup include declared
+project providers. A private root probe identity binds the plan digest, resource frame, operation and
+closed resource family, including the synthetic alias and chart workload. The family is a typed case for
+root-side dispatch, not a caller-supplied string; it is descriptive and cannot itself prove readiness or
+authorize a grant. For a chart workload, the root can reconstruct the declared workload and cluster
+inputs from that identity and the same admitted plan; this reconstruction does not observe the cluster.
+The root can derive the complete ordered prerequisite identity set from the admitted node and select
+retained protected observations without accepting raw coordinates. Separately, the journal preparation
+entry can recheck prerequisite ownership and physical record versions. Grant preparation has not yet
+adopted the plan-derived selection, and neither selection establishes that a backend is ready. Root-owned
+backend probes, backend conditional versions and their adoption at grant preparation remain outstanding.
 `withPreparedOperation` traverses the complete resource-bearing prefix and runs its registered probes
 inside preparation. The sealed set is an implementation detail, not an argument a caller can retain
 and present later.
@@ -398,6 +485,21 @@ The seven recognized unresolved outcomes explicitly yield `UnknownDisposition`:
 Unrecognized text separately fails decoding and reaches the same public disposition. Recognition alone
 therefore cannot turn an unresolved outcome into permission to continue or treat it as settled.
 
+Before a restarted Down or Destroy runs that preflight over its recursive catalog, the root asks each
+unresolved operation's declared recovery observer, in the operation's own frame, whether its effect landed:
+in-process for the root frame, and as a shipped, authority-free recovery-observation act for a descended frame,
+along the route the catalog composes from the root frame through every frame above it. Only an answer admitted against the row's exact operation, record version,
+attempt, observer identity and revision is kept; a lost, malformed or foreign answer leaves the operation
+unresolved. The root then records an admitted absence under a fresh protected entry and the current broker,
+over the exact snapshot only: the manifest still lists the operation in an open session, the record keeps its
+version and bytes, the attempt is the observed one, and the plan's fence is the one the row was written under.
+The successor is that family's fenced-retryable absence (`EffectAbsent`, `ReservationAbsent` or
+`AdoptionObservedAbsent`) at the same session, fence and attempt, so the shared preflight admits it and the
+recorded-session interpreter abandons it under its new fence before the requested Destroy continues. An observer
+that allows a delayed effect cannot report absence. Managed presence, a foreign effect, an inconclusive answer,
+and repair, managed-phase or teardown rows each refuse without writing, and the preflight then refuses with the
+admitted answer named in that operation's refusal. A replayed snapshot finds another version and refuses.
+
 The six `Continuable` phases are `IntentRecorded`, `AdoptionIntentRecorded`, `RepairIntentRecorded`,
 `PhaseIntentRecorded`, `ReservationRetryFenced` and `Reserved`. This means eligibility for current-fence
 prepare checks before the next backend call; it does not claim that no earlier call occurred. The nine
@@ -465,7 +567,8 @@ cannot settle a newer attempt.
 settled before it compare-and-swaps the session record to Closed. Prepare and close exclude each other
 through the shared project-journal permit, not by both consuming the session record's version. Each
 successful transition returns the sole successor permit. In the rooted path the root publishes the terminal receipt before it signs
-`FrameComplete`, and returns `ReceiptRecorded` only after an idempotent `ReceiptConfirm` (see
+`FrameComplete`, and returns `ReceiptRecorded` only after an idempotent `ReceiptConfirm` that matches the
+session predecessor and durably records the report's canonical acknowledgement (see
 [Cross-process authority handoff](#cross-process-authority-handoff)). A later teardown invocation receives a
 fresh per-edge token and session.
 
@@ -483,6 +586,29 @@ close nor `recoverAbandonedSessions` can silently discard that member. The liste
 on this refusal. Independent session/operation enumeration and exact membership remain in place; this
 member check adds no rollback guarantee for unrelated recovery work.
 
+Production reverse entry holds the project run-liveness lock while it recovers cataloged child journals,
+before opening any new child session. It fences and interprets a complete manifest when sessions remain open;
+unknown effects refuse rather than being replayed. The rooted operation-session identity includes its observed
+fence, so a recovered invocation opens a distinct session and retains the closed predecessor as evidence.
+Harness same-run rotation verifies the operator and source root before allocating its next broker generation.
+Its settled-destroy closure carries the source epoch and bound-lease record version; a different generation
+or version refuses before mutation. Restarted snapshot admission also compares the bound lease's project,
+store, mode and epoch with the root and retained plan.
+
+Root-local reverse work and failed-Up unwind each open a fresh operation session, register intent, and pass a
+prepared gate to the callback before its effect. Under the live cursor entry the owner records the exact
+outcome kind and detail before acknowledging the journal and closing the session. A detail record without
+its matching acknowledged phase grants no settlement. If a child descent fails, the still-live forward
+Chain closes its exact session before unwind; a close refusal remains a refusal.
+
+Committed reverse-root recovery holds run liveness and verifies the source commitment, complete session
+manifest, exact continuation receipts, target generation, mode and lease, and operator before recovering an
+open target session. It rejects unknown operation outcomes and inconsistent or missing terminal details
+before fencing. After interpretation it rechecks provenance and session closure. The root driver reuses an
+authenticated released, foreign, or refused outcome instead of calling that operation again; an observed
+failure remains retryable. An older foreign or failure/refusal record without its exact outcome detail
+refuses until independently attributed by the [recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
+
 ## Typed lifecycle transitions
 
 Forward and reverse execution use the same plan. Reverse projection validates the complete frame forest and
@@ -497,7 +623,10 @@ therefore begins in a **pre-descent reachability** state, and the root reverse d
 invoking that node's own declared reverse with `ReachFrame` — the same callback that stops and deletes the
 provider is the one asked to open it, so no second declaration can disagree with the first. Only the root
 holds the project's callbacks: a frame serving its own children's reverse refuses a reachability step
-rather than reporting it released.
+rather than reporting it released. Failed, foreign, or refused reachability retains its observation and
+leaves the provider and children outstanding; retry offers reachability again before any child descent.
+Only a successful reachability attempt exposes the children, and the provider's ordinary teardown is
+authorized only after those children settle. The same handler is used by failed-Up unwind.
 
 Each operation records its durable unknown state before an effect whose answer could be lost. The result
 then settles that same operation, fence, generation, and journal version. A delayed result cannot settle a
@@ -526,6 +655,9 @@ untouched rather than being probed under an ambiguous old-key fallback. The
 
 Reverse-journal and cursor helpers retain the enclosing scope, plan, broker generation, and result type
 across GADT branches. Explicit local result signatures make those index relationships compiler-independent.
+The reverse-target entry compares the root, mode, recovered-profile and rebuilt-plan broker epochs before
+admission. Its pure comparison functions retain the distinct refusal for each mismatch.
+
 The reverse-root intent codec likewise fixes its field-list, unsigned-integer, and reverse-verb guard result
 types so compiler inference does not affect the canonical record format.
 Reverse-entry refusal helpers explicitly retain their `IO` effect and the enclosing descent-work and result
@@ -547,12 +679,15 @@ it cannot create a second plan beside the recorded one. The intent row moves thr
 - **Fresh Up.** After closure, a fresh Up rearms through the normal closed-lease path; it plays no part in
   Destroy retry. Its run-lease admission compare-and-deletes a version-3 or version-6 terminal row whose broker
   generation is strictly older than the new one, and refuses any other row as a reverse root in progress.
-- **Reverse rearm.** A reverse verb that finds a terminal row still present after its new successful-Up
-  evidence revalidates accepts only a version-3 terminal with matching project and store and a strictly newer
-  broker generation, compare-and-deletes it, confirms absence by readback, and then writes the next Pending
-  row. [Durable state](durable_state.md#the-reverse-root-terminal-row) holds the complete table.
+- **Fresh reverse admission.** A new reverse intent is published only when the intent row is absent. A
+  retained row goes through the existing intent transition, not a second terminal-deletion path.
+  [Durable state](durable_state.md#the-reverse-root-terminal-row) holds the complete table.
 - **Failed-Up unwind.** The unwind preserves the original failure while attempting the admitted reverse work
-  and reporting any unsettled resources.
+  and reporting any unsettled resources. A root-local failed-forward report identifies the failing root operation
+  from the root's reached list before child observations are merged. A failed-Up recovery handoff retains
+  the Up verb and must use the teardown phase; its verified join still checks the exact signed projection.
+  In Harness, a reached core-managed resource is retained for the Harness reverse owner rather than claimed
+  as having acquired nothing.
 
 ## Lifecycle profile authority
 
@@ -563,6 +698,14 @@ protected transition alone mints the opaque, three-role-nominal
 and broker generation. A Harness acquisition generates a `RunId` inside a continuation; diagnostic run
 text cannot reconstruct it. Root, mode, lease, snapshot, and profile evidence retain the exact installed
 project, protected-store identity, and broker epoch.
+
+A preview needs none of this authority. `project up --dry-run` builds only the forward projection
+(`withProjectPlanPreview`: the drafts' bindings, `mkStepPlan`, and the chart workload, service activation and
+provider probe root declarations, which is every check a project plan admission runs before a profile is needed)
+under a fresh plan identity that no admitted plan or `StepExecution` shares, so its planned steps render but cannot
+run. It renders them and exits before the protected store is opened. It therefore takes no Production
+mode, writes no lease, re-arms no closed invocation, and consumes no profile slot: the store is byte-identical
+afterwards, including after `project destroy`, whose closed invocation and terminal receipt survive.
 
 The durable mode key is `mode.` followed by the encoded installed-project name. Production root
 acquisition records `production<TAB><epoch>`, and a successful callback return does not itself release
@@ -586,6 +729,14 @@ ASCII unsigned decimal within `Word64`. Empty text, more than 20 digits, signs, 
 hexadecimal forms, leading zeros other than `0`, and overflow are refused. The bounded integer parse
 must reproduce the original field through `showWord`; each state retains its additional positivity
 checks. Target-record refusal preserves that record's bytes and version.
+
+A rooted node settlement records an observation only after a signed `Settled` response names the
+exact request digest and the digest of that observation, and echoes the session coordinates and
+nonce with a successor ordinal. A signed `Refused` records no settlement. Exact retries converge on
+the existing durable row; a different observation at those coordinates refuses without changing it. The
+retained authenticated opening nonce distinguishes separate frame attachments, so a later attempt can
+settle without replacing an earlier attempt's row. An unscoped legacy row is replayed only when its bytes
+match; a conflicting legacy row refuses and remains unchanged.
 
 On a settled store, Production root admission checks mode and lease eligibility after mandatory closure
 recovery and operator verification, under the same exclusive protected entry. An absent mode or retained
@@ -691,7 +842,8 @@ The plan-bound acquisition journal admits only the exact root, bound lease, snap
 plan after rechecking live mode, lease and snapshot under the lease store's exclusive entry. Its callback
 runs after unlock. One descriptive `AcquisitionBindingCoordinates` record names the eleven immutable
 coordinates: stable scope, project, store, snapshot digest, lease key and version, run, specification digest,
-lease plan digest, broker epoch and root verb. The opener and retained-journal validator share an ordered
+lease plan digest, broker epoch and root verb. Its stable scope comes from the closed Production or Harness
+lease mode, and reverse preparation requires that scope to match its plan. The opener and retained-journal validator share an ordered
 comparison that reports the differing field. The validator receives an independently expected typed verb;
 root authorization supplies its checked verb and reverse-root recovery supplies the source root's Up verb.
 The coordinate record grants no authority and cannot replace the opener's hidden admission token. The live
@@ -700,6 +852,19 @@ Reverse-root recovery retains its separately admitted source-record reader. The 
 is derived directly from the immutable binding's project/run/broker coordinates. Lexical definition and
 export guards hold this boundary, with the design justification in
 [the acquisition-admission rationale](../../DEVELOPMENT_PLAN/rationale.md#acquisition-admission-has-one-live-route).
+
+For each forward child grant, the root's operation journal retains the root command authority and Execute
+cursor. Inside the same protected entry that checks the allocated broker and operation fence and publishes
+the unknown operation, it revalidates the cursor's original live mode, lease, and snapshot binding. A stale
+binding refuses before registration; the child supplies neither the validator nor its authority.
+
+When forward settlement persists a resource record, the root captures its verified bytes, protected-store
+identity, and physical record version under the same entry. The coordinator serializes frame settlements
+and retains successful observations, replacing only the same store and record key. Private helpers select
+exact resource coordinates, and a journal prepare
+entry can compare selected observations before publishing Unknown. Grant-time selection and root-authoritative
+live probes remain open work in the [recursive lifecycle command](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md);
+a record does not by itself establish backend readiness.
 
 The canonical seven-field cursor record retains its exact acquisition source and frame binding. Its frame
 limit is 4,096 encoded UTF-8 bytes and its complete payload limit is 65,536 bytes. An over-limit requested
@@ -790,7 +955,10 @@ only when the complete set is closed. It never treats the reserved Production le
 
 The root constructs and persists one recursive `RootedPlanCatalog` from the exact finalized specification.
 Each edge retains the target plan, digest binding, canonical child configuration, payload digest, and
-one-layer route. Catalog selection rechecks the exact parent/child relationship and projected node keys.
+one-layer route. A compare-and-swap version mismatch proceeds to strict catalog readback; other publication
+errors retain the protected-store diagnostic. Catalog selection rechecks the exact parent/child relationship
+and projected node keys. Reverse preparation reads back its version-1 record before invoking the continuation,
+which can reopen the store and observe the same record.
 
 The receiver authenticates the root scope capsule using the independently installed identity and verification
 key before interpreting the child package. Ordinary and recovery offers retain distinct exact bindings.
@@ -810,7 +978,14 @@ The standing production consumers have distinct roles: `Handoff.Relay` calls the
 from catalog-selected child configuration and adapter bytes. These actual call sites establish ownership;
 package/signing/join validation does not establish those consumers' complete carrier, catalog-admission,
 coordinator or real-process integration. Neither package bytes nor either signed value alone grants
-lifecycle, protected-store or signing authority.
+lifecycle, protected-store or signing authority. A failed-Up unwind has a separate Up-indexed root link
+whose opening and recovery signer require the exact prepared reverse admissions. The ordinary recovery
+entry points retain their Down/Destroy-only restriction. An authenticated Up teardown can reach the nested
+child. The child reorders its authenticated reverse adapter's duplicate-free operation set into local plan
+order and then requires exact adapter bytes before accepting the projection. Preparation and settlement
+rows include the root-selected session in their keys, and the session token distinguishes opening modes even
+when their paths coincide. A successful authenticated unwind preserves the original
+Up failure without launching a second cleanup; root fallback remains available when that unwind fails.
 
 Recovery receiver admission checks the signed phase and closed verb before interpreting the remaining
 recovery evidence. Genuine Down offers supply the positive control for wrong-phase and cross-paired
@@ -878,8 +1053,9 @@ rendered binding, and the token:
 | Any other token record, map version, or map bytes | Refuse without opening another edge |
 
 Every path ends with a strict readback of the map at its version and of the token record; a token record that
-is `granted:` at readback refuses with `HandoffTokenConsumed`. The map owns no process, child store, executor,
-lifecycle settlement, or terminal receipt.
+is `granted:` at readback refuses with `HandoffTokenConsumed`. Pure decisions classify the observed version,
+bytes, and token state; the protected entry retains all store effects. The map owns no process, child store,
+executor, lifecycle settlement, or terminal receipt.
 
 `withVerifiedRootedLifecycleResponse` decodes the exact request before response decoding, pairing,
 signature/report validation or callback entry. Malformed-request DATA controls use the same installed key
@@ -921,15 +1097,33 @@ authentication and before callback entry; neither path grants lifecycle executio
 returns a signed `Opened` response naming the canonical path and root-issued session, stage, and ordinal.
 Post-open requests bind path, session, nonce, ordinal, and predecessor digest; the inner path must equal both
 the envelope and retained session path. Response families echo the request identity and carry only the
-successor permitted by that request.
+successor permitted by that request. Before attachment the root decodes the signer result and requires its
+unsigned `Opened` fields to match the response it rendered. Advancement accepts exactly the next ordinal;
+refused and receipt-recorded sessions are terminal.
 
-A storeless `FrameExecutor` compares a verified `Prepared` package with its independently rebuilt local node,
-dependencies, own gate, and projected gates. Only this exact comparison can reify the local prepared gate.
+A version-three rooted gate package includes the exact operation key alongside plan, catalog, frame, session,
+runtime broker generation, the distinct operation fence, attempt, and journal version. The reader validates
+and canonically re-renders these fields; the unfenced package codec is absent. The [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+tracks validation of its routed consumers. A storeless `FrameExecutor` compares a verified
+`Prepared` package with its independently rebuilt local node, dependencies, own gate, and projected gates. Only this exact comparison can reify the local prepared gate.
+Its opening records whether the frame performs forward or reverse work independently of the command verb:
+failed-Up cleanup retains the `up` verb but must decode and verify the reverse gate envelope.
 The child executes the local effect and returns an observation. The root owns settlement, completion reports,
 and receipt confirmation. A `Descend`, `Refused`, or mismatched response cannot enter the prepared branch.
+The private completion kernels refuse a report for the wrong direction or binding. A refused or failed child
+is acknowledged without minting completion, then its detail is returned to the caller.
+
+Forward report admission checks the root-issued session stage and rejects unopened, non-Up, and
+intermediate sessions. The coordinator separately checks its node index and descent state before issuing a
+successful report, because one `settled` response can represent an intermediate node. The current
+catalog-derived empty-frame exception is not yet evidence of a realizable empty child: admitted frame
+topology is derived from steps. The [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
+tracks the remaining plan-admission and root-issued settlement work for that case.
 
 The process owner derives every provider crossing through the shared Lift fold. It isolates descriptors,
 bounds handshake/control frames, handles cancellation and process-group cleanup, and reaps the child.
+After a successful exchange it gives the child a bounded opportunity to exit naturally; on failure or
+cancellation it begins cleanup immediately and preserves asynchronous cancellation after releasing the child.
 An admitted backend effect may take as long as its own operation permits; a handshake deadline is not an
 unconditional deadline over provisioning. See [binary context](binary_context_config.md) for wire and
 activation details.
@@ -1080,6 +1274,28 @@ A prepared gate exposes its six coordinates through ordinary reader functions. A
 its plan, operation, session, fence, attempt, and journal version without gaining a record field that
 can replace one of them. Constructor opacity and one typed record-update fixture per reader hold the
 boundary; the local mint's session checks and the public producer's limitation are described above.
+
+The private gate representation also has transitional, separately typed unknown-phase and call-digest
+coordinates. An effect-aware journal prepare writes and re-reads both coordinates before binding them to
+the gate, refusing invalid digests before writing. Existing routed producers still use the legacy unbound
+path; the authenticated wire and effect check are scheduled for following sprints, so these fields alone
+grant no end-to-end effect guarantee. The private rooted journal also has an effect-aware preparation path:
+it records supplied phase and digest values, matches both when reusing a pending gate, and settlement checks
+them against the durable record. Its caller must first establish the coordinates from authenticated evidence.
+Provider preflight can project a generative descriptive backend binding through the same pure retained-client
+check used by strong discovery; the projection runs no provider command and does not grant an effect.
+A version-4 effect-bearing gate package codec now carries the same
+fenced coordinates plus the phase and digest, with bounded canonical fields. A private forward grant route can
+package those committed coordinates after rechecking its prerequisites; the production routed producer and
+consumer still use version 3 until their adoption sprints.
+A bounded ordered effect-proposal codec describes operation keys, unknown phases and call digests; it does
+not itself authorize a write or an effect. The executing-frame preflight and authenticated request route that
+would supply these proposals are still outstanding. Steps can now retain a pure `HostConfig`-based preflight
+separately from their effectful actions; a missing declaration remains explicit. The current declaration is
+not yet supplied with backend realization evidence or used by the routed lifecycle. The plan-bound projection
+checks that proposed operation keys exactly match the admitted node and projections, then retains the canonical
+proposal under the plan identity. It is descriptive and grants no gate authority; canonical snapshot bytes are
+unchanged. The eventual signed request and preparation check must bind the actual effect.
 
 **A prepared gate has one commitment.** Its six fields — plan, operation, session, fence, attempt and
 journal version — are projected once, beside the gate itself, and committed by length-framing each field

@@ -14,6 +14,8 @@ module HostBootstrap.Lifecycle.Execution.Internal (
     planExecutionPackageProject,
     planExecutionPackageRoot,
     planExecutionPackageNode,
+    planExecutionPackageResourceDependencies,
+    planExecutionPackageResourceMembers,
     StepExecution,
     mintStepExecution,
     stepExecutionHostConfig,
@@ -142,40 +144,48 @@ data PlanExecutionPackage scope planId
         Text
         FilePath
         ExecutionNode
+        (Either Text [(Text, Bool)])
+        (Either Text [(Text, Text, Bool)])
     deriving (Eq, Show)
 
 type role PlanExecutionPackage nominal nominal
 
 mintPlanExecutionPackage ::
-    Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> FilePath -> ExecutionNode -> PlanExecutionPackage scope planId
+    Text -> Text -> Text -> Text -> Text -> Word64 -> Text -> FilePath -> ExecutionNode -> Either Text [(Text, Bool)] -> Either Text [(Text, Text, Bool)] -> PlanExecutionPackage scope planId
 mintPlanExecutionPackage = PlanExecutionPackage
 
 planExecutionPackageSpecDigest :: PlanExecutionPackage scope planId -> Text
-planExecutionPackageSpecDigest (PlanExecutionPackage value _ _ _ _ _ _ _ _) = value
+planExecutionPackageSpecDigest (PlanExecutionPackage value _ _ _ _ _ _ _ _ _ _) = value
 
 planExecutionPackagePlanDigest :: PlanExecutionPackage scope planId -> Text
-planExecutionPackagePlanDigest (PlanExecutionPackage _ value _ _ _ _ _ _ _) = value
+planExecutionPackagePlanDigest (PlanExecutionPackage _ value _ _ _ _ _ _ _ _ _) = value
 
 planExecutionPackageConfigDigest :: PlanExecutionPackage scope planId -> Text
-planExecutionPackageConfigDigest (PlanExecutionPackage _ _ value _ _ _ _ _ _) = value
+planExecutionPackageConfigDigest (PlanExecutionPackage _ _ value _ _ _ _ _ _ _ _) = value
 
 planExecutionPackageNodeIdentity :: PlanExecutionPackage scope planId -> Text
-planExecutionPackageNodeIdentity (PlanExecutionPackage _ _ _ value _ _ _ _ _) = value
+planExecutionPackageNodeIdentity (PlanExecutionPackage _ _ _ value _ _ _ _ _ _ _) = value
 
 planExecutionPackageProfile :: PlanExecutionPackage scope planId -> Text
-planExecutionPackageProfile (PlanExecutionPackage _ _ _ _ value _ _ _ _) = value
+planExecutionPackageProfile (PlanExecutionPackage _ _ _ _ value _ _ _ _ _ _) = value
 
 planExecutionPackageGeneration :: PlanExecutionPackage scope planId -> Word64
-planExecutionPackageGeneration (PlanExecutionPackage _ _ _ _ _ value _ _ _) = value
+planExecutionPackageGeneration (PlanExecutionPackage _ _ _ _ _ value _ _ _ _ _) = value
 
 planExecutionPackageProject :: PlanExecutionPackage scope planId -> Text
-planExecutionPackageProject (PlanExecutionPackage _ _ _ _ _ _ value _ _) = value
+planExecutionPackageProject (PlanExecutionPackage _ _ _ _ _ _ value _ _ _ _) = value
 
 planExecutionPackageRoot :: PlanExecutionPackage scope planId -> FilePath
-planExecutionPackageRoot (PlanExecutionPackage _ _ _ _ _ _ _ value _) = value
+planExecutionPackageRoot (PlanExecutionPackage _ _ _ _ _ _ _ value _ _ _) = value
 
 planExecutionPackageNode :: PlanExecutionPackage scope planId -> ExecutionNode
-planExecutionPackageNode (PlanExecutionPackage _ _ _ _ _ _ _ _ value) = value
+planExecutionPackageNode (PlanExecutionPackage _ _ _ _ _ _ _ _ value _ _) = value
+
+planExecutionPackageResourceDependencies :: PlanExecutionPackage scope planId -> Either Text [(Text, Bool)]
+planExecutionPackageResourceDependencies (PlanExecutionPackage _ _ _ _ _ _ _ _ _ value _) = value
+
+planExecutionPackageResourceMembers :: PlanExecutionPackage scope planId -> Either Text [(Text, Text, Bool)]
+planExecutionPackageResourceMembers (PlanExecutionPackage _ _ _ _ _ _ _ _ _ _ value) = value
 
 {- | Plan-minted authority to execute one exact step.
 

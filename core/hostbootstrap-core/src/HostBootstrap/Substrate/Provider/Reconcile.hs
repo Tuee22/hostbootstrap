@@ -46,6 +46,7 @@ module HostBootstrap.Substrate.Provider.Reconcile (
     mkProviderShareSpec,
     providerShareHostPath,
     providerShareGuestPath,
+    providerShareCallDigest,
     ManagedProviderShareHandle,
     managedProviderShareKey,
     managedProviderShareGeneration,

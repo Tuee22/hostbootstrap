@@ -13,6 +13,7 @@ not reconstructed from steps or accepted as a second caller-supplied graph.
 -}
 module HostBootstrap.Chain (
     renderChain,
+    renderChainPreview,
     nextFrameAfter,
     runChainFromFrameWithDescentFailure,
 )
@@ -128,12 +129,19 @@ step representation.
 renderChain ::
     ProjectPlan scope specDigest planId configId cfg ->
     String
-renderChain plan =
+renderChain plan = renderChainPreview (orderedProjection plan)
+
+{- | Render a forward projection in its order. 'renderChain' renders an
+admitted plan's own projection through it, and @project up --dry-run@ renders
+the projection an admission would build, so the two agree line for line.
+-}
+renderChainPreview :: NonEmpty (PlannedStep scope planId configId config) -> String
+renderChainPreview planned =
     unlines
         ( zipWith
-            (\number planned -> show number ++ ". " ++ renderPlannedStep planned)
+            (\number step -> show number ++ ". " ++ renderPlannedStep step)
             [1 :: Int ..]
-            (NonEmpty.toList (orderedProjection plan))
+            (NonEmpty.toList planned)
         )
 
 {- | The exact child frame and lift context derived for a current frame.
@@ -528,7 +536,10 @@ runChainFromFrameWithDescentObserved cfg store plan authority cursor runDescent 
                 Right () -> runPostHandoff carrier session fence permit postHandoff
                 Left failure -> do
                     putStrLn ("project up: authenticated descent refused: " ++ failure)
-                    pure (Left failure)
+                    closed <- closeAfterNode session permit
+                    pure $ case closed of
+                        Left closeFailure -> Left (failure ++ "; closing the forward session failed: " ++ closeFailure)
+                        Right _ -> Left failure
 
     runPostHandoff carrier session fence permit postHandoff = do
         ran <- runPlanSteps carrier session fence permit postHandoff

@@ -44,4 +44,4 @@ instance Show StablePlanSnapshot where
 old bytes must never be reinterpreted under a new schema.
 -}
 canonicalPlanSnapshotFormatVersion :: Word64
-canonicalPlanSnapshotFormatVersion = 8
+canonicalPlanSnapshotFormatVersion = 10

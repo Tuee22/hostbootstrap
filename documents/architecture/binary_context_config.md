@@ -162,7 +162,10 @@ effects, not permission to omit a witness.
 The [authenticated handoff phase](../../DEVELOPMENT_PLAN/phase-13-authenticated-handoff-and-child-admission.md)
 owns the bounded canonical wire, scope capsule, binding, challenge/grant, and keyless relay.
 The [recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md)
-owns its installed root/child process consumer.
+owns its installed root/child process consumer. Its private runtime tests build both arms from a live root
+broker and a verified handoff, and exercise identity, route, and arm-narrowing refusals.
+Child-plan admission also compares the running frame from the validated context with the signed child frame;
+a mismatch refuses admission before child-plan authority is minted.
 
 The root link signs one `AuthenticatedRootScope` capsule from its live broker and exact scope. Nested links
 retain those exact bytes and receive no signer. The receiver verifies the capsule against the independently
@@ -196,6 +199,9 @@ child protocol state before a later failure can attempt to announce anything. Th
 blocks later report sends and relay requests locally, before another protocol frame can be written.
 Relay's own successfully transmitted upstream refusal closes that same retained edge and preserves the
 original error. A local validation failure before transmission leaves it open for Receiver's refusal.
+Lifecycle acknowledgement requests carry the exact offered edge, challenge, report, and acknowledgement
+through the root route. Terminal persistence is one-shot: repeated or late calls receive the fixed unavailable
+result, and a failed acknowledgement transmission cannot record a fresh disposition.
 
 After scope authentication, the receiver bounds the embedded Offer payload at 7,340,032 bytes before
 reading its installed-key digest or binding, sending a Challenge, or selecting a branch. Exactly that

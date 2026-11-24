@@ -43,7 +43,6 @@ module HostBootstrap.Handoff.Receiver (
 
     -- * The exchange
     withIsolatedReceivedHandoffEdge,
-    withReceivedHandoffEdge,
     withProviderDependencyClientKernel,
 
     -- * Failures

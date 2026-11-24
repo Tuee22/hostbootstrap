@@ -40,9 +40,7 @@ import HostBootstrap.Config.Class (
     ProjectCodec,
     projectCodecSpecDigest,
  )
-import HostBootstrap.Config.Fields (
-    ScopeKind,
- )
+import HostBootstrap.Config.Fields (KnownScopeKind)
 import HostBootstrap.Config.Schema (
     ValidatedConfig,
     VerifiedConfigHandoff,
@@ -64,6 +62,7 @@ import HostBootstrap.Config.Vocab (
 import HostBootstrap.Handoff (
     HandoffBinding,
     handoffBrokerGeneration,
+    handoffChildFrame,
     handoffInstalledProject,
     handoffPlanRevision,
     handoffScope,
@@ -123,6 +122,7 @@ import HostBootstrap.ProjectPlan.Child.Internal (
     childPlanAuthorityBindingKernel,
     mintChildPlanAuthorityKernel,
  )
+import HostBootstrap.Lifecycle.FrameRole (ChildFrameId, ParentFrameId)
 import HostBootstrap.ProjectPlan.Construct.Internal (
     FinalizedProjectSpec,
     finalizedProjectCodecKernel,
@@ -159,7 +159,7 @@ argument, so later Harness instantiation cannot silently substitute another
 project definition.
 -}
 withFinalizedProjectSpec ::
-    ScopeKind ->
+    (KnownScopeKind scope) =>
     ProjectCodec scope initialDigest cfg ->
     ServiceRegistry cfg ->
     ( forall planScope rootId.
@@ -169,8 +169,8 @@ withFinalizedProjectSpec ::
     ) ->
     ( forall planScope.
       cfg planScope ->
-      Text ->
-      Text ->
+      ParentFrameId ->
+      ChildFrameId ->
       LiftContext ->
       Either String (FilePath, cfg planScope, StepPlan)
     ) ->
@@ -308,10 +308,11 @@ lifecycle profile origin only from signed binding fields, builds from the opaque
 draft root and exact validated configuration, and compares the resulting stable
 plan digest with the signed parent revision. Only successful structural admission
 and that exact revision comparison yield the local plan, binding, and fully
-indexed child authority.
+indexed child authority. The signed child frame must match the running frame.
 -}
 withChildProjectPlan ::
     ProjectVerb verb ->
+    Text ->
     VerifiedConfigHandoff
         scope
         planDigest
@@ -341,7 +342,10 @@ withChildProjectPlan ::
       a
     ) ->
     Either AuthorityError a
-withChildProjectPlan verb handoff wire config drafts use = do
+withChildProjectPlan verb runningFrame handoff wire config drafts use = do
+    if runningFrame /= handoffChildFrame binding
+        then Left (AuthorityMalformedBinding ("child plan admission: running frame " <> runningFrame <> " differs from authenticated child frame " <> handoffChildFrame binding))
+        else pure ()
     profileName <- childProfileName binding
     verb `seq` wire `seq` pure ()
     either

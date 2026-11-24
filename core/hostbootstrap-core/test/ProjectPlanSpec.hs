@@ -15,16 +15,25 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Char8 as ByteStringChar8
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.Char (isLower, isSpace, ord)
-import Data.IORef (modifyIORef', newIORef, readIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (delete, isInfixOf, isPrefixOf, sort)
 import Data.List.NonEmpty (NonEmpty)
+import Data.Maybe (isJust, isNothing)
 import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import Expect (expectRight)
 import qualified Fixture
+import qualified FakeProvider
+import qualified TestLifecyclePlan
+import qualified TestRootedSession
+import qualified TestPreparedGate as PreparedCodec
+import qualified HostBootstrap.Handoff.Rooted as RootedCodec
+import GHC.Exts (Any)
 import GHC.IO.Exception (IOErrorType (InvalidArgument))
+import HostBootstrap.CLI (ChildFrameId (ChildFrameId), ParentFrameId (ParentFrameId))
 import qualified HostBootstrap.CLI.Bare as Bare
 import HostBootstrap.CLI.Bare.Runtime (parseLoopbackMapping, successfulLine)
 import HostBootstrap.Cluster.Lifecycle (ClusterProfile, mkTestCaseProfile, clusterKubeconfigPath, resolvePlan)
@@ -47,7 +56,6 @@ import HostBootstrap.Config.Class (
     projectCodecSpecDigest,
     renderProjectCodecValue,
  )
-import HostBootstrap.Config.Fields (ScopeKind (ProductionScope))
 import HostBootstrap.Config.Schema (
     ValidatedConfig,
     renderScopedProjectConfigBytes,
@@ -61,10 +69,21 @@ import HostBootstrap.Config.Schema (
 import HostBootstrap.Config.Vocab (Production)
 import qualified HostBootstrap.Config.Vocab as V
 import qualified HostBootstrap.Context as Context
+import HostBootstrap.Digest (sha256Hex)
+import HostBootstrap.HostConfig (HostConfig (..))
+import HostBootstrap.HostTool (HostTool (Docker, Incus, Lima, Wsl), mkAbsExe)
+import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, WindowsCpu))
+import HostBootstrap.Substrate.Provider (HostPathShare (HostPathShare), ProviderKind (ProviderLima), VMHandles (VMHandles), selectProviderKind)
+import qualified HostBootstrap.Substrate.Provider.Backend as ProviderBackend
+import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
+import qualified HostBootstrap.Substrate.Provider.GuestVm as GuestVm
+import qualified HostBootstrap.Substrate.Provider.Ownership as ProviderOwnership
+import qualified HostBootstrap.Substrate.Provider.Reconcile as ProviderReconcile
 import HostBootstrap.Handoff (
     HandoffBindingInput (..),
     HandoffPayloadKind (NarrowedProjectConfig),
     childConfigDigest,
+    frameWire,
     freshChallenge,
     grantHandoff,
     handoffInstalledProject,
@@ -125,6 +144,7 @@ import HostBootstrap.Lift (
     inContainer,
     localContext,
  )
+import qualified HostBootstrap.Lift.Context as ProbeLift
 import HostBootstrap.ProjectPlan (
     PlanDraft,
     PlanError (..),
@@ -192,6 +212,7 @@ import HostBootstrap.ProjectPlan.Construct (
     withRecoveredProductionProjectPlan,
     withRecoveredProductionProjectPlanInputs,
  )
+import TestFinalizedSpec (refuseForwardChildPlan)
 import HostBootstrap.ProjectPlan.Snapshot (
     BoundPlanSnapshot,
     PlanDigestBinding,
@@ -227,12 +248,14 @@ import HostBootstrap.Protected (
     withProtectedEntry,
  )
 import qualified HostBootstrap.Reconcile as Reconcile (
+    ReconcileError (Conflict, Failure, Unsupported),
     canonicalPlanSnapshotBytes,
     canonicalPlanSnapshotConfigDigest,
     canonicalPlanSnapshotDigest,
     canonicalPlanSnapshotFormatVersion,
     canonicalPlanSnapshotRoot,
     canonicalPlanSnapshotSpecDigest,
+    resourceRecordKey,
  )
 import HostBootstrap.RoleLifecycle (
     DeclaredEffects (NoEffects),
@@ -254,8 +277,12 @@ import HostBootstrap.Service (
     singletonServiceRegistry,
  )
 import HostBootstrap.Service.Program (ServiceBackend (..))
+import HostBootstrap.Step (recoveryObserverIdentity, recoveryObserverRevision)
 import HostBootstrap.Step (
     CoreStepId (ContextInitId, EnsureToolId),
+    ProviderProbeDescription (..),
+    ShareProbeDescription (..),
+    AliasProbeDescription (..),
     ReversePolicy (PreserveOnReverse, ProjectManagedReverse),
     Step,
     StepFrame (StepFrame),
@@ -267,7 +294,18 @@ import HostBootstrap.Step (
     contextInitStep,
     copySourceStep,
     declaresChartWorkloadResource,
+    declaresEffectPreflight,
     declaresProviderResource,
+    declaresProviderProbe,
+    declaresShareProbe,
+    declaresAliasProbe,
+    declaresClusterObjectProbe,
+    ClusterObjectProbeDescription (..),
+    declaresEmptyChildFrame,
+    DelayedEffectGuarantee (NoDelayedEffect),
+    RecoveryObservation (RecoveryEffectAbsent),
+    mkRecoveryObserver,
+    observesRecoveryWith,
     declaresServiceActivation,
     deployChartStep,
     deployKindStep,
@@ -282,6 +320,7 @@ import HostBootstrap.Step (
     providerResourceAtCurrentFrame,
     providerResourceAtImmediateChild,
     stepPlanSteps,
+    stepProviderProbeDescriptions,
  )
 import SourceGuard (
     fieldModules,
@@ -289,11 +328,17 @@ import SourceGuard (
     significantHaskellLineCount,
  )
 import qualified SourceGuard
-import System.Directory (createDirectory, doesDirectoryExist)
+import System.Directory (createDirectory, createFileLink, doesDirectoryExist, doesPathExist, makeAbsolute, removeFile, renameDirectory)
+import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), currentSelfRef)
+import HostBootstrap.Ownership.Row (ownershipRowForHost)
+import HostBootstrap.Ownership.Shipped (ShippedAct (ShipObserveSymbolicLink, ShipTakeSymbolicLink), ShippedOutcome (ShippedRefused, ShippedSymbolicLinkCreated), runShippedOwnership)
+import qualified HostBootstrap.Substrate.Provider.Alias as ProviderAlias
+import System.Environment (getExecutablePath)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (takeFileName, (</>))
 import System.IO.Error (ioeGetErrorType)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Info (os)
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (
@@ -311,7 +356,168 @@ tests :: TestTree
 tests =
     testGroup
         "indexed project-plan foundation"
-        [ testCase "bare plan refuses absent Harness run and pins kubectl to its plan" $
+        [ testCase "prepared gate codecs round-trip and reject malformed fields" $ do
+            let frame bytes = encodedWord64 (fromIntegral (ByteString.length bytes)) <> bytes
+                fields = ["hostbootstrap/prepared-node-gate", encodedWord64 2, "plan", "catalog", "frame", "session", "operation", encodedWord64 3, encodedWord64 4, encodedWord64 5]
+                pack = ByteString.concat . map frame
+                unfenced = pack fields
+                replaceAt index value xs = take index xs ++ [value] ++ drop (index + 1) xs
+                refuse candidate detail = PreparedCodec.readFencedPreparedGatePackageKernel candidate @?= Left ("prepared node gate package: " <> detail)
+                list values = pack (["hostbootstrap/prepared-node-gates", encodedWord64 1, encodedWord64 (fromIntegral (length values))] ++ values)
+            let routed = PreparedCodec.mintRoutedPreparedGate
+                    (PreparedCodec.GatePlanDigest "plan") (PreparedCodec.GateOperationKey "operation")
+                    (PreparedCodec.GateSession "session") (PreparedCodec.GateSupersessionGeneration 3)
+                    (PreparedCodec.GateFence 9) (PreparedCodec.GateAttempt 4) (PreparedCodec.GateJournalVersion 5)
+            PreparedCodec.preparedGateFence routed @?= 9
+            PreparedCodec.preparedGateSupersessionGeneration routed @?= Just 3
+            PreparedCodec.preparedGateEffect routed @?= Nothing
+            let effect = PreparedCodec.bindPreparedGateEffect
+                    (PreparedCodec.GateUnknownPhase "ReservationOutcomeUnknown")
+                    (PreparedCodec.GateCallDigest "call-digest") routed
+            PreparedCodec.preparedGateEffect effect @?= Just
+                (PreparedCodec.GateUnknownPhase "ReservationOutcomeUnknown", PreparedCodec.GateCallDigest "call-digest")
+            let fenced = PreparedCodec.renderFencedPreparedGatePackageKernel
+                    (PreparedCodec.GatePlanDigest "plan") (PreparedCodec.GateCatalogIdentity "catalog")
+                    (PreparedCodec.GateFrame "frame") (PreparedCodec.GateSession "session")
+                    (PreparedCodec.GateOperationKey "operation") (PreparedCodec.GateSupersessionGeneration 3)
+                    (PreparedCodec.GateFence 9) (PreparedCodec.GateAttempt 4) (PreparedCodec.GateJournalVersion 5)
+                fencedFields = ["hostbootstrap/prepared-node-gate", encodedWord64 3, "plan", "catalog", "frame", "session", "operation", encodedWord64 3, encodedWord64 9, encodedWord64 4, encodedWord64 5]
+                rejectFence bytes = case PreparedCodec.readFencedPreparedGatePackageKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure "invalid fenced package was accepted"
+            fenced @?= pack fencedFields
+            PreparedCodec.readFencedPreparedGatePackageKernel fenced @?= Right ("plan", "catalog", "frame", "session", "operation", 3, 9, 4, 5)
+            let phase = PreparedCodec.GateUnknownPhase "ReservationOutcomeUnknown"
+                digest = PreparedCodec.GateCallDigest "call-digest"
+                effectFields = replaceAt 1 (encodedWord64 4) fencedFields ++ ["ReservationOutcomeUnknown", "call-digest"]
+                rejectEffect bytes = case PreparedCodec.readEffectPreparedGatePackageKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure "invalid effect package was accepted"
+            effectPackage <- expectRight (PreparedCodec.renderEffectPreparedGatePackageKernel fenced phase digest)
+            effectPackage @?= pack effectFields
+            PreparedCodec.readEffectPreparedGatePackageKernel effectPackage @?= Right (fenced, phase, digest)
+            rejectEffect (pack (replaceAt 1 (encodedWord64 3) effectFields))
+            rejectEffect (pack (replaceAt 11 "" effectFields))
+            rejectEffect (pack (replaceAt 12 "" effectFields))
+            rejectEffect (pack (replaceAt 12 (ByteString.singleton 255) effectFields))
+            rejectEffect (pack (replaceAt 12 (ByteString.replicate 4097 97) effectFields))
+            rejectEffect (pack (init effectFields))
+            rejectEffect (effectPackage <> "tail")
+            rejectEffect (pack (replaceAt 8 (encodedWord64 0) effectFields))
+            let proposals =
+                    [ (PreparedCodec.GateOperationKey "operation", phase, digest)
+                    , (PreparedCodec.GateOperationKey "projection", PreparedCodec.GateUnknownPhase "EffectOutcomeUnknown", PreparedCodec.GateCallDigest "second-digest")
+                    ]
+                proposalFields = ["hostbootstrap/effect-proposals", encodedWord64 1, encodedWord64 2, "operation", "ReservationOutcomeUnknown", "call-digest", "projection", "EffectOutcomeUnknown", "second-digest"]
+                rejectProposal bytes = case PreparedCodec.readEffectProposalsKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure "invalid effect proposal was accepted"
+            proposalBytes <- expectRight (PreparedCodec.renderEffectProposalsKernel proposals)
+            proposalBytes @?= pack proposalFields
+            PreparedCodec.readEffectProposalsKernel proposalBytes @?= Right proposals
+            rejectProposal (pack (replaceAt 1 (encodedWord64 2) proposalFields))
+            rejectProposal (pack (replaceAt 2 (encodedWord64 0) proposalFields))
+            rejectProposal (pack (replaceAt 2 (encodedWord64 257) proposalFields))
+            rejectProposal (pack (replaceAt 6 "operation" proposalFields))
+            rejectProposal (pack (replaceAt 8 "" proposalFields))
+            rejectProposal (pack (replaceAt 8 (ByteString.singleton 255) proposalFields))
+            rejectProposal (pack (replaceAt 8 "bad\tdigest" proposalFields))
+            rejectProposal (pack (replaceAt 8 (ByteString.replicate 4097 97) proposalFields))
+            rejectProposal (pack (init proposalFields))
+            rejectProposal (proposalBytes <> "tail")
+            rejectFence (pack (take 8 fencedFields ++ drop 9 fencedFields))
+            rejectFence (pack (replaceAt 8 (ByteString.replicate 7 0) fencedFields))
+            rejectFence (pack (replaceAt 8 (encodedWord64 0) fencedFields))
+            rejectFence (pack (replaceAt 7 (encodedWord64 0) fencedFields))
+            rejectFence (pack (replaceAt 9 (encodedWord64 0) fencedFields))
+            rejectFence (pack (replaceAt 10 (encodedWord64 0) fencedFields))
+            rejectFence (fenced <> "tail")
+            absent <- expectRight (RootedCodec.renderReversePreparedGateEnvelopeKernel fenced Nothing)
+            present <- expectRight (RootedCodec.renderReversePreparedGateEnvelopeKernel fenced (Just "prior-resource"))
+            RootedCodec.readReversePreparedGateEnvelopeKernel absent @?= Right (fenced, Nothing)
+            RootedCodec.readReversePreparedGateEnvelopeKernel present @?= Right (fenced, Just "prior-resource")
+            let rejectEnvelope bytes = case RootedCodec.readReversePreparedGateEnvelopeKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure "invalid reverse gate envelope was accepted"
+            rejectEnvelope (present <> "tail")
+            rejectEnvelope (ByteString.take (ByteString.length present - 1) present)
+            rejectEnvelope (pack ["wrong", fenced, frame "absent"])
+            rejectEnvelope (pack ["hostbootstrap/reverse-prepared-gate/v1", unfenced, frame "absent"])
+            rejectEnvelope (pack ["hostbootstrap/reverse-prepared-gate/v1", fenced, frame "unknown"])
+            rejectEnvelope (pack ["hostbootstrap/reverse-prepared-gate/v1", fenced, frame "present" <> frame ""])
+            rejectEnvelope (ByteString.replicate (6 * 1024 * 1024 + 1) 0)
+            assertBool "an unfenced gate cannot be wrapped" (case RootedCodec.renderReversePreparedGateEnvelopeKernel unfenced Nothing of Left _ -> True; Right _ -> False)
+            -- The recovery ask wraps one exact fenced gate; the answer is a closed, canonical record.
+            observeEnvelope <- expectRight (RootedCodec.renderRecoveryObserveEnvelopeKernel fenced)
+            RootedCodec.readRecoveryObserveEnvelopeKernel observeEnvelope @?= Right fenced
+            let rejectObserve label bytes = case RootedCodec.readRecoveryObserveEnvelopeKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure ("an invalid recovery observe envelope was accepted: " <> label)
+            rejectObserve "trailing" (observeEnvelope <> "tail")
+            rejectObserve "truncated" (ByteString.take (ByteString.length observeEnvelope - 1) observeEnvelope)
+            rejectObserve "foreign domain" (pack ["hostbootstrap/reverse-prepared-gate/v1", fenced])
+            rejectObserve "unfenced gate" (pack ["hostbootstrap/recovery-observe/v1", unfenced])
+            rejectObserve "extra field" (pack ["hostbootstrap/recovery-observe/v1", fenced, "extra"])
+            assertBool "an unfenced gate cannot be asked to observe" (case RootedCodec.renderRecoveryObserveEnvelopeKernel unfenced of Left _ -> True; Right _ -> False)
+            let observation result = RootedCodec.RootedRecoveryObservation "operation" 3 4 "vm-inspector" 2 result
+                results = [RootedCodec.RootedRecoveryAbsent, RootedCodec.RootedRecoveryPresent "vm-1", RootedCodec.RootedRecoveryForeign "stranger", RootedCodec.RootedRecoveryInconclusive "may still land"]
+            forM_ results $ \result -> do
+                wire <- expectRight (RootedCodec.renderRootedRecoveryObservationKernel (observation result))
+                RootedCodec.readRootedRecoveryObservationKernel wire @?= Right (observation result)
+            absentWire <- expectRight (RootedCodec.renderRootedRecoveryObservationKernel (observation RootedCodec.RootedRecoveryAbsent))
+            let recoveryFields tag detail = ["hostbootstrap/rooted-recovery-observation/v1", "operation", encodedWord64 3, encodedWord64 4, "vm-inspector", encodedWord64 2, tag, detail]
+                rejectRecord label bytes = case RootedCodec.readRootedRecoveryObservationKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure ("an invalid recovery observation was accepted: " <> label)
+            pack (recoveryFields "absent" "") @?= absentWire
+            rejectRecord "trailing" (absentWire <> "tail")
+            rejectRecord "foreign domain" (pack (replaceAt 0 "hostbootstrap/rooted-reverse-observation/v1" (recoveryFields "absent" "")))
+            rejectRecord "missing field" (pack (take 7 (recoveryFields "absent" "")))
+            rejectRecord "zero record version" (pack (replaceAt 2 (encodedWord64 0) (recoveryFields "absent" "")))
+            rejectRecord "noncanonical attempt width" (pack (replaceAt 3 (ByteString.replicate 7 0) (recoveryFields "absent" "")))
+            rejectRecord "detail on absence" (pack (recoveryFields "absent" "detail"))
+            rejectRecord "empty presence identity" (pack (recoveryFields "present" ""))
+            rejectRecord "unknown result" (pack (recoveryFields "maybe" "x"))
+            rejectRecord "non-UTF-8 observer" (pack (replaceAt 4 (ByteString.singleton 255) (recoveryFields "absent" "")))
+            assertBool "a zero revision cannot be rendered"
+                (case RootedCodec.renderRootedRecoveryObservationKernel (RootedCodec.RootedRecoveryObservation "operation" 3 4 "vm-inspector" 0 RootedCodec.RootedRecoveryAbsent) of Left _ -> True; Right _ -> False)
+            let admit = RootedCodec.admitRootedRecoveryObservationKernel
+            admit "operation" 3 4 "vm-inspector" 2 (observation (RootedCodec.RootedRecoveryPresent "vm-1")) @?= Right (RootedCodec.RootedRecoveryPresent "vm-1")
+            admit "other-operation" 3 4 "vm-inspector" 2 (observation RootedCodec.RootedRecoveryAbsent) @?= Left "the recovery observation names another operation"
+            admit "operation" 9 4 "vm-inspector" 2 (observation RootedCodec.RootedRecoveryAbsent) @?= Left "the recovery observation answers another record version or attempt"
+            admit "operation" 3 9 "vm-inspector" 2 (observation RootedCodec.RootedRecoveryAbsent) @?= Left "the recovery observation answers another record version or attempt"
+            admit "operation" 3 4 "other-inspector" 2 (observation RootedCodec.RootedRecoveryAbsent) @?= Left "the recovery observation came from another observer or revision"
+            admit "operation" 3 4 "vm-inspector" 3 (observation RootedCodec.RootedRecoveryAbsent) @?= Left "the recovery observation came from another observer or revision"
+            -- The shipped act names exact plan coordinates and carries the frame's canonical config.
+            let actRequest = RootedCodec.RecoveryObservationRequest "production" 7 "demo" "store" "digest" "vm-project-container-2" "project:container" 3 4 "vm-inspector" 2 "config bytes"
+            act <- expectRight (RootedCodec.renderRecoveryObservationRequestKernel actRequest)
+            RootedCodec.readRecoveryObservationRequestKernel act @?= Right actRequest
+            RootedCodec.isRecoveryObservationRequestKernel act @?= True
+            RootedCodec.isRecoveryObservationRequestKernel observeEnvelope @?= False
+            RootedCodec.isRecoveryObservationRequestKernel "hostbootstrap/ownership/request/v1" @?= False
+            let rejectAct label bytes = case RootedCodec.readRecoveryObservationRequestKernel bytes of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure ("an invalid recovery observation act was accepted: " <> label)
+            rejectAct "trailing" (act <> "tail")
+            rejectAct "truncated" (ByteString.take (ByteString.length act - 1) act)
+            rejectAct "foreign domain" (pack ["hostbootstrap/rooted-recovery-observation/v1", "production"])
+            assertBool "an empty child config cannot be shipped"
+                (case RootedCodec.renderRecoveryObservationRequestKernel (RootedCodec.RecoveryObservationRequest "production" 7 "demo" "store" "digest" "frame" "operation" 3 4 "vm-inspector" 2 "") of Left _ -> True; Right _ -> False)
+            assertBool "a zero profile epoch cannot be shipped"
+                (case RootedCodec.renderRecoveryObservationRequestKernel (RootedCodec.RecoveryObservationRequest "production" 0 "demo" "store" "digest" "frame" "operation" 3 4 "vm-inspector" 2 "config") of Left _ -> True; Right _ -> False)
+            PreparedCodec.readPreparedGatePackagesKernel (PreparedCodec.renderPreparedGatePackagesKernel [fenced, fenced]) @?= Right [fenced, fenced]
+            refuse (pack (replaceAt 0 "wrong" fencedFields)) "has the wrong gate package domain"
+            refuse (pack (replaceAt 1 (encodedWord64 1) fencedFields)) "has the wrong gate package version"
+            refuse (fenced <> "x") "has trailing gate package bytes"
+            refuse (pack (replaceAt 7 (ByteString.replicate 7 0) fencedFields)) "has a noncanonical supersession generation width"
+            refuse (pack (replaceAt 6 "" fencedFields)) "has an empty operation key"
+            refuse (pack (replaceAt 6 (ByteString.singleton 255) fencedFields)) "has a operation key that is not valid UTF-8"
+            PreparedCodec.readPreparedGatePackagesKernel (pack ["hostbootstrap/prepared-node-gates", encodedWord64 1, encodedWord64 2, fenced])
+                @?= Left "prepared node gate package: does not carry the number of gate packages it declares"
+            PreparedCodec.readPreparedGatePackagesKernel (list (replicate 257 "x"))
+                @?= Left "prepared node gate package: carries more gate packages than one node may project"
+            refuse (pack (replaceAt 6 (ByteString.replicate 4097 65) fencedFields)) "declares an oversized gate frame"
+        , testCase "bare plan refuses absent Harness run and pins kubectl to its plan" $
             withSystemTempDirectory "hostbootstrap-bare-values" $ \directory -> do
                 cfg <- expectRight (Bare.bareInit "bare" directory (Fixture.initArgsFor Context.HostOrchestrator) :: Either String (Bare.BareConfig ()))
                 rooted <- withCanonicalProjectRoot directory directory $ \root ->
@@ -326,10 +532,26 @@ tests =
                         Right (Left EmptyStepPlan) -> pure ()
                         _ -> assertFailure "bare plan accepted an invalid Harness run key"
                 accepted <- withCanonicalProjectRoot directory directory $ \root ->
-                    pure (Bare.bareStepPlan "bare" root (Bare.bareWithRunForTesting "run-42" cfg))
+                    pure (canonicalProjectRootPath root, Bare.bareStepPlan "bare" root (Bare.bareWithRunForTesting "run-42" cfg))
                 case accepted of
-                    Right (Right _) -> pure ()
+                    Right (rootPath, Right graph) -> do
+                        let firstStep = NonEmpty.head (stepPlanSteps graph)
+                        case stepProviderProbeDescriptions firstStep of
+                            [DirectProviderProbe observed image] -> do
+                                observed @?= rootPath
+                                assertBool "the declared node image is not empty" (not (Text.null image))
+                            _ -> assertFailure "the bare provider has no exact Direct description"
                     _ -> assertFailure "bare plan refused a valid Harness run key"
+                changed <- withCanonicalProjectRoot directory directory $ \root ->
+                    pure (Bare.bareStepPlan "bare" root (Bare.bareWithNodeImageForTesting "changed-image" (Bare.bareWithRunForTesting "run-42" cfg)))
+                case changed of
+                    Right (Right graph) -> case stepProviderProbeDescriptions (NonEmpty.head (stepPlanSteps graph)) of
+                        [DirectProviderProbe _ image] -> image @?= "changed-image"
+                        _ -> assertFailure "the changed bare provider has no Direct description"
+                    _ -> assertFailure "the bare plan refused a changed provider image"
+                case refuseForwardChildPlan cfg (ParentFrameId "parent") (ChildFrameId "child") localContext of
+                    Left failure -> failure @?= "forward-child projection is unavailable"
+                    Right _ -> assertFailure "the bare projector accepted a child"
                 let plan = resolvePlan "bare" directory (fixtureHarnessProfile "run-test")
                     expected = ["--kubeconfig", clusterKubeconfigPath plan]
                 Bare.bareKubectlArguments plan ["version", "-o", "json"] @?= expected <> ["version", "-o", "json"]
@@ -351,7 +573,6 @@ tests =
             Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) ->
                 withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
                     withFinalizedProjectSpec
-                        ProductionScope
                         baseCodec
                         fixtureServiceRegistry
                         (\_ _ -> Right jointFinalizationPlan)
@@ -444,6 +665,48 @@ tests =
                         | otherwise = Right singletonPlan
                 drafts <- expectRight (planDraftsFromValidatedBuilder root config build)
                 expectPlanAccepted (withProjectPlan profile root config drafts (const ()))
+        , testCase "effect preflight is bound to the admitted node" $
+            withFoundation $ \_codec profile root config -> do
+                calls <- newIORef (0 :: Int)
+                let host = HostConfig (Substrate LinuxCpu Amd64) Map.empty
+                    action _ = modifyIORef' calls (+ 1) >> pure StepChanged
+                    base = contextInitStep "context" (StepFrame "host" "Host") action
+                    expected = [("core:context-init", "EffectOutcomeUnknown", "exact-digest")]
+                    plain = expectStepPlan [base]
+                    valid = expectStepPlan [declaresEffectPreflight (const (Right expected)) base]
+                    foreignPlan = expectStepPlan [declaresEffectPreflight (const (Right [("other", "EffectOutcomeUnknown", "exact-digest")])) base]
+                    malformed = expectStepPlan [declaresEffectPreflight (const (Right [("core:context-init", "EffectOutcomeUnknown", "")])) base]
+                plainSnapshot <- snapshotFor profile root config plain
+                validSnapshot <- snapshotFor profile root config valid
+                stablePlanSnapshotBytes plainSnapshot @?= stablePlanSnapshotBytes validSnapshot
+                withAdmittedProjectPlan profile root config plain $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [node] -> case TestLifecyclePlan.preflightPlannedStepKernel node host of
+                            Left failure -> failure @?= "planned effect preflight: declaration is missing"
+                            Right _ -> assertFailure "a missing preflight was admitted"
+                        _ -> assertFailure "expected one planned node"
+                withAdmittedProjectPlan profile root config foreignPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [node] -> case TestLifecyclePlan.preflightPlannedStepKernel node host of
+                            Left failure -> failure @?= "planned effect preflight: operations differ from the admitted node"
+                            Right _ -> assertFailure "a foreign operation was admitted"
+                        _ -> assertFailure "expected one planned node"
+                withAdmittedProjectPlan profile root config malformed $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [node] -> case TestLifecyclePlan.preflightPlannedStepKernel node host of
+                            Left _ -> pure ()
+                            Right _ -> assertFailure "a malformed effect was admitted"
+                        _ -> assertFailure "expected one planned node"
+                withAdmittedProjectPlan profile root config valid $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [node] -> do
+                            proposal <- expectRight (TestLifecyclePlan.preflightPlannedStepKernel node host)
+                            TestLifecyclePlan.withPlannedEffectProposalKernel proposal $ \operation frame wire -> do
+                                (operation, frame) @?= ("core:context-init", "host")
+                                PreparedCodec.readEffectProposalsKernel wire @?= Right
+                                    [(PreparedCodec.GateOperationKey "core:context-init", PreparedCodec.GateUnknownPhase "EffectOutcomeUnknown", PreparedCodec.GateCallDigest "exact-digest")]
+                        _ -> assertFailure "expected one planned node"
+                readIORef calls >>= (@?= 0)
         , testCase "fresh admission accepts the same authoritative graph deterministically" $
             withFoundation $ \_codec profile root config -> do
                 drafts <- draftsFor root config singletonPlan
@@ -510,6 +773,7 @@ tests =
                                                     ( \configHandoff ->
                                                         withChildProjectPlan
                                                             ProjectUp
+                                                            "host"
                                                             configHandoff
                                                             wire
                                                             childConfig
@@ -533,6 +797,86 @@ tests =
                             )
                     (observed, expected) <- expectRight brokered
                     observed @?= expected
+        , testCase "child admission refuses a running frame other than the signed child frame" $
+            withSnapshotPlan singletonPlan $
+                \store project rootAuthority _unbound spec root parentConfig _parentDrafts parentPlan -> do
+                    let codec = finalizedProjectCodec spec
+                        payload =
+                            renderScopedProjectConfigBytes
+                                codec
+                                (validatedConfigValue parentConfig)
+                        planDigest = stablePlanSnapshotDigest (renderSnapshot parentPlan)
+                        input =
+                            HandoffBindingInput
+                                { requestedSpecDigest = validatedConfigSpecDigest parentConfig
+                                , requestedPayloadKind = NarrowedProjectConfig
+                                , requestedPlanRevision = planDigest
+                                , requestedParentFrame = "parent-frame"
+                                , requestedChildFrame = "host"
+                                , requestedChildConfigDigest = childConfigDigest payload
+                                , requestedPhase = "execute"
+                                }
+                    signingKey <-
+                        expectRight
+                            (projectSigningKeyFromBytes (ByteString.replicate 32 201))
+                    brokered <-
+                        withRootBroker
+                            (productionHandoffScope project)
+                            store
+                            signingKey
+                            rootAuthority
+                            ( \broker -> do
+                                (relay, token) <- expectRight =<< registerHandoffEdge broker input
+                                offer <- expectRight (mkHandoffOffer relay payload token)
+                                challenge <- freshChallenge
+                                grant <- expectRight =<< grantHandoff broker offer challenge
+                                handoff <-
+                                    expectRight
+                                        ( verifyHandoff
+                                            (rootBrokerVerificationKey broker)
+                                            (handoffOfferWire offer)
+                                            (relayBinding relay)
+                                            challenge
+                                            grant
+                                        )
+                                authenticated <- expectRight (verifiedConfigPayload handoff)
+                                configAdmission <-
+                                    withAuthenticatedConfigWire codec authenticated $ \wire childConfig -> do
+                                        childDrafts <- expectRight (projectPlanDrafts spec root childConfig)
+                                        refined <-
+                                            expectRight
+                                                ( withVerifiedConfigHandoff
+                                                    ProjectUp
+                                                    handoff
+                                                    wire
+                                                    childConfig
+                                                    ( \configHandoff ->
+                                                        withChildProjectPlan
+                                                            ProjectUp
+                                                            "other-frame"
+                                                            configHandoff
+                                                            wire
+                                                            childConfig
+                                                            childDrafts
+                                                            ( \authority childPlan _digestBinding ->
+                                                                ( childPlanAuthorityBinding authority
+                                                                , stablePlanSnapshotDigest (renderSnapshot childPlan)
+                                                                , projectPlanProjectName childPlan
+                                                                , projectPlanProfileName childPlan
+                                                                )
+                                                            )
+                                                    )
+                                                )
+                                        pure refined
+                                observed <- expectRight configAdmission
+                                handoffScope (relayBinding relay) @?= "Production"
+                                pure
+                                    ( observed
+                                    , (relayBinding relay, planDigest, installedProjectName project, "production" :: Text.Text)
+                                    )
+                            )
+                    (observed, _expected) <- expectRight brokered
+                    observed @?= Left (AuthorityMalformedBinding "child plan admission: running frame other-frame differs from authenticated child frame host")
         , testCase "child admission refuses a signed revision other than the stable child plan digest" $
             withSnapshotPlan singletonPlan $
                 \store project rootAuthority _unbound spec root parentConfig _parentDrafts parentPlan -> do
@@ -566,7 +910,7 @@ tests =
                                     childDrafts <- expectRight (projectPlanDrafts spec root childConfig)
                                     refined <- expectRight
                                         (withVerifiedConfigHandoff ProjectUp handoff wire childConfig $ \configHandoff ->
-                                            withChildProjectPlan ProjectUp configHandoff wire childConfig childDrafts $
+                                            withChildProjectPlan ProjectUp "host" configHandoff wire childConfig childDrafts $
                                                 \authority childPlan _digestBinding -> do
                                                     modifyIORef' callbacks (+ 1)
                                                     pure
@@ -600,7 +944,7 @@ tests =
         , testCase "an owned Harness config edge admits the exact run profile and child authority" $
             Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) ->
                 withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
-                    withFinalizedProjectSpec ProductionScope baseCodec fixtureServiceRegistry
+                    withFinalizedProjectSpec baseCodec fixtureServiceRegistry
                         (\_ _ -> Right singletonPlan) Fixture.refusingForwardChildPlan $ \productionSpec ->
                             withSystemTempDirectory "hostbootstrap-harness-child-plan" $ \directory -> do
                                 rooted <- withCanonicalProjectRoot directory directory $ \ownershipRoot ->
@@ -655,7 +999,7 @@ tests =
                                                                                             childDrafts <- expectRight (projectPlanDrafts spec root childConfig)
                                                                                             refined <- expectRight
                                                                                                 (withVerifiedConfigHandoff ProjectUp handoff wire childConfig $ \configHandoff ->
-                                                                                                    withChildProjectPlan ProjectUp configHandoff wire childConfig childDrafts $
+                                                                                                    withChildProjectPlan ProjectUp "host" configHandoff wire childConfig childDrafts $
                                                                                                         \authority childPlan _digestBinding ->
                                                                                                             ( childPlanAuthorityBinding authority
                                                                                                             , stablePlanSnapshotDigest (renderSnapshot childPlan)
@@ -825,6 +1169,998 @@ tests =
                             withPlannedResourceOfKind plan ObjectStoreResourceKind (plannedStepOperationKey providerNode) (const ())
                                 @?= Left (PlanResourceKindMismatch "core:deploy-vm" "object store")
                         other -> assertFailure ("expected six resource nodes, got " <> show (length other))
+        , testCase "root resource prerequisites retain only the admitted ordered resource prefix" $
+            withFoundation $ \_codec profile root config -> do
+                let project plan node = fmap (map (\(key, frame) -> (Text.pack (operationKeyText key), frame)))
+                        (TestLifecyclePlan.plannedResourceDependencyFramesKernel plan node)
+                withAdmittedProjectPlan profile root config topologyFixturePlan $ \plan ->
+                    map (project plan) (NonEmpty.toList (forward plan)) @?= [Right [], Right []]
+                withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_provider, share, _docker, _objectStore, _registry, cluster] -> do
+                            project plan share @?= Right [("core:deploy-vm", "host")]
+                            project plan cluster @?= Right
+                                [ ("core:deploy-vm", "host")
+                                , ("core:copy-source", "host")
+                                , ("core:ensure-docker", "host")
+                                , ("project:deploy-object-store", "host")
+                                , ("project:deploy-registry", "host")
+                                ]
+                        other -> assertFailure ("expected six resource nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config topologyFixturePlan $ \plan ->
+                    withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \foreignPlan -> do
+                        let foreignNode = NonEmpty.head (forward foreignPlan)
+                            expectedDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                            foreignDigest = stablePlanSnapshotDigest (renderSnapshot foreignPlan)
+                        assertBool "the independently admitted plans differ" (expectedDigest /= foreignDigest)
+                        TestLifecyclePlan.plannedResourceDependencyFramesKernel plan (unsafeCoerce foreignNode)
+                            @?= Left (PlanResourceBindingMismatch "resource prerequisite plan" expectedDigest foreignDigest)
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    withAdmittedProjectPlan profile root config unprojectedResourcePlan $ \foreignPlan -> do
+                        let node = NonEmpty.last (forward plan)
+                            foreignNode = NonEmpty.last (forward foreignPlan)
+                            expectedDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                            foreignDigest = stablePlanSnapshotDigest (renderSnapshot foreignPlan)
+                        plannedStepOperationKey node @?= plannedStepOperationKey foreignNode
+                        plannedStepDependencyOperations node @?= plannedStepDependencyOperations foreignNode
+                        assertBool "the declared synthetic operation changes the admitted plan" (expectedDigest /= foreignDigest)
+                        TestLifecyclePlan.plannedResourceDependencyFramesKernel plan (unsafeCoerce foreignNode)
+                            @?= Left (PlanResourceBindingMismatch "resource prerequisite plan" expectedDigest foreignDigest)
+        , testCase "root probe identity does not attest an opaque step callback" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "host" "Host"
+                    planFor outcome = expectStepPlan [deployVMStep "provider" frame (const (pure outcome))]
+                    probe plan = do
+                        let node = NonEmpty.head (forward plan)
+                        (identity, _) <- TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node "core:deploy-vm"
+                        pure (TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity)
+                withAdmittedProjectPlan profile root config (planFor StepChanged) $ \first ->
+                    withAdmittedProjectPlan profile root config (planFor StepUnchanged) $ \second -> do
+                        stablePlanSnapshotDigest (renderSnapshot first) @?= stablePlanSnapshotDigest (renderSnapshot second)
+                        probe first @?= probe second
+        , testCase "provider probe descriptions are bound to the admitted plan" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "host" "Host"
+                    planFor image = expectStepPlan [declaresProviderProbe (DirectProviderProbe (canonicalProjectRootPath root) image) (deployVMStep "provider" frame (const (pure StepChanged)))]
+                withAdmittedProjectPlan profile root config (planFor "image-a") $ \first ->
+                    withAdmittedProjectPlan profile root config (planFor "image-b") $ \second -> do
+                        let firstDigest = stablePlanSnapshotDigest (renderSnapshot first)
+                            secondDigest = stablePlanSnapshotDigest (renderSnapshot second)
+                            snapshot = renderSnapshot first
+                        assertBool "provider target changes the snapshot digest" (firstDigest /= secondDigest)
+                        admitted <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) firstDigest (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanResourceMembersKernel admitted)
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanRecoveryFramesKernel admitted)
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel first (NonEmpty.head (forward first)) "core:deploy-vm")
+                        (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel second (NonEmpty.head (forward second)) "core:deploy-vm")
+                        TestLifecyclePlan.withRootProviderProbeDescriptionKernel first identity id @?= Right (DirectProviderProbe (canonicalProjectRootPath root) "image-a")
+                        TestLifecyclePlan.withRootProviderProbeDescriptionKernel first foreignIdentity id @?= Left (PlanResourceBindingMismatch "provider root probe plan" firstDigest secondDigest)
+                let wrongRoot = canonicalProjectRootPath root </> "other"
+                    mismatched = expectStepPlan [declaresProviderProbe (DirectProviderProbe wrongRoot "image") (deployVMStep "provider" frame (const (pure StepChanged)))]
+                drafts <- draftsFor root config mismatched
+                case withProjectPlan profile root config drafts (const ()) of
+                    Left (PlanResourceBindingMismatch "direct provider probe root" _ _) -> pure ()
+                    other -> assertFailure ("expected a direct provider root mismatch, got " <> show other)
+        , testCase "provider probe declarations reject malformed and duplicate descriptions" $ do
+            let frame = StepFrame "host" "Host"
+                provider = deployVMStep "provider" frame (const (pure StepChanged))
+                invalidDescriptions =
+                    [ DirectProviderProbe "relative" "image"
+                    , DirectProviderProbe "/root" ""
+                    , IncusProviderProbe "instance" "image" "guard" "/state" 0 "2GiB" "4GiB"
+                    , LimaProviderProbe "instance" 2 "2GiB" "4GiB" "/host" "relative"
+                    ]
+                duplicate = declaresProviderProbe (DirectProviderProbe "/root" "image") (declaresProviderProbe (DirectProviderProbe "/root" "image") provider)
+                unrelated = declaresProviderProbe (DirectProviderProbe "/root" "image") (contextInitStep "context" frame (const (pure StepChanged)))
+            forM_ invalidDescriptions $ \description ->
+                case mkStepPlan [declaresProviderProbe description provider] of
+                    Left (InvalidProviderProbeDescription _) -> pure ()
+                    _ -> assertFailure "malformed provider description was accepted"
+            case mkStepPlan [duplicate] of
+                Left (DuplicateProviderProbeDescription _ 2) -> pure ()
+                _ -> assertFailure "duplicate provider descriptions were accepted"
+            case mkStepPlan [unrelated] of
+                Left (ProviderProbeWithoutResource _) -> pure ()
+                _ -> assertFailure "provider description on an unrelated step was accepted"
+        , testCase "share probe descriptions bind the exact admitted share" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "host" "Host"
+                    share target = declaresShareProbe (ShareProbeDescription (canonicalProjectRootPath root) target) (copySourceStep "share" frame (const (pure StepChanged)))
+                    planFor target = expectStepPlan [deployVMStep "provider" frame (const (pure StepChanged)), share target]
+                withAdmittedProjectPlan profile root config (planFor "/guest-a") $ \first ->
+                    withAdmittedProjectPlan profile root config (planFor "/guest-b") $ \second -> do
+                        let snapshot = renderSnapshot first
+                            firstDigest = stablePlanSnapshotDigest snapshot
+                            secondDigest = stablePlanSnapshotDigest (renderSnapshot second)
+                        assertBool "the share target changes the plan digest" (firstDigest /= secondDigest)
+                        admitted <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) firstDigest (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanResourceMembersKernel admitted)
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanRecoveryFramesKernel admitted)
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel first (NonEmpty.last (forward first)) "core:copy-source")
+                        (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel second (NonEmpty.last (forward second)) "core:copy-source")
+                        TestLifecyclePlan.withRootShareProbeDescriptionKernel first identity id @?= Right (ShareProbeDescription (canonicalProjectRootPath root) "/guest-a")
+                        TestLifecyclePlan.withRootShareProbeDescriptionKernel first foreignIdentity id @?= Left (PlanResourceBindingMismatch "share root probe plan" firstDigest secondDigest)
+                        providerIdentity <- expectRight (TestLifecyclePlan.rootShareProviderProbeIdentityKernel first identity)
+                        let (_, _, providerKey, providerFamily) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel providerIdentity
+                        (providerKey, providerFamily) @?= ("core:deploy-vm", "provider")
+                        case TestLifecyclePlan.rootShareProviderProbeIdentityKernel first foreignIdentity of
+                            Left _ -> pure ()
+                            Right _ -> assertFailure "a foreign share selected a provider"
+                        withSystemTempDirectory "root-share-generation" $ \directory -> do
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "7", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            store <- expectRight =<< openProtectedStore (directory </> "store")
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                            retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            current <- expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedShareGenerationInEntryKernel protected identity retained)
+                            current @?= Right 7
+                            foreignResult <- expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedShareGenerationInEntryKernel protected foreignIdentity retained)
+                            foreignResult @?= Left "rooted probe prerequisite: resource identity differs"
+                case mkStepPlan [share "relative"] of
+                    Left (InvalidShareProbeDescription _) -> pure ()
+                    _ -> assertFailure "relative guest share was accepted"
+                case mkStepPlan [declaresShareProbe (ShareProbeDescription (canonicalProjectRootPath root) "/guest") (share "/guest")] of
+                    Left (DuplicateShareProbeDescription _ 2) -> pure ()
+                    _ -> assertFailure "duplicate share probes were accepted"
+                case mkStepPlan [declaresShareProbe (ShareProbeDescription (canonicalProjectRootPath root) "/guest") (deployVMStep "provider" frame (const (pure StepChanged)))] of
+                    Left (ShareProbeWithoutResource _) -> pure ()
+                    _ -> assertFailure "share probe on a provider was accepted"
+        , testCase "alias probe descriptions bind the exact admitted alias" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "host" "Host"
+                    aliasKey = "core:deploy-vm/core:copy-source/guest-alias"
+                    shared target = declaresShareProbe (ShareProbeDescription (canonicalProjectRootPath root) target)
+                        (projectsOperation (Text.unpack aliasKey) (copySourceStep "share" frame (const (pure StepChanged))))
+                    aliased alias target = declaresAliasProbe (AliasProbeDescription alias target) (shared "/guest")
+                    provider = deployVMStep "provider" frame (const (pure StepChanged))
+                withAdmittedProjectPlan profile root config (expectStepPlan [provider, aliased "/alias-a" "/guest"]) $ \first ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan [provider, aliased "/alias-b" "/guest"]) $ \second -> do
+                        let snapshot = renderSnapshot first
+                            firstDigest = stablePlanSnapshotDigest snapshot
+                        assertBool "the alias path changes the plan digest" (firstDigest /= stablePlanSnapshotDigest (renderSnapshot second))
+                        admitted <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) firstDigest (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanResourceMembersKernel admitted)
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanRecoveryFramesKernel admitted)
+                        let node = NonEmpty.last (forward first)
+                        (aliasIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel first node aliasKey)
+                        (shareIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel first node "core:copy-source")
+                        (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel second (NonEmpty.last (forward second)) aliasKey)
+                        TestLifecyclePlan.withRootAliasProbeDescriptionKernel first aliasIdentity id @?= Right (AliasProbeDescription "/alias-a" "/guest")
+                        TestLifecyclePlan.plannedRootAliasProbeIdentitiesKernel first @?= Right [aliasIdentity]
+                        TestLifecyclePlan.withRootAliasProbeDescriptionKernel first shareIdentity id @?= Left (PlanResourceKindMismatch "core:copy-source" "durable alias")
+                        case TestLifecyclePlan.withRootAliasProbeDescriptionKernel first foreignIdentity id of
+                            Left _ -> pure ()
+                            Right _ -> assertFailure "a foreign alias identity recovered a description"
+                withAdmittedProjectPlan profile root config (expectStepPlan [provider, shared "/guest"]) $ \unaliased ->
+                    TestLifecyclePlan.plannedRootAliasProbeIdentitiesKernel unaliased @?= Right []
+                case mkStepPlan [provider, declaresAliasProbe (AliasProbeDescription "/alias" "/guest") (copySourceStep "share" frame (const (pure StepChanged)))] of
+                    Left (AliasProbeWithoutShare _) -> pure ()
+                    _ -> assertFailure "an alias without its share was accepted"
+                case mkStepPlan [provider, aliased "/alias" "/other-guest"] of
+                    Left (InvalidAliasProbeDescription _) -> pure ()
+                    _ -> assertFailure "an alias linking elsewhere than its share was accepted"
+                case mkStepPlan [provider, aliased "relative" "/guest"] of
+                    Left (InvalidAliasProbeDescription _) -> pure ()
+                    _ -> assertFailure "a relative alias path was accepted"
+                case mkStepPlan [provider, declaresAliasProbe (AliasProbeDescription "/alias" "/guest") (aliased "/alias" "/guest")] of
+                    Left (DuplicateAliasProbeDescription _ 2) -> pure ()
+                    _ -> assertFailure "duplicate alias probes were accepted"
+        , conditionalCase ["ProjectPlanSpec", "rooted guest alias observation"] FakeProvider.localGuestAliasSupported
+            "rooted guest alias observation reports the bound link and refuses missing, replaced and removed aliases"
+            rootedAliasObservationRow rootedAliasObservationRefusal
+        , testCase "rooted guest alias observation refuses a Direct provider without a guest frame" $
+            withSystemTempDirectory "root-alias-direct" $ \directory -> do
+                let source = directory </> "source"
+                    frame = StepFrame "host" "Host"
+                    aliasKey = "core:deploy-vm/core:copy-source/guest-alias"
+                createDirectory source
+                self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+                withFoundationAt source $ \_codec profile root config -> do
+                    let sourcePath = canonicalProjectRootPath root
+                        provider = declaresProviderProbe (DirectProviderProbe sourcePath "image") (deployVMStep "provider" frame (const (pure StepChanged)))
+                        share = declaresAliasProbe (AliasProbeDescription "/alias" "/guest") $
+                            declaresShareProbe (ShareProbeDescription sourcePath "/guest") $
+                                projectsOperation (Text.unpack aliasKey) (copySourceStep "share" frame (const (pure StepChanged)))
+                    withAdmittedProjectPlan profile root config (expectStepPlan [provider, share]) $ \plan -> do
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) aliasKey)
+                        shareIdentity <- expectRight (TestLifecyclePlan.rootAliasShareProbeIdentityKernel plan identity)
+                        store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                        rows <- forM [identity, shareIdentity] (writeRootAliasRecord store)
+                        _ <- pure self
+                        case ProviderBackend.rootedAliasTarget store plan identity rows of
+                            Left (Reconcile.Unsupported _) -> pure ()
+                            other -> assertFailure ("expected the Direct alias refusal, got " <> either show (const "a target") other)
+        , testCase "rooted Docker observation reads its own frame's daemon and refuses stale, foreign, unready and child-frame daemons" $
+            withSystemTempDirectory "root-docker-observation" $ \directory -> do
+                let source = directory </> "source"
+                    frame = StepFrame "host" "Host"
+                    answer report status = FakeProvider.newDockerFixture directory (Just ["info", "--format", "{{.ID}}"]) report status
+                    refused label outcome = case outcome of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure label
+                createDirectory source
+                executable <- getExecutablePath
+                docker <- expectRight (mkAbsExe executable)
+                _ <- answer "daemon-a\n" 0
+                let host = HostConfig (Substrate LinuxCpu Amd64) (Map.singleton Docker docker)
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        withAdmittedProjectPlan profile root config (expectStepPlan [ensureStep "docker" "ensure docker" frame (const (pure StepChanged))]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:ensure-docker")
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            refused "a missing Docker record was observed" =<< ProviderBackend.observeRootedDocker host store plan identity []
+                            foreignStore <- expectRight =<< openProtectedStore (directory </> "foreign-store")
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                foreignBytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 (Text.replicate 64 "0"), TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry foreignStore (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent foreignBytes)
+                            foreignRows <- expectRight =<< withProtectedEntry foreignStore (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            case foreignRows of
+                                Left _ -> pure ()
+                                Right row -> refused "a foreign Docker record was observed" =<< ProviderBackend.observeRootedDocker host foreignStore plan identity [row]
+                            row <- writeRootAliasRecord store identity
+                            observed <- expectRight =<< ProviderBackend.observeRootedDocker host store plan identity [row]
+                            ProviderBackend.recheckRootedDocker host store plan observed >>= (@?= Right ())
+                            _ <- answer "daemon-b\n" 0
+                            refused "a replaced Docker daemon passed the root recheck" =<< ProviderBackend.recheckRootedDocker host store plan observed
+                            _ <- answer "" 1
+                            refused "an unanswering Docker daemon was observed" =<< ProviderBackend.observeRootedDocker host store plan identity [row]
+                            _ <- answer "daemon-a\nsecond\n" 0
+                            refused "a multi-line Docker identity was observed" =<< ProviderBackend.observeRootedDocker host store plan identity [row]
+                        let childPlan = expectStepPlan
+                                [ descendsVia localContext (deployVMStep "provider" frame (const (pure StepChanged)))
+                                , ensureStep "docker" "ensure docker" (StepFrame "provider" "Provider") (const (pure StepChanged))
+                                ]
+                        withAdmittedProjectPlan profile root config childPlan $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) "core:ensure-docker")
+                            store <- expectRight =<< openProtectedStore (directory </> "child-store")
+                            row <- writeRootAliasRecord store identity
+                            outcome <- ProviderBackend.observeRootedDocker host store plan identity [row]
+                            case outcome of
+                                Left (Reconcile.Unsupported _) -> pure ()
+                                other -> assertFailure ("expected the child-frame Docker refusal, got " <> either show (const "an observation") other)
+        , testCase "cluster object probe descriptions bind the exact admitted object store" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "host" "Host"
+                    store name = declaresClusterObjectProbe (ClusterObjectProbeDescription "/workspace/demo/.data/cluster/kind/state" "demo" "default" "deployment" name)
+                        (projectStep (either error id (projectStepId "deploy-object-store")) PreserveOnReverse "object store" frame (const (pure StepChanged)))
+                withAdmittedProjectPlan profile root config (expectStepPlan [store "object-store"]) $ \first ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan [store "object-store-b"]) $ \second -> do
+                        let snapshot = renderSnapshot first
+                            firstDigest = stablePlanSnapshotDigest snapshot
+                        assertBool "the object name changes the plan digest" (firstDigest /= stablePlanSnapshotDigest (renderSnapshot second))
+                        admitted <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) firstDigest (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanResourceMembersKernel admitted)
+                        _ <- expectRight (TestLifecyclePlan.canonicalPlanRecoveryFramesKernel admitted)
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel first (NonEmpty.head (forward first)) "project:deploy-object-store")
+                        TestLifecyclePlan.withRootClusterObjectProbeDescriptionKernel first identity id
+                            @?= Right (ClusterObjectProbeDescription "/workspace/demo/.data/cluster/kind/state" "demo" "default" "deployment" "object-store")
+                        (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel second (NonEmpty.head (forward second)) "project:deploy-object-store")
+                        case TestLifecyclePlan.withRootClusterObjectProbeDescriptionKernel first foreignIdentity id of
+                            Left _ -> pure ()
+                            Right _ -> assertFailure "a foreign object-store identity recovered a description"
+                case mkStepPlan [declaresClusterObjectProbe (ClusterObjectProbeDescription "/state" "demo" "default" "deployment" "x") (deployVMStep "provider" frame (const (pure StepChanged)))] of
+                    Left (ClusterObjectProbeWithoutResource _) -> pure ()
+                    _ -> assertFailure "a cluster object on a provider was accepted"
+                forM_ [ ClusterObjectProbeDescription "relative" "demo" "default" "deployment" "x"
+                      , ClusterObjectProbeDescription "/state" "Demo" "default" "deployment" "x"
+                      , ClusterObjectProbeDescription "/state" "demo" "default" "daemonset" "x"
+                      , ClusterObjectProbeDescription "/state" "demo" "default" "deployment" "-x"
+                      ] $ \description ->
+                    case mkStepPlan [declaresClusterObjectProbe description (projectStep (either error id (projectStepId "deploy-object-store")) PreserveOnReverse "object store" frame (const (pure StepChanged)))] of
+                        Left (InvalidClusterObjectProbeDescription _) -> pure ()
+                        _ -> assertFailure ("an invalid cluster object was accepted: " <> show description)
+                case mkStepPlan [declaresClusterObjectProbe (ClusterObjectProbeDescription "/state" "demo" "default" "deployment" "y") (store "object-store")] of
+                    Left (DuplicateClusterObjectProbeDescription _ 2) -> pure ()
+                    _ -> assertFailure "duplicate cluster objects were accepted"
+        , testCase "rooted cluster, object-store and registry observation reads the declared object and refuses missing, foreign, stale and unready identities" $
+            withSystemTempDirectory "root-object-store" $ \directory -> do
+                let source = directory </> "source"
+                    frame = StepFrame "host" "Host"
+                    describe = ClusterObjectProbeDescription "/var/tmp/hostbootstrap-demo-data/cluster/kind/state" "demo" "default" "deployment"
+                    declared = describe "object-store"
+                    store' name = declaresClusterObjectProbe (describe name)
+                        (projectStep (either error id (projectStepId "deploy-object-store")) PreserveOnReverse "object store" frame (const (pure StepChanged)))
+                    refused label outcome = case outcome of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure label
+                createDirectory source
+                answer <- newIORef (Right ("uid-1", "7") :: Either Text.Text (Text.Text, Text.Text))
+                received <- newIORef []
+                let native description = do
+                        modifyIORef' received (++ [description])
+                        readIORef answer
+                withFoundationAt source $ \_codec profile root config ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan [store' "object-store"]) $ \plan ->
+                        withAdmittedProjectPlan profile root config (expectStepPlan [store' "object-store-b"]) $ \foreignPlan ->
+                            withAdmittedProjectPlan profile root config (expectStepPlan [ensureStep "docker" "ensure docker" frame (const (pure StepChanged))]) $ \dockerPlan -> do
+                                (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "project:deploy-object-store")
+                                (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel foreignPlan (NonEmpty.head (forward foreignPlan)) "project:deploy-object-store")
+                                (dockerIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel dockerPlan (NonEmpty.head (forward dockerPlan)) "core:ensure-docker")
+                                store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                                refused "a missing object-store record was observed" =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity native
+                                readIORef received >>= (@?= [])
+                                _ <- writeRootAliasRecord store identity
+                                observed <- expectRight =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity native
+                                TestRootedSession.rootedClusterObjectNativeKernel observed @?= ("uid-1", "7")
+                                readIORef received >>= (@?= [declared])
+                                refused "a foreign plan's object store was observed" =<< TestRootedSession.observeRootedClusterObjectKernel store plan foreignIdentity native
+                                _ <- writeRootAliasRecord store dockerIdentity
+                                refused "a Docker identity was observed as an object store" =<< TestRootedSession.observeRootedClusterObjectKernel store dockerPlan dockerIdentity native
+                                TestRootedSession.recheckRootedClusterObjectKernel store plan observed native >>= (@?= Right ())
+                                writeIORef answer (Right ("uid-1", "8"))
+                                refused "a changed conditional version passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel store plan observed native
+                                writeIORef answer (Right ("uid-2", "7"))
+                                refused "a replaced object passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel store plan observed native
+                                writeIORef answer (Left "Error from server (NotFound)")
+                                refused "an absent object was observed" =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity native
+                                writeIORef answer (Right ("uid-1", "7"))
+                                let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                                key <- expectRight (mkRecordKey keyText)
+                                let replace = do
+                                        _ <- withProtectedEntry store $ \protected -> do
+                                            current <- readProtectedRecord protected key
+                                            case current of
+                                                Right (Just record) -> compareAndSwapProtectedRecord protected key (ExpectVersion (protectedRecordVersion record)) (protectedRecordBytes record)
+                                                _ -> assertFailure "the bound object-store record is absent"
+                                        readIORef answer
+                                refused "a record replaced during the native query was observed" =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity (const replace)
+                                refused "the stale observation passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel store plan observed native
+                                let registry = declaresClusterObjectProbe (describe "registry")
+                                        (projectStep (either error id (projectStepId "deploy-registry")) PreserveOnReverse "registry" frame (const (pure StepChanged)))
+                                withAdmittedProjectPlan profile root config (expectStepPlan [registry]) $ \registryPlan -> do
+                                    (registryIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel registryPlan (NonEmpty.head (forward registryPlan)) "project:deploy-registry")
+                                    registryStore <- expectRight =<< openProtectedStore (directory </> "registry-store")
+                                    refused "a missing registry record was observed" =<< TestRootedSession.observeRootedClusterObjectKernel registryStore registryPlan registryIdentity native
+                                    _ <- writeRootAliasRecord registryStore registryIdentity
+                                    writeIORef received []
+                                    registryObserved <- expectRight =<< TestRootedSession.observeRootedClusterObjectKernel registryStore registryPlan registryIdentity native
+                                    readIORef received >>= (@?= [describe "registry"])
+                                    refused "the object store's identity was observed in the registry's plan" =<< TestRootedSession.observeRootedClusterObjectKernel registryStore registryPlan identity native
+                                    writeIORef answer (Right ("uid-1", "9"))
+                                    refused "a changed registry version passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel registryStore registryPlan registryObserved native
+                                let clusterIdentityObject = ClusterObjectProbeDescription "/var/tmp/hostbootstrap-demo-data/cluster/kind/state" "demo" "kube-system" "namespace" "kube-system"
+                                    cluster = declaresClusterObjectProbe clusterIdentityObject (deployKindStep "cluster" frame (const (pure StepChanged)))
+                                withAdmittedProjectPlan profile root config (expectStepPlan [cluster]) $ \clusterPlan -> do
+                                    (clusterIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel clusterPlan (NonEmpty.head (forward clusterPlan)) "core:deploy-kind")
+                                    clusterStore <- expectRight =<< openProtectedStore (directory </> "cluster-store")
+                                    refused "a missing cluster record was observed" =<< TestRootedSession.observeRootedClusterObjectKernel clusterStore clusterPlan clusterIdentity native
+                                    _ <- writeRootAliasRecord clusterStore clusterIdentity
+                                    writeIORef received []
+                                    writeIORef answer (Right ("cluster-uid", "4"))
+                                    clusterObserved <- expectRight =<< TestRootedSession.observeRootedClusterObjectKernel clusterStore clusterPlan clusterIdentity native
+                                    readIORef received >>= (@?= [clusterIdentityObject])
+                                    TestRootedSession.recheckRootedClusterObjectKernel clusterStore clusterPlan clusterObserved native >>= (@?= Right ())
+                                    writeIORef answer (Right ("replacement-uid", "4"))
+                                    refused "a replaced cluster passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel clusterStore clusterPlan clusterObserved native
+                                    writeIORef answer (Left "the cluster kubeconfig is absent")
+                                    refused "an unready cluster was observed" =<< TestRootedSession.observeRootedClusterObjectKernel clusterStore clusterPlan clusterIdentity native
+                                forM_ [ (ClusterObjectProbeDescription "/state" "demo" "kube-system" "deployment" "kube-system", deployKindStep "cluster" frame (const (pure StepChanged)))
+                                      , (ClusterObjectProbeDescription "/state" "demo" "default" "namespace" "kube-system", deployKindStep "cluster" frame (const (pure StepChanged)))
+                                      , (ClusterObjectProbeDescription "/state" "demo" "kube-system" "namespace" "kube-system", store' "object-store")
+                                      ] $ \(description, step) ->
+                                    case mkStepPlan [declaresClusterObjectProbe description step] of
+                                        Left (InvalidClusterObjectProbeDescription _) -> pure ()
+                                        Left (DuplicateClusterObjectProbeDescription _ _) -> pure ()
+                                        _ -> assertFailure ("a mismatched cluster object kind was accepted: " <> show description)
+        , testCase "rooted chart-workload observation reads the chart's own declared workload and refuses unbound ones" $
+            withSystemTempDirectory "root-chart-workload" $ \directory -> do
+                let workload = ClusterObjectProbeDescription "/var/tmp/hostbootstrap-demo-data/cluster/kind/state" "demo" "demo-system" "deployment" "demo"
+                    withChartObject description = case NonEmpty.toList (stepPlanSteps (chartWorkloadPlan "sha256:workload")) of
+                        [cluster, chart] -> [cluster, declaresClusterObjectProbe description chart]
+                        _ -> error "chart workload fixture shape changed"
+                    refused label outcome = case outcome of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure label
+                answer <- newIORef (Right ("web-uid", "11") :: Either Text.Text (Text.Text, Text.Text))
+                received <- newIORef []
+                let native description = do
+                        modifyIORef' received (++ [description])
+                        readIORef answer
+                withFoundation $ \_codec profile root config ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan (withChartObject workload)) $ \plan -> do
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) "core:deploy-chart")
+                        TestLifecyclePlan.rootProbeIdentityFamilyKernel identity @?= TestLifecyclePlan.RootChartWorkloadProbe
+                        store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                        refused "a missing chart record was observed" =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity native
+                        _ <- writeRootAliasRecord store identity
+                        observed <- expectRight =<< TestRootedSession.observeRootedClusterObjectKernel store plan identity native
+                        readIORef received >>= (@?= [workload])
+                        TestRootedSession.recheckRootedClusterObjectKernel store plan observed native >>= (@?= Right ())
+                        writeIORef answer (Right ("web-uid", "12"))
+                        refused "a changed chart workload version passed the root recheck" =<< TestRootedSession.recheckRootedClusterObjectKernel store plan observed native
+                        (clusterIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-kind")
+                        refused "an undeclared cluster identity recovered a description" =<< TestRootedSession.observeRootedClusterObjectKernel store plan clusterIdentity native
+                forM_ [ ClusterObjectProbeDescription "/state" "demo" "default" "deployment" "demo"
+                      , ClusterObjectProbeDescription "/state" "demo" "demo-system" "deployment" "other"
+                      , ClusterObjectProbeDescription "/state" "demo" "demo-system" "statefulset" "demo"
+                      ] $ \description ->
+                    case mkStepPlan (withChartObject description) of
+                        Left (InvalidClusterObjectProbeDescription _) -> pure ()
+                        _ -> assertFailure ("a workload outside the chart's effects was accepted: " <> show description)
+                case mkStepPlan [declaresClusterObjectProbe workload (deployChartStep "workload" (StepFrame "cluster" "Cluster") (const (pure StepChanged)))] of
+                    Left (InvalidClusterObjectProbeDescription _) -> pure ()
+                    _ -> assertFailure "a chart object without an admitted chart was accepted"
+        , testCase "rooted Incus share observation reenters existing state and detects replacement" $
+            withSystemTempDirectory "root-incus-share-observation" $ \directory -> do
+                let source = directory </> "source"
+                    state = directory </> "provider-state"
+                    name = "hb-root-share"
+                    image = "images:ubuntu/24.04"
+                    guardPrefix = "hb-"
+                    target = "/guest"
+                    frame = StepFrame "host" "Host"
+                    sized value = Text.pack (show (Text.length value)) <> ":" <> value
+                    semantic = Text.concat (map sized ["hostbootstrap/provider-backend/incus/v1", name, image, Text.pack state, "2", "2GiB", "12GiB"])
+                    describe = IncusProviderProbe name image guardPrefix state 2 "2GiB" "12GiB"
+                createDirectory source
+                executable <- getExecutablePath
+                incus <- expectRight (mkAbsExe executable)
+                let host = HostConfig (Substrate LinuxCpu Amd64) (Map.singleton Incus incus)
+                _ <- FakeProvider.newProviderFixture directory "backend" FakeProvider.ProviderAnswers
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        let sourcePath = canonicalProjectRootPath root
+                            provider = declaresProviderProbe describe (deployVMStep "provider" frame (const (pure StepChanged)))
+                            share = declaresShareProbe (ShareProbeDescription sourcePath target) (copySourceStep "share" frame (const (pure StepChanged)))
+                        withAdmittedProjectPlan profile root config (expectStepPlan [provider, share]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) "core:copy-source")
+                            parent <- expectRight (TestLifecyclePlan.rootShareProviderProbeIdentityKernel plan identity)
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            rows <- forM [parent, identity] $ \item -> do
+                                let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel item
+                                    bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                                keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                                key <- expectRight (mkRecordKey keyText)
+                                _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                                expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            missing <- ProviderBackend.observeRootedShare host store plan identity rows
+                            case missing of
+                                Left (Reconcile.Failure _) -> pure ()
+                                _ -> assertFailure "a missing Incus authority was not refused as existing-only"
+                            doesDirectoryExist state >>= (@?= False)
+                            FakeProvider.recordedProviderCommands directory >>= (@?= [])
+                            let (digest, _, shareKey, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                (_, _, providerKey, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel parent
+                                owner = Text.concat (map sized ["hostbootstrap/provider-origin/v2", digest, providerKey, "1", semantic])
+                                owned = ProviderOwnership.OwnedProviderInstance (Text.unpack name) (Text.unpack image) (Text.unpack guardPrefix) (ProviderSizing 2 "2GiB" "12GiB") owner
+                            native <- expectRight =<< openProtectedStore state
+                            nativeKey <- expectRight (ProviderOwnership.ownedInstanceRecordKey owned)
+                            _ <- expectRight =<< expectRight =<< withProtectedEntry native (\protected -> Right <$> ProviderOwnership.provisionOwnedInstance host protected nativeKey owned)
+                            spec <- expectRight (ProviderBackend.mkIncusBackendSpec (Text.unpack name) (Text.unpack image) (Text.unpack guardPrefix) host state 2 "2GiB" "12GiB")
+                            shareSpec <- expectRight (ProviderReconcile.mkProviderShareSpec sourcePath target)
+                            callDigest <- expectRight =<< ProviderBackend.discoverStrongProviderBackend host spec (\backend -> pure (ProviderReconcile.providerShareCallDigest (ProviderBackend.providerBackendBinding backend) shareSpec))
+                            let binding = Text.concat (map sized ["hostbootstrap/provider-share/v1", digest, providerKey, "1", shareKey, "1", shareKey, callDigest])
+                                device = "hb-share-" <> take 12 (Text.unpack (sha256Hex (TextEncoding.encodeUtf8 binding)))
+                                ownedShare = ProviderOwnership.OwnedProviderShare owned device sourcePath target binding
+                            nativeShareKey <- expectRight (ProviderOwnership.ownedShareRecordKey ownedShare)
+                            _ <- expectRight =<< expectRight =<< withProtectedEntry native (\protected -> Right <$> ProviderOwnership.attachOwnedShare host protected nativeShareKey ownedShare)
+                            mutations <- FakeProvider.recordedProviderMutations directory
+                            observed <- expectRight =<< ProviderBackend.observeRootedShare host store plan identity rows
+                            ProviderBackend.recheckRootedShare host store plan observed >>= (@?= Right ())
+                            FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+                            let mountId = FakeProvider.providerToolStatePath directory </> "root-share-mount-id"
+                            writeFile mountId "43\n"
+                            changedMount <- ProviderBackend.recheckRootedShare host store plan observed
+                            case changedMount of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a replaced Incus guest mount passed the root recheck"
+                            writeFile mountId "42\n"
+                            FakeProvider.alterInstance directory (Text.unpack name) (\instanceState -> instanceState{FakeProvider.instanceDevices = []})
+                            replaced <- ProviderBackend.recheckRootedShare host store plan observed
+                            case replaced of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a replaced Incus share passed the root recheck"
+                            FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+        , testCase "rooted Direct share observation detects replacement and missing records" $
+            withSystemTempDirectory "root-share-observation" $ \directory -> do
+                let source = directory </> "source"
+                    moved = directory </> "moved"
+                createDirectory source
+                executable <- getExecutablePath
+                docker <- expectRight (mkAbsExe executable)
+                _ <- FakeProvider.newDockerFixture directory Nothing "{}" 0
+                let host = HostConfig (Substrate LinuxCpu Arm64) (Map.singleton Docker docker)
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        let frame = StepFrame "host" "Host"
+                            sourcePath = canonicalProjectRootPath root
+                            provider = declaresProviderProbe (DirectProviderProbe sourcePath "image-a") (deployVMStep "provider" frame (const (pure StepChanged)))
+                            share = declaresShareProbe (ShareProbeDescription sourcePath "/guest") (copySourceStep "share" frame (const (pure StepChanged)))
+                        withAdmittedProjectPlan profile root config (expectStepPlan [provider, share]) $ \plan -> do
+                            let node = NonEmpty.last (forward plan)
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node "core:copy-source")
+                            parent <- expectRight (TestLifecyclePlan.rootShareProviderProbeIdentityKernel plan identity)
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            rows <- forM [parent, identity] $ \item -> do
+                                let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel item
+                                    bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                                keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                                key <- expectRight (mkRecordKey keyText)
+                                _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                                expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            missing <- ProviderBackend.observeRootedShare host store plan identity (take 1 rows)
+                            case missing of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a missing share record admitted observation"
+                            observed <- expectRight =<< ProviderBackend.observeRootedShare host store plan identity rows
+                            ProviderBackend.recheckRootedShare host store plan observed >>= (@?= Right ())
+                            renameDirectory source moved
+                            createDirectory source
+                            replaced <- ProviderBackend.recheckRootedShare host store plan observed
+                            case replaced of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a replaced share root passed recheck"
+        , testCase "planned root share observation selects its own records and refuses missing, foreign, stale and unready shares" $
+            withSystemTempDirectory "root-planned-share" $ \directory -> do
+                let source = directory </> "source"
+                    moved = directory </> "moved"
+                createDirectory source
+                executable <- getExecutablePath
+                docker <- expectRight (mkAbsExe executable)
+                _ <- FakeProvider.newDockerFixture directory Nothing "{}" 0
+                let host = HostConfig (Substrate LinuxCpu Arm64) (Map.singleton Docker docker)
+                    frame = StepFrame "host" "Host"
+                    record digest frameId operation generation =
+                        ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, generation, TextEncoding.encodeUtf8 operation, generation, "active", "fixture", "owned"])
+                    write store identity foreignDigest = do
+                        let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                        keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                        key <- expectRight (mkRecordKey keyText)
+                        _ <- expectRight =<< withProtectedEntry store (\protected ->
+                            compareAndSwapProtectedRecord protected key ExpectAbsent (record (maybe digest id foreignDigest) frameId operation "1"))
+                        pure ()
+                    refused label outcome = case outcome of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure label
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        let sourcePath = canonicalProjectRootPath root
+                            provider = declaresProviderProbe (DirectProviderProbe sourcePath "image-a") (deployVMStep "provider" frame (const (pure StepChanged)))
+                            synthetic = declaresProviderProbe (DirectProviderProbe sourcePath "image-a") $
+                                declaresProviderResource providerResourceAtCurrentFrame $
+                                    projectStep (either error id (projectStepId "synthetic-provider")) PreserveOnReverse "provider" frame (const (pure StepChanged))
+                            share = declaresShareProbe (ShareProbeDescription sourcePath "/guest") (copySourceStep "share" frame (const (pure StepChanged)))
+                        withAdmittedProjectPlan profile root config (expectStepPlan [provider]) $ \plan -> do
+                            store <- expectRight =<< openProtectedStore (directory </> "no-share-store")
+                            observed <- ProviderBackend.observePlannedRootShare host store plan
+                            either (assertFailure . show) (\found -> assertBool "a plan without a share observed one" (isNothing found)) observed
+                        withAdmittedProjectPlan profile root config (expectStepPlan [provider, share]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) "core:copy-source")
+                            parent <- expectRight (TestLifecyclePlan.rootShareProviderProbeIdentityKernel plan identity)
+                            foreignStore <- expectRight =<< openProtectedStore (directory </> "foreign-store")
+                            write foreignStore parent Nothing
+                            write foreignStore identity (Just (Text.replicate 64 "0"))
+                            refused "a foreign share record was observed" =<< ProviderBackend.observePlannedRootShare host foreignStore plan
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            write store parent Nothing
+                            refused "a missing share record was observed" =<< ProviderBackend.observePlannedRootShare host store plan
+                            write store identity Nothing
+                            observed <- expectRight =<< ProviderBackend.observePlannedRootShare host store plan
+                            selected <- maybe (assertFailure "the planned share was not observed") pure observed
+                            ProviderBackend.recheckRootedShare host store plan selected >>= (@?= Right ())
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> do
+                                found <- readProtectedRecord protected key
+                                case found of
+                                    Right (Just current) -> compareAndSwapProtectedRecord protected key (ExpectVersion (protectedRecordVersion current)) (record digest frameId operation "2")
+                                    _ -> assertFailure "the share record vanished")
+                            refused "a stale share observation passed recheck" =<< ProviderBackend.recheckRootedShare host store plan selected
+                            renameDirectory source moved
+                            refused "an unready share root was observed" =<< ProviderBackend.observePlannedRootShare host store plan
+                            renameDirectory moved source
+                        withAdmittedProjectPlan profile root config (expectStepPlan [synthetic, share]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) "core:copy-source")
+                            parent <- expectRight (TestLifecyclePlan.rootShareProviderProbeIdentityKernel plan identity)
+                            store <- expectRight =<< openProtectedStore (directory </> "synthetic-store")
+                            write store parent Nothing
+                            write store identity Nothing
+                            observed <- expectRight =<< ProviderBackend.observePlannedRootShare host store plan
+                            assertBool "the synthetic provider's planned share was not observed" (isJust observed)
+        , testCase "rooted Direct provider observation detects refusal and native replacement" $
+            withSystemTempDirectory "root-provider-observation" $ \directory -> do
+                let source = directory </> "source"
+                    moved = directory </> "moved"
+                createDirectory source
+                executable <- getExecutablePath
+                docker <- expectRight (mkAbsExe executable)
+                recorded <- FakeProvider.newDockerFixture directory Nothing "{}" 0
+                let host = HostConfig (Substrate LinuxCpu Arm64) (Map.singleton Docker docker)
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        let frame = StepFrame "host" "Host"
+                            planFor image = expectStepPlan [declaresProviderProbe (DirectProviderProbe (canonicalProjectRootPath root) image) (deployVMStep "provider" frame (const (pure StepChanged)))]
+                        withAdmittedProjectPlan profile root config (planFor "image-a") $ \plan ->
+                            withAdmittedProjectPlan profile root config (planFor "image-b") $ \other -> do
+                                store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                                (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-vm")
+                                let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                    bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                                keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                                key <- expectRight (mkRecordKey keyText)
+                                _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                                retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                                before <- readFile recorded
+                                mismatch <- ProviderBackend.observeRootedProvider host store other identity retained
+                                case mismatch of
+                                    Left _ -> pure ()
+                                    Right _ -> assertFailure "a foreign plan admitted the provider observation"
+                                readFile recorded >>= (@?= before)
+                                observed <- expectRight =<< ProviderBackend.observeRootedProvider host store plan identity retained
+                                ProviderBackend.recheckRootedProvider host store plan observed >>= (@?= Right ())
+                                writeFile (directory </> "docker-answer") (show (Nothing :: Maybe [String], "unavailable" :: String, 1 :: Int))
+                                unavailable <- ProviderBackend.recheckRootedProvider host store plan observed
+                                case unavailable of
+                                    Left _ -> pure ()
+                                    Right _ -> assertFailure "an unavailable provider passed the native recheck"
+                                writeFile (directory </> "docker-answer") (show (Nothing :: Maybe [String], "{}" :: String, 0 :: Int))
+                                renameDirectory source moved
+                                createDirectory source
+                                replaced <- ProviderBackend.recheckRootedProvider host store plan observed
+                                case replaced of
+                                    Left (Reconcile.Conflict _) -> pure ()
+                                    _ -> assertFailure "a replaced native root passed the identity recheck"
+                                _ <- expectRight =<< withProtectedEntry store (\protected -> do
+                                    found <- readProtectedRecord protected key
+                                    case found of
+                                        Right (Just current) -> compareAndSwapProtectedRecord protected key (ExpectVersion (protectedRecordVersion current)) bytes
+                                        Left failure -> pure (Left failure)
+                                        Right Nothing -> fail "the provider record disappeared")
+                                beforeStale <- readFile recorded
+                                stale <- ProviderBackend.recheckRootedProvider host store plan observed
+                                case stale of
+                                    Left _ -> pure ()
+                                    Right _ -> assertFailure "a stale root record admitted the provider recheck"
+                                readFile recorded >>= (@?= beforeStale)
+        , testCase "rooted Incus provider observation refuses stopped and replaced instances without mutation" $
+            withSystemTempDirectory "root-incus-observation" $ \directory -> do
+                let state = directory </> "state"
+                    name = "hb-root-probe"
+                    image = "images:ubuntu/24.04"
+                    guardPrefix = "hb-"
+                    frame = StepFrame "host" "Host"
+                    describe = IncusProviderProbe name image guardPrefix state 2 "2GiB" "12GiB"
+                    sized value = Text.pack (show (Text.length value)) <> ":" <> value
+                    semantic = Text.concat (map sized ["hostbootstrap/provider-backend/incus/v1", name, image, Text.pack state, "2", "2GiB", "12GiB"])
+                createDirectory state
+                executable <- getExecutablePath
+                incus <- expectRight (mkAbsExe executable)
+                let host = HostConfig (Substrate LinuxCpu Amd64) (Map.singleton Incus incus)
+                _ <- FakeProvider.newProviderFixture directory "backend" FakeProvider.ProviderAnswers
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundation $ \_codec profile root config ->
+                        withAdmittedProjectPlan profile root config (expectStepPlan [declaresProviderProbe describe (deployVMStep "provider" frame (const (pure StepChanged)))]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-vm")
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                owner = Text.concat (map sized ["hostbootstrap/provider-origin/v2", digest, operation, "1", semantic])
+                                owned = ProviderOwnership.OwnedProviderInstance (Text.unpack name) (Text.unpack image) (Text.unpack guardPrefix) (ProviderSizing 2 "2GiB" "12GiB") owner
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            nativeStore <- expectRight =<< openProtectedStore state
+                            nativeKey <- expectRight (ProviderOwnership.ownedInstanceRecordKey owned)
+                            _ <- expectRight =<< expectRight =<< withProtectedEntry nativeStore (\protected -> Right <$> ProviderOwnership.provisionOwnedInstance host protected nativeKey owned)
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                            retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            observed <- expectRight =<< ProviderBackend.observeRootedProvider host store plan identity retained
+                            ProviderBackend.recheckRootedProvider host store plan observed >>= (@?= Right ())
+                            mutations <- FakeProvider.recordedProviderMutations directory
+                            FakeProvider.alterInstance directory (Text.unpack name) (\instanceState -> instanceState{FakeProvider.instanceRunState = "STOPPED"})
+                            stopped <- ProviderBackend.recheckRootedProvider host store plan observed
+                            case stopped of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a stopped Incus provider passed the root recheck"
+                            FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+                            FakeProvider.alterInstance directory (Text.unpack name) (\instanceState -> instanceState{FakeProvider.instanceRunState = "RUNNING", FakeProvider.instanceIdentity = FakeProvider.replacementIdentity})
+                            replaced <- ProviderBackend.recheckRootedProvider host store plan observed
+                            case replaced of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "a replaced Incus provider passed the root recheck"
+                            FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+        , testCase "rooted Lima provider observation refuses stopped and replaced guests without mutation" $
+            withSystemTempDirectory "root-lima-observation" $ \directory -> do
+                let name = "hostbootstrap-provider-test"
+                    hostShare = directory </> "share"
+                    guestShare = "/srv/hostbootstrap/data"
+                    frame = StepFrame "host" "Host"
+                    describe = LimaProviderProbe name 2 "4GiB" "40GiB" hostShare guestShare
+                    sized value = Text.pack (show (Text.length value)) <> ":" <> value
+                    envelope = Context.ResourceEnvelope 2 "4GiB" "40GiB"
+                    semantic = Text.concat (map sized ["hostbootstrap/provider-backend/guest-vm/v1", "ProviderLima", name, Text.pack (show envelope), Text.pack hostShare, Text.pack guestShare])
+                    vm = Text.unpack name
+                    handles = VMHandles (ProbeLift.IncusVM vm "unused") (ProbeLift.LimaVM vm) (ProbeLift.Wsl2VM vm) "hostbootstrap"
+                    provider = selectProviderKind ProviderLima handles
+                    share = HostPathShare hostShare guestShare Nothing
+                createDirectory hostShare
+                executable <- getExecutablePath
+                lima <- expectRight (mkAbsExe executable)
+                let host = HostConfig (Substrate AppleSilicon Arm64) (Map.singleton Lima lima)
+                _ <- FakeProvider.newProviderFixture directory "lima" FakeProvider.ProviderAnswers
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundation $ \_codec profile root config ->
+                        withAdmittedProjectPlan profile root config (expectStepPlan [declaresProviderProbe describe (deployVMStep "provider" frame (const (pure StepChanged)))]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-vm")
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                owner = Text.concat (map sized ["hostbootstrap/provider-origin/v2", digest, operation, "1", semantic])
+                                owned = GuestVm.OwnedGuestVm provider (ProviderSizing 2 "4GiB" "40GiB") share owner
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            provisioned <- GuestVm.provisionOwnedGuestVm host owned
+                            if os == "mingw32"
+                                then case provisioned of
+                                    Left _ -> pure ()
+                                    Right _ -> assertFailure "the unsupported native guest identity row succeeded"
+                                else do
+                                    _ <- expectRight provisioned
+                                    _ <- expectRight =<< GuestVm.readyOwnedGuestVm host owned
+                                    store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                                    keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                                    key <- expectRight (mkRecordKey keyText)
+                                    _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                                    retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                                    observed <- expectRight =<< ProviderBackend.observeRootedProvider host store plan identity retained
+                                    ProviderBackend.recheckRootedProvider host store plan observed >>= (@?= Right ())
+                                    mutations <- FakeProvider.recordedProviderMutations directory
+                                    FakeProvider.alterInstance directory vm (\instanceState -> instanceState{FakeProvider.instanceRunState = "Stopped"})
+                                    stopped <- ProviderBackend.recheckRootedProvider host store plan observed
+                                    case stopped of
+                                        Left _ -> pure ()
+                                        Right _ -> assertFailure "a stopped Lima guest passed the root recheck"
+                                    FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+                                    FakeProvider.alterInstance directory vm (\instanceState -> instanceState{FakeProvider.instanceRunState = "Running"})
+                                    FakeProvider.replaceLimaDirectory directory vm
+                                    replaced <- ProviderBackend.recheckRootedProvider host store plan observed
+                                    case replaced of
+                                        Left _ -> pure ()
+                                        Right _ -> assertFailure "a replaced Lima guest passed the root recheck"
+                                    FakeProvider.recordedProviderMutations directory >>= (@?= mutations)
+        , testCase "rooted WSL2 provider observation refuses an unowned guest without mutation" $
+            withSystemTempDirectory "root-wsl-observation" $ \directory -> do
+                let hostShare = directory </> "share"
+                    frame = StepFrame "host" "Host"
+                    describe = Wsl2ProviderProbe "hostbootstrap-provider-test" 2 "4GiB" "40GiB" hostShare "/mnt/host/share"
+                createDirectory hostShare
+                executable <- getExecutablePath
+                wsl <- expectRight (mkAbsExe executable)
+                let host = HostConfig (Substrate WindowsCpu Amd64) (Map.singleton Wsl wsl)
+                FakeProvider.newGuestVmFixture directory []
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundation $ \_codec profile root config ->
+                        withAdmittedProjectPlan profile root config (expectStepPlan [declaresProviderProbe describe (deployVMStep "provider" frame (const (pure StepChanged)))]) $ \plan -> do
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-vm")
+                            let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                            retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            observed <- ProviderBackend.observeRootedProvider host store plan identity retained
+                            case observed of
+                                Left _ -> pure ()
+                                Right _ -> assertFailure "an unowned WSL2 guest passed the root observation"
+                            FakeProvider.recordedProviderMutations directory >>= (@?= [])
+        , testCase "rooted synthetic provider observes its own declared Direct target" $
+            withSystemTempDirectory "root-synthetic-provider" $ \directory -> do
+                let source = directory </> "source"
+                    frame = StepFrame "host" "Host"
+                createDirectory source
+                executable <- getExecutablePath
+                docker <- expectRight (mkAbsExe executable)
+                _ <- FakeProvider.newDockerFixture directory Nothing "{}" 0
+                let host = HostConfig (Substrate LinuxCpu Arm64) (Map.singleton Docker docker)
+                FakeProvider.withFakeProviderClient directory $
+                    withFoundationAt source $ \_codec profile root config -> do
+                        let step = declaresProviderProbe (DirectProviderProbe (canonicalProjectRootPath root) "image") $
+                                declaresProviderResource providerResourceAtCurrentFrame $
+                                    projectStep (either error id (projectStepId "synthetic-provider")) PreserveOnReverse "provider" frame (const (pure StepChanged))
+                        withAdmittedProjectPlan profile root config (expectStepPlan [step]) $ \plan -> do
+                            let node = NonEmpty.head (forward plan)
+                                operation = Text.pack (operationKeyText (plannedStepOperationKey node))
+                            (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node operation)
+                            let (digest, frameId, _, family) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            family @?= "provider"
+                            store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                            retained <- expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+                            observed <- expectRight =<< ProviderBackend.observeRootedProvider host store plan identity retained
+                            ProviderBackend.recheckRootedProvider host store plan observed >>= (@?= Right ())
+        , testCase "root probe identities bind exact plan coordinates and resource families" $
+            withFoundation $ \_codec profile root config -> do
+                let project plan node key = do
+                        (target, dependencies) <- TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node key
+                        pure (TestLifecyclePlan.rootProbeIdentityCoordinatesKernel target, map TestLifecyclePlan.rootProbeIdentityCoordinatesKernel dependencies)
+                    family plan node key = do
+                        (target, _) <- TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node key
+                        pure (TestLifecyclePlan.rootProbeIdentityFamilyKernel target)
+                withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \plan -> do
+                    let nodes = NonEmpty.toList (forward plan)
+                        keys = map (Text.pack . operationKeyText . plannedStepOperationKey) nodes
+                    sequence (zipWith (family plan) nodes keys) @?= Right
+                        [ TestLifecyclePlan.RootProviderProbe
+                        , TestLifecyclePlan.RootDurableShareProbe
+                        , TestLifecyclePlan.RootDockerProbe
+                        , TestLifecyclePlan.RootObjectStoreProbe
+                        , TestLifecyclePlan.RootRegistryProbe
+                        , TestLifecyclePlan.RootClusterProbe
+                        ]
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_provider, share, _cluster] -> do
+                            let digest = stablePlanSnapshotDigest (renderSnapshot plan)
+                                alias = "core:deploy-vm/core:copy-source/guest-alias"
+                            project plan share alias @?= Right
+                                ((digest, "provider", alias, "durable alias"), [(digest, "provider", "core:copy-source", "durable share")])
+                            family plan share alias @?= Right TestLifecyclePlan.RootDurableAliasProbe
+                            project plan share "core:copy-source" @?= Right
+                                ((digest, "provider", "core:copy-source", "durable share"), [(digest, "host", "core:deploy-vm", "provider")])
+                        other -> assertFailure ("expected three projected nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-a") $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_cluster, chart] -> do
+                            let digest = stablePlanSnapshotDigest (renderSnapshot plan)
+                            project plan chart "core:deploy-chart" @?= Right
+                                ((digest, "cluster", "core:deploy-chart", "chart workload"), [(digest, "cluster", "core:deploy-kind", "cluster")])
+                            family plan chart "core:deploy-chart" @?= Right TestLifecyclePlan.RootChartWorkloadProbe
+                        other -> assertFailure ("expected cluster and chart nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    withAdmittedProjectPlan profile root config unprojectedResourcePlan $ \foreignPlan ->
+                        case NonEmpty.toList (forward foreignPlan) of
+                            [_provider, foreignShare, _cluster] -> do
+                                let expectedDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                                    foreignDigest = stablePlanSnapshotDigest (renderSnapshot foreignPlan)
+                                project plan (unsafeCoerce foreignShare) "core:copy-source"
+                                    @?= Left (PlanResourceBindingMismatch "resource prerequisite plan" expectedDigest foreignDigest)
+                            other -> assertFailure ("expected three foreign nodes, got " <> show (length other))
+        , testCase "root prerequisites are selected from the complete admitted prefix" $
+            withFoundation $ \_codec profile root config ->
+                withSystemTempDirectory "root-prerequisite-selection" $ \directory -> do
+                    store <- expectRight =<< openProtectedStore (directory </> "store")
+                    withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \plan -> do
+                        let node = NonEmpty.last (forward plan)
+                        (_, identities) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan node "core:deploy-kind")
+                        observations <- forM identities $ \identity -> do
+                            let (digest, frame, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+                                bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frame, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+                            keyText <- expectRight (Reconcile.resourceRecordKey digest frame operation)
+                            key <- expectRight (mkRecordKey keyText)
+                            _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+                            expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frame digest operation)
+                        (target, selected) <- expectRight (TestRootedSession.selectPlannedRootPrerequisitesKernel store plan node "core:deploy-kind" (reverse observations))
+                        let (_, _, targetKey, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel target
+                        targetKey @?= "core:deploy-kind"
+                        map (TestLifecyclePlan.rootProbeIdentityCoordinatesKernel . fst) selected @?=
+                            map TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identities
+                        case TestRootedSession.selectPlannedRootPrerequisitesKernel store plan node "core:deploy-kind" (drop 1 observations) of
+                            Left failure -> failure @?= "rooted resource observation: required resource was not observed"
+                            Right _ -> assertFailure "an incomplete prerequisite set was selected"
+                        case observations of
+                            first : _ -> case TestRootedSession.selectPlannedRootPrerequisitesKernel store plan node "core:deploy-kind" (first : observations) of
+                                Left failure -> failure @?= "rooted resource observation: duplicate retained resource"
+                                Right _ -> assertFailure "duplicate prerequisite evidence was selected"
+                            [] -> assertFailure "the fixture has no prerequisites"
+        , testCase "root chart probe inputs come from the exact admitted declaration" $
+            withFoundation $ \_codec profile root config ->
+                withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-a") $ \plan ->
+                    withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-b") $ \other -> do
+                        let chartNode = NonEmpty.last (forward plan)
+                            otherNode = NonEmpty.last (forward other)
+                            details chart = TestLifecyclePlan.withChartWorkloadResourceDetailsKernel chart $
+                                \_ release namespace _ _ _ workloadDigest _ _ _ digest cluster ->
+                                    (release, namespace, workloadDigest, digest, cluster)
+                        (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan chartNode "core:deploy-chart")
+                        (foreignIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel other otherNode "core:deploy-chart")
+                        TestLifecyclePlan.withRootChartProbeResourceKernel plan identity details @?=
+                            Right ("demo", "demo-system", "sha256:workload-a", stablePlanSnapshotDigest (renderSnapshot plan), "core:deploy-kind")
+                        TestLifecyclePlan.withRootChartProbeResourceKernel plan foreignIdentity details @?=
+                            Left (PlanResourceBindingMismatch "chart root probe plan" (stablePlanSnapshotDigest (renderSnapshot plan)) (stablePlanSnapshotDigest (renderSnapshot other)))
+                        (clusterIdentity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.head (forward plan)) "core:deploy-kind")
+                        TestLifecyclePlan.withRootChartProbeResourceKernel plan clusterIdentity details @?=
+                            Left (PlanResourceKindMismatch "core:deploy-kind" "chart workload")
+        , testCase "root resource coordinates select ordinary and chart targets from the admitted plan" $
+            withFoundation $ \_codec profile root config -> do
+                let project plan node =
+                        TestLifecyclePlan.plannedResourceCoordinatesKernel
+                            plan node (Text.pack (operationKeyText (plannedStepOperationKey node)))
+                withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [provider, share, _docker, _objectStore, _registry, cluster] -> do
+                            project plan provider @?= Right (("core:deploy-vm", "host"), [])
+                            project plan share @?= Right (("core:copy-source", "host"), [("core:deploy-vm", "host")])
+                            project plan cluster @?= Right
+                                ( ("core:deploy-kind", "host")
+                                , [("core:deploy-vm", "host"), ("core:copy-source", "host"), ("core:ensure-docker", "host"), ("project:deploy-object-store", "host"), ("project:deploy-registry", "host")]
+                                )
+                        other -> assertFailure ("expected six resource nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config topologyFixturePlan $ \plan -> do
+                    let node = NonEmpty.head (forward plan)
+                        key = Text.pack (operationKeyText (plannedStepOperationKey node))
+                    project plan node @?= Left (PlanResourceKindMismatch key "managed resource")
+                withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-a") $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_cluster, chart] ->
+                            project plan chart @?= Right (("core:deploy-chart", "cluster"), [("core:deploy-kind", "cluster")])
+                        other -> assertFailure ("expected cluster and chart nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_provider, share, _cluster] ->
+                            TestLifecyclePlan.plannedResourceCoordinatesKernel plan share "core:deploy-vm/core:copy-source/guest-alias"
+                                @?= Right (("core:deploy-vm/core:copy-source/guest-alias", "provider"), [("core:copy-source", "provider")])
+                        other -> assertFailure ("expected three projected nodes, got " <> show (length other))
+        , testCase "root guest alias coordinates require the exact admitted provider and share" $
+            withFoundation $ \_codec profile root config -> do
+                let alias = "core:deploy-vm/core:copy-source/guest-alias"
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_provider, share, cluster] -> do
+                            TestLifecyclePlan.plannedGuestAliasCoordinatesKernel plan share alias
+                                @?= Right ((alias, "provider"), [("core:copy-source", "provider")])
+                            TestLifecyclePlan.plannedGuestAliasCoordinatesKernel plan cluster alias
+                                @?= Left (PlanResourceKindMismatch "core:deploy-kind" "durable share")
+                            TestLifecyclePlan.plannedGuestAliasCoordinatesKernel plan share "core:other/core:copy-source/guest-alias"
+                                @?= Left (PlanProjectedOperationMissing "core:other/core:copy-source/guest-alias")
+                        other -> assertFailure ("expected three projected nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config unprojectedResourcePlan $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_provider, share, _cluster] ->
+                            TestLifecyclePlan.plannedGuestAliasCoordinatesKernel plan share alias
+                                @?= Left (PlanProjectedOperationMissing alias)
+                        other -> assertFailure ("expected three unprojected nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config resourceProjectionPlan $ \plan ->
+                    withAdmittedProjectPlan profile root config unprojectedResourcePlan $ \foreignPlan -> do
+                        let foreignShare = NonEmpty.toList (forward foreignPlan) !! 1
+                            expectedDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                            foreignDigest = stablePlanSnapshotDigest (renderSnapshot foreignPlan)
+                        TestLifecyclePlan.plannedGuestAliasCoordinatesKernel plan (unsafeCoerce foreignShare) alias
+                            @?= Left (PlanResourceBindingMismatch "resource prerequisite plan" expectedDigest foreignDigest)
+        , testCase "root resource coordinates refuse absent and duplicate declarations and foreign nodes" $
+            withFoundation $ \_codec profile root config -> do
+                let frame = StepFrame "cluster" "Cluster"
+                    missingChart = expectStepPlan
+                        [ deployKindStep "cluster" frame (const (pure StepChanged))
+                        , deployChartStep "chart" frame (const (pure StepChanged))
+                        ]
+                    duplicateProvider =
+                        declaresProviderResource providerResourceAtCurrentFrame $
+                            declaresProviderResource providerResourceAtCurrentFrame $
+                                deployVMStep "provider" frame (const (pure StepChanged))
+                    ambiguousDependency = expectStepPlan
+                        [ declaresProviderResource providerResourceAtCurrentFrame $
+                            copySourceStep "share and provider" frame (const (pure StepChanged))
+                        , deployKindStep "cluster" frame (const (pure StepChanged))
+                        ]
+                withAdmittedProjectPlan profile root config missingChart $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_cluster, chart] ->
+                            TestLifecyclePlan.plannedResourceCoordinatesKernel plan chart "core:deploy-chart"
+                                @?= Left (PlanResourceBindingMismatch "chart workload declaration count" "one" "not one")
+                        other -> assertFailure ("expected cluster and chart nodes, got " <> show (length other))
+                case mkStepPlan [duplicateProvider] of
+                    Left (DuplicateProviderResourceDeclaration _ 2) -> pure ()
+                    Left other -> assertFailure ("unexpected duplicate declaration refusal: " <> show other)
+                    Right _ -> assertFailure "duplicate provider declarations were admitted"
+                withAdmittedProjectPlan profile root config ambiguousDependency $ \plan ->
+                    case NonEmpty.toList (forward plan) of
+                        [_share, cluster] ->
+                            TestLifecyclePlan.plannedResourceCoordinatesKernel plan cluster "core:deploy-kind"
+                                @?= Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "duplicate")
+                        other -> assertFailure ("expected share and cluster nodes, got " <> show (length other))
+                withAdmittedProjectPlan profile root config closedResourceFamilyPlan $ \plan ->
+                    withAdmittedProjectPlan profile root config resourceProjectionPlan $ \foreignPlan -> do
+                        let foreignNode = NonEmpty.head (forward foreignPlan)
+                            expectedDigest = stablePlanSnapshotDigest (renderSnapshot plan)
+                            foreignDigest = stablePlanSnapshotDigest (renderSnapshot foreignPlan)
+                        TestLifecyclePlan.plannedResourceCoordinatesKernel plan (unsafeCoerce foreignNode) "core:deploy-vm"
+                            @?= Left (PlanResourceBindingMismatch "resource prerequisite plan" expectedDigest foreignDigest)
         , testCase "provider declarations derive current and immediate-child frames from their authoring operations" $
             withFoundation $ \_codec profile root config -> do
                 let direct =
@@ -845,16 +2181,24 @@ tests =
                                 ]
                 withAdmittedProjectPlan profile root config direct $ \plan ->
                     case NonEmpty.toList (forward plan) of
-                        node : _ ->
+                        node : guest : _ -> do
                             withPlannedResourceOfKind plan ProviderResourceKind (plannedStepOperationKey node) plannedResourceFrame
                                 @?= Right "host"
-                        [] -> assertFailure "the direct provider plan was empty"
+                            fmap (map (\(key, frame) -> (Text.pack (operationKeyText key), frame)))
+                                (TestLifecyclePlan.plannedResourceDependencyFramesKernel plan guest)
+                                @?= Right [("project:direct-provider", "host")]
+                        _ -> assertFailure "the direct provider plan did not contain its two frames"
                 withAdmittedProjectPlan profile root config vm $ \plan ->
                     case NonEmpty.toList (forward plan) of
-                        node : _ ->
+                        node : guest : _ -> do
                             withPlannedResourceOfKind plan ProviderResourceKind (plannedStepOperationKey node) plannedResourceFrame
                                 @?= Right "guest"
-                        [] -> assertFailure "the VM provider plan was empty"
+                            TestLifecyclePlan.plannedResourceCoordinatesKernel plan node "core:deploy-vm"
+                                @?= Right (("core:deploy-vm", "guest"), [])
+                            fmap (map (\(key, frame) -> (Text.pack (operationKeyText key), frame)))
+                                (TestLifecyclePlan.plannedResourceDependencyFramesKernel plan guest)
+                                @?= Right [("core:deploy-vm", "guest")]
+                        _ -> assertFailure "the VM provider plan did not contain its two frames"
         , testCase "chart workload resources project their exact admitted identity and bind stable bytes" $
             withFoundation $ \_codec profile root config -> do
                 withAdmittedProjectPlan profile root config (chartWorkloadPlan "sha256:workload-a") $ \plan ->
@@ -1141,6 +2485,81 @@ tests =
                     topologyDescentFrom derived "host"
                         @?= Just ("guest", localContext)
                     topologyDescentFrom derived "guest" @?= Nothing
+        , testCase "a declared empty terminal child is a digest-bound frame with no node and no descent" $
+            withFoundation $ \_codec profile root config -> do
+                let host = StepFrame "host" "Host"
+                    entering frame = descendsVia localContext (declaresEmptyChildFrame frame (ensureStep "enter" "enter the empty child" host (const (pure StepChanged))))
+                withAdmittedProjectPlan profile root config (expectStepPlan [entering (StepFrame "empty" "Empty")]) $ \plan ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan [entering (StepFrame "other-empty" "Empty")]) $ \other -> do
+                        let derived = topology plan
+                        topologyFrameOrder derived @?= NonEmpty.fromList [("host", "Host"), ("empty", "Empty")]
+                        topologyDescentFrom derived "host" @?= Just ("empty", localContext)
+                        topologyDescentFrom derived "empty" @?= Nothing
+                        topologyParentFrame derived "empty" @?= Just "host"
+                        [plannedStepFrameId planned | planned <- NonEmpty.toList (forward plan)] @?= ["host"]
+                        let snapshot = renderSnapshot plan
+                        assertBool "the empty child's identity changes the plan digest"
+                            (stablePlanSnapshotDigest snapshot /= stablePlanSnapshotDigest (renderSnapshot other))
+                        _ <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) (stablePlanSnapshotDigest snapshot) (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                        pure ()
+                let plain = ensureStep "plain" "no descent" host (const (pure StepChanged))
+                    guest = StepFrame "guest" "Guest"
+                    refusal label expected stepsUnderTest = case mkStepPlan stepsUnderTest of
+                        Left failure | expected failure -> pure ()
+                        other -> assertFailure (label <> ": " <> either show (const "admitted") other)
+                refusal "a declaration without a descent" (\failure -> case failure of MisplacedEmptyChildFrame 1 -> True; _ -> False)
+                    [declaresEmptyChildFrame (StepFrame "empty" "Empty") plain]
+                refusal "a declaration on an outer frame" (\failure -> case failure of MisplacedEmptyChildFrame 1 -> True; _ -> False)
+                    [ descendsVia localContext (declaresEmptyChildFrame (StepFrame "empty" "Empty") (ensureStep "outer" "outer" host (const (pure StepChanged))))
+                    , ensureStep "inner" "inner" guest (const (pure StepChanged))
+                    ]
+                refusal "a second declaration" (\failure -> case failure of MisplacedEmptyChildFrame _ -> True; _ -> False)
+                    [entering (StepFrame "empty" "Empty"), declaresEmptyChildFrame (StepFrame "empty-b" "Empty") plain]
+                refusal "a reused frame identity" (\failure -> case failure of InvalidEmptyChildFrame "host" -> True; _ -> False)
+                    [entering (StepFrame "host" "Host")]
+                refusal "an unnamed frame" (\failure -> case failure of InvalidEmptyChildFrame "" -> True; _ -> False)
+                    [entering (StepFrame "" "Empty")]
+                refusal "an innermost descent without a declared empty child" (\failure -> case failure of DescentFromInnermostFrame "host" -> True; _ -> False)
+                    [descendsVia localContext plain]
+        , testCase "exactly one private module renders the canonical reverse adapter" $
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                preparation <- readFile (packageRoot </> "internal" </> "reverse-descent" </> "HostBootstrap" </> "Teardown" </> "Preparation.hs")
+                internal <- readModuleSource packageRoot "HostBootstrap.Teardown.Internal"
+                executor <- readFile (packageRoot </> "internal" </> "reverse-executor" </> "HostBootstrap" </> "Teardown" </> "Executor" </> "Internal.hs")
+                -- A rendering frames the domain as text; the failed-Up decoder only compares it.
+                let rendering = "Text \"hostbootstrap/reverse-descent-adapter\""
+                    count source = length (filter (rendering `isInfixOf`) (lines source))
+                (count preparation, count internal, count executor) @?= (1, 0, 0)
+                assertBool "the shared adapter fixes the three terminal outcomes"
+                    ("[adapterWord 3, adapterText \"released\", adapterText \"foreign-retained\", adapterText \"refused\"]" `isInfixOf` preparation)
+                assertBool "the root producer renders through the shared adapter"
+                    ("renderReverseAdapterKernel childPlanDigest (projectVerbName verb) parent child expected" `isInfixOf` internal)
+                assertBool "the child verifier renders through the shared adapter"
+                    ("renderReverseAdapterKernel planDigest (projectVerbName verb) parent child expected" `isInfixOf` executor)
+                assertBool "the executor does not import the root reverse-descent substrate"
+                    (not ("import HostBootstrap.Teardown.Internal" `isInfixOf` executor))
+        , testCase "a recovery observer's identity and revision are bound by the admitted plan" $
+            withFoundation $ \_codec profile root config -> do
+                let host = StepFrame "host" "Host"
+                    observed identity revision = case mkRecoveryObserver identity revision NoDelayedEffect (\_ _ -> pure RecoveryEffectAbsent) of
+                        Right observer -> observesRecoveryWith observer (deployVMStep "launch" host (const (pure StepChanged)))
+                        Left failure -> error failure
+                withAdmittedProjectPlan profile root config (expectStepPlan [observed "vm-inspector" 1]) $ \first ->
+                    withAdmittedProjectPlan profile root config (expectStepPlan [observed "vm-inspector" 2]) $ \revised ->
+                        withAdmittedProjectPlan profile root config (expectStepPlan [deployVMStep "launch" host (const (pure StepChanged))]) $ \bare -> do
+                            let snapshot = renderSnapshot first
+                                digest = stablePlanSnapshotDigest
+                            assertBool "the observer revision changes the plan digest" (digest snapshot /= digest (renderSnapshot revised))
+                            assertBool "declaring an observer changes the plan digest" (digest snapshot /= digest (renderSnapshot bare))
+                            let bound plan operation =
+                                    fmap (\(frame, _, observer) -> (frame, recoveryObserverIdentity observer, recoveryObserverRevision observer))
+                                        (TestLifecyclePlan.plannedRecoveryObserverKernel plan operation)
+                            bound first "core:deploy-vm" @?= Just ("host", "vm-inspector", 1)
+                            bound revised "core:deploy-vm" @?= Just ("host", "vm-inspector", 2)
+                            bound bare "core:deploy-vm" @?= Nothing
+                            bound first "project:launch" @?= Nothing
+                            _ <- expectRight (TestLifecyclePlan.admitPersistedCanonicalPlanSnapshotKernel (stablePlanSnapshotSpecDigest snapshot) (digest snapshot) (Just (stablePlanSnapshotConfigDigest snapshot)) (Just (stablePlanSnapshotBytes snapshot)))
+                            pure ()
         , testCase "renderSnapshot is deterministic across fresh local plan identities" $
             withFoundation $ \_codec profile root config -> do
                 first <- snapshotFor profile root config topologyFixturePlan
@@ -1149,7 +2568,7 @@ tests =
         , testCase "stable snapshot accessors expose exact admitted identities and derived digest" $
             withFoundation $ \_codec profile root config -> do
                 snapshot <- snapshotFor profile root config topologyFixturePlan
-                stablePlanSnapshotFormatVersion snapshot @?= 8
+                stablePlanSnapshotFormatVersion snapshot @?= 10
                 stablePlanSnapshotRoot snapshot
                     @?= canonicalProjectRootPath root
                 stablePlanSnapshotSpecDigest snapshot
@@ -1165,9 +2584,9 @@ tests =
             withSnapshotPlan singletonPlan $ \store project _authority unbound _spec root _config _drafts plan -> do
                 let stable = renderSnapshot plan
                     canonical = Fixture.canonicalSnapshotFromProjectPlan plan
-                    expectedDisplay = "CanonicalPlanSnapshot<v8, " <> Text.unpack (stablePlanSnapshotDigest stable) <> ">"
-                Reconcile.canonicalPlanSnapshotFormatVersion @?= 8
-                stablePlanSnapshotFormatVersion stable @?= 8
+                    expectedDisplay = "CanonicalPlanSnapshot<v10, " <> Text.unpack (stablePlanSnapshotDigest stable) <> ">"
+                Reconcile.canonicalPlanSnapshotFormatVersion @?= 10
+                stablePlanSnapshotFormatVersion stable @?= 10
                 Reconcile.canonicalPlanSnapshotRoot canonical @?= canonicalProjectRootPath root
                 Reconcile.canonicalPlanSnapshotSpecDigest canonical @?= stablePlanSnapshotSpecDigest stable
                 Reconcile.canonicalPlanSnapshotConfigDigest canonical @?= stablePlanSnapshotConfigDigest stable
@@ -1235,7 +2654,7 @@ tests =
                 let bytes = stablePlanSnapshotBytes snapshot
                 ByteString.take 18 bytes @?= ByteStringChar8.pack "HOSTBOOTSTRAP-PLAN"
                 ByteString.take 8 (ByteString.drop 18 bytes)
-                    @?= encodedWord64 8
+                    @?= encodedWord64 10
                 assertBool
                     "the step collection lacked its explicit count"
                     (framedCount "steps" 1 `ByteString.isInfixOf` bytes)
@@ -1620,12 +3039,28 @@ snapshotRootPayload snapshot = do
 
 deliverySnapshotCases :: [TestTree]
 deliverySnapshotCases =
-    [ testCase "a two-field delivery survives public persistence and exact recovery" $
+    [ testCase "provider descriptions survive persisted structural recovery" $ do
+        native <- makeAbsolute "."
+        let frame = StepFrame "host" "Host"
+            descriptions =
+                [ IncusProviderProbe "instance" "image" "guard" native 2 "2GiB" "4GiB"
+                , LimaProviderProbe "instance" 2 "2GiB" "4GiB" native "/guest"
+                , Wsl2ProviderProbe "instance" 2 "2GiB" "4GiB" native "/guest"
+                ]
+        forM_ descriptions $ \description -> do
+            let graph = expectStepPlan [declaresProviderProbe description (deployVMStep "provider" frame (const (pure StepChanged)))]
+            withSnapshotPlan graph $ \store project root unbound _spec _canonicalRoot _config _drafts plan -> do
+                let bytes = stablePlanSnapshotBytes (renderSnapshot plan)
+                persisted <- withPersistedPlanSnapshot root unbound plan (\_ _ _ _ _ -> pure ())
+                either (fail . show) pure persisted
+                recovered <- withBoundPlanSnapshot store project (\_ -> assertFailure "unexpected terminal snapshot") (\_ _ _ verified _ _ _ -> pure (planSnapshotCanonicalBytes verified))
+                recovered @?= Right (Just bytes)
+    , testCase "a two-field delivery survives public persistence and exact recovery" $
         withSnapshotPlan deliverySnapshotPlan $ \store project root unbound _spec _canonicalRoot _config _drafts plan -> do
             let stable = renderSnapshot plan
                 expectedBytes = stablePlanSnapshotBytes stable
             NonEmpty.length (forward plan) @?= 2
-            stablePlanSnapshotFormatVersion stable @?= 8
+            stablePlanSnapshotFormatVersion stable @?= 10
             assertBool
                 "the persisted fixture contains its two-field delivery record"
                 (framedCount "config-delivery" 2 `ByteString.isInfixOf` expectedBytes)
@@ -1661,15 +3096,33 @@ deliverySnapshotCases =
             readIORef callbacks >>= (@?= 1)
             readAllProtectedRecords store >>= (@?= before)
     , refusalCase
-        "a rehashed version-8 delivery record with three fields is refused"
+        "a rehashed version-10 delivery record with three fields is refused"
         "the canonical config-delivery field count is malformed"
         (replaceCanonicalFragment (framedCount "config-delivery" 2) (framedCount "config-delivery" 3))
     , refusalCase
-        "a rehashed version-7 header cannot admit a current two-field delivery"
+        "a rehashed snapshot with multiple provider probes is refused"
+        "the canonical provider probe count is malformed"
+        ( \bytes -> do
+            let original = framedCount "provider-probes" 0
+                (prefix, remainder) = ByteString.breakSubstring original bytes
+            assertBool "the provider probe list is present" (not (ByteString.null remainder))
+            pure (prefix <> framedCount "provider-probes" 2 <> ByteString.drop (ByteString.length original) remainder)
+        )
+    , refusalCase
+        "a rehashed snapshot with multiple share probes is refused"
+        "the canonical share probe count is malformed"
+        ( \bytes -> do
+            let original = framedCount "share-probes" 0
+                (prefix, remainder) = ByteString.breakSubstring original bytes
+            assertBool "the share probe list is present" (not (ByteString.null remainder))
+            pure (prefix <> framedCount "share-probes" 2 <> ByteString.drop (ByteString.length original) remainder)
+        )
+    , refusalCase
+        "a rehashed version-9 header cannot admit a current two-field delivery"
         "the canonical plan version is unsupported"
         ( replaceCanonicalFragment
-            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 8)
-            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 7)
+            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 10)
+            ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 9)
         )
     , refusalCase
         "a rehashed legacy version-7 delivery snapshot is refused"
@@ -1684,7 +3137,7 @@ deliverySnapshotCases =
                         <> framedText "/app/project"
             legacy <- replaceCanonicalFragment currentPrefix legacyPrefix bytes
             replaceCanonicalFragment
-                ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 8)
+                ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 10)
                 ("HOSTBOOTSTRAP-PLAN" <> encodedWord64 7)
                 legacy
         )
@@ -1785,6 +3238,17 @@ replaceSnapshotTestRecord store key bytes = do
             compareAndSwapProtectedRecord session key (ExpectVersion (protectedRecordVersion record)) bytes
     either (fail . show) (const (pure ())) written
 
+-- This test-only representation mirror forges the otherwise unrepresentable
+-- inconsistent carrier.  It must track the seven lazy fields in the hidden
+-- finalized-spec owner; the production constructor remains inaccessible.
+data ForgedFinalizedSpec = ForgedFinalizedSpec Any Any Any Any Any Any Any
+
+replaceFinalizedRegistry :: FinalizedProjectSpec scope digest cfg -> registry -> FinalizedProjectSpec scope digest cfg
+replaceFinalizedRegistry spec registry =
+    case unsafeCoerce spec of
+        ForgedFinalizedSpec codec _ builder projector staticServices staticBuilder staticProjector ->
+            unsafeCoerce (ForgedFinalizedSpec codec (unsafeCoerce registry) builder projector staticServices staticBuilder staticProjector)
+
 recoveredProductionProjectPlanCases :: [TestTree]
 recoveredProductionProjectPlanCases =
     [ testCase "exact reconstruction retains one admitted plan identity" $
@@ -1809,9 +3273,13 @@ recoveredProductionProjectPlanCases =
         withRecoveredProjectPlanCandidateFixture
             singletonPlan
             fixtureServiceRegistry
-            ( \_store _project profile root _verified _bound _binding candidateSpec candidateConfig -> do
+            ( \_store _project profile root verified bound binding candidateSpec candidateConfig -> do
                 let candidateCodec = finalizedProjectCodec candidateSpec
                     candidateServices = finalizedProjectServices candidateSpec
+                    candidateBytes = do
+                        drafts <- projectPlanDrafts candidateSpec root candidateConfig
+                        withRecoveredProductionProjectPlan profile root verified bound binding
+                            (unsafeCoerce candidateConfig) (unsafeCoerce drafts) (stablePlanSnapshotBytes . renderSnapshot)
                     observed =
                         withRecoveredProductionProjectPlanInputs
                             profile
@@ -1829,10 +3297,8 @@ recoveredProductionProjectPlanCases =
                                     , renderProjectCodecValue
                                         recoveredCodec
                                         (validatedConfigValue recoveredConfig)
-                                    , NonEmpty.length recoveredDrafts
-                                    , fmap
-                                        NonEmpty.length
-                                        (projectPlanDrafts recoveredSpec root recoveredConfig)
+                                    , withRecoveredProductionProjectPlan profile root verified bound binding recoveredConfig recoveredDrafts
+                                        (stablePlanSnapshotBytes . renderSnapshot)
                                     , validatedConfigSpecDigest recoveredConfig
                                     )
                             )
@@ -1846,8 +3312,7 @@ recoveredProductionProjectPlanCases =
                             , variants
                             , families
                             , rendered
-                            , draftCount
-                            , rebuiltDraftCount
+                            , recoveredBytes
                             , configSpecDigest
                             ) -> do
                             -- the reindexed specification is at the recovered
@@ -1866,10 +3331,11 @@ recoveredProductionProjectPlanCases =
                                     (validatedConfigValue candidateConfig)
                             -- the retained plan builder is preserved and still
                             -- produces the same stream at the recovered index
-                            draftCount @?= 1
-                            rebuiltDraftCount @?= Right draftCount
+                            candidateSnapshot <- expectRight candidateBytes
+                            recoveredSnapshotBytes <- expectRight recoveredBytes
+                            recoveredSnapshotBytes @?= candidateSnapshot
             )
-    , testCase "an empty service registry still proves its digest before the specification is reindexed" $
+    , testCase "an empty-registry recovery succeeds with no variants" $
         withRecoveredProjectPlanCandidateFixtureUsing
             emptyServiceRegistry
             singletonPlan
@@ -1914,6 +3380,30 @@ recoveredProductionProjectPlanCases =
                         (\_spec _refined _drafts -> error "recovered-input callback entered")
                     )
             )
+    , testCase "a recorded non-empty registry refuses an empty candidate" $
+        withRecoveredProjectPlanCandidateFixtureUsing fixtureServiceRegistry singletonPlan emptyServiceRegistry $
+            \_store _project profile root _verified _bound _binding candidateSpec candidateConfig -> do
+                let expected = recoveredProductionProfileSpecDigest profile
+                    observed = projectCodecSpecDigest (finalizedProjectCodec candidateSpec)
+                assertBool "empty and non-empty finalized registries differ" (expected /= observed)
+                assertRecoveryMismatchExact "finalized specification" expected observed $
+                    withRecoveredProductionProjectPlanInputs profile root candidateSpec candidateConfig
+                        (\_ _ _ -> error "mismatched registry reached the callback")
+    , testCase "a mismatched retained registry carrier is refused during recovery" $
+        withRecoveredProjectPlanCandidateFixture singletonPlan fixtureServiceRegistry $
+            \_store _project profile root _verified _bound _binding candidateSpec candidateConfig ->
+                withProductionProjectCodec $ \baseCodec ->
+                    withFinalizedProjectSpec baseCodec emptyServiceRegistry
+                        (\_ _ -> Right singletonPlan) Fixture.refusingForwardChildPlan $ \foreignSpec -> do
+                            let expected = projectCodecSpecDigest (finalizedProjectCodec candidateSpec)
+                                observed = projectCodecSpecDigest (finalizedProjectCodec foreignSpec)
+                                forged = replaceFinalizedRegistry candidateSpec (finalizedProjectServices foreignSpec)
+                            assertBool "the foreign registry was finalized under a different digest" (expected /= observed)
+                            projectCodecSpecDigest (finalizedProjectCodec forged) @?= expected
+                            finalizedServiceVariantNames (finalizedProjectServices forged) @?= []
+                            assertRecoveryMismatchExact "finalized specification carriers" expected observed $
+                                withRecoveredProductionProjectPlanInputs profile root forged candidateConfig
+                                    (\_ _ _ -> error "mismatched carrier reached the callback")
     , testCase "different independently validated config bytes are refused before refinement" $
         withRecoveredProjectPlanCandidateFixture
             singletonPlan
@@ -2168,8 +3658,8 @@ sourceBoundaryTests =
                 let expectedRoots = sort
                         [ "src", "internal/authority", "internal/bare-runtime", "internal/capacity", "internal/chain-entry"
                         , "internal/cluster-backend", "internal/cluster-exposure", "internal/cluster-ownership", "internal/colima-backend", "internal/colima-ownership", "internal/effect", "internal/effect-command"
-                        , "internal/handoff-implementation", "internal/harness-lifecycle", "internal/lifecycle-representation", "internal/network-port"
-                        , "internal/ownership", "internal/plan-resource", "internal/provider-start", "internal/readiness", "internal/reconcile-error", "internal/reverse-root-intent", "internal/wall-observation"
+                        , "internal/failed-up", "internal/handoff-completion", "internal/handoff-implementation", "internal/harness-close", "internal/harness-lifecycle", "internal/lifecycle-representation", "internal/network-port"
+                        , "internal/ownership", "internal/plan-resource", "internal/provider-start", "internal/readiness", "internal/reconcile-error", "internal/reverse-descent", "internal/reverse-executor", "internal/reverse-root-intent", "internal/wall-observation"
                         ]
                     declaredRoots = sort
                         [ SourceGuard.repoRelativePath packageRoot (packageRoot </> directory)
@@ -2533,9 +4023,13 @@ sourceBoundaryTests =
                             , "HostBootstrap.Lifecycle.Context"
                             , "HostBootstrap.Lifecycle.Mode"
                             , "HostBootstrap.Lifecycle.Recovery"
+                            , "HostBootstrap.Lifecycle.Rooted"
+                            , "HostBootstrap.Lifecycle.Rooted.Node"
                             , "HostBootstrap.Lifecycle.RootedPlan"
+                            , "HostBootstrap.Lifecycle.RootedPlan.Internal"
                             , "HostBootstrap.Lifecycle.Session"
                             , "HostBootstrap.Reconcile"
+                            , "HostBootstrap.Substrate.Provider.Backend"
                             , "HostBootstrap.Teardown.Internal"
                             ]
                 importers @?= allowed
@@ -2725,7 +4219,6 @@ sourceBoundaryTests =
                                     <> lines internalSource
                                 )
                             )
-                    cliSignificant = significantHaskellLineCount cliSource
                     internalSignificant = significantHaskellLineCount internalSource
                     -- Dated 2026-11-01 attribution before this ownership adoption:
                     -- Construct 631 / Internal 226 plus CLI and the old 394 + 618
@@ -2751,6 +4244,7 @@ sourceBoundaryTests =
                         , "withFinalizedProjectSpecPartsKernel"
                         , "withFinalizedForwardChildProjectionKernel"
                         , "reindexFinalizedProjectSpecKernel"
+                        , "refuseForwardChildPlan"
                         ]
                 assertBool
                     "the public facade no longer exports FinalizedProjectSpec abstractly"
@@ -2770,9 +4264,10 @@ sourceBoundaryTests =
                     "the hidden finalized-spec owner appears in exposed-modules"
                     ("HostBootstrap.ProjectPlan.Construct.Internal" `notElem` exposed)
                 importers "HostBootstrap.ProjectPlan.Construct.Internal"
-                    @?= [ "HostBootstrap.Lifecycle.RootedPlan"
+                    @?= [ "HostBootstrap.CLI"
+                        , "HostBootstrap.Lifecycle.RootedPlan"
+                        , "HostBootstrap.Lifecycle.RootedPlan.Internal"
                         , "HostBootstrap.ProjectPlan.Construct"
-                        , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.ProjectPlan.Projection.Internal"
                         ]
                 users "withFinalizedForwardChildProjectionKernel"
@@ -2799,22 +4294,22 @@ sourceBoundaryTests =
                     (\(label, fragment, body) -> assertContains label fragment body)
                     [
                         ( "ProjectSpec retains one scope-polymorphic pure projector"
-                        , "psForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
+                        , "psForwardChildPlan :: forall scope. cfg scope -> ParentFrameId -> ChildFrameId -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
                         , cli
                         )
                     ,
                         ( "ProjectSpecBuilder retains the same scope-polymorphic pure projector"
-                        , "pbForwardChildPlan :: forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
+                        , "pbForwardChildPlan :: forall scope. cfg scope -> ParentFrameId -> ChildFrameId -> LiftContext -> Either String (FilePath, cfg scope, StepPlan)"
                         , cli
                         )
                     ,
                         ( "the public installer accepts exactly the fixed projector shape"
-                        , "addForwardChildPlan :: ( forall scope. cfg scope -> Text -> Text -> LiftContext -> Either String (FilePath, cfg scope, StepPlan) ) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg"
+                        , "addForwardChildPlan :: ( forall scope. cfg scope -> ParentFrameId -> ChildFrameId -> LiftContext -> Either String (FilePath, cfg scope, StepPlan) ) -> ProjectSpecBuilder cfg tcfg -> ProjectSpecBuilder cfg tcfg"
                         , cli
                         )
                     ,
                         ( "the hidden kernel consumes the exact parent config and has a fixed refusal callback"
-                        , "withFinalizedForwardChildProjectionKernel :: FinalizedProjectSpec scope specDigest cfg -> ValidatedConfig scope specDigest parentConfigId (cfg scope) -> Text -> Text -> LiftContext -> ( forall childConfigId. FilePath -> ValidatedConfig scope specDigest childConfigId (cfg scope) -> StepPlan -> IO (Either Text ()) ) -> IO (Either Text ())"
+                        , "withFinalizedForwardChildProjectionKernel :: FinalizedProjectSpec scope specDigest cfg -> ValidatedConfig scope specDigest parentConfigId (cfg scope) -> ParentFrameId -> ChildFrameId -> LiftContext -> ( forall childConfigId. FilePath -> ValidatedConfig scope specDigest childConfigId (cfg scope) -> StepPlan -> IO (Either Text ()) ) -> IO (Either Text ())"
                         , kernel
                         )
                     ]
@@ -2832,14 +4327,10 @@ sourceBoundaryTests =
                     , "pbForwardChildPlanCount builder /= 1 = Left DuplicateForwardChildPlan"
                     ]
                     cli
-                assertContains
-                    "the real CLI retains the exact installed projector during finalization"
-                    "(psStepPlan spec) (psForwardChildPlan spec)"
-                    cli
-                assertContains
-                    "the bare CLI supplies its owned cluster gate and default child refusal"
-                    "(bareStepPlan progName) refuseForwardChildPlan"
-                    cli
+                SourceGuard.countHaskellTokenSequence
+                    (SourceGuard.haskellTokens "(psStepPlan spec) (psForwardChildPlan spec)") cliSource @?= 1
+                SourceGuard.countHaskellTokenSequence
+                    (SourceGuard.haskellTokens "(bareStepPlan progName) refuseForwardChildPlan") cliSource @?= 1
                 assertFragmentsInOrder
                     "the exact retained projector precedes canonical child-config validation and fixed callback flattening"
                     [ "case projector"
@@ -2861,12 +4352,18 @@ sourceBoundaryTests =
                     kernel
                 assertFragmentsInOrder
                     "Harness refinalization reuses the exact static projector"
-                    [ "scopeKind baseCodec staticServices staticPlanBuilder staticProjector use ="
+                    [ "baseCodec staticServices staticPlanBuilder staticProjector use ="
                     , "FinalizedProjectSpec finalCodec finalServices staticPlanBuilder staticProjector staticServices staticPlanBuilder staticProjector"
                     , "FinalizedProjectSpec _ _ _ _ staticServices staticPlanBuilder staticProjector"
-                    , "withFinalizedProjectSpecKernel HarnessScope baseCodec staticServices staticPlanBuilder staticProjector use"
+                    , "withFinalizedProjectSpecKernel baseCodec staticServices staticPlanBuilder staticProjector use"
                     ]
                     internal
+                assertContains "the hidden finalizer derives its scope tag from the indexed codec"
+                    "withFinalizedProjectSpecKernel :: forall scope specDigest cfg result. (KnownScopeKind scope) => ProjectCodec scope specDigest cfg" internal
+                assertContains "the registry receives the type-derived scope tag"
+                    "withFinalizedServiceRegistry (scopeKindOf (Proxy @scope)) baseCodec staticServices" internal
+                assertContains "the public finalizer requires a known scope index"
+                    "withFinalizedProjectSpec :: (KnownScopeKind scope) => ProjectCodec scope initialDigest cfg" (normalizeHaskellSource constructSource)
                 mapM_
                     (\identifier -> SourceGuard.countHaskellIdentifier identifier kernelSource @?= 0)
                     [ "ByteString"
@@ -2885,7 +4382,7 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "staticProjector" internalSource @?= 7
                 SourceGuard.countHaskellIdentifier "addForwardChildPlan" cliSource @?= 3
                 SourceGuard.countHaskellIdentifier "pbForwardChildPlanCount" cliSource @?= 6
-                SourceGuard.countHaskellIdentifier "refuseForwardChildPlan" cliSource @?= 4
+                SourceGuard.countHaskellIdentifier "refuseForwardChildPlan" cliSource @?= 3
                 SourceGuard.countHaskellIdentifier "psForwardChildPlan" cliSource @?= 3
                 mapM_
                     (\identifier -> SourceGuard.countHaskellIdentifier identifier partsSource @?= 0)
@@ -2918,13 +4415,12 @@ sourceBoundaryTests =
                 let forwardingBytes = LazyByteString.toStrict
                         (Aeson.encode (SourceGuard.haskellTokens forwardingSource, forwardingClauses))
                 sha256Text forwardingBytes
-                    @?= "c49bb152f01599b443a774dc506b11655665f209a31f3ab11b2b14f38c2326bd"
+                    @?= "f56f25eaf564ccd124f0fc3da556d83a052906329ba8a153f9132783945fc3b6"
                 sha256Text internalBytes
-                    @?= "821e9b1deb79a23ae62339022d86aee874a0a1f3e02bf4f91204ae596d9cadb3"
-                internalSignificant @?= 226
-                assertBool "shared CLI lost the installed projector surface" (cliSignificant >= 424)
+                    @?= "38801dd3a34600b8abac540695d9ac0896dac0bf45a5abfea8e5495c728f4e59"
+                internalSignificant @?= 233
                 cabalAttribution @?= 1
-        , testCase "planned-forward handoff is exact, inert, hidden, acyclic, and frozen" $
+        , testCase "catalog-forward handoff is exact, inert, hidden, acyclic, and frozen" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 handoffPath <- requiredModulePath packageRoot "HostBootstrap.ProjectPlan.Handoff.Internal"
                 handoffBytes <- ByteString.readFile handoffPath
@@ -2957,10 +4453,7 @@ sourceBoundaryTests =
                             ]
                     importedByHandoff = sort (SourceGuard.haskellImports handoffSource)
                 filter (/= ",") handoffExports
-                    @?= [ "PlannedForwardHandoff"
-                        , "withPlannedForwardHandoffKernel"
-                        , "withPlannedForwardProcessInputsKernel"
-                        , "CatalogForwardHandoff"
+                    @?= [ "CatalogForwardHandoff"
                         , "withCatalogForwardHandoffKernel"
                         , "withCatalogForwardProcessInputsKernel"
                         ]
@@ -2988,12 +4481,10 @@ sourceBoundaryTests =
                     @?= [ "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Handoff.Process.Route"
                         ]
-                users "PlannedForwardHandoff"
-                    @?= ["HostBootstrap.ProjectPlan.Handoff.Internal"]
-                users "withPlannedForwardHandoffKernel"
-                    @?= ["HostBootstrap.ProjectPlan.Handoff.Internal"]
-                users "withPlannedForwardProcessInputsKernel"
-                    @?= ["HostBootstrap.ProjectPlan.Handoff.Internal"]
+                mapM_ (\name -> users name @?= [])
+                    [ "PlannedForwardHandoff", "withPlannedForwardHandoffKernel"
+                    , "withPlannedForwardProcessInputsKernel", "withValidatedNestedLifecycleContext"
+                    ]
                 users "CatalogForwardHandoff"
                     @?= [ "HostBootstrap.Handoff.Process.Route"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
@@ -3011,18 +4502,14 @@ sourceBoundaryTests =
                     @?= sort
                         [ "Data.ByteString"
                         , "Data.Text"
-                        , "Data.Text"
                         , "HostBootstrap.Config.Class"
                         , "HostBootstrap.Config.Schema"
                         , "HostBootstrap.Context"
                         , "HostBootstrap.Handoff"
-                        , "HostBootstrap.Lifecycle.Context.Internal"
                         , "HostBootstrap.Lifecycle.Plan"
                         , "HostBootstrap.Lifecycle.RootedPlan"
                         , "HostBootstrap.Lift.Context"
-                        , "HostBootstrap.ProjectPlan.Construct.Internal"
                         , "HostBootstrap.ProjectPlan.Frame"
-                        , "HostBootstrap.ProjectPlan.Projection.Internal"
                         , "HostBootstrap.Step"
                         ]
                 mapM_
@@ -3060,47 +4547,9 @@ sourceBoundaryTests =
                     , "HostBootstrap.ProjectPlan.Projection.Internal"
                     , "HostBootstrap.Step"
                     ]
-                SourceGuard.countHaskellTokenSequence ["data", "PlannedForwardHandoff"] handoffSource @?= 1
                 SourceGuard.countHaskellTokenSequence ["data", "CatalogForwardHandoff"] handoffSource @?= 1
-                SourceGuard.countHaskellIdentifier "data" handoffSource @?= 2
+                SourceGuard.countHaskellIdentifier "data" handoffSource @?= 1
                 SourceGuard.countHaskellIdentifier "newtype" handoffSource @?= 0
-                assertContains
-                    "the package has exactly eight nominal phantom authorities"
-                    "type role PlannedForwardHandoff nominal nominal nominal nominal nominal nominal nominal nominal"
-                    handoff
-                assertContains
-                    "the hidden constructor retains both exact plans, currents, context, route views, binding input, and payload"
-                    "PlannedForwardHandoff :: ProjectPlan scope specDigest parentPlanId parentConfigId cfg -> CurrentFrame scope parentPlanId parentFrame -> ValidatedLifecycleContext scope specDigest parentPlanId parentConfigId parentFrame -> ProjectPlan scope specDigest childPlanId childConfigId cfg -> PlanDigestBinding scope specDigest childPlanDigest childPlanId -> CurrentFrame scope childPlanId childFrame -> LiftContext -> LiftContext -> HandoffBindingInput -> ByteString -> PlannedForwardHandoff scope specDigest parentPlanId parentConfigId parentFrame childPlanDigest childConfigId childFrame"
-                    handoff
-                assertContains
-                    "the sole producer accepts only the exact finalized projector and parent evidence"
-                    "withPlannedForwardHandoffKernel :: (ProjectCfg cfg) => FinalizedProjectSpec scope specDigest cfg -> ProjectPlan scope specDigest parentPlanId parentConfigId cfg -> CurrentFrame scope parentPlanId parentFrame -> ValidatedLifecycleContext scope specDigest parentPlanId parentConfigId parentFrame -> ( forall childPlanDigest childConfigId childFrame. PlannedForwardHandoff scope specDigest parentPlanId parentConfigId parentFrame childPlanDigest childConfigId childFrame -> IO (Either Text ()) ) -> IO (Either Text ())"
-                    handoff
-                assertFragmentsInOrder
-                    "the lifecycle join and its frame evidence precede the shared projection kernel"
-                    [ "case withValidatedRootLifecycleContext lifecycle borrow of"
-                    , "Left (LifecycleContextRootFrameRequired _)"
-                    , "withValidatedNestedLifecycleContext lifecycle borrow"
-                    , "borrow _ _ retainedCurrent projectFrame validated ="
-                    , "admitLifecycle retainedCurrent (projectFrameId projectFrame) (validatedContextValue validated)"
-                    , "suppliedId /= retainedId || suppliedId /= projectId"
-                    , "withImmediateTargetKernel finalized parent suppliedCurrent parentContext sealPlanned"
-                    , "suppliedId = currentFrameId suppliedCurrent"
-                    , "retainedId = currentFrameId retainedCurrent"
-                    ]
-                    handoff
-                assertContains
-                    "the package is sealed only from the shared kernel's own admitted target evidence"
-                    "sealPlanned targetPlan binding targetCurrent _child _parentFrame _childFrame raw route payload _configDigest _payloadDigest input = runPlannedForward ( PlannedForwardHandoff parent suppliedCurrent lifecycle targetPlan binding targetCurrent raw route input payload ) use"
-                    handoff
-                assertContains
-                    "the Process fold exposes only the sanitized route, exact input, and canonical payload"
-                    "withPlannedForwardProcessInputsKernel planned use = runPlannedForward planned expose where expose (PlannedForwardHandoff _ _ _ _ _ _ _ route input payload) = use route input payload"
-                    handoff
-                assertContains
-                    "all ten retained fields are forced before either callback"
-                    "runPlannedForward planned@(PlannedForwardHandoff parent current lifecycle targetPlan binding child raw route input payload) use = parent `seq` current `seq` lifecycle `seq` targetPlan `seq` binding `seq` child `seq` raw `seq` route `seq` input `seq` payload `seq` use planned"
-                    handoff
                 assertContains
                     "the catalog package has exactly eight nominal phantom authorities"
                     "type role CatalogForwardHandoff nominal nominal nominal nominal nominal nominal nominal nominal"
@@ -3115,10 +4564,10 @@ sourceBoundaryTests =
                     handoff
                 assertFragmentsInOrder
                     "catalog selection precedes every frame, configuration, digest, and route recheck"
-                    [ "case withRootedPlanCatalogEdgeKernel catalog requestedParent requestedChild sealCatalog of"
+                    [ "case withRootedPlanCatalogEdgeKernel catalog (ParentFrameId requestedParent) (ChildFrameId requestedChild) sealCatalog of"
                     , "Left failure -> pure (Left (catalogFailure failure))"
                     , "Right action -> action"
-                    , "sealCatalog parentCurrent childPlan binding childCurrent raw route payload configDigest payloadDigest keys"
+                    , "sealCatalog parentCurrent childPlan binding childCurrent (RawLiftRoute raw) (StrippedLiftRoute route) payload (ConfigDigest configDigest) (PayloadDigest payloadDigest) keys"
                     , "currentFrameId childCurrent /= requestedChild"
                     , "Context.currentFrame (cfgContext (validatedConfigValue childConfig)) /= requestedChild"
                     , "validatedConfigDigest childConfig /= configDigest"
@@ -3201,11 +4650,8 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text handoffBytes
-                    @?= "e56df2633605bd76186b246881ff7b2a8f911c9f3c6cdd431008c7e63819c29d"
-                significantHaskellLineCount handoffSource @?= 339
-                assertBool
-                    "the forward-package owner crossed the hard 400-line split boundary"
-                    (significantHaskellLineCount handoffSource < 400)
+                    @?= "a743804cd04ca9d6d043cc40581aa23cc1f92dcdfd21341cc8474f755fb11f8c"
+                significantHaskellLineCount handoffSource @?= 197
         , testCase "the shared immediate-target projection is VLC-free, exact, hidden, and acyclic" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 planPath <- requiredModulePath packageRoot "HostBootstrap.Lifecycle.Plan"
@@ -3269,12 +4715,10 @@ sourceBoundaryTests =
                 importers "HostBootstrap.ProjectPlan.Projection.Internal"
                     @?= [ "HostBootstrap.Command.Child"
                         , "HostBootstrap.Lifecycle.RootedPlan"
-                        , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         ]
                 users "withImmediateTargetKernel"
                     @?= [ "HostBootstrap.Command.Child"
                         , "HostBootstrap.Lifecycle.RootedPlan"
-                        , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.ProjectPlan.Projection.Internal"
                         ]
                 users "withProjectedProjectPlanKernel"
@@ -3285,7 +4729,6 @@ sourceBoundaryTests =
                 -- projection producers and importers are pinned independently above.
                 projectionVocabularyUsers
                     @?= [ "HostBootstrap.Lifecycle.Plan"
-                        , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.ProjectPlan.Projection.Internal"
                         , "HostBootstrap.Reconcile"
                         ]
@@ -3301,6 +4744,7 @@ sourceBoundaryTests =
                         , "HostBootstrap.Config.Vocab"
                         , "HostBootstrap.Context"
                         , "HostBootstrap.Handoff"
+                        , "HostBootstrap.Lifecycle.FrameRole"
                         , "HostBootstrap.Lifecycle.Plan"
                         , "HostBootstrap.Lift.Context"
                         , "HostBootstrap.ProjectPlan.Construct.Internal"
@@ -3335,7 +4779,7 @@ sourceBoundaryTests =
                     , "topologyDescentEdgesKernel (topologyKernel parent)"
                     , "edgeParent == parentFrameId"
                     , "[(child, rawRoute)] | [_] <- liftLayers rawRoute ->"
-                    , "withFinalizedForwardChildProjectionKernel finalized parentConfig parentFrameId child rawRoute"
+                    , "withFinalizedForwardChildProjectionKernel finalized parentConfig (ParentFrameId parentFrameId) (ChildFrameId child) rawRoute"
                     , "admitProjection placement child rawRoute"
                     ]
                     projection
@@ -3403,7 +4847,9 @@ sourceBoundaryTests =
                     ]
                 assertFragmentsInOrder
                     "direct host-container projection preserves every field and rebases one unambiguous durable source"
-                    [ "clImage parent == clImage targetContainer"
+                    [ "clPlacement parent == clPlacement targetContainer"
+                    , "direct container placement differs"
+                    , "clImage parent == clImage targetContainer"
                     , "clExtraArgs parent == clExtraArgs targetContainer"
                     , "clRemoveAfter parent == clRemoveAfter targetContainer"
                     , "clConfigDelivery parent == clConfigDelivery targetContainer"
@@ -3457,15 +4903,56 @@ sourceBoundaryTests =
                     , "System.Process"
                     ]
                 sha256Text projectionBytes
-                    @?= "252742d3ba09fa228f8ddc17ab7c1a099cc2bd0810a8aab0a1bfc2ccd9e17c8a"
-                significantHaskellLineCount projectionSource @?= 281
+                    @?= "553f18f7fb08b909ebcc212b7ad5319d40b5edefc6d310e9c243bb73afefddd1"
+                assertBool "the immediate-target projection crossed the 400-line split boundary"
+                    (significantHaskellLineCount projectionSource < 400)
+        , testCase "post-open response families are closed and preserve their wire labels" $
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                relayPath <- requiredModulePath packageRoot "HostBootstrap.Handoff.Relay"
+                relaySource <- readFile relayPath
+                let relay = normalizeHaskellSource relaySource
+                assertContains "the response selector has exactly five constructors"
+                    "data PostOpenFamily = Descend | Settled | FrameComplete | ReceiptRecorded | Refused" relay
+                mapM_
+                    (\fragment -> assertContains "each response family has its original wire label" fragment relay)
+                    [ "postOpenFamilyLabel Descend = \"descend\""
+                    , "postOpenFamilyLabel Settled = \"settled\""
+                    , "postOpenFamilyLabel FrameComplete = \"frame-complete\""
+                    , "postOpenFamilyLabel ReceiptRecorded = \"receipt-recorded\""
+                    , "postOpenFamilyLabel Refused = \"refused\""
+                    ]
+                assertContains "the response producer accepts the closed selector"
+                    "RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb -> PostOpenFamily -> ByteString" relay
+                assertContains "the checked stage retains the wire label"
+                    "Rooted.mkLifecycleStage (postOpenFamilyLabel family)" relay
+                buildSource <- requiredSourceSectionFrom
+                    "the closed response builder" "build path token ordinal nonce digest stage = case family of"
+                    "fitRootedRefusal ::" relaySource
+                assertBool "the response builder must handle each family without a wildcard"
+                    (not (containsTokenSequence ["_", "->"] (SourceGuard.haskellTokens buildSource)))
+                mapM_
+                    (\fragment -> assertContains "request kinds admit only their paired response families" fragment relay)
+                    [ "nextNode nonce = require (case family of Nothing -> True Just Descend -> True Just Refused -> True Just Settled -> False Just FrameComplete -> False Just ReceiptRecorded -> False) nonce"
+                    , "settlement nonce = require (case family of Nothing -> False Just Descend -> False Just Settled -> True Just FrameComplete -> False Just ReceiptRecorded -> False Just Refused -> True ) nonce"
+                    , "completion nonce = require (case family of Nothing -> False Just Descend -> False Just Settled -> False Just FrameComplete -> True Just ReceiptRecorded -> False Just Refused -> True ) nonce"
+                    , "receipt nonce = require (case family of Nothing -> False Just Descend -> False Just Settled -> False Just FrameComplete -> False Just ReceiptRecorded -> True Just Refused -> True ) nonce"
+                    ]
+                assertBool "the former open-family fallback remains"
+                    (not ("the post-open response family is not closed" `isInfixOf` relaySource))
         , testCase "the recursive rooted plan catalog is nominal, hidden, fold-only, and inert" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 catalogPath <- requiredModulePath packageRoot "HostBootstrap.Lifecycle.RootedPlan"
                 catalogBytes <- ByteString.readFile catalogPath
+                representationPath <- requiredModulePath packageRoot "HostBootstrap.Lifecycle.RootedPlan.Internal"
+                representationBytes <- ByteString.readFile representationPath
+                frameRolePath <- requiredModulePath packageRoot "HostBootstrap.Lifecycle.FrameRole"
+                frameRoleBytes <- ByteString.readFile frameRolePath
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 let catalogSource = Text.unpack (TextEncoding.decodeUtf8 catalogBytes)
                     catalog = normalizeHaskellSource catalogSource
+                    representationSource = Text.unpack (TextEncoding.decodeUtf8 representationBytes)
+                    representation = normalizeHaskellSource representationSource
+                    frameRoleSource = Text.unpack (TextEncoding.decodeUtf8 frameRoleBytes)
                 sources <- readProductionSources packageRoot
                 metadataPublic <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
                 metadataHidden <- either assertFailure pure (SourceGuard.mainImplementationHiddenModules cabalSource)
@@ -3487,12 +4974,36 @@ sourceBoundaryTests =
                     catalogSignificant = significantHaskellLineCount catalogSource
                 filter (/= ",") catalogExports
                     @?= [ "RootedPlanCatalog"
+                        , "ParentFrameId"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "ChildFrameId"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "RawLiftRoute"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "StrippedLiftRoute"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "ConfigDigest"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "PayloadDigest"
+                        , "("
+                        , ".."
+                        , ")"
                         , "withRootedPlanCatalogKernel"
                         , "withRootedPlanCatalogRootKernel"
                         , "withRootedPlanCatalogEntriesKernel"
                         , "withRootedPlanCatalogEntriesContinuationKernel"
-                        , "withRootedPlanCatalogEntryKernel"
                         , "withRootedPlanCatalogEdgeKernel"
+                        , "rootedPlanCatalogChildRoutesKernel"
                         , "rootedPlanCatalogRecordIdentityKernel"
                         , "rootedPlanCatalogManifestKernel"
                         , "rootedPlanCatalogManifestMatchesKernel"
@@ -3504,9 +5015,9 @@ sourceBoundaryTests =
                     , "withRootedPlanCatalogRootKernel"
                     , "withRootedPlanCatalogEntriesKernel"
                     , "withRootedPlanCatalogEntriesContinuationKernel"
-                    , "withRootedPlanCatalogEntryKernel"
                     , "withRootedPlanCatalogEdgeKernel"
                     , "withRootedPlanCatalogFrameKernel"
+                    , "rootedPlanCatalogChildRoutesKernel"
                     , "rootedPlanCatalogRecordIdentityKernel"
                     , "rootedPlanCatalogManifestKernel"
                     , "rootedPlanCatalogManifestMatchesKernel"
@@ -3523,7 +5034,10 @@ sourceBoundaryTests =
                 importers "HostBootstrap.Lifecycle.RootedPlan"
                     @?= [ "HostBootstrap.Authority.FailedUp.Internal"
                         , "HostBootstrap.Command.LifecycleEntry"
+                        , "HostBootstrap.Handoff.TerminalReport"
                         , "HostBootstrap.Lifecycle.Rooted"
+                        , "HostBootstrap.Lifecycle.Rooted.Node"
+                        , "HostBootstrap.Lifecycle.RootedPlan.Testing"
                         , "HostBootstrap.ProjectPlan.Handoff.Internal"
                         , "HostBootstrap.Teardown.Internal"
                         ]
@@ -3542,20 +5056,27 @@ sourceBoundaryTests =
                         , "HostBootstrap.Context"
                         , "HostBootstrap.Lifecycle.Context.Internal"
                         , "HostBootstrap.Lifecycle.Plan"
+                        , "HostBootstrap.Lifecycle.RootedPlan.Internal"
                         , "HostBootstrap.Lift.Context"
                         , "HostBootstrap.ProjectPlan.Construct.Internal"
                         , "HostBootstrap.ProjectPlan.Frame"
                         , "HostBootstrap.ProjectPlan.Projection.Internal"
                         , "HostBootstrap.Step"
                         ]
-                SourceGuard.countHaskellTokenSequence ["data", "RootedPlanCatalog"] catalogSource @?= 1
-                SourceGuard.countHaskellIdentifier "data" catalogSource @?= 1
-                SourceGuard.countHaskellIdentifier "newtype" catalogSource @?= 0
-                SourceGuard.countHaskellIdentifier "type" catalogSource @?= 1
+                SourceGuard.countHaskellTokenSequence ["data", "RootedPlanCatalog"] representationSource @?= 1
+                SourceGuard.countHaskellIdentifier "data" representationSource @?= 1
+                -- The shared frame identities and the catalog's four edge values remain distinct roles.
+                SourceGuard.countHaskellIdentifier "newtype" frameRoleSource @?= 2
+                forM_ ["ParentFrameId", "ChildFrameId"] $ \role ->
+                    SourceGuard.countHaskellTokenSequence ["newtype", role] frameRoleSource @?= 1
+                SourceGuard.countHaskellIdentifier "newtype" representationSource @?= 4
+                forM_ ["RawLiftRoute", "StrippedLiftRoute", "ConfigDigest", "PayloadDigest"] $ \role ->
+                    SourceGuard.countHaskellTokenSequence ["newtype", role] representationSource @?= 1
+                SourceGuard.countHaskellIdentifier "type" representationSource @?= 1
                 assertContains
                     "the catalog has exactly four nominal phantom authorities"
                     "type role RootedPlanCatalog nominal nominal nominal nominal"
-                    catalog
+                    representation
                 assertContains
                     "the sole producer consumes the exact specification, authority, root plan, frame, and lifecycle context"
                     "withRootedPlanCatalogKernel :: (ProjectCfg cfg) => FinalizedProjectSpec scope specDigest cfg -> RootInvocationAuthority scope brokerGeneration verb -> ProjectPlan scope specDigest rootPlanId rootConfigId cfg -> CurrentFrame scope rootPlanId rootFrame -> ValidatedLifecycleContext scope specDigest rootPlanId rootConfigId rootFrame -> ( forall catalogId. RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> IO (Either Text ()) ) -> IO (Either Text ())"
@@ -3569,6 +5090,8 @@ sourceBoundaryTests =
                     , "rootId /= Context.currentFrame rootContext"
                     , "rootAuthorityProjectName authority /= projectPlanProfileProjectNameKernel rootPlan"
                     , "rootAuthorityStoreIdentity authority /= projectPlanProfileStoreIdentityKernel rootPlan"
+                    , "brokerEpochWord (rootAuthorityEpoch authority) /= projectPlanProfileEpochKernel rootPlan"
+                    , "root invocation authority names another broker epoch"
                     , "descendRootedPlanCatalogKernel finalized"
                     , "RootedPlanCatalogRoot finalized authority rootPlan rootCurrent lifecycle"
                     , "rootId = currentFrameId rootCurrent"
@@ -3583,7 +5106,7 @@ sourceBoundaryTests =
                     , "withImmediateTargetKernel finalized plan current context extend"
                     , "frameName = currentFrameId current"
                     , "extend targetPlan binding targetCurrent childContext parentFrame childFrame raw route payload configDigest payloadDigest _input"
-                    , "descendRootedPlanCatalogKernel finalized (budget - 1) ( RootedPlanCatalogDescent catalog targetPlan binding targetCurrent parentFrame childFrame raw route payload configDigest payloadDigest (projectedNodeKeys plan parentFrame) ) targetPlan targetCurrent childContext use"
+                    , "descendRootedPlanCatalogKernel finalized (budget - 1) ( RootedPlanCatalogDescent catalog targetPlan binding targetCurrent (ParentFrameId parentFrame) (ChildFrameId childFrame) (RawLiftRoute raw) (StrippedLiftRoute route) payload (ConfigDigest configDigest) (PayloadDigest payloadDigest) (projectedNodeKeys plan parentFrame) ) targetPlan targetCurrent childContext use"
                     ]
                     catalog
                 assertContains
@@ -3595,12 +5118,8 @@ sourceBoundaryTests =
                     "withRootedPlanCatalogEntriesKernel catalog use = collect catalog [] where collect (RootedPlanCatalogRoot _ _ _ _ _) collected = collected"
                     catalog
                 assertContains
-                    "selection is a fold over the catalog itself"
-                    "select (RootedPlanCatalogRoot _ _ _ _ _) = Nothing"
-                    catalog
-                assertContains
                     "the edge fold discloses the parent level only as its own frame identity"
-                    "withRootedPlanCatalogEdgeKernel :: RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> Text -> Text -> ( forall parentPlanId parentFrame specDigest childPlanDigest childPlanId childConfigId childFrame cfg. (ProjectCfg cfg) => CurrentFrame scope parentPlanId parentFrame -> ProjectPlan scope specDigest childPlanId childConfigId cfg -> PlanDigestBinding scope specDigest childPlanDigest childPlanId -> CurrentFrame scope childPlanId childFrame -> LiftContext -> LiftContext -> ByteString -> Text -> Text -> [OperationKey] -> result ) -> Either Text result"
+                    "withRootedPlanCatalogEdgeKernel :: RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> ParentFrameId -> ChildFrameId -> ( forall parentPlanId parentFrame specDigest childPlanDigest childPlanId childConfigId childFrame cfg. (ProjectCfg cfg) => CurrentFrame scope parentPlanId parentFrame -> ProjectPlan scope specDigest childPlanId childConfigId cfg -> PlanDigestBinding scope specDigest childPlanDigest childPlanId -> CurrentFrame scope childPlanId childFrame -> RawLiftRoute -> StrippedLiftRoute -> ByteString -> ConfigDigest -> PayloadDigest -> [OperationKey] -> result ) -> Either Text result"
                     catalog
                 assertFragmentsInOrder
                     "missing, duplicate, sibling, and independently projected edges all refuse before the fold"
@@ -3611,9 +5130,9 @@ sourceBoundaryTests =
                     , "child /= requestedChild = collect ancestors collected"
                     , "parent /= requestedParent = refusal \"the admitted edge names another parent frame\""
                     , "withRootedPlanCatalogFrameKernel ancestors joinParent"
-                    , "currentFrameId parentCurrent /= parent"
-                    , "topologyDescentFromKernel (topologyKernel parentPlan) parent /= Just (child, raw)"
-                    , "projectedNodeKeys parentPlan parent /= keys"
+                    , "currentFrameId parentCurrent /= parentName"
+                    , "topologyDescentFromKernel (topologyKernel parentPlan) parentName /= Just (childName, rawContext)"
+                    , "projectedNodeKeys parentPlan parentName /= keys"
                     , "use parentCurrent plan binding current raw route payload configDigest payloadDigest keys"
                     ]
                     catalog
@@ -3637,7 +5156,7 @@ sourceBoundaryTests =
                     , "manifestText (stablePlanSnapshotSpecDigestKernel snapshot)"
                     , "manifestText (stablePlanSnapshotDigestKernel snapshot)"
                     , "manifestText (currentFrameId current)"
-                    , "manifestEntry plan binding _current parent child _raw _route _payload configDigest payloadDigest keys"
+                    , "manifestEntry plan binding _current (ParentFrameId parent) (ChildFrameId child) _raw _route _payload (ConfigDigest configDigest) (PayloadDigest payloadDigest) keys"
                     , "manifestText (planDigestBindingDigestKernel binding)"
                     , "manifestWord (fromIntegral (length keys))"
                     ]
@@ -3699,16 +5218,20 @@ sourceBoundaryTests =
                     , "System.IO"
                     , "System.Process"
                     ]
+                importers "HostBootstrap.Lifecycle.RootedPlan.Internal"
+                    @?= ["HostBootstrap.Lifecycle.RootedPlan", "HostBootstrap.Lifecycle.RootedPlan.Testing"]
+                sha256Text representationBytes
+                    @?= "e396526654b1c2c49dc12e759c4c9a82ee4fa2f0a0fb828496011de5d506a914"
                 sha256Text catalogBytes
-                    @?= "6f38f4a0c3656f3f229ba6f8302e025378a84041b286f26d98a2bb8e80cd17f2"
-                catalogSignificant @?= 421
+                    @?= "3fb4e2ee7d7242b8b7230792a0b47393893c32f7f3b459773d49ab4690ad2b34"
                 assertBool
-                    "the recursive catalog owner crossed the hard 425-line split boundary"
-                    (catalogSignificant < 425)
+                    "the recursive catalog owner crossed the hard 400-line split boundary"
+                    (catalogSignificant < 400)
         , testCase "the rooted frame session is root-selected, hidden, nominal, and request-inert" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 rootedPath <- requiredModulePath packageRoot "HostBootstrap.Lifecycle.Rooted"
                 rootedSource <- readFile rootedPath
+                rootedBytes <- ByteString.readFile rootedPath
                 sessionSource <-
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Session"
                 catalogSource <-
@@ -3758,6 +5281,44 @@ sourceBoundaryTests =
                         ]
                 filter (/= ",") rootedExports
                     @?= [ "RootedFrameSession"
+                        , "RootedOperationJournal"
+                        , "newRootedOperationJournalKernel"
+                        , "newForwardRootedOperationJournalKernel"
+                        , "withRootedOperationJournalKernel"
+                        , "prepareRootedOperationJournalKernel"
+                        , "prepareRootedEffectJournalKernel"
+                        , "prepareRootedEffectJournalForPrerequisitesKernel"
+                        , "validateRootedJournalCoordinatesKernel"
+                        , "packageRootedJournalGateKernel"
+                        , "prepareRootedOperationJournalWithObservationsKernel"
+                        , "prepareRootedOperationJournalForPrerequisitesKernel"
+                        , "settleRootedOperationJournalKernel"
+                        , "settleRootedOperationJournalObservingKernel"
+                        , "settleRootedOperationJournalRetainingKernel"
+                    , "settleRootedReverseOperationJournalKernel"
+                        , "settleRootedReverseResourceJournalKernel"
+                        , "readRootedResourcePredecessorInEntryKernel"
+                        , "RootedResourceObservation"
+                        , "retainRootedResourceObservationsKernel"
+                        , "selectRootedResourceObservationsKernel"
+                        , "selectRootedProbeObservationsKernel"
+                        , "selectPlannedRootPrerequisitesKernel"
+                        , "observeRootedResourceInEntryKernel"
+                        , "observeRootedProviderGenerationInEntryKernel"
+                        , "observeRootedShareGenerationInEntryKernel"
+                        , "validateRootedResourceObservationInEntryKernel"
+                        , "validateRootedProbePrerequisiteInEntryKernel"
+                        , "rootedEmptyFrameProofKernel"
+                        , "RootedClusterObjectObservation"
+                        , "rootedClusterObjectNativeKernel"
+                        , "observeRootedClusterObjectKernel"
+                        , "recheckRootedClusterObjectKernel"
+                        , "withRootedPreparedResourcePredecessorKernel"
+                        , "checkRootedSettlementRowKernel"
+                        , "rootedSettlementSessionTokenKernel"
+                        , "selectRootedSettlementAddressKernel"
+                        , "publishRootedSettlementExactKernel"
+                        , "closeRootedOperationJournalKernel"
                         , "withRootOpenedFrameSessionKernel"
                         , "withRootOpenedDirectFrameSessionKernel"
                         , "withAttachedRootedFrameSessionKernel"
@@ -3767,6 +5328,13 @@ sourceBoundaryTests =
                         , "withFailedRootedFrameSessionKernel"
                         , "cancelUnattachedRootedFrameSessionKernel"
                         ]
+                sites "persistResourceSettlementKernel"
+                    @?= [ ("HostBootstrap.Lifecycle.ResourceRecord", 3)
+                        , ("HostBootstrap.Lifecycle.Rooted", 3)
+                        ]
+                assertBool
+                    "the resource writer remains Cabal-private"
+                    ("HostBootstrap.Lifecycle.ResourceRecord" `notElem` exposed)
                 assertBool
                     "the rooted frame session owner stays Cabal-private"
                     ( "HostBootstrap.Lifecycle.Rooted" `notElem` exposed
@@ -3775,6 +5343,44 @@ sourceBoundaryTests =
                 mapM_
                     (\name -> modulesExporting name publicExports @?= [])
                     [ "RootedFrameSession"
+                    , "RootedOperationJournal"
+                    , "newRootedOperationJournalKernel"
+                    , "newForwardRootedOperationJournalKernel"
+                    , "withRootedOperationJournalKernel"
+                    , "prepareRootedOperationJournalKernel"
+                    , "prepareRootedEffectJournalKernel"
+                    , "prepareRootedEffectJournalForPrerequisitesKernel"
+                    , "validateRootedJournalCoordinatesKernel"
+                    , "packageRootedJournalGateKernel"
+                    , "prepareRootedOperationJournalWithObservationsKernel"
+                    , "prepareRootedOperationJournalForPrerequisitesKernel"
+                    , "settleRootedOperationJournalKernel"
+                    , "settleRootedOperationJournalObservingKernel"
+                    , "settleRootedOperationJournalRetainingKernel"
+                    , "settleRootedReverseOperationJournalKernel"
+                    , "settleRootedReverseResourceJournalKernel"
+                    , "readRootedResourcePredecessorInEntryKernel"
+                    , "RootedResourceObservation"
+                    , "retainRootedResourceObservationsKernel"
+                    , "selectRootedResourceObservationsKernel"
+                    , "selectRootedProbeObservationsKernel"
+                    , "selectPlannedRootPrerequisitesKernel"
+                    , "observeRootedResourceInEntryKernel"
+                    , "observeRootedProviderGenerationInEntryKernel"
+                    , "observeRootedShareGenerationInEntryKernel"
+                    , "validateRootedResourceObservationInEntryKernel"
+                    , "validateRootedProbePrerequisiteInEntryKernel"
+                    , "rootedEmptyFrameProofKernel"
+                    , "RootedClusterObjectObservation"
+                    , "rootedClusterObjectNativeKernel"
+                    , "observeRootedClusterObjectKernel"
+                    , "recheckRootedClusterObjectKernel"
+                    , "withRootedPreparedResourcePredecessorKernel"
+                    , "checkRootedSettlementRowKernel"
+                    , "rootedSettlementSessionTokenKernel"
+                    , "selectRootedSettlementAddressKernel"
+                    , "publishRootedSettlementExactKernel"
+                    , "closeRootedOperationJournalKernel"
                     , "OpenedRootedFrameSession"
                     , "AttachedRootedFrameSession"
                     , "withRootOpenedFrameSessionKernel"
@@ -3784,12 +5390,50 @@ sourceBoundaryTests =
                     , "cancelUnattachedRootedFrameSessionKernel"
                     ]
                 assertContains
-                    "the sole named type carries seven nominal roles"
+                    "the session type carries seven nominal roles"
                     "type role RootedFrameSession nominal nominal nominal nominal nominal nominal nominal"
                     rooted
-                SourceGuard.countHaskellIdentifier "data" rootedSource @?= 1
+                assertContains
+                    "the retained journal carries the same seven nominal authorities"
+                    "type role RootedOperationJournal nominal nominal nominal nominal nominal nominal nominal"
+                    rooted
+                -- The fifth is the opaque rooted cluster-object observation, which grants nothing.
+                SourceGuard.countHaskellIdentifier "data" rootedSource @?= 5
                 SourceGuard.countHaskellIdentifier "newtype" rootedSource @?= 0
-                SourceGuard.countHaskellIdentifier "type" rootedSource @?= 1
+                SourceGuard.countHaskellIdentifier "type" rootedSource @?= 2
+                assertContains
+                    "an attachment retains opening fields, not another session"
+                    "AttachedRootedFrameSession :: OpenedFrameFields verb -> ByteString -> Text -> RecordVersion -> ByteString -> RootedFrameSession"
+                    rooted
+                sha256Text rootedBytes
+                    @?= "43617ab9e7a1e2296d717eed1e0ec49615e41c9407351bcc275834d73ca4ee1f"
+                let rootedImports =
+                        [ if name == "qualified" then qualifiedName else name
+                        | line <- lines rootedSource
+                        , let tokens = words line
+                        , "import" : name : rest <- [tokens]
+                        , let qualifiedName = case rest of [] -> ""; value : _ -> value
+                        ]
+                rootedImports @?= [ "Control.Concurrent.MVar", "Control.Exception"
+                      , "Data.ByteString", "Data.ByteString", "Data.ByteString.Builder", "Data.ByteString.Lazy"
+                      , "Data.List", "Data.Maybe", "Data.Text", "Data.Text", "Data.Text.Encoding", "Data.Word"
+                      , "HostBootstrap.Authority", "HostBootstrap.Authority.Kernel", "HostBootstrap.Handoff"
+                      , "HostBootstrap.Handoff.Rooted", "HostBootstrap.Handoff.Runtime"
+                      , "HostBootstrap.Lifecycle.Prepared.Internal", "HostBootstrap.Lifecycle.Plan", "HostBootstrap.Lifecycle.RootedPlan"
+                      , "HostBootstrap.Lifecycle.ResourceRecord", "HostBootstrap.Lifecycle.Session"
+                      , "HostBootstrap.ProjectPlan", "HostBootstrap.ProjectPlan.Frame", "HostBootstrap.Step", "HostBootstrap.Protected"
+                      ]
+                mapM_ (\name -> assertContains (name <> " derives lineage internally")
+                    (name <> " :: RecursiveHandoffRuntime scope brokerGeneration verb -> RootedPlanCatalog scope rootPlanId brokerGeneration catalogId -> ProtectedStore -> ProjectVerb verb -> Text -> ( forall frame sessionId.") rooted)
+                    ["withRootOpenedFrameSessionKernel", "withRootOpenedDirectFrameSessionKernel"]
+                assertContains
+                    "the versioned session token includes opening mode"
+                    "framedWord 2 , framedText (if direct then \"direct\" else \"canonical\")"
+                    opener
+                assertContains
+                    "the root lineage is derived from the catalog"
+                    "rootPlanDigest = withRootedPlanCatalogRootKernel catalog (\\_ _ plan _ _ -> stablePlanSnapshotDigest (renderSnapshot plan))"
+                    opener
                 assertContains
                     "both the frame and session indices are minted by the opening"
                     "( forall frame sessionId. RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId verb -> IO (Either Text ()) ) -> IO (Either Text ())"
@@ -3822,7 +5466,7 @@ sourceBoundaryTests =
                     [ "require \"a keyless nested arm cannot open a root frame session\" atRoot"
                     , "require \"the runtime is not path-agnostic\" (isNothing frame)"
                     , "path <- canonicalRequesterPath"
-                    , "key <- sessionFailure (rootedFrameSessionKeyKernel rootPlanDigest catalogIdentity requestedFrame)"
+                    , "key <- sessionFailure ((if direct then rootedDirectFrameSessionKeyKernel else rootedFrameSessionKeyKernel) rootPlanDigest catalogIdentity requestedFrame)"
                     ]
                     opener
                 assertFragmentsInOrder
@@ -3838,13 +5482,17 @@ sourceBoundaryTests =
                     opener
                 assertContains
                     "the opened row carries the root-selected coordinates and no predecessor"
-                    "framedText \"opened\" , framedText rootPlanDigest , framedText catalogIdentity , framedText requestedFrame , framedText verbName , framedText (sessionTokenFor path) , framedText initialStage , framedWord initialOrdinal"
+                    "framedText \"opened\" , framedText rootPlanDigest , framedText catalogIdentity , framedText requestedFrame , framedText verbName , framedText (sessionTokenFor path) , framedText openingStage , framedWord initialOrdinal"
                     opener
                 assertBool
                     "the initial ordinal is nonzero and the stage is fixed"
                     ( "initialOrdinal = 1" `isInfixOf` rooted
                         && "initialStage = \"open\"" `isInfixOf` rooted
                     )
+                assertContains
+                    "only an Up opening of a frame the root's own catalog proves empty is issued settled"
+                    "| verbName == \"up\" && either (const False) (const True) (rootedEmptyFrameProofKernel catalog requestedFrame) = \"settled\" | otherwise = initialStage"
+                    rooted
                 assertFragmentsInOrder
                     "an already attached session refuses, and admission gates the durable advance"
                     [ "AttachedRootedFrameSession{} -> pure (Left (rootedFailure \"the rooted frame session is already attached\"))"
@@ -3941,6 +5589,7 @@ sourceBoundaryTests =
                         , "HostBootstrap.Handoff.TerminalReport"
                         , "HostBootstrap.Lifecycle.Rooted.Node"
                         , "HostBootstrap.Lifecycle.Rooted.Receipt"
+                        , "HostBootstrap.Substrate.Provider.Backend"
                         ]
                 assertBool
                     "the sprint-owned opening and attachment slices stay inside their coherent budget"
@@ -3961,6 +5610,14 @@ sourceBoundaryTests =
                     requiredModuleExports
                         "HostBootstrap.Authority.FailedUp.Internal"
                         authoritySource
+                failedSessionSource <- requiredSourceSection
+                    "failed rooted session check" "withFailedRootedFrameSessionKernel ::" "withAdvancedRootedFrameSessionKernel ::" rootedSource
+                failedEntrySource <- requiredSourceSection
+                    "failed-Up entry" "withPreparedFailedUpReverseDescentKernel ::" "runRootProjectUpLifecycleEntry ::" entrySource
+                forwardLinkFailure <- requiredSourceSection
+                    "forward broker link refusal" "linked <- rootForwardBrokerLink broker scope" "Right link -> do" entrySource
+                failedCoordinator <- requiredSourceSection
+                    "failed-Up coordinator" "runRootForwardCoordinator ::" "serveForwardFrame ::" entrySource
                 let authority = normalizeHaskellSource authoritySource
                     rooted = normalizeHaskellSource rootedSource
                     entry = normalizeHaskellSource entrySource
@@ -3968,7 +5625,7 @@ sourceBoundaryTests =
                     @?= [ "FailedUpUnwindAuthority"
                         , "withFailedUpUnwindAuthorityKernel"
                         , "withRootFailedUpUnwindAuthorityKernel"
-                        , "withRetriedFailedUpUnwindAuthorityKernel"
+                        , "failedUpUnwindCatalogIdentity"
                         , "withFailedUpCleanupOperationsKernel"
                         ]
                 assertContains
@@ -3991,7 +5648,7 @@ sourceBoundaryTests =
                     , "rootAuthorityProjectName catalogRoot == project"
                     , "brokerEpochWord (rootAuthorityEpoch catalogRoot) == epoch"
                     , "lineage == stablePlanSnapshotDigest (renderSnapshot plan)"
-                    , "sameAuthority retained candidate"
+                    , "frame == currentFrameId current"
                     ]
                 assertAbsent "failed-Up authority cannot name Destroy authority" "VerbDestroy" authoritySource
                 assertAbsent "failed-Up authority cannot mutate Production mode" "HostBootstrap.Lifecycle.Mode" authoritySource
@@ -4008,9 +5665,35 @@ sourceBoundaryTests =
                     "the sealed Entry wrapper admits only its root Up constructor"
                     "case entry of RootUpLifecycleEntry root _ _ _ _ _ _ catalog -> withFailedUpUnwindAuthorityKernel root catalog failed report binding reached unresolved use"
                     entry
+                assertBool
+                    "both failed-Up entry wrappers join the retained catalog"
+                    (SourceGuard.countHaskellIdentifier "failedUpUnwindCatalogIdentity" entrySource == 3)
+                assertContains
+                    "failed-Up descent re-reads the exact Execute reservation"
+                    "reauthorizeFailedUp root plan lifecycleContext authority"
+                    entry
+                assertContains
+                    "a failed forward link cancels every unused rooted session"
+                    "Left failure -> do cancelled <- cancelUnusedFrameSessions services"
+                    (normalizeHaskellSource forwardLinkFailure)
+                mapM_
+                    (\fragment -> assertContains "failed-Up retains its original failure and reached state" fragment (normalizeHaskellSource failedCoordinator))
+                    [ "Left signingFailure -> pure (Left (detail ++ \"; cleanup: \" ++ signingFailure, reached, unresolved))"
+                    , "Left brokerFailure -> Left (detail ++ \"; cleanup: \" ++ handoffErrorMessage brokerFailure, reached, unresolved)"
+                    , "Right (Left unwindFailure) -> Left (detail ++ \"; cleanup: \" ++ Text.unpack unwindFailure, reached, unresolved)"
+                    , "Left cancellationFailure -> pure (Left (Text.pack detail <> \"; cleanup: \" <> cancellationFailure))"
+                    , "Left unwindFailure -> Left (Text.pack detail <> \"; cleanup: \" <> unwindFailure)"
+                    , "otherwise -> Left (Text.unpack failure, reached, unresolved)"
+                    ]
+                assertContains
+                    "the retained reservation must still have its exact bytes and version"
+                    "protectedRecordBytes record == identity , recordVersionWord (protectedRecordVersion record) == 1 -> Right authority"
+                    entry
                 mainLibrary <- maybe (assertFailure "the main library stanza is absent") pure (mainLibraryStanza cabalSource)
-                assertBool "the failed-Up authority module is built but not exposed"
-                    ( "HostBootstrap.Authority.FailedUp.Internal" `elem` fieldModules "other-modules" mainLibrary
+                privateLibrary <- maybe (assertFailure "the failed-Up private component is absent") pure (SourceGuard.namedStanza "library failed-up-internal" cabalSource)
+                assertBool "the failed-Up authority module is private to its component"
+                    ( fieldModules "exposed-modules" privateLibrary == ["HostBootstrap.Authority.FailedUp.Internal"]
+                        && "HostBootstrap.Authority.FailedUp.Internal" `notElem` fieldModules "other-modules" mainLibrary
                         && "HostBootstrap.Authority.FailedUp.Internal" `notElem` fieldModules "exposed-modules" mainLibrary
                         && "HostBootstrap.Authority.FailedUp.Internal" `notElem` fieldModules "reexported-modules" mainLibrary
                     )
@@ -4019,14 +5702,15 @@ sourceBoundaryTests =
                 assertBool
                     "the three sprint-owned additions stay within their coherent budget"
                     ( significantHaskellLineCount authoritySource
-                        + SourceGuard.countHaskellIdentifier "withFailedRootedFrameSessionKernel" rootedSource
-                        + SourceGuard.countHaskellIdentifier "withFailedUpUnwindAuthorityForEntryKernel" entrySource
+                        + significantHaskellLineCount failedSessionSource
+                        + significantHaskellLineCount failedEntrySource
                         < 400
                     )
         , testCase "the rooted opening signs the root's own coordinates and records before it releases" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 rootedSource <-
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Rooted"
+                codecSource <- readModuleSource packageRoot "HostBootstrap.Handoff.Rooted"
                 runtimeSource <-
                     readModuleSource packageRoot "HostBootstrap.Handoff.Runtime"
                 relaySource <-
@@ -4111,7 +5795,9 @@ sourceBoundaryTests =
                     opening
                 assertFragmentsInOrder
                     "the complete signed response is recorded and read back before the caller may release it"
-                    [ "Right signedOpened -> withAttachedRootedFrameSessionKernel runtime session store envelope request signedOpened"
+                    [ "Right signedOpened ->"
+                    , "case validateSignedOpening unsigned signedOpened of"
+                    , "withAttachedRootedFrameSessionKernel runtime session store envelope request signedOpened"
                     , "(\\opened -> use opened signedOpened)"
                     ]
                     opening
@@ -4130,12 +5816,23 @@ sourceBoundaryTests =
                     "and the same 4,096-byte encoded component bound"
                     "require \"the sealed external envelope contains an oversized component\" ( all ( (<= maxRootedRequesterComponentBytes) . ByteString.length . TextEncoding.encodeUtf8 ) envelope )"
                     opening
-                assertBool
-                    "both bounds are the post-open request codec's own"
-                    ( "maxRootedRequesterComponents = 256" `isInfixOf` normalizeHaskellSource rootedSource
-                        && "maxRootedRequesterComponentBytes = 4096"
-                            `isInfixOf` normalizeHaskellSource rootedSource
-                    )
+                let limitToken name source = do
+                        tokens <- SourceGuard.haskellDefinitionTokens name source
+                        case tokens of
+                            [actual, "=", value] | actual == name -> Right value
+                            _ -> Left ("expected one complete limit token for " <> name)
+                    matching rootName codecName rootText codecText = do
+                        rootLimit <- limitToken rootName rootText
+                        codecLimit <- limitToken codecName codecText
+                        pure (rootLimit == codecLimit)
+                    pathLimits = matching "maxRootedRequesterComponents" "rootedLifecyclePathLimit"
+                    textLimits = matching "maxRootedRequesterComponentBytes" "rootedLifecycleTextLimit"
+                pathLimits rootedSource codecSource @?= Right True
+                textLimits rootedSource codecSource @?= Right True
+                pathLimits "maxRootedRequesterComponents = 2560" "rootedLifecyclePathLimit = 256" @?= Right False
+                pathLimits "maxRootedRequesterComponents = 256" "rootedLifecyclePathLimit = 2560" @?= Right False
+                textLimits "maxRootedRequesterComponentBytes = 40960" "rootedLifecycleTextLimit = 4096" @?= Right False
+                textLimits "maxRootedRequesterComponentBytes = 4096" "rootedLifecycleTextLimit = 40960" @?= Right False
                 assertContains
                     "an already attached session cannot answer a second opening"
                     "require \"an attached rooted frame session cannot answer a second opening\" (not attached)"
@@ -4189,10 +5886,11 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Handoff.Relay", 3)
                         ]
                 sites "RootedLifecycleService"
-                    @?= [("HostBootstrap.Handoff.Relay", 4)]
+                    @?= [("HostBootstrap.Handoff.Relay", 5)]
                 assertBool
                     "the rooted-opening runtime stays inside its sprint line budget"
-                    (significantHaskellLineCount runtimeSource < 400)
+                    (significantHaskellLineCount runtimeSource + significantHaskellLineCount openingSource
+                        + significantHaskellLineCount callSiteSource < 400)
         , testCase "the storeless frame executor holds coordinates, never authority" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 executorSource <-
@@ -4210,6 +5908,18 @@ sourceBoundaryTests =
                         "the frame executor opening"
                         "withOpenedFrameExecutorKernel ::"
                         "withFrameExecutorRequestKernel ::"
+                        executorSource
+                freshOpeningSource <-
+                    requiredSourceSection
+                        "the independently indexed frame executor opening"
+                        "withOpenedFrameExecutorKernel ::"
+                        "withOpenedFrameExecutorForPlanKernel ::"
+                        executorSource
+                planOpeningSource <-
+                    requiredSourceSection
+                        "the carrier-bound frame executor opening"
+                        "withOpenedFrameExecutorForPlanKernel ::"
+                        "admitOpenedFrame ::"
                         executorSource
                 requestSource <-
                     requiredSourceSection
@@ -4251,7 +5961,12 @@ sourceBoundaryTests =
                         ]
                 filter (/= ",") executorExports
                     @?= [ "FrameExecutor"
+                        , "FrameRequest"
+                        , "("
+                        , ".."
+                        , ")"
                         , "withOpenedFrameExecutorKernel"
+                        , "withOpenedReverseFrameExecutorKernel"
                         , "withOpenedFrameExecutorForPlanKernel"
                         , "withFrameExecutorRequestKernel"
                         , "withAdvancedFrameExecutorKernel"
@@ -4266,16 +5981,19 @@ sourceBoundaryTests =
                     (\name -> modulesExporting name publicExports @?= [])
                     [ "FrameExecutor"
                     , "withOpenedFrameExecutorKernel"
+                    , "withOpenedReverseFrameExecutorKernel"
                     , "withOpenedFrameExecutorForPlanKernel"
                     , "withFrameExecutorRequestKernel"
                     , "withAdvancedFrameExecutorKernel"
                     , "withExecutedFrameNodeKernel"
                     ]
                 assertContains
-                    "the sole named type carries seven nominal roles"
+                    "the executor carries seven nominal roles"
                     "type role FrameExecutor nominal nominal nominal nominal nominal nominal nominal"
                     executor
-                SourceGuard.countHaskellIdentifier "data" executorSource @?= 1
+                SourceGuard.countHaskellIdentifier "data" executorSource @?= 3
+                assertContains "the opening fixes the execution direction independently of the verb"
+                    "data FrameDirection = ForwardFrame | ReverseFrame" executor
                 SourceGuard.countHaskellIdentifier "newtype" executorSource @?= 0
                 assertContains
                     "five of the seven indices are minted by the opening rather than chosen"
@@ -4286,7 +6004,7 @@ sourceBoundaryTests =
                     [ "require \"a supplied execution node belongs to another frame\" (all ((== frameName) . executionNodeFrame) nodes)"
                     , "require \"the frame plan carries one operation key twice\" (length keys == length (nub keys))"
                     , "verified <- verifiedResponse key request signedOpened"
-                    , "(\\_ path session stage ordinal _ -> Right (path, session, stage, ordinal))"
+                    , "(\\_ answerPath answerSession answerStage answerOrdinal _ -> Right (answerPath, answerSession, answerStage, answerOrdinal))"
                     ]
                     opening
                 assertContains
@@ -4294,12 +6012,20 @@ sourceBoundaryTests =
                     "beforeOpened = Left (executorFailure \"only a verified Opened response opens a frame executor\")"
                     opening
                 assertContains
-                    "the first predecessor is the digest of the complete signed Opened bytes"
+                    "the fresh opening retains the signed Opened digest"
                     "(childConfigDigest signedOpened)"
-                    opening
+                    (normalizeHaskellSource freshOpeningSource)
+                assertContains
+                    "the carrier-bound opening retains the signed Opened digest"
+                    "(childConfigDigest signedOpened)"
+                    (normalizeHaskellSource planOpeningSource)
+                assertContains
+                    "the carrier-bound opening introduces its own four remaining indices"
+                    "forall brokerGeneration catalogId frame sessionId. FrameExecutor scope planId brokerGeneration catalogId frame sessionId verb"
+                    (normalizeHaskellSource planOpeningSource)
                 assertFragmentsInOrder
                     "every request echoes the executor's own retained coordinates"
-                    [ "FrameExecutor _ _ _ _ _ _ path session stage ordinal predecessor = executor"
+                    [ "FrameExecutor _ _ _ _ _ _ _ _ path session stage ordinal predecessor = executor"
                     , "rootedNextNodeRequestKernel path session stage ordinal nonce predecessor"
                     , "rootedCloseFrameRequestKernel path session stage ordinal nonce predecessor"
                     , "rootedReceiptConfirmRequestKernel path session stage ordinal nonce predecessor"
@@ -4308,9 +6034,9 @@ sourceBoundaryTests =
                     ]
                     request
                 assertContains
-                    "the five families are closed and an OpenFrame is not among them"
-                    "a frame executor raises no request outside its five families"
-                    request
+                    "the five request cases encode their required bodies"
+                    "data FrameRequest = FrameNextNode | FrameCloseFrame | FrameReceiptConfirm | FrameSettleNode ByteString | FrameDescendResult ByteString"
+                    executor
                 assertBool
                     "no executor path constructs an opening request"
                     (SourceGuard.countHaskellIdentifier "rootedOpenFrameRequestKernel" executorSource == 0)
@@ -4323,6 +6049,14 @@ sourceBoundaryTests =
                     , "(childConfigDigest signedResponse)"
                     ]
                     advance
+                assertFragmentsInOrder
+                    "a verified Prepared retains its catalog across executor advances"
+                    [ "Just package -> do"
+                    , "readFencedPreparedGatePackageKernel =<< frameOperationPackage direction package"
+                    , "require \"a gate package names another catalog\" (maybe True (== packageCatalog) catalog)"
+                    , "pure (Just packageCatalog)"
+                    ]
+                    advance
                 assertContains
                     "an Opened response cannot advance an already opened executor"
                     "afterOpened = Left (executorFailure \"an Opened response cannot advance an opened frame executor\")"
@@ -4331,8 +6065,8 @@ sourceBoundaryTests =
                     "execution admits, then runs, and only a nonempty observation escapes"
                     [ "case admit of"
                     , "Left failure -> pure (Left failure)"
-                    , "Right (node, gate, projected) -> do"
-                    , "observed <- run node gate projected carrier"
+                    , "Right (node, gate, projected, resourcePredecessor) -> do"
+                    , "observed <- run node gate projected carrier resourcePredecessor"
                     , "ByteString.null observation"
                     , "otherwise -> use observation"
                     ]
@@ -4340,9 +6074,20 @@ sourceBoundaryTests =
                 assertFragmentsInOrder
                     "the four packages are read out of a verified Prepared answer, never supplied beside it"
                     [ "verified <- verifiedResponse key request signedPrepared"
-                    , "(\\_ p s _ _ _ n d o g _ -> Right (p, s, n, d, o, g))"
+                    , "(\\_ p s _ nextOrdinal _ n d o g _ -> Right (p, s, nextOrdinal, n, d, o, g))"
                     , "require \"the Prepared response echoes another requester path\" (responsePath == path)"
                     , "require \"the Prepared response echoes another session\" (responseSession == session)"
+                    , "require \"the Prepared response does not select a successor ordinal\" (successorOrdinal > ordinal)"
+                    ]
+                    execution
+                assertFragmentsInOrder
+                    "the current request coordinates and response successor are checked before execution"
+                    [ "rootedLifecycleRequestFromWireKernel request"
+                    , "require \"the request echoes another stage\" (requestStage == stage)"
+                    , "require \"the request echoes another ordinal\" (requestOrdinal == ordinal)"
+                    , "require \"the request echoes another predecessor\" (requestPredecessor == predecessor)"
+                    , "require \"the Prepared response does not select a successor ordinal\" (successorOrdinal > ordinal)"
+                    , "require \"a gate package names another catalog\" (maybe True (== operationCatalog) catalog)"
                     ]
                     execution
                 assertContains
@@ -4356,17 +6101,19 @@ sourceBoundaryTests =
                     , "packages <- readPreparedGatePackagesKernel projectedGates"
                     , "require \"the projected gate list is not the canonical one it carries\" (renderPreparedGatePackagesKernel packages == projectedGates)"
                     , "require \"the projected gates are not this node's own projections\" (length packages == length (executionNodeProjectedKeys node))"
-                    , "gate <- gateFor (executionNodeOperationKey node) operationGate"
-                    , "projected <- traverse (uncurry gateFor) (zip (executionNodeProjectedKeys node) packages)"
+                    , "gate <- gateFor operationCatalog operationGeneration operationFence (executionNodeOperationKey node) operationPackage"
+                    , "projected <- traverse (uncurry (gateFor operationCatalog operationGeneration operationFence)) (zip (executionNodeProjectedKeys node) packages)"
                     ]
                     execution
                 assertFragmentsInOrder
                     "each gate package must name this plan, frame, and session before it becomes a local gate"
-                    [ "readPreparedGatePackageKernel package"
+                    [ "readFencedPreparedGatePackageKernel package"
+                    , "require \"a gate package names another catalog\" (packageCatalog == expectedCatalog)"
+                    , "require \"a gate package names another operation\" (packageOperation == operation)"
                     , "require \"a gate package names another plan\" (packagePlan == planDigest)"
                     , "require \"a gate package names another frame\" (packageFrame == frameName)"
                     , "require \"a gate package names another session\" (packageSession == session)"
-                    , "pure ( mintPreparedGate (GatePlanDigest packagePlan) (GateOperationKey operation) (GateSession packageSession) (GateFence generation) (GateAttempt attempt) (GateJournalVersion journalVersion) )"
+                    , "pure ( mintRoutedPreparedGate (GatePlanDigest packagePlan) (GateOperationKey operation) (GateSession packageSession) (GateSupersessionGeneration generation) (GateFence fence) (GateAttempt attempt) (GateJournalVersion journalVersion) )"
                     ]
                     execution
                 assertContains
@@ -4419,16 +6166,20 @@ sourceBoundaryTests =
                 importers "HostBootstrap.Lifecycle.FrameExecutor"
                     @?= ["HostBootstrap.Command.Child"]
                 sites "withOpenedFrameExecutorKernel"
+                    @?= [("HostBootstrap.Lifecycle.FrameExecutor", 4)]
+                sites "withOpenedReverseFrameExecutorKernel"
                     @?= [ ("HostBootstrap.Command.Child", 2)
-                        , ("HostBootstrap.Lifecycle.FrameExecutor", 4)
+                        , ("HostBootstrap.Lifecycle.FrameExecutor", 3)
                         ]
                 sites "withOpenedFrameExecutorForPlanKernel"
                     @?= [ ("HostBootstrap.Command.Child", 2)
                         , ("HostBootstrap.Lifecycle.FrameExecutor", 4)
                         ]
-                sites "readPreparedGatePackageKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.FrameExecutor", 2)
-                        , ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
+                -- Rooted validates the wrapped gate of the reverse and the recovery-observe envelopes.
+                sites "readFencedPreparedGatePackageKernel"
+                    @?= [ ("HostBootstrap.Handoff.Rooted", 3)
+                        , ("HostBootstrap.Lifecycle.FrameExecutor", 4)
+                        , ("HostBootstrap.Lifecycle.Prepared.Internal", 5)
                         ]
                 sites "renderPreparedNodeKeysKernel"
                     @?= [ ("HostBootstrap.Handoff.Relay", 2)
@@ -4446,18 +6197,25 @@ sourceBoundaryTests =
                     readModuleSource packageRoot "HostBootstrap.Command.Child"
                 routeSource <-
                     readModuleSource packageRoot "HostBootstrap.Handoff.Process.Route"
-                cliSource <- readModuleSource packageRoot "HostBootstrap.CLI"
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 sources <- readProductionSources packageRoot
                 metadataPublic <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
                 metadataHidden <- either assertFailure pure (SourceGuard.mainImplementationHiddenModules cabalSource)
                 childExports <- requiredModuleExports "HostBootstrap.Command.Child" childSource
-                activationExtension <-
-                    requiredSourceSection
-                        "worked-demo activation relay extension"
-                        "activationRuntime <- newStepRuntime carrier"
+                -- Module metadata and imports are declarations, not the child interpreter;
+                -- the activation signing relay belongs to the worked-demo extension.
+                childBeforeActivation <-
+                    requiredSourceSectionFrom "child before activation relay"
+                        "lifecycleChildArguments :: [String]"
+                        "activationRuntime <- newStepRuntime carrier" childSource
+                childAfterActivation <-
+                    requiredSourceSectionFrom "child after activation relay"
                         "let opened = openWith carrier runtime link nonce"
-                        childSource
+                        "hostConfig :: IO (Either Text HostConfig)" childSource
+                childHostConfig <-
+                    requiredSourceSectionFrom "child host configuration"
+                        "hostConfig :: IO (Either Text HostConfig)"
+                        "childSourceEndMarker" (childSource <> "\nchildSourceEndMarker\n")
                 let child = normalizeHaskellSource childSource
                     exposed = metadataPublic
                     privateModules = metadataHidden
@@ -4468,7 +6226,7 @@ sourceBoundaryTests =
                             , SourceGuard.importsModule moduleName source
                             ]
                 filter (/= ",") childExports
-                    @?= ["lifecycleChildArguments", "runForwardLifecycleChild"]
+                    @?= ["lifecycleChildArguments", "runForwardLifecycleChild", "interpretShippedRecoveryObservation"]
                 assertBool
                     "the lifecycle child stays Cabal-private"
                     ( "HostBootstrap.Command.Child" `notElem` exposed
@@ -4488,7 +6246,7 @@ sourceBoundaryTests =
                     [ "withIsolatedReceivedHandoffEdge project key"
                     , "withAuthenticatedConfigWire (finalizedProjectCodec finalized) authenticated"
                     , "withVerifiedConfigHandoff ProjectUp (receivedEdgeHandoff edge) wire config"
-                    , "withChildProjectPlan ProjectUp handoff wire config drafts"
+                    , "withChildProjectPlan ProjectUp (Context.currentFrame context) handoff wire config drafts"
                     , "carrier <- newResourceCarrier"
                     , "withOpenedFrameExecutorForPlanKernel key (receivedEdgeAuthenticatedRootScope edge) ProjectUp"
                     ]
@@ -4497,14 +6255,14 @@ sourceBoundaryTests =
                     "a prepared node executes, settles, and advances through signed responses"
                     [ "withExecutedFrameNodeKernel executor key exactRequest signed"
                     , "withAdvancedFrameExecutorKernel executor key exactRequest signed"
-                    , "sendExecutorRequest prepared \"settle-node\" (Just observation)"
+                    , "sendExecutorRequest prepared (FrameSettleNode observation)"
                     , "withAdvancedFrameExecutorKernel prepared key settleRequest settled"
                     ]
                     child
                 assertFragmentsInOrder
                     "terminal reporting follows close and receipt confirmation"
-                    [ "sendExecutorRequest executor \"close-frame\" Nothing"
-                    , "sendExecutorRequest completedFrame \"receipt-confirm\" Nothing"
+                    [ "sendExecutorRequest executor FrameCloseFrame"
+                    , "sendExecutorRequest completedFrame FrameReceiptConfirm"
                     , "sendReport report"
                     ]
                     child
@@ -4534,13 +6292,41 @@ sourceBoundaryTests =
                     ]
                 assertBool
                     "the child owner remains within two coherent sprint splits"
-                    ( significantHaskellLineCount childSource
-                        - significantHaskellLineCount activationExtension
-                        - 8
-                        - 5
-                        + SourceGuard.countHaskellIdentifier "runForwardLifecycleChild" cliSource
+                    ( significantHaskellLineCount childBeforeActivation
+                        + significantHaskellLineCount childAfterActivation
+                        + significantHaskellLineCount childHostConfig
                         < 800
                     )
+        , testCase "an exhausted forward frame is told to close" $
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                source <- readModuleSource packageRoot "HostBootstrap.Command.LifecycleEntry"
+                forwardService <- requiredSourceSection "forward frame request service" "serveForwardFrame store nodeResourceGate _generation" "Right (\"settle\", Just observation)" source
+                assertFragmentsInOrder "each child grant first reobserves the root resources its node depends on"
+                    [ "((node, dependencies, projections) : _) ->"
+                    , "gated <- nodeResourceGate dependencies"
+                    , "selected <- rootedNodePrerequisites store childPlan node dependencies retainedNow"
+                    , "withJournalPreparedRootedNodeGrantKernel runtime session journal"
+                    , "node dependencies projections prerequisites observations Nothing"
+                    ] forwardService
+                assertContains "the exhausted frame's signed refusal"
+                    "withRootedPostOpenResponseKernel broker session Refused request \"no node remains; the frame must close\"" forwardService
+                assertContains "the coordinator retains the pre-attachment session"
+                    "openingSessionRef <- newIORef session" source
+                assertFragmentsInOrder "opening retries preserve the advanced session"
+                    [ "Right (\"open\", _) -> do"
+                    , "session <- readIORef openingSessionRef"
+                    , "withRootedOpenedResponseKernel runtime broker session store path request"
+                    , "case retained of Nothing -> writeIORef sessionRef attached Just _ -> pure ()"
+                    , "releaseSigned signed"
+                    ] forwardService
+                descentService <- requiredSourceSection "forward descent result"
+                    "Right (\"descend-result\", Just observation)" "Right (\"close\", _)" source
+                assertFragmentsInOrder "only an outstanding descent accepts a descent observation"
+                    [ "if descended || noDescent || stage /= \"descend\""
+                    , "the frame has no outstanding descent"
+                    , "Right (\"hostbootstrap/forward-descent-result/v1\", _)"
+                    , "settle session"
+                    ] descentService
         , testCase "the protocol-safe process route sanitizes its launch and orders its opening" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 routeSource <-
@@ -4587,13 +6373,8 @@ sourceBoundaryTests =
                             ]
                 filter (/= ",") routeExports
                     @?= [ "LifecycleProcessRoute"
-                        , "ChannelInteractivity"
-                        , "("
-                        , ".."
-                        , ")"
                         , "withForwardLifecycleProcessRouteKernel"
                         , "withNestedForwardLifecycleProcessRouteKernel"
-                        , "withRecoveryLifecycleProcessRouteKernel"
                         , "withRecoveryLifecycleProcessRouteForKernel"
                         , "withLifecycleProcessRouteLaunchKernel"
                         , "withLifecycleChildOpeningKernel"
@@ -4610,7 +6391,7 @@ sourceBoundaryTests =
                     [ "LifecycleProcessRoute"
                     , "ChannelInteractivity"
                     , "withForwardLifecycleProcessRouteKernel"
-                    , "withRecoveryLifecycleProcessRouteKernel"
+                    , "withRecoveryLifecycleProcessRouteForKernel"
                     , "withLifecycleProcessRouteLaunchKernel"
                     , "withLifecycleChildOpeningKernel"
                     ]
@@ -4630,7 +6411,7 @@ sourceBoundaryTests =
                     (\declaration -> assertContains "the route's named results" declaration route)
                     [ "data AdmittedLaunch = AdmittedLaunch HostTool [Text] ChannelInteractivity"
                     , "data AdmittedEdge = AdmittedEdge Text Text AdmittedLaunch"
-                    , "data AdmittedLayers = AdmittedLayers [LiftLayer] ChannelInteractivity"
+                    , "data AdmittedLayers = AdmittedLayers [LiftLayer] (Maybe ValidatedPath) ChannelInteractivity"
                     , "newtype ValidatedArgument = ValidatedArgument {admittedText :: Text}"
                     , "newtype ValidatedPath = ValidatedPath {admittedPathText :: Text}"
                     ]
@@ -4651,6 +6432,7 @@ sourceBoundaryTests =
                     , "case derive verb \"execute\" (withoutConfigDelivery route) input targetBinary of"
                     , "Right (AdmittedEdge parent child (AdmittedLaunch tool argv interactivity))"
                     , "use (LifecycleProcessRoute verb parent child tool argv interactivity)"
+                    , "withReverseDescentProcessInputsKernel descent"
                     , "derive verb \"teardown\" (withoutConfigDelivery route) input targetBinary"
                     ]
                     derivation
@@ -4658,6 +6440,7 @@ sourceBoundaryTests =
                     "the edge is the binding input's own and its phase is checked before a launch is rendered"
                     [ "require \"the admitted edge joins one frame to itself\" (parent /= child)"
                     , "(requestedPhase input == phase)"
+                    , "(phase /= \"execute\" || length (liftLayers route) == 1)"
                     , "launch <- sanitizedLaunch route child targetBinary (subcommand verb)"
                     , "pure (AdmittedEdge parent child launch)"
                     , "parent = requestedParentFrame input"
@@ -4680,11 +6463,11 @@ sourceBoundaryTests =
                     "the route validates policy and delegates every crossing argv to the sole Lift fold"
                     [ "admitted <- admittedContainer child container"
                     , "folded [ViaContainer admitted] \"\" inner InteractiveChannel"
-                    , "folded [ViaVM vm] targetBinary inner NoninteractiveChannel"
-                    , "folded [ViaLimaVM vm] targetBinary inner NoninteractiveChannel"
-                    , "folded [ViaWsl2VM vm] targetBinary inner NoninteractiveChannel"
-                    , "AdmittedLayers admitted interactivity <- validateComposedLayers child layers targetBinary"
-                    , "folded admitted targetBinary inner interactivity"
+                    , "folded [ViaVM vm{vmName = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel"
+                    , "folded [ViaLimaVM vm{limaName = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel"
+                    , "folded [ViaWsl2VM vm{wsl2Distro = Text.unpack (admittedText name)}] (admittedPathText binary) inner NoninteractiveChannel"
+                    , "AdmittedLayers admitted binary interactivity <- validateComposedLayers child layers targetBinary"
+                    , "folded admitted (maybe \"\" admittedPathText binary) inner interactivity"
                     , "HOSTBOOTSTRAP_DIRECT_CONTAINER=linux-gpu"
                     , "HOSTBOOTSTRAP_CURRENT_FRAME=\" <> Text.unpack (admittedText frame)"
                     , "++ placementArgs"
@@ -4699,7 +6482,7 @@ sourceBoundaryTests =
                     "a composed terminal container receives the same admitted protocol-channel arguments"
                     [ "go [ViaContainer container] = do"
                     , "admitted <- admittedContainer child container"
-                    , "pure (AdmittedLayers [ViaContainer admitted] InteractiveChannel)"
+                    , "pure (AdmittedLayers [ViaContainer admitted] Nothing InteractiveChannel)"
                     , "admittedContainer child container = do"
                     , "\"-i\""
                     , "\"--network=host\""
@@ -4709,16 +6492,26 @@ sourceBoundaryTests =
                     ]
                     launch
                 mapM_
-                    (\fragment -> assertBool ("route duplicated crossing argv: " <> fragment) (fragment `notElem` words routeSource))
+                    (\fragment -> assertBool ("route discards admitted value: " <> fragment) (not (fragment `isInfixOf` launch)))
+                    ["_ <- sanitizedPath", "_ <- sanitizedArgument", "_ <- traverse sanitizedMount"]
+                assertFragmentsInOrder
+                    "container rendering consumes its admitted image and mount paths"
+                    [ "image <- sanitizedArgument \"the admitted container image\""
+                    , "mounts <- traverse sanitizedMount (clMounts container)"
+                    , "clImage = Text.unpack (admittedText image)"
+                    , "clMounts = mounts"
+                    , "pure (Mount (admittedPathText from) (admittedPathText to) (readOnly mount))"
+                    ]
+                    launch
+                mapM_
+                    (\fragment -> assertBool ("route duplicated crossing argv: " <> fragment) (fragment `notElem` SourceGuard.haskellTokens launchSource))
                     ["\"exec\"", "\"shell\""]
+                SourceGuard.countHaskellIdentifier "\"exec\"" "([\"exec\", vm]" @?= 1
                 assertContains
                     "a route that is not exactly one plan-owned layer renders nothing"
                     "a process route carries exactly one plan-owned lift layer"
                     launch
-                assertContains
-                    "the closed grammar names the overrides it refuses rather than escaping them"
-                    "rejectedOverrides = [ \"--\" , \"--attach\" , \"--detach\" , \"--entrypoint\" , \"--interactive\" , \"--preserve-fds\" , \"--sig-proxy\" , \"--stop-signal\" , \"--tty\" , \"--workdir\" ]"
-                    route
+                SourceGuard.countHaskellIdentifier "rejectedOverrides" routeSource @?= 0
                 assertContains
                     "every derived argument is admitted against that grammar"
                     "require (label <> \" reads as an option or a separator\") (not (\"-\" `Text.isPrefixOf` value))"
@@ -4806,7 +6599,6 @@ sourceBoundaryTests =
                     , "HostBootstrap.Lifecycle.RootedPlan"
                     , "HostBootstrap.Lifecycle.Session"
                     , "HostBootstrap.Protected"
-                    , "HostBootstrap.Teardown.Internal"
                     , "System.IO"
                     , "System.Process"
                     ]
@@ -4828,6 +6620,7 @@ sourceBoundaryTests =
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Rooted.Node"
                 sessionOwnerSource <-
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Rooted"
+                coordinatorSource <- readModuleSource packageRoot "HostBootstrap.Command.LifecycleEntry"
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 sources <- readProductionSources packageRoot
                 metadataPublic <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
@@ -4839,15 +6632,32 @@ sourceBoundaryTests =
                 producerSource <-
                     requiredSourceSection
                         "the durable node-grant producer"
-                        "withPreparedRootedNodeGrantKernel ::"
+                        "withJournalPreparedRootedNodeGrantKernel ::"
                         "withSettledRootedNodeKernel ::"
                         rootedSource
                 settlementSource <-
                     requiredSourceSection
                         "the durable node settlement"
                         "withSettledRootedNodeKernel ::"
-                        "publishExactRow :: ProtectedStore -> Text -> RecordKey -> ByteString -> IO (Either Text Word64)"
+                        "rootedSettlementDomain :: Text"
                         rootedSource
+                reverseSettlementSource <-
+                    requiredSourceSection
+                        "the reverse resource settlement"
+                        "settleRootedReverseResourceJournalKernel ::"
+                        "checkRootedSettlementRowKernel ::"
+                        sessionOwnerSource
+                assertFragmentsInOrder
+                    "the release checkpoint follows validation and precedes resource and operation writes"
+                    [ "validateAllocatedBrokerEpochKernel protected epoch"
+                    , "validatePreparedGateForSettlementKernel protected session gate permit"
+                    , "verifyRecoveredResourceReleaseKernel"
+                    , "checkResourceSettlementKernel"
+                    , "publishRootedSettlementRowKernel protected key row"
+                    , "persistResourceSettlementKernel"
+                    , "acknowledgeOutcome protected session gate"
+                    ]
+                    (normalizeHaskellSource reverseSettlementSource)
                 publicExports <- readPublicModuleExports packageRoot
                 let gate = normalizeHaskellSource gateSource
                     producer = normalizeHaskellSource producerSource
@@ -4885,6 +6695,14 @@ sourceBoundaryTests =
                         , "("
                         , ".."
                         , ")"
+                        , "GateUnknownPhase"
+                        , "("
+                        , ".."
+                        , ")"
+                        , "GateCallDigest"
+                        , "("
+                        , ".."
+                        , ")"
                         , "GateCatalogIdentity"
                         , "("
                         , ".."
@@ -4902,13 +6720,21 @@ sourceBoundaryTests =
                         , "preparedGateOperation"
                         , "preparedGateSession"
                         , "preparedGateFence"
+                        , "preparedGateSupersessionGeneration"
                         , "preparedGateAttempt"
                         , "preparedGateJournalVersion"
+                        , "preparedGateEffect"
+                        , "bindPreparedGateEffect"
                         , "mintPreparedGate"
+                        , "mintRoutedPreparedGate"
                         , "PreparedNodeGrant"
-                        , "renderPreparedGatePackageKernel"
+                        , "renderFencedPreparedGatePackageKernel"
                         , "renderPreparedGatePackagesKernel"
-                        , "readPreparedGatePackageKernel"
+                        , "readFencedPreparedGatePackageKernel"
+                        , "renderEffectPreparedGatePackageKernel"
+                        , "readEffectPreparedGatePackageKernel"
+                        , "renderEffectProposalsKernel"
+                        , "readEffectProposalsKernel"
                         , "readPreparedGatePackagesKernel"
                         , "renderPreparedNodeKeysKernel"
                         , "mintPreparedNodeGrantKernel"
@@ -4924,7 +6750,8 @@ sourceBoundaryTests =
                     [ "PreparedNodeGrant"
                     , "mintPreparedNodeGrantKernel"
                     , "withPreparedNodeGrantKernel"
-                    , "withPreparedRootedNodeGrantKernel"
+                    , "withJournalPreparedRootedNodeGrantKernel"
+                    , "withJournalPreparedRootedEffectNodeGrantKernel"
                     ]
                 assertContains
                     "the grant carries eight nominal roles"
@@ -4936,7 +6763,7 @@ sourceBoundaryTests =
                     gate
                 assertContains
                     "the gate package frames every coordinate canonically with an explicit version"
-                    "framed \"hostbootstrap/prepared-node-gate\" , framedWord 1 , framed planDigest , framed catalogIdentity , framed frame , framed session , framedWord generation , framedWord attempt , framedWord journalVersion"
+                    "framed \"hostbootstrap/prepared-node-gate\" , framedWord 3 , framed plan , framed catalog , framed frame , framed session , framed operation , framedWord generation , framedWord fence , framedWord attempt , framedWord journalVersion"
                     gate
                 assertContains
                     "the projected gate list carries an explicit count"
@@ -4947,40 +6774,48 @@ sourceBoundaryTests =
                     "withPreparedNodeGrantKernel :: PreparedNodeGrant scope rootPlanId brokerGeneration catalogId frame sessionId node verb -> (Text -> [Text] -> ByteString -> ByteString -> IO (Either Text ())) -> IO (Either Text ())"
                     gate
                 assertFragmentsInOrder
-                    "admission gates the ordered publication, and an unattached session is refused inside it"
-                    [ "case admit attached atRoot current of"
-                    , "Left failure -> pure (Left failure)"
-                    , "publishOrdered lineage localPlanDigest catalogIdentity frame token ordinal (node : projectedOperations) []"
-                    , "Right (own : projected) -> use ( mintPreparedNodeGrantKernel node dependencies own (renderPreparedGatePackagesKernel projected) )"
+                    "the journal checks authority before preparing and packaging the ordered gates"
+                    [ "validateRootedJournalCoordinatesKernel journal runtimeStore generation localDigest token"
+                    , "prepareRootedOperationJournalForPrerequisitesKernel journal prerequisites observations (node : projections)"
+                    , "traverse (packageRootedJournalGateKernel localDigest catalog frame token generation (isJust effects)) gates"
+                    , "mintPreparedNodeGrantKernel node dependencies (maybe own id wrapped)"
                     ]
                     producer
                 assertFragmentsInOrder
-                    "each row is keyed, published, and gate-packaged before the next"
-                    [ "rootedNodeUnknownKeyKernel lineage catalogIdentity frame operation"
-                    , "published <- publishExactRow store \"unknown\" key unknown"
-                    , "renderPreparedGatePackageKernel"
+                    "the journal authority check observes the exact live fence and plan"
+                    [ "withRootedOperationJournalKernel journal"
+                    , "currentFence protected permit"
+                    , "operationSessionMatchesPlan localDigest operationSession"
                     ]
-                    producer
+                    (normalizeHaskellSource sessionOwnerSource)
                 assertFragmentsInOrder
                     "the shared publisher strictly reads back and byte-checks every row it writes"
-                    [ "publishRootedUnknownRowKernel protected key expected"
+                    [ "publishRootedSettlementRowKernel protected key expected"
                     , "present /= expected"
                     , "is not this preparation"
-                    , "Right (recordVersionWord version)"
+                    , "otherwise -> Right ()"
                     ]
-                    (normalizeHaskellSource rootedSource)
+                    (normalizeHaskellSource sessionOwnerSource)
                 assertContains
-                    "the node's own operation is prepared before its projected operations"
-                    "(node : projectedOperations)"
+                    "the operation key is checked on read"
+                    "<*> gateText \"operation key\" operation"
+                    gate
+                assertFragmentsInOrder
+                    "the fence-bearing reader validates and canonically re-renders the operation"
+                    [ "requireGate (version == wordBytes 3)"
+                    , "<*> gateText \"operation key\" operation"
+                    , "(GateOperationKey operationName)"
+                    , "== raw"
+                    ]
+                    gate
+                assertContains
+                    "projected operations must be unique"
+                    "length projections /= length (nub projections)"
                     producer
                 assertContains
-                    "the projected operation order refuses duplicates"
-                    "length projectedOperations == length (nub projectedOperations)"
-                    producer
-                assertContains
-                    "an unattached session cannot prepare a grant"
-                    "require \"an unattached rooted frame session cannot prepare a node grant\" attached"
-                    producer
+                    "each prepared gate must name the observed journal fence"
+                    "requireGateCoordinate \"the journal gate has no observed fence\" (preparedGateFence gate > 0)"
+                    (normalizeHaskellSource sessionOwnerSource)
                 mapM_
                     (\identifier -> SourceGuard.countHaskellIdentifier identifier rootedSource @?= 0)
                     [ "rootedDescendResponseUnsignedKernel"
@@ -4997,23 +6832,36 @@ sourceBoundaryTests =
                     , "RootedPlanCatalog"
                     ]
                 sites "mintPreparedGate"
-                    @?= [ ("HostBootstrap.Lifecycle.FrameExecutor", 2)
-                        , ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
+                    @?= [ ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
                         , ("HostBootstrap.Lifecycle.Prepared", 2)
                         , ("HostBootstrap.Lifecycle.Session", 2)
                         ]
+                sites "mintRoutedPreparedGate"
+                    @?= [("HostBootstrap.Lifecycle.FrameExecutor", 2), ("HostBootstrap.Lifecycle.Prepared.Internal", 3)]
                 sites "mintPreparedNodeGrantKernel"
                     @?= [ ("HostBootstrap.Lifecycle.Prepared.Internal", 3)
                         , ("HostBootstrap.Lifecycle.Rooted.Node", 2)
                         ]
-                sites "publishRootedUnknownRowKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.Rooted.Node", 2)
+                sites "publishRootedSettlementRowKernel"
+                    @?= [ ("HostBootstrap.Lifecycle.Rooted", 3)
                         , ("HostBootstrap.Lifecycle.Session", 3)
                         ]
                 filter (/= ",") nodeExports
-                    @?= [ "withPreparedRootedNodeGrantKernel"
+                    @?= [ "RootedCleanupLease"
+                        , "acquireRootedCleanupLeaseKernel"
+                        , "withRootedCleanupLeaseForPredecessorKernel"
+                        , "releaseRootedCleanupLeaseKernel"
+                        , "withJournalPreparedRootedNodeGrantKernel"
+                        , "withJournalPreparedRootedEffectNodeGrantKernel"
+                        , "withRootedFrameJournalKernel"
                         , "withSettledRootedNodeKernel"
                         ]
+                mapM_ (\name -> modulesExporting name publicExports @?= [])
+                    ["RootedCleanupLease", "acquireRootedCleanupLeaseKernel", "withRootedCleanupLeaseForPredecessorKernel", "releaseRootedCleanupLeaseKernel"]
+                assertContains
+                    "the cleanup lease retains seven nominal authority indices"
+                    "type role RootedCleanupLease nominal nominal nominal nominal nominal nominal nominal"
+                    (normalizeHaskellSource rootedSource)
                 assertBool
                     "the node owner reaches a session only through its coordinate fold"
                     ( SourceGuard.countHaskellIdentifier "OpenedRootedFrameSession" rootedSource == 0
@@ -5036,6 +6884,8 @@ sourceBoundaryTests =
                     , "require \"the settle request echoes another ordinal\" (requestOrdinal == ordinal)"
                     , "require \"the settle request echoes another predecessor\" (Just requestPredecessor == predecessor)"
                     , "rootedLifecycleResponseFromWireKernel signedSettled"
+                    , "require \"the signed response echoes another request\" (responseDigest == childConfigDigest request)"
+                    , "require \"the signed response echoes another observation\" (responseBody == TextEncoding.encodeUtf8 (childConfigDigest body))"
                     , "require \"the signed response does not select a successor ordinal\" (responseOrdinal > ordinal)"
                     ]
                     settlement
@@ -5044,13 +6894,19 @@ sourceBoundaryTests =
                     "outsideSettlement = Left (nodeFailure \"only a SettleNode or DescendResult request settles a rooted node\")"
                     settlement
                 assertContains
-                    "only the paired Settled or Refused response family settles"
-                    "outsideSettlementFamily = Left (nodeFailure \"only a paired Settled or Refused response settles a rooted node\")"
+                    "only the paired Settled response family settles"
+                    "outsideSettlementFamily = Left (nodeFailure \"only a paired Settled response settles a rooted node\")"
+                    settlement
+                Text.count "TextEncoding.encodeUtf8 (childConfigDigest observation)" (Text.pack (normalizeHaskellSource coordinatorSource)) @?= 3
+                assertContains
+                    "a signed refusal cannot settle"
+                    "a signed Refused response does not settle a rooted node"
                     settlement
                 assertFragmentsInOrder
                     "the observation row is published and read back before the response digest is taken"
-                    [ "rootedSettlementKeyKernel lineage catalogIdentity frame node ordinal"
-                    , "published <- publishExactRow store \"settlement\" key settled"
+                    [ "rootedSettlementSessionTokenKernel session"
+                    , "rootedSettlementKeyKernel lineage catalogIdentity frame token node ordinal"
+                    , "published <- publishRootedSettlementExactKernel store key settled"
                     , "Right _ -> use (childConfigDigest signedSettled)"
                     ]
                     settlement
@@ -5064,7 +6920,7 @@ sourceBoundaryTests =
                         && SourceGuard.countHaskellIdentifier "PreparedGate" rootedSource == 0
                     )
                 sites "rootedSettlementKeyKernel"
-                    @?= [ ("HostBootstrap.Lifecycle.Rooted.Node", 2)
+                    @?= [ ("HostBootstrap.Lifecycle.Rooted.Node", 3)
                         , ("HostBootstrap.Lifecycle.Session", 3)
                         ]
                 assertBool
@@ -5080,8 +6936,7 @@ sourceBoundaryTests =
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Rooted"
                 nodeOwnerSource <-
                     readModuleSource packageRoot "HostBootstrap.Lifecycle.Rooted.Node"
-                relaySource <-
-                    readModuleSource packageRoot "HostBootstrap.Handoff.Relay"
+                coordinatorSource <- readModuleSource packageRoot "HostBootstrap.Command.LifecycleEntry"
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 sources <- readProductionSources packageRoot
                 metadataPublic <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
@@ -5100,16 +6955,10 @@ sourceBoundaryTests =
                         "withRootedReceiptConfirmationKernel ::"
                         "withTerminalRootedSession ::"
                         receiptSource
-                callSiteSource <-
-                    requiredSourceSection
-                        "the terminal receipt call site"
-                        "withRootedTerminalReceiptKernel ::"
-                        "linkSignActivation ::"
-                        relaySource
                 publicExports <- readPublicModuleExports packageRoot
                 let report = normalizeHaskellSource reportSource
                     confirm = normalizeHaskellSource confirmSource
-                    callSite = normalizeHaskellSource callSiteSource
+                    callSite = normalizeHaskellSource coordinatorSource
                     exposed = metadataPublic
                     privateModules = metadataHidden
                     importers moduleName =
@@ -5163,7 +7012,8 @@ sourceBoundaryTests =
                     report
                 assertFragmentsInOrder
                     "a receipt names the exact completion digest before the durable advance runs"
-                    [ "echoed <- terminalRequest False request"
+                    [ "require \"the completion differs from the session predecessor\" (predecessor == Just completion)"
+                    , "echoed <- terminalRequest False request"
                     , "require \"the receipt confirmation names another terminal report\" (namedPredecessor echoed == Just completion)"
                     , "answer <- terminalResponse False \"ReceiptRecorded\" signedReceipt"
                     , "recorded <- echoedResponse \"ReceiptRecorded\" path token ordinal nonce answer"
@@ -5172,7 +7022,7 @@ sourceBoundaryTests =
                     confirm
                 assertFragmentsInOrder
                     "the confirmation admits, then advances, then derives its own digest"
-                    [ "case admit path token ordinal of"
+                    [ "case admit path token ordinal predecessor of"
                     , "Left failure -> pure (Left failure)"
                     , "received <- receive"
                     , "Right () -> use (childConfigDigest signedReceipt)"
@@ -5235,28 +7085,42 @@ sourceBoundaryTests =
                         && SourceGuard.countHaskellIdentifier "withRootedReceiptConfirmationKernel" nodeOwnerSource == 0
                     )
                 assertFragmentsInOrder
-                    "the sole call site supplies publication first and the Published-to-Received advance second"
-                    [ "withRootedTerminalReportKernel runtime session close signedComplete publish"
-                    , "withRootedReceiptConfirmationKernel runtime session confirm completion signedReceipt (advance report) use"
-                    , "published <- publishLifecycleReportKernel recoverySigningKernel store report"
-                    , "advance report = case renderLifecycleAcknowledgement report of"
-                    , "receiveLifecycleAcknowledgementKernel recoverySigningKernel store report acknowledgement"
+                    "forward terminal publication precedes session advancement and canonical acknowledgement"
+                    [ "withRootedTerminalReportKernel runtime session request signed"
+                    , "closed <- closeJournal"
+                    , "Right () -> publishRootedLifecycleReportKernel store body"
+                    , "advanceRootedSession sessionRef session request signed"
+                    , "withRootedReceiptConfirmationKernel runtime session request completion signedReceipt"
+                    , "renderLifecycleAcknowledgement _report"
+                    , "persistRootedLifecycleCompletionKernel store _report acknowledgement"
+                    , "advanceRootedSession sessionRef session request signedReceipt"
+                    ]
+                    callSite
+                assertFragmentsInOrder
+                    "reverse terminal publication and completion precede session advancement"
+                    [ "withRootedTerminalReportKernel runtime session request signed"
+                    , "closed <- closeRootedOperationJournalKernel journal"
+                    , "Right () -> publishRootedLifecycleReportKernel store body"
+                    , "writeIORef terminalRef (Just (published, completion, settled))"
+                    , "advanceRootedSession sessionRef session request signed"
+                    , "withRootedReceiptConfirmationKernel runtime session request completion signed"
+                    , "renderLifecycleAcknowledgement report"
+                    , "received <- persistRootedLifecycleCompletionKernel store report acknowledgement"
+                    , "Right () -> complete settled"
+                    , "advanceRootedSession sessionRef session request signed"
                     ]
                     callSite
                 sites "withRootedTerminalReportKernel"
                     @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
-                        , ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Lifecycle.Rooted.Receipt", 4)
                         ]
                 sites "withRootedReceiptConfirmationKernel"
                     @?= [ ("HostBootstrap.Command.LifecycleEntry", 3)
-                        , ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Lifecycle.Rooted.Receipt", 4)
                         ]
-                sites "withRootedTerminalReceiptKernel"
-                    @?= [("HostBootstrap.Handoff.Relay", 3)]
+                sites "withRootedTerminalReceiptKernel" @?= []
                 importers "HostBootstrap.Lifecycle.Rooted.Receipt"
-                    @?= ["HostBootstrap.Command.LifecycleEntry", "HostBootstrap.Handoff.Relay"]
+                    @?= ["HostBootstrap.Command.LifecycleEntry"]
                 importers "HostBootstrap.Lifecycle.Rooted"
                     @?= [ "HostBootstrap.Authority.FailedUp.Internal"
                         , "HostBootstrap.Command.LifecycleEntry"
@@ -5264,6 +7128,7 @@ sourceBoundaryTests =
                         , "HostBootstrap.Handoff.TerminalReport"
                         , "HostBootstrap.Lifecycle.Rooted.Node"
                         , "HostBootstrap.Lifecycle.Rooted.Receipt"
+                        , "HostBootstrap.Substrate.Provider.Backend"
                         ]
                 assertBool
                     "the receipt and node split owners stay inside the 400-line boundary"
@@ -5317,6 +7182,9 @@ sourceBoundaryTests =
                     "kernel importers can construct a projected node"
                     (not (containsTokenSequence ["PlannedStep", "("] kernelExports))
                 assertBool "the retained-step accessor is absent" ("plannedStepStepKernel" `elem` kernelExports)
+                assertBool "the planned effect proposal is absent from the kernel export list" ("PlannedEffectProposal" `elem` kernelExports)
+                assertBool "kernel importers can construct an effect proposal" (not (containsTokenSequence ["PlannedEffectProposal", "("] kernelExports))
+                assertContains "effect proposals retain nominal plan indices" "type role PlannedEffectProposal nominal nominal" (normalizeHaskellSource kernelSource)
                 facadeSource <- readModuleSource packageRoot "HostBootstrap.ProjectPlan"
                 facadeExports <- requiredModuleExports "HostBootstrap.ProjectPlan" facadeSource
                 assertBool "the raw-step accessor escapes the facade" ("plannedStepStepKernel" `notElem` facadeExports)
@@ -5595,15 +7463,15 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withReverseRootSourceRecordsKernel" modeSource @?= 2
                 (\expectedCounts -> [(name, SourceGuard.countHaskellIdentifier name protocolSource) | (name, _) <- expectedCounts] @?= expectedCounts)
                     [ ("ReverseRootDownPending", 3)
-                    , ("ReverseRootDestroyPending", 4)
-                    , ("ReverseRootDownCommitted", 3)
-                    , ("ReverseRootDestroyCommitted", 3)
-                    , ("ReverseRootDownTerminal", 8)
-                    , ("ReverseRootDestroyTerminal", 7)
-                    , ("encodeReverseRootIntent", 8)
-                    , ("decodeReverseRootIntent", 12)
+                    , ("ReverseRootDestroyPending", 3)
+                    , ("ReverseRootDownCommitted", 5)
+                    , ("ReverseRootDestroyCommitted", 4)
+                    , ("ReverseRootDownTerminal", 7)
+                    , ("ReverseRootDestroyTerminal", 4)
+                    , ("encodeReverseRootIntent", 7)
+                    , ("decodeReverseRootIntent", 14)
                     , ("reverseRootIntentKey", 7)
-                    , ("reverseRootIntentKeyForName", 4)
+                    , ("reverseRootIntentKeyForName", 6)
                     ]
                 mapM_
                     (\name -> SourceGuard.countHaskellIdentifier name modeSource @?= 0)
@@ -5742,6 +7610,12 @@ sourceBoundaryTests =
                         "    validateCommon ::"
                         "    readSuffix ::"
                         engineSource
+                receiptSource <-
+                    requiredSourceSection
+                        "reverse-session receipt verification"
+                        "verifyReverseSessionReceipts ::"
+                        "recordRootReverseSessionKernel ::"
+                        modeSource
                 suffixSource <-
                     requiredSourceSection
                         "reverse-root suffix classification and readback"
@@ -5760,6 +7634,7 @@ sourceBoundaryTests =
                     promotion = normalizeHaskellSource promotionSource
                     committed = normalizeHaskellSource committedSource
                     common = normalizeHaskellSource commonSource
+                    receipt = normalizeHaskellSource receiptSource
                     suffix = normalizeHaskellSource suffixSource
                     existingRoot = normalizeHaskellSource existingRootSource
                 mapM_
@@ -5964,6 +7839,7 @@ sourceBoundaryTests =
                     , "withReifiedAllocatedBrokerEpochKernel session project target"
                     , "suffix <- readSuffix"
                     , "case suffix of"
+                    , "hasOpen && not (modeDone && leaseDone)"
                     ]
                     committed
                 assertFragmentsInOrder
@@ -5980,15 +7856,30 @@ sourceBoundaryTests =
                     , "readOpenRevisionKindForKey session"
                     , "exactWordRecord session acquisitionKey acquisitionVersion acquisitionBytes"
                     , "exactWordRecord session cursorKey cursorVersion cursorBytes"
-                    , "verifyAllSessionsClosed session plan"
+                    , "verifySessionManifest session plan"
                     , "readVerifiedPlanSnapshotAt session"
                     , "Right InvocationOpen"
                     , "Right NormalRevision"
-                    , "requireText \"closed-session plan\" plan"
-                    , "requireWord \"closed-session count\" sessions"
                     , "admitPersistedCanonicalPlanSnapshotKernel"
+                    , "verifyReverseSessionReceipts session projectName storeIdentity plan source sessions allowedTargets"
+                    , "verifyAllSessionsClosed session plan"
+                    , "requireText \"closed-session plan\" plan"
+                    , "useCommon verified canonical False"
+                    , "manifestSessionGeneration"
+                    , "useCommon verified canonical True"
                     ]
                     common
+                assertFragmentsInOrder
+                    "session admission verifies the source count and exact continuation receipts"
+                    [ "verifyRootSourceCommitment session project store plan source expectedSource"
+                    , "verifySessionManifest session plan"
+                    , "readProtectedRecord session key"
+                    , "recordVersionWord (protectedRecordVersion record) == 1"
+                    , "Right receiptOperation == recordName (recordNameIdentity receiptOperation)"
+                    , "manifestSessionOperations member"
+                    , "protectedRecordBytes record == encodeFields"
+                    ]
+                    receipt
                 assertFragmentsInOrder
                     "intent, mode, and lease readback precede the target closure"
                     [ "intentRead <- exactWordRecord session intentKey (recordVersionWord (protectedRecordVersion retainedIntent))"
@@ -5996,6 +7887,10 @@ sourceBoundaryTests =
                     , "leaseRead <- exactWordRecord"
                     , "case (intentRead, modeRead, leaseRead) of"
                     , "verifyOsPrincipal session"
+                    , "verifyRootOutcomeRecovery session plan target"
+                    , "settleAndAdmit session epoch plan"
+                    , "verifyReverseSessionReceipts session projectName storeIdentity plan source sourceSessions"
+                    , "verifyAllSessionsClosed session plan"
                     , "withExistingVerifiedRoot ProductionRootScope"
                     , "withPersistedBoundPlanSnapshotKernel canonical"
                     , "use verb root"
@@ -6305,7 +8200,9 @@ sourceBoundaryTests =
                     , "operator <- verifyOsPrincipal session"
                     , "withExistingVerifiedRoot ProductionRootScope"
                     , "(projectModeLeaseEpoch sourceMode) ProjectUp"
-                    , "recovered <- recoverAbandonedSessions session"
+                    , "sourceGenerations <- verifySourceSessionGenerations session"
+                    , "recovered <- case sourceGenerations of"
+                    , "Right () -> settleAndAdmit session"
                     , "closed <- case recovered of"
                     , "verifyAllSessionsClosed session"
                     , "publishPending profile rootFrameName sourceRecords proof modeRecord leaseRecord"
@@ -6330,8 +8227,8 @@ sourceBoundaryTests =
                 SourceGuard.countHaskellIdentifier "withExistingBoundReverseRootTransition" modeSource
                     @?= 4
                 SourceGuard.countHaskellIdentifier "ExpectAbsent" freshSource @?= 1
-                SourceGuard.countHaskellIdentifier "ExpectVersion" freshSource @?= 2
-                SourceGuard.countHaskellIdentifier "compareAndDeleteProtectedRecord" freshSource @?= 1
+                SourceGuard.countHaskellIdentifier "ExpectVersion" freshSource @?= 1
+                SourceGuard.countHaskellIdentifier "compareAndDeleteProtectedRecord" freshSource @?= 0
                 SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" freshSource @?= 2
                 SourceGuard.countHaskellIdentifier "requireBelowMax" freshSource @?= 3
                 SourceGuard.countHaskellIdentifier "maxBound" freshSource @?= 1
@@ -6613,7 +8510,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "reverse-root catalog sealer"
                         "sealReverseRootEntry ::"
-                        "withPreparedRootReverseDescentKernel ::"
+                        "withReverseRootCatalog ::"
                         reverseEntry
                 targetCursorKernel <-
                     requiredSourceSection
@@ -6686,7 +8583,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the rebuilt target plan is checked at the callback epoch"
-                        , "if projectPlanProfileEpochKernel targetPlan /= targetEpoch then pure (Left \"lifecycle entry: target plan broker epoch differs\")"
+                        , "case validateReverseTargetPlanEpoch targetEpoch (projectPlanProfileEpochKernel targetPlan) of Left failure -> pure (Left failure) Right () -> do"
                         , target
                         )
                     ,
@@ -6706,7 +8603,7 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the reverse target delegates sealing to the one catalog-admitting sealer"
-                        , "Right authority -> sealReverseRootEntry targetSpec targetVerb targetRoot targetPlan targetCurrent lifecycleContext journal teardownCursor authority reauthorize ( \\entry -> use entry"
+                        , "Right authority -> sealReverseRootEntry targetSpec targetVerb targetRoot targetPlan targetCurrent lifecycleContext journal teardownCursor authority reauthorize ( \\entry -> withRecoveredReverseEntrySessions hostConfig selfRef store entry $ use entry"
                         , target
                         )
                     ,
@@ -6732,6 +8629,16 @@ sourceBoundaryTests =
                     ,
                         ( "the immutable target acquisition seed must remain Prepare"
                         , "advance = case seedPhase of Prepare | recordVersionWord sourceVersion == 1 -> case validateLifecycleCursorRequest journal frame verb of"
+                        , cursor
+                        )
+                    ,
+                        ( "a target acquisition seed with another record version is refused"
+                        , "| otherwise -> refuseAcquisition \"record version\" \"1\" (showWord (recordVersionWord sourceVersion))"
+                        , cursor
+                        )
+                    ,
+                        ( "the target cursor checks its exact record version"
+                        , "checkedVersion expected cursor = cursor <$ requireCursorBindingWord \"reverse root target cursor version\" expected (lifecycleCursorRecordVersion cursor)"
                         , cursor
                         )
                     ,
@@ -6828,6 +8735,7 @@ sourceBoundaryTests =
                     , "RootDestroyLifecycleEntry"
                     ]
                     entry
+                SourceGuard.countHaskellIdentifier "withRecoveredReverseEntrySessions" entrySource @?= 3
                 assertFragmentsInOrder
                     "target cursor phases are exhaustive and monotone"
                     [ "case seedPhase of"
@@ -6936,6 +8844,30 @@ sourceBoundaryTests =
                     "withReverseRootTargetLifecycleCursorKernel"
                     sessionTesting
                     @?= 0
+        , testCase "every recovery entry shares the one unknown-phase preflight" $
+            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
+                entrySource <- readModuleSource packageRoot "HostBootstrap.Command.LifecycleEntry"
+                modeSource <- readModuleSource packageRoot "HostBootstrap.Lifecycle.Mode"
+                -- The root reverse entry and the three Mode recovery entries (the
+                -- migration settlement, the root-outcome check and the reverse receipt
+                -- read) each call the shared preflight once, beside its import.
+                SourceGuard.countHaskellIdentifier "verifyNoUnknownSessionOperations" entrySource @?= 2
+                SourceGuard.countHaskellIdentifier "verifyNoUnknownSessionOperations" modeSource @?= 4
+                -- The root reads unresolved rows only to ask their observers; no
+                -- entry classifies a recorded phase for itself.
+                SourceGuard.countHaskellIdentifier "findUnresolvedSessionOperations" entrySource @?= 2
+                SourceGuard.countHaskellIdentifier "findUnresolvedSessionOperations" modeSource @?= 0
+                forM_ [entrySource, modeSource] $ \source ->
+                    SourceGuard.countHaskellIdentifier "classifyRecordedPhase" source @?= 0
+                assertFragmentsInOrder
+                    "the root observes before the shared preflight, which still refuses"
+                    [ "observed <- observeUnresolvedRecovery root plan catalog"
+                    , "ExceptT (preflightPlans root observed digests)"
+                    , "mapM_ (ExceptT . recoverPlan root) digests"
+                    , "describeUnresolvedRefusal digest observed"
+                    , "verifyNoUnknownSessionOperations session digest"
+                    ]
+                    entrySource
         , testCase "the reverse-descent substrate is hidden, nominal, and durably ordered" $
             withPackageSourceRoot $ \packageRoot _sourceRoot -> do
                 internalSource <-
@@ -6962,12 +8894,6 @@ sourceBoundaryTests =
                         "withPreparedReverseDescentKernel admission ="
                         "withBoundReverseDescentKernel ::"
                         internalSource
-                adapterVerifierSource <-
-                    requiredSourceSectionFrom
-                        "the canonical reverse-adapter verifier"
-                        "withVerifiedReverseAdapterKernel ::"
-                        "renderReverseAdapter :: Text -> ProjectVerb verb -> Text -> Text -> [Text] -> ByteString"
-                        internalSource
                 internalExports <-
                     maybe
                         (assertFailure "HostBootstrap.Teardown.Internal has no explicit export list")
@@ -6980,7 +8906,6 @@ sourceBoundaryTests =
                     family = normalizeHaskellSource familySource
                     signature = normalizeHaskellSource signatureSource
                     admission = normalizeHaskellSource admissionSource
-                    adapterVerifier = normalizeHaskellSource adapterVerifierSource
                     teardown = normalizeHaskellSource teardownSource
                     exports = filter (/= ",") internalExports
                 exports
@@ -6993,11 +8918,15 @@ sourceBoundaryTests =
                         , "withPreparedReverseDescentKernel"
                         , "withBoundReverseDescentKernel"
                         , "withRehydratedBoundReverseDescentKernel"
-                        , "withRehydratedAdoptedReverseDescentKernel"
                         , "withRehydratedSettledReverseDescentKernel"
                         , "withVerifiedBoundReverseDescentReportKernel"
                         , "withVerifiedBoundReverseDescentObservationsKernel"
-                        , "withVerifiedReverseAdapterKernel"
+                        , "decideReverseRequestKernel"
+                        , "classifyRehydratedBoundRecordKernel"
+                        , "rebindAdoptedReverseDescentKernel"
+                        , "classifyPrepared"
+                        , "parseBoundRecord"
+                        , "verifyChildObservations"
                         ]
                 mapM_
                     (\(label, fragment, body) -> assertContains label fragment body)
@@ -7083,12 +9012,12 @@ sourceBoundaryTests =
                         )
                     ,
                         ( "the complete package comes only from the admitted edge and the frozen constructor"
-                        , "catalogPackage parent child expected = do (childPlanDigest, childConfig, configDigest) <- withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig let adapter = renderReverseAdapter childPlanDigest verb parent child expected package <- recoveryChildPackageKernel childConfig adapter pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)"
+                        , "catalogPackage parent child expected = do (childPlanDigest, childConfig, configDigest) <- withRootedPlanCatalogEdgeKernel catalog (ParentFrameId parent) (ChildFrameId child) selectChildConfig let adapter = renderReverseAdapterKernel childPlanDigest (projectVerbName verb) parent child expected package <- recoveryChildPackageKernel childConfig adapter pure (childPlanDigest, adapter, childConfig, configDigest, renderRecoveryChildPackageKernel package)"
                         , admission
                         )
                     ,
                         ( "the catalog fold narrows to the canonical child config and its digest"
-                        , "selectChildConfig _parentCurrent _plan binding _current _raw _route payload configDigest _payloadDigest _keys = (Plan.planDigestBindingDigestKernel binding, payload, configDigest)"
+                        , "selectChildConfig _parentCurrent _plan binding _current _raw _route payload (ConfigDigest configDigest) _payloadDigest _keys = (Plan.planDigestBindingDigestKernel binding, payload, configDigest)"
                         , admission
                         )
                     ,
@@ -7117,13 +9046,13 @@ sourceBoundaryTests =
                         , admission
                         )
                     ,
-                        ( "the catalog child configuration, its digest, and the exact package are revalidated"
-                        , "require \"the catalog child configuration is empty\" (not (ByteString.null childConfig)) require \"the catalog child configuration digest differs\" (configDigest == childConfigDigest childConfig) require \"the recovery package does not carry the exact catalog child configuration and adapter\" (package == renderedPackage) require \"the recovery package exceeds the handoff bound\" (fromIntegral (ByteString.length package) <= maxWireBytes) require \"the recovery package and child configuration digests are conflated\" (childConfigDigest package /= configDigest)"
+                        ( "the admitted catalog values are checked by the private preparation decision"
+                        , "validatePreparation PreparationFacts"
                         , admission
                         )
                     ,
-                        ( "the expected package is rerendered from the same two admitted fields"
-                        , "renderedPackage = either (const ByteString.empty) renderRecoveryChildPackageKernel (recoveryChildPackageKernel childConfig adapter)"
+                        ( "the expected package is rerendered from the admitted fields"
+                        , "preparationRenderedPackage = either (const ByteString.empty) renderRecoveryChildPackageKernel (recoveryChildPackageKernel childConfig adapter)"
                         , admission
                         )
                     ,
@@ -7132,23 +9061,8 @@ sourceBoundaryTests =
                         , admission
                         )
                     ,
-                        ( "the same parent and child frame is refused"
-                        , "require \"the parent and child frames are equal\" (parent /= child)"
-                        , admission
-                        )
-                    ,
-                        ( "the child order is nonempty and duplicate-free"
-                        , "require \"the child observation order is empty\" (not (null expected)) require \"the child observation order contains duplicates\" (length expected == length (nub expected))"
-                        , admission
-                        )
-                    ,
-                        ( "the recovery adapter is nonempty and bounded"
-                        , "require \"the recovery adapter is empty\" (not (ByteString.null adapter)) require \"the recovery adapter exceeds the handoff bound\" (fromIntegral (ByteString.length adapter) <= maxWireBytes)"
-                        , admission
-                        )
-                    ,
-                        ( "the complete Prepared bytes are bounded before publication"
-                        , "require \"the prepared record exceeds the handoff bound\" (fromIntegral (ByteString.length preparedBytes) <= maxWireBytes)"
+                        ( "the decision receives exact store and cursor checks"
+                        , "preparationCursorMatchesCommand = lifecycleCursorMatchesCommandAuthority retained cursor , preparationCommandMatchesStore = commandAuthorityMatchesStore retained store"
                         , admission
                         )
                     ,
@@ -7167,6 +9081,11 @@ sourceBoundaryTests =
                         , admission
                         )
                     ,
+                        ( "the stored row uses the private prepared-record decision"
+                        , "classifyPreparedRecord expected (recordVersionWord version) bytes bound"
+                        , internal
+                        )
+                    ,
                         ( "absence alone enters the compare-and-swap"
                         , "Right Nothing -> do written <- compareAndSwapProtectedRecord session key ExpectAbsent expected"
                         , admission
@@ -7177,13 +9096,8 @@ sourceBoundaryTests =
                         , admission
                         )
                     ,
-                        ( "the adapter has one versioned length-framed vocabulary"
-                        , "framedText \"hostbootstrap/reverse-descent-adapter\" , framedWord 1 , framedText planDigest , framedText parent , framedText child , framedText (projectVerbName closedVerb) , framedText \"teardown\" , framedWord (fromIntegral (length expected))"
-                        , internal
-                        )
-                    ,
-                        ( "the adapter fixes the three terminal outcomes"
-                        , "framedWord 3 , framedText \"released\" , framedText \"foreign-retained\" , framedText \"refused\""
+                        ( "the root producer renders the adapter through the one shared private renderer"
+                        , "let adapter = renderReverseAdapterKernel childPlanDigest (projectVerbName verb) parent child expected"
                         , internal
                         )
                     ,
@@ -7216,65 +9130,10 @@ sourceBoundaryTests =
                         , "TeardownReverseDescentRefused detail -> \"teardown: reverse descent refused: \" <> Text.unpack detail"
                         , teardown
                         )
-                    ,
-                        ( "the hidden verifier consumes one exact local plan and matching current frame"
-                        , "withVerifiedReverseAdapterKernel :: ProjectPlan scope specDigest planId configId cfg -> CurrentFrame scope planId localFrame -> ProjectVerb verb -> ByteString -> (TeardownPlan scope planId localFrame verb -> result) -> Either TeardownError result"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "the hidden verifier totally refuses Up and admits only Down or Destroy"
-                        , "case verb of ProjectUp -> Left (refusal \"project up has no reverse adapter\") ProjectDown -> verify ProjectDestroy -> verify"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "the local frame must have exactly one plan-derived parent"
-                        , "case parentFrames of [parent] ->"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "the local projection is derived only from the supplied plan, frame, and typed verb"
-                        , "projection = teardownPlan plan current verb"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "the adapter plan digest is re-rendered from the exact local plan"
-                        , "planDigest = stablePlanSnapshotDigest (renderSnapshot plan)"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "projection failure yields no plan"
-                        , "case openTeardownForest projection of Left failure -> Left failure"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "the canonical adapter is re-rendered from exact local order"
-                        , "expected = teardownForestOutstanding forest canonical = renderReverseAdapter planDigest verb parent child expected"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "byte drift refuses before the exact projection callback"
-                        , "observed /= canonical -> Left (refusal \"the supplied reverse adapter is not canonical\") | otherwise -> Right (use projection)"
-                        , adapterVerifier
-                        )
-                    ,
-                        ( "non-unique or absent local ancestry yields no plan"
-                        , "_ -> Left (refusal \"the current frame is not one exact topology child\")"
-                        , adapterVerifier
-                        )
                     ]
                 assertFragmentsInOrder
-                    "preparation derives, validates, reauthorizes, persists, rereads, unlocks, then calls back"
-                    [ "withDescentWorkSubtree descent"
-                    , "expected = teardownForestOutstanding childForest"
-                    , "case catalogPackage parent child expected of"
-                    , "let packageDigest = childConfigDigest package"
-                    , "input = HandoffBindingInput"
-                    , "bytes = renderPrepared"
-                    , "withRootedPlanCatalogEdgeKernel catalog parent child selectChildConfig"
-                    , "recoveryChildPackageKernel childConfig adapter"
-                    , "validate store current frame"
-                    , "keyFor invocation (recoveryWireDigest package)"
-                    , "replayed <- reauthorize"
+                    "the admission block reauthorizes, enters the store, admits, then calls back"
+                    [ "replayed <- reauthorize"
                     , "sameCommandAuthority store retained authority"
                     , "withProtectedEntry store"
                     , "validateCurrentLifecycleCursor session cursor"
@@ -7286,20 +9145,15 @@ sourceBoundaryTests =
                     ]
                     admission
                 assertFragmentsInOrder
-                    "the hidden verifier refuses drift before yielding its exact local projection"
-                    [ "withVerifiedReverseAdapterKernel plan current verb observed use ="
-                    , "case verb of"
-                    , "ProjectUp -> Left"
-                    , "ProjectDown -> verify"
-                    , "ProjectDestroy -> verify"
-                    , "case parentFrames of"
-                    , "[parent]"
-                    , "openTeardownForest projection"
-                    , "observed /= canonical"
-                    , "Left (refusal \"the supplied reverse adapter is not canonical\")"
-                    , "otherwise -> Right (use projection)"
+                    "the admission helper writes an absent row then reads it back"
+                    [ "admit session key expected = do"
+                    , "observed <- readProtectedRecord session key"
+                    , "compareAndSwapProtectedRecord session key ExpectAbsent expected"
+                    , "reread = do"
+                    , "readback <- readProtectedRecord session key"
+                    , "classifyPrepared expected record"
                     ]
-                    adapterVerifier
+                    admission
                 assertFragmentsInOrder
                     "the absent record path is CAS followed by strict state reclassification"
                     [ "observed <- readProtectedRecord session key"
@@ -7338,26 +9192,13 @@ sourceBoundaryTests =
                     , "HandoffOffer"
                     , "HandoffToken"
                     ]
-                mapM_
-                    (\name -> SourceGuard.countHaskellIdentifier name adapterVerifierSource @?= 0)
-                    [ "Text"
-                    , "TeardownOutcome"
-                    , "DescentWork"
-                    , "LifecycleCursor"
-                    , "CommandAuthority"
-                    , "HandoffBindingInput"
-                    , "HandoffChannel"
-                    , "RecordKey"
-                    , "RecordVersion"
-                    , "ProtectedStore"
-                    ]
                 SourceGuard.countHaskellIdentifier "failDescentWork" internalSource @?= 0
                 SourceGuard.countHaskellIdentifier "settleDescentWork" internalSource @?= 1
                 SourceGuard.countHaskellIdentifier "PreparedReverseDescent" familySource @?= 1
-                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 14
+                SourceGuard.countHaskellIdentifier "PreparedReverseDescent" internalSource @?= 13
                 SourceGuard.countHaskellTokenSequence ["data", "ReverseDescent"] internalSource @?= 1
                 SourceGuard.countHaskellTokenSequence ["type", "ReverseDescent"] internalSource @?= 0
-                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 10
+                SourceGuard.countHaskellIdentifier "BoundReverseDescent" internalSource @?= 9
                 SourceGuard.countHaskellIdentifier "unsafeCoerce" internalSource @?= 0
                 assertBool
                     "the hidden substrate imports only the lower Teardown boundary"
@@ -7394,19 +9235,15 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 14)]
+                    @?= [("HostBootstrap.Teardown.Internal", 13)]
                 sites "BoundReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 10)]
+                    @?= [("HostBootstrap.Teardown.Internal", 9)]
                 sites "withBoundReverseDescentKernel"
                     @?= [ ("HostBootstrap.Handoff.Relay", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "withRehydratedBoundReverseDescentKernel"
-                    @?= [("HostBootstrap.Teardown.Internal", 6)]
-                sites "withRehydratedAdoptedReverseDescentKernel"
-                    @?= [ ("HostBootstrap.Handoff.Completion", 2)
-                        , ("HostBootstrap.Teardown.Internal", 4)
-                        ]
+                    @?= [("HostBootstrap.Teardown.Internal", 5)]
                 sites "withRehydratedSettledReverseDescentKernel"
                     @?= [ ("HostBootstrap.Command.LifecycleEntry", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
@@ -7415,12 +9252,10 @@ sourceBoundaryTests =
                     @?= [ ("HostBootstrap.Handoff.Completion", 2)
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
-                sites "withVerifiedReverseAdapterKernel"
-                    @?= [ ("HostBootstrap.Teardown.Internal", 3)
-                        ]
                 importers "HostBootstrap.Teardown.Internal"
                     @?= [ "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Handoff.Completion"
+                        , "HostBootstrap.Handoff.Process.Route"
                         , "HostBootstrap.Handoff.Process"
                         , "HostBootstrap.Handoff.Relay"
                         ]
@@ -7435,7 +9270,6 @@ sourceBoundaryTests =
                 modulesExporting "withRehydratedSettledReverseDescentKernel" publicExports @?= []
                 modulesExporting "withVerifiedBoundReverseDescentReportKernel" publicExports @?= []
                 modulesExporting "withVerifiedBoundReverseDescentObservationsKernel" publicExports @?= []
-                modulesExporting "withVerifiedReverseAdapterKernel" publicExports @?= []
                 cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
                 metadataPublic <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
                 metadataHidden <- either assertFailure pure (SourceGuard.mainImplementationHiddenModules cabalSource)
@@ -7445,7 +9279,7 @@ sourceBoundaryTests =
                 assertBool
                     "HostBootstrap.Teardown.Internal is not exposed"
                     ("HostBootstrap.Teardown.Internal" `notElem` exposedModules)
-                Text.count "HostBootstrap.Teardown.Internal" (Text.pack cabalSource) @?= 1
+                Text.count "HostBootstrap.Teardown.Internal" (Text.pack cabalSource) @?= 2
                 mapM_
                     (\name -> assertAbsent "a private preparation runtime seam" name cabalSource)
                     [ "HostBootstrap.Teardown.Testing"
@@ -7476,7 +9310,7 @@ sourceBoundaryTests =
                     requiredSourceSection
                         "reverse-root catalog sealer"
                         "sealReverseRootEntry ::"
-                        "withPreparedRootReverseDescentKernel ::"
+                        "withReverseRootCatalog ::"
                         entrySource
                 producerSignature <-
                     requiredSourceSectionFrom
@@ -7741,13 +9575,11 @@ sourceBoundaryTests =
                         , ("HostBootstrap.Teardown.Internal", 4)
                         ]
                 sites "PreparedReverseDescent"
-                    @?= [("HostBootstrap.Teardown.Internal", 14)]
-                sites "withVerifiedReverseAdapterKernel"
-                    @?= [ ("HostBootstrap.Teardown.Internal", 3)
-                        ]
+                    @?= [("HostBootstrap.Teardown.Internal", 13)]
                 importers "HostBootstrap.Teardown.Internal"
                     @?= [ "HostBootstrap.Command.LifecycleEntry"
                         , "HostBootstrap.Handoff.Completion"
+                        , "HostBootstrap.Handoff.Process.Route"
                         , "HostBootstrap.Handoff.Process"
                         , "HostBootstrap.Handoff.Relay"
                         ]
@@ -7770,7 +9602,7 @@ sourceBoundaryTests =
                     )
                     ["HostBootstrap.Command.LifecycleEntry", "HostBootstrap.Teardown.Internal"]
                 Text.count "HostBootstrap.Command.LifecycleEntry" (Text.pack cabalSource) @?= 1
-                Text.count "HostBootstrap.Teardown.Internal" (Text.pack cabalSource) @?= 1
+                Text.count "HostBootstrap.Teardown.Internal" (Text.pack cabalSource) @?= 2
                 mapM_
                     (\name -> assertAbsent "a reverse-descent producer runtime seam" name cabalSource)
                     [ "HostBootstrap.Command.LifecycleEntry.Testing"
@@ -7789,7 +9621,11 @@ sourceBoundaryTests =
                     "ValidatedLifecycleContext scope specDigest planId configId rootFrame -> AcquisitionJournal scope planId brokerGeneration -> LifecycleCursor scope planId rootFrame brokerGeneration verb phase -> CommandAuthority scope planId rootFrame brokerGeneration verb phase -> IO (Either AuthorityError (CommandAuthority scope planId rootFrame brokerGeneration verb phase)) -> DescentWork scope planId parentFrame childFrame verb"
                     internal
                 mapM_
-                    (\fragment -> assertBool ("the nested reverse producer omits obsolete root/parent equality: " <> fragment) (fragment `notElem` lines internalSource))
+                    ( \fragment -> do
+                        let tokens = SourceGuard.haskellTokens fragment
+                        SourceGuard.countHaskellTokenSequence tokens internalSource @?= 0
+                        SourceGuard.countHaskellTokenSequence tokens ("        " <> fragment <> "\n") @?= 1
+                    )
                     [ "require \"the context current frame differs\" (currentFrameId current == parent)"
                     , "require \"the cursor frame differs\" (lifecycleCursorFrame cursor == parent)"
                     , "require \"the command frame differs\" (commandAuthorityFrame retained == parent)"
@@ -8176,76 +10012,6 @@ sourceBoundaryTests =
                         )
                     ]
                 SourceGuard.countHaskellIdentifier "authorizeChildProject" projectAuthoritySource @?= 0
-        , testCase "child plan admission cannot reopen a root acquisition cursor" $
-            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
-                -- rationale.md: a shared lifecycle-authority mount and generic
-                -- protected-store RPC cannot stand in for rooted coordination.
-                sources <- readProductionSources packageRoot
-                let forbidden = "AuthenticatedChildCursor"
-                    occurrences =
-                        [ (name, count)
-                        | (name, _path, source) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier forbidden source
-                        , count > 0
-                        ]
-                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
-                occurrences @?= []
-        , testCase "reverse children cannot reopen the root acquisition store" $
-            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
-                -- rationale.md: a shared lifecycle-authority mount and generic
-                -- protected-store RPC cannot stand in for rooted coordination.
-                sources <- readProductionSources packageRoot
-                let forbidden = "reopenAuthenticatedRecoveryChildCursorKernel"
-                    occurrences =
-                        [ (name, count)
-                        | (name, _path, source) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier forbidden source
-                        , count > 0
-                        ]
-                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
-                occurrences @?= []
-        , testCase "recovery children cannot acquire root command authority" $
-            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
-                -- rationale.md: a shared lifecycle-authority mount and generic
-                -- protected-store RPC cannot stand in for rooted coordination.
-                sources <- readProductionSources packageRoot
-                let forbidden = "ChildRecoveryOrigin"
-                    occurrences =
-                        [ (name, count)
-                        | (name, _path, source) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier forbidden source
-                        , count > 0
-                        ]
-                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
-                occurrences @?= []
-        , testCase "root lifecycle entries cannot contain a recovery child" $
-            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
-                -- rationale.md: a shared lifecycle-authority mount and generic
-                -- protected-store RPC cannot stand in for rooted coordination.
-                sources <- readProductionSources packageRoot
-                let forbidden = "ChildRecoveryLifecycleEntry"
-                    occurrences =
-                        [ (name, count)
-                        | (name, _path, source) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier forbidden source
-                        , count > 0
-                        ]
-                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
-                occurrences @?= []
-        , testCase "forward children execute only root-selected frame grants" $
-            withPackageSourceRoot $ \packageRoot _sourceRoot -> do
-                -- rationale.md: a shared lifecycle-authority mount and generic
-                -- protected-store RPC cannot stand in for rooted coordination.
-                sources <- readProductionSources packageRoot
-                let forbidden = "AuthorizedChildCursor"
-                    occurrences =
-                        [ (name, count)
-                        | (name, _path, source) <- sources
-                        , let count = SourceGuard.countHaskellIdentifier forbidden source
-                        , count > 0
-                        ]
-                SourceGuard.countHaskellIdentifier forbidden ("data " <> forbidden <> " = Forbidden") @?= 1
-                occurrences @?= []
         ]
 
 -- Keep every global exposure edge except the exact production imports that
@@ -8266,7 +10032,16 @@ exposedOutsideTrustedImplementation description = do
         assertBool
             (moduleName <> " escaped through Main's public facade")
             (moduleName `notElem` publicModules)
-    pure (foldl (flip delete) (fieldModules "exposed-modules" description) trustedMainImports)
+    completion <-
+        maybe (assertFailure "the handoff completion owner is absent") pure
+            (SourceGuard.namedStanza "library handoff-completion-internal" description)
+    SourceGuard.fieldValues "visibility" completion @?= ["private"]
+    lookup "HostBootstrap.Handoff.Completion" owners @?= Just "library handoff-completion-internal"
+    fieldModules "exposed-modules" completion @?= ["HostBootstrap.Handoff.Completion", "HostBootstrap.Handoff.TerminalReport"]
+    assertBool "handoff completion escaped through Main's public facade"
+        ("HostBootstrap.Handoff.Completion" `notElem` publicModules)
+    pure (foldl (flip delete) (fieldModules "exposed-modules" description)
+        ("HostBootstrap.Handoff.Completion" : "HostBootstrap.Handoff.TerminalReport" : trustedMainImports))
   where
     owner = "library handoff-implementation-internal"
     trustedMainImports =
@@ -8286,6 +10061,8 @@ exposedOutsideTrustedImplementation description = do
         , "HostBootstrap.Lifecycle.Rooted"
         , "HostBootstrap.Lifecycle.Rooted.Receipt"
         , "HostBootstrap.Lifecycle.RootedPlan"
+        , "HostBootstrap.Lifecycle.RootedPlan.Testing"
+        , "HostBootstrap.ProjectPlan.Handoff.Internal"
         , "HostBootstrap.ProjectPlan.Construct.Internal"
         , "HostBootstrap.ProjectPlan.Projection.Internal"
         , "HostBootstrap.Teardown.Internal"
@@ -8339,7 +10116,7 @@ requiredModulePath packageRoot moduleName = do
 -- Independent physical expectations move only with their named relocation cohort.
 expectedModuleHomes :: [(String, FilePath)]
 expectedModuleHomes =
-    [ ("HostBootstrap.Authority.FailedUp.Internal", "src/HostBootstrap/Authority/FailedUp/Internal.hs")
+    [ ("HostBootstrap.Authority.FailedUp.Internal", "internal/failed-up/HostBootstrap/Authority/FailedUp/Internal.hs")
     , ("HostBootstrap.Authority.ProjectPlan", "src/HostBootstrap/Authority/ProjectPlan.hs")
     , ("HostBootstrap.CLI", "src/HostBootstrap/CLI.hs")
     , ("HostBootstrap.Chain", "src/HostBootstrap/Chain.hs")
@@ -8349,23 +10126,26 @@ expectedModuleHomes =
     , ("HostBootstrap.Command.LifecycleEntry", "src/HostBootstrap/Command/LifecycleEntry.hs")
     , ("HostBootstrap.Handoff.Process.Route", "src/HostBootstrap/Handoff/Process/Route.hs")
     , ("HostBootstrap.Handoff.Relay", "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs")
+    , ("HostBootstrap.Handoff.Rooted", "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs")
     , ("HostBootstrap.Handoff.Runtime", "internal/handoff-implementation/HostBootstrap/Handoff/Runtime.hs")
-    , ("HostBootstrap.Lifecycle.FrameExecutor", "src/HostBootstrap/Lifecycle/FrameExecutor.hs")
+    , ("HostBootstrap.Lifecycle.FrameExecutor", "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs")
+    , ("HostBootstrap.Lifecycle.FrameRole", "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameRole.hs")
     , ("HostBootstrap.Lifecycle.Mode", "internal/handoff-implementation/HostBootstrap/Lifecycle/Mode.hs")
     , ("HostBootstrap.Lifecycle.Plan", "internal/handoff-implementation/HostBootstrap/Lifecycle/Plan.hs")
     , ("HostBootstrap.Lifecycle.Prepared.Internal", "internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs")
     , ("HostBootstrap.Lifecycle.ReverseRootIntent", "internal/reverse-root-intent/HostBootstrap/Lifecycle/ReverseRootIntent.hs")
     , ("HostBootstrap.Lifecycle.Rooted", "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs")
-    , ("HostBootstrap.Lifecycle.Rooted.Node", "src/HostBootstrap/Lifecycle/Rooted/Node.hs")
+    , ("HostBootstrap.Lifecycle.Rooted.Node", "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs")
     , ("HostBootstrap.Lifecycle.Rooted.Receipt", "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs")
     , ("HostBootstrap.Lifecycle.RootedPlan", "internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan.hs")
+    , ("HostBootstrap.Lifecycle.RootedPlan.Internal", "internal/handoff-implementation/HostBootstrap/Lifecycle/RootedPlan/Internal.hs")
     , ("HostBootstrap.Lifecycle.Session", "internal/handoff-implementation/HostBootstrap/Lifecycle/Session.hs")
     , ("HostBootstrap.Lifecycle.Session.Testing", "src/HostBootstrap/Lifecycle/Session/Testing.hs")
     , ("HostBootstrap.ProjectPlan", "internal/handoff-implementation/HostBootstrap/ProjectPlan.hs")
     , ("HostBootstrap.ProjectPlan.Construct", "src/HostBootstrap/ProjectPlan/Construct.hs")
     , ("HostBootstrap.ProjectPlan.Construct.Internal", "internal/handoff-implementation/HostBootstrap/ProjectPlan/Construct/Internal.hs")
     , ("HostBootstrap.ProjectPlan.Frame", "internal/handoff-implementation/HostBootstrap/ProjectPlan/Frame.hs")
-    , ("HostBootstrap.ProjectPlan.Handoff.Internal", "src/HostBootstrap/ProjectPlan/Handoff/Internal.hs")
+    , ("HostBootstrap.ProjectPlan.Handoff.Internal", "internal/handoff-implementation/HostBootstrap/ProjectPlan/Handoff/Internal.hs")
     , ("HostBootstrap.ProjectPlan.Projection.Internal", "internal/handoff-implementation/HostBootstrap/ProjectPlan/Projection/Internal.hs")
     , ("HostBootstrap.ProjectPlan.Snapshot", "src/HostBootstrap/ProjectPlan/Snapshot.hs")
     , ("HostBootstrap.Step", "internal/handoff-implementation/HostBootstrap/Step.hs")
@@ -8696,8 +10476,8 @@ withRecoveredProjectPlanCandidateFixture ::
     IO result
 withRecoveredProjectPlanCandidateFixture = withRecoveredProjectPlanCandidateFixtureUsing fixtureServiceRegistry
 
-{- | The candidate fixture with the recorded finalization's registry chosen, so
-a recovery whose recorded and candidate registries agree can be exercised.
+{- | The default fixture records `fixtureServiceRegistry`; this variant lets a
+test choose the recorded registry independently of the candidate registry.
 -}
 withRecoveredProjectPlanCandidateFixtureUsing ::
     ServiceRegistry Fixture.ProjectConfig ->
@@ -8773,7 +10553,6 @@ withRecoveredProjectPlanCandidateFixtureUsing recordedServices candidatePlan can
                         ( \profile ->
                             withProductionProjectCodec $ \candidateBaseCodec ->
                                 withFinalizedProjectSpec
-                                    ProductionScope
                                     candidateBaseCodec
                                     candidateServices
                                     (\_ _ -> Right candidatePlan)
@@ -8902,14 +10681,25 @@ withFoundation ::
       IO result
     ) ->
     IO result
-withFoundation use =
+withFoundation = withFoundationAt "."
+
+withFoundationAt ::
+    FilePath ->
+    ( forall projectId specDigest rootId configId.
+      ProjectCodec (Production projectId) specDigest Fixture.ProjectConfig ->
+      LifecycleProfile (Production projectId) ->
+      CanonicalProjectRoot (Production projectId) rootId ->
+      ValidatedConfig (Production projectId) specDigest configId (Fixture.ProjectConfig (Production projectId)) ->
+      IO result
+    ) -> IO result
+withFoundationAt sourceRoot use =
     withSystemTempDirectory "hostbootstrap-project-plan" $ \directory -> do
         store <- openProtectedStore (directory </> "protected") >>= either (fail . show) pure
         Fixture.withFixtureInstalledProject $ \(project :: InstalledProjectIdentity projectId) -> do
             rooted <-
                 withCanonicalProjectRoot
                     (directory </> "fixture.dhall")
-                    "."
+                    sourceRoot
                     ( \(root :: CanonicalProjectRoot (Production projectId) rootId) ->
                         withProductionRoot store project ProjectUp $ \productionRoot -> do
                             opened <-
@@ -8970,9 +10760,8 @@ withSnapshotPlan ::
     IO result
 withSnapshotPlan = withSnapshotPlanUsing fixtureServiceRegistry
 
-{- | The same fixture with the recorded finalization's own service registry
-chosen, so a matched-registry recovery can be exercised alongside the default
-drifted-candidate cases.
+{- | The default fixture records `fixtureServiceRegistry`; this variant lets a
+test choose the registry retained by the recorded finalization.
 -}
 withSnapshotPlanUsing ::
     ServiceRegistry Fixture.ProjectConfig ->
@@ -9026,7 +10815,6 @@ withSnapshotPlanUsing recordedServices stepPlan use =
                                     ( \profile ->
                                         withProductionProjectCodec @Fixture.ProjectConfig @projectId $ \baseCodec ->
                                             withFinalizedProjectSpec
-                                                ProductionScope
                                                 baseCodec
                                                 recordedServices
                                                 (\_ _ -> Right stepPlan)
@@ -9455,14 +11243,14 @@ hexBytes = Text.pack . concatMap byteHex . ByteString.unpack
 goldenSnapshotBytesHex :: FilePath -> Text.Text
 goldenSnapshotBytesHex root =
     Text.concat
-        [ "484f5354424f4f5453545241502d504c414e0000000000000008"
+        [ "484f5354424f4f5453545241502d504c414e000000000000000a"
         , hexFramedText "root"
         , hexRoot root
         , "000000000000000b737065632d646967657374"
         , "000000000000001038343033636432393734356430636239000000000000000d636f6e6669672d646967657374"
         , "00000000000000403430366337353637343137313330386530623433626239633765306135333930326466626134"
         , "35313836353635623834363265633130383361613136326663340000000000000005737465707300000000000000"
-        , "01000000000000000473746570000000000000000e00000000000000076f7264696e616c000000000000000100"
+        , "01000000000000000473746570000000000000001400000000000000076f7264696e616c000000000000000100"
         , "000000000000086964656e746974790000000000000009636f72652d73746570000000000000000c636f6e7465"
         , "78742d696e69740000000000000000000000000000000e696d706c656d656e746174696f6e0000000000000013"
         , "636f72652d696d706c656d656e746174696f6e000000000000000200000000000000086964656e746974790000"
@@ -9470,7 +11258,19 @@ goldenSnapshotBytesHex root =
         , "000000000100000000000000096f7065726174696f6e0000000000000011636f72653a636f6e746578742d696e"
         , "6974000000000000001470726f6a65637465642d6f7065726174696f6e73000000000000000100000000000000"
         , "1a636f72653a636f6e746578742d696e69742f72656c6174696f6e000000000000001270726f76696465722d72"
-        , "65736f75726365730000000000000000000000000000000f63686172742d776f726b6c6f61647300000000000000000000000000000013736572766963652d61637469766174696f6e73000000000000000000000000000000056c6162656c0000000000"
+        , "65736f75726365730000000000000000"
+        , hexFramedText "provider-probes"
+        , "0000000000000000"
+        , hexFramedText "share-probes"
+        , "0000000000000000"
+        , hexFramedText "alias-probes"
+        , "0000000000000000"
+        , hexFramedText "cluster-object-probes"
+        , "0000000000000000"
+        , hexFramedText "empty-child-frames"
+        , "0000000000000000"
+        , hexFramedText "recovery-observers"
+        , "0000000000000000000000000000000f63686172742d776f726b6c6f61647300000000000000000000000000000013736572766963652d61637469766174696f6e73000000000000000000000000000000056c6162656c0000000000"
         , "000007636f6e7465787400000000000000056672616d6500000000000000020000000000000002696400000000"
         , "00000004686f737400000000000000056c6162656c0000000000000004486f7374000000000000000c64657065"
         , "6e64656e636965730000000000000000000000000000000e726576657273652d706f6c69637900000000000000"
@@ -9513,3 +11313,77 @@ joinPlan = either Left id
 
 expectPlanAccepted :: Either PlanError () -> IO ()
 expectPlanAccepted = either (assertFailure . show) pure
+
+-- A real bound link, observed through the plan-described Incus guest frame,
+-- which the prepared-alias fixture runs as a local frame child.
+rootedAliasObservationRow :: IO ()
+rootedAliasObservationRow =
+    withSystemTempDirectory "root-alias-observation" $ \directory -> do
+        let source = directory </> "source"
+            name = "hb-root-alias"
+            frame = StepFrame "host" "Host"
+            aliasKey = "core:deploy-vm/core:copy-source/guest-alias"
+            aliasPath = directory </> "stable-alias"
+            refused label outcome = case outcome of
+                Left _ -> pure ()
+                Right _ -> assertFailure label
+        createDirectory source
+        executable <- getExecutablePath
+        incus <- expectRight (mkAbsExe executable)
+        self <- currentSelfRef (InVMSelfPath "/usr/local/bin/hostbootstrap-demo")
+        let host = HostConfig (Substrate LinuxCpu Amd64) (Map.singleton Incus incus)
+        _ <- FakeProvider.newProviderFixture directory "prepared-alias" FakeProvider.ProviderAnswers
+        FakeProvider.writeInstances directory [(name, FakeProvider.ProviderInstance "RUNNING" "native-1" "" [] True [])]
+        FakeProvider.withFakeProviderClient directory $
+            withFoundationAt source $ \_codec profile root config -> do
+                let sourcePath = canonicalProjectRootPath root
+                    target = sourcePath </> "guest"
+                    provider = declaresProviderProbe (IncusProviderProbe (Text.pack name) "images:ubuntu/24.04" "hb-" (directory </> "provider-state") 2 "2GiB" "12GiB")
+                        (deployVMStep "provider" frame (const (pure StepChanged)))
+                    share = declaresAliasProbe (AliasProbeDescription aliasPath target) $
+                        declaresShareProbe (ShareProbeDescription sourcePath target) $
+                            projectsOperation (Text.unpack aliasKey) (copySourceStep "share" frame (const (pure StepChanged)))
+                createDirectory target
+                withAdmittedProjectPlan profile root config (expectStepPlan [provider, share]) $ \plan -> do
+                    (identity, _) <- expectRight (TestLifecyclePlan.plannedRootProbeIdentitiesKernel plan (NonEmpty.last (forward plan)) aliasKey)
+                    shareIdentity <- expectRight (TestLifecyclePlan.rootAliasShareProbeIdentityKernel plan identity)
+                    store <- expectRight =<< openProtectedStore (directory </> "root-store")
+                    rows <- forM [identity, shareIdentity] (writeRootAliasRecord store)
+                    spec <- expectRight (ProviderAlias.mkGuestAliasSpec aliasPath target)
+                    target' <- expectRight (ProviderBackend.rootedAliasTarget store plan identity rows)
+                    refused "an alias that was never taken was observed" =<< ProviderAlias.observeRootedAlias host self store target'
+                    taken <- runShippedOwnership ownershipRowForHost
+                        (ProviderAlias.guestAliasOwnershipTransaction spec (ShipTakeSymbolicLink (ProviderAlias.guestAliasLinkTarget spec)))
+                    case taken of
+                        ShippedSymbolicLinkCreated _ -> pure ()
+                        other -> assertFailure ("expected the alias to be taken, got " <> show other)
+                    observed <- expectRight =<< ProviderAlias.observeRootedAlias host self store target'
+                    ProviderAlias.recheckRootedAlias host self store observed >>= (@?= Right ())
+                    refused "an alias without its own record was selected" (ProviderBackend.rootedAliasTarget store plan identity (drop 1 rows))
+                    removeFile aliasPath
+                    createFileLink target aliasPath
+                    refused "a replaced alias passed the root recheck" =<< ProviderAlias.recheckRootedAlias host self store observed
+                    removeFile aliasPath
+                    refused "a removed alias passed the root recheck" =<< ProviderAlias.recheckRootedAlias host self store observed
+                    doesPathExist aliasPath >>= (@?= False)
+
+-- Where this host's ownership row has no symbolic-link support, the shipped
+-- observation the root alias route depends on refuses rather than reports.
+rootedAliasObservationRefusal :: IO ()
+rootedAliasObservationRefusal = do
+        spec <- expectRight (ProviderAlias.mkGuestAliasSpec "/var/tmp/hb-root-alias" "/var/tmp/hb-root-alias-target")
+        outcome <- runShippedOwnership ownershipRowForHost
+            (ProviderAlias.guestAliasOwnershipTransaction spec (ShipObserveSymbolicLink (ProviderAlias.guestAliasLinkTarget spec)))
+        case outcome of
+            ShippedRefused _ -> pure ()
+            other -> assertFailure ("expected the shipped observation to refuse, got " <> show other)
+
+writeRootAliasRecord :: ProtectedStore -> TestLifecyclePlan.RootProbeIdentity -> IO TestRootedSession.RootedResourceObservation
+writeRootAliasRecord store identity = do
+    let (digest, frameId, operation, _) = TestLifecyclePlan.rootProbeIdentityCoordinatesKernel identity
+        bytes = ByteString.concat (map frameWire ["hostbootstrap/resource-record-bundle", "1", TextEncoding.encodeUtf8 digest, TextEncoding.encodeUtf8 frameId, TextEncoding.encodeUtf8 operation, "1", TextEncoding.encodeUtf8 operation, "1", "active", "fixture", "owned"])
+    keyText <- expectRight (Reconcile.resourceRecordKey digest frameId operation)
+    key <- expectRight (mkRecordKey keyText)
+    _ <- expectRight =<< withProtectedEntry store (\protected -> compareAndSwapProtectedRecord protected key ExpectAbsent bytes)
+    expectRight =<< expectRight =<< withProtectedEntry store (\protected -> Right <$> TestRootedSession.observeRootedResourceInEntryKernel protected frameId digest operation)
+

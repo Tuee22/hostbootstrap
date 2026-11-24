@@ -13,8 +13,6 @@ module HostBootstrap.Handoff.Completion (
     LifecycleCompletion,
     withAcknowledgedForwardLifecycleCompletionKernel,
     withAcknowledgedBoundReverseLifecycleCompletionKernel,
-    withRehydratedAcknowledgedReverseLifecycleCompletionKernel,
-    withLifecycleCompletionKernel,
 )
 where
 
@@ -23,16 +21,13 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Authority (VerbUp)
 import qualified HostBootstrap.Handoff as Handoff
-import HostBootstrap.Handoff.Internal (recoverySigningKernel)
 import HostBootstrap.Teardown (
     SubtreeSettled,
-    TeardownError,
     teardownErrorMessage,
     teardownObservationsFromWire,
  )
 import HostBootstrap.Teardown.Internal (
     ReverseDescent,
-    withRehydratedAdoptedReverseDescentKernel,
     withVerifiedBoundReverseDescentObservationsKernel,
     withVerifiedBoundReverseDescentReportKernel,
  )
@@ -168,70 +163,6 @@ withBoundReverseLifecycleCompletionKernel bound report acknowledgeReport use =
             Left failure -> Left failure
             Right () -> Left ("lifecycle completion: the reverse child " <> status <> ": " <> detail)
     wrong _ _ _ _ _ = pure (Left "lifecycle completion: a reverse descent refuses a forward report")
-
-{- | Rehydrate exact Bound and parent Adopted state without reopening a token
-or map, then enter the same common reverse acknowledgement path.
--}
-withRehydratedAcknowledgedReverseLifecycleCompletionKernel ::
-    ReverseDescent
-        ()
-        scope
-        planId
-        parentFrame
-        childFrame
-        brokerGeneration
-        verb
-        descentId ->
-    ByteString ->
-    ( LifecycleCompletion
-        (SubtreeSettled scope planId childFrame verb)
-        scope
-        brokerGeneration
-        verb ->
-      IO (Either Text ())
-    ) ->
-    IO
-        ( Either
-            ( TeardownError
-            , ReverseDescent
-                ()
-                scope
-                planId
-                parentFrame
-                childFrame
-                brokerGeneration
-                verb
-                descentId
-            )
-            (Either Text ())
-        )
-{-# OPAQUE withRehydratedAcknowledgedReverseLifecycleCompletionKernel #-}
-withRehydratedAcknowledgedReverseLifecycleCompletionKernel prepared report use =
-    withRehydratedAdoptedReverseDescentKernel
-        recoverySigningKernel
-        prepared
-        report
-        ( \bound acknowledgement ->
-            withBoundReverseLifecycleCompletionKernel
-                bound
-                report
-                (\continue -> continue acknowledgement)
-                use
-        )
-
--- | Eliminate semantic completion without exposing its retained wire identity.
-withLifecycleCompletionKernel ::
-    LifecycleCompletion proof scope brokerGeneration verb ->
-    (proof -> IO (Either Text ())) ->
-    IO (Either Text ())
-{-# OPAQUE withLifecycleCompletionKernel #-}
-withLifecycleCompletionKernel completion = case completion of
-    ForwardLifecycleCompletion report acknowledgement ->
-        case report `seq` acknowledgement `seq` () of
-            () -> \use -> use ()
-    ReverseLifecycleCompletion report acknowledgement proof ->
-        case report `seq` acknowledgement `seq` proof `seq` () of
-            () -> \use -> use proof
 
 acknowledge ::
     ByteString ->

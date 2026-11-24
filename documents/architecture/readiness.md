@@ -63,7 +63,10 @@ The probe registered for a member is the `DependencyProbe` that the code calling
 `withDependencySnapshotEntry` supplied. In production these are backend reprobes:
 `runningProviderDependencyReprobe` for a running provider, `providerShareDependencyReprobe` and the
 guest-alias share probe for a durable share, and `reprobeClusterReadiness` for a cluster. The
-`Ready`-based path — `withBackendProbe`, `awaitPlanReady`, and `planDependencyProbe` — has no production
+running-provider reprobe observes the owned Incus or guest VM and probes its guest only while it is
+already running. A stopped VM is not ready; this check never starts it. Starting a provider remains a
+separate prepared operation.
+The `Ready`-based path — `withBackendProbe`, `awaitPlanReady`, and `planDependencyProbe` — has no production
 caller. `ReadinessSpec` exercises the complete indexed path, including dependency-snapshot traversal.
 `awaitPlanReady` retains the versions from the backend's successful `BackendReady` payload and refuses a
 zero generation, phase version, or observation version as `PollInvalidReady` with its specific

@@ -14,7 +14,6 @@ module HostBootstrap.Handoff.TerminalReport (
 where
 
 import Data.ByteString (ByteString)
-import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import HostBootstrap.Authority (VerbUp)
@@ -27,24 +26,28 @@ import HostBootstrap.Lifecycle.Rooted (
     RootedFrameSession,
     withRootedFrameSessionKernel,
  )
+import HostBootstrap.Lifecycle.RootedPlan (
+    RootedPlanCatalog,
+ )
 
 -- | Render completion only for an attached, advanced Up session.
 withForwardRootedTerminalReportKernel ::
     RootedFrameSession scope rootPlanId brokerGeneration catalogId frame sessionId VerbUp ->
+    RootedPlanCatalog scope rootPlanId brokerGeneration catalogId ->
     ByteString ->
     (ByteString -> IO (Either Text ())) ->
     IO (Either Text ())
 {-# OPAQUE withForwardRootedTerminalReportKernel #-}
-withForwardRootedTerminalReportKernel session origin use =
+withForwardRootedTerminalReportKernel session _catalog origin use =
     withRootedFrameSessionKernel session $
-        \attached verb _lineage _catalog _frame _path _token _stage ordinal predecessor ->
+        \attached verb _lineage _catalog _frame _path _token stage _ordinal _predecessor ->
             if not attached
                 then refused "an unopened frame has no terminal settlement"
                 else
                     if verb /= "up"
                         then refused "a forward terminal report requires the Up session"
                         else
-                            if ordinal <= 1 || not (isJust predecessor)
+                            if stage /= "settled"
                                 then refused "the rooted frame session has not advanced through settlement"
                                 else case renderForwardCompletedLifecycleReport origin of
                                     Left failure -> refused (Text.pack (handoffErrorMessage failure))
@@ -66,14 +69,14 @@ withFailedForwardRootedTerminalReportKernel ::
 {-# OPAQUE withFailedForwardRootedTerminalReportKernel #-}
 withFailedForwardRootedTerminalReportKernel session binding observations detail use =
     withRootedFrameSessionKernel session $
-        \attached verb _lineage _catalog _frame _path _token _stage ordinal predecessor ->
+        \attached verb _lineage _catalog _frame _path _token stage _ordinal _predecessor ->
             if not attached
                 then refused "an unopened frame has no terminal failure"
                 else
                     if verb /= "up"
                         then refused "a forward failure report requires the Up session"
                         else
-                            if ordinal <= 1 || not (isJust predecessor)
+                            if stage /= "settled"
                                 then refused "the rooted frame session has not advanced through failure settlement"
                                 else case renderForwardFailedLifecycleReportWithObservations binding observations detail of
                                     Left failure -> refused (Text.pack (handoffErrorMessage failure))

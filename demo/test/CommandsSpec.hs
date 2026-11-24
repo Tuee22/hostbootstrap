@@ -5,7 +5,7 @@
 module CommandsSpec (hostCfg, tests) where
 
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (forM_)
+import Control.Monad (forM, forM_)
 import qualified Data.ByteString as ByteString
 import Data.Either (isLeft)
 import Data.Function ((&))
@@ -27,6 +27,7 @@ import HostBootstrap.Activation (
     manifestService,
     renderActivationManifest,
  )
+import HostBootstrap.CLI (ChildFrameId (ChildFrameId), ParentFrameId (ParentFrameId))
 import HostBootstrap.Cluster.Lifecycle (AcceleratorDaemonPlacement (HostResidentDaemon), ClusterDriver (..), ClusterPlan (clusterConfigFile, clusterDriver, clusterName, dataPath), ClusterProfile (Production), mkTestCaseProfile, acceleratorIngressPlan, ingressKindListenAddress, profileDataPath, profileDataSegments)
 import HostBootstrap.Cluster.Reconcile (ClusterReadinessResultView (..))
 import HostBootstrap.Config.Class (ProjectCfg (withProductionProjectCodec), decodeProjectCodecWithSettings, projectCodecSpecDigest)
@@ -57,7 +58,7 @@ import HostBootstrap.Dhall.Gen (artifactName)
 import HostBootstrap.Handoff (childConfigDigest)
 import HostBootstrap.HostTool (absExePath)
 import HostBootstrap.Lift (ContainerLift (clExtraArgs, clMounts), LiftLayer (ViaContainer), liftLayers, localContext)
-import HostBootstrap.ProjectRoot (CanonicalProjectRoot, withCanonicalProjectRoot)
+import HostBootstrap.ProjectRoot (CanonicalProjectRoot, canonicalProjectRootPath, withCanonicalProjectRoot)
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedStore,
@@ -82,9 +83,14 @@ import HostBootstrap.Service (
 import HostBootstrap.Step (Step, StepFrame (..), StepIdentity (..), StepPlan, chainFrames, frameDescent, frameId, mkStepPlan, postHandoffStepsForFrame, projectStepId, providerResourceDeclarationTargetsChild, renderChainPlan, stepFrame, stepIdentity, stepKind, stepKindName, stepLabel, stepPlanSteps, stepProviderResourceDeclarations, stepServiceActivationDeclarations)
 import qualified HostBootstrap.Step as Step
 import HostBootstrap.Substrate (Arch (Amd64, Arm64), Substrate (Substrate), SubstrateName (AppleSilicon, LinuxCpu, LinuxGpu, WindowsCpu, WindowsGpu))
-import HostBootstrap.Substrate.Provider (ProviderWallDecision (..), ProviderWallDimension (..))
+import HostBootstrap.Substrate.Provider (HostPathShare (..), ProviderWallDecision (..), ProviderWallDimension (..))
+import HostBootstrapDemo.ClusterConfig (durableDockerHostPath)
 import HostBootstrapDemo.Commands (
     absoluteHostAcceleratorDaemonExePath,
+    admitDemoVmProviderDescription,
+    admitDemoShareDescription,
+    admitDemoAliasDescription,
+    admitDemoDirectProviderDescription,
     acceleratorDaemonManifest,
     acceleratorHelmValuesForContext,
     clusterReadinessProbeResult,
@@ -161,6 +167,29 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 
 expectPlan :: [Step] -> StepPlan
 expectPlan = either (error . show) id . mkStepPlan
+
+{- | Admit a substrate's plan on this gate host.
+
+Incus and Lima keep the host share's absolute path as their guest path, so a
+Linux CPU or Apple Silicon plan built over a Windows temporary root names a
+non-POSIX guest path, and plan admission refuses its VM provider or share probe.
+Only those exact refusals are accepted, and only on Windows; those plans'
+contents are asserted on POSIX gate hosts.
+-}
+admitPlanOnHost :: Substrate -> [Step] -> IO (Maybe StepPlan)
+admitPlanOnHost substrate steps = case mkStepPlan steps of
+    Right plan -> pure (Just plan)
+    Left (Step.InvalidProviderProbeDescription (Step.CoreStepIdentity Step.DeployVMId))
+        | posixGuestOnWindows -> pure Nothing
+    Left (Step.InvalidShareProbeDescription (Step.CoreStepIdentity Step.CopySourceId))
+        | posixGuestOnWindows -> pure Nothing
+    Left refusal -> assertFailure ("the plan was refused: " ++ show refusal)
+  where
+    posixGuestOnWindows = os == "mingw32" && substrate `elem` [Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64]
+
+-- | The demo plan for a substrate, admitted on this gate host as 'admitPlanOnHost' describes.
+demoPlanOnHost :: Substrate -> IO (Maybe StepPlan)
+demoPlanOnHost substrate = withDemoRoot (\root -> admitPlanOnHost substrate (demoChainFor substrate root hostCfg))
 
 {- | The rendered schema text up to the accelerator entry, i.e. the web role's
 own portion. Used to show a field belongs to one role rather than to every one.
@@ -357,7 +386,7 @@ tests =
                     _ -> False
             assertBool "core reverse does not enter retained ownership release" ("releaseRetainedClusterLifecycle cfg (planForRoot root ctx)" `isInfixOf` coreReverse)
             assertBool "core reverse does not release exposure before retained cluster ownership" (ordered coreRelease "releaseRecordedClusterExposure cfg plan" "releaseRetainedCluster cfg plan")
-            assertBool "child reverse does not release exposure before retained cluster ownership" (ordered childSource "releaseRecordedClusterExposure host clusterPlan" "releaseRetainedCluster host clusterPlan")
+            assertBool "child reverse does not release exposure before retained cluster ownership" (ordered childSource "releaseRecordedClusterExposureFenced host plan gate" "releaseRetainedClusterFenced host plan gate")
             assertBool "direct reverse does not release exposure before retained nvkind ownership" (ordered directReverse "releaseRecordedClusterExposure cfg directPlan" "directClusterReleaseArgs dockerHostDataPath (dataPath directPlan) profile")
             assertBool "direct reverse no longer bypasses retained ownership with raw kind" (not ("directClusterTeardownArgs" `isInfixOf` directReverse))
             let childRelease = maybe "" (`drop` demoSource) (substringOffset "runDirectClusterReleaseChild rawProfile = do" demoSource)
@@ -409,15 +438,15 @@ tests =
                         (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool
                 "the VM action does not receive its exact StepExecution"
-                ("changed (runVmUp cfg)" `isInfixOf` commandsSource)
+                ("changed (runVmUp root description cfg)" `isInfixOf` commandsSource)
             assertBool
                 "the provider package route is no longer the fixed invocation-local readiness route"
                 ("\"runtime://provider/demo-vm-readiness\"" `isInfixOf` commandsSource)
             assertBool
                 "Lima does not enter the same exact VM provider adopter as Incus"
                 ( "ProviderIncus -> runExactVmProvider" `isInfixOf` commandsSource
-                    && "runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot" `isInfixOf` commandsSource
-                    && "mkLimaBackendSpec cfg provider envelope durableShare" `isInfixOf` adopterSource
+                    && "runExactVmProvider expected projectCfg cfg execution sp" `isInfixOf` commandsSource
+                    && "mkLimaBackendSpec cfg provider envelope (HostPathShare host guest Nothing)" `isInfixOf` adopterSource
                 )
             assertBool
                 "the provider adopter reconstructed an operation-name fallback"
@@ -446,7 +475,7 @@ tests =
                         (substringOffset "runExactDirectProvider ::" commandsSource)
                 exactCallsite =
                     [ "stepExecutionPreparedGate execution"
-                    , "mkDirectHostBackendSpec cfg canonicalRoot (demoBaseImage cfg)"
+                    , "mkDirectHostBackendSpec cfg canonicalRoot (T.unpack image)"
                     , "withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution)"
                     , "withNodeObservedResource execution planned"
                     , "withPreparedProviderProvision execution"
@@ -467,10 +496,10 @@ tests =
                         (and (zipWith (<) offsets (drop 1 offsets)))
             assertBool
                 "the Direct build action does not receive its exact StepExecution"
-                ("changed (runDirectProviderReservation cfg)" `isInfixOf` commandsSource)
+                ("changed (runDirectProviderReservation description cfg)" `isInfixOf` commandsSource)
             assertBool
                 "Direct reservation is not settled before CUDA mutation"
-                ( case (substringOffset "runExactDirectProvider parentCfg cfgAfterDocker execution absoluteRoot" bootstrapSource, substringOffset "runEnsure EnsureCuda.reconciler" bootstrapSource) of
+                ( case (substringOffset "runExactDirectProvider parentCfg cfgAfterDocker execution root image" bootstrapSource, substringOffset "runEnsure EnsureCuda.reconciler" bootstrapSource) of
                     (Just exactOffset, Just cudaOffset) -> exactOffset < cudaOffset
                     _ -> False
                 )
@@ -507,11 +536,12 @@ tests =
                     assertBool
                         "copy-source stages are not ordered recover/prepare/attach/settle/use/close"
                         (and (zipWith (<) offsets (drop 1 offsets)))
-            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            vmPlans <- demoPlanOnHost (Substrate LinuxCpu Amd64)
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
-            assertBool
-                "the VM topology does not contain exactly one copy-source action"
-                (length (filter ((== "copy-source") . stepKindName . stepKind) (NonEmpty.toList (stepPlanSteps vmPlan))) == 1)
+            forM_ vmPlans $ \vmPlan ->
+                assertBool
+                    "the VM topology does not contain exactly one copy-source action"
+                    (length (filter ((== "copy-source") . stepKindName . stepKind) (NonEmpty.toList (stepPlanSteps vmPlan))) == 1)
             assertBool
                 "the Direct topology acquired a VM-only copy-source action"
                 (all ((/= "copy-source") . stepKindName . stepKind) (NonEmpty.toList (stepPlanSteps directPlan)))
@@ -525,7 +555,7 @@ tests =
                         (substringOffset "demoVmBackedStackAt ::" commandsSource)
             assertBool
                 "the pristine guest binary is not installed before the shipped alias transaction"
-                ( case (substringOffset "runVmBootstrap cfg" chainSource, substringOffset "runCopySource cfg" chainSource) of
+                ( case (substringOffset "runVmBootstrap cfg" chainSource, substringOffset "runCopySource root shareDescription aliasDescription cfg" chainSource) of
                     (Just bootstrapOffset, Just copyOffset) -> bootstrapOffset < copyOffset
                     _ -> False
                 )
@@ -547,12 +577,13 @@ tests =
         , testCase "the guest alias settles inside the managed copy-source continuation" $ do
             mapM_
                 ( \substrate -> do
-                    plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor substrate root hostCfg)))
-                    case [reverseAction | step <- NonEmpty.toList (stepPlanSteps plan), stepKindName (stepKind step) == "copy-source", Just reverseAction <- [Step.stepReverse step]] of
-                        [reverseAction] -> do
-                            outcome <- reverseAction (error "alias retention must not inspect a host configuration or perform guest effects") Step.RetainResource
-                            outcome @?= Step.TeardownForeignRetained "the owned guest alias persists across provider stop/restart"
-                        _ -> assertFailure "the VM plan must retain exactly one guest-alias reverse adapter"
+                    admitted <- withDemoRoot (\root -> admitPlanOnHost substrate (demoChainFor substrate root hostCfg))
+                    forM_ admitted $ \plan ->
+                        case [reverseAction | step <- NonEmpty.toList (stepPlanSteps plan), stepKindName (stepKind step) == "copy-source", Just reverseAction <- [Step.stepReverse step]] of
+                            [reverseAction] -> do
+                                outcome <- reverseAction (error "alias retention must not inspect a host configuration or perform guest effects") Step.RetainResource
+                                outcome @?= Step.TeardownForeignRetained "the owned guest alias persists across provider stop/restart"
+                            _ -> assertFailure "the VM plan must retain exactly one guest-alias reverse adapter"
                 )
                 [Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64, Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64]
             commandsSource <- readFile "src/HostBootstrapDemo/Commands.hs"
@@ -729,30 +760,174 @@ tests =
                         present <- doesFileExist template
                         assertBool ("the selected template " <> template <> " is not shipped") present
         , testCase "VM and Direct topologies author distinct provider resources at their exact target frames" $ do
-            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            vmPlans <- demoPlanOnHost (Substrate LinuxCpu Amd64)
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
             let declarations plan =
                     [ (frameId (stepFrame step), providerResourceDeclarationTargetsChild declaration)
                     | step <- NonEmpty.toList (stepPlanSteps plan)
                     , declaration <- stepProviderResourceDeclarations step
                     ]
-            declarations vmPlan @?= [("host-orchestrator-0", True)]
+            forM_ vmPlans $ \vmPlan -> declarations vmPlan @?= [("host-orchestrator-0", True)]
             declarations directPlan @?= [("host-orchestrator-0", False)]
+        , testCase "VM provider probes retain the canonical root and provider realization" $ do
+            withDemoRoot $ \root -> do
+                let descriptionsOf plan =
+                        [ probe
+                        | step <- NonEmpty.toList (stepPlanSteps plan)
+                        , probe <- Step.stepProviderProbeDescriptions step
+                        ]
+                    descriptions substrate = descriptionsOf (expectPlan (demoChainFor substrate root hostCfg))
+                    durable = profileDataPath (clusterProfileOf hostCfg) (canonicalProjectRootPath root)
+                incus <- admitPlanOnHost (Substrate LinuxCpu Amd64) (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)
+                forM_ incus $ \plan -> case descriptionsOf plan of
+                    [probe@(Step.IncusProviderProbe _ _ _ stateRoot _ _ _)] -> do
+                        stateRoot @?= durable </> ".provider-state"
+                        route <- maybe (assertFailure "missing VM descent") pure (frameDescent "host-orchestrator-0" plan)
+                        admitDemoVmProviderDescription hostCfg route (canonicalProjectRootPath root) (Just probe) @?= Right probe
+                        assertBool "a changed provider root was accepted" $
+                            isLeft (admitDemoVmProviderDescription hostCfg route (canonicalProjectRootPath root </> "other") (Just probe))
+                        assertBool "a missing provider description was accepted" $
+                            isLeft (admitDemoVmProviderDescription hostCfg route (canonicalProjectRootPath root) Nothing)
+                    probes -> assertFailure ("unexpected Incus provider probe: " ++ show probes)
+                apple <- admitPlanOnHost (Substrate AppleSilicon Arm64) (demoChainFor (Substrate AppleSilicon Arm64) root hostCfg)
+                forM_ apple $ \plan -> case descriptionsOf plan of
+                    [Step.LimaProviderProbe _ _ _ _ host _] -> host @?= durable
+                    probes -> assertFailure ("unexpected Lima provider probe: " ++ show probes)
+                case descriptions (Substrate WindowsCpu Amd64) of
+                    [Step.Wsl2ProviderProbe _ _ _ _ host _] -> host @?= durable
+                    probes -> assertFailure ("unexpected WSL2 provider probe: " ++ show probes)
+        , testCase "the copy-source share declaration binds the backend's exact share" $
+            withDemoRoot $ \root -> forM_ [Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64, Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64] $ \substrate -> do
+                admitted <- admitPlanOnHost substrate (demoChainFor substrate root hostCfg)
+                forM_ admitted $ \plan -> do
+                    route <- maybe (assertFailure "missing VM descent") pure (frameDescent "host-orchestrator-0" plan)
+                    let rootPath = canonicalProjectRootPath root
+                    case [ declared | step <- NonEmpty.toList (stepPlanSteps plan), stepKindName (stepKind step) == "copy-source"
+                                    , declared <- Step.stepShareProbeDescriptions step ] of
+                        [declared@(Step.ShareProbeDescription host guest)] -> do
+                            host @?= profileDataPath (clusterProfileOf hostCfg) rootPath
+                            share <- either assertFailure pure (admitDemoShareDescription hostCfg route rootPath (Just declared))
+                            (hpsHostPath share, hpsGuestPath share) @?= (host, guest)
+                            assertBool "a share for another project root was admitted" $
+                                isLeft (admitDemoShareDescription hostCfg route (rootPath </> "other") (Just declared))
+                            assertBool "a changed guest target was admitted" $
+                                isLeft (admitDemoShareDescription hostCfg route rootPath (Just (Step.ShareProbeDescription host (guest <> "-other"))))
+                            assertBool "a missing share declaration was admitted" $
+                                isLeft (admitDemoShareDescription hostCfg route rootPath Nothing)
+                        declarations -> assertFailure ("copy-source must declare exactly one share, got " ++ show declarations)
+        , testCase "the copy-source alias declaration binds the backend's exact alias" $
+            withDemoRoot $ \root -> forM_ [Substrate LinuxCpu Amd64, Substrate AppleSilicon Arm64, Substrate WindowsCpu Amd64, Substrate WindowsGpu Amd64] $ \substrate -> do
+                admitted <- admitPlanOnHost substrate (demoChainFor substrate root hostCfg)
+                forM_ admitted $ \plan -> do
+                    route <- maybe (assertFailure "missing VM descent") pure (frameDescent "host-orchestrator-0" plan)
+                    let rootPath = canonicalProjectRootPath root
+                        copySources = [step | step <- NonEmpty.toList (stepPlanSteps plan), stepKindName (stepKind step) == "copy-source"]
+                    case (concatMap Step.stepAliasProbeDescriptions copySources, concatMap Step.stepShareProbeDescriptions copySources) of
+                        ([declared@(Step.AliasProbeDescription alias linkTarget)], [Step.ShareProbeDescription _ guest]) -> do
+                            (alias, linkTarget) @?= (durableDockerHostPath, guest)
+                            admitDemoAliasDescription hostCfg route rootPath (Just declared) @?= Right ()
+                            assertBool "an alias for another project root was admitted" $
+                                isLeft (admitDemoAliasDescription hostCfg route (rootPath </> "other") (Just declared))
+                            assertBool "a changed alias path was admitted" $
+                                isLeft (admitDemoAliasDescription hostCfg route rootPath (Just (Step.AliasProbeDescription (alias <> "-other") linkTarget)))
+                            assertBool "a missing alias declaration was admitted" $
+                                isLeft (admitDemoAliasDescription hostCfg route rootPath Nothing)
+                        declarations -> assertFailure ("copy-source must declare exactly one alias beside its share, got " ++ show declarations)
+        , testCase "the object-store node declares the container cluster's exact object-store Deployment" $
+            forM_ [(Substrate LinuxGpu Amd64, False), (Substrate WindowsCpu Amd64, True), (Substrate LinuxCpu Amd64, True)] $ \(substrate, guest) -> do
+                admitted <- demoPlanOnHost substrate
+                forM_ admitted $ \plan ->
+                    case ( guest
+                         , [ description
+                           | step <- NonEmpty.toList (stepPlanSteps plan)
+                           , stepKindName (stepKind step) == "deploy-object-store"
+                           , description <- Step.stepClusterObjectProbeDescriptions step
+                           ]
+                         ) of
+                        (False, []) -> pure ()
+                        (True, [Step.ClusterObjectProbeDescription state cluster namespace kind name]) -> do
+                            state @?= "/var/tmp/hostbootstrap-demo-data/cluster/kind/state"
+                            (namespace, kind, name) @?= ("default", "deployment", "object-store")
+                            let ctx = Context.deriveContainerContext (Context.deriveVMContextWithProvider Context.IncusVMProvider (context hostCfg) "/vm/demo") "/workspace/demo"
+                            cluster @?= T.pack (clusterName (containerPlan (clusterProfileOf hostCfg) ctx))
+                        (_, declarations) -> assertFailure ("unexpected object-store declarations: " ++ show declarations)
+        , testCase "the cluster node declares its Kind cluster's kube-system namespace identity" $
+            forM_ [(Substrate LinuxGpu Amd64, False), (Substrate WindowsCpu Amd64, True), (Substrate LinuxCpu Amd64, True)] $ \(substrate, guest) -> do
+                admitted <- demoPlanOnHost substrate
+                forM_ admitted $ \plan ->
+                    case ( guest
+                         , [ description
+                           | step <- NonEmpty.toList (stepPlanSteps plan)
+                           , stepKindName (stepKind step) == "deploy-kind"
+                           , description <- Step.stepClusterObjectProbeDescriptions step
+                           ]
+                         ) of
+                        (False, []) -> pure ()
+                        (True, [Step.ClusterObjectProbeDescription state _ namespace kind name]) -> do
+                            state @?= "/var/tmp/hostbootstrap-demo-data/cluster/kind/state"
+                            (namespace, kind, name) @?= ("kube-system", "namespace", "kube-system")
+                        (_, declarations) -> assertFailure ("unexpected cluster declarations: " ++ show declarations)
+        , testCase "the chart node declares its own web Deployment" $
+            forM_ [(Substrate LinuxGpu Amd64, False), (Substrate WindowsCpu Amd64, True), (Substrate LinuxCpu Amd64, True)] $ \(substrate, guest) -> do
+                admitted <- demoPlanOnHost substrate
+                forM_ admitted $ \plan ->
+                    case ( guest
+                         , [ description
+                           | step <- NonEmpty.toList (stepPlanSteps plan)
+                           , stepKindName (stepKind step) == "deploy-chart"
+                           , description <- Step.stepClusterObjectProbeDescriptions step
+                           ]
+                         ) of
+                        (False, []) -> pure ()
+                        (True, [Step.ClusterObjectProbeDescription state _ namespace kind name]) -> do
+                            state @?= "/var/tmp/hostbootstrap-demo-data/cluster/kind/state"
+                            (namespace, kind, name) @?= ("default", "deployment", "hostbootstrap-demo-web")
+                        (_, declarations) -> assertFailure ("unexpected chart declarations: " ++ show declarations)
+        , testCase "the registry node declares the container cluster's exact registry Deployment" $
+            forM_ [(Substrate LinuxGpu Amd64, False), (Substrate WindowsCpu Amd64, True), (Substrate LinuxCpu Amd64, True)] $ \(substrate, guest) -> do
+                admitted <- demoPlanOnHost substrate
+                forM_ admitted $ \plan ->
+                    case ( guest
+                         , [ description
+                           | step <- NonEmpty.toList (stepPlanSteps plan)
+                           , stepKindName (stepKind step) == "deploy-registry"
+                           , description <- Step.stepClusterObjectProbeDescriptions step
+                           ]
+                         ) of
+                        (False, []) -> pure ()
+                        (True, [Step.ClusterObjectProbeDescription state _ namespace kind name]) -> do
+                            state @?= "/var/tmp/hostbootstrap-demo-data/cluster/kind/state"
+                            (namespace, kind, name) @?= ("default", "deployment", "registry")
+                        (_, declarations) -> assertFailure ("unexpected registry declarations: " ++ show declarations)
+        , testCase "Direct provider probe binds the canonical root and configured target image" $ do
+            withDemoRoot $ \root -> do
+                let substrate = Substrate LinuxGpu Amd64
+                    plan = expectPlan (demoChainFor substrate root hostCfg)
+                    probes = concatMap Step.stepProviderProbeDescriptions (NonEmpty.toList (stepPlanSteps plan))
+                    expected = Step.DirectProviderProbe (canonicalProjectRootPath root) (T.pack (demoBaseImageFor substrate))
+                probes @?= [expected]
+                admitDemoDirectProviderDescription substrate (Just expected) @?= Right (canonicalProjectRootPath root, T.pack (demoBaseImageFor substrate))
+                assertBool "a changed image was accepted" $
+                    isLeft (admitDemoDirectProviderDescription substrate (Just (Step.DirectProviderProbe (canonicalProjectRootPath root) "foreign")))
+                assertBool "a missing Direct description was accepted" $
+                    isLeft (admitDemoDirectProviderDescription substrate Nothing)
         , testCase "the exact forward-child projector covers VM, container, Direct, and Harness scopes" $ do
             withDemoRoot $ \root -> do
                 let project parent child cfg lift =
-                        either assertFailure pure (demoForwardChildPlan cfg parent child lift)
+                        either assertFailure pure (demoForwardChildPlan cfg (ParentFrameId parent) (ChildFrameId child) lift)
                     requireDescent frame plan =
                         maybe (assertFailure ("missing descent from " ++ frame)) pure (frameDescent frame plan)
-                vmRootPlan <- pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg))
-                vmLift <- requireDescent "host-orchestrator-0" vmRootPlan
-                (vmPath, vmCfg, vmPlan) <- project "host-orchestrator-0" "vm-orchestrator-1" hostCfg vmLift
-                vmPath @?= "/root/hostbootstrap/demo"
-                Context.currentFrame (context vmCfg) @?= "vm-orchestrator-1"
-                containerLift <- requireDescent "vm-orchestrator-1" vmPlan
-                (containerPath, containerCfg, _containerPlan) <- project "vm-orchestrator-1" "vm-project-container-2" vmCfg containerLift
-                containerPath @?= "/workspace/demo"
-                Context.currentFrame (context containerCfg) @?= "vm-project-container-2"
+                vmRootPlans <- admitPlanOnHost (Substrate LinuxCpu Amd64) (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)
+                vmLifts <- forM vmRootPlans $ \vmRootPlan -> do
+                    vmLift <- requireDescent "host-orchestrator-0" vmRootPlan
+                    (vmPath, vmCfg, vmPlan) <- project "host-orchestrator-0" "vm-orchestrator-1" hostCfg vmLift
+                    vmPath @?= "/root/hostbootstrap/demo"
+                    Context.currentFrame (context vmCfg) @?= "vm-orchestrator-1"
+                    containerLift <- requireDescent "vm-orchestrator-1" vmPlan
+                    (containerPath, containerCfg, _containerPlan) <- project "vm-orchestrator-1" "vm-project-container-2" vmCfg containerLift
+                    containerPath @?= "/workspace/demo"
+                    Context.currentFrame (context containerCfg) @?= "vm-project-container-2"
+                    pure vmLift
 
                 directRootPlan <- pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg))
                 directLift <- requireDescent "host-orchestrator-0" directRootPlan
@@ -767,8 +942,9 @@ tests =
                 (_, projectedHarness, _) <- project "host-orchestrator-0" "vm-project-container-1" harnessCfg harnessLift
                 clusterProfileOf projectedHarness @?= fixtureHarnessProfile "run-42"
 
-                assertBool "a foreign child edge was projected" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "foreign" directLift))
-                assertBool "a VM lift was accepted for the Direct child" (isLeft (demoForwardChildPlan hostCfg "host-orchestrator-0" "vm-project-container-1" vmLift))
+                assertBool "a foreign child edge was projected" (isLeft (demoForwardChildPlan hostCfg (ParentFrameId "host-orchestrator-0") (ChildFrameId "foreign") directLift))
+                forM_ vmLifts $ \vmLift ->
+                    assertBool "a VM lift was accepted for the Direct child" (isLeft (demoForwardChildPlan hostCfg (ParentFrameId "host-orchestrator-0") (ChildFrameId "vm-project-container-1") vmLift))
         , testCase "the provider/cluster join accepts only one exact immediate parent" $ do
             let parents frame
                     | frame == "cluster" = Just "provider"
@@ -785,18 +961,19 @@ tests =
             assertBool "a sibling provider was accepted" (isLeft (demoDirectParentJoin ["sibling"] ["cluster"] parents))
             assertBool "a root cluster without a parent was accepted" (isLeft (demoDirectParentJoin ["provider"] ["root"] parents))
         , testCase "VM and Direct operations partition by closed identity in exact order" $ do
-            vmPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
+            vmPlans <- demoPlanOnHost (Substrate LinuxCpu Amd64)
             directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
             let roles :: StepPlan -> [String]
                 roles = map (roleOf . stepIdentity) . NonEmpty.toList . stepPlanSteps
                 roleOf :: StepIdentity -> String
                 roleOf identity =
                     either error id (foldDemoOperationRole identity "provider" "cluster" "workload" "service" "assertion")
-            roles vmPlan
-                @?= replicate 5 "provider"
-                    ++ ["cluster"]
-                    ++ replicate 4 "workload"
-                    ++ ["assertion", "service"]
+            forM_ vmPlans $ \vmPlan ->
+                roles vmPlan
+                    @?= replicate 5 "provider"
+                        ++ ["cluster"]
+                        ++ replicate 4 "workload"
+                        ++ ["assertion", "service"]
             roles directPlan
                 @?= replicate 3 "provider"
                     ++ ["cluster"]
@@ -1055,13 +1232,9 @@ tests =
             -- Both descents are read off the plan itself: the direct lane's is
             -- declared by its metal @context-init@ node, the VM-backed lane's by
             -- the in-VM @context-init@ node (§ W).
-            result <-
-                withDemoRoot $ \root ->
-                    pure
-                        ( frameDescent "host-orchestrator-0" (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg))
-                        , frameDescent "vm-orchestrator-1" (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg))
-                        )
-            case result of
+            vmPlans <- demoPlanOnHost (Substrate LinuxCpu Amd64)
+            directPlan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxGpu Amd64) root hostCfg)))
+            forM_ vmPlans $ \vmPlan -> case (frameDescent "host-orchestrator-0" directPlan, frameDescent "vm-orchestrator-1" vmPlan) of
                 (Just directContext, Just ordinaryContext)
                     | [ViaContainer directLift] <- liftLayers directContext
                     , [ViaContainer ordinaryLift] <- liftLayers ordinaryContext -> do
@@ -1218,27 +1391,29 @@ tests =
                     Left _ -> True
                     Right _ -> False
         , testCase "linux-cpu runs the accelerator daemon as an in-cluster pod (no host hook)" $ do
-            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate LinuxCpu Amd64) root hostCfg)))
-            let steps = NonEmpty.toList (stepPlanSteps plan)
-            map frameId (NonEmpty.toList (chainFrames plan)) @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
-            -- Incus does not forward the guest NodePort to the host, so the Linux CPU
-            -- accelerator daemon is an in-cluster pod (dialing the web ClusterIP), NOT a
-            -- host-resident post-handoff process as on Apple/Windows.
-            map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
-            stepKindName (stepKind (last steps)) @?= "deploy-accelerator-daemon"
-            case stepServiceActivationDeclarations (last steps) of
-                [(activationFrame, "accelerator", ["network-listen", "process"])] ->
-                    assertBool "the in-cluster activation frame is empty" (not (T.null activationFrame))
-                declarations -> assertFailure ("unexpected in-cluster activation declarations: " ++ show declarations)
+            admitted <- demoPlanOnHost (Substrate LinuxCpu Amd64)
+            forM_ admitted $ \plan -> do
+                let steps = NonEmpty.toList (stepPlanSteps plan)
+                map frameId (NonEmpty.toList (chainFrames plan)) @?= ["host-orchestrator-0", "vm-orchestrator-1", "vm-project-container-2"]
+                -- Incus does not forward the guest NodePort to the host, so the Linux CPU
+                -- accelerator daemon is an in-cluster pod (dialing the web ClusterIP), NOT a
+                -- host-resident post-handoff process as on Apple/Windows.
+                map stepLabel (postHandoffStepsForFrame "host-orchestrator-0" plan) @?= []
+                stepKindName (stepKind (last steps)) @?= "deploy-accelerator-daemon"
+                case stepServiceActivationDeclarations (last steps) of
+                    [(activationFrame, "accelerator", ["network-listen", "process"])] ->
+                        assertBool "the in-cluster activation frame is empty" (not (T.null activationFrame))
+                    declarations -> assertFailure ("unexpected in-cluster activation declarations: " ++ show declarations)
         , testCase "apple/windows keep the host-resident accelerator daemon post-handoff hook" $ do
-            plan <- withDemoRoot (\root -> pure (expectPlan (demoChainFor (Substrate AppleSilicon Arm64) root hostCfg)))
-            let hostSteps = postHandoffStepsForFrame "host-orchestrator-0" plan
-            map stepLabel hostSteps
-                @?= ["start the host-resident accelerator daemon after ingress is reachable"]
-            case concatMap stepServiceActivationDeclarations hostSteps of
-                [(activationFrame, "accelerator", ["network-listen", "process"])] ->
-                    assertBool "the host activation frame is empty" (not (T.null activationFrame))
-                declarations -> assertFailure ("unexpected host activation declarations: " ++ show declarations)
+            admitted <- withDemoRoot (\root -> admitPlanOnHost (Substrate AppleSilicon Arm64) (demoChainFor (Substrate AppleSilicon Arm64) root hostCfg))
+            forM_ admitted $ \plan -> do
+                let hostSteps = postHandoffStepsForFrame "host-orchestrator-0" plan
+                map stepLabel hostSteps
+                    @?= ["start the host-resident accelerator daemon after ingress is reachable"]
+                case concatMap stepServiceActivationDeclarations hostSteps of
+                    [(activationFrame, "accelerator", ["network-listen", "process"])] ->
+                        assertBool "the host activation frame is empty" (not (T.null activationFrame))
+                    declarations -> assertFailure ("unexpected host activation declarations: " ++ show declarations)
             hostAcceleratorSubstrate (Substrate AppleSilicon Arm64) @?= True
             hostAcceleratorSubstrate (Substrate WindowsGpu Amd64) @?= True
         , testCase "windows-cpu has no accelerator worker or host-daemon hook" $ do

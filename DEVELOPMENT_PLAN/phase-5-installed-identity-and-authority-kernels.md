@@ -826,8 +826,8 @@ None. Which modules the `lifecycle-transaction-internal` stanza exposes beside t
 
 **Status**: Done
 **Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Prepared/Internal.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/Rooted/Node.hs`,
-`core/hostbootstrap-core/src/HostBootstrap/Lifecycle/FrameExecutor.hs`
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs`,
+`core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs`
 **Substrates**: none
 **Docs to update**: `documents/architecture/unrepresentable_state.md`
 

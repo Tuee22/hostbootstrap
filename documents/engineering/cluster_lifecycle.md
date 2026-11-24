@@ -199,7 +199,9 @@ The prepared reconcile, cordon and readiness calls hold the protected entry thro
 ownership observation and effects. They return descriptive backend call results for exact settlement.
 `ClusterCreated` or `ClusterRecovered` surfaces as `ClusterResultCreated`, while an already-owned
 cluster is healthy only when every bound node container runs. Retained cleanup is the single release
-route: `releaseRetainedCluster` derives one `RetainedClusterProjection` at entry. This ordinary
+route, reached only behind the adopted durable gate; the former exact-cleanup producer and its uncalled root-entry
+caller are gone, and a source guard bans both names. `releaseRetainedCluster` derives one
+`RetainedClusterProjection` at entry. This ordinary
 view contains only the cluster name, declared node names, state directory and kubeconfig path; it
 retains no durable root and grants no ownership authority. Release reads those coordinates to open
 the same state store, then recovers the recorded claim and compares bound identities under one entry.
@@ -402,8 +404,11 @@ is the canonical home for that traversal. Within a frame, the reverse projection
   it is `runCoreManagedReverse`. Both first release the recorded exposure relay
   (`releaseRecordedClusterExposure`) and then run `releaseRetainedCluster`, which re-observes the bound node
   identities under the protected store, deletes through the one interpreter, and forgets the records only
-  over a reported absence;
-- `deploy-chart` and `expose-port` are released with the cluster that contains them;
+  over a reported absence. Root cleanup first durably prepares the exact local operation and checks that
+  the resulting gate names the current plan and operation, including during failed-Up unwind;
+- a declared chart workload uses its exact recorded ownership bundle for cleanup. An absent bundle is
+  reported as foreign-retained, while a malformed bundle fails the chart's teardown. Other core-managed
+  resources without a separate cleanup projection are retained with their containing cluster;
 - a node's declared reverse stops or deletes its provider or direct resources.
 
 On the direct Linux GPU path the demo declares a reverse that recovers the exact Docker-visible durable

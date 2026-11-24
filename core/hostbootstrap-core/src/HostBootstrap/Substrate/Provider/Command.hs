@@ -57,6 +57,7 @@ module HostBootstrap.Substrate.Provider.Command (
     createLimaInstanceCommand,
     startLimaInstanceCommand,
     installWslInstanceCommand,
+    listRunningWslCommand,
 )
 where
 
@@ -300,3 +301,7 @@ installWslInstanceCommand name location disk =
         [ "--install", "-d", "Ubuntu-24.04", "--name", name, "--location", location
         , "--no-launch", "--vhd-size", disk
         ]
+
+-- | List running distributions only. Listing never launches a distribution.
+listRunningWslCommand :: HostCommand
+listRunningWslCommand = hostCommand Wsl ["--list", "--running", "--quiet"]

@@ -62,8 +62,8 @@
    for a concrete configuration; `projectPlanDrafts` then refuses with
    `InvalidProjectPlan EmptyStepPlan`. Step identities, frames, descent and reverse rules are checked by
    `mkStepPlan` at that concrete projection boundary.
-   `Step`/`StepKind` constructors are hidden, and Production `project up --dry-run` renders the exact
-   admitted `ProjectPlan` whose forward projection the interpreter consumes. Validation rejects
+   `Step`/`StepKind` constructors are hidden, and Production `project up --dry-run` renders the step
+   plan the same admission would build, in the order the interpreter consumes, without Production authority. Validation rejects
    empty/duplicate/conflicting plans,
    noncontiguous `A/B/A` frames, and invalid post-handoff placement before effects; the complete set of
    refusals is the `StepPlanError` table in
@@ -103,7 +103,8 @@
      effect permits only declared reads, so an assembler that reads no file declares none (as the demo
      does), and a duplicate path refuses finalization;
    - `addForwardChildPlan` installs the one forward-child projector. It is a required single-assignment
-     seam: given the current config, the parent and child frame identifiers, and the lift the parent
+     seam: given the current config, the `ParentFrameId` and `ChildFrameId` identifiers exported by
+     `HostBootstrap.CLI`, and the lift the parent
      supplies, it projects the exact next child's config and independently rebuilds that child's complete
      child-local `StepPlan`, returning the child's source root, config, and plan or a refusal. Core calls
      it on the current frame's one-layer forward topology edge to build the child it hands off to. The
@@ -111,6 +112,8 @@
 
    `finalizeProjectSpec` returns `Left MissingStepPlan` without a step fragment, `Left MissingForwardChildPlan`
    without a projector, and `Left DuplicateForwardChildPlan` when `addForwardChildPlan` ran more than once.
+   The internal finalized runtime view derives its Production or Harness scope tag from the codec's scope
+   index; callers do not supply a separate scope tag.
    It also checks the test suite, unique case identities, artifacts, assembly inputs and services.
    Pass only the opaque `Right` result to `runHostBootstrapCLI` so the contributions merge into the
    recursive interpreter. The core command surface (`project`/`test`/`service`/`context`/`check-code`) is fixed; the project

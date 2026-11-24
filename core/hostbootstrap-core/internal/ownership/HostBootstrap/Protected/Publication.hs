@@ -7,6 +7,9 @@ module HostBootstrap.Protected.Publication (
     syncPublishedFile,
     renamePublishedFile,
     syncPublishedParent,
+#if defined(mingw32_HOST_OS)
+    windowsPublishedPath,
+#endif
 ) where
 
 import Control.Exception (bracket)

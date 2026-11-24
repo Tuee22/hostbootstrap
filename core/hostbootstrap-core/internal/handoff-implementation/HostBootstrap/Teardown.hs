@@ -45,10 +45,12 @@ of 'DestroySettled' — the proof
 @HostBootstrap.Lifecycle.Mode.destroySettledClosure@ requires before Production
 mode may be released.
 
-A foreign or refused observation is not a failure: § Y classifies compatible
+A foreign or refused ordinary observation is not a failure: § Y classifies compatible
 unowned state as a `ForeignResult` and a policy decision as a `SafetyRefusal`,
 and neither is torn down. Both settle their node — the run never owned the
-object — and both are recorded on the forest so the report can name them.
+object — and both are recorded on the forest so the report can name them. At
+pre-descent, however, either observation leaves the provider unreachable and
+keeps its children outstanding.
 -}
 module HostBootstrap.Teardown (
     -- * The reverse projection
@@ -77,6 +79,8 @@ module HostBootstrap.Teardown (
     preDescentStepKey,
     preDescentStepFrame,
     preDescentStepRun,
+    runPreDescentReachability,
+    nestedPreDescentRefusal,
     SettledChildren,
     settledChildrenKeys,
     TeardownWork,
@@ -109,7 +113,6 @@ module HostBootstrap.Teardown (
     subtreeSettledOpeningFrame,
     subtreeSettledVerbName,
     subtreeSettledTerminalObservations,
-    subtreeSettledReleasedOperationKeys,
     verifySubtreeSettled,
     validateRootSubtreeSettled,
     DestroySettled,
@@ -375,6 +378,8 @@ actionFor ProjectDestroy _ = Just ReleaseResource
 data NodeState
     = -- | destroy-only: the stopped provider is not yet reachable
       PreDescentPending
+    | -- | reachability failed or was refused; retry it before any child work
+      PreDescentFailed
     | -- | this node's own step waits on its deeper frame
       ChildrenPending
     | -- | this node's own step is schedulable
@@ -491,12 +496,12 @@ teardownForestFailures (TeardownForest _ nodes) = concatMap failuresIn nodes
     failuresIn node =
         concatMap failuresIn (nodeChildren node)
             ++ [ (reverseKey (nodeStep node), Text.pack detail)
-               | nodeState node == SelfFailed
+               | nodeState node `elem` [SelfFailed, PreDescentFailed]
                , Just (TeardownFailed detail) <- [nodeObservation node]
                ]
 
-{- | Nodes settled as compatible-unowned or policy-refused. They were left
-untouched, which is why they do not block completion but are still reported.
+{- | Compatible-unowned or policy-refused observations. An ordinary node is
+settled, while a pre-descent refusal keeps its children blocked and is reported.
 -}
 teardownForestForeign :: TeardownForest scope planId frame verb -> [(Text, Text)]
 teardownForestForeign (TeardownForest _ nodes) = concatMap foreignIn nodes
@@ -504,7 +509,7 @@ teardownForestForeign (TeardownForest _ nodes) = concatMap foreignIn nodes
     foreignIn node =
         concatMap foreignIn (nodeChildren node)
             ++ [ (reverseKey (nodeStep node), Text.pack detail)
-               | nodeState node == Settled
+               | nodeState node `elem` [Settled, PreDescentFailed]
                , Just observation <- [nodeObservation node]
                , detail <- case observation of
                     TeardownForeignRetained value -> [value]
@@ -591,6 +596,17 @@ preDescentStepRun ::
     PreDescentStep scope planId frame verb ->
     Maybe (HostConfig -> TeardownAction -> IO TeardownOutcome)
 preDescentStepRun (PreDescentStep point) = reverseRun (authorizationPointStep point)
+
+-- | Run the exact provider callback the projected node declared, when present.
+runPreDescentReachability :: HostConfig -> PreDescentStep scope planId frame verb -> IO TeardownOutcome
+runPreDescentReachability cfg pre = case preDescentStepRun pre of
+    Nothing -> pure TeardownReleased
+    Just declared -> declared cfg ReachFrame
+
+-- | A nested frame cannot invoke the root's project-owned provider callback.
+nestedPreDescentRefusal :: PreDescentStep scope planId frame verb -> IO TeardownOutcome
+nestedPreDescentRefusal pre =
+    pure (TeardownFailed ("a frame serving its children's reverse cannot open a provider: " <> Text.unpack (preDescentStepKey pre)))
 
 -- | Proof that this node's exact child set has settled.
 newtype SettledChildren scope planId frame = SettledChildren [Text]
@@ -715,7 +731,7 @@ nextTeardownWork forest@(TeardownForest (TeardownPlan verb _ digest frame _ _) n
     case firstJust [searchAll FreshWork [] nodes, searchAll RetryWork [] nodes] of
         Just (path, node, preDescent) ->
             ProgressWork (TeardownAuthorizationPoint forest path node preDescent)
-        Nothing ->
+        Nothing | null (teardownForestOutstanding forest) ->
             ProgressCompleted
                 ( CompletedTeardownForest
                     verb
@@ -723,6 +739,7 @@ nextTeardownWork forest@(TeardownForest (TeardownPlan verb _ digest frame _ _) n
                     frame
                     (terminalObservations nodes)
                 )
+        Nothing -> error "teardown scheduler has outstanding work but no schedulable node"
   where
     settledKeys = map fst (terminalObservations nodes)
     dependenciesSettled node = all (`elem` settledKeys) (nodeWaitsFor node)
@@ -730,21 +747,27 @@ nextTeardownWork forest@(TeardownForest (TeardownPlan verb _ digest frame _ _) n
         firstJust . zipWith (\index node -> search pass (prefix ++ [index]) node) [0 ..]
     search pass path node = case nodeState node of
         PreDescentPending | pass == FreshWork -> Just (path, node, True)
-        SelfPending | pass == FreshWork, dependenciesSettled node -> Just (path, node, False)
+        PreDescentFailed | pass == RetryWork -> Just (path, node, True)
+        SelfPending | pass == FreshWork, childrenSettled node, dependenciesSettled node -> Just (path, node, False)
         -- A failed node is offered again, but only after every unrelated
         -- sibling has had its turn: that is what keeps the rest of the cleanup
         -- draining while its exact parent stays blocked, and it is why a forest
         -- containing a failure can never report itself complete.
-        SelfFailed | pass == RetryWork, dependenciesSettled node -> Just (path, node, False)
+        SelfFailed ->
+            case searchAll pass path (nodeChildren node) of
+                Just found -> Just found
+                Nothing | pass == RetryWork, childrenSettled node, dependenciesSettled node -> Just (path, node, False)
+                Nothing -> Nothing
         ChildrenPending ->
             case searchAll pass path (nodeChildren node) of
                 Just found -> Just found
                 Nothing
                     | pass == FreshWork
-                    , all ((== Settled) . nodeState) (nodeChildren node) ->
+                    , childrenSettled node ->
                         Just (path, node, False)
                     | otherwise -> Nothing
         _ -> Nothing
+    childrenSettled = all ((== Settled) . nodeState) . nodeChildren
 
 {- | Two scheduling passes: everything not yet attempted, then everything that
 failed. Without the split a depth-first search would keep re-offering the first
@@ -793,10 +816,11 @@ withTeardownAuthorization ::
     result
 withTeardownAuthorization point@(TeardownAuthorizationPoint _ _ node preDescent) onPreDescent onOrdinary
     | preDescent = onPreDescent (PreDescentStep point)
-    | otherwise =
+    | all ((== Settled) . nodeState) (nodeChildren node) =
         onOrdinary
             (SettledChildren [reverseKey (nodeStep child) | child <- nodeChildren node])
             (ordinaryWork point (nodeStep node))
+    | otherwise = error "teardown authorization requires settled children"
 
 ordinaryWork ::
     TeardownAuthorizationPoint scope planId frame verb ->
@@ -869,9 +893,7 @@ advanceAuthorizationPoint (TeardownAuthorizationPoint forest path _ preDescent) 
     advance node
         | preDescent = case outcome of
             TeardownReleased -> node{nodeState = descendState node, nodeObservation = Nothing}
-            TeardownForeignRetained _ -> terminalNode node outcome
-            TeardownRefused _ -> terminalNode node outcome
-            TeardownFailed _ -> failedNode node outcome
+            _ -> node{nodeState = PreDescentFailed, nodeObservation = Just outcome}
         | otherwise = case outcome of
             TeardownReleased -> terminalNode node outcome
             TeardownForeignRetained _ -> terminalNode node outcome
@@ -942,7 +964,10 @@ failChildObservations (TeardownAuthorizationPoint (TeardownForest projection nod
          in if reverseOperationKey (nodeStep node) `elem` operations
                 then
                     node
-                        { nodeState = SelfFailed
+                        { nodeState = case nodeState node of
+                            PreDescentPending -> PreDescentFailed
+                            PreDescentFailed -> PreDescentFailed
+                            _ -> SelfFailed
                         , nodeChildren = children
                         , nodeObservation = Just failure
                         }
@@ -1006,7 +1031,8 @@ driveTeardownForest forest attemptPreDescent attemptLocal attemptDescent report 
                                 point
                                 ( \preDescent -> do
                                     outcome <- attemptPreDescent preDescent
-                                    finish failed key outcome (attemptPreDescentStep preDescent outcome)
+                                    report key outcome
+                                    go (failed ++ [key | outcome /= TeardownReleased]) (attemptPreDescentStep preDescent outcome)
                                 )
                                 ( \settled work ->
                                     eliminateTeardownWork
@@ -1108,14 +1134,6 @@ subtreeSettledTerminalObservations ::
     SubtreeSettled scope planId frame verb ->
     [(OperationKey, TeardownOutcome)]
 subtreeSettledTerminalObservations (SubtreeSettled _ _ _ observations) = observations
-
-subtreeSettledReleasedOperationKeys ::
-    SubtreeSettled scope planId frame verb ->
-    [OperationKey]
-subtreeSettledReleasedOperationKeys settled =
-    [ operation
-    | (operation, TeardownReleased) <- subtreeSettledTerminalObservations settled
-    ]
 
 {- | The sole producer of frame-bound subtree settlement.
 
@@ -1325,8 +1343,6 @@ data TeardownError
       TeardownProjectUpHasNoReverse
     | -- | the verb whose projection removed nothing at all
       TeardownPlanEmpty Text
-    | -- | nodes the plan names that the forest never settled
-      TeardownIncomplete [Text]
     | -- | expected and observed stable plan digests
       TeardownPlanDigestMismatch Text Text
     | -- | expected and observed opening frame identifiers
@@ -1352,9 +1368,6 @@ teardownErrorMessage failure = case failure of
         "teardown: the "
             <> Text.unpack verb
             <> " projection of this plan removes nothing; every step preserves on reverse"
-    TeardownIncomplete missing ->
-        "teardown: the forest completed without settling "
-            <> Text.unpack (Text.intercalate ", " missing)
     TeardownPlanDigestMismatch expected observed ->
         "teardown: plan digest mismatch; expected "
             <> Text.unpack expected

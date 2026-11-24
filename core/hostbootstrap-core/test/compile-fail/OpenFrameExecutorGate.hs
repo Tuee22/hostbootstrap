@@ -6,7 +6,7 @@ module OpenFrameExecutorGate where
 -- package, or render the ordered key list a signed grant is compared against.
 import HostBootstrap.Lifecycle.Prepared (
     mintPreparedGate,
-    readPreparedGatePackageKernel,
+    readFencedPreparedGatePackageKernel,
     readPreparedGatePackagesKernel,
     renderPreparedNodeKeysKernel,
  )

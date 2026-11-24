@@ -30,6 +30,8 @@ module HostBootstrap.Authority.Kernel (
     verifyOsPrincipal,
     BrokerEpoch,
     brokerEpochWord,
+    validateReverseTargetEpochs,
+    validateReverseTargetPlanEpoch,
     withFreshBrokerEpochKernel,
     withReifiedAllocatedBrokerEpochKernel,
     validateAllocatedBrokerEpochKernel,
@@ -205,6 +207,19 @@ instance Show (BrokerEpoch brokerGeneration) where
 
 brokerEpochWord :: BrokerEpoch brokerGeneration -> Word64
 brokerEpochWord (BrokerEpoch _project _store value) = value
+
+-- | Compare the independently retained epoch projections before reverse admission.
+validateReverseTargetEpochs :: Word64 -> Word64 -> Word64 -> Either String Word64
+validateReverseTargetEpochs rootEpoch modeEpoch profileEpoch
+    | rootEpoch /= modeEpoch = Left "lifecycle entry: target root and mode broker epochs differ"
+    | rootEpoch /= profileEpoch = Left "lifecycle entry: target root and recovered-profile broker epochs differ"
+    | otherwise = Right rootEpoch
+
+-- | Compare the rebuilt target plan with the admitted reverse epoch.
+validateReverseTargetPlanEpoch :: Word64 -> Word64 -> Either String ()
+validateReverseTargetPlanEpoch targetEpoch planEpoch
+    | planEpoch /= targetEpoch = Left "lifecycle entry: target plan broker epoch differs"
+    | otherwise = Right ()
 
 withFreshBrokerEpochKernel ::
     ProtectedSession session ->
@@ -829,6 +844,8 @@ data AuthorityError
     | AuthorityWrongStore Text Text
     | AuthorityEpochOriginMismatch Text Text
     | AuthorityMalformedBinding Text
+    | -- | Retained root evidence presented to the root project gate disagrees.
+      AuthorityEvidenceMismatch Text
     | AuthorityInvocationConsumed Text
     | AuthorityReservationConflict Text
     | AuthorityUnknownVerb Text
@@ -856,6 +873,8 @@ authorityErrorMessage failure = case failure of
             <> storeIdentity
     AuthorityMalformedBinding reason ->
         "the protected authority binding is malformed: " <> reason
+    AuthorityEvidenceMismatch subject ->
+        "the retained root evidence does not match: " <> subject
     AuthorityInvocationConsumed invocation ->
         "invocation " <> invocation <> " has already been consumed"
     AuthorityReservationConflict invocation ->

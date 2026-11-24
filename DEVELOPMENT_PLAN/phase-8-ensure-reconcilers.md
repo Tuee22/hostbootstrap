@@ -1854,7 +1854,7 @@ None.
 ### Sprint 8.34: Immediate handoff reads the route layer view [Done]
 
 **Status**: Done
-**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/ProjectPlan/Handoff/Internal.hs`,
+**Implementation**: `core/hostbootstrap-core/internal/handoff-implementation/HostBootstrap/ProjectPlan/Handoff/Internal.hs`,
 `core/hostbootstrap-core/test/HandoffSpec.hs`,
 `core/hostbootstrap-core/test/ProjectPlanSpec.hs`,
 `core/hostbootstrap-core/test/RecursiveLifecycleSpec.hs`

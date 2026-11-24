@@ -11,26 +11,37 @@ module HostBootstrap.Teardown.Executor.Internal (
     withStorelessReverseExecutorKernel,
     runStorelessReversePreparedKernel,
     withStorelessReverseDescentResultKernel,
+    failedUpExpectedOperations,
 )
 where
 
+import Control.Exception.Safe (displayException, tryAny)
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LazyByteString
 import Data.List (nub)
+import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Authority (ProjectVerb (ProjectDestroy, ProjectDown, ProjectUp), projectVerbName)
-import HostBootstrap.Handoff (frameWire, handoffErrorMessage, takeHandoffFrame)
+import HostBootstrap.Teardown.Preparation (renderReverseAdapterKernel)
+import HostBootstrap.Handoff (handoffErrorMessage, takeHandoffFrame)
 import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Prepared (PreparedGate, preparedGateAttempt, preparedGateFence, preparedGateJournalVersion, preparedGateOperation, preparedGateSession)
 import HostBootstrap.ProjectPlan (
     ProjectPlan,
+    forward,
+    operationKeyText,
+    plannedStepFrameId,
+    plannedStepOperationKey,
+    plannedStepProjectedOperationKeys,
     renderSnapshot,
     stablePlanSnapshotDigest,
     topology,
+    topologyFrameOrder,
     topologyParentEdges,
  )
 import HostBootstrap.ProjectPlan.Frame (CurrentFrame, currentFrameId)
@@ -39,7 +50,7 @@ import HostBootstrap.Teardown (
     SubtreeSettled,
     TeardownError (TeardownReverseDescentRefused, TeardownTerminalObservationsMismatch),
     TeardownForest,
-    TeardownOutcome (TeardownReleased),
+    TeardownOutcome (TeardownFailed, TeardownForeignRetained, TeardownRefused, TeardownReleased),
     TeardownPlan,
     attemptLocalWork,
     attemptPreDescentStep,
@@ -74,7 +85,11 @@ withStorelessReverseExecutorKernel plan current verb observed use =
     case verb of
         ProjectUp -> do
             expected <- failedUpExpectedOperations observed
-            projection <- failedUpTeardownPlanKernel plan current expected
+            let ordered = filter (`elem` expected) admittedForwardOperations
+            if length expected /= length (nub expected) || length ordered /= length expected
+                then Left (refusal "the failed-Up adapter names duplicate or unadmitted operations")
+                else pure ()
+            projection <- failedUpTeardownPlanKernel plan current ordered
             verify projection
         ProjectDown -> verify (teardownPlan plan current verb)
         ProjectDestroy -> verify (teardownPlan plan current verb)
@@ -90,9 +105,19 @@ withStorelessReverseExecutorKernel plan current verb observed use =
                 | otherwise -> Right (use projection)
               where
                 expected = teardownForestOutstanding forest
-                canonical = renderAdapter planDigest verb parent child expected
+                canonical = renderReverseAdapterKernel planDigest (projectVerbName verb) parent child expected
         _ -> Left (refusal "the reverse child frame is not one exact topology child")
     child = currentFrameId current
+    admittedFrames = dropWhile (/= child) (map fst (NonEmpty.toList (topologyFrameOrder (topology plan))))
+    admittedForwardOperations =
+        [ operation
+        | frame <- admittedFrames
+        , step <- NonEmpty.toList (forward plan)
+        , plannedStepFrameId step == frame
+        , operation <-
+            Text.pack (operationKeyText (plannedStepOperationKey step))
+                : map (Text.pack . operationKeyText) (plannedStepProjectedOperationKeys step)
+        ]
     parentFrames =
         [parent | (parent, edgeChild) <- topologyParentEdges (topology plan), edgeChild == child]
     planDigest = stablePlanSnapshotDigest (renderSnapshot plan)
@@ -133,15 +158,21 @@ wordBytes = LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64B
 -- | Run only the exact local work named by one verified Prepared response.
 runStorelessReversePreparedKernel ::
     HostConfig ->
-    (LocalWork scope planId frame verb -> IO TeardownOutcome) ->
+    (PreparedGate -> LocalWork scope planId frame verb -> IO TeardownOutcome) ->
+    (ByteString -> Either Text ByteString) ->
     TeardownForest scope planId frame verb ->
+    PreparedGate ->
     Text ->
     IO (Either TeardownError (TeardownForest scope planId frame verb, ByteString))
-runStorelessReversePreparedKernel host runCoreManaged forest operation =
-    eliminateTeardownProgress
-        (nextTeardownWork forest)
-        (const (pure (Left (refusal "the reverse frame is already complete"))))
-        ( \point ->
+runStorelessReversePreparedKernel host runCoreManaged wrapObservation forest gate operation
+    | preparedGateOperation gate /= operation = pure (Left (refusal "the gate names another reverse operation"))
+    | Text.null (preparedGateSession gate) || preparedGateFence gate == 0 || preparedGateAttempt gate == 0 || preparedGateJournalVersion gate == 0 =
+        pure (Left (refusal "the reverse gate is missing durable authority"))
+    | otherwise =
+        eliminateTeardownProgress
+            (nextTeardownWork forest)
+            (const (pure (Left (refusal "the reverse frame is already complete"))))
+            ( \point ->
             withTeardownAuthorization
                 point
                 (const (pure (Left (refusal "a pre-descent reachability step is root-owned"))))
@@ -156,14 +187,48 @@ runStorelessReversePreparedKernel host runCoreManaged forest operation =
     runLocal local
         | localWorkKey local /= operation =
             pure (Left (refusal "the Prepared response names another reverse operation"))
-        | otherwise = do
-            outcome <- case localWorkRun local of
-                Nothing -> runCoreManaged local
-                Just run -> run host (localWorkAction local)
-            pure $ do
-                observation <- renderTeardownObservations [(operation, outcome)]
-                Right (attemptLocalWork local outcome, observation)
+        | otherwise = case traverse check templates of
+            Left failure -> pure (Left failure)
+            Right _ -> do
+                attempted <- tryAny $ case localWorkRun local of
+                    Nothing -> runCoreManaged gate local
+                    Just run -> run host (localWorkAction local)
+                let outcome = either (TeardownFailed . displayException) id attempted
+                pure $ do
+                    normalized <- normalizeReverseOutcome operation wrapObservation outcome
+                    observation <- renderTeardownObservations [(operation, normalized)]
+                    Right (attemptLocalWork local normalized, observation)
     refusal = TeardownReverseDescentRefused
+    templates = [TeardownReleased, TeardownForeignRetained placeholder, TeardownRefused placeholder, TeardownFailed placeholder]
+    check template = do
+        wire <- renderTeardownObservations [(operation, template)]
+        either (Left . refusal) (const (Right ())) (wrapObservation wire)
+
+-- | Preserve as much UTF-8 detail as the complete single-row wire can hold.
+normalizeReverseOutcome :: Text -> (ByteString -> Either Text ByteString) -> TeardownOutcome -> Either TeardownError TeardownOutcome
+normalizeReverseOutcome operation wrapObservation outcome = case outcome of
+    TeardownReleased -> Right TeardownReleased
+    TeardownForeignRetained detail -> normalize TeardownForeignRetained detail
+    TeardownRefused detail -> normalize TeardownRefused detail
+    TeardownFailed detail -> normalize TeardownFailed detail
+  where
+    normalize constructor detail = do
+        let original = Text.pack detail
+            safe text = if Text.null text || text == "none" then Text.pack placeholder else text
+            fits text = case renderTeardownObservations [(operation, constructor (Text.unpack (safe text)))] of
+                Left _ -> False
+                Right wire -> either (const False) (const True) (wrapObservation wire)
+            search low high
+                | low >= high = low
+                | fits (Text.take middle original) = search middle high
+                | otherwise = search low (middle - 1)
+              where
+                middle = (low + high + 1) `div` 2
+            selected = if fits original then safe original else safe (Text.take (search 0 (Text.length original)) original)
+        pure (constructor (Text.unpack selected))
+
+placeholder :: String
+placeholder = "no detail given"
 
 -- | Advance one exact descent only from canonical child terminal observations.
 withStorelessReverseDescentResultKernel ::
@@ -239,25 +304,3 @@ verifyObservations projection observations = do
                 (teardownForestOutstanding current)
                 (map fst rows)
             )
-
-renderAdapter :: Text -> ProjectVerb verb -> Text -> Text -> [Text] -> ByteString
-renderAdapter planDigest verb parent child expected =
-    ByteString.concat
-        ( [ framedText "hostbootstrap/reverse-descent-adapter"
-          , framedWord 1
-          , framedText planDigest
-          , framedText parent
-          , framedText child
-          , framedText (projectVerbName verb)
-          , framedText "teardown"
-          , framedWord (fromIntegral (length expected))
-          ]
-            ++ map framedText expected
-            ++ [framedWord 3, framedText "released", framedText "foreign-retained", framedText "refused"]
-        )
-
-framedText :: Text -> ByteString
-framedText = frameWire . TextEncoding.encodeUtf8
-
-framedWord :: Word64 -> ByteString
-framedWord = frameWire . LazyByteString.toStrict . Builder.toLazyByteString . Builder.word64BE

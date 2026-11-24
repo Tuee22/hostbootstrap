@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 {- | Package-private admission for fixed-domain root signing and durable joins.
 
 The historically named capability entered through recovery signing, but it is
@@ -16,10 +18,16 @@ module HostBootstrap.Handoff.Internal (
     consumeRootedLifecycleResponseSigningKernel,
     RegisteredEdgeRereadResult (..),
     classifyRegisteredEdgeReread,
+    RecoveryExactReadback (..),
+    classifyRecoveryExactReadback,
+    RecoveryTokenReadback (..),
+    classifyRecoveryTokenReadback,
 )
 where
 
 import Data.ByteString (ByteString)
+import qualified Data.ByteString as ByteString
+import Data.Word (Word64)
 import HostBootstrap.Handoff.Rooted (RootedLifecycleResponse)
 
 -- | Nominal, unconstructible outside this Cabal-hidden module.
@@ -67,3 +75,24 @@ classifyRegisteredEdgeReread planned granted writeFailure reread = case reread o
         | retained == granted -> RegisteredEdgeGranted
         | retained == planned -> RegisteredEdgeStoreFailure writeFailure
         | otherwise -> RegisteredEdgeConsumed
+
+-- | The exact durable row must still have both its observed version and bytes.
+data RecoveryExactReadback = RecoveryExactMatch | RecoveryExactChanged
+    deriving (Eq, Show)
+
+classifyRecoveryExactReadback :: Word64 -> ByteString -> Maybe (Word64, ByteString) -> RecoveryExactReadback
+classifyRecoveryExactReadback expectedVersion expectedBytes observed = case observed of
+    Just (version, bytes)
+        | version == expectedVersion && bytes == expectedBytes -> RecoveryExactMatch
+    _ -> RecoveryExactChanged
+
+-- | A planned token is reusable once; a granted token is already consumed.
+data RecoveryTokenReadback = RecoveryTokenPlanned | RecoveryTokenConsumed | RecoveryTokenChanged
+    deriving (Eq, Show)
+
+classifyRecoveryTokenReadback :: ByteString -> Maybe (Word64, ByteString) -> RecoveryTokenReadback
+classifyRecoveryTokenReadback expected observed = case observed of
+    Just (version, bytes)
+        | version == 1 && bytes == expected -> RecoveryTokenPlanned
+        | "granted:" `ByteString.isPrefixOf` bytes -> RecoveryTokenConsumed
+    _ -> RecoveryTokenChanged

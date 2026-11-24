@@ -9,7 +9,7 @@ cross-family confirmation belongs to the
 [host-portability acceptance phase](phase-29-host-portability-acceptance.md)), composed with
 the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu
 **Gate kind**: deferred
-**Gate evidence**: 2026-11-10 ; x86_64 Ubuntu 24.04.5 LTS under WSL2 (Linux 6.18.54.1-microsoft-standard-WSL2), Docker 29.9.3, Kind 0.32.0, kubectl v1.36.3 client against a Kubernetes v1.36.1 server, Helm 4.3.1, GHC 9.12.4 and Cabal 3.16.1.0 ; `cabal test all --test-show-details=direct --test-options=--hide-successes` from `core/` (5336 tests, 6787 seconds), composed with the bare core binary `hostbootstrap test run cluster-live` ; pass ; covers 5da4b257fc6eefe93883fb07eea32da530cbd1f0accec054734c35bad8ec1e8f
+**Gate evidence**: 2026-11-23 ; x86_64 Ubuntu 24.04.3 on dedicated C:-backed VirtualBox, Docker 29.1.3, Kind 0.32.0, Kubernetes 1.36.1, GHC 9.12.4 and Cabal 3.16.1.0 ; `cabal test all -j2 --test-show-details=direct --test-option=--hide-successes` from `core/`, composed with installed bare core `hostbootstrap test run cluster-live` on 2026-11-22 ; pass ; covers 55bd230e5a14258ccadcba02e6cc31bccf151f4be01a39163916942688ccc122
 **Evidence covers**: `core/hostbootstrap-core/src/HostBootstrap/Cluster` `core/hostbootstrap-core/internal/cluster-ownership` `core/hostbootstrap-core/src/HostBootstrap/Ensure/Colima.hs` `core/hostbootstrap-core/internal/colima-backend` `core/hostbootstrap-core/internal/cluster-backend` `core/hostbootstrap-core/internal/cluster-exposure` `core/hostbootstrap-core/src/HostBootstrap/CLI/Bare.hs` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Dependency/Internal.hs` `core/hostbootstrap-core/src/HostBootstrap/Substrate/Provider/Reconcile.hs` `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs` `core/hostbootstrap-core/internal/reconcile-error` `core/hostbootstrap-core/hostbootstrap-core.cabal` `core/hostbootstrap-core/internal/effect-command` `core/hostbootstrap-core/internal/colima-ownership` `core/hostbootstrap-core/internal/wall-observation` `core/hostbootstrap-core/internal/provider-start`
 
 > **Purpose**: Bring a cluster up inside a declared resource budget, cordon what the project may consume, and
@@ -10543,6 +10543,320 @@ canonical covered-path digest is recorded in the `**Gate evidence**` row.
 
 None.
 
+### Sprint 16.69: Refresh cluster evidence after package metadata change [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh the cluster evidence after the package description changes in a covered path (§ C).
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+On 2026-11-12, the bare core binary on the dedicated `hostbootstrap-linux-ssd` WSL2 instance passed
+`hostbootstrap test run cluster-live` (1/1): read-only absence and presence, generation refusals, and
+post-teardown absence were verified. Kind listed no clusters and Docker listed no containers afterward;
+Docker was stopped. The canonical covered-path digest is
+`f836d329898e11efef8d1357c748f147e088ad076fc80683543c562c259f12a9`. The first core gate reported 5,351/5,352 passing; its sole failure was the source-root inventory missing the
+new private component. The updated inventory passed its targeted rerun; the full core gate then passed all 5,352 tests in 991.25 seconds.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.70: Refresh cluster evidence after test-component metadata change [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh phase evidence after the package description's test-component metadata changes (§ C).
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+On 2026-11-12, the bare core binary passed `hostbootstrap test run cluster-live` (1/1) on the dedicated
+SSD-backed `hostbootstrap-linux-ssd` WSL2 instance. It verified read-only absence and presence and
+wrong-generation refusals, then removed its cluster. Kind listed no clusters and Docker listed no containers;
+Docker and containerd were stopped. The canonical covered-path digest is
+`4d1b5782581736affc216e7a2e885b7d0ea2315d2fdaa2cc8dc956595a31e710`. The first full core run passed 5,355 of 5,356 tests in 993.47 seconds; its sole failure was the
+handoff test-import inventory, which has been updated to list the existing private modules used by the
+new fixture. The `imports` selection then passed 24 tests; the full core rerun passed all 5,356 tests in 1129.86 seconds.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.71: Refresh cluster evidence after completion-component metadata change [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh phase evidence after the completion-component package metadata changes (§ C).
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+On 2026-11-12, the bare core binary passed `hostbootstrap test run cluster-live` (1/1) on the dedicated
+SSD-backed `hostbootstrap-linux-ssd` WSL2 instance. It verified read-only absence and presence and
+wrong-generation refusals, then removed its cluster. Kind listed no clusters and Docker listed no containers;
+Docker and containerd were stopped. The canonical covered-path digest is
+`7533fc568dfa67a53b046707b6e51be37d9298dc7ddba45644adc110c6383d94`. The first full core run passed 5,359 of 5,360 tests in 1037.87 seconds; its sole failure was the spec-index
+source-root inventory, which has been updated for the completion owner. The `enumerates` selection passed
+two tests; the full core rerun passed all 5,360 tests in 1044.54 seconds.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.72: Refresh cluster evidence after test mixin change [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh phase evidence after the finalized-project test mixin changes (§ C).
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+On 2026-11-12, the current bare binary passed `hostbootstrap test run cluster-live` (1/1) in the dedicated
+SSD-backed `hostbootstrap-linux-ssd` WSL2 instance, including read-only status and wrong-generation refusals.
+Kind had no clusters and Docker had no containers afterward; Docker and containerd were stopped. The core
+gate initially ran 5,362 cases in 1,020.77 seconds and failed one handoff test-mixin inventory, which is
+updated for `TestFinalizedSpec`. The core gate rerun passed all 5,362 tests in 1,031.22 seconds. The covered-path digest is
+`a0a7d349711c3ef0d350cc32bf98de1ba3e6e0534d6c2fb9c6bb24a0b1ecf381`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.73: Refresh cluster evidence after catalog test seam [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh expired evidence after the Cabal metadata change for sprint 17.29's private catalog test seam (? C).
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+2026-11-12: the bare core binary passed `hostbootstrap test run cluster-live` (1/1) in the dedicated
+SSD-backed Ubuntu WSL2 instance; Kind and Docker were empty afterwards and Docker and containerd were
+stopped. Two WSL core runs were interrupted by instance restarts and are not counted. Windows reported low
+virtual memory from unrelated existing processes, so the static leg ran natively on the same physical host.
+After correcting the documentation status and closed-import inventories, `cabal test all -j8
+--test-show-details=direct --test-option=--hide-successes` from `core/` passed all 5,369 core tests in
+714.16 seconds using GHC 9.12.4 and Cabal 3.16.1.0. The covered-path digest is
+`b0bda4778c382a9007c50f3db74d9441bd0345987a95afc4a052fbb7a3da63f5`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.74: Refresh cluster evidence after runtime test mixin [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh expired evidence after sprint 17.31 exposes its existing private runtime owner to tests (? C).
+
+#### Deliverables
+
+- Run the complete core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+2026-11-12, dedicated SSD-backed Ubuntu WSL2: `cabal test all -j8 --test-show-details=direct
+--test-option=--hide-successes` from `core/` passed all 5,377 tests in 1045.49 seconds, including all six
+real recursive lifecycle cases. The current bare core binary's `hostbootstrap test run cluster-live` passed
+1/1, including read-only status and wrong-generation refusals. Kind and Docker had no remaining clusters
+or containers; Docker and containerd were stopped. The covered-path digest is
+`fe42b9dac2579eb50f879487e7902ed9634a0fd2711edadf63728a0b2259dd7d`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.75: Refresh cluster evidence after frame-session test mixin [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh expired evidence after sprint 17.32 exposes its private frame-session owner to tests (? C).
+
+#### Deliverables
+
+- Run the complete core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+2026-11-12, dedicated SSD-backed Ubuntu WSL2: `cabal test all -j8 --test-show-details=direct
+--test-option=--hide-successes` from `core/` passed all 5,378 tests in 949.79 seconds, including the real
+recursive lifecycle cases. The bare core binary's `hostbootstrap test run cluster-live` passed 1/1,
+including read-only and wrong-generation checks. Kind and Docker had no remaining clusters or containers;
+Docker and containerd were stopped. The covered-path digest is
+`c8b850e3f4dd213b087035c0ca6cda8cf3b955656a8fa4c8e6e2b9602ecb52fd`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.76: Refresh cluster evidence after gate-codec test mixin [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh evidence expired by the sprint 17.33 private gate-codec test mixin, under the evidence-expiry rule.
+
+#### Deliverables
+
+- Run the complete core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+2026-11-12: the first core run was stopped after a focused check exposed an outdated exact Cabal mixin
+inventory. That inventory now includes the new test-only codec import. The full core suite and bare
+`hostbootstrap test run cluster-live` remain outstanding on the dedicated WSL instance. The refreshed bare
+binary subsequently passed `test run cluster-live` (1/1), including read-only and wrong-generation checks;
+Kind and Docker had no remaining clusters or containers, and Docker and containerd were stopped. The complete
+core rerun failed one documentation validator case after 5,384 passes: the README row was still Done while
+the phase header was Active. The status table was corrected; documentation validation passed 22 cases, and the complete core gate rerun
+passed all 5,385 cases in 1,097.79 seconds. The covered-path digest is
+`229629872f91e568363b3f1a2325c21a99147cd289c8adbf060619f44744673b`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.77: Refresh cluster evidence after rooted-node test access [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh evidence expired by moving the rooted-node owner into the existing private testable unit.
+
+#### Deliverables
+
+- Run the complete core and live Kind gate and remeasure the covered-path digest.
+
+#### Validation
+
+2026-11-12: the rebuilt bare binary passed the live Kind gate (1/1), including read-only and
+wrong-generation checks. Kind and Docker had no remaining clusters or containers; Docker and containerd
+were stopped. The covered-path digest measured `af5464bb44f5112dd3181c73dcf22692442bf66e8e492a8ee78d996ce59299ca`.
+A focused ownership run exposed sorted path-inventory changes, which were corrected. The complete core gate
+then passed all 5,386 tests in 970.59 seconds.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.78: Refresh cluster evidence after receipt test mixin [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh completion evidence expired by the private receipt test mixin in the covered Cabal metadata.
+
+#### Deliverables
+
+- Run the declared core suite and bare binary live cluster gate on linux-cpu.
+- Measure the covered-path digest, record the gate and cleanup, and close the phase.
+
+#### Validation
+
+2026-11-12, dedicated SSD-backed Ubuntu WSL2: the freshly rebuilt bare binary passed `test run
+cluster-live` (1/1), including read-only and wrong-generation checks. Kind and Docker had no clusters or
+containers afterward; Docker and containerd were stopped. The covered-path digest is
+`84ede1de5552b7c9d8b96b83873f7302944e2151fc0df6692c7300e73b29b730`. The complete core gate passed all 5,388 tests in 889.53 seconds.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.79: Refresh cluster evidence after executor test access [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint reruns the composed phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh completion evidence expired by private executor test access in the covered Cabal metadata.
+
+#### Deliverables
+
+- Run the declared core suite and bare binary live cluster gate on linux-cpu.
+- Measure the covered-path digest, record the gate and cleanup, and close the phase.
+
+#### Validation
+
+2026-11-13, dedicated SSD-backed Ubuntu WSL2: the rebuilt bare binary passed `test run cluster-live`
+(1/1), including read-only and wrong-generation checks. Kind and Docker had no clusters or containers
+afterward; Docker and containerd were stopped. The covered-path digest is
+`47e8863b043ef2c13d04ed366a0fce585e018e07134f23d9ef739aeaa5746cb0`. The first full core gate passed 5,387 of 5,388 tests: the moved executor produced a hidden-package
+compile-fail diagnostic where the fixture expected a hidden-module diagnostic. The expected diagnostic was
+updated; the focused fixture passed and the full core rerun passed all 5,388 tests in 798.67 seconds.
+
+#### Remaining Work
+
+None.
+
 ## Static Validation Evidence
 
 On 2026-08-10, the published
@@ -10636,6 +10950,476 @@ is the behaviour the 2026-08-22 entry already records, so this was a host condit
 against a Kubernetes 1.36.1 server, the composed gate the header's `**Gate evidence**` row records passed;
 the live half created and cordoned `hostbootstrap-test-run-c4456ff0010cb` and reported 1/1 passed. Sprint
 16.56's Validation carries the full record.
+
+### Sprint 16.80: Refresh cluster evidence after routed fencing [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`
+
+#### Objective
+
+Refresh this phase's gate evidence after Sprint 17.37e1 changed the covered retained-cluster backend.
+
+#### Deliverables
+
+- Re-run the phase's declared core suite and live cluster gate.
+- Measure the covered-path digest and record the new gate evidence.
+
+#### Validation
+
+2026-11-13, dedicated Ubuntu WSL2 on C: SSD: the first `cabal test all -j8 --test-show-details=direct
+--test-option=--hide-successes` run passed 5,400 of 5,401 tests in 834.04 seconds. `AuthoritySpec` "the
+authority kernel has a closed package-internal importer set" failed because its inventory omitted the two
+private rooted journal modules; the inventory has been corrected. The corrected importer selection passed, then the full core gate passed all 5,401 tests in 837.90 seconds.
+The rebuilt bare binary passed `hostbootstrap test run cluster-live` (1/1): read-only status, wrong-generation
+refusals, cluster readiness, and post-deletion absence passed. Kind and Docker had no remaining clusters or
+containers; Docker and containerd were stopped. The covered-path digest is
+`dab09d0e32a24f0c2ce04ca1118e23a5789ac4c91b0e38cb26391c74cdaded71`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.81: Refresh cluster evidence after target binding [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Backend.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/durable_state.md`
+
+#### Objective
+
+Restore this phase's covered-path evidence after Sprint 17.37e1b binds routed cleanup to its admitted target.
+
+#### Deliverables
+
+- Validate the changed cluster backend with this phase's complete declared gate and refresh its digest.
+
+#### Validation
+
+On 2026-11-13 the routed selection passed eight cases and the cluster backend selection passed 108,
+including cross-plan and incomplete-gate refusals before target-state creation. The affected storeless
+and teardown source-boundary selections passed four cases. The full core gate passed 5,407 tests in
+796.43 seconds. The rebuilt bare binary passed `hostbootstrap test run cluster-live` 1/1, including
+read-only status, wrong-generation refusals, readiness, and post-deletion absence. No Kind clusters or
+Docker containers remained; Docker, its socket, and containerd were stopped. The covered-path digest is
+`8834fa180f5680def619458546368e9dd84c84b025df404f88816b84a4589de5`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.82: Refresh cluster evidence after terminal report test access [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+Refresh this phase's evidence after the private terminal-report test seam changes the package description.
+
+#### Deliverables
+
+- Run this phase's complete declared gate and measure its covered-path digest.
+
+#### Validation
+
+Run the warning-clean complete core suite and the bare core `hostbootstrap test run cluster-live` gate.
+On 2026-11-14, after the private component move, the focused `HandoffSpec` selection passed all 230
+tests on dedicated WSL2. The complete core gate is running; the live cluster gate remains outstanding.
+The first full core run completed 5,428 of 5,430 cases in 1,082.05 seconds. Two source-boundary
+inventories omitted the terminal-report module's newly required plan and catalog imports; both inventories
+were updated. The complete core gate and live cluster gate remain to be rerun.
+The corrected `indexed` project-plan selection passed all 121 cases on 2026-11-14; the complete core
+gate has been restarted.
+The complete core rerun passed all 5,430 tests in 1,092.65 seconds on 2026-11-15; the optional native
+provider-live lane was not requested. The phase's live cluster gate remains outstanding.
+The bare `hostbootstrap` executable was rebuilt successfully on WSL2 for the subsequent live cluster gate.
+The current covered paths measured `3c71d352d8850bc299897fece0a829899c14c5e165cc640a6470e3e9e354cd5a`;
+this is a preliminary measurement and will be rechecked when recording passing gate evidence.
+On 2026-11-15 the rebuilt bare executable passed `test run cluster-live` (1/1), including readiness,
+read-only status, wrong-generation refusals, and post-release absence. No Kind clusters or Docker
+containers remained; Docker, its socket, and containerd were stopped. The covered-path digest was
+remeasured and matched `3c71d352d8850bc299897fece0a829899c14c5e165cc640a6470e3e9e354cd5a`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.83: Refresh cluster evidence after failed-Up test access [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `documents/architecture/unrepresentable_state.md`
+
+#### Objective
+
+Refresh cluster evidence after the private failed-Up authority component changes the package description.
+
+#### Deliverables
+
+- Run this phase's complete declared gate and measure the covered-path digest.
+
+#### Validation
+
+The prior gate evidence predates the package change. The complete core suite and live cluster gate remain due.
+On 2026-11-15 the new private component and its dependents compiled with GHC 9.12.4; the focused
+`failed-Up` selection passed three cases. The complete gate and digest remain due.
+The first `HandoffSpec` boundary run passed 243 of 244 cases; its source census did not include the new
+private component. The census has been extended to include that owner and awaits a rerun.
+After the census update, the focused `one-way` codec-ownership guard passed on WSL2 on 2026-11-15.
+The `indexed` selection passed 120 of 121 cases; its remaining source-root inventory omitted
+`internal/failed-up`. After correction, the focused `scanning` case passed on WSL2.
+On 2026-11-15 the complete warning-clean core suite passed all 5,484 tests in 943.93 seconds on the dedicated
+SSD-backed WSL2 instance with GHC 9.12.4 and Cabal 3.16.1.0. The optional provider-live component reported
+unsupported on WSL2. Docker was started in that instance, with no existing containers, and the rebuilt bare
+binary's live cluster leg passed 1/1, covering readiness, read-only status, wrong-generation refusals, and
+post-deletion absence. No Kind clusters or Docker containers remained; Docker, its socket, and containerd
+were stopped. The covered-path digest is `86502a70ce15bd0bd67f4866086e00a672eac8afdd4a9a9cfb7fb5cdc203c77c`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.84: Refresh cluster evidence after Harness close test access [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh the cluster gate evidence after the private Harness close-control component changes package metadata.
+
+#### Deliverables
+
+- Run the complete declared core and live Kind gate and measure the covered-path digest.
+
+#### Validation
+
+The previous gate evidence predates the package metadata change; the complete gate and digest remain due.
+On 2026-11-15 the rebuilt bare binary passed the live Kind leg, including read-only status, generation
+refusals and post-release absence; no clusters or containers remained, and Docker and containerd were stopped.
+The first full core run passed 5,510 of 5,511 cases in 940.36 seconds. The remaining compile-fail case
+correctly refused the private module but expected its previous hidden-module diagnostic; its expected
+diagnostic was updated to name the new hidden private package. The complete core gate remains due.
+The corrected private-import case passed, then the full warning-clean core gate passed all 5,511 cases in
+998.38 seconds; the optional provider-live component reported its declared no-request result. The covered
+paths were remeasured after both gate legs as `af6d2902f0726ba20afd7756f8ce731cd228bd7046f66a73ee28c23e8127c2ab`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.85: Refresh cluster evidence after reconciliation dependency projection [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Reconcile.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Refresh the covered-source evidence after reconciliation adopts plan-derived dependency identities.
+
+#### Deliverables
+
+- Run the complete declared core and live cluster gate and remeasure the covered-path digest.
+
+#### Validation
+
+On 2026-11-15, the warning-clean core build passed. The focused WSL2 selection passed all 25 cases,
+including the project-declared provider descriptor comparison and documentation validator. The full core
+leg was stopped before completion to include the subsequent resource-lookup change; the full core leg,
+live cluster leg and final digest remain due. On 2026-11-16 the revised WSL2 warning-clean build
+and all 26 focused cases passed, covering the admitted child-frame provider lookup, wrong-kind refusal,
+existing node-resource boundary and documentation validator. The subsequent full core gate failed 11 of
+5,519 cases in 879.97 seconds; the live leg has not run. The generated private execution-package
+controls needed the two new metadata fields, and their deliberately altered node fixtures must alter the
+matching metadata too. A 258-case reconciliation, chain and provider-alias selection passed; the corrected
+runtime controls and complete gate remain due. The corrected runtime-control selection subsequently
+passed 114 of 115 cases; its one generated fixture failed to compile without `OverloadedStrings`. After
+adding the extension, that exact missing-dependency refusal passed separately on 2026-11-16. The complete
+core gate and live cluster leg still need a final run. On 2026-11-16 the complete core gate passed
+all 5,519 tests in 929.18 seconds. The rebuilt bare binary then passed `test run cluster-live` (1/1),
+including ready nodes, read-only status, wrong-generation refusals and post-release absence. No Kind
+clusters or Docker containers remained; Docker, its socket and containerd were stopped. The remeasured
+covered-path digest is `e0dc99d87d5c41cb3e05144ea8cd94951b11ea593e01e01a8c55db0571a36941`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.86: Refresh cluster evidence after bare provider declaration [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Revalidate the cluster phase after its covered bare live-gate provider declaration changes.
+
+#### Deliverables
+
+- Run the complete declared core and bare live cluster gate and remeasure the covered-path digest.
+
+#### Validation
+
+Run `cabal test all` from `core/` and the bare core `hostbootstrap test run cluster-live` on linux-cpu.
+
+On 2026-11-16 the documentation validator passed 22 cases and the bare-focused selection passed 22
+cases. The first live attempt passed its cluster assertions but teardown refused because the isolated
+binary copy lacked installed handoff keys. Recovery refused the resulting abandoned run; the exact Kind
+cluster created by that attempt was removed, and its scratch records were retained. A fresh scratch copy
+received `--hostbootstrap-install-identity` before `test init`; the installed rerun passed 1/1, including readiness, read-only status, wrong-generation
+refusals and post-release absence. No Kind clusters or containers remained; Docker, its socket, and
+containerd were returned to inactive, their initial state. The full core gate passed all 5,536 tests in 1,314.48 seconds. The covered-path digest was remeasured
+as `9e88823ea8f19f03b46be6dac0f6ddc554ff4c03787e44be17e4cdbba3463004`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.87: Refresh cluster evidence after share digest projection [Done]
+
+**Status**: Done
+**Implementation**: none; this sprint revalidates the phase gate
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b2a1's edit of the covered provider reconciler.
+
+#### Deliverables
+
+- Run the declared core and live cluster gate and record their environment and covered-path digest.
+
+#### Validation
+
+Run `cabal test all` from `core/` and the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu.
+
+2026-11-17: restored the dedicated `hostbootstrap-linux` Hyper-V VM from its C:-backed
+256 GiB maximum disk after its registration had been deleted. It has 8 vCPUs, 32 GiB fixed
+RAM, 8 GiB guest swap and 230 GiB free. The live Windows checkout is SFTP-exposed and
+bind-mounted; fresh writes were observed in both directions, the corrected relative symlink
+was dereferenced, and the phase 15 plan file hashes matched. A transient Windows file-sharing
+lock immediately following a guest write cleared before the subsequent host write. Docker
+29.1.3, Kind 0.32.0, kubectl 1.37.0 and Helm 4.3.1 are installed in the guest; Docker
+reported no containers and Kind no clusters. The complete core gate is running; the live
+cluster gate remains owed.
+The Kind node image `kindest/node:v1.36.1` was pulled into guest-local Docker storage
+(digest `sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5`).
+A bare executable was linked from the current Cabal-built in-place library in private guest
+storage, its installed identity was provisioned, and `test init` completed. The phase 15
+documentation status and digest passed the targeted governed-documentation validator.
+The complete `cabal test all -j2 --test-show-details=direct --test-option=--hide-successes`
+gate passed all 5,547 core cases in 6,668.38 seconds; the provider-live suite reported its
+ordinary not-requested result. The installed bare `hostbootstrap test run cluster-live` then
+passed 1/1 on linux-cpu: Kubernetes 1.36.1 became ready, read-only observations and
+wrong-generation refusals held, and the cluster returned to absent. Docker and Kind reported
+no containers or clusters afterward. `/dev/nvidiactl` and `/proc/driver/nvidia/version` were
+absent and `nvidia-smi` was unavailable, which the substrate detector treats as no GPU.
+The covered paths measured `633c70214a951dabd5e9bc70a7feba0e52406bd21f342562637e9476aad7f9d2`
+using SHA-256 with the framing and exclusions specified by `HostBootstrap.Digest`. The guest
+reported 30 GiB available memory, no swap use and 228 GiB free after the gate.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.88: Refresh cluster evidence after cluster object observation [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Shipped.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b5a's cluster object observation in covered cluster code.
+
+#### Deliverables
+
+- Run `cabal test all` from `core/` and the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu,
+  and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, Docker 29.1.3, Kind 0.32.0,
+Kubernetes 1.36.1, GHC 9.12.4, Cabal 3.16.1.0) on 2026-11-20 UTC. `cabal test all -j2
+--test-show-details=direct --test-option=--hide-successes` from `core/` ran from 14:16:07 to 16:47:16 and passed
+all 5,598 core tests in 6,624.78 seconds and the unconfirmed provider-live baseline. A bare executable was
+built from the current tree into fresh private guest storage, its installed identity was provisioned and `test
+init` completed; the installed bare `hostbootstrap test run cluster-live` then passed 1/1 from 17:45:07 to
+17:45:39: read-only status observed the cluster absent and then present with records and containers unchanged,
+another generation and wrong-generation retirement were refused, and the cluster returned to absent. Docker
+reported no containers and Kind no clusters before and after. The covered paths measured
+`d414a21d14565037e566a091d51197fc3562c10d28241552b486fb19b8578f76` using the framing and exclusions specified by
+`HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.89: Refresh cluster evidence after the cluster namespace identity [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Shipped.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by Sprint 17.42e1b7's namespace object kind in covered cluster code.
+
+#### Deliverables
+
+- Run `cabal test all` from `core/` and the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu,
+  and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, Docker 29.1.3, Kind 0.32.0,
+Kubernetes 1.36.1, GHC 9.12.4, Cabal 3.16.1.0). `cabal test all -j2 --test-show-details=direct
+--test-option=--hide-successes` from `core/` ran from 2026-11-20 20:43:08 to 23:18:50 UTC and passed all 5,601
+core tests in 6,628.78 seconds, including the fake kubectl namespace query that native Windows skips, and the
+unconfirmed provider-live baseline. A bare executable was built from the current tree into fresh private guest
+storage, its installed identity was provisioned and `test init` completed; the installed bare `hostbootstrap
+test run cluster-live` then passed 1/1 on 2026-11-21 from 00:11:58 to 00:12:31 UTC: read-only status observed
+the cluster absent and then present with records and containers unchanged, another generation and
+wrong-generation retirement were refused, and the cluster returned to absent. Docker reported no containers and
+Kind no clusters before and after. The covered paths measured
+`5e632448813b0a0668658b750fcb272f71ecb4760da2b7c4f54a1fb64e043d7b` using the framing and exclusions specified by
+`HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.90: Refresh cluster evidence after the shared reverse adapter dependency [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/hostbootstrap-core.cabal`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by the covered Cabal file's changes in Sprints 17.45a, 17.45b and 17.45c: the main
+library's dependency on `reverse-descent-internal`, and the new private `reverse-executor-internal` library with
+its test-suite mixin. A first run begun after Sprint 17.45a alone was stopped before either leg finished, because
+the two later sprints edit the same file and would have expired it again.
+
+#### Deliverables
+
+- Run `cabal test all` from `core/` and the bare core binary's `hostbootstrap test run cluster-live` on linux-cpu,
+  and record the covered-path digest and cleanup.
+
+#### Validation
+
+Both declared legs ran on the dedicated Linux VM (Ubuntu 24.04.5 x86_64 on Hyper-V, Docker 29.1.3, Kind 0.32.0,
+Kubernetes 1.36.1, GHC 9.12.4, Cabal 3.16.1.0) on 2026-11-21 UTC. A run begun after Sprint 17.45c compiled the test
+suite before a test-only source-root pin was corrected and was stopped before its core leg finished; the run was
+relaunched from the corrected tree. `cabal test all -j2 --test-show-details=direct --test-option=--hide-successes`
+from `core/` then ran from 15:35:00 to 18:08:13 and passed all 5,610 core tests in 6,731.05 seconds, including the
+real-process recursive lifecycle and recovery cases, and the unconfirmed provider-live baseline. A bare executable
+was built from the current tree into fresh private guest storage, its installed identity was provisioned and `test
+init` completed; the installed bare `hostbootstrap test run cluster-live` passed 1/1 from 19:07:37 to 19:08:10.
+Docker reported no containers and Kind no clusters before and after. The covered paths measured
+`7af1cd621ea7f3a816f1030f72678765d32c1f4cb545af49c530d89912f6953c` using the framing and exclusions specified by
+`HostBootstrap.Digest`.
+
+#### Remaining Work
+
+None.
+
+### Sprint 16.91: Refresh cluster evidence after the cleanup path change [Done]
+
+**Status**: Done
+**Implementation**: `core/hostbootstrap-core/src/HostBootstrap/Cluster/Reconcile.hs`
+**Substrates**: linux-cpu
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`
+
+#### Objective
+
+Restore evidence expired by the removal of the unused cluster cleanup producer from covered cluster code.
+
+#### Deliverables
+
+- Run `cabal test all` from `core/` and the bare core binary's `hostbootstrap test run
+  cluster-live` on linux-cpu, and record the covered-path digest and cleanup.
+
+#### Validation
+
+2026-11-22: Created the dedicated C:-backed VirtualBox guest hostbootstrap-linux-validation with 4 vCPUs, 16
+GiB RAM and a dynamically allocated 256 GiB maximum disk. Ubuntu 24.04.3 was installed. The unattended installer
+reported a guest-additions post-install error because the guest user was
+not yet present; its installed disk nonetheless booted, and the configured guest account and guest control
+worked. The direct VirtualBox share matched source bytes and passed fresh bidirectional writes but rejected
+symlink creation and did not honor chmod. The live Windows checkout was then exposed through the existing
+dedicated hostbootstrap Hyper-V guest SFTP mount, mounted in VirtualBox over SSHFS and bind-mounted into the
+workspace. README SHA-256 matched the Windows checkout, fresh host and guest writes were visible in both
+directions, and the existing relative symlink resolved. The VirtualBox guest has 8 GiB swap on its own disk;
+Docker, Kind, kubectl and Helm 4.3.1 were installed. Kind node image v1.36.1 was pulled with digest
+3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5. Cabal 3.16.1.0 was installed and its package
+index updated. The first GHC 9.12.4 installation was interrupted after the guest stopped responding, its
+virtual CPUs remained in the same kernel locations, and an ACPI shutdown failed. VirtualBox reported the guest
+powered off but its dedicated process persisted; after that process was terminated the guest booted again. No
+GHC version had been installed, so installation was retried with Docker stopped and the direct VirtualBox
+share unmounted. The retry installed GHC 9.12.4 successfully; Cabal 3.16.1.0 and GHC versions were verified,
+the SSHFS checkout was remounted. At 17:21:02 UTC the complete core leg started from `core/` as `cabal test
+all --builddir=/home/hbvalidate/cabal-build-core -j2 --test-show-details=direct
+--test-option=--hide-successes`, using guest-local build storage. Cabal began compiling dependencies and project
+modules. A separate forwarded SFTP connection was also checked
+for matching README SHA-256, fresh writes in both directions, and relative symlink resolution; the running
+gate retains its original mount. During the core run, the 44 covered files measured
+`55bd230e5a14258ccadcba02e6cc31bccf151f4be01a39163916942688ccc122`; this checkpoint is not gate evidence.
+The same framing and exclusions reproduced phase 15's recorded covered-source digest. Before the live leg, Docker 29.1.3 reported no containers, Kind reported no clusters, and the cached node image
+retained the recorded digest. The guest reports Linux 7.0.0-43, cgroup v2 with the systemd driver, and guest-local
+Docker storage. The guest has no `/dev/nvidiactl`, NVIDIA driver version file or `nvidia-smi`. A bare binary was
+linked against the current in-place core library into private guest storage; its installed identity was
+provisioned and `test init` succeeded. The core leg failed 839 of 5,630 tests in 6,560.39 seconds. The compile-fail and related fixtures search the
+project's `core/dist-newstyle` plan, but this run used a separate `--builddir`; their plan lookup therefore found
+no row for the executing test binary. Two separately isolated source guards also failed because their expected
+imports, frame-role declarations and source digest had not been updated with the current implementation.
+`ProjectPlanSpec` now checks the two frame identities in their shared owner and the four remaining catalog
+roles, and pins the projection's current import and reviewed source digest. The complete core leg was restarted
+from `core/` without `--builddir`, with guest-local storage bind-mounted at `core/dist-newstyle`. Compilation
+succeeded, but a separately run focused check found a missing reviewed physical-home entry in the new guard;
+the full run was interrupted so the guard and its expected source digest could be fixed. The guest test
+process outlived its host-side controller briefly and was then stopped explicitly; this run is not evidence.
+The focused rooted-catalog guard passed after that fix. The focused projection guard then found a stale
+ordering assertion for the now-wrapped parent and child frame IDs; its focused rerun also passed 1/1. The
+complete core leg was restarted on the corrected tree. It completed with 3 failures out of 5,630 tests in
+10,599.44 seconds: the sealed CLI export pin, the handoff private module inventory, and the forward-child
+projector source guard were stale relative to the current frame-role changes. After updating the checks,
+focused runs of the CLI export and handoff ownership guards passed. The projector guard then identified its
+separate frozen forwarder digest, which was updated after reviewing the typed-frame change. Its next focused
+run passed the digest and exposed a stale significant-line count; after pinning the measured 231-line count,
+the focused projector guard also passed. On 2026-11-23 the complete `cabal test all -j2
+--test-show-details=direct --test-option=--hide-successes` from `core/` passed all 5,630 core tests in
+11,249.33 seconds. Its optional Incus provider-live case reported unsupported because it was not requested;
+Windows-only cases likewise reported their unsupported rows on Linux.
+The bare binary's
+`hostbootstrap test run cluster-live` passed 1/1 on linux-cpu on 2026-11-22
+(run `run-10e17b12ff52`), checking absent and present read-only status, generation refusal, wrong-generation
+retirement refusal, Kubernetes client/server v1.36.1, and retirement. Immediately afterward `docker ps -aq`
+was empty and `kind get clusters` reported no clusters. The covered-source digest was remeasured after the
+core gate over the same 44 files as `55bd230e5a14258ccadcba02e6cc31bccf151f4be01a39163916942688ccc122`,
+matching the checkpoint taken before the live run.
+
+#### Remaining Work
+
+None.
 
 ## Remaining Work
 

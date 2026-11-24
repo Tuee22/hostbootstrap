@@ -518,6 +518,9 @@ serveFakeClusterClient root argv = case argv of
                             emitLine "DESCRIPTION: Install complete"
                 )
             )
+    ["--kubeconfig", _kubeconfig, "get", target, "--namespace", namespace, "-o", "jsonpath={.metadata.uid} {.metadata.resourceVersion}"] -> do
+        let answer = root </> ("cluster-object-" <> namespace <> "-" <> map (\character -> if character == '/' then '-' else character) target)
+        ifM (doesFileExist answer) (readFile' answer >>= writeUtf8 stdout) (refuse ("Error from server (NotFound): " <> target))
     ["--kubeconfig", _kubeconfig, "rollout", "status", "--namespace", _namespace, target, "--timeout=5m"]
         | "deployment/" `isPrefixOf` target -> do
             let refusal = root </> "rollout-refusal"

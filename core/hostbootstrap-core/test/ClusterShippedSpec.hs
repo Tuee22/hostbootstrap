@@ -13,13 +13,16 @@ module ClusterShippedSpec (tests) where
 
 import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
+import qualified FakeCluster
+import HostBootstrap.HostTool (HostTool (Kubectl), mkAbsExe)
+import System.FilePath ((</>))
 import qualified Data.Text as Text
 import HostBootstrap.Cluster.Shipped
 import HostBootstrap.Handoff.Transaction (withFrameChildTransaction)
 import HostBootstrap.HostConfig (HostConfig (..))
 import HostBootstrap.Lift (InVMSelfPath (InVMSelfPath), LocalSelfPath (LocalSelfPath), localContext, mkSelfRef)
 import HostBootstrap.Substrate (Arch (Amd64), Substrate (..), SubstrateName (LinuxCpu))
-import System.Directory (canonicalizePath)
+import System.Directory (canonicalizePath, createDirectoryIfMissing)
 import System.Environment (getExecutablePath)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Info (os)
@@ -32,6 +35,7 @@ tests =
         "ClusterShippedSpec"
         [ testGroup "the request and response wire" codecCases
         , testGroup "the far-frame observation" observationCases
+        , testGroup "cluster object observation" objectCases
         ]
 
 codecCases :: [TestTree]
@@ -117,3 +121,75 @@ unresolvedHostConfig =
         { hcSubstrate = Substrate LinuxCpu Amd64
         , hcToolPaths = Map.empty
         }
+
+objectCases :: [TestTree]
+objectCases =
+    [ testCase "one canonical object request round-trips exactly" $ do
+        let request = encodeShippedClusterObjectRequest "/var/tmp/demo/cluster/kind/state" "demo" "storage" ClusterDeployment "object-store"
+        (request >>= decodeShippedClusterObjectRequest)
+            @?= Right ("/var/tmp/demo/cluster/kind/state", "demo", "storage", ClusterDeployment, "object-store")
+    , testCase "a cluster's namespace identity request round-trips exactly" $ do
+        let request = encodeShippedClusterObjectRequest "/var/tmp/demo/cluster/kind/state" "demo" "kube-system" ClusterNamespace "kube-system"
+        (request >>= decodeShippedClusterObjectRequest)
+            @?= Right ("/var/tmp/demo/cluster/kind/state", "demo", "kube-system", ClusterNamespace, "kube-system")
+    , testCase "invalid object request fields are refused" $ do
+        let invalid =
+                [ encodeShippedClusterObjectRequest "relative/state" "demo" "storage" ClusterDeployment "object-store"
+                , encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "Storage" ClusterDeployment "object-store"
+                , encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "storage" ClusterDeployment "-store"
+                , encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "storage" ClusterDeployment (Text.replicate 64 "a")
+                , encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "" ClusterStatefulSet "registry"
+                ]
+        assertBool "an invalid object request was admitted" (all (either (const True) (const False)) invalid)
+    , testCase "an object request with an unknown kind or trailing field is refused" $ do
+        request <- either (assertFailure . Text.unpack) pure
+            (encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "storage" ClusterDeployment "object-store")
+        assertBool "a trailing field was admitted"
+            (either (const True) (const False) (decodeShippedClusterObjectRequest (request <> "\0extra")))
+        let (prefix, _) = ByteString.breakSubstring "deployment" request
+        assertBool "an unknown kind was admitted"
+            (either (const True) (const False) (decodeShippedClusterObjectRequest (prefix <> "daemonset\0object-store")))
+    , testCase "foreign prefixes fall through both cluster interpreters" $ do
+        interpretShippedClusterObject "hostbootstrap/ownership/request/v1" >>= (@?= Nothing)
+        request <- either (assertFailure . Text.unpack) pure
+            (encodeShippedClusterObjectRequest "/var/tmp/state" "demo" "storage" ClusterDeployment "object-store")
+        interpretShippedClusterExposure request >>= (@?= Nothing)
+    , testCase "only a two-field bounded identity is an object response" $ do
+        decodeShippedClusterObjectResponse "hostbootstrap/cluster-object/response/v1\0uid-1\0\&7"
+            @?= Right (ClusterObjectIdentity "uid-1" "7")
+        assertBool "a one-field response decoded"
+            (either (const True) (const False) (decodeShippedClusterObjectResponse "hostbootstrap/cluster-object/response/v1\0uid-1"))
+        assertBool "a foreign response decoded"
+            (either (const True) (const False) (decodeShippedClusterObjectResponse "uid-1 7"))
+    , testCase "the object query reads the cluster's own kubeconfig and refuses absent, missing and malformed answers" $
+        withSystemTempDirectory "hostbootstrap-cluster-object" $ \temporary -> do
+            root <- canonicalizePath temporary
+            _ <- FakeCluster.newClusterFixture root []
+            self <- FakeCluster.prepareFixtureExecutables root
+            kubectl <- either (assertFailure . show) pure (mkAbsExe (FakeCluster.fixtureToolPath self "kubectl"))
+            let state = if os == "mingw32" then "/var/tmp/hostbootstrap-cluster-object" else root </> "state"
+                cfg = HostConfig (Substrate LinuxCpu Amd64) (Map.singleton Kubectl kubectl)
+                observe = observeClusterObject cfg state "demo" "storage" ClusterDeployment "object-store"
+                refused label outcome = case outcome of
+                    Left _ -> pure ()
+                    Right _ -> assertFailure label
+            FakeCluster.withFakeClusterClient root $ do
+                refused "an absent kubeconfig was observed" =<< observe
+                if os == "mingw32"
+                    then pure ()
+                    else do
+                        createStateWithKubeconfig state
+                        refused "an absent object was observed" =<< observe
+                        writeFile (root </> "cluster-object-storage-deployment-object-store") "uid-1 7"
+                        observe >>= (@?= Right (ClusterObjectIdentity "uid-1" "7"))
+                        writeFile (root </> "cluster-object-storage-deployment-object-store") "uid-1 7 extra"
+                        refused "a malformed identity was observed" =<< observe
+                        let observeNamespace = observeClusterObject cfg state "demo" "kube-system" ClusterNamespace "kube-system"
+                        refused "an absent namespace was observed" =<< observeNamespace
+                        writeFile (root </> "cluster-object-kube-system-namespace-kube-system") "cluster-uid 4"
+                        observeNamespace >>= (@?= Right (ClusterObjectIdentity "cluster-uid" "4"))
+    ]
+  where
+    createStateWithKubeconfig state = do
+        createDirectoryIfMissing True state
+        writeFile (state </> "cluster.kubeconfig") "apiVersion: v1\n"

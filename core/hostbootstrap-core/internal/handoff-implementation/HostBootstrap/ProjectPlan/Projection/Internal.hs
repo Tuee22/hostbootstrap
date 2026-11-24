@@ -59,6 +59,7 @@ import HostBootstrap.Lift.Context (
     liftLayers,
     mapTerminalContainer,
  )
+import HostBootstrap.Lifecycle.FrameRole (ChildFrameId (ChildFrameId), ParentFrameId (ParentFrameId))
 import HostBootstrap.ProjectPlan.Construct.Internal (
     FinalizedProjectSpec,
     finalizedProjectCodecKernel,
@@ -126,8 +127,8 @@ withImmediateTargetKernel finalized parent suppliedCurrent parentContext use
                     withFinalizedForwardChildProjectionKernel
                         finalized
                         parentConfig
-                        parentFrameId
-                        child
+                        (ParentFrameId parentFrameId)
+                        (ChildFrameId child)
                         rawRoute
                         (admitProjection placement child rawRoute)
             [_] -> pure (refusal "the immediate topology edge is not one layer")
@@ -267,7 +268,8 @@ selectedLiftMatches placement parent targetRoute
         require (parent == targetRoute) "the selected VM or VM-container lift differs"
 
 directContainerRebase :: ContainerLift -> ContainerLift -> Either Text ()
-directContainerRebase parent targetContainer = do
+directContainerRebase parent@(ContainerLift _ _ _ _ _ _) targetContainer@(ContainerLift _ _ _ _ _ _) = do
+    require (clPlacement parent == clPlacement targetContainer) "direct container placement differs"
     require (clImage parent == clImage targetContainer) "direct container image differs"
     require (clExtraArgs parent == clExtraArgs targetContainer) "direct container arguments differ"
     require (clRemoveAfter parent == clRemoveAfter targetContainer) "direct container remove policy differs"

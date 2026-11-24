@@ -13,7 +13,7 @@ module HostBootstrap.Authority.ProjectPlan (
 
 import qualified Data.Text as Text
 import HostBootstrap.Authority (
-    AuthorityError (AuthorityMalformedBinding, AuthorityStoreNotOurs),
+    AuthorityError (AuthorityEvidenceMismatch, AuthorityStoreNotOurs),
     CommandAuthority,
     InstalledProjectIdentity,
     ProjectVerb,
@@ -127,7 +127,7 @@ authorizeRootProject root verb verified bound binding lease plan journal cursor 
             Left failure ->
                 pure
                     ( Left
-                        (AuthorityMalformedBinding (Text.pack (lifecycleContextErrorMessage failure)))
+                        (AuthorityEvidenceMismatch (Text.pack (lifecycleContextErrorMessage failure)))
                     )
             Right admitted -> admitted
   where
@@ -215,7 +215,7 @@ authorizeRootProject root verb verified bound binding lease plan journal cursor 
                 Context.ClusterLifecycleCommand
             )
 
-    malformed subject = Left (AuthorityMalformedBinding subject)
+    malformed subject = Left (AuthorityEvidenceMismatch subject)
 
     requireCondition subject condition
         | condition = Right ()

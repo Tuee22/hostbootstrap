@@ -30,7 +30,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.IO.Encoding (getLocaleEncoding, mkTextEncoding, setLocaleEncoding)
 import HostBootstrap.DocValidator (findRepoRoot)
-import HostBootstrap.Effect.ChildGroup (ChildGroup, askChildGroupToStop, withChildGroupProcess)
+import HostBootstrap.Effect.ChildGroup (ChildGroup, askChildGroupToStop, awaitChildGroupExit, killChildGroup, withChildGroupProcess)
 import HostBootstrap.Effect (
     BoundedRun (..),
     CapturedRun (..),
@@ -96,7 +96,7 @@ import Control.Monad (forever)
 import System.IO (hClose)
 import System.IO.Error (isDoesNotExistError)
 import System.Posix.Process (forkProcess, getProcessGroupIDOf, getProcessID)
-import System.Posix.Signals (Handler (Ignore), installHandler, nullSignal, sigKILL, sigTERM, signalProcess, signalProcessGroup)
+import System.Posix.Signals (Handler (Default, Ignore), installHandler, nullSignal, sigKILL, sigTERM, signalProcess, signalProcessGroup)
 #endif
 
 tests :: TestTree
@@ -519,6 +519,7 @@ runEffectProbe arguments = case arguments of
         incoming <- ByteString.hGet stdin (128 * 1024)
         hPutStr stderr (show (ByteString.length incoming))
     ["cwd"] -> getCurrentDirectory >>= hPutStr stdout
+    ["portable-wait", path] -> writeFile path "ready\n" >> threadDelay (60 * 1000000)
     "arguments" : values -> hPutStr stdout (show values)
     [mode, path] -> runPosixEffectProbe mode path
     _ -> ioError (userError ("unknown effect probe: " ++ show arguments))
@@ -546,6 +547,15 @@ runPosixEffectProbe mode path = do
             child <- forkProcess (threadDelay (60 * 1000000))
             writeFile path (show process ++ " " ++ show child ++ "\n")
             awaitRelease (600 :: Int)
+        "leader-term" -> do
+            _ <- installHandler sigTERM Default Nothing
+            child <- forkProcess $ do
+                _ <- installHandler sigTERM Ignore Nothing
+                writeFile (path ++ ".child-ready") "ready\n"
+                linger
+            awaitChildReady (200 :: Int)
+            writeFile path (show process ++ " " ++ show child ++ "\n")
+            linger
         _ -> ioError (userError ("unknown POSIX effect probe: " ++ mode))
   where
     linger = forever (threadDelay 1000000)
@@ -553,6 +563,10 @@ runPosixEffectProbe mode path = do
     awaitRelease remaining = do
         released <- doesFileExist (path ++ ".release")
         if released then pure () else threadDelay 100000 >> awaitRelease (remaining - 1)
+    awaitChildReady 0 = ioError (userError "the descendant did not install its TERM handler")
+    awaitChildReady remaining = do
+        ready <- doesFileExist (path ++ ".child-ready")
+        if ready then pure () else threadDelay 25000 >> awaitChildReady (remaining - 1)
 #endif
 
 probeArguments :: [String] -> [String]
@@ -634,7 +648,28 @@ boundedPosixCases =
 
 scopedPosixChildGroupCases :: [TestTree]
 scopedPosixChildGroupCases =
-    [ rowCase "an explicitly reaped leader leaves its descendant owned until scoped exit" $
+    [ rowCase "TERM-resistant group requires escalation and exits after KILL" $
+        withScopedPosixProbe $ \_ _ group leader descendant -> do
+            askChildGroupToStop group
+            awaitChildGroupExit 200000 group >>= (@?= False)
+            processAlive leader >>= (@?= True)
+            processAlive descendant >>= (@?= True)
+            killChildGroup group
+            awaitChildGroupExit (10 * 1000000) group >>= (@?= True)
+            processAlive leader >>= (@?= False)
+            processAlive descendant >>= (@?= False)
+    , rowCase "a leader exiting on TERM does not hide its TERM-resistant descendant" $
+        withScopedPosixProbeMode "leader-term" $ \_ child group leader descendant -> do
+            askChildGroupToStop group
+            stopped <- timeout (5 * 1000000) (waitForProcess child)
+            assertBool "the leader exits after TERM" (maybe False (/= ExitSuccess) stopped)
+            processAlive leader >>= (@?= False)
+            processAlive descendant >>= (@?= True)
+            awaitChildGroupExit 200000 group >>= (@?= False)
+            killChildGroup group
+            awaitChildGroupExit (10 * 1000000) group >>= (@?= True)
+            processAlive descendant >>= (@?= False)
+    , rowCase "an explicitly reaped leader leaves its descendant owned until scoped exit" $
         withScopedPosixProbe $ \path child group leader descendant -> do
             writeFile (path ++ ".release") "release\n"
             waitForProcess child >>= (@?= ExitSuccess)
@@ -661,7 +696,10 @@ scopedPosixChildGroupCases =
             Right value -> assertFailure ("expected unavailable POSIX liveness instrumentation, got " ++ show value)
 
 withScopedPosixProbe :: (FilePath -> ProcessHandle -> ChildGroup -> Int -> Int -> IO ()) -> IO ()
-withScopedPosixProbe use = withRunFixture $ \namespace executable path -> do
+withScopedPosixProbe = withScopedPosixProbeMode "fork-then-exit"
+
+withScopedPosixProbeMode :: String -> (FilePath -> ProcessHandle -> ChildGroup -> Int -> Int -> IO ()) -> IO ()
+withScopedPosixProbeMode mode use = withRunFixture $ \namespace executable path -> do
     observed <- newIORef ([], Nothing)
     let cleanup = do
             (known, group) <- readIORef observed
@@ -669,7 +707,7 @@ withScopedPosixProbe use = withRunFixture $ \namespace executable path -> do
             killScopedProbe (known ++ maybe [] (\(leader, descendant) -> [leader, descendant]) published) group
         action = do
             withChildGroupProcess
-                (proc executable (probeArguments ["fork-then-exit", path]))
+                (proc executable (probeArguments [mode, path]))
                     { Process.cwd = Just (runWorkingDirectory namespace)
                     , env = Just (runEnvironment namespace)
                     , std_in = NoStream
@@ -758,7 +796,24 @@ killScopedProbe processes group = do
 
 portableProcessCases :: [TestTree]
 portableProcessCases =
-    [ testCase "output beyond the per-stream ceiling is refused" $
+    [ testCase "the native child group stop ends the launched process" $
+        withRunFixture $ \namespace executable ready ->
+            withChildGroupProcess
+                (proc executable (probeArguments ["portable-wait", ready]))
+                    { Process.cwd = Just (runWorkingDirectory namespace)
+                    , env = Just (runEnvironment namespace)
+                    , std_in = NoStream
+                    , std_out = NoStream
+                    , std_err = NoStream
+                    , close_fds = True
+                    }
+                $ \_ _ _ child group -> do
+                    awaitPidFile ready
+                    askChildGroupToStop group
+                    awaitChildGroupExit (10 * 1000000) group >>= (@?= True)
+                    status <- waitForProcess child
+                    assertBool "group stop ends the live child unsuccessfully" (status /= ExitSuccess)
+    , testCase "output beyond the per-stream ceiling is refused" $
         withRunFixture $ \namespace executable _ ->
             runBoundedGrouped smallBounds namespace executable (probeArguments ["flood"]) >>= (@?= BoundedOutputLimit)
     , testCase "a missing executable is a launch failure" $

@@ -48,6 +48,11 @@ module HostBootstrap.Substrate.Provider.Alias (
     withPreparedGuestAliasRelease,
     runPreparedGuestAliasRelease,
 
+    -- * Root observation
+    RootedAliasObservation,
+    observeRootedAlias,
+    recheckRootedAlias,
+
     -- * The node's route
     GuestAliasSettlement (..),
     reconcileNodeGuestAlias,
@@ -70,6 +75,13 @@ import HostBootstrap.Lifecycle.Execution (
  )
 import HostBootstrap.Lifecycle.Prepared (PreparedGate)
 import HostBootstrap.Lift (LiftContext, SelfRef)
+import HostBootstrap.Substrate.Provider.Backend (
+    RootedAliasTarget,
+    checkRootedAliasTargetRecords,
+    rootedAliasTargetContext,
+    rootedAliasTargetPaths,
+ )
+import HostBootstrap.Protected (ProtectedStore)
 import HostBootstrap.Ownership.Object (
     ConflictReport,
     Origin (..),
@@ -1073,3 +1085,45 @@ joinAliasIO ::
     Either ReconcileError (IO (Either ReconcileError value)) ->
     IO (Either ReconcileError value)
 joinAliasIO = either (pure . Left) id
+
+-- ---------------------------------------------------------------------------
+-- Root observation
+
+-- | The identity the guest frame reported for the plan's bound alias. It grants nothing.
+data RootedAliasObservation = RootedAliasObservation RootedAliasTarget Ownership.ObjectIdentity
+
+{- | Observe the plan-owned guest alias without preparing a mutation.
+
+The target carries the plan-derived guest frame, alias and records; they must
+be current on both sides of the guest call. The guest runs the read-only
+shipped symbolic-link observation, which reports only the identity its record
+bound and repairs nothing.
+-}
+observeRootedAlias :: HostConfig -> SelfRef -> ProtectedStore -> RootedAliasTarget -> IO (Either ReconcileError RootedAliasObservation)
+observeRootedAlias config self store target = do
+    before <- checkRootedAliasTargetRecords store target
+    case before >> uncurry mkGuestAliasSpec (rootedAliasTargetPaths target) of
+        Left failure -> pure (Left failure)
+        Right spec -> do
+            outcome <- shipOwnedTransaction config self (rootedAliasTargetContext target)
+                (guestAliasOwnershipTransaction spec (ShipObserveSymbolicLink (guestAliasLinkTarget spec)))
+            after <- checkRootedAliasTargetRecords store target
+            pure $ do
+                native <- case outcome of
+                    Right (ShippedSymbolicLinkRetained observed) -> Right observed
+                    Right other -> Left (refuse ("the guest alias frame reported " <> Text.pack (show other)))
+                    Left failure -> Left (refuse ("the guest alias frame did not observe the bound alias: " <> Text.pack (show failure)))
+                after
+                Right (RootedAliasObservation target native)
+  where
+    refuse cause = Failure (FailureDetail "observe rooted alias" cause ReprobeBeforeRetry)
+
+-- | Reobserve rather than trusting the previous result.
+recheckRootedAlias :: HostConfig -> SelfRef -> ProtectedStore -> RootedAliasObservation -> IO (Either ReconcileError ())
+recheckRootedAlias config self store (RootedAliasObservation target expected) = do
+    observed <- observeRootedAlias config self store target
+    pure $ do
+        RootedAliasObservation _ actual <- observed
+        if actual == expected
+            then Right ()
+            else Left (Failure (FailureDetail "recheck rooted alias" "the bound guest alias identity changed" ReprobeBeforeRetry))

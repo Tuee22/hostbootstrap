@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module CompileFailSpec (tests, assertNativeLinkNoReplacePreservesDestination, withPrivateBudgetKernel) where
+module CompileFailSpec (tests, assertNativeLinkNoReplacePreservesDestination, withPrivateBudgetKernel, withPrivateRouteKernel, withPrivateEntryKernel) where
 
 import Control.Exception (onException)
 import Control.Monad (forM, forM_, unless)
@@ -87,6 +87,10 @@ tests =
                             )
                   , withResource (getPaths >>= resolveOwnershipCompiler) (const (pure ())) $ \getOwnershipCompiler ->
                         testGroup "private ownership unit" (ownershipCompileFailCases (rejectsWithUsing getOwnershipCompiler))
+                  , withResource (getPaths >>= resolveFailedUpCompiler) (const (pure ())) $ \getFailedUpCompiler ->
+                        testGroup "private failed-Up authority unit" (failedUpCompileFailCases (rejectsWithUsing getFailedUpCompiler))
+                  , withResource (getPaths >>= resolveRootedCatalogCompiler) (const (pure ())) $ \getRootedCatalogCompiler ->
+                        testGroup "private rooted catalog unit" (rootedCatalogCompileFailCases (rejectsWithUsing getRootedCatalogCompiler))
                   , withResource (getPaths >>= resolveHandoffTestCompiler) (const (pure ())) handoffTestContextCases
                   ]
                     <> compileFailCases (rejectsWithUsing getCompiler)
@@ -103,6 +107,26 @@ privateCompileFailCases rejectsWith =
 ownershipCompileFailCases :: (FilePath -> NonEmpty String -> result) -> [result]
 ownershipCompileFailCases rejectsWith =
     [ rejectsWith "UpdateOwnershipManifestEntry.hs" ("Not in scope: record field 'manifestEntryPath'" :| [])
+    ]
+
+failedUpCompileFailCases :: (FilePath -> NonEmpty String -> result) -> [result]
+failedUpCompileFailCases rejectsWith =
+    [ rejectsWith "CoerceFailedUpAuthorityRoles.hs"
+        ( "Couldn't match type 'FailedScopeA' with 'FailedScopeB' arising from a use of 'coerce'"
+            :| [ "Couldn't match type 'FailedPlanA' with 'FailedPlanB' arising from a use of 'coerce'"
+               , "Couldn't match type 'FailedBrokerA' with 'FailedBrokerB' arising from a use of 'coerce'"
+               , "Couldn't match type 'FailedCatalogA' with 'FailedCatalogB' arising from a use of 'coerce'"
+               ]
+        )
+    , rejectsWith "OpenFailedUpAuthority.hs"
+        ("does not export any children (constructors, class methods or field names) called 'FailedUpUnwindAuthority'" :| [])
+    , rejectsWith "FailedUpAsDestroyAuthority.hs" ("Couldn't match type: RootInvocationAuthority" :| [])
+    ]
+
+-- The catalog's coordinate roles are distinct types across its sealed folds.
+rootedCatalogCompileFailCases :: (FilePath -> NonEmpty String -> result) -> [result]
+rootedCatalogCompileFailCases rejectsWith =
+    [ rejectsWith "SwapRootedPlanCatalogCoordinates.hs" ("Couldn't match expected type 'ConfigDigest' with actual type 'PayloadDigest'" :| [])
     ]
 
 -- These role controls expose the actual private production unit, never main.
@@ -136,9 +160,15 @@ compileFailCases ::
     (FilePath -> NonEmpty String -> result) ->
     [result]
 compileFailCases rejectsWith =
-    [ rejectsWith
+    [ rejectsWith "FinalizeProjectSpecWithScopeKind.hs"
+        ("Couldn't match expected type 'ProjectCodec (Production projectId) specDigest cfg' with actual type 'ScopeKind'" :| [])
+    , rejectsWith "SwapForwardChildProjectorFrames.hs"
+        ("Couldn't match expected type 'ParentFrameId' with actual type 'ChildFrameId'" :| [])
+    , rejectsWith
         "ImportProtectedPublication.hs"
         ("Could not load module 'HostBootstrap.Protected.Publication'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:ownership-internal'" :| [])
+    , rejectsWith "ImportFailedUpAuthority.hs"
+        ("Could not load module 'HostBootstrap.Authority.FailedUp.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:failed-up-internal'" :| [])
     , rejectsWith
         "ImportClusterOwnership.hs"
         ("Could not load module 'HostBootstrap.Cluster.Ownership'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:cluster-ownership-internal'" :| [])
@@ -371,7 +401,7 @@ compileFailCases rejectsWith =
         ("Could not load module 'HostBootstrap.ProjectPlan.Construct.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'." :| [])
     , rejectsWith
         "ImportProjectPlanHandoffInternal.hs"
-        (("Could not load module 'HostBootstrap.ProjectPlan.Handoff.Internal'. it is a hidden module") :| [])
+        (("Could not load module 'HostBootstrap.ProjectPlan.Handoff.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'.") :| [])
     , rejectsWith
         "ImportProjectPlanProjectionInternal.hs"
         ("Could not load module 'HostBootstrap.ProjectPlan.Projection.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'." :| [])
@@ -380,10 +410,10 @@ compileFailCases rejectsWith =
         ("Could not load module 'HostBootstrap.Lifecycle.RootedPlan'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'." :| [])
     , rejectsWith
         "ImportLifecycleFrameExecutor.hs"
-        (("Could not load module 'HostBootstrap.Lifecycle.FrameExecutor'. it is a hidden module") :| [])
+        (("Could not load module 'HostBootstrap.Lifecycle.FrameExecutor'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'.") :| [])
     , rejectsWith
         "ImportTeardownExecutorInternal.hs"
-        (("Could not load module 'HostBootstrap.Teardown.Executor.Internal'. it is a hidden module") :| [])
+        (("Could not load module 'HostBootstrap.Teardown.Executor.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:reverse-executor-internal'.") :| [])
     , rejectsWith
         "ImportHandoffProcessRoute.hs"
         (("Could not load module 'HostBootstrap.Handoff.Process.Route'. it is a hidden module") :| [])
@@ -400,7 +430,7 @@ compileFailCases rejectsWith =
         (("Module 'HostBootstrap.Lift' does not export 'sanitizedLaunch'") :| ["Module 'HostBootstrap.Lift' does not export 'withLifecycleProcessRouteLaunchKernel'"])
     , rejectsWith
         "OpenFrameExecutorGate.hs"
-        (("Module 'HostBootstrap.Lifecycle.Prepared' does not export 'mintPreparedGate'") :| ["Module 'HostBootstrap.Lifecycle.Prepared' does not export 'readPreparedGatePackageKernel'"
+        (("Module 'HostBootstrap.Lifecycle.Prepared' does not export 'mintPreparedGate'") :| ["Module 'HostBootstrap.Lifecycle.Prepared' does not export 'readFencedPreparedGatePackageKernel'"
         , "Module 'HostBootstrap.Lifecycle.Prepared' does not export 'readPreparedGatePackagesKernel'"
         , "Module 'HostBootstrap.Lifecycle.Prepared' does not export 'renderPreparedNodeKeysKernel'"])
     , rejectsWith
@@ -413,14 +443,9 @@ compileFailCases rejectsWith =
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'rootedPlanCatalogRecordIdentityKernel'"
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogEdgeKernel'"
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogEntriesKernel'"
-        , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogEntryKernel'"
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogFrameKernel'"
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogKernel'"
         , "Module 'HostBootstrap.Lifecycle.Session' does not export 'withRootedPlanCatalogRootKernel'"])
-    , rejectsWith
-        "OpenPlannedForwardHandoff.hs"
-        (("Module 'HostBootstrap.ProjectPlan' does not export 'PlannedForwardHandoff'") :| ["Module 'HostBootstrap.ProjectPlan' does not export 'withPlannedForwardHandoffKernel'"
-        , "Module 'HostBootstrap.ProjectPlan' does not export 'withPlannedForwardProcessInputsKernel'"])
     , rejectsWith
         "OpenCatalogForwardHandoff.hs"
         (("Module 'HostBootstrap.ProjectPlan' does not export 'CatalogForwardHandoff'") :| ["Module 'HostBootstrap.ProjectPlan' does not export 'withCatalogForwardHandoffKernel'"
@@ -710,8 +735,7 @@ compileFailCases rejectsWith =
         , "Module 'HostBootstrap.Teardown' does not export 'withRehydratedBoundReverseDescentKernel'"
         , "Module 'HostBootstrap.Teardown' does not export 'withReverseDescentLiftContextKernel'"
         , "Module 'HostBootstrap.Teardown' does not export 'withVerifiedBoundReverseDescentObservationsKernel'"
-        , "Module 'HostBootstrap.Teardown' does not export 'withVerifiedBoundReverseDescentReportKernel'"
-        , "Module 'HostBootstrap.Teardown' does not export 'withVerifiedReverseAdapterKernel'"])
+        , "Module 'HostBootstrap.Teardown' does not export 'withVerifiedBoundReverseDescentReportKernel'"])
     , rejectsWith
         "OpenTeardownForestWithCurrentFrame.hs"
         (("Couldn't match type: TeardownPlan scope0 planId0 frame0 verb0 with: CurrentFrame Scope Plan Frame") :| [])
@@ -1639,7 +1663,7 @@ compileFailCases rejectsWith =
         ("Module 'HostBootstrap.Harness.Ownership' does not export 'newOwnedHarnessCloseControl'" :| ["Module 'HostBootstrap.Harness.Ownership' does not export 'consumeOwnedHarnessClose'"])
     , rejectsWith
         "ImportHarnessOwnershipInternal.hs"
-        ("Could not load module 'HostBootstrap.Harness.Ownership.Internal'. it is a hidden module in the package 'hostbootstrap-core-0.1.0.0'" :| [])
+        ("Could not load module 'HostBootstrap.Harness.Ownership.Internal'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:harness-close-internal'" :| [])
     , rejectsWith
         "AuthorizeHarnessCloseWithoutClosure.hs"
         (("Couldn't match expected type 'HostBootstrap.Lifecycle.Mode.ProjectClosureEvidence (Harness Project Run)' with actual type 'Word64'") :| [])
@@ -1865,20 +1889,17 @@ compileFailCases rejectsWith =
         ("Could not load module 'HostBootstrap.Lifecycle.Rooted.Receipt'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-implementation-internal'." :| [])
     , rejectsWith
         "ImportHandoffCompletion.hs"
-        (("Could not load module 'HostBootstrap.Handoff.Completion'. it is a hidden module") :| [])
+        ("Could not load module 'HostBootstrap.Handoff.Completion'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-completion-internal'." :| [])
     , rejectsWith
         "ImportHandoffTerminalReport.hs"
-        (("Could not load module 'HostBootstrap.Handoff.TerminalReport'. it is a hidden module") :| [])
+        ("Could not load module 'HostBootstrap.Handoff.TerminalReport'. It is a member of the hidden package 'hostbootstrap-core-0.1.0.0:handoff-completion-internal'." :| [])
     , rejectsWith
         "HandoffLifecycleCompletionType.hs"
         (("Module 'HostBootstrap.Handoff' does not export 'ForwardLifecycleCompletion'") :| ["Module 'HostBootstrap.Handoff' does not export 'LifecycleCompletion'"
         , "Module 'HostBootstrap.Handoff' does not export 'ReverseLifecycleCompletion'"])
     , rejectsWith
         "HandoffLifecycleProducers.hs"
-        ("Module 'HostBootstrap.Handoff' does not export 'withAcknowledgedBoundReverseLifecycleCompletionKernel'" :| ["Module 'HostBootstrap.Handoff' does not export 'withAcknowledgedForwardLifecycleCompletionKernel'", "Module 'HostBootstrap.Handoff' does not export 'withRehydratedAcknowledgedReverseLifecycleCompletionKernel'"])
-    , rejectsWith
-        "HandoffLifecycleFold.hs"
-        (("Module 'HostBootstrap.Handoff' does not export 'withLifecycleCompletionKernel'") :| [])
+        ("Module 'HostBootstrap.Handoff' does not export 'withAcknowledgedBoundReverseLifecycleCompletionKernel'" :| ["Module 'HostBootstrap.Handoff' does not export 'withAcknowledgedForwardLifecycleCompletionKernel'"])
     , rejectsWith
         "HandoffFormerProtocolReexport.hs"
         ("Module 'HostBootstrap.Handoff' does not export 'BrokerLink'" :| ["Module 'HostBootstrap.Handoff' does not export 'ChildProtocolState'", "Module 'HostBootstrap.Handoff' does not export 'ProtocolError'", "Module 'HostBootstrap.Handoff' does not export 'ProtocolMessage'", "Module 'HostBootstrap.Handoff' does not export 'ProtocolTag'", "Module 'HostBootstrap.Handoff' does not export 'adoptLifecycleAcknowledgementThroughLink'", "Module 'HostBootstrap.Handoff' does not export 'prepareLifecycleAcknowledgementThroughLink'", "Module 'HostBootstrap.Handoff' does not export 'protocolMessage'"])
@@ -1889,7 +1910,6 @@ compileFailCases rejectsWith =
         , "Module 'HostBootstrap.Handoff' does not export 'handoffChannel'"
         , "Module 'HostBootstrap.Handoff' does not export 'protocolMessageRequestId'"
         , "Module 'HostBootstrap.Handoff' does not export 'readProtocolMessage'"
-        , "Module 'HostBootstrap.Handoff' does not export 'stdioHandoffChannel'"
         , "Module 'HostBootstrap.Handoff' does not export 'writeProtocolMessage'"])
     , rejectsWith
         "HandoffRecoverySigningCapability.hs"
@@ -2619,6 +2639,8 @@ fixtureInventoryCases =
                     <> privateCompileFailCases (\name _ -> name)
                     <> representationCompileFailCases (\name _ -> name)
                     <> ownershipCompileFailCases (\name _ -> name)
+                    <> failedUpCompileFailCases (\name _ -> name)
+                    <> rootedCatalogCompileFailCases (\name _ -> name)
                     <> handoffNewCompileFailCases (\name _ -> name)
                 ) @?= []
     , testCase "every first-party import probes live library definitions" $
@@ -3099,28 +3121,37 @@ assertNativeLinkNoReplacePreservesDestination = do
         assertBool (observed <> failure) (null failure)
 
 
--- Link the actual hidden Budget kernel into a temporary Main-unit control.
+-- Link an actual hidden Main-unit kernel into a temporary control.
 -- The regular test component and public hidden-module refusals stay intact.
 withPrivateBudgetKernel :: String -> (IO FilePath -> TestTree) -> TestTree
-withPrivateBudgetKernel source use =
+withPrivateBudgetKernel = withPrivateMainKernel "HostBootstrap.Cluster.Budget.Internal"
+
+withPrivateRouteKernel :: String -> (IO FilePath -> TestTree) -> TestTree
+withPrivateRouteKernel = withPrivateMainKernel "HostBootstrap.Handoff.Process.Route"
+
+withPrivateEntryKernel :: String -> (IO FilePath -> TestTree) -> TestTree
+withPrivateEntryKernel = withPrivateMainKernel "HostBootstrap.Command.LifecycleEntry"
+
+withPrivateMainKernel :: String -> String -> (IO FilePath -> TestTree) -> TestTree
+withPrivateMainKernel requiredModule source use =
     withResource build cleanup (\getProgram -> use ((\(_, _, executable) -> executable) <$> getProgram))
   where
     build = do
         context <- resolveCompilerPaths >>= resolveHandoffTestCompiler
         parent <- getTemporaryDirectory >>= canonicalizePath
-        directory <- createTempDirectory parent "hostbootstrap-budget-settlement-control"
-        let executable = directory </> "budget-settlement-control.exe"
+        directory <- createTempDirectory parent "hostbootstrap-private-kernel-control"
+        let executable = directory </> "private-kernel-control.exe"
             resource = (parent, directory, executable)
-        compilePrivateBudgetKernel context directory executable source `onException` cleanup resource
+        compilePrivateBudgetKernel requiredModule context directory executable source `onException` cleanup resource
         pure resource
     cleanup (parent, directory, _) = do
         actual <- canonicalizePath directory
-        unless (equalFilePath (takeDirectory actual) parent && "hostbootstrap-budget-settlement-control" `isPrefixOf` takeFileName actual)
-            (fail "budget settlement control cleanup escaped its exact temporary parent")
+        unless (equalFilePath (takeDirectory actual) parent && "hostbootstrap-private-kernel-control" `isPrefixOf` takeFileName actual)
+            (fail "private kernel control cleanup escaped its exact temporary parent")
         removeDirectoryRecursive actual
 
-compilePrivateBudgetKernel :: HandoffTestCompiler -> FilePath -> FilePath -> String -> IO ()
-compilePrivateBudgetKernel context directory executable source = do
+compilePrivateBudgetKernel :: String -> HandoffTestCompiler -> FilePath -> FilePath -> String -> IO ()
+compilePrivateBudgetKernel requiredModule context directory executable source = do
     description <- SourceGuard.readPackageDescription
     stanza <- maybe (fail "the budget settlement control has no Main library stanza") pure (SourceGuard.mainLibraryStanza description)
     let modules = Set.toList . Set.fromList $
@@ -3147,8 +3178,8 @@ compilePrivateBudgetKernel context directory executable source = do
                     before <- ByteString.readFile original
                     after <- ByteString.readFile copied
                     assertBool ("copied Main interface changed: " <> name) (before == after)
-    required <- doesFileExist (interfaces </> modulePath "HostBootstrap.Cluster.Budget.Internal" <.> "hi")
-    assertBool "the actual hidden Budget interface is present" required
+    required <- doesFileExist (interfaces </> modulePath requiredModule <.> "hi")
+    assertBool ("the actual hidden interface is present: " <> requiredModule) required
     inherited <- getEnvironment
     let compilerEnvironment =
             [("TEMP", compilerTemp), ("TMP", compilerTemp), ("TMPDIR", compilerTemp), ("GHC_CHARENC", "UTF-8")]
@@ -3187,6 +3218,7 @@ shareDescriptorRuntimeControl getCompiler =
                 executable = directory </> "provider-share-descriptor-proof.exe"
                 source = unlines
                     [ "{-# LANGUAGE RankNTypes #-}"
+                    , "{-# LANGUAGE OverloadedStrings #-}"
                     , "module Main (main) where"
                     , ""
                     , "import qualified HostBootstrap.Lifecycle.Execution.Internal as Internal"
@@ -3217,6 +3249,8 @@ shareDescriptorRuntimeControl getCompiler =
                     , "            (Internal.planExecutionPackageProject package)"
                     , "            (Internal.planExecutionPackageRoot package)"
                     , "            node{Internal.executionNodeDependencies = []}"
+                    , "            (fmap (filter ((/= \"core:deploy-vm\") . fst)) (Internal.planExecutionPackageResourceDependencies package))"
+                    , "            (fmap (filter (\\(key, _, _) -> key /= \"core:deploy-vm\")) (Internal.planExecutionPackageResourceMembers package))"
                     , ""
                     , "main :: IO ()"
                     , "main = do"
@@ -3443,6 +3477,9 @@ compileProviderOriginProgram context directory executable = do
             , "    Execution.StepExecution scope planId -> Execution.StepExecution scope planId"
             , "changeNode change execution ="
             , "    let package = Execution.stepExecutionPackage execution"
+            , "        node = change (Execution.planExecutionPackageNode package)"
+            , "        hasDependency key = key `elem` map fst (Execution.executionNodeDependencies node)"
+            , "        hasMember key = key == Execution.executionNodeOperationKey node || hasDependency key"
             , "        changed = Execution.mintPlanExecutionPackage"
             , "            (Execution.planExecutionPackageSpecDigest package)"
             , "            (Execution.planExecutionPackagePlanDigest package)"
@@ -3452,7 +3489,9 @@ compileProviderOriginProgram context directory executable = do
             , "            (Execution.planExecutionPackageGeneration package)"
             , "            (Execution.planExecutionPackageProject package)"
             , "            (Execution.planExecutionPackageRoot package)"
-            , "            (change (Execution.planExecutionPackageNode package))"
+            , "            node"
+            , "            (fmap (filter (hasDependency . fst)) (Execution.planExecutionPackageResourceDependencies package))"
+            , "            (fmap (filter (\\(key, _, _) -> hasMember key)) (Execution.planExecutionPackageResourceMembers package))"
             , "    in Execution.mintStepExecution (Execution.stepExecutionHostConfig execution) changed"
             , "        (Execution.stepExecutionRuntime execution)"
             , ""
@@ -3592,10 +3631,9 @@ handoffExposurePositives =
             , "module HandoffReceiverSharesPublicInputs (retained) where"
             , "import HostBootstrap.Authority (InstalledProjectIdentity)"
             , "import HostBootstrap.Handoff (ProjectVerificationKey)"
-            , "import HostBootstrap.Handoff.Protocol (HandoffChannel)"
-            , "import HostBootstrap.Handoff.Receiver (ReceiverError, withReceivedHandoffEdge)"
-            , "retained :: InstalledProjectIdentity projectId -> HandoffChannel -> ProjectVerificationKey -> IO (Either ReceiverError ())"
-            , "retained project channel key = withReceivedHandoffEdge project channel key"
+            , "import HostBootstrap.Handoff.Receiver (ReceiverError, withIsolatedReceivedHandoffEdge)"
+            , "retained :: InstalledProjectIdentity projectId -> ProjectVerificationKey -> IO (Either ReceiverError ())"
+            , "retained project key = withIsolatedReceivedHandoffEdge project key"
             , "    (\\_ _ _ -> pure (Right ())) (\\_ _ -> pure (Right ()))"
             , "    (\\_ _ _ -> pure (Right ())) (\\_ _ -> pure (Right ()))"
             ]
@@ -4804,6 +4842,28 @@ resolveOwnershipCompiler paths@(CompilerPaths _ localPackageDb _) = do
         [unitId] -> pure unitId
         observed -> fail ("expected exactly one ownership-unit id in " ++ ownershipConf ++ ", observed " ++ show observed)
     pure (compilerForUnit paths ownershipUnit)
+
+resolveFailedUpCompiler :: CompilerPaths -> IO PublicCompiler
+resolveFailedUpCompiler paths@(CompilerPaths _ localPackageDb _) = do
+    failedUpConf <- uniqueRegistration localPackageDb "failed-up-internal" $ \name ->
+        "hostbootstrap-core-" `isPrefixOf` name && "-inplace-failed-up-internal.conf" `isSuffixOf` name
+    registration <- readFile (localPackageDb </> failedUpConf)
+    failedUpUnit <- case SourceGuard.fieldValues "id" registration of
+        [unitId] -> pure unitId
+        observed -> fail ("expected exactly one failed-Up unit id in " ++ failedUpConf ++ ", observed " ++ show observed)
+    PublicCompiler compiler publicArguments <- resolvePublicCompiler paths
+    pure (PublicCompiler compiler (publicArguments <> ["-package-id", failedUpUnit]))
+
+-- Expose exactly the catalog owner from the private implementation unit.
+resolveRootedCatalogCompiler :: CompilerPaths -> IO PublicCompiler
+resolveRootedCatalogCompiler paths@(CompilerPaths _ localPackageDb _) = do
+    implementationConf <- uniqueRegistration localPackageDb "handoff-implementation-internal" $ \name ->
+        "hostbootstrap-core-" `isPrefixOf` name && "-inplace-handoff-implementation-internal.conf" `isSuffixOf` name
+    registration <- readFile (localPackageDb </> implementationConf)
+    implementationUnit <- case SourceGuard.fieldValues "id" registration of
+        [unitId] -> pure unitId
+        observed -> fail ("expected exactly one implementation unit id in " ++ implementationConf ++ ", observed " ++ show observed)
+    pure (compilerForUnit paths (implementationUnit ++ " (HostBootstrap.Lifecycle.RootedPlan)"))
 
 uniqueRegistration :: FilePath -> String -> (FilePath -> Bool) -> IO FilePath
 uniqueRegistration localPackageDb label matches = do

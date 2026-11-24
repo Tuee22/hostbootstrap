@@ -62,9 +62,32 @@ module HostBootstrap.Lifecycle.Plan (
     plannedStepFrameIdKernel,
     plannedStepFrameLabelKernel,
     plannedStepOperationKeyKernel,
+    plannedRecoveryObserverKernel,
+    withPreviewPlannedStepsKernel,
     plannedStepDependencyOperationsKernel,
+    plannedResourceDependencyFramesKernel,
+    plannedResourceDependencyKindsKernel,
+    plannedResourceMembersKernel,
+    plannedResourceCoordinatesKernel,
+    plannedGuestAliasCoordinatesKernel,
+    RootProbeIdentity,
+    RootProbeFamily (..),
+    rootProbeIdentityFamilyKernel,
+    withRootProviderProbeDescriptionKernel,
+    withRootShareProbeDescriptionKernel,
+    withRootAliasProbeDescriptionKernel,
+    withRootClusterObjectProbeDescriptionKernel,
+    rootAliasShareProbeIdentityKernel,
+    plannedRootAliasProbeIdentitiesKernel,
+    rootShareProviderProbeIdentityKernel,
+    withRootChartProbeResourceKernel,
+    rootProbeIdentityCoordinatesKernel,
+    plannedRootProbeIdentitiesKernel,
     plannedStepProjectedOperationKeysKernel,
     runPlannedStepKernel,
+    PlannedEffectProposal,
+    preflightPlannedStepKernel,
+    withPlannedEffectProposalKernel,
     plannedResourceKeyKernel,
     plannedResourceFrameKernel,
     plannedResourcePlanDigestKernel,
@@ -156,6 +179,11 @@ import HostBootstrap.Config.Schema (
  )
 import HostBootstrap.Config.Vocab (Mount (..))
 import HostBootstrap.Digest (sha256Hex)
+import HostBootstrap.HostConfig (HostConfig)
+import HostBootstrap.Lifecycle.Prepared.Internal (
+    GateCallDigest (GateCallDigest), GateOperationKey (GateOperationKey), GateUnknownPhase (GateUnknownPhase),
+    renderEffectProposalsKernel,
+ )
 import HostBootstrap.Lifecycle.Execution (StepExecution, stepExecutionFrame, stepExecutionOperationKey)
 import HostBootstrap.Lifecycle.Snapshot.Core (
     CanonicalPlanSnapshot (..),
@@ -189,6 +217,10 @@ import HostBootstrap.ProjectRoot (
 import HostBootstrap.Step (
     CoreStepId (..),
     OperationKey,
+    ProviderProbeDescription (..),
+    ShareProbeDescription (..),
+    AliasProbeDescription (..),
+    ClusterObjectProbeDescription (..),
     ProviderResourceDeclaration,
     ReversePolicy (..),
     Step,
@@ -211,6 +243,7 @@ import HostBootstrap.Step (
     stepDependencies,
     stepDescents,
     stepFrame,
+    stepEffectPreflight,
     stepIdentity,
     stepImplementationRevision,
     stepImplementationRevisionNumber,
@@ -219,6 +252,15 @@ import HostBootstrap.Step (
     stepPlanSteps,
     stepProjectedOperations,
     stepProviderResourceDeclarations,
+    stepProviderProbeDescriptions,
+    stepShareProbeDescriptions,
+    stepAliasProbeDescriptions,
+    stepClusterObjectProbeDescriptions,
+    stepEmptyChildFrames,
+    RecoveryObserver,
+    recoveryObserverIdentity,
+    recoveryObserverRevision,
+    stepRecoveryObserver,
     stepReverseAdapterRevision,
     stepReverseAdapterRevisionNumber,
     stepReversePolicy,
@@ -313,6 +355,11 @@ data PlannedStep scope planId configId config
     = PlannedStep Text Step [(OperationKey, Text)]
 
 type role PlannedStep nominal nominal nominal nominal
+
+-- | Descriptive effects retained under the exact admitted plan identity.
+data PlannedEffectProposal scope planId = PlannedEffectProposal Text Text ByteString
+
+type role PlannedEffectProposal nominal nominal
 
 -- | The closed relation between a resource family and its plan operation.
 data PlannedResourceKind resource where
@@ -714,14 +761,16 @@ canonicalPlanRecoveryFramesKernel snapshot = do
 
 decodeRecoveryFrame :: ByteString -> Either Text ((Text, Text, Word64), ByteString)
 decodeRecoveryFrame input = do
-    remainder0 <- consumeCanonicalRecordHeader "step" 14 input
+    remainder0 <- consumeCanonicalRecordHeader "step" 20 input
     (_ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
     remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
     remainder3 <- consumeCanonicalTag "implementation" remainder2 >>= consumeCanonicalImplementation
     remainder4 <- consumeCanonicalTaggedText "operation" remainder3
     remainder5 <- consumeCanonicalTextList "projected-operations" remainder4
     remainder5a <- consumeCanonicalProviderResources remainder5
-    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder5p <- consumeCanonicalProviderProbes remainder5a
+    remainder5s <- consumeCanonicalShareProbes remainder5p >>= consumeCanonicalAliasProbes >>= consumeCanonicalClusterObjectProbes >>= consumeCanonicalEmptyChildFrames >>= consumeCanonicalRecoveryObservers
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5s
     remainder5c <- consumeCanonicalList "service-activations" consumeCanonicalServiceActivation remainder5b
     remainder6 <- consumeCanonicalTaggedText "label" remainder5c
     (frame, remainder7) <- takeCanonicalFrame remainder6
@@ -750,14 +799,16 @@ takeCanonicalRecoveryAdapter input = do
 
 decodeStepMembers :: ByteString -> Either Text ([(Text, Text)], ByteString)
 decodeStepMembers input = do
-    remainder0 <- consumeCanonicalRecordHeader "step" 14 input
+    remainder0 <- consumeCanonicalRecordHeader "step" 20 input
     (_ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
     remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
     remainder3 <- consumeCanonicalTag "implementation" remainder2 >>= consumeCanonicalImplementation
     (operation, remainder4) <- takeCanonicalTaggedText "operation" remainder3
     (projected, remainder5) <- takeCanonicalTextList "projected-operations" remainder4
     remainder5a <- consumeCanonicalProviderResources remainder5
-    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder5p <- consumeCanonicalProviderProbes remainder5a
+    remainder5s <- consumeCanonicalShareProbes remainder5p >>= consumeCanonicalAliasProbes >>= consumeCanonicalClusterObjectProbes >>= consumeCanonicalEmptyChildFrames >>= consumeCanonicalRecoveryObservers
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5s
     remainder5c <- consumeCanonicalList "service-activations" consumeCanonicalServiceActivation remainder5b
     remainder6 <- consumeCanonicalTaggedText "label" remainder5c
     (frame, remainder7) <- takeCanonicalFrame remainder6
@@ -800,6 +851,127 @@ consumeCanonicalProviderResources input = do
             "the provider-resource target is malformed"
         go (remaining - 1) trailing
 
+consumeCanonicalProviderProbes :: ByteString -> Either Text ByteString
+consumeCanonicalProviderProbes input = do
+    remainder <- consumeCanonicalTag "provider-probes" input
+    (count, items) <- takeCanonicalWord "provider-probes count" remainder
+    case count of
+        0 -> Right items
+        1 -> consumeCanonicalProviderProbe items
+        _ -> Left "the canonical provider probe count is malformed"
+
+consumeCanonicalShareProbes :: ByteString -> Either Text ByteString
+consumeCanonicalShareProbes input = do
+    remainder <- consumeCanonicalTag "share-probes" input
+    (count, items) <- takeCanonicalWord "share-probes count" remainder
+    case count of
+        0 -> Right items
+        1 -> do
+            fields <- consumeCanonicalRecordHeader "share-probe" 2 items
+            host <- consumeProbePath "host" isAbsolute fields
+            consumeProbePath "guest" Posix.isAbsolute host
+        _ -> Left "the canonical share probe count is malformed"
+
+consumeCanonicalAliasProbes :: ByteString -> Either Text ByteString
+consumeCanonicalAliasProbes input = do
+    remainder <- consumeCanonicalTag "alias-probes" input
+    (count, items) <- takeCanonicalWord "alias-probes count" remainder
+    case count of
+        0 -> Right items
+        1 -> do
+            fields <- consumeCanonicalRecordHeader "alias-probe" 2 items
+            alias <- consumeProbePath "alias" Posix.isAbsolute fields
+            consumeProbePath "target" Posix.isAbsolute alias
+        _ -> Left "the canonical alias probe count is malformed"
+
+consumeCanonicalClusterObjectProbes :: ByteString -> Either Text ByteString
+consumeCanonicalClusterObjectProbes input = do
+    remainder <- consumeCanonicalTag "cluster-object-probes" input
+    (count, items) <- takeCanonicalWord "cluster-object-probes count" remainder
+    case count of
+        0 -> Right items
+        1 -> do
+            fields <- consumeCanonicalRecordHeader "cluster-object-probe" 5 items
+            afterState <- consumeProbePath "state" Posix.isAbsolute fields
+            afterCluster <- consumeProbeText "cluster" afterState
+            afterNamespace <- consumeProbeText "namespace" afterCluster
+            afterKind <- consumeProbeText "kind" afterNamespace
+            consumeProbeText "name" afterKind
+        _ -> Left "the canonical cluster object probe count is malformed"
+
+consumeCanonicalRecoveryObservers :: ByteString -> Either Text ByteString
+consumeCanonicalRecoveryObservers input = do
+    remainder <- consumeCanonicalTag "recovery-observers" input
+    (count, items) <- takeCanonicalWord "recovery-observers count" remainder
+    case count of
+        0 -> Right items
+        1 -> do
+            fields <- consumeCanonicalRecordHeader "recovery-observer" 2 items
+            afterIdentity <- consumeProbeText "identity" fields
+            afterTag <- consumeCanonicalTag "revision" afterIdentity
+            (_, afterRevision) <- takeCanonicalWord "recovery observer revision" afterTag
+            Right afterRevision
+        _ -> Left "the canonical recovery observer count is malformed"
+
+consumeCanonicalEmptyChildFrames :: ByteString -> Either Text ByteString
+consumeCanonicalEmptyChildFrames input = do
+    remainder <- consumeCanonicalTag "empty-child-frames" input
+    (count, items) <- takeCanonicalWord "empty-child-frames count" remainder
+    case count of
+        0 -> Right items
+        1 -> do
+            fields <- consumeCanonicalRecordHeader "empty-child-frame" 2 items
+            afterId <- consumeProbeText "id" fields
+            consumeProbeText "label" afterId
+        _ -> Left "the canonical empty child frame count is malformed"
+
+consumeCanonicalProviderProbe :: ByteString -> Either Text ByteString
+consumeCanonicalProviderProbe input = do
+    (kind, afterKind) <- takeCanonicalText "provider probe kind" input
+    (count, fields) <- takeCanonicalWord "provider probe field count" afterKind
+    case kind of
+        "direct-provider-probe" -> do
+            requireCanonical (count == 2) "the canonical Direct provider probe is malformed"
+            afterRoot <- consumeProbePath "root" isAbsolute fields
+            consumeProbeText "image" afterRoot
+        "incus-provider-probe" -> do
+            requireCanonical (count == 7) "the canonical Incus provider probe is malformed"
+            afterName <- consumeProbeText "name" fields
+            afterImage <- consumeProbeText "image" afterName
+            afterGuard <- consumeProbeText "guard" afterImage
+            afterState <- consumeProbePath "state" isAbsolute afterGuard
+            afterCpu <- consumeCanonicalPositiveTaggedWord "cpu" afterState
+            afterMemory <- consumeProbeText "memory" afterCpu
+            consumeProbeText "storage" afterMemory
+        "lima-provider-probe" -> guest count fields
+        "wsl2-provider-probe" -> guest count fields
+        _ -> Left "the canonical provider probe kind is malformed"
+  where
+    guest count fields = do
+        requireCanonical (count == 6) "the canonical guest provider probe is malformed"
+        afterName <- consumeProbeText "name" fields
+        afterCpu <- consumeCanonicalPositiveTaggedWord "cpu" afterName
+        afterMemory <- consumeProbeText "memory" afterCpu
+        afterStorage <- consumeProbeText "storage" afterMemory
+        afterHost <- consumeProbePath "host" isAbsolute afterStorage
+        consumeProbePath "guest" Posix.isAbsolute afterHost
+
+consumeProbeText :: Text -> ByteString -> Either Text ByteString
+consumeProbeText tag input = do
+    (value, trailing) <- takeCanonicalTaggedText tag input
+    requireCanonical
+        (not (Text.null value) && Text.length value <= 32768 && not (Text.any (== '\0') value))
+        ("the canonical provider probe " <> tag <> " is malformed")
+    pure trailing
+
+consumeProbePath :: Text -> (FilePath -> Bool) -> ByteString -> Either Text ByteString
+consumeProbePath tag absolute input = do
+    tagged <- consumeCanonicalTag tag input
+    (bytes, trailing) <- maybe (Left "the canonical provider probe path is malformed") Right (takeLengthFrame tagged)
+    path <- decodeCanonicalRoot bytes
+    requireCanonical (absolute path) ("the canonical provider probe " <> tag <> " is not absolute")
+    pure trailing
+
 consumeCanonicalChartWorkload :: ByteString -> Either Text ByteString
 consumeCanonicalChartWorkload input = do
     remainder0 <- consumeCanonicalRecordHeader "chart-workload" 10 input
@@ -837,7 +1009,7 @@ semantic graph evidence from durable data.
 -}
 consumeCanonicalStep :: ByteString -> Either Text ByteString
 consumeCanonicalStep input = do
-    remainder0 <- consumeCanonicalRecordHeader "step" 14 input
+    remainder0 <- consumeCanonicalRecordHeader "step" 20 input
     (ordinal, remainder1) <- consumeCanonicalTaggedWord "ordinal" remainder0
     requireCanonical (ordinal > 0) "the canonical step ordinal is malformed"
     remainder2 <- consumeCanonicalTag "identity" remainder1 >>= consumeCanonicalStepIdentity
@@ -845,7 +1017,9 @@ consumeCanonicalStep input = do
     remainder4 <- consumeCanonicalTaggedText "operation" remainder3
     remainder5 <- consumeCanonicalTextList "projected-operations" remainder4
     remainder5a <- consumeCanonicalProviderResources remainder5
-    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5a
+    remainder5p <- consumeCanonicalProviderProbes remainder5a
+    remainder5s <- consumeCanonicalShareProbes remainder5p >>= consumeCanonicalAliasProbes >>= consumeCanonicalClusterObjectProbes >>= consumeCanonicalEmptyChildFrames >>= consumeCanonicalRecoveryObservers
+    remainder5b <- consumeCanonicalList "chart-workloads" consumeCanonicalChartWorkload remainder5s
     remainder5c <- consumeCanonicalList "service-activations" consumeCanonicalServiceActivation remainder5b
     remainder6 <- consumeCanonicalTaggedText "label" remainder5c
     remainder7 <- consumeCanonicalFrame remainder6
@@ -1436,13 +1610,7 @@ admitProjectPlanAtRootKernel ::
     NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
     Either PlanError (ProjectPlan scope specDigest planId configId cfg)
 admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity expectedRoot config drafts = do
-    validateDraftBindings
-    plan <-
-        case mkStepPlan (map internalDraftStep (NonEmpty.toList drafts)) of
-            Left failure -> Left (InvalidProjectPlan failure)
-            Right admitted -> Right admitted
-    validateChartWorkloadDeclarations plan
-    validateServiceActivationDeclarations plan
+    plan <- admitStepPlanAtRootKernel expectedRoot config drafts
     let admittedTopology = topologyFromAdmittedPlan plan
         snapshot =
             canonicalPlanSnapshot
@@ -1462,6 +1630,50 @@ admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity 
             admittedTopology
             (IndexedPlanSnapshot snapshot)
         )
+
+{- | The forward projection a project plan admission at this root would build,
+without a lifecycle profile.
+
+It runs every profile-free admission check: the drafts' root, specification
+and configuration bindings, the step plan's own validation, and the chart
+workload, service activation and provider probe root declarations. The planned
+steps carry a fresh plan identity that no admitted 'ProjectPlan' or
+'StepExecution' shares, so they can be rendered but never run. It consumes no
+profile slot and names no store, so a preview such as @project up --dry-run@
+renders the chain an admission would run without holding Production authority.
+-}
+withPreviewPlannedStepsKernel ::
+    CanonicalProjectRoot scope rootId ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
+    (forall planId. NonEmpty (PlannedStep scope planId configId (cfg scope)) -> a) ->
+    Either PlanError a
+withPreviewPlannedStepsKernel root config drafts use = do
+    let expectedRoot = canonicalProjectRootPath root
+    plan <- admitStepPlanAtRootKernel expectedRoot config drafts
+    let snapshot =
+            canonicalPlanSnapshot
+                expectedRoot
+                (validatedConfigSpecDigest config)
+                (validatedConfigDigest config)
+                plan
+    Right (use (plannedStepsOfKernel (canonicalPlanSnapshotDigest snapshot) plan))
+
+admitStepPlanAtRootKernel ::
+    FilePath ->
+    ValidatedConfig scope specDigest configId (cfg scope) ->
+    NonEmpty (PlanDraft scope specDigest (cfg scope)) ->
+    Either PlanError StepPlan
+admitStepPlanAtRootKernel expectedRoot config drafts = do
+    validateDraftBindings
+    plan <-
+        case mkStepPlan (map internalDraftStep (NonEmpty.toList drafts)) of
+            Left failure -> Left (InvalidProjectPlan failure)
+            Right admitted -> Right admitted
+    validateChartWorkloadDeclarations plan
+    validateServiceActivationDeclarations plan
+    validateProviderProbeRoots expectedRoot plan
+    Right plan
   where
     expectedSpecDigest = validatedConfigSpecDigest config
     expectedConfigDigest = validatedConfigDigest config
@@ -1490,6 +1702,14 @@ admitProjectPlanAtRootKernel profileName profileEpoch projectName storeIdentity 
                                         (internalDraftConfigDigest draft)
                                     )
                             Nothing -> Right ()
+
+validateProviderProbeRoots :: FilePath -> StepPlan -> Either PlanError ()
+validateProviderProbeRoots expectedRoot plan = mapM_ validate (NonEmpty.toList (stepPlanSteps plan))
+  where
+    validate step = case stepProviderProbeDescriptions step of
+        [DirectProviderProbe root _]
+            | root /= expectedRoot -> Left (PlanResourceBindingMismatch "direct provider probe root" (Text.pack expectedRoot) (Text.pack root))
+        _ -> Right ()
 
 validateChartWorkloadDeclarations :: StepPlan -> Either PlanError ()
 validateChartWorkloadDeclarations plan = mapM_ validate (NonEmpty.toList (stepPlanSteps plan))
@@ -1625,10 +1845,14 @@ forwardKernel ::
     NonEmpty (PlannedStep scope planId configId (cfg scope))
 forwardKernel
     (ProjectPlan _ _ _ _ _ _ plan _ (IndexedPlanSnapshot snapshot)) =
+        plannedStepsOfKernel (canonicalPlanSnapshotDigest snapshot) plan
+
+-- | Project an admitted step plan's forward nodes under one plan digest.
+plannedStepsOfKernel :: Text -> StepPlan -> NonEmpty (PlannedStep scope planId configId config)
+plannedStepsOfKernel digest plan =
         let firstStep :| remainingSteps = stepPlanSteps plan
          in PlannedStep digest firstStep [] :| go [firstStep] remainingSteps
       where
-        digest = canonicalPlanSnapshotDigest snapshot
         go _ [] = []
         go preceding (step : rest) =
             PlannedStep digest step (map dependencyView preceding)
@@ -1654,10 +1878,392 @@ plannedStepFrameLabelKernel (PlannedStep _ step _) = Text.pack (frameLabel (step
 plannedStepOperationKeyKernel :: PlannedStep scope planId configId config -> OperationKey
 plannedStepOperationKeyKernel (PlannedStep _ step _) = stepOperationKey step
 
+{- | The recovery observer the admitted plan binds to one of its operations:
+the operation's frame, its step, and the step's declared observer. Descriptive
+only; an operation the plan does not admit, or whose step declares no observer,
+has none.
+-}
+plannedRecoveryObserverKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> Text -> Maybe (Text, Step, RecoveryObserver)
+plannedRecoveryObserverKernel plan operation =
+    case [ (Text.pack (frameId (stepFrame step)), step, observer)
+         | PlannedStep _ step _ <- NonEmpty.toList (forwardKernel plan)
+         , Text.pack (operationKeyText (stepOperationKey step)) == operation
+         , Just observer <- [stepRecoveryObserver step]
+         ] of
+        [declared] -> Just declared
+        _ -> Nothing
+
 plannedStepDependencyOperationsKernel ::
     PlannedStep scope planId configId config ->
     [(OperationKey, Text)]
 plannedStepDependencyOperationsKernel (PlannedStep _ _ dependencies) = dependencies
+
+-- | Resolve closed-family and declared provider dependencies to resource frames
+-- from the admitted graph. Synthetic resources need their own projections.
+-- A provider declaration may place its resource in the immediate child frame.
+plannedResourceDependencyFramesKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Either PlanError [(OperationKey, Text)]
+plannedResourceDependencyFramesKernel plan planned@(PlannedStep digest _ dependencies) = do
+    requireBinding "resource prerequisite plan" (projectPlanDigestKernel plan) digest
+    targetStep <- maybe (Left (PlanResourceOperationMissing targetKey)) Right (findStep graph targetKey)
+    let exact = [(stepOperationKey step, Text.pack (frameId (stepFrame step))) | step <- NonEmpty.toList (stepPlanSteps graph), stepIdentity step `elem` stepDependencies graph targetStep]
+    if dependencies /= exact
+        then Left (PlanResourceBindingMismatch "resource prerequisite prefix" "the retained plan prefix" "a different prefix")
+        else concat <$> traverse resolve dependencies
+  where
+    graph = projectPlanStepPlanKernel plan
+    targetKey = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned))
+    resolve (key, _) = do
+        step <- maybe (Left (PlanResourceOperationMissing (Text.pack (operationKeyText key)))) Right (findStep graph (Text.pack (operationKeyText key)))
+        case resourceKindsForStep step of
+            [] -> Right []
+            [kind] -> (: []) <$> resource key step kind
+            _ -> Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "duplicate")
+    resource key step (SomePlannedResourceKind kind) = do
+        frame <- resourceFrame graph kind step
+        pure (key, frame)
+
+-- | Retain the plan's resource kind alongside each ordered dependency key.
+-- The Boolean marks the provider family, including project-declared providers.
+plannedResourceDependencyKindsKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Either PlanError [(Text, Bool)]
+plannedResourceDependencyKindsKernel plan planned = do
+    dependencies <- plannedResourceDependencyFramesKernel plan planned
+    traverse classify dependencies
+  where
+    graph = projectPlanStepPlanKernel plan
+    classify (key, _) = do
+        let name = Text.pack (operationKeyText key)
+        step <- maybe (Left (PlanResourceOperationMissing name)) Right (findStep graph name)
+        case resourceKindsForStep step of
+            [SomePlannedResourceKind kind] -> Right (name, providerKind kind)
+            _ -> Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "not one")
+
+-- | The exact resource-bearing prefix and own resource, with their real
+-- resource frames. Non-resource steps remain absent from this authority view.
+plannedResourceMembersKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Either PlanError [(Text, Text, Bool)]
+plannedResourceMembersKernel plan planned = do
+    dependencies <- plannedResourceDependencyFramesKernel plan planned
+    prefix <- traverse member dependencies
+    let ownKey = plannedStepOperationKeyKernel planned
+        ownName = Text.pack (operationKeyText ownKey)
+    own <- maybe (Left (PlanResourceOperationMissing ownName)) Right (findStep graph ownName)
+    ownMembers <- case resourceKindsForStep own of
+        [] -> Right []
+        [SomePlannedResourceKind kind] -> do
+            frame <- resourceFrame graph kind own
+            Right [(ownName, frame, providerKind kind)]
+        _ -> Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "duplicate")
+    pure (prefix <> ownMembers)
+  where
+    graph = projectPlanStepPlanKernel plan
+    member (key, frame) = do
+        let name = Text.pack (operationKeyText key)
+        step <- maybe (Left (PlanResourceOperationMissing name)) Right (findStep graph name)
+        case resourceKindsForStep step of
+            [SomePlannedResourceKind kind] -> Right (name, frame, providerKind kind)
+            _ -> Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "not one")
+
+resourceKindsForStep :: Step -> [SomePlannedResourceKind]
+resourceKindsForStep step =
+    if null (stepProviderResourceDeclarations step) || any isProvider matching
+        then matching
+        else SomePlannedResourceKind ProviderResourceKind : matching
+  where
+    key = Text.pack (operationKeyText (stepOperationKey step))
+    matching = [wrapped | wrapped@(SomePlannedResourceKind kind) <- plannedResourceKinds, key == plannedKindKey kind]
+    isProvider (SomePlannedResourceKind kind) = providerKind kind
+
+-- | Project only resource identities justified by the admitted node. Existing
+-- resources use the same coordinates as newly acquired resources; their
+-- existence and readiness are established separately by root-owned probes.
+plannedResourceCoordinatesKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Text ->
+    Either PlanError ((Text, Text), [(Text, Text)])
+plannedResourceCoordinatesKernel plan planned requested
+    | requested /= nodeKey = plannedGuestAliasCoordinatesKernel plan planned requested
+    | otherwise = do
+        dependencies <- plannedResourceDependencyFramesKernel plan planned
+        step <- maybe (Left (PlanResourceOperationMissing nodeKey)) Right (findStep graph nodeKey)
+        if stepIdentity step == CoreStepIdentity DeployChartId
+            then withProjectChartWorkloadResourceKernel plan (stepOperationKey step) $ \chart ->
+                withChartWorkloadResourceDetailsKernel chart $ \_ _ _ _ _ _ _ _ _ _ _ clusterKey ->
+                    let frame = chartWorkloadResourceFrameKernel chart
+                     in ((nodeKey, frame), [(clusterKey, frame)])
+            else case resourceKindsForStep step of
+                [SomePlannedResourceKind kind] -> do
+                    frame <- resourceFrame graph kind step
+                    pure ((nodeKey, frame), [(Text.pack (operationKeyText key), dependencyFrame) | (key, dependencyFrame) <- dependencies])
+                [] -> Left (PlanResourceKindMismatch nodeKey "managed resource")
+                _ -> Left (PlanResourceBindingMismatch "resource declaration" "one resource kind" "duplicate")
+  where
+    graph = projectPlanStepPlanKernel plan
+    nodeKey = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned))
+
+-- | Descriptive identity for a root-selected probe. This value contains no
+-- backend observation, callback, readiness evidence, or permission to grant.
+data RootProbeFamily
+    = RootProviderProbe
+    | RootDurableShareProbe
+    | RootDurableAliasProbe
+    | RootDockerProbe
+    | RootObjectStoreProbe
+    | RootRegistryProbe
+    | RootClusterProbe
+    | RootChartWorkloadProbe
+    deriving (Eq, Show)
+
+data RootProbeIdentity = RootProbeIdentity Text Text Text RootProbeFamily
+    deriving (Eq, Show)
+
+rootProbeIdentityCoordinatesKernel :: RootProbeIdentity -> (Text, Text, Text, Text)
+rootProbeIdentityCoordinatesKernel (RootProbeIdentity digest frame key kind) =
+    (digest, frame, key, rootProbeFamilyName kind)
+
+rootProbeIdentityFamilyKernel :: RootProbeIdentity -> RootProbeFamily
+rootProbeIdentityFamilyKernel (RootProbeIdentity _ _ _ family) = family
+
+-- | Reconstruct only the description bound to this exact provider identity.
+-- This describes a target and grants no observation or mutation authority.
+withRootProviderProbeDescriptionKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity ->
+    (ProviderProbeDescription -> result) ->
+    Either PlanError result
+withRootProviderProbeDescriptionKernel plan (RootProbeIdentity digest frame key family) consume = do
+    requireBinding "provider root probe plan" (projectPlanDigestKernel plan) digest
+    if family /= RootProviderProbe
+        then Left (PlanResourceKindMismatch key "provider")
+        else do
+            let graph = projectPlanStepPlanKernel plan
+            step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep graph key)
+            actualFrame <- resourceFrame graph ProviderResourceKind step
+            requireBinding "provider root probe frame" actualFrame frame
+            case stepProviderProbeDescriptions step of
+                [description] -> Right (consume description)
+                _ -> Left (PlanResourceBindingMismatch "provider root probe description" "one admitted description" "not one")
+
+-- | Recover descriptive share paths only from the exact admitted share identity.
+withRootShareProbeDescriptionKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> RootProbeIdentity ->
+    (ShareProbeDescription -> result) -> Either PlanError result
+withRootShareProbeDescriptionKernel plan (RootProbeIdentity digest frame key family) consume = do
+    requireBinding "share root probe plan" (projectPlanDigestKernel plan) digest
+    if family /= RootDurableShareProbe
+        then Left (PlanResourceKindMismatch key "durable share")
+        else do
+            let graph = projectPlanStepPlanKernel plan
+            step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep graph key)
+            actualFrame <- resourceFrame graph DurableShareResourceKind step
+            requireBinding "share root probe frame" actualFrame frame
+            case stepShareProbeDescriptions step of
+                [description] -> Right (consume description)
+                _ -> Left (PlanResourceBindingMismatch "share root probe description" "one admitted description" "not one")
+
+-- | Recover the guest alias path and link target only from the exact admitted
+-- alias identity: the one step projecting it must declare exactly one alias.
+withRootAliasProbeDescriptionKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> RootProbeIdentity ->
+    (AliasProbeDescription -> result) -> Either PlanError result
+withRootAliasProbeDescriptionKernel plan (RootProbeIdentity digest frame key family) consume = do
+    requireBinding "alias root probe plan" (projectPlanDigestKernel plan) digest
+    if family /= RootDurableAliasProbe
+        then Left (PlanResourceKindMismatch key "durable alias")
+        else do
+            let graph = projectPlanStepPlanKernel plan
+                projects step = key `elem` map (Text.pack . operationKeyText) (stepProjectedOperations step)
+            step <- case filter projects (NonEmpty.toList (stepPlanSteps graph)) of
+                [declaring] -> Right declaring
+                [] -> Left (PlanResourceOperationMissing key)
+                _ -> Left (PlanResourceBindingMismatch "alias root probe step" "one projecting step" "several")
+            shareFrame <- resourceFrame graph DurableShareResourceKind step
+            requireBinding "alias root probe frame" shareFrame frame
+            case stepAliasProbeDescriptions step of
+                [description] -> Right (consume description)
+                _ -> Left (PlanResourceBindingMismatch "alias root probe description" "one admitted description" "not one")
+
+-- | Select the alias's sole durable-share edge from the admitted graph: the
+-- share is the step projecting the alias, so a caller cannot name another.
+rootAliasShareProbeIdentityKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> RootProbeIdentity -> Either PlanError RootProbeIdentity
+rootAliasShareProbeIdentityKernel plan identity = do
+    _ <- withRootAliasProbeDescriptionKernel plan identity id
+    let (_, _, key, _) = rootProbeIdentityCoordinatesKernel identity
+        projects planned = key `elem` map (Text.pack . operationKeyText) (plannedStepProjectedOperationKeysKernel planned)
+    node <- maybe (Left (PlanResourceOperationMissing key)) Right (find projects (NonEmpty.toList (forwardKernel plan)))
+    (selected, dependencies) <- plannedRootProbeIdentitiesKernel plan node key
+    if identity /= selected
+        then Left (PlanResourceBindingMismatch "alias root probe identity" "the admitted alias" "a different resource")
+        else pure ()
+    case dependencies of
+        [share] | rootProbeIdentityFamilyKernel share == RootDurableShareProbe -> Right share
+        _ -> Left (PlanResourceBindingMismatch "alias root probe share" "one admitted durable share" "not one")
+
+-- | The guest-alias probe identities the admitted plan itself declares: each
+-- projected guest-alias operation of a step that declares an alias probe.
+plannedRootAliasProbeIdentitiesKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> Either PlanError [RootProbeIdentity]
+plannedRootAliasProbeIdentitiesKernel plan =
+    fmap concat . sequence $
+        [ fmap (\(identity, _) -> [identity | rootProbeIdentityFamilyKernel identity == RootDurableAliasProbe])
+            (plannedRootProbeIdentitiesKernel plan node key)
+        | node <- NonEmpty.toList (forwardKernel plan)
+        , not (null (stepAliasProbeDescriptions (plannedStepStepKernel node)))
+        , key <- map (Text.pack . operationKeyText) (plannedStepProjectedOperationKeysKernel node)
+        , "/guest-alias" `Text.isSuffixOf` key
+        ]
+
+-- | Recover the cluster object only from the exact admitted object-store,
+-- registry, cluster or chart-workload identity; the step must declare exactly
+-- one cluster object.
+withRootClusterObjectProbeDescriptionKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> RootProbeIdentity ->
+    (ClusterObjectProbeDescription -> result) -> Either PlanError result
+withRootClusterObjectProbeDescriptionKernel plan identity@(RootProbeIdentity _ _ key RootChartWorkloadProbe) consume = do
+    -- The chart identity is checked against the admitted chart resource, its plan and frame.
+    _ <- withRootChartProbeResourceKernel plan identity (const ())
+    step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep (projectPlanStepPlanKernel plan) key)
+    case stepClusterObjectProbeDescriptions step of
+        [description] -> Right (consume description)
+        _ -> Left (PlanResourceBindingMismatch "cluster object root probe description" "one admitted description" "not one")
+withRootClusterObjectProbeDescriptionKernel plan (RootProbeIdentity digest frame key family) consume = do
+    requireBinding "cluster object root probe plan" (projectPlanDigestKernel plan) digest
+    resourceKind <- case family of
+        RootObjectStoreProbe -> Right (SomePlannedResourceKind ObjectStoreResourceKind)
+        RootRegistryProbe -> Right (SomePlannedResourceKind RegistryResourceKind)
+        RootClusterProbe -> Right (SomePlannedResourceKind ClusterResourceKind)
+        _ -> Left (PlanResourceKindMismatch key "cluster object")
+    let graph = projectPlanStepPlanKernel plan
+    step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep graph key)
+    actualFrame <- case resourceKind of
+        SomePlannedResourceKind kind -> resourceFrame graph kind step
+    requireBinding "cluster object root probe frame" actualFrame frame
+    case stepClusterObjectProbeDescriptions step of
+        [description] -> Right (consume description)
+        _ -> Left (PlanResourceBindingMismatch "cluster object root probe description" "one admitted description" "not one")
+
+-- | Select the share's sole declared provider dependency from the admitted graph.
+rootShareProviderProbeIdentityKernel ::
+    ProjectPlan scope specDigest planId configId cfg -> RootProbeIdentity -> Either PlanError RootProbeIdentity
+rootShareProviderProbeIdentityKernel plan identity = do
+    _ <- withRootShareProbeDescriptionKernel plan identity id
+    let (_, _, key, _) = rootProbeIdentityCoordinatesKernel identity
+        matches planned = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned)) == key
+    node <- maybe (Left (PlanResourceOperationMissing key)) Right (find matches (NonEmpty.toList (forwardKernel plan)))
+    (selected, dependencies) <- plannedRootProbeIdentitiesKernel plan node key
+    if identity == selected
+        then Right ()
+        else Left (PlanResourceBindingMismatch "share root probe identity" "the admitted share" "a different resource")
+    case filter ((== RootProviderProbe) . rootProbeIdentityFamilyKernel) dependencies of
+        [provider] -> Right provider
+        _ -> Left (PlanResourceBindingMismatch "share provider dependency" "one admitted provider" "not one")
+
+-- | Reconstruct a chart's declared backend inputs only from the admitted
+-- graph and the exact root-selected identity. This projection supplies no
+-- backend observation or authority to prepare an effect.
+withRootChartProbeResourceKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity ->
+    (forall resourceId frame. ChartWorkloadResource scope planId resourceId frame -> result) ->
+    Either PlanError result
+withRootChartProbeResourceKernel plan (RootProbeIdentity digest frame key family) consume = do
+    requireBinding "chart root probe plan" (projectPlanDigestKernel plan) digest
+    if family /= RootChartWorkloadProbe
+        then Left (PlanResourceKindMismatch key "chart workload")
+        else do
+            step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep (projectPlanStepPlanKernel plan) key)
+            withProjectChartWorkloadResourceKernel plan (stepOperationKey step)
+                (\chart ->
+                    if chartWorkloadResourceFrameKernel chart == frame
+                        then Right (consume chart)
+                        else Left (PlanResourceBindingMismatch "chart root probe frame" (chartWorkloadResourceFrameKernel chart) frame))
+                >>= id
+
+rootProbeFamilyName :: RootProbeFamily -> Text
+rootProbeFamilyName family = case family of
+    RootProviderProbe -> "provider"
+    RootDurableShareProbe -> "durable share"
+    RootDurableAliasProbe -> "durable alias"
+    RootDockerProbe -> "Docker daemon"
+    RootObjectStoreProbe -> "object store"
+    RootRegistryProbe -> "registry"
+    RootClusterProbe -> "cluster"
+    RootChartWorkloadProbe -> "chart workload"
+
+plannedRootProbeFamily :: PlannedResourceKind resource -> RootProbeFamily
+plannedRootProbeFamily kind = case kind of
+    ProviderResourceKind -> RootProviderProbe
+    DurableShareResourceKind -> RootDurableShareProbe
+    DockerResourceKind -> RootDockerProbe
+    ObjectStoreResourceKind -> RootObjectStoreProbe
+    RegistryResourceKind -> RootRegistryProbe
+    ClusterResourceKind -> RootClusterProbe
+
+-- | Bind probe identities to the exact retained plan resource coordinates.
+-- Probe execution and conditional-version evidence are separate obligations.
+plannedRootProbeIdentitiesKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Text ->
+    Either PlanError (RootProbeIdentity, [RootProbeIdentity])
+plannedRootProbeIdentitiesKernel plan planned requested = do
+    (targetCoordinate, dependencies) <- plannedResourceCoordinatesKernel plan planned requested
+    targetIdentity <- identify targetCoordinate
+    dependencyIdentities <- traverse identify dependencies
+    pure (targetIdentity, dependencyIdentities)
+  where
+    graph = projectPlanStepPlanKernel plan
+    digest = projectPlanDigestKernel plan
+    ownKey = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned))
+    identify (key, frame)
+        | key == requested && key /= ownKey = Right (RootProbeIdentity digest frame key RootDurableAliasProbe)
+        | otherwise = do
+            step <- maybe (Left (PlanResourceOperationMissing key)) Right (findStep graph key)
+            if stepIdentity step == CoreStepIdentity DeployChartId
+                then Right (RootProbeIdentity digest frame key RootChartWorkloadProbe)
+                else case resourceKindsForStep step of
+                    [SomePlannedResourceKind kind] -> Right (RootProbeIdentity digest frame key (plannedRootProbeFamily kind))
+                    _ -> Left (PlanResourceBindingMismatch "root probe resource kind" "one admitted kind" "not one")
+
+-- | Resolve the synthetic guest-alias target and its one durable-share edge.
+-- The declaring share and its provider must both belong to the retained plan;
+-- arbitrary projected operation keys do not imply a guest-alias resource.
+plannedGuestAliasCoordinatesKernel ::
+    ProjectPlan scope specDigest planId configId cfg ->
+    PlannedStep scope planId configId (cfg scope) ->
+    Text ->
+    Either PlanError ((Text, Text), [(Text, Text)])
+plannedGuestAliasCoordinatesKernel plan planned requested = do
+    _ <- plannedResourceDependencyFramesKernel plan planned
+    share <- maybe (Left (PlanResourceOperationMissing shareKey)) Right (findStep graph shareKey)
+    shareFrame <- resourceFrame graph DurableShareResourceKind share
+    requireProjectedAlias share requested
+    case providers of
+        [provider] -> do
+            _ <- resourceFrame graph ProviderResourceKind provider
+            pure ((requested, shareFrame), [(shareKey, shareFrame)])
+        [] -> Left (PlanResourceBindingMismatch "guest alias provider" "one admitted provider dependency" "none")
+        _ -> Left (PlanResourceBindingMismatch "guest alias provider" "one admitted provider dependency" "duplicate")
+  where
+    graph = projectPlanStepPlanKernel plan
+    shareKey = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned))
+    providers =
+        [ provider
+        | (key, _) <- plannedStepDependencyOperationsKernel planned
+        , let providerKey = Text.pack (operationKeyText key)
+        , requested == providerKey <> "/" <> shareKey <> "/guest-alias"
+        , Just provider <- [findStep graph providerKey]
+        ]
 
 plannedStepProjectedOperationKeysKernel ::
     PlannedStep scope planId configId config ->
@@ -1701,14 +2307,7 @@ plannedKindKey resourceKind =
         ClusterResourceKind -> "core:deploy-kind"
 
 plannedKindName :: PlannedResourceKind resource -> Text
-plannedKindName resourceKind =
-    case resourceKind of
-        ProviderResourceKind -> "provider"
-        DurableShareResourceKind -> "durable share"
-        DockerResourceKind -> "Docker daemon"
-        ObjectStoreResourceKind -> "object store"
-        RegistryResourceKind -> "registry"
-        ClusterResourceKind -> "cluster"
+plannedKindName = rootProbeFamilyName . plannedRootProbeFamily
 
 data SomePlannedResourceKind where
     SomePlannedResourceKind :: PlannedResourceKind resource -> SomePlannedResourceKind
@@ -1720,7 +2319,11 @@ plannedResourceKindKeyKernel = plannedKindKey
 plannedResourceFamilyKeysKernel :: [Text]
 plannedResourceFamilyKeysKernel =
     [ plannedKindKey resourceKind
-    | SomePlannedResourceKind resourceKind <-
+    | SomePlannedResourceKind resourceKind <- plannedResourceKinds
+    ]
+
+plannedResourceKinds :: [SomePlannedResourceKind]
+plannedResourceKinds =
         [ SomePlannedResourceKind ProviderResourceKind
         , SomePlannedResourceKind DurableShareResourceKind
         , SomePlannedResourceKind DockerResourceKind
@@ -1728,7 +2331,6 @@ plannedResourceFamilyKeysKernel =
         , SomePlannedResourceKind RegistryResourceKind
         , SomePlannedResourceKind ClusterResourceKind
         ]
-    ]
 
 withProjectPlannedResourceOfKindKernel ::
     ProjectPlan scope specDigest planId configId cfg ->
@@ -1870,7 +2472,7 @@ withPlannedStepGuestAliasProjectionKernel plannedStep =
 
 withCompatibilityNodeResourceOfKindKernel ::
     Text ->
-    [(Text, Text)] ->
+    [(Text, Text, Bool)] ->
     PlannedResourceKind resource ->
     Text ->
     ( forall resourceId frame.
@@ -1878,7 +2480,14 @@ withCompatibilityNodeResourceOfKindKernel ::
       result
     ) ->
     Either PlanError result
-withCompatibilityNodeResourceOfKindKernel = withNodeResourceOfKind
+withCompatibilityNodeResourceOfKindKernel digest resources resourceKind requestedKey consume =
+    case find (\(key, _, _) -> key == requestedKey) resources of
+        Nothing -> Left (PlanNodeResourceOutsidePrefix requestedKey)
+        Just (_, frame, isProvider)
+            | isProvider == providerKind resourceKind
+                && (isProvider || requestedKey == plannedKindKey resourceKind) ->
+                    Right (consume (PlannedResource digest requestedKey frame))
+            | otherwise -> Left (PlanResourceKindMismatch requestedKey (plannedKindName resourceKind))
 
 withCompatibilityNodeGuestAliasProjectionKernel ::
     Text ->
@@ -2110,6 +2719,23 @@ projectPlanDigestKernel ::
     ProjectPlan scope specDigest planId configId cfg ->
     Text
 projectPlanDigestKernel = canonicalPlanSnapshotDigest . projectPlanCanonicalSnapshotKernel
+
+-- | Evaluate only this node's pure preflight and require its exact ordered operations.
+preflightPlannedStepKernel ::
+    PlannedStep scope planId configId config -> HostConfig -> Either Text (PlannedEffectProposal scope planId)
+preflightPlannedStepKernel planned@(PlannedStep _ step _) host = do
+    proposed <- maybe (Left "planned effect preflight: declaration is missing") id (stepEffectPreflight step host)
+    let operation = Text.pack (operationKeyText (plannedStepOperationKeyKernel planned))
+        expected = operation : map (Text.pack . operationKeyText) (plannedStepProjectedOperationKeysKernel planned)
+    if [key | (key, _, _) <- proposed] /= expected
+        then Left "planned effect preflight: operations differ from the admitted node"
+        else do
+            wire <- renderEffectProposalsKernel [(GateOperationKey key, GateUnknownPhase phase, GateCallDigest digest) | (key, phase, digest) <- proposed]
+            pure (PlannedEffectProposal operation (plannedStepFrameIdKernel planned) wire)
+
+-- | Observe the exact node identity and canonical descriptive proposal.
+withPlannedEffectProposalKernel :: PlannedEffectProposal scope planId -> (Text -> Text -> ByteString -> result) -> result
+withPlannedEffectProposalKernel (PlannedEffectProposal operation frame wire) use = use operation frame wire
 
 {- | Execute only the callback retained by this exact projected node.
 
@@ -2430,6 +3056,12 @@ encodeStep allSteps plan step =
             "provider-resources"
             encodeProviderResourceDeclaration
             (stepProviderResourceDeclarations step)
+        , taggedList "provider-probes" encodeProviderProbeDescription (stepProviderProbeDescriptions step)
+        , taggedList "share-probes" encodeShareProbeDescription (stepShareProbeDescriptions step)
+        , taggedList "alias-probes" encodeAliasProbeDescription (stepAliasProbeDescriptions step)
+        , taggedList "cluster-object-probes" encodeClusterObjectProbeDescription (stepClusterObjectProbeDescriptions step)
+        , taggedList "empty-child-frames" encodeEmptyChildFrame (stepEmptyChildFrames step)
+        , taggedList "recovery-observers" encodeRecoveryObserver (maybe [] pure (stepRecoveryObserver step))
         , taggedList
             "chart-workloads"
             encodeChartWorkloadDeclaration
@@ -2467,6 +3099,63 @@ encodeProviderResourceDeclaration declaration =
             then "immediate-child"
             else "current-frame"
         )
+
+encodeShareProbeDescription :: ShareProbeDescription -> Builder.Builder
+encodeShareProbeDescription (ShareProbeDescription host guest) =
+    taggedRecord "share-probe"
+        [ taggedBuilder "host" (encodeCanonicalRoot host)
+        , taggedBuilder "guest" (encodeCanonicalRoot guest)
+        ]
+
+encodeAliasProbeDescription :: AliasProbeDescription -> Builder.Builder
+encodeAliasProbeDescription (AliasProbeDescription alias linkTarget) =
+    taggedRecord "alias-probe"
+        [ taggedBuilder "alias" (encodeCanonicalRoot alias)
+        , taggedBuilder "target" (encodeCanonicalRoot linkTarget)
+        ]
+
+encodeRecoveryObserver :: RecoveryObserver -> Builder.Builder
+encodeRecoveryObserver observer =
+    taggedRecord "recovery-observer"
+        [ taggedText "identity" (recoveryObserverIdentity observer)
+        , taggedWord "revision" (recoveryObserverRevision observer)
+        ]
+
+encodeEmptyChildFrame :: StepFrame -> Builder.Builder
+encodeEmptyChildFrame frame =
+    taggedRecord "empty-child-frame"
+        [ taggedText "id" (Text.pack (frameId frame))
+        , taggedText "label" (Text.pack (frameLabel frame))
+        ]
+
+encodeClusterObjectProbeDescription :: ClusterObjectProbeDescription -> Builder.Builder
+encodeClusterObjectProbeDescription (ClusterObjectProbeDescription state cluster namespace kind name) =
+    taggedRecord "cluster-object-probe"
+        [ taggedBuilder "state" (encodeCanonicalRoot state)
+        , taggedText "cluster" cluster
+        , taggedText "namespace" namespace
+        , taggedText "kind" kind
+        , taggedText "name" name
+        ]
+
+encodeProviderProbeDescription :: ProviderProbeDescription -> Builder.Builder
+encodeProviderProbeDescription description = case description of
+    DirectProviderProbe root image ->
+        taggedRecord "direct-provider-probe" [path "root" root, taggedText "image" image]
+    IncusProviderProbe name image guardPrefix state cpu memory storage ->
+        taggedRecord "incus-provider-probe"
+            [ taggedText "name" name, taggedText "image" image, taggedText "guard" guardPrefix
+            , path "state" state, taggedWord "cpu" cpu, taggedText "memory" memory, taggedText "storage" storage
+            ]
+    LimaProviderProbe name cpu memory storage host guest -> guestProbe "lima-provider-probe" name cpu memory storage host guest
+    Wsl2ProviderProbe name cpu memory storage host guest -> guestProbe "wsl2-provider-probe" name cpu memory storage host guest
+  where
+    path tag = taggedBuilder tag . encodeCanonicalRoot
+    guestProbe tag name cpu memory storage host guest =
+        taggedRecord tag
+            [ taggedText "name" name, taggedWord "cpu" cpu, taggedText "memory" memory
+            , taggedText "storage" storage, path "host" host, path "guest" guest
+            ]
 
 encodeChartWorkloadDeclaration :: (Text, Text, Text, Text, Text, Text, Text, Text, Text, [Text]) -> Builder.Builder
 encodeChartWorkloadDeclaration (artifact, release, namespace, valuesDigest, imageIdentity, workloadKey, workloadDigest, activationFrame, serviceRole, effects) =

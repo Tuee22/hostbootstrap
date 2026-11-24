@@ -58,7 +58,24 @@ module HostBootstrap.Substrate.Provider.Backend (
     -- * Clause-holding backend
     StrongProviderBackend,
     discoverStrongProviderBackend,
+    withResolvedProviderBinding,
     providerBackendBinding,
+    RootedProviderObservation,
+    observeRootedProvider,
+    recheckRootedProvider,
+    RootedShareObservation,
+    observeRootedShare,
+    observePlannedRootShare,
+    RootedAliasTarget,
+    rootedAliasTarget,
+    rootedAliasTargetIdentity,
+    rootedAliasTargetContext,
+    rootedAliasTargetPaths,
+    checkRootedAliasTargetRecords,
+    RootedDockerObservation,
+    observeRootedDocker,
+    recheckRootedDocker,
+    recheckRootedShare,
 
     -- * Prepared backend calls
     runProviderProvisionCall,
@@ -86,6 +103,7 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, try)
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
+import qualified Data.List.NonEmpty as NonEmpty
 import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT, throwE)
 import qualified Data.Bifunctor as Bifunctor
 import Crypto.Hash (Digest, SHA256, hash)
@@ -97,7 +115,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
-import HostBootstrap.Context (ResourceEnvelope)
+import HostBootstrap.Context (ResourceEnvelope (ResourceEnvelope))
 import qualified HostBootstrap.Context as Context
 import HostBootstrap.Effect.Interpreter (interpretHostCommand)
 import HostBootstrap.Effect.Run (CapturedRun (capturedExit, capturedStderr, capturedStdout))
@@ -126,6 +144,10 @@ import HostBootstrap.Lifecycle.Prepared (
     preparedGateOperation,
     preparedGatePlan,
  )
+import HostBootstrap.ProjectPlan (forward, operationKeyText, plannedStepFrameId, plannedStepOperationKey, renderSnapshot, stablePlanSnapshotDigest)
+import HostBootstrap.Lifecycle.Plan (ProjectPlan, RootProbeFamily (RootDockerProbe, RootDurableShareProbe), RootProbeIdentity, plannedRootProbeIdentitiesKernel, rootAliasShareProbeIdentityKernel, rootProbeIdentityCoordinatesKernel, rootProbeIdentityFamilyKernel, rootShareProviderProbeIdentityKernel, withRootAliasProbeDescriptionKernel, withRootProviderProbeDescriptionKernel, withRootShareProbeDescriptionKernel)
+import HostBootstrap.Lifecycle.Rooted (RootedResourceObservation, observeRootedProviderGenerationInEntryKernel, observeRootedResourceInEntryKernel, observeRootedShareGenerationInEntryKernel, selectRootedProbeObservationsKernel, validateRootedProbePrerequisiteInEntryKernel)
+import HostBootstrap.Lift.Context (IncusVM (IncusVM), LiftContext, LimaVM (LimaVM), Wsl2VM (Wsl2VM))
 import HostBootstrap.Ownership.Object (
     ObjectIdentity,
     Origin (OriginAbsent, OriginPresent),
@@ -137,7 +159,9 @@ import HostBootstrap.Ownership.Primitive (rowObserveIdentity, withOwnershipRow)
 import HostBootstrap.Ownership.Row (ownershipRowForHost)
 import HostBootstrap.Protected (
     ProtectedSession,
+    ProtectedStore,
     RecordKey,
+    openExistingProtectedStore,
     openProtectedStore,
     protectedErrorMessage,
     withProtectedEntry,
@@ -158,18 +182,22 @@ import HostBootstrap.Reconcile (
  )
 import HostBootstrap.Substrate (HostFrame (WindowsFrame), SubstrateName (AppleSilicon, LinuxCpu), substrateFrame, substrateName)
 import HostBootstrap.Substrate.Provider (
-    HostPathShare,
+    HostPathShare (HostPathShare),
     ProviderKind (ProviderDirectHost, ProviderIncus, ProviderLima, ProviderWsl2),
     SubstrateProvider,
+    VMHandles (VMHandles),
     foldExistsProbe,
     hpsGuestPath,
     hpsHostPath,
     providerExistsProbe,
     providerKind,
+    providerLiftContext,
     providerVmId,
+    selectProviderKind,
     validConflictToken,
  )
 import HostBootstrap.Substrate.Provider.Command (ProviderSizing (ProviderSizing))
+import HostBootstrap.Step (AliasProbeDescription (AliasProbeDescription), ProviderProbeDescription (..), ShareProbeDescription (..))
 import qualified HostBootstrap.Substrate.Provider.GuestVm as GuestVm
 import HostBootstrap.Substrate.Provider.Dependency.Internal (
     RunningProviderDependency (..),
@@ -229,6 +257,7 @@ import HostBootstrap.Substrate.Provider.Ownership (
     observeOwnedShare,
     provisionOwnedInstance,
     readyOwnedInstance,
+    probeRunningOwnedInstance,
     stopOwnedInstance,
  )
 import HostBootstrap.Substrate.Provider.Reconcile (
@@ -259,6 +288,8 @@ import HostBootstrap.Substrate.Provider.Reconcile (
     preparedProviderStopBinding,
     providerShareGuestPath,
     providerShareHostPath,
+    providerShareCallDigest,
+    mkProviderShareSpec,
     withProviderPhaseAdvance,
  )
 import HostBootstrap.Substrate.Provider.Report (
@@ -595,17 +626,24 @@ discoverStrongProviderBackend ::
     (forall backendId. StrongProviderBackend backendId -> IO result) ->
     IO (Either ReconcileError result)
 discoverStrongProviderBackend cfg spec consume =
-    case retainedBackendClient spec of
+    case withResolvedProviderBinding cfg spec (\binding -> consume (admitted binding spec)) of
         Left failure -> pure (Left failure)
-        Right (label, tool, executable)
-            | fmap absExePath (resolveMaybe cfg tool) /= Just executable ->
-                pure (Left (invalidBackend label "the resolved client executable differs from the admitted provider backend"))
-            | otherwise -> Right <$> consume (admitted spec)
+        Right action -> Right <$> action
   where
-    binding = ProviderBackendBinding (backendSemanticFingerprint spec) (backendRealizationFingerprint spec)
-    admitted DirectHostBackendSpec{} = StrongDirectHostBackend binding cfg spec
-    admitted IncusBackendSpec{} = StrongIncusBackend binding cfg spec
-    admitted LimaBackendSpec{} = StrongLimaBackend binding cfg spec
+    admitted binding DirectHostBackendSpec{} = StrongDirectHostBackend binding cfg spec
+    admitted binding IncusBackendSpec{} = StrongIncusBackend binding cfg spec
+    admitted binding LimaBackendSpec{} = StrongLimaBackend binding cfg spec
+
+-- | Project descriptive binding coordinates after the same pure admission used
+-- by strong discovery. This executes no command and grants no prepared effect.
+withResolvedProviderBinding ::
+    HostConfig -> ProviderBackendSpec -> (forall backendId. ProviderBackendBinding backendId -> result) ->
+    Either ReconcileError result
+withResolvedProviderBinding cfg spec use = do
+    (label, tool, executable) <- retainedBackendClient spec
+    if fmap absExePath (resolveMaybe cfg tool) /= Just executable
+        then Left (invalidBackend label "the resolved client executable differs from the admitted provider backend")
+        else Right (use (ProviderBackendBinding (backendSemanticFingerprint spec) (backendRealizationFingerprint spec)))
 
 -- | Resolve every realization's retained client through the same closed rows.
 retainedBackendClient :: ProviderBackendSpec -> Either ReconcileError (Text, HostTool, FilePath)
@@ -622,6 +660,361 @@ providerBackendBinding backend = case backend of
     StrongIncusBackend binding _ _ -> binding
     StrongLimaBackend binding _ _ -> binding
     StrongDirectHostBackend binding _ _ -> binding
+
+-- | A root-observed native identity, bound to its selected protected row.
+-- It is descriptive evidence and does not itself authorize a grant.
+data RootedProviderObservation = RootedProviderObservation RootProbeIdentity RootedResourceObservation ObjectIdentity
+
+-- | Reconstruct the backend from the admitted plan, then independently probe
+-- the exact owned provider named by the still-current root record.
+observeRootedProvider ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity -> RootedResourceObservation -> IO (Either ReconcileError RootedProviderObservation)
+observeRootedProvider cfg store plan identity retained = runExceptT $ do
+    description <- either (throwE . refuse . Text.pack . show) pure
+        (withRootProviderProbeDescriptionKernel plan identity id)
+    generation <- ExceptT (readGeneration store identity retained)
+    spec <- either throwE pure (rootedProviderBackendSpec cfg description)
+    let (planDigest, _, resourceKey, _) = rootProbeIdentityCoordinatesKernel identity
+    discovered <- lift $ discoverStrongProviderBackend cfg spec $ \backend -> do
+        let origin = ProviderOriginBinding (providerBackendBinding backend) planDigest resourceKey generation
+        observeExistingProviderIdentity backend resourceKey (providerOriginOwner origin)
+    native <- ExceptT (pure (discovered >>= id))
+    finalGeneration <- ExceptT (readGeneration store identity retained)
+    unless (generation == finalGeneration) (throwE (refuse "provider generation changed during native observation"))
+    pure (RootedProviderObservation identity retained native)
+  where
+    refuse = Failure . failed "observe rooted provider"
+
+-- | Repeat the independent observation and require the exact native identity.
+recheckRootedProvider ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootedProviderObservation -> IO (Either ReconcileError ())
+recheckRootedProvider cfg store plan (RootedProviderObservation identity retained expected) = do
+    observed <- observeRootedProvider cfg store plan identity retained
+    pure $ do
+        RootedProviderObservation _ _ actual <- observed
+        unless (actual == expected) (Left (nativeIdentityConflict key expected actual))
+  where
+    (_, _, key, _) = rootProbeIdentityCoordinatesKernel identity
+
+-- | The plan-selected share, its current protected prerequisites, and the
+-- independently observed provider and share identities. It grants no mutation.
+data RootedShareObservation = RootedShareObservation RootProbeIdentity [RootedResourceObservation] ObjectIdentity ObjectIdentity
+
+-- | Recover the provider and share binding from the admitted plan, never from
+-- a child-supplied prepared operation or an arbitrary caller-selected path.
+observeRootedShare ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity -> [RootedResourceObservation] -> IO (Either ReconcileError RootedShareObservation)
+observeRootedShare cfg store plan identity retained = runExceptT $ do
+    ShareProbeDescription source target <- either (throwE . refuse . Text.pack . show) pure
+        (withRootShareProbeDescriptionKernel plan identity id)
+    providerIdentity <- either (throwE . refuse . Text.pack . show) pure
+        (rootShareProviderProbeIdentityKernel plan identity)
+    description <- either (throwE . refuse . Text.pack . show) pure
+        (withRootProviderProbeDescriptionKernel plan providerIdentity id)
+    selected <- either (throwE . refuse) pure
+        (selectRootedProbeObservationsKernel store [providerIdentity, identity] retained)
+    (providerRow, shareRow) <- case selected of
+        [providerRecord, shareRecord] -> pure (providerRecord, shareRecord)
+        _ -> throwE (refuse "the exact provider and share records were not selected")
+    generations@(providerGeneration, shareGeneration) <- ExceptT (readRootShareGenerations store providerIdentity providerRow identity shareRow)
+    spec <- either throwE pure (rootedProviderBackendSpec cfg description)
+    shareSpec <- either throwE pure (mkProviderShareSpec source target)
+    let (planDigest, _, shareKey, _) = rootProbeIdentityCoordinatesKernel identity
+        (_, _, providerKey, _) = rootProbeIdentityCoordinatesKernel providerIdentity
+    discovered <- lift $ discoverStrongProviderBackend cfg spec $ \backend -> do
+        let binding = providerBackendBinding backend
+            origin = ProviderOriginBinding binding planDigest providerKey providerGeneration
+            owner = providerOriginOwner origin
+            callDigest = providerShareCallDigest binding shareSpec
+            exactBinding = shareBinding planDigest providerKey providerGeneration shareKey shareGeneration shareKey callDigest
+        if not (rootShareObservationAvailable backend)
+            then pure (Left (Unsupported (UnsupportedDetail "observe rooted share" "the provider's read-only share admission is not yet established")))
+            else do
+                before <- observeExistingProviderIdentity backend providerKey owner
+                case before of
+                    Left failure -> pure (Left failure)
+                    Right providerNative -> do
+                        nativeShare <- observeRootShareIdentity backend owner shareKey exactBinding source target
+                        after <- observeExistingProviderIdentity backend providerKey owner
+                        pure $ do
+                            shareNative <- nativeShare
+                            currentProvider <- after
+                            unless (currentProvider == providerNative) (Left (nativeIdentityConflict providerKey providerNative currentProvider))
+                            pure (providerNative, shareNative)
+    (providerNative, shareNative) <- ExceptT (pure (discovered >>= id))
+    final <- ExceptT (readRootShareGenerations store providerIdentity providerRow identity shareRow)
+    unless (generations == final) (throwE (refuse "a protected generation changed during native observation"))
+    pure (RootedShareObservation identity selected providerNative shareNative)
+  where
+    refuse = Failure . failed "observe rooted share"
+
+{- | Observe the one durable share the admitted plan itself declares.
+
+The share identity comes from the plan's own copy-source node and the provider
+and share records are read from the protected store at this call, so neither
+a child nor a caller selects the coordinates or supplies a retained record.
+A plan without a share probe yields 'Nothing'; more than one share probe is a
+refusal. The result grants nothing on its own.
+-}
+observePlannedRootShare ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    IO (Either ReconcileError (Maybe RootedShareObservation))
+observePlannedRootShare cfg store plan =
+    case [ identity
+         | node <- NonEmpty.toList (forward plan)
+         , Right (identity, _) <- [plannedRootProbeIdentitiesKernel plan node (Text.pack (operationKeyText (plannedStepOperationKey node)))]
+         , rootProbeIdentityFamilyKernel identity == RootDurableShareProbe
+         ] of
+        [] -> pure (Right Nothing)
+        [identity] -> runExceptT $ do
+            provider <- either (throwE . refuse . Text.pack . show) pure (rootShareProviderProbeIdentityKernel plan identity)
+            entered <- lift $ withProtectedEntry store $ \protected ->
+                Right . sequence <$> traverse (current protected) [provider, identity]
+            rows <- case entered of
+                Left failure -> throwE (refuse (protectedErrorMessage failure))
+                Right (Left failure) -> throwE (refuse failure)
+                Right (Right rows) -> pure rows
+            Just <$> ExceptT (observeRootedShare cfg store plan identity rows)
+        _ -> pure (Left (refuse "the admitted plan declares more than one durable share"))
+  where
+    refuse = Failure . failed "observe planned root share"
+    current protected identity =
+        let (digest, frame, operation, _) = rootProbeIdentityCoordinatesKernel identity
+         in observeRootedResourceInEntryKernel protected frame digest operation
+
+{- | The plan-derived target of a root alias observation.
+
+It is built only from the admitted plan and the exact alias and share records:
+the alias path and link target, the guest frame of the share's provider, and
+the records a caller must find unchanged around the guest call. The
+constructor is private, so no caller supplies another frame or record.
+-}
+data RootedAliasTarget = RootedAliasTarget RootProbeIdentity LiftContext FilePath FilePath [(RootProbeIdentity, RootedResourceObservation)]
+
+rootedAliasTarget ::
+    ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity -> [RootedResourceObservation] -> Either ReconcileError RootedAliasTarget
+rootedAliasTarget store plan identity retained = do
+    AliasProbeDescription aliasPath target <- planned (withRootAliasProbeDescriptionKernel plan identity id)
+    shareIdentity <- planned (rootAliasShareProbeIdentityKernel plan identity)
+    providerIdentity <- planned (rootShareProviderProbeIdentityKernel plan shareIdentity)
+    description <- planned (withRootProviderProbeDescriptionKernel plan providerIdentity id)
+    context <- rootedGuestLiftContext description
+    selected <- either (Left . refuse) Right (selectRootedProbeObservationsKernel store [identity, shareIdentity] retained)
+    Right (RootedAliasTarget identity context aliasPath target (zip [identity, shareIdentity] selected))
+  where
+    refuse = Failure . failed "observe rooted alias"
+    planned = either (Left . refuse . Text.pack . show) Right
+
+rootedAliasTargetIdentity :: RootedAliasTarget -> RootProbeIdentity
+rootedAliasTargetIdentity (RootedAliasTarget identity _ _ _ _) = identity
+
+rootedAliasTargetContext :: RootedAliasTarget -> LiftContext
+rootedAliasTargetContext (RootedAliasTarget _ context _ _ _) = context
+
+-- | The alias path and its exact link target, both guest paths.
+rootedAliasTargetPaths :: RootedAliasTarget -> (FilePath, FilePath)
+rootedAliasTargetPaths (RootedAliasTarget _ _ aliasPath target _) = (aliasPath, target)
+
+-- | Require the target's alias and share records to be current and unreleased.
+checkRootedAliasTargetRecords :: ProtectedStore -> RootedAliasTarget -> IO (Either ReconcileError ())
+checkRootedAliasTargetRecords store (RootedAliasTarget _ _ _ _ pairs) = do
+    entered <- withProtectedEntry store $ \protected ->
+        Right . sequence_ <$> traverse (uncurry (validateRootedProbePrerequisiteInEntryKernel protected)) pairs
+    pure $ case entered of
+        Left failure -> Left (refuse (protectedErrorMessage failure))
+        Right (Left failure) -> Left (refuse failure)
+        Right (Right ()) -> Right ()
+  where
+    refuse = Failure . failed "observe rooted alias"
+
+-- | The Docker daemon identity the root observed for its plan's own frame,
+-- bound to the exact current record it was read under. It grants nothing.
+data RootedDockerObservation = RootedDockerObservation RootProbeIdentity [RootedResourceObservation] Text
+
+{- | Observe the plan-owned Docker daemon in the root's own frame.
+
+The identity names a Docker resource of the admitted plan; its record must be
+current and unreleased on both sides of the daemon query, and the daemon must
+answer with one bounded identity line. A Docker resource in a child frame lives
+behind that frame's boundary and is refused rather than observed from here.
+-}
+observeRootedDocker ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootProbeIdentity -> [RootedResourceObservation] -> IO (Either ReconcileError RootedDockerObservation)
+observeRootedDocker cfg store plan identity retained
+    | rootProbeIdentityFamilyKernel identity /= RootDockerProbe =
+        pure (Left (refuse "the identity is not a Docker resource"))
+    | digest /= stablePlanSnapshotDigest (renderSnapshot plan) =
+        pure (Left (refuse "the identity belongs to another plan"))
+    | frame /= rootFrame =
+        pure (Left (Unsupported (UnsupportedDetail "observe rooted Docker" "the Docker resource lives in a child frame")))
+    | otherwise = runExceptT $ do
+        selected <- either (throwE . refuse) pure (selectRootedProbeObservationsKernel store [identity] retained)
+        ExceptT (current selected)
+        answer <- lift (interpretHostCommand cfg (hostCommand Docker ["info", "--format", "{{.ID}}"]))
+        daemon <- either throwE pure (classify answer)
+        ExceptT (current selected)
+        pure (RootedDockerObservation identity selected daemon)
+  where
+    (digest, frame, _, _) = rootProbeIdentityCoordinatesKernel identity
+    rootFrame = plannedStepFrameId (NonEmpty.head (forward plan))
+    refuse = Failure . failed "observe rooted Docker"
+    current selected = do
+        entered <- withProtectedEntry store $ \protected ->
+            Right . sequence_ <$> traverse (validateRootedProbePrerequisiteInEntryKernel protected identity) selected
+        pure $ case entered of
+            Left failure -> Left (refuse (protectedErrorMessage failure))
+            Right (Left failure) -> Left (refuse failure)
+            Right (Right ()) -> Right ()
+    classify answer = case answer of
+        Left failure -> Left (refuse (Text.pack failure))
+        Right captured
+            | capturedExit captured /= ExitSuccess -> Left (refuse "the Docker daemon did not answer")
+            | not (null (capturedStderr captured)) -> Left (refuse "the Docker daemon answered on its diagnostic stream")
+            | [line] <- lines (capturedStdout captured)
+            , not (null line), length line <= 256, all (\character -> character > ' ' && character < '\DEL') line ->
+                Right (Text.pack line)
+            | otherwise -> Left (refuse "the Docker daemon identity is not one bounded line")
+
+-- | Reobserve the daemon and refuse a different identity.
+recheckRootedDocker ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootedDockerObservation -> IO (Either ReconcileError ())
+recheckRootedDocker cfg store plan (RootedDockerObservation identity retained expected) = do
+    observed <- observeRootedDocker cfg store plan identity retained
+    pure $ do
+        RootedDockerObservation _ _ actual <- observed
+        unless (actual == expected) $
+            Left (Conflict (ConflictDetail key ("daemon=" <> expected) ("daemon=" <> actual)
+                "reconcile the replacement Docker daemon before any dependent mutation"))
+  where
+    (_, _, key, _) = rootProbeIdentityCoordinatesKernel identity
+
+-- The guest frame a plan-described provider realizes; Direct has none.
+rootedGuestLiftContext :: ProviderProbeDescription -> Either ReconcileError LiftContext
+rootedGuestLiftContext description = case description of
+    DirectProviderProbe{} ->
+        Left (Unsupported (UnsupportedDetail "observe rooted alias" "the direct host has no guest alias frame"))
+    IncusProviderProbe name image _ _ _ _ _ -> guest ProviderIncus (IncusVM (Text.unpack name) (Text.unpack image)) name
+    LimaProviderProbe name _ _ _ _ _ -> guest ProviderLima (IncusVM (Text.unpack name) "unused") name
+    Wsl2ProviderProbe name _ _ _ _ _ -> guest ProviderWsl2 (IncusVM (Text.unpack name) "unused") name
+  where
+    guest kind incus name =
+        let vm = Text.unpack name
+         in Right (providerLiftContext (selectProviderKind kind (VMHandles incus (LimaVM vm) (Wsl2VM vm) "hostbootstrap")))
+
+-- Lima proves host/guest correspondence through its own mount configuration and
+-- WSL2 through its guest's DrvFs mount, each only while observed running.
+rootShareObservationAvailable :: StrongProviderBackend backendId -> Bool
+rootShareObservationAvailable StrongDirectHostBackend{} = True
+rootShareObservationAvailable StrongIncusBackend{} = True
+rootShareObservationAvailable StrongLimaBackend{} = True
+
+-- | Reobserve rather than trusting the previous result or executor-local state.
+recheckRootedShare ::
+    HostConfig -> ProtectedStore -> ProjectPlan scope specDigest planId configId cfg ->
+    RootedShareObservation -> IO (Either ReconcileError ())
+recheckRootedShare cfg store plan (RootedShareObservation identity retained expectedProvider expectedShare) = do
+    observed <- observeRootedShare cfg store plan identity retained
+    pure $ do
+        RootedShareObservation _ _ actualProvider actualShare <- observed
+        unless (actualProvider == expectedProvider) (Left (nativeIdentityConflict key expectedProvider actualProvider))
+        unless (actualShare == expectedShare) (Left (nativeIdentityConflict key expectedShare actualShare))
+  where
+    (_, _, key, _) = rootProbeIdentityCoordinatesKernel identity
+
+readRootShareGenerations ::
+    ProtectedStore -> RootProbeIdentity -> RootedResourceObservation -> RootProbeIdentity -> RootedResourceObservation ->
+    IO (Either ReconcileError (Word64, Word64))
+readRootShareGenerations store providerIdentity providerRow shareIdentity shareRow = do
+    entered <- withProtectedEntry store $ \protected -> do
+        provider <- observeRootedProviderGenerationInEntryKernel protected providerIdentity providerRow
+        share <- observeRootedShareGenerationInEntryKernel protected shareIdentity shareRow
+        pure (Right ((,) <$> provider <*> share))
+    pure $ case entered of
+        Left failure -> Left (Failure (failed "observe rooted share" (protectedErrorMessage failure)))
+        Right result -> either (Left . Failure . failed "observe rooted share") Right result
+
+-- | Observe the selected share without acquiring, attaching, or repairing it.
+observeRootShareIdentity ::
+    StrongProviderBackend backendId -> Text -> Text -> Text -> FilePath -> FilePath -> IO (Either ReconcileError ObjectIdentity)
+observeRootShareIdentity backend owner key binding source target = case backend of
+    StrongDirectHostBackend _ _ (DirectHostBackendSpec root _ _)
+        | source == root -> observeDirectProviderIdentity key root
+        | otherwise -> pure (Left (Failure (failed "observe rooted share" "the Direct share differs from its admitted root")))
+    StrongIncusBackend _ cfg spec -> do
+        host <- observeDirectProviderIdentity key source
+        case host of
+            Left failure -> pure (Left failure)
+            Right hostIdentity -> do
+                outcome <- case providerOwnershipAddress spec owner of
+                    Left fault -> pure (Left fault)
+                    Right (_, _, owned) -> do
+                        let share = OwnedProviderShare owned (shareDeviceNameForBinding binding) source target binding
+                        withExistingOwnedProviderTransaction cfg spec owner $ \session instanceKey ownedInstance -> runExceptT $ do
+                            first <- ExceptT (observeOwnedShare cfg session share)
+                            mount <- ExceptT (execInOwnedInstance cfg session instanceKey ownedInstance "findmnt" ["-n", "-o", "FSTYPE", "--mountpoint", target])
+                            unless (capturedExit mount == ExitSuccess && lines (capturedStdout mount) == ["virtiofs"] && null (capturedStderr mount))
+                                (throwE guestShareNotReady)
+                            fact <- ExceptT (GuestVm.observeGuestShareFact (\argv -> case argv of
+                                command : arguments -> execInOwnedInstance cfg session instanceKey ownedInstance command arguments
+                                [] -> pure (Left guestShareNotReady)) target)
+                            second <- ExceptT (observeOwnedShare cfg session share)
+                            unless (first == second) (throwE guestShareNotReady)
+                            either (throwE . ProviderOwnershipClause) pure (rootShareNativeIdentity hostIdentity first fact)
+                after <- observeDirectProviderIdentity key source
+                pure $ do
+                    actualHost <- after
+                    unless (actualHost == hostIdentity) (Left (nativeIdentityConflict key hostIdentity actualHost))
+                    nativeReadyIdentity key (ReadyAlready <$> outcome)
+    StrongLimaBackend _ cfg spec@(LimaBackendSpec _ _ retainedShare _)
+        | source /= hpsHostPath retainedShare || target /= hpsGuestPath retainedShare ->
+            pure (Left (Failure (failed "observe rooted share" "the guest share differs from its admitted provider")))
+        | otherwise -> do
+            host <- observeDirectProviderIdentity key source
+            case host of
+                Left failure -> pure (Left failure)
+                Right hostIdentity -> do
+                    fact <- withOwnedGuestVm spec owner (GuestVm.observeExistingOwnedGuestShare cfg)
+                    after <- observeDirectProviderIdentity key source
+                    pure $ do
+                        actualHost <- after
+                        unless (actualHost == hostIdentity) (Left (nativeIdentityConflict key hostIdentity actualHost))
+                        observed <- either (Left . Failure . failed "observe rooted share" . Text.pack . show) Right fact
+                        either (Left . Failure . failed "observe rooted share" . Text.pack . show) Right
+                            (rootShareNativeIdentity hostIdentity hostIdentity observed)
+    _ -> pure (Left (Failure (failed "observe rooted share" "invalid provider backend state")))
+
+rootShareNativeIdentity :: ObjectIdentity -> ObjectIdentity -> Text -> Either OwnedObject.OwnershipFault ObjectIdentity
+rootShareNativeIdentity host device guest = OwnedObject.mkObjectIdentity (convertToBase Base16 digest)
+  where
+    digest = hash (TextEncoding.encodeUtf8 (Text.intercalate ":" [objectIdentityText host, objectIdentityText device, guest])) :: Digest SHA256
+
+readGeneration :: ProtectedStore -> RootProbeIdentity -> RootedResourceObservation -> IO (Either ReconcileError Word64)
+readGeneration store identity retained = do
+    entered <- withProtectedEntry store $ \protected -> Right <$> observeRootedProviderGenerationInEntryKernel protected identity retained
+    pure $ case entered of
+        Left failure -> Left (Failure (failed "observe rooted provider" (protectedErrorMessage failure)))
+        Right result -> either (Left . Failure . failed "observe rooted provider") Right result
+
+rootedProviderBackendSpec :: HostConfig -> ProviderProbeDescription -> Either ReconcileError ProviderBackendSpec
+rootedProviderBackendSpec cfg description = case description of
+    DirectProviderProbe root image -> mkDirectHostBackendSpec cfg root (Text.unpack image)
+    IncusProviderProbe name image guardPrefix state cpu memory storage ->
+        mkIncusBackendSpec (Text.unpack name) (Text.unpack image) (Text.unpack guardPrefix) cfg state cpu (Text.unpack memory) (Text.unpack storage)
+    LimaProviderProbe name cpu memory storage host guest -> guestBackend ProviderLima mkLimaBackendSpec name cpu memory storage host guest
+    Wsl2ProviderProbe name cpu memory storage host guest -> guestBackend ProviderWsl2 mkWsl2BackendSpec name cpu memory storage host guest
+  where
+    guestBackend kind make name cpu memory storage host guest =
+        let vm = Text.unpack name
+            handles = VMHandles (IncusVM vm "unused") (LimaVM vm) (Wsl2VM vm) "hostbootstrap"
+            provider = selectProviderKind kind handles
+            envelope = ResourceEnvelope (fromIntegral cpu) memory storage
+         in make cfg provider envelope (HostPathShare host guest Nothing)
 
 backendSemanticFingerprint :: ProviderBackendSpec -> Text
 backendSemanticFingerprint spec = case spec of
@@ -1006,7 +1399,11 @@ observeRunningProviderIdentity ::
     StrongProviderBackend backendId ->
     ManagedProviderHandle scope planId backendId providerId Running ->
     IO (Either ReconcileError ObjectIdentity)
-observeRunningProviderIdentity backend managed = case backend of
+observeRunningProviderIdentity backend managed =
+    observeProviderIdentity backend (managedProviderKey managed) (managedOriginOwner managed)
+
+observeProviderIdentity :: StrongProviderBackend backendId -> Text -> Text -> IO (Either ReconcileError ObjectIdentity)
+observeProviderIdentity backend key owner = case backend of
     StrongDirectHostBackend _ cfg (DirectHostBackendSpec root _ image) -> runExceptT $ do
         before <- ExceptT (observeDirectProviderIdentity key root)
         egress <- lift (interpretHostCommand cfg (directEgressCommand image))
@@ -1019,13 +1416,23 @@ observeRunningProviderIdentity backend managed = case backend of
         pure (Left (Failure (failed "reprobe Direct provider" "invalid Direct backend state")))
     StrongIncusBackend _ cfg spec ->
         fmap (nativeReadyIdentity key) $
-            withOwnedProviderTransaction cfg spec (managedOriginOwner managed) $
-                \session record owned -> readyOwnedInstance cfg session record owned
+            withOwnedProviderTransaction cfg spec owner $
+                \session record owned -> probeRunningOwnedInstance cfg session record owned
     StrongLimaBackend _ cfg spec ->
         fmap (nativeReadyIdentity key)
-            (withOwnedGuestVm spec (managedOriginOwner managed) (GuestVm.readyOwnedGuestVm cfg))
-  where
-    key = managedProviderKey managed
+            (withOwnedGuestVm spec owner (GuestVm.probeRunningOwnedGuestVm cfg))
+
+-- Root observations reenter existing authority and never create its storage.
+observeExistingProviderIdentity :: StrongProviderBackend backendId -> Text -> Text -> IO (Either ReconcileError ObjectIdentity)
+observeExistingProviderIdentity backend key owner = case backend of
+    StrongIncusBackend _ cfg spec ->
+        fmap (nativeReadyIdentity key) $
+            withExistingOwnedProviderTransaction cfg spec owner $
+                \session record owned -> probeRunningOwnedInstance cfg session record owned
+    StrongLimaBackend _ cfg spec ->
+        fmap (nativeReadyIdentity key)
+            (withOwnedGuestVm spec owner (GuestVm.probeExistingRunningOwnedGuestVm cfg))
+    _ -> observeProviderIdentity backend key owner
 
 -- Observe the plan-local Direct root; this claims no ownership of the host.
 observeDirectProviderIdentity :: Text -> FilePath -> IO (Either ReconcileError ObjectIdentity)
@@ -1221,11 +1628,38 @@ withOwnedProviderTransaction ::
       IO (Either ProviderOwnershipFault result)
     ) ->
     IO (Either ProviderOwnershipFault result)
-withOwnedProviderTransaction _cfg spec owner transaction =
+withOwnedProviderTransaction = withOwnedProviderTransactionMode False
+
+withExistingOwnedProviderTransaction ::
+    HostConfig ->
+    ProviderBackendSpec ->
+    Text ->
+    ( forall session.
+      ProtectedSession session ->
+      RecordKey ->
+      OwnedProviderInstance ->
+      IO (Either ProviderOwnershipFault result)
+    ) ->
+    IO (Either ProviderOwnershipFault result)
+withExistingOwnedProviderTransaction = withOwnedProviderTransactionMode True
+
+withOwnedProviderTransactionMode ::
+    Bool ->
+    HostConfig ->
+    ProviderBackendSpec ->
+    Text ->
+    ( forall session.
+      ProtectedSession session ->
+      RecordKey ->
+      OwnedProviderInstance ->
+      IO (Either ProviderOwnershipFault result)
+    ) ->
+    IO (Either ProviderOwnershipFault result)
+withOwnedProviderTransactionMode existingOnly _cfg spec owner transaction =
     case providerOwnershipAddress spec owner of
         Left fault -> pure (Left fault)
         Right (stateDirectory, key, owned) -> do
-            opened <- openProtectedStore stateDirectory
+            opened <- (if existingOnly then openExistingProtectedStore else openProtectedStore) stateDirectory
             case opened of
                 Left failure -> pure (Left (ProviderOwnershipStore failure))
                 Right store -> do
@@ -1561,10 +1995,14 @@ shareDeviceName ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     String
 shareDeviceName prepared =
+    shareDeviceNameForBinding (preparedShareBinding prepared)
+
+shareDeviceNameForBinding :: Text -> String
+shareDeviceNameForBinding binding =
     shareDevicePrefix
         <> take shareDeviceDigestLength (ByteString.unpack (convertToBase Base16 digest))
   where
-    digest = hash (TextEncoding.encodeUtf8 (preparedShareBinding prepared)) :: Digest SHA256
+    digest = hash (TextEncoding.encodeUtf8 binding) :: Digest SHA256
 
 {- | The share device is named from a bounded share-binding digest.
 The same prepared share addresses the same device. A truncated digest does
@@ -1611,19 +2049,31 @@ preparedShareBinding ::
     PreparedProviderShare scope planId backendId providerId shareId operationKey callDigest attempt journalVersion ->
     Text
 preparedShareBinding prepared =
-    Text.concat
-        [ sized "hostbootstrap/provider-share/v1"
-        , sized (preparedProviderBindingPlanDigest binding)
-        , sized (preparedProviderBindingResourceKey binding)
-        , sized (Text.pack (show (preparedProviderBindingGeneration binding)))
-        , sized (resourceHandleKey shareHandle)
-        , sized (Text.pack (show (resourceHandleGeneration shareHandle)))
-        , sized (preparedProviderBindingOperationKey binding)
-        , sized (preparedProviderBindingCallDigest binding)
-        ]
+    shareBinding
+        (preparedProviderBindingPlanDigest binding)
+        (preparedProviderBindingResourceKey binding)
+        (preparedProviderBindingGeneration binding)
+        (resourceHandleKey shareHandle)
+        (resourceHandleGeneration shareHandle)
+        (preparedProviderBindingOperationKey binding)
+        (preparedProviderBindingCallDigest binding)
   where
     binding = preparedProviderShareBinding prepared
     shareHandle = preparedProviderShareHandle prepared
+
+shareBinding :: Text -> Text -> Word64 -> Text -> Word64 -> Text -> Text -> Text
+shareBinding plan provider providerGeneration share shareGeneration operation callDigest =
+    Text.concat
+        [ sized "hostbootstrap/provider-share/v1"
+        , sized plan
+        , sized provider
+        , sized (Text.pack (show providerGeneration))
+        , sized share
+        , sized (Text.pack (show shareGeneration))
+        , sized operation
+        , sized callDigest
+        ]
+  where
     sized value = Text.pack (show (Text.length value)) <> ":" <> value
 
 runProviderDeleteCall ::

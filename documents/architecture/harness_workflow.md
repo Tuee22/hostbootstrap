@@ -11,7 +11,7 @@
 
 The lifecycle root gives every Harness acquisition a sealed generative run identity and matching
 mode, root, and unbound-lease evidence; its protected profile opener can enter exactly once per broker
-generation, and `withFreshHarnessInvocation` rearms it only after a settled intermediate destroy. Each selected
+generation, and `withFreshHarnessInvocationFrom` rearms it only after a settled intermediate destroy. Each selected
 variant owns its generated config, admits one exact Harness-scoped project plan, and drives that plan's
 hidden fixed root-Up entry plus exact reverse action. The entry alone reaches the lower Chain. `TestSuite`
 is assertion-only, and the lifecycle constructor is confined to a private Cabal component. A case may
@@ -565,9 +565,12 @@ authorization. Binding-in-progress and Closing-pending states fail closed. A gen
 run instead takes the separate verified no-project-resources short-close path.
 
 The plan's preserved `.test_data/<runId>` root supports the same-run durability check. After the intermediate
-destroy settles and every session is Closed, `withFreshHarnessInvocation` advances the held Harness mode and
-bound lease to a strictly fresh broker generation, rearms the lifecycle-profile slot and terminal fallback,
-and re-admits the identical canonical plan snapshot under fresh local indices. Released stable resource
+destroy settles and every session is Closed, `withFreshHarnessInvocationFrom` verifies the operator and
+existing root before advancing the held Harness mode and bound lease to a strictly fresh broker generation.
+The settled closure retains the source broker epoch and lease version, and another generation or lease
+version refuses before the advance. The transition rearms the lifecycle-profile slot and terminal fallback,
+and re-admits the identical canonical plan snapshot under fresh local indices. The destroy-only rotation
+also rearms the profile slot for its new epoch and lease version. Released stable resource
 members admit only a canonical owned successor at a strictly greater ownership generation. The final destroy's
 current-generation evidence alone authorizes terminal close. No raw lifecycle IO enters `TestSuite`.
 

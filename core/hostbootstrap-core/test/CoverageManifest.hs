@@ -44,6 +44,7 @@ import HostToolSpec (windowsResolutionSupported)
 import LiftSpec (posixShellSupported)
 import ProjectPlanSpec (surrogateDirectorySupported)
 import ProviderAliasSpec (localGuestAliasSupported)
+import System.Info (os)
 import Test.Tasty (DependencyType (AllFinish), TestName, TestTree, after, testGroup)
 import Test.Tasty.HUnit (assertFailure, testCase, (@?=))
 import Test.Tasty.Runners (TreeFold (foldGroup, foldSingle), foldTestTree, trivialFold)
@@ -237,8 +238,8 @@ manifest =
         }
     , ConditionalFamily
         { familyPath = ["EffectSpec", "scoped POSIX child groups"]
-        , familyCases = 2
-        , familyRowCases = 2
+        , familyCases = 4
+        , familyRowCases = 4
         , familyRowHolds = posixOwnershipSupported
         , familyReason =
             "captured POSIX process-group observations need native POSIX signal primitives;"
@@ -252,18 +253,25 @@ manifest =
         , familyReason = "POSIX process-group and native cwd-and-exec probes need POSIX support; Windows asserts the process-probe and native-entry unavailable results"
         }
     , ConditionalFamily
-        { familyPath = ["RecursiveLifecycleSpec (real root/VM/container lifecycle)"]
-        , familyCases = 8
-        , familyRowCases = 6
+        { familyPath = ["RecursiveLifecycleSpec (root/VM/container process-transport fixture)"]
+        , familyCases = 31
+        , familyRowCases = 28
         , familyRowHolds = posixOwnershipSupported
         , familyReason =
             "local guest execution needs the POSIX row and its canonical path grammar;"
                 ++ " the native receiver also refuses a different guest-root snapshot"
         }
     , ConditionalFamily
-        { familyPath = ["recovery-interruption"]
-        , familyCases = 5
+        { familyPath = ["RecursiveLifecycleSpec (root/VM/container process-transport fixture)", "root-settlement-interruption"]
+        , familyCases = 1
         , familyRowCases = 1
+        , familyRowHolds = os == "linux" && posixOwnershipSupported
+        , familyReason = "the publication interceptor requires Linux and the POSIX ownership row; other hosts assert its unavailability"
+        }
+    , ConditionalFamily
+        { familyPath = ["recovery-interruption"]
+        , familyCases = 7
+        , familyRowCases = 3
         , familyRowHolds = posixOwnershipSupported
         , familyReason = "recursive destroy recovery uses the declared POSIX guest row; the native receiver refuses a different guest-root snapshot"
         }

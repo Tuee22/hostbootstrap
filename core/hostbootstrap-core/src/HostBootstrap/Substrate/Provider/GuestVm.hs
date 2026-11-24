@@ -1,6 +1,7 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- | Recorded ownership over the guest-VM row.
 
@@ -18,14 +19,20 @@ module HostBootstrap.Substrate.Provider.GuestVm (
     provisionOwnedGuestVm,
     observeOwnedGuestVm,
     readyOwnedGuestVm,
+    probeRunningOwnedGuestVm,
     execInOwnedGuestVm,
+    probeExistingRunningOwnedGuestVm,
+    execInExistingOwnedGuestVm,
+    observeExistingOwnedGuestShare,
+    observeGuestShareFact,
+    classifyDrvFsCorrespondence,
 ) where
 
 import Control.Exception (IOException, displayException, try)
 import Control.Monad (unless, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT (ExceptT), runExceptT, throwE)
-import Data.Char (isControl)
+import Data.Char (isAsciiUpper, isControl, toLower, toUpper)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
@@ -53,10 +60,10 @@ import HostBootstrap.Ownership.Tape (
     RecordSubject (RecordSubject), RecordTape, publishBoundRecord, publishFreshRecord,
     readRecordUnder, readStoredRecordUnder, recordTape, storedOriginRecord,
  )
-import HostBootstrap.Protected (ProtectedError, ProtectedSession, RecordKey, mkRecordKey, openProtectedStore, withProtectedEntry)
+import HostBootstrap.Protected (ProtectedError, ProtectedSession, RecordKey, mkRecordKey, openExistingProtectedStore, openProtectedStore, withProtectedEntry)
 import HostBootstrap.Substrate.Provider (
     HostPathShare (..), ProviderKind (..), SubstrateProvider, providerKind,
-    providerLiftContext, providerVmId,
+    providerLiftContext, providerVmId, windowsPathToWslMount,
  )
 import HostBootstrap.Substrate.Provider.Command
 import HostBootstrap.Substrate.Provider.Ownership (
@@ -148,18 +155,29 @@ withGuestVmEntry ::
     OwnedGuestVm ->
     (forall lease session. ShippedDirectoryLease lease -> ProtectedSession session -> RecordKey -> GuestAction value) ->
     IO (Either ProviderOwnershipFault value)
-withGuestVmEntry owned action = runExceptT $ do
+withGuestVmEntry = withGuestVmEntryMode False
+
+-- Read-only observations must never manufacture a namespace, lease, or store.
+withGuestVmEntryMode :: forall value.
+    Bool ->
+    OwnedGuestVm ->
+    (forall lease session. ShippedDirectoryLease lease -> ProtectedSession session -> RecordKey -> GuestAction value) ->
+    IO (Either ProviderOwnershipFault value)
+withGuestVmEntryMode existingOnly owned action = runExceptT $ do
     validateGuestVm owned
     namespaceKey <- store (pure (mkRecordKey ("guest-namespace." <> namespaceTag owned)))
     vmKey <- store (pure (mkRecordKey "guest-instance"))
     authority <- clause (pure (Shipped.mkShippedAuthorityPath (hpsHostPath (ownedGuestVmShare owned) </> ".provider-state")))
     target <- clause (pure (Shipped.mkShippedTargetPath (ownedGuestVmNamespace owned)))
     let transaction = Shipped.mkShippedOwnership authority namespaceKey target Shipped.ShipTakeDirectory
-    nested <- clause $ Shipped.withShippedDirectoryLease ownershipRowForHost transaction $ \lease ->
-        runExceptT $ do
-            records <- store (openProtectedStore (ownedGuestVmRecordDirectory owned))
+    let consume :: forall lease. ShippedDirectoryLease lease -> IO (Either ProviderOwnershipFault value)
+        consume lease = runExceptT $ do
+            records <- store ((if existingOnly then openExistingProtectedStore else openProtectedStore) (ownedGuestVmRecordDirectory owned))
             entered <- store (withProtectedEntry records (\session -> Right <$> runExceptT (action lease session vmKey)))
             either throwE pure entered
+    nested <- clause $ if existingOnly
+        then Shipped.withExistingShippedDirectoryLease ownershipRowForHost transaction consume
+        else Shipped.withShippedDirectoryLease ownershipRowForHost transaction consume
     either throwE pure nested
 
 guestTape :: ProtectedSession session -> RecordTape session
@@ -313,6 +331,35 @@ execUnderEntry lease cfg session key owned argv = do
 execInOwnedGuestVm :: HostConfig -> OwnedGuestVm -> [String] -> IO (Either ProviderOwnershipFault CapturedRun)
 execInOwnedGuestVm cfg owned argv = withGuestVmEntry owned $ \lease session key -> execUnderEntry lease cfg session key owned argv
 
+-- | Run a probe only after reentering an already-bound, observed-running guest.
+-- WSL registration alone does not establish a running state; in particular,
+-- invoking WSL to discover that state can start a stopped distribution.
+execInExistingOwnedGuestVm :: HostConfig -> OwnedGuestVm -> [String] -> IO (Either ProviderOwnershipFault CapturedRun)
+execInExistingOwnedGuestVm cfg owned argv = withGuestVmEntryMode True owned $ \lease session key ->
+    runningGuestExec lease cfg session key owned argv
+
+{- | Run one guest command only after observing the owned guest running.
+
+Lima reports its run state in the instance listing. WSL2 registration carries
+none, and invoking a stopped distribution launches it, so WSL2 is observed in
+its running-distribution listing immediately before each command. That
+listing cannot exclude a distribution stopping between the two calls.
+-}
+runningGuestExec :: ShippedDirectoryLease lease -> HostConfig -> ProtectedSession session -> RecordKey -> OwnedGuestVm ->
+    [String] -> GuestAction CapturedRun
+runningGuestExec lease cfg session key owned argv = do
+    (current, GuestObservation state _ _ _) <- standing lease cfg session key owned
+    running <- observedRunning lease cfg owned state
+    case current of
+        InstanceOwned _ _ | running -> execUnderEntry lease cfg session key owned argv
+        _ -> bad "the owned guest VM is not observed running"
+
+observedRunning :: ShippedDirectoryLease lease -> HostConfig -> OwnedGuestVm -> Maybe ProviderRunState -> GuestAction Bool
+observedRunning lease cfg owned state = case providerKind (ownedGuestVmProvider owned) of
+    ProviderWsl2 -> report =<< (classifyWslRunningReport (providerVmId (ownedGuestVmProvider owned))
+        <$> interpret lease cfg listRunningWslCommand)
+    _ -> pure (state == Just ProviderRunning)
+
 readyOwnedGuestVm :: HostConfig -> OwnedGuestVm -> IO (Either ProviderOwnershipFault ProviderReadyOutcome)
 readyOwnedGuestVm cfg owned = withGuestVmEntry owned $ \lease session key -> do
     (current, GuestObservation state _ _ _) <- standing lease cfg session key owned
@@ -330,3 +377,122 @@ readyOwnedGuestVm cfg owned = withGuestVmEntry owned $ \lease session key -> do
     pure $ case capturedExit captured of
         ExitSuccess -> if started then ReadyStarted identity else ReadyAlready identity
         ExitFailure _ -> ReadyNotAnswering (Text.pack (capturedStderr captured))
+
+-- | Observe the retained guest and its identity without starting it.
+probeRunningOwnedGuestVm :: HostConfig -> OwnedGuestVm -> IO (Either ProviderOwnershipFault ProviderReadyOutcome)
+probeRunningOwnedGuestVm = probeRunningOwnedGuestVmMode False
+
+-- | Probe a running guest without creating its protected admission state.
+probeExistingRunningOwnedGuestVm :: HostConfig -> OwnedGuestVm -> IO (Either ProviderOwnershipFault ProviderReadyOutcome)
+probeExistingRunningOwnedGuestVm = probeRunningOwnedGuestVmMode True
+
+probeRunningOwnedGuestVmMode :: Bool -> HostConfig -> OwnedGuestVm -> IO (Either ProviderOwnershipFault ProviderReadyOutcome)
+probeRunningOwnedGuestVmMode existingOnly cfg owned = withGuestVmEntryMode existingOnly owned $ \lease session key -> do
+    (current, GuestObservation state _ _ _) <- standing lease cfg session key owned
+    identity <- case current of
+        InstanceOwned _ actual -> pure actual
+        _ -> bad "the guest-VM record does not yet bind an owned native instance"
+    running <- if existingOnly then observedRunning lease cfg owned state else pure (state == Just ProviderRunning)
+    if running
+        then do
+            captured <- (if existingOnly then runningGuestExec else execUnderEntry) lease cfg session key owned ["true"]
+            pure $ case capturedExit captured of
+                ExitSuccess -> ReadyAlready identity
+                ExitFailure _ -> ReadyNotAnswering (Text.pack (capturedStderr captured))
+        else pure (ReadyNotAnswering "the owned guest VM is not running")
+
+{- | Observe the owned share without creating, starting, or repairing anything.
+
+One existing-only entry holds the guest record, and every guest command runs
+only after the owned guest is observed running. The host/guest correspondence is
+checked on both sides of the guest sample: Lima's own configuration must map
+exactly the declared host source to the guest target, writable, and a WSL2
+guest target must be the DrvFs projection of the declared Windows host source.
+-}
+observeExistingOwnedGuestShare :: HostConfig -> OwnedGuestVm -> IO (Either ProviderOwnershipFault Text)
+observeExistingOwnedGuestShare cfg owned = withGuestVmEntryMode True owned $ \lease session key -> do
+    let execute = runningGuestExec lease cfg session key owned
+    nativeShareCorrespondence lease cfg owned execute
+    fact <- ExceptT (observeGuestShareFact (runExceptT . execute) (hpsGuestPath (ownedGuestVmShare owned)))
+    nativeShareCorrespondence lease cfg owned execute
+    pure fact
+
+-- The provider's configuration or WSL's DrvFs mount, never the guest's word
+-- alone, names the host side of a mount.
+nativeShareCorrespondence :: ShippedDirectoryLease lease -> HostConfig -> OwnedGuestVm ->
+    ([String] -> GuestAction CapturedRun) -> GuestAction ()
+nativeShareCorrespondence lease cfg owned execute = case providerKind provider of
+    ProviderLima -> do
+        listed <- report =<< (classifyLimaInstanceReport name <$> interpret lease cfg (listLimaInstanceCommand name))
+        native <- maybe (bad "the owned Lima instance is absent") pure listed
+        mounts <- either bad pure (limaInstanceMounts native)
+        case filter ((== target) . limaMountPoint) mounts of
+            [mount]
+                | limaMountLocation mount == source && limaMountWritable mount -> pure ()
+                | otherwise -> bad "the Lima mount at the guest target is not the declared writable host source"
+            [] -> bad "the Lima instance declares no mount at the guest target"
+            _ -> bad "the Lima instance declares the guest target more than once"
+    ProviderWsl2 -> do
+        captured <- execute ["findmnt", "-n", "-o", "TARGET,FSTYPE,OPTIONS", "-T", hpsGuestPath share]
+        either bad pure (classifyDrvFsCorrespondence (hpsHostPath share) (hpsGuestPath share) captured)
+    _ -> bad "the guest provider has no read-only share correspondence"
+  where
+    provider = ownedGuestVmProvider owned
+    name = providerVmId provider
+    share = ownedGuestVmShare owned
+    source = PosixPath.dropTrailingPathSeparator (hpsHostPath share)
+    target = PosixPath.dropTrailingPathSeparator (hpsGuestPath share)
+
+-- | Sample a guest's mount and directory identities on both sides of its
+-- readiness checks, refusing malformed output and replacement during the probe.
+observeGuestShareFact ::
+    ([String] -> IO (Either ProviderOwnershipFault CapturedRun)) -> FilePath -> IO (Either ProviderOwnershipFault Text)
+observeGuestShareFact execute target = runExceptT $ do
+    first <- sample
+    _ <- checked ["test", "-d", target]
+    _ <- checked ["test", "-w", target]
+    second <- sample
+    unless (first == second) (throwE guestShareNotReady)
+    pure first
+  where
+    checked argv = do
+        captured <- ExceptT (execute argv)
+        unless (capturedExit captured == ExitSuccess && null (capturedStderr captured)) (throwE guestShareNotReady)
+        pure (capturedStdout captured)
+    sample = do
+        mount <- checked ["findmnt", "-n", "-o", "ID", "-T", target]
+        node <- checked ["stat", "-Lc", "%d:%i:%f", "--", target]
+        case (lines mount, lines node) of
+            ([mountId], [nodeId])
+                | not (null mountId) && all (`elem` ['0' .. '9']) mountId
+                , not (null nodeId) && length nodeId <= 128
+                , all (`elem` (['0' .. '9'] ++ ['a' .. 'f'] ++ ":")) nodeId ->
+                    pure (Text.pack (mountId <> ":" <> nodeId))
+            _ -> throwE guestShareNotReady
+    guestShareNotReady = ProviderOwnershipClause
+        (OwnershipProbeFailed "observe the guest share mount" "the exact guest target is not a stable writable mounted directory")
+
+{- | Whether a guest target lies on the DrvFs mount of its Windows host source.
+
+The answer is findmnt's TARGET, FSTYPE and OPTIONS for the guest target. It
+must be WSL's 9p DrvFs mount of exactly the host path's drive, mounted at
+@/mnt/<drive>@, and the guest target must be the host path's projection there.
+-}
+classifyDrvFsCorrespondence :: FilePath -> FilePath -> CapturedRun -> Either Text ()
+classifyDrvFsCorrespondence host guest captured = case (host, lines (capturedStdout captured)) of
+    (drive : ':' : _, [row])
+        | capturedExit captured == ExitSuccess
+        , null (capturedStderr captured)
+        , isAsciiUpper (toUpper drive)
+        , [mountTarget, "9p", options] <- words row
+        , mountTarget == "/mnt/" <> [toLower drive]
+        , guest == windowsPathToWslMount host
+        , "aname=drvfs" `elem` fields options
+        , any (`elem` ["path=" <> [toLower drive, ':', '\\'], "path=" <> [toLower drive, ':']]) (map (map toLower) (fields options)) ->
+            Right ()
+    _ -> Left "the WSL guest target is not the DrvFs projection of the declared host source"
+  where
+    fields = concatMap (splitOn ';') . splitOn ','
+    splitOn separator text = case break (== separator) text of
+        (field, []) -> [field]
+        (field, _ : rest) -> field : splitOn separator rest

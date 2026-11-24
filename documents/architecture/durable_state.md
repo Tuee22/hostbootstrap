@@ -238,7 +238,61 @@ the reverse-root intent row, and the recovery-open map rows) is not under the du
 `<project-root>/.hostbootstrap/authority/<project>`. The root prepares and settles durable frame operations
 and sends only signed, bounded rooted responses; children return observations and receipt confirmations,
 never raw record keys or versions. The share and alias carry workload bytes and the backend records above,
-never that root store.
+never that root store. A terminal receipt confirmation must name the completion digest retained by its
+root session. Forward node observations bind the node and ordered projected operations to their taken or
+unused gate states and carry any resource settlement bytes; the root checks the node, projection order, and
+settlement frame against its plan. The private journal settlement path checks every prepared gate and resource
+predecessor under one protected lock; its private resource owner validates and writes a canonical member before
+acknowledgement. The forward root coordinator uses that path and rechecks the operation fence inside the same
+protected entry that records new intents. Journal closure is serialized and an exact in-process close retry does
+not write again. Reverse preparation uses the same journal; the root validates each teardown observation and
+records released, foreign-retained, or terminal failure under its prepared gate before replying. That observation
+does not itself create resource settlement evidence. The reverse executor now passes its gate into core-managed
+actions and checks its plan, operation and fence before the backend. The retained cluster cleanup backend records and compares routed generations and fences while holding its own
+ownership lock. This rejects an older request after the newer fence has reached that store. For routed cluster
+cleanup, the root now holds its journal entry from gate issuance until the matching child settlement, so root
+supersession cannot race the in-flight cleanup. Tests exercise competing independent handles and processes,
+release, and refusal of the superseded lease. The fenced backend checks the gate against the admitted plan and
+derives the cluster target from that plan's project, profile, and snapshot root. Cross-plan and incomplete
+gates refuse before target-state creation. An opt-in live Kind fixture verifies the routed fence and cluster
+origin retirement through the recursive child process. Reverse resource settlement remains open in the
+recursive lifecycle phase. In both forward and reverse exchanges, the root closes the
+journal before publishing the terminal report and persists its canonical acknowledgement before advancing the
+session and releasing `ReceiptRecorded`.
+The reverse resource settlement wire form carries exact predecessor and successor bytes with each frame and
+resource coordinate; it is descriptive until the rooted session checks and persists it.
+The private reverse journal settlement path accepts only the recovered owned-to-released transition for
+its attached frame and operation, checks the live gate and exact predecessor, and persists before acknowledgement.
+The routed reverse child supplies that evidence to the journal before the root publishes settlement.
+The private resource owner derives that transition from the canonical owned predecessor, preserving every
+coordinate and changing only its disposition; the root verifies against the same derivation.
+The private reverse prepared-gate envelope can carry an exact predecessor or explicit absence beside a
+canonical fenced gate. It grants no authority until the root signs the enclosing response.
+The root reads that predecessor against the attached frame and live gate, includes it in the signed reverse
+preparation, and rechecks the same bytes inside the cleanup lease before exposing the response. The reverse
+executor validates the envelope and passes the predecessor to the admitted node, which reports a canonical
+release transition. The root requires it to match the predecessor retained under the cleanup lease and
+checks the live journal gate before acknowledging it.
+The rooted settlement owner admits the signed exchange and checks any existing row before its journal
+continuation. New settlement addresses include the attached frame's authenticated opening nonce; exact
+legacy rows remain replayable, and conflicting legacy rows refuse rather than being overwritten. For a reverse
+resource release, that continuation validates the live gate and exact resource,
+then publishes and reads back the admitted observation in the same protected entry before writing the
+released resource and acknowledging the operation. The root publishes its response only after those writes;
+recovery of an interrupted checkpoint remains open.
+The relay terminates on an outer settlement refusal, so an interrupted reverse release is handled by a later
+recovery invocation rather than an in-process settlement retry. Recovery must validate the retained checkpoint
+against the abandoned session and current authority before using it; that consumer remains open in the
+[recovery and migration phase](../../DEVELOPMENT_PLAN/phase-18-recovery-and-migration.md).
+The private routed-gate codec carries distinct operation-fence and broker-generation fields. A private journal
+bridge selects the child plan from the rooted catalog and checks live root authority before opening its operation
+session and observed fence. Production reverse entry, while holding its project run-liveness lock and before
+opening new child sessions, enumerates each cataloged child journal. For open sessions it fences prior permits,
+interprets the complete session and operation manifest, and admits the current broker only after closure.
+Unknown effects refuse recovery. A replacement rooted operation session includes the observed fence in its
+identity, preserving its closed predecessor. The producer and executor use the fence-bearing gate form;
+remaining validation and managed reverse integration are tracked in
+[the recursive lifecycle command phase](../../DEVELOPMENT_PLAN/phase-17-recursive-lifecycle-command.md).
 
 ## What is implemented
 
@@ -347,16 +401,24 @@ never that root store.
   illegal key. The manifest length-frames every variable-width value, counts every list, refuses rather than
   truncates at both an admitted-edge and a byte ceiling, and carries digests instead of any raw configuration
   payload. An exact retry and a compare-and-swap loser both converge on the record already present because the
-  decision comes from the strict readback; conflicting bytes refuse before the command reservation and before
+  decision comes from the strict readback; other publication failures retain the protected-store error.
+  Conflicting bytes refuse before the command reservation and before
   any lifecycle effect.
-- One root-owned frame session row exists per admitted catalog frame, keyed by root lineage, catalog
-  identity, and frame alone, so no part of a request can select which row is addressed. The opened row frames
+- Root-owned frame session rows use the root plan digest derived from the admitted catalog, its catalog
+  identity, and frame. Canonical ancestry and direct single-edge openings have distinct key families, so
+  both can coexist for a nested frame without letting a request select another row. A direct opening must
+  name an admitted non-root frame. The opened row frames
   the root-selected requester path, opaque session token, fixed stage, and first nonzero ordinal, and carries
   no predecessor-response digest, because at that point nothing has been answered. Its attached successor
   nests the exact opened bytes with the admitted nonce and the lowercase SHA-256 digest of the complete signed
   `Opened` response, and the compare-and-swap consumes exactly the opened version the caller read back. An
   exact replay returns the attached version already present without a second mutation; anything that is
-  neither the exact opened row nor the exact attached row refuses.
+  neither the exact opened row nor the exact attached row refuses. Unknown preparation and settlement
+  keys also include the root-selected session token. The token includes the opening mode, so even equal-path
+  forward and direct reverse sessions address distinct rows; exact replay within one mode converges.
+- Before the root kernel publishes a prepared reverse-descent row, a private pure decision validates the
+  retained frame, authority, observation, package, and size facts. Protected-store entry, compare-and-swap,
+  and strict readback remain in the kernel; a refused decision publishes nothing.
 - A recoverable reverse edge keeps its handoff token in one root-store map row, because the token is fresh
   random bytes and cannot be recomputed from its binding. `registerRecoverableAdmittedHandoffEdgeKernel` keys
   the row `recovery-open.<digest>` by the digest of a framed `hostbootstrap/recovery-open-map` identity
@@ -365,7 +427,8 @@ never that root store.
   token. The first registration mints the token once and publishes the row by an absent-only
   compare-and-swap (`ExpectAbsent`) with a readback at version 1; a later registration reuses the token from
   the row, and when the planned-edge token record is already `granted:` it rotates the row by
-  compare-and-swap to a fresh token. The state table is canonical in
+  compare-and-swap to a fresh token. Pure readback decisions compare the retained map version and bytes and
+  distinguish an already granted token; the protected entry owns every read and write. The state table is canonical in
   [lifecycle state model](lifecycle_state_model.md#cross-process-authority-handoff).
 
 Together these facts make `.data` host-carried state rather than frame-relative guest state.
@@ -385,20 +448,28 @@ compare-and-swap followed by an exact version-and-bytes readback, and an exact T
 mutation. Ordinary admission recognizes Terminal as settled, but Pending and Committed remain exclusive
 owners.
 
+Before Pending, the root retains a version-one commitment to the exact closed source sessions and their
+operation records. Each root-local reverse session also has a version-one receipt binding the project,
+store, plan, source and target generations, verb, session, and operation to the committed intent. A
+receipt alone grants no authority; admission checks the independently enumerated paired manifest and the
+source commitment. Before acknowledging a root-local outcome, the live prepared gate records its kind
+and exact detail in a version-one outcome row. A row without the matching acknowledged operation phase
+does not prove settlement. Recovery refuses an unknown outcome, changed receipt or detail, or an
+unattributable legacy detail rather than repeating an effect.
+
 | Row versions | Written by | Next |
 |---|---|---|
-| 1, 2, 3 (Pending, Committed, Terminal) | the first reverse verb (Down or Destroy) from the source lineage | Destroy continuation (after a Down terminal), fresh Up, or reverse rearm |
+| 1, 2, 3 (Pending, Committed, Terminal) | the first reverse verb (Down or Destroy) from the source lineage | Destroy continuation (after a Down terminal) or fresh Up |
 | 4, 5, 6 (Destroy Pending, Committed, Terminal) | a Destroy continuing a settled Down: it verifies the version-3 Down terminal against the current mode, lease, snapshot, source rows, and closed sessions, allocates one fresh Destroy broker generation, and advances the same row | fresh Up |
 
-Two paths delete a terminal row, and they accept different versions:
+Fresh Up deletes a terminal row when it rebinds a closed Production lease:
 
 | Path | When it runs | Accepts | Readback |
 |---|---|---|---|
 | Fresh Up, in run-lease admission | an Up rebinds the closed Production lease; this is the ordinary path after any Down or Destroy | a terminal at version 3 (Down or Destroy) or version 6 (Destroy), whose broker generation is strictly older than the new one; anything else refuses as a reverse root in progress | compare-and-delete at the observed version, with no separate absence readback |
-| Reverse rearm, in reverse admission | a reverse verb finds a terminal row still present after its new successful-Up lease, snapshot, acquisition row, teardown cursor, and closed session set are revalidated | only a version-3 terminal (Down or Destroy) with matching project and store coordinates and a strictly newer broker generation; a version-6 row refuses | compare-and-delete followed by a strict absence readback, then the next Pending row through the normal absent-only path |
-
-A stale lease cannot rearm, and a crash after terminal consumption is safe because the independently durable
-new Up source can recreate the absent Pending row.
+Fresh reverse admission runs only when the intent row is absent; a retained row is handled by the existing
+intent transition. A crash after terminal consumption is safe because the independently durable new Up source
+can recreate the absent Pending row.
 
 ## Durability boundaries
 
@@ -524,6 +595,9 @@ and its target, that claims the link target and records an absent origin:
 - Give-back re-observes the bound identity, removes only that exact link, and then forgets the record. A
   give-back that finds the alias already absent forgets the record; any other occupant refuses and the
   record stays. The store directory itself stays in the share.
+- Observation (`ShipObserveSymbolicLink`) enters only an existing store, reads the bound record, and reports
+  the bound identity only when the alias is that exact link. It records, stages, publishes and removes
+  nothing, so an absent store, an unbound or missing record, a replaced link and a removed link all refuse.
 
 No guest-local pathname sidecar or exact-looking path can mint ownership. A guest that cannot supply a clause returns `Unsupported` and mints no receipt. The
 [ownership clauses and reservations phase](../../DEVELOPMENT_PLAN/phase-14-ownership-clauses-and-reservations.md)

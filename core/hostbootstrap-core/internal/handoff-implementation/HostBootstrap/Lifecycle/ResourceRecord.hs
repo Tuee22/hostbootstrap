@@ -20,6 +20,10 @@ module HostBootstrap.Lifecycle.ResourceRecord (
     verifyResourceRecordBundleKernel,
     verifyExactResourceRecordBundleKernel,
     verifyReleasedResourceSuccessorKernel,
+    verifyRecoveredResourceReleaseKernel,
+    renderRecoveredResourceReleaseKernel,
+    checkResourceSettlementKernel,
+    persistResourceSettlementKernel,
     verifyResourceRecordSetKernel,
     withVerifiedResourceRecordBundleKernel,
     withVerifiedResourceRecordSetKernel,
@@ -46,7 +50,17 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word64)
 import HostBootstrap.Digest (frameWire, sha256Hex)
-import HostBootstrap.Protected (mkRecordName, protectedErrorMessage)
+import HostBootstrap.Protected (
+    Expectation (ExpectAbsent, ExpectVersion),
+    ProtectedRecord (protectedRecordBytes, protectedRecordVersion),
+    ProtectedSession,
+    RecordKey,
+    compareAndSwapProtectedRecord,
+    mkRecordKey,
+    mkRecordName,
+    protectedErrorMessage,
+    readProtectedRecord,
+ )
 
 data VerifiedResourceRecordBundle scope planId id resource
     = VerifiedResourceRecordBundle
@@ -217,6 +231,51 @@ verifyExactResourceRecordBundleKernel expectedPlan expectedFrame expectedResourc
     require "resource record identity differs" (resource == expectedResource)
     pure (VerifiedResourceRecordBundle plan frame resource generation operation version phase adapter owned canonical)
 
+{- | Check one canonical resource settlement and its current predecessor.
+
+The caller owns the gate check and holds the same protected session through the
+write and acknowledgement. This private helper does not mint effect authority.
+-}
+checkResourceSettlementKernel ::
+    ProtectedSession session -> Text -> Text -> Text -> Maybe ByteString -> ByteString -> IO (Either Text ())
+checkResourceSettlementKernel session plan frame resource expected bytes =
+    withResourceSettlement session plan frame resource expected bytes (\_ _ -> pure (Right ()))
+
+-- | Persist a checked settlement under the protected session held by its owner.
+persistResourceSettlementKernel ::
+    ProtectedSession session -> Text -> Text -> Text -> Maybe ByteString -> ByteString -> IO (Either Text ())
+persistResourceSettlementKernel session plan frame resource expected bytes =
+    withResourceSettlement session plan frame resource expected bytes $ \key expectation ->
+        case expectation of
+            Nothing -> pure (Right ())
+            Just compareExpectation -> do
+                written <- compareAndSwapProtectedRecord session key compareExpectation bytes
+                pure (either (Left . protectedErrorMessage) (const (Right ())) written)
+
+withResourceSettlement ::
+    ProtectedSession session -> Text -> Text -> Text -> Maybe ByteString -> ByteString ->
+    (RecordKey -> Maybe Expectation -> IO (Either Text result)) -> IO (Either Text result)
+withResourceSettlement session plan frame resource expected bytes use =
+    case (verifyExactResourceRecordBundleKernel plan frame resource bytes, resourceRecordKeyKernel plan frame resource) of
+        (Left failure, _) -> pure (Left failure)
+        (_, Left failure) -> pure (Left failure)
+        (Right _, Right rawKey) -> case mkRecordKey rawKey of
+            Left failure -> pure (Left (protectedErrorMessage failure))
+            Right key -> do
+                observed <- readProtectedRecord session key
+                case observed of
+                    Left failure -> pure (Left (protectedErrorMessage failure))
+                    Right Nothing -> case expected of
+                        Nothing -> use key (Just ExpectAbsent)
+                        Just _ -> pure (Left "resource settlement is missing its predecessor")
+                    Right (Just record)
+                        | protectedRecordBytes record == bytes -> use key Nothing
+                        | Just (protectedRecordBytes record) == expected -> use key (Just (ExpectVersion (protectedRecordVersion record)))
+                        | Nothing <- expected
+                        , Right () <- verifyReleasedResourceSuccessorKernel (protectedRecordBytes record) bytes ->
+                            use key (Just (ExpectVersion (protectedRecordVersion record)))
+                        | otherwise -> pure (Left "resource settlement conflicts with its predecessor")
+
 {- | Verify the only stable-member replacement that does not carry its exact
 predecessor bytes in-process: a fresh invocation reacquiring a resource whose
 previous invocation durably released it.
@@ -239,6 +298,23 @@ verifyReleasedResourceSuccessorKernel predecessor successor = do
     require "resource successor predecessor is not released" (not oldOwned)
     require "resource successor is not owned" newOwned
     require "resource successor generation did not advance" (newGeneration > oldGeneration)
+
+-- | A recovered release preserves every retained coordinate and changes only
+-- the owned disposition. The caller must still join it to a live gate and CAS.
+verifyRecoveredResourceReleaseKernel :: Text -> Text -> Text -> ByteString -> ByteString -> Either Text ()
+verifyRecoveredResourceReleaseKernel expectedPlan expectedFrame expectedResource predecessor successor = do
+    expected <- renderRecoveredResourceReleaseKernel expectedPlan expectedFrame expectedResource predecessor
+    require "release successor is not the exact retained transition" (successor == expected)
+
+-- | Derive only the released form of this exact recovered owned member.
+renderRecoveredResourceReleaseKernel :: Text -> Text -> Text -> ByteString -> Either Text ByteString
+renderRecoveredResourceReleaseKernel expectedPlan expectedFrame expectedResource predecessor = do
+    ResourceRecordMember plan frame resource generation operation version phase adapter owned _ <- parseResourceRecord predecessor
+    require "release predecessor names another plan" (plan == expectedPlan)
+    require "release predecessor names another frame" (frame == expectedFrame)
+    require "release predecessor names another resource" (resource == expectedResource)
+    require "release predecessor is not owned" owned
+    renderResourceRecordBundleKernel plan frame resource generation operation version phase adapter False
 
 withVerifiedResourceRecordSetKernel ::
     VerifiedResourceRecordSet scope planId ->

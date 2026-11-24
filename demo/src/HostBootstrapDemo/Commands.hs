@@ -43,6 +43,12 @@ module HostBootstrapDemo.Commands (
     demoChain,
     demoChainFor,
     demoForwardChildPlan,
+    admitDemoVmProviderDescription,
+    demoShareProbeDescription,
+    admitDemoShareDescription,
+    demoAliasProbeDescription,
+    admitDemoAliasDescription,
+    admitDemoDirectProviderDescription,
     containerPlan,
     demoTestFrameContext,
     demoAssertionDurableRoot,
@@ -122,6 +128,7 @@ import Data.Word (Word64)
 import Dhall (FromDhall, ToDhall)
 import qualified Dhall
 import GHC.Generics (Generic)
+import HostBootstrap.CLI (ChildFrameId (ChildFrameId), ParentFrameId (ParentFrameId))
 import HostBootstrap.Activation (
     ActivationManifestInput (..),
     activationErrorMessage,
@@ -954,21 +961,18 @@ stack (@deploy-kind@ → @deploy-object-store@ → @deploy-registry@ → @push-i
 chains differ ONLY in how the accelerator daemon is placed (host-resident vs.
 in-cluster), appended after this stack.
 -}
-demoVmBackedStack :: Substrate -> ProjectConfig configScope -> [Step]
-demoVmBackedStack sub =
-    demoVmBackedStackAt (demoVMFrameContext sub)
-
-demoVmBackedStackAt :: LiftContext -> ProjectConfig configScope -> [Step]
-demoVmBackedStackAt providerContext cfg =
+demoVmBackedStackAt :: Maybe FilePath -> LiftContext -> ProjectConfig configScope -> [Step]
+demoVmBackedStackAt root providerContext cfg =
     -- host-orchestrator-0 (metal): provision the VM, build the pb (#2) + image (#3) in it.
     -- Every step closes over the one admitted snapshot (§ 15.9); none re-reads
     -- the sibling config.
     [ projectStep demoEnsureVMProviderStep PreserveOnReverse "ensure the VM provider (Lima on Apple Silicon, Incus on Linux, WSL2 on Windows)" demoMetalFrame (changed (const (runVmEnsure cfg)))
     , reversedBy
         (demoProviderReverse cfg)
-        ( Step.declaresProviderResource
-            Step.providerResourceAtImmediateChild
-            (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (changed (runVmUp cfg)))
+        ( maybe id Step.declaresProviderProbe description $
+            Step.declaresProviderResource
+                Step.providerResourceAtImmediateChild
+                (deployVMStep "launch the budget-sized VM (cordon #1: the VM is the wall)" demoMetalFrame (changed (runVmUp root description cfg)))
         )
     , -- Bootstrap the pristine guest before asking its installed binary to own
       -- the durable alias transaction.
@@ -980,9 +984,11 @@ demoVmBackedStackAt providerContext cfg =
         providerContext
         ( reversedBy
             (demoGuestAliasReverse cfg)
-            ( Step.projectsOperation
-                "core:deploy-vm/core:copy-source/guest-alias"
-                (copySourceStep "attach the exact writable durable source to the managed VM" demoMetalFrame (changed (runCopySource cfg)))
+            ( maybe id Step.declaresAliasProbe aliasDescription $
+                maybe id Step.declaresShareProbe shareDescription $
+                Step.projectsOperation
+                    "core:deploy-vm/core:copy-source/guest-alias"
+                    (copySourceStep "attach the exact writable durable source to the managed VM" demoMetalFrame (changed (runCopySource root shareDescription aliasDescription cfg)))
             )
         )
     , -- vm-orchestrator-1 (the in-VM pb): mint the project-container child config, then hand off.
@@ -993,13 +999,21 @@ demoVmBackedStackAt providerContext cfg =
         (inContainer (demoDeployImage (clusterProfileOf cfg) ProviderGuestDurable containerRuntimeFrameId False (containerConfigPayload cfg)) emptyVMStack)
         (contextInitStep "prepare the project-container child config for in-place delivery" demoVMFrame (changed contextInitAnnounce))
     , -- vm-project-container-2 (the in-container pb): stand up the persistent stack.
-      deployKindStep "deploy the persistent kind cluster (cordon #2, at the run's own profile)" demoContainerFrame (changed (deployKindAction cfg))
-    , demoProjectStep "deploy-object-store" "install the in-cluster S3 backing store + create the registry bucket" demoContainerFrame (changed (deployObjectStoreAction cfg))
-    , demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), backed by the S3 store" demoContainerFrame (changed (deployRegistryAction cfg))
+      Step.declaresClusterObjectProbe (demoClusterIdentityDescription (clusterProfileOf cfg)) $
+        deployKindStep "deploy the persistent kind cluster (cordon #2, at the run's own profile)" demoContainerFrame (changed (deployKindAction cfg))
+    , Step.declaresClusterObjectProbe (demoClusterObjectDescription (clusterProfileOf cfg) "object-store") $
+        demoProjectStep "deploy-object-store" "install the in-cluster S3 backing store + create the registry bucket" demoContainerFrame (changed (deployObjectStoreAction cfg))
+    , Step.declaresClusterObjectProbe (demoClusterObjectDescription (clusterProfileOf cfg) "registry") $
+        demoProjectStep "deploy-registry" "install the in-cluster registry (registry:2, NodePort 30500), backed by the S3 store" demoContainerFrame (changed (deployRegistryAction cfg))
     , demoProjectStep "push-image" "load the project image into kind + push it to the in-cluster registry" demoContainerFrame (changed (pushImageAction cfg))
-    , declaredChartStep cfg demoContainerFrame
+    , Step.declaresClusterObjectProbe (demoClusterObjectDescription (clusterProfileOf cfg) "hostbootstrap-demo-web") $
+        declaredChartStep cfg demoContainerFrame
     , exposePortStep "verify the web NodePort (30080) is reachable" demoContainerFrame (changed (exposeAction cfg))
     ]
+  where
+    description = fmap (either (error . ("demo provider plan: " ++)) id . demoVmProviderDescription cfg providerContext) root
+    shareDescription = fmap (either (error . ("demo share plan: " ++)) id . demoShareProbeDescription cfg providerContext) root
+    aliasDescription = fmap (either (error . ("demo alias plan: " ++)) id . demoAliasProbeDescription cfg providerContext) root
 
 {- | The Apple Silicon / Windows GPU chain: the VM-backed stack plus a HOST-resident
 accelerator daemon started after the web ingress is exposed. The host daemon reaches
@@ -1007,9 +1021,9 @@ the in-VM cluster's local-only accelerator ingress because Lima and WSL2 forward
 guest NodePort to the host loopback (Incus does not — hence Linux CPU uses an
 in-cluster pod, 'demoLinuxCpuChain'; accelerator_daemon.md § Cluster Exposure).
 -}
-demoChain :: Substrate -> ProjectConfig configScope -> [Step]
-demoChain sub cfg =
-    demoVmBackedStack sub cfg
+demoChain :: Substrate -> CanonicalProjectRoot scope rootId -> ProjectConfig scope -> [Step]
+demoChain sub root cfg =
+    demoVmBackedStackAt (Just (canonicalProjectRootPath root)) (demoVMFrameContext sub) cfg
         ++ [ declaredHostAcceleratorStep cfg $
                 reversedBy
                     (demoHostAcceleratorReverse cfg)
@@ -1022,13 +1036,9 @@ not forward the guest NodePort to the host, a host-resident daemon could not rea
 the in-VM cluster. The pod is the CPU-base project image, whose @clang++@ builds the
 C++ worker (accelerator_daemon.md § Substrate Matrix).
 -}
-demoLinuxCpuChain :: Substrate -> ProjectConfig configScope -> [Step]
-demoLinuxCpuChain sub =
-    demoLinuxCpuChainAt (demoVMFrameContext sub)
-
-demoLinuxCpuChainAt :: LiftContext -> ProjectConfig configScope -> [Step]
-demoLinuxCpuChainAt providerContext cfg =
-    demoVmBackedStackAt providerContext cfg
+demoLinuxCpuChainAt :: Maybe FilePath -> LiftContext -> ProjectConfig configScope -> [Step]
+demoLinuxCpuChainAt root providerContext cfg =
+    demoVmBackedStackAt root providerContext cfg
         ++ [ declaredInClusterAcceleratorStep cfg $
                 demoProjectStep "deploy-accelerator-daemon" "deploy the in-cluster accelerator daemon pod (Linux CPU: clang++ C++ worker, dials the web ClusterIP)" demoContainerFrame (changed (deployAcceleratorDaemonAction cfg))
            ]
@@ -1058,37 +1068,41 @@ demoChainFor sub root cfg
   where
     ctx = context cfg
     rootChain
-        | substrateName sub == LinuxGpu = demoLinuxGpuChain root cfg
-        | substrateName sub == LinuxCpu = demoLinuxCpuChain sub cfg
-        | substrateName sub == WindowsCpu = demoVmBackedStack sub cfg
-        | otherwise = demoChain sub cfg
+        | substrateName sub == LinuxGpu = demoLinuxGpuChain sub root cfg
+        | substrateName sub == LinuxCpu = demoLinuxCpuChainAt (Just (canonicalProjectRootPath root)) (demoVMFrameContext sub) cfg
+        | substrateName sub == WindowsCpu = demoVmBackedStackAt (Just (canonicalProjectRootPath root)) (demoVMFrameContext sub) cfg
+        | otherwise = demoChain sub root cfg
     nestedChain = case retainedProvider cfg of
         Right provider
-            | providerKind provider == ProviderIncus -> demoLinuxCpuChainAt (providerLiftContext provider) cfg
-            | providerKind provider `elem` [ProviderLima, ProviderWsl2] -> demoVmBackedStackAt (providerLiftContext provider) cfg
+            | providerKind provider == ProviderIncus -> demoLinuxCpuChainAt Nothing (providerLiftContext provider) cfg
+            | providerKind provider `elem` [ProviderLima, ProviderWsl2] -> demoVmBackedStackAt Nothing (providerLiftContext provider) cfg
         Left _
-            | Context.isExplicitLinuxGpuContainer ctx -> demoLinuxGpuChain root cfg
+            | Context.isExplicitLinuxGpuContainer ctx -> demoLinuxGpuChain sub root cfg
         _ -> error "demo chain: validated nested topology has no supported provider route"
 
 demoLinuxGpuChain ::
+    Substrate ->
     CanonicalProjectRoot scope rootId ->
     ProjectConfig scope ->
     [Step]
-demoLinuxGpuChain root cfg =
+demoLinuxGpuChain sub root cfg =
     demoLinuxGpuChainAt
         (CanonicalHostDurable root (runDurableHostPath (clusterProfileOf cfg) root))
         (canonicalProjectRootPath root)
+        (if Context.isRootFrame (context cfg) then Just (T.pack (demoBaseImageFor sub)) else Nothing)
         cfg
 
 demoLinuxGpuChainAt ::
     DemoDurableBind scope rootId ->
     FilePath ->
+    Maybe T.Text ->
     ProjectConfig configScope ->
     [Step]
-demoLinuxGpuChainAt durableBind descriptor cfg =
-    [ Step.declaresProviderResource
-        Step.providerResourceAtCurrentFrame
-        (deployVMStep "reserve the exact Direct host provider" demoMetalFrame (changed (runDirectProviderReservation cfg)))
+demoLinuxGpuChainAt durableBind descriptor image cfg =
+    [ maybe id Step.declaresProviderProbe description $
+        Step.declaresProviderResource
+            Step.providerResourceAtCurrentFrame
+            (deployVMStep "reserve the exact Direct host provider" demoMetalFrame (changed (runDirectProviderReservation description cfg)))
     , buildImageStep "build the project image on the Linux GPU host for the direct container handoff" demoMetalFrame (changed (runDirectHostBootstrap cfg))
     , -- The direct lane's one descent: metal → the nvkind project container. It
       -- consumes the admitted canonical root for the durable host mount (§ X).
@@ -1109,6 +1123,8 @@ demoLinuxGpuChainAt durableBind descriptor cfg =
     , declaredInClusterAcceleratorStep cfg $
         demoProjectStep "deploy-accelerator-daemon" "deploy the CUDA accelerator daemon pod with one NVIDIA GPU (dials the web ClusterIP)" demoDirectContainerFrame (changed (deployAcceleratorDaemonAction cfg))
     ]
+  where
+    description = Step.DirectProviderProbe descriptor <$> image
 
 {- | Project the exact next demo child and independently rebuild its complete
 child-local plan. Local substrate detection remains outside this projector and
@@ -1120,11 +1136,11 @@ package.
 -}
 demoForwardChildPlan ::
     ProjectConfig scope ->
-    T.Text ->
-    T.Text ->
+    ParentFrameId ->
+    ChildFrameId ->
     LiftContext ->
     Either String (FilePath, ProjectConfig scope, StepPlan)
-demoForwardChildPlan cfg parentId childId suppliedLift = do
+demoForwardChildPlan cfg (ParentFrameId parentId) (ChildFrameId childId) suppliedLift = do
     first (("demo forward child: invalid retained topology: " ++) . Context.contextErrorMessage) (Context.validateTopology ctx)
     current <-
         maybe
@@ -1147,8 +1163,8 @@ demoForwardChildPlan cfg parentId childId suppliedLift = do
                         cfg
                         (Context.deriveVMContextWithProvider (providerTopologyKind routeKind) ctx (T.pack vmDemoRoot))
                 steps
-                    | routeKind == ProviderIncus = demoLinuxCpuChainAt (providerLiftContext provider) childCfg
-                    | otherwise = demoVmBackedStackAt (providerLiftContext provider) childCfg
+                    | routeKind == ProviderIncus = demoLinuxCpuChainAt Nothing (providerLiftContext provider) childCfg
+                    | otherwise = demoVmBackedStackAt Nothing (providerLiftContext provider) childCfg
             finish vmDemoRoot childCfg steps
         (Context.VMOrchestrator, topologyProvider, "vm-orchestrator-1", child)
             | child == T.pack containerRuntimeFrameId -> do
@@ -1161,8 +1177,8 @@ demoForwardChildPlan cfg parentId childId suppliedLift = do
                             (demoDeployImage (clusterProfileOf cfg) ProviderGuestDurable containerRuntimeFrameId False (canonicalProjectConfigPayload childCfg))
                             emptyVMStack
                     steps
-                        | providerKind provider == ProviderIncus = demoLinuxCpuChainAt (providerLiftContext provider) childCfg
-                        | otherwise = demoVmBackedStackAt (providerLiftContext provider) childCfg
+                        | providerKind provider == ProviderIncus = demoLinuxCpuChainAt Nothing (providerLiftContext provider) childCfg
+                        | otherwise = demoVmBackedStackAt Nothing (providerLiftContext provider) childCfg
                 requireForward
                     (providerKind provider `elem` [ProviderIncus, ProviderLima, ProviderWsl2])
                     "container edge requires a retained VM provider"
@@ -1175,7 +1191,7 @@ demoForwardChildPlan cfg parentId childId suppliedLift = do
                 let childCfg = projectConfigFromContext cfg (Context.deriveLinuxGpuContainerContext ctx (T.pack containerSourceRoot))
                     profile = clusterProfileOf childCfg
                     childDurable = guestProfileDataPath profile containerSourceRoot
-                    steps = demoLinuxGpuChainAt (ProjectedDurable containerSourceRoot childDurable) containerSourceRoot childCfg
+                    steps = demoLinuxGpuChainAt (ProjectedDurable containerSourceRoot childDurable) containerSourceRoot Nothing childCfg
                 validateDirectParentLift childDurable (canonicalProjectConfigPayload childCfg) suppliedLift
                 finish containerSourceRoot childCfg steps
         _ -> Left "demo forward child: unsupported parent/child frame, kind, or provider route"
@@ -1378,15 +1394,20 @@ runtime exposure operation (the worked-demo phase).
 -}
 containerPlan :: ClusterProfile -> Context.BinaryContext -> ClusterPlan
 containerPlan profile ctx =
+    containerPlanAt profile (Context.isExplicitLinuxGpuContainer ctx) (T.unpack (Context.sourceRoot ctx))
+
+-- | The container cluster plan from its frame-invariant inputs: the profile,
+-- whether the container is the explicit Linux GPU one, and its source root.
+containerPlanAt :: ClusterProfile -> Bool -> FilePath -> ClusterPlan
+containerPlanAt profile gpu root =
     basePlan
         { dataPath = guestProfileDataPath profile root
         , derivedStatePath = root Posix.</> ".cluster" Posix.</> clusterName basePlan
         , clusterConfigFile = Just configFile
         }
   where
-    root = T.unpack (Context.sourceRoot ctx)
     basePlan
-        | Context.isExplicitLinuxGpuContainer ctx =
+        | gpu =
             resolvePlanWithDriver demoProject root profile NvkindDriver
         | otherwise = resolvePlan demoProject root profile
     -- Two branches, because two templates differ. There used to be three: the
@@ -1394,7 +1415,7 @@ containerPlan profile ctx =
     -- their comments, so one branch was a distinction the YAML did not make and
     -- a reader had to open both files to discover that.
     configFile
-        | Context.isExplicitLinuxGpuContainer ctx = "nvkind-in-cluster.yaml"
+        | gpu = "nvkind-in-cluster.yaml"
         | otherwise = "kind.yaml"
 
 demoClusterKubeconfigPath :: ProjectConfig configScope -> Context.BinaryContext -> FilePath
@@ -1956,9 +1977,42 @@ pollRolloutOrDie cfg pol retryNote failMsg probe = do
 create the registry bucket idempotently. The @s3@ driver requires the bucket to
 pre-exist, so this completes fully before the registry pod schedules.
 -}
+{- | An in-cluster workload node's cluster object on a VM chain: the demo's
+named Deployment (@object-store@ or @registry@) in the default namespace of the
+container's Kind cluster, at that cluster's state directory as the provider
+guest sees it, where the root reads it. The Direct chain's cluster is in the
+root's own frame and declares none. 'requireDeclaredDemoCluster' refuses any
+other cluster.
+-}
+demoClusterObjectDescription :: ClusterProfile -> T.Text -> Step.ClusterObjectProbeDescription
+demoClusterObjectDescription profile =
+    Step.ClusterObjectProbeDescription
+        hostClusterStateDirectory
+        (T.pack (clusterName (containerPlanAt profile False containerSourceRoot)))
+        "default"
+        "deployment"
+
+{- | The cluster node's identity object on a VM chain: the Kind cluster's
+@kube-system@ namespace, whose UID the cluster's own API server assigned when it
+was created, at the same guest-side state directory as its workloads.
+-}
+demoClusterIdentityDescription :: ClusterProfile -> Step.ClusterObjectProbeDescription
+demoClusterIdentityDescription profile =
+    let Step.ClusterObjectProbeDescription state cluster _ _ _ = demoClusterObjectDescription profile ""
+     in Step.ClusterObjectProbeDescription state cluster "kube-system" "namespace" "kube-system"
+
+-- | Refuse a VM-chain workload whose actual cluster is not the declared one.
+requireDeclaredDemoCluster :: String -> ProjectConfig configScope -> Context.BinaryContext -> IO ()
+requireDeclaredDemoCluster label stepCfg ctx = do
+    let actual = containerPlan (clusterProfileOf stepCfg) ctx
+        Step.ClusterObjectProbeDescription _ declaredCluster _ _ _ = demoClusterObjectDescription (clusterProfileOf stepCfg) ""
+    when (not (Context.isExplicitLinuxGpuContainer ctx) && (clusterDriver actual /= KindDriver || declaredCluster /= T.pack (clusterName actual))) $
+        die (label <> ": the actual cluster differs from the declared cluster")
+
 deployObjectStoreAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployObjectStoreAction stepCfg execution = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
+    requireDeclaredDemoCluster "deploy-object-store" stepCfg ctx
     let kubeconfig = demoClusterKubeconfigPath stepCfg ctx
     withDemoServiceExposure stepCfg execution "deploy-object-store" "object-store" $ \exposure -> do
         runOrDieStdin cfg Kubectl (kubectlWith kubeconfig ["apply", "-f", "-"]) objectStoreManifest
@@ -2022,6 +2076,7 @@ substrate with no component overrides.
 deployRegistryAction :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
 deployRegistryAction stepCfg execution = demoContext stepCfg Context.ClusterLifecycleCommand [] $ \ctx -> do
     cfg <- resolveHostConfig
+    requireDeclaredDemoCluster "deploy-registry" stepCfg ctx
     let kubeconfig = demoClusterKubeconfigPath stepCfg ctx
     -- Apply the registry Deployment + NodePort and wait for the rollout. The pod
     -- pulls registry:2 from Docker Hub itself — NOT `kind load docker-image`, which
@@ -4790,11 +4845,77 @@ Silicon (Lima) and Linux (Incus); on Windows it begins by writing the global
 @.wslconfig@ ceiling and @wsl --shutdown@ (the honest WSL2 wall, since WSL2 has no
 per-distro @wsl --memory@/@--cpu@), then registers the distro with its VHDX cap.
 -}
-runVmUp :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
+demoVmProviderDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Either String Step.ProviderProbeDescription
+demoVmProviderDescription cfg providerContext root = do
+    provider <- providerFromLift providerContext
+    let configured = resources cfg
+        cpuNatural = cpu configured
+        durableRoot = profileDataPath (clusterProfileOf cfg) root
+        IncusVM name image = demoVM
+        memoryText = quantityText (memory configured)
+        storageText = quantityText (storage configured)
+    when (cpuNatural > fromIntegral (maxBound :: Word64)) (Left "CPU quantity exceeds Word64")
+    share <- first show (planProviderShare provider durableRoot)
+    let count = fromIntegral cpuNatural
+        vm = T.pack (providerVmId provider)
+    case providerKind provider of
+        ProviderIncus -> Right (Step.IncusProviderProbe (T.pack name) (T.pack image) (T.pack demoGuardPrefix) (durableRoot </> ".provider-state") count memoryText storageText)
+        ProviderLima -> Right (Step.LimaProviderProbe vm count memoryText storageText (hpsHostPath share) (hpsGuestPath share))
+        ProviderWsl2 -> Right (Step.Wsl2ProviderProbe vm count memoryText storageText (hpsHostPath share) (hpsGuestPath share))
+        _ -> Left "unsupported VM provider"
+
+admitDemoVmProviderDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Maybe Step.ProviderProbeDescription -> Either String Step.ProviderProbeDescription
+admitDemoVmProviderDescription cfg route root declared = do
+    expected <- demoVmProviderDescription cfg route root
+    if declared == Just expected
+        then Right expected
+        else Left "actual provider inputs differ from the admitted description"
+
+-- The one share the backend uses: the profile's durable root under the canonical
+-- project root, projected to the guest by the selected provider.
+demoPlannedShare :: ProjectConfig configScope -> LiftContext -> FilePath -> Either String HostPathShare
+demoPlannedShare cfg providerContext root = do
+    provider <- providerFromLift providerContext
+    first show (planProviderShare provider (profileDataPath (clusterProfileOf cfg) root))
+
+{- | The copy-source node's share declaration. The root plan carries exactly the
+host and guest paths of 'demoPlannedShare', and 'admitDemoShareDescription'
+recomputes that share at execution and refuses any other declaration.
+-}
+demoShareProbeDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Either String Step.ShareProbeDescription
+demoShareProbeDescription cfg providerContext root = do
+    share <- demoPlannedShare cfg providerContext root
+    Right (Step.ShareProbeDescription (hpsHostPath share) (hpsGuestPath share))
+
+{- | The copy-source node's guest-alias declaration: the stable Docker-visible
+alias path linked to the planned share's guest path, exactly the values the
+alias backend reconciles. 'admitDemoAliasDescription' refuses any other.
+-}
+demoAliasProbeDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Either String Step.AliasProbeDescription
+demoAliasProbeDescription cfg providerContext root = do
+    share <- demoPlannedShare cfg providerContext root
+    Right (Step.AliasProbeDescription durableDockerHostPath (hpsGuestPath share))
+
+admitDemoAliasDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Maybe Step.AliasProbeDescription -> Either String ()
+admitDemoAliasDescription cfg route root declared = do
+    expected <- demoAliasProbeDescription cfg route root
+    if declared == Just expected
+        then Right ()
+        else Left "actual alias inputs differ from the admitted description"
+
+admitDemoShareDescription :: ProjectConfig configScope -> LiftContext -> FilePath -> Maybe Step.ShareProbeDescription -> Either String HostPathShare
+admitDemoShareDescription cfg route root declared = do
+    share <- demoPlannedShare cfg route root
+    if declared == Just (Step.ShareProbeDescription (hpsHostPath share) (hpsGuestPath share))
+        then Right share
+        else Left "actual share inputs differ from the admitted description"
+
+runVmUp :: Maybe FilePath -> Maybe Step.ProviderProbeDescription -> ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runVmUp root declared stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
-    projectRoot <- makeAbsolute =<< getCurrentDirectory
+    projectRoot <- maybe (die "VM provider plan: canonical root is absent") pure root
+    expected <- either (die . ("VM provider plan: " ++)) pure (admitDemoVmProviderDescription projectCfg (providerLiftContext sp) projectRoot declared)
     hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
     let lifecycleResources = resources projectCfg
         envelope = envelopeOfResources lifecycleResources
@@ -4804,7 +4925,7 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
     -- is started rather than re-creating it (a create on an existing instance
     -- fails), so a re-run of `project up` reconciles a partially-built stack.
     case providerKind sp of
-        ProviderIncus -> runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
+        ProviderIncus -> runExactVmProvider expected projectCfg cfg execution sp
         ProviderLima -> do
             exists <- substrateExists cfg sp
             case clusterProfileRunKey (clusterProfileOf projectCfg) of
@@ -4817,7 +4938,7 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                                 )
                             )
                 Nothing -> pure ()
-            runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
+            runExactVmProvider expected projectCfg cfg execution sp
         _ -> do
             exists <- substrateExists cfg sp
             if exists
@@ -4834,16 +4955,19 @@ runVmUp stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCo
                     putStrLn ("vm up: launching " ++ providerVmId sp ++ " (cordon #1: the VM is the wall, sized to the budget)")
                     runEffects cfg (provisionEffects launch)
             when (providerKind sp == ProviderWsl2) $
-                runExactVmProvider projectCfg cfg execution sp envelope durableShare hostDurableRoot
+                runExactVmProvider expected projectCfg cfg execution sp
     putStrLn ("vm up: " ++ providerVmId sp ++ " is up")
 
-runCopySource :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-runCopySource stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
+runCopySource :: Maybe FilePath -> Maybe Step.ShareProbeDescription -> Maybe Step.AliasProbeDescription -> ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runCopySource root declared declaredAlias stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \projectCfg _ctx -> do
     cfg <- resolveHostConfig
     sp <- demoProvider cfg
-    projectRoot <- makeAbsolute =<< getCurrentDirectory
-    hostDurableRoot <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
-    durableShare <- either (die . show) pure (planProviderShare sp hostDurableRoot)
+    projectRoot <- maybe (die "copy-source plan: canonical root is absent") pure root
+    _ <- ensureProfileDataPath (clusterProfileOf projectCfg) projectRoot
+    durableShare <- either (die . ("copy-source plan: " ++)) pure
+        (admitDemoShareDescription projectCfg (providerLiftContext sp) projectRoot declared)
+    either (die . ("copy-source plan: " ++)) pure
+        (admitDemoAliasDescription projectCfg (providerLiftContext sp) projectRoot declaredAlias)
     if providerKind sp `elem` [ProviderIncus, ProviderLima]
         then runExactVmShare projectCfg cfg execution durableShare
         else do
@@ -4999,44 +5123,30 @@ runExactVmShare projectCfg cfg execution durableShare = do
     failLifecycle = throwIO . LifecycleFailure
 
 runExactVmProvider ::
+    Step.ProviderProbeDescription ->
     ProjectConfig configScope ->
     HostConfig ->
     StepExecution scope planId ->
     SubstrateProvider ->
-    Context.ResourceEnvelope ->
-    HostPathShare ->
-    FilePath ->
     IO ()
-runExactVmProvider projectCfg cfg execution provider envelope durableShare durableRoot = do
+runExactVmProvider description projectCfg cfg execution provider = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "VM provider reconcile: the exact producer gate is absent") pure
-    let configured = resources projectCfg
-        IncusVM name image = demoVM
-        cpuNatural = cpu configured
-        stateRoot = durableRoot </> ".provider-state"
-        scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
+    let scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
             Nothing -> "production"
             Just runKey -> "harness:" <> runKey
-    when (cpuNatural > fromIntegral (maxBound :: Word64)) (die "VM provider reconcile: CPU quantity exceeds Word64")
     when (preparedGateJournalVersion gate > maxBound - 1024) (die "VM provider reconcile: dependency lifetime overflows")
-    (backendSpec, adapterVersion) <- case providerKind provider of
-        ProviderIncus -> do
-            spec <-
-                either (die . show) pure $
-                    mkIncusBackendSpec
-                        name
-                        image
-                        demoGuardPrefix
-                        cfg
-                        stateRoot
-                        (fromIntegral cpuNatural)
-                        (T.unpack (quantityText (memory configured)))
-                        (T.unpack (quantityText (storage configured)))
+    (backendSpec, adapterVersion) <- case description of
+        Step.IncusProviderProbe name image guardPrefix stateRoot cpuCount memoryText storageText -> do
+            spec <- either (die . show) pure $
+                mkIncusBackendSpec (T.unpack name) (T.unpack image) (T.unpack guardPrefix) cfg stateRoot cpuCount (T.unpack memoryText) (T.unpack storageText)
             pure (spec, "demo-incus-provider-v1")
-        ProviderLima -> do
-            spec <- either (die . show) pure (mkLimaBackendSpec cfg provider envelope durableShare)
+        Step.LimaProviderProbe _ cpuCount memoryText storageText host guest -> do
+            let envelope = Context.ResourceEnvelope (fromIntegral cpuCount) memoryText storageText
+            spec <- either (die . show) pure (mkLimaBackendSpec cfg provider envelope (HostPathShare host guest Nothing))
             pure (spec, "demo-lima-provider-v1")
-        ProviderWsl2 -> do
-            spec <- either (die . show) pure (mkWsl2BackendSpec cfg provider envelope durableShare)
+        Step.Wsl2ProviderProbe _ cpuCount memoryText storageText host guest -> do
+            let envelope = Context.ResourceEnvelope (fromIntegral cpuCount) memoryText storageText
+            spec <- either (die . show) pure (mkWsl2BackendSpec cfg provider envelope (HostPathShare host guest Nothing))
             pure (spec, "demo-wsl2-provider-v1")
         _ -> die "VM provider reconcile: the exact VM backend is unavailable on this provider"
     putStrLn ("vm up: reconciling " ++ providerVmId provider ++ " through the exact provider settlement")
@@ -5674,15 +5784,22 @@ runVmBootstrap stepCfg _execution = demoConfigContext stepCfg Context.HostOrches
         GuestStepSatisfied step -> putStrLn ("pristine-bootstrap: already satisfied — " ++ stepLabel step)
         GuestStepInstalled step -> putStrLn ("pristine-bootstrap: installed — " ++ stepLabel step)
 
-runDirectProviderReservation :: ProjectConfig configScope -> StepExecution scope planId -> IO ()
-runDirectProviderReservation stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg ctx -> do
+admitDemoDirectProviderDescription :: Substrate -> Maybe Step.ProviderProbeDescription -> Either String (FilePath, T.Text)
+admitDemoDirectProviderDescription substrate declared = case declared of
+    Just (Step.DirectProviderProbe root image)
+        | image == T.pack (demoBaseImageFor substrate) -> Right (root, image)
+    _ -> Left "target or image differs from the admitted description"
+
+runDirectProviderReservation :: Maybe Step.ProviderProbeDescription -> ProjectConfig configScope -> StepExecution scope planId -> IO ()
+runDirectProviderReservation declared stepCfg execution = demoConfigContext stepCfg Context.HostOrchestratorCommand [Context.HostTools] $ \parentCfg _ctx -> do
     initialCfg <- resolveHostConfig
     when (substrateName (hcSubstrate initialCfg) /= LinuxGpu) $
         die "direct-linux-gpu-bootstrap: this path is only valid on the linux-gpu substrate"
+    (root, image) <- either (die . ("direct provider plan: " ++)) pure $
+        admitDemoDirectProviderDescription (hcSubstrate initialCfg) declared
     preflightDemoLifecycleHost initialCfg (resources parentCfg)
     runEnsure EnsureDocker.reconciler
     cfgAfterDocker <- resolveHostConfig
-    let root = T.unpack (Context.sourceRoot ctx)
     _hostDurableRoot <- ensureProfileDataPath (clusterProfileOf parentCfg) root
     let directPlan = resolvePlanWithDriver demoProject root (clusterProfileOf parentCfg) NvkindDriver
     case clusterProfileRunKey (clusterProfileOf parentCfg) of
@@ -5691,13 +5808,12 @@ runDirectProviderReservation stepCfg execution = demoConfigContext stepCfg Conte
             when exists $
                 throwIO (SafetyRefusal "direct nvkind state appeared after Docker ensure; refusing to reconcile it before CUDA mutates Docker")
         Nothing -> pure ()
-    absoluteRoot <- makeAbsolute root
     let directProvider = selectProviderKind ProviderDirectHost demoVMHandles
         envelope = envelopeOfResources (resources parentCfg)
     provision <- either (die . show) pure (planProviderProvision directProvider envelope Nothing)
     wallReport <- maybe (die "direct provider did not report its unsupported walls") pure $
         renderDirectProviderWallDecision (provisionWallDecision provision)
-    runExactDirectProvider parentCfg cfgAfterDocker execution absoluteRoot
+    runExactDirectProvider parentCfg cfgAfterDocker execution root image
     putStrLn wallReport
     putStrLn "direct-linux-gpu-bootstrap: exact Direct provider reservation is ready"
 
@@ -5751,14 +5867,15 @@ runExactDirectProvider ::
     HostConfig ->
     StepExecution scope planId ->
     FilePath ->
+    T.Text ->
     IO ()
-runExactDirectProvider projectCfg cfg execution canonicalRoot = do
+runExactDirectProvider projectCfg cfg execution canonicalRoot image = do
     gate <- stepExecutionPreparedGate execution >>= maybe (die "Direct provider reconcile: the exact producer gate is absent") pure
     when (preparedGateJournalVersion gate > maxBound - 1024) (die "Direct provider reconcile: dependency lifetime overflows")
     let scopeCommitment = case clusterProfileRunKey (clusterProfileOf projectCfg) of
             Nothing -> "production"
             Just runKey -> "harness:" <> runKey
-    backendSpec <- either (die . show) pure (mkDirectHostBackendSpec cfg canonicalRoot (demoBaseImage cfg))
+    backendSpec <- either (die . show) pure (mkDirectHostBackendSpec cfg canonicalRoot (T.unpack image))
     discovered <- discoverStrongProviderBackend cfg backendSpec $ \backend ->
         case withNodeResourceOfKind execution ProviderResourceKind (stepExecutionOperationKey execution) $ \planned ->
             withNodeObservedResource execution planned (preparedGateFence gate) (preparedGateJournalVersion gate) $ \observed ->

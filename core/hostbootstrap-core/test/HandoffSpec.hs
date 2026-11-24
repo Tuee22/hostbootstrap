@@ -15,11 +15,11 @@ authenticated-root-scope verification uses the same public-only oracle shape.
 Public consumer packages cannot obtain signing admission; the selected private
 test route separately exercises fixed-domain production signers.
 -}
-module HandoffSpec (tests, runFrameInterpreterFailureProbe, runPrivateProtocolStdioProbe, runChildGroupProbe, frameChildFixtureInterpreter, windowsChildGroupObservationSupported, siblingConfigSymlinksSupported) where
+module HandoffSpec (tests, withForwardLifecycleFixture, runFrameInterpreterFailureProbe, runPrivateProtocolStdioProbe, runIsolatedReceiverProbe, runChildGroupProbe, frameChildFixtureInterpreter, windowsChildGroupObservationSupported, siblingConfigSymlinksSupported) where
 
 import qualified CompileFailSpec
 import ConditionalCase (conditionalCase)
-import Control.Concurrent (MVar, ThreadId, forkFinally, forkIO, killThread, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
+import Control.Concurrent (MVar, ThreadId, forkFinally, forkIO, killThread, myThreadId, newEmptyMVar, putMVar, readMVar, takeMVar, threadDelay)
 import Control.Exception (AsyncException (ThreadKilled, UserInterrupt), IOException, SomeException, bracket, evaluate, finally, fromException, mask, throwIO, throwTo, try)
 import Control.Monad (forM, forM_, unless, when)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
@@ -42,6 +42,7 @@ import qualified Data.Text.Encoding as TextEncoding
 import Data.Word (Word32, Word64, Word8)
 import Expect (expectRight)
 import qualified Fixture
+import GHC.Exts (Any)
 import GHC.Conc (BlockReason (BlockedOnMVar), ThreadStatus (ThreadBlocked), threadStatus)
 import GHC.IO.Exception (IOErrorType (UnsupportedOperation))
 import qualified HostBootstrap.Activation as Activation
@@ -53,6 +54,7 @@ import HostBootstrap.Authority (
     installedProjectName,
     verifyOsPrincipal,
  )
+import qualified HostBootstrap.Authority as Authority
 import qualified HostBootstrap.Authority.Testing as AuthorityFixture
 import HostBootstrap.Config.Class (
     ProjectCfg (withProductionProjectCodec),
@@ -84,6 +86,7 @@ import HostBootstrap.Config.Vocab (
 import qualified HostBootstrap.Context as Context
 import qualified HostBootstrap.Effect.ChildGroup as ChildGroup
 import HostBootstrap.Handoff
+import qualified HostBootstrap.Handoff.Completion as Completion
 import qualified HostBootstrap.Handoff.Internal as HandoffInternal
 import qualified HostBootstrap.Handoff.Protocol as Protocol
 import qualified HostBootstrap.Handoff.Receiver as Receiver
@@ -124,10 +127,13 @@ import HostBootstrap.Lift.Context (
     inVM,
     vmContext,
  )
+import HostBootstrap.ProjectPlan.Frame (withCurrentFrame)
+import qualified HostBootstrap.Step as Step
 import HostBootstrap.Protected (
     Expectation (ExpectAbsent, ExpectVersion),
     ProtectedError (ProtectedIOFailure),
     ProtectedStore,
+    compareAndDeleteProtectedRecord,
     compareAndSwapProtectedRecord,
     listProtectedRecords,
     mkRecordKey,
@@ -158,7 +164,7 @@ import System.Directory (createDirectory, createFileLink, doesPathExist, listDir
 import System.Environment (getExecutablePath, lookupEnv, setEnv, unsetEnv)
 import System.Exit (ExitCode (..), exitFailure)
 import System.FilePath (takeDirectory, (<.>), (</>))
-import System.IO (Handle, hClose, hFlush, hIsClosed, hSetBinaryMode, stderr, stdout)
+import System.IO (Handle, hClose, hFlush, hGetContents, hIsClosed, hSetBinaryMode, stderr, stdin, stdout)
 import System.IO.Error (ioeGetErrorString, ioeGetErrorType, isDoesNotExistError, isPermissionError)
 import System.IO.Temp (withSystemTempDirectory, withTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
@@ -169,6 +175,7 @@ import System.Process (
     createPipe,
     getProcessExitCode,
     proc,
+    readProcessWithExitCode,
     terminateProcess,
     waitForProcess,
     withCreateProcess,
@@ -181,6 +188,10 @@ import Data.Bits ((.|.))
 import GHC.Windows (BOOL, DWORD, HANDLE, failIfFalse_, failIfNull, throwGetLastError)
 import System.Process (createProcess)
 #endif
+import qualified TestHandoffRuntime as Runtime
+import qualified TestTeardown as Teardown
+import qualified TestTeardownInternal as TeardownInternal
+import Unsafe.Coerce (unsafeCoerce)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertEqual, assertFailure, testCase, (@?=))
 
@@ -192,11 +203,14 @@ tests =
         , testGroup "length framing" framingTests
         , testGroup "protocol decoder and child-state DATA" protocolDataTests
         , testGroup "binding rendering" bindingTests
+        , testGroup "recursive runtime behavior" recursiveRuntimeTests
+        , privateRouteBehaviorTests
         , testGroup "the signed handoff protocol" protocolTests
         , testGroup "sibling config symlinks" siblingConfigSymlinkTests
         , testGroup "the keyless duplex relay" duplexRelayTests
         , testGroup "the scripted scope-first receiver" receiverScriptTests
         , testGroup "the bounded rooted recovery carrier" receiverCarrierTests
+        , testGroup "reverse-settlement-decisions" reverseSettlementDecisionTests
         , testGroup "the actual rooted requester transport" rootedRequesterTransportTests
         , testGroup "the recovery wire" recoveryTests
         , testGroup "the lifecycle completion wire" lifecycleCompletionWireTests
@@ -205,6 +219,229 @@ tests =
         , testGroup "the frame-child entry" frameCrossingTests
         , testGroup "native Windows child groups" windowsChildGroupTests
         ]
+
+-- Test-only mirrors forge otherwise unrepresentable drift while retaining the
+-- genuine broker, route, and signed handoff fixture for every other coordinate.
+data RuntimeRouteFixture = RuntimeRouteFixture Text.Text Text.Text Text.Text Word64 Text.Text ByteString.ByteString (Maybe Text.Text)
+data RuntimeRootFixture = RuntimeRootFixture Text.Text Text.Text RuntimeEpochFixture Any
+data RuntimeEpochFixture = RuntimeEpochFixture Text.Text Text.Text Word64
+
+runtimeRouteDrift :: (ByteString.ByteString -> ByteString.ByteString) -> (Maybe Text.Text -> Maybe Text.Text) -> BrokerRoute scope generation -> BrokerRoute scope generation
+runtimeRouteDrift key frame route =
+    case unsafeCoerce route of
+        RuntimeRouteFixture project tag store generation verb digest current ->
+            unsafeCoerce (RuntimeRouteFixture project tag store generation verb (key digest) (frame current))
+
+runtimeRootDrift :: (Text.Text -> Text.Text) -> (Text.Text -> Text.Text) -> (Word64 -> Word64) -> Authority.RootInvocationAuthority scope generation verb -> Authority.RootInvocationAuthority scope generation verb
+runtimeRootDrift projectChange storeChange epochChange root =
+    case unsafeCoerce root of
+        RuntimeRootFixture project store (RuntimeEpochFixture epochProject epochStore epoch) verb ->
+            unsafeCoerce (RuntimeRootFixture (projectChange project) (storeChange store) (RuntimeEpochFixture epochProject epochStore (epochChange epoch)) verb)
+
+recursiveRuntimeTests :: [TestTree]
+recursiveRuntimeTests =
+    [ testCase "root and verified nested arms refuse each identity and route drift" $
+        withSystemTempDirectory "hostbootstrap-recursive-runtime" $ \directory -> do
+            signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 73))
+            store <- expectRightIO =<< openProtectedStore (directory </> "authority")
+            Fixture.withFixtureInstalledProject $ \project -> do
+                opened <- withProductionRoot store project ProjectUp $ \production -> do
+                    let authority = productionRootAuthority production
+                        scope = productionHandoffScope project
+                    brokered <- withRootBroker scope store signing authority $ \broker -> do
+                        let rootRoute = rootBrokerRoute broker
+                            root candidateScope candidateRoute candidateAuthority verb =
+                                () <$ Runtime.rootRecursiveHandoffRuntimeKernel broker candidateScope candidateRoute candidateAuthority verb
+                            badVerb = unsafeCoerce ProjectDown :: Authority.ProjectVerb VerbUp
+                            refused detail = Left ("recursive handoff runtime: " <> detail)
+                        rootArm <- expectRight (Runtime.rootRecursiveHandoffRuntimeKernel broker scope rootRoute authority ProjectUp)
+                        (binding, offer) <- newOffer broker childPayload
+                        challenge <- freshChallenge
+                        grant <- expectRightIO =<< grantHandoff broker offer challenge
+                        verified <- expectRight (verifyHandoff (rootBrokerVerificationKey broker) (handoffOfferWire offer) binding challenge grant)
+                        let nestedRoute = verifiedHandoffRoute verified
+                            nested route edge verb = () <$ Runtime.nestedRecursiveHandoffRuntimeKernel route edge verb
+                        nestedArm <- expectRight (Runtime.nestedRecursiveHandoffRuntimeKernel nestedRoute binding ProjectUp)
+                        root scope rootRoute (runtimeRootDrift (const "other-project") id id authority) ProjectUp
+                            @?= refused "the scope evidence names a different installed project than the root authority"
+                        root scope rootRoute authority badVerb @?= refused "the runtime verb differs from the root authority"
+                        root scope (runtimeRouteDrift (const "foreign-key") id rootRoute) authority ProjectUp
+                            @?= refused "the root route advertises a different installed verification key"
+                        root scope nestedRoute authority ProjectUp @?= refused "a root runtime cannot hold an authenticated current frame"
+                        root scope rootRoute (runtimeRootDrift id (const "") id authority) ProjectUp
+                            @?= refused "the protected-store identity is empty"
+                        root scope rootRoute (runtimeRootDrift id id (const 0) authority) ProjectUp
+                            @?= refused "the broker generation is zero"
+                        nested nestedRoute binding badVerb @?= refused "the runtime verb differs from the authenticated edge"
+                        nested (runtimeRouteDrift id (const (Just "other-frame")) nestedRoute) binding ProjectUp
+                            @?= refused "the relayed route does not name the authenticated child frame"
+                        nested (runtimeRouteDrift (const ByteString.empty) id nestedRoute) binding ProjectUp
+                            @?= refused "the installed verification-key digest is empty"
+                        Runtime.withRootArmRecursiveHandoffRuntimeKernel nestedArm (\_ _ _ _ _ _ -> pure (Right ()))
+                            >>= (@?= refused "a keyless nested arm has no root recursive handoff runtime")
+                        Runtime.withNestedArmRecursiveHandoffRuntimeKernel rootArm (\_ _ _ _ _ _ _ -> pure (Right ()))
+                            >>= (@?= refused "a root arm speaks for no authenticated nested frame")
+                    either (assertFailure . show) pure brokered
+                    pure (Right ())
+                either (assertFailure . show) pure opened
+    ]
+
+-- The route only forces the runtime to weak head normal form; it does not
+-- inspect it. This control isolates the real private route grammar, while the
+-- authenticated runtime and process fixtures exercise the surrounding route.
+privateRouteBehaviorTests :: TestTree
+privateRouteBehaviorTests =
+    CompileFailSpec.withPrivateRouteKernel privateRouteBehaviorSource $ \getExecutable ->
+        testCase "private lifecycle route admits exact vectors and refuses unsafe inputs" $ do
+            executable <- getExecutable
+            (code, output, diagnostic) <- readProcessWithExitCode executable [] ""
+            assertEqual (output <> diagnostic) ExitSuccess code
+
+privateRouteBehaviorSource :: String
+privateRouteBehaviorSource = unlines
+    [ "{-# LANGUAGE OverloadedStrings #-}"
+    , "{-# LANGUAGE RankNTypes #-}"
+    , "module Main where"
+    , "import Control.Monad (unless)"
+    , "import qualified Data.ByteString as B"
+    , "import Data.Text (Text)"
+    , "import HostBootstrap.Authority (ProjectVerb(ProjectUp), VerbUp)"
+    , "import HostBootstrap.Config.Vocab (Mount(..))"
+    , "import HostBootstrap.Handoff (HandoffBindingInput(..), HandoffPayloadKind(NarrowedProjectConfig))"
+    , "import qualified HostBootstrap.Handoff as H"
+    , "import qualified HostBootstrap.Handoff.Internal as HI"
+    , "import qualified HostBootstrap.Handoff.Rooted as R"
+    , "import HostBootstrap.Handoff.Process.Route"
+    , "import TestHandoffRuntime (RecursiveHandoffRuntime)"
+    , "import qualified TestHandoffRuntime as RT"
+    , "import HostBootstrap.HostTool (HostTool(..))"
+    , "import qualified HostBootstrap.Lifecycle.Mode as M"
+    , "import HostBootstrap.Lift.Context"
+    , "import qualified HostBootstrap.Protected as P"
+    , "import qualified Fixture"
+    , "import Expect (expectRight)"
+    , "import System.IO.Temp (withSystemTempDirectory)"
+    , "import System.FilePath ((</>))"
+    , "import Unsafe.Coerce (unsafeCoerce)"
+    , "runtime :: RecursiveHandoffRuntime () () VerbUp"
+    , "runtime = unsafeCoerce ()"
+    , "binding :: HandoffBindingInput"
+    , "binding = HandoffBindingInput \"spec\" NarrowedProjectConfig \"revision\" \"parent\" \"child\" \"digest\" \"execute\""
+    , "container :: ContainerLift"
+    , "container = ContainerLift \"image:tag\" ProviderGuestContainer [] [] True Nothing"
+    , "context :: [LiftLayer] -> LiftContext"
+    , "context layers = either error id (liftContextFromLayers layers)"
+    , "run :: [LiftLayer] -> HandoffBindingInput -> Text -> (forall rootPlanId catalogId parent child. LifecycleProcessRoute () rootPlanId () catalogId parent child VerbUp -> IO (Either Text ())) -> IO (Either Text ())"
+    , "run layers input binary callback = withNestedForwardLifecycleProcessRouteKernel runtime (context layers) input ProjectUp binary callback"
+    , "accept :: [LiftLayer] -> Text -> HostTool -> [Text] -> Bool -> IO ()"
+    , "accept layers binary tool arguments interactive = do"
+    , "  result <- run layers binding binary $ \\route -> withLifecycleProcessRouteLaunchKernel route $ \\actual argv -> do"
+    , "    let attached = \"-i\" `elem` argv"
+    , "    unless (actual == tool && argv == arguments && attached == interactive) (fail (show (actual, argv, attached)))"
+    , "    pure (Right ())"
+    , "  either (fail . show) pure result"
+    , "refuse :: [LiftLayer] -> HandoffBindingInput -> Text -> IO ()"
+    , "refuse layers input binary = do"
+    , "  result <- run layers input binary (\\_ -> fail \"refused route reached its consumer\")"
+    , "  case result of Left _ -> pure (); Right () -> fail \"unsafe route admitted\""
+    , "refuseExactly :: [LiftLayer] -> Text -> Text -> IO ()"
+    , "refuseExactly layers binary = refuseInputExactly layers binding binary"
+    , "refuseInputExactly :: [LiftLayer] -> HandoffBindingInput -> Text -> Text -> IO ()"
+    , "refuseInputExactly layers input binary expected = do"
+    , "  result <- run layers input binary (\\_ -> fail \"refused route reached its consumer\")"
+    , "  unless (result == Left (\"lifecycle process route: \" <> expected)) (fail (show result))"
+    , "main :: IO ()"
+    , "main = do"
+    , "  let marker = \"--hostbootstrap-lifecycle-child\"; binary = \"/bin/hostbootstrap\""
+    , "      incus = ViaVM (IncusVM \"vm\" \"image\"); lima = ViaLimaVM (LimaVM \"vm\"); wsl = ViaWsl2VM (Wsl2VM \"vm\")"
+    , "  accept [incus] binary Incus [\"exec\",\"vm\",\"--cwd\",\"/\",\"-T\",\"--\",binary,marker] False"
+    , "  accept [lima] binary Lima [\"shell\",\"--workdir\",\"/\",\"vm\",\"--\",\"sudo\",\"-n\",\"-H\",binary,marker] False"
+    , "  accept [wsl] binary Wsl [\"-d\",\"vm\",\"--cd\",\"/\",\"--exec\",\"sudo\",\"-n\",\"-H\",binary,marker] False"
+    , "  accept [ViaContainer container] \"\" Docker [\"run\",\"--rm\",\"-i\",\"--network=host\",\"-e\",\"HOSTBOOTSTRAP_CURRENT_FRAME=child\",\"-e\",\"HOSTBOOTSTRAP_REGISTRY_AUTH\",\"-w\",\"/\",\"image:tag\",marker] True"
+    , "  accept [ViaContainer (container{clMounts=[Mount \"/source\" \"/target\" True,Mount \"/data\" \"/work\" False]})] \"\" Docker [\"run\",\"--rm\",\"-v\",\"/source:/target:ro\",\"-v\",\"/data:/work\",\"-i\",\"--network=host\",\"-e\",\"HOSTBOOTSTRAP_CURRENT_FRAME=child\",\"-e\",\"HOSTBOOTSTRAP_REGISTRY_AUTH\",\"-w\",\"/\",\"image:tag\",marker] True"
+    , "  refuse [incus,lima] binding binary"
+    , "  refuse [incus] binding{requestedPhase=\"teardown\"} binary"
+    , "  refuse [incus] binding{requestedChildFrame=\"parent\"} binary"
+    , "  refuse [ViaVM (IncusVM \"--detach\" \"image\")] binding binary"
+    , "  refuse [incus] binding \"relative\""
+    , "  refuseExactly [incus] \"rel/path\" \"the admitted target binary is not absolute\""
+    , "  refuseExactly [incus] \"/a/../b\" \"the admitted target binary reaches outside itself\""
+    , "  refuseExactly [incus] \"/a:b\" \"the admitted target binary carries the mount delimiter\""
+    , "  refuse [ViaContainer (container{clExtraArgs=[\"--tty\"]})] binding \"\""
+    , "  refuse [ViaContainer (container{clRemoveAfter=False})] binding \"\""
+    , "  refuse [ViaContainer (container{clConfigDelivery=Just (ConfigDelivery \"/config\" \"x\")})] binding \"\""
+    , "  refuseInputExactly [incus] binding{requestedParentFrame=\"\"} binary \"the admitted edge names an empty parent frame\""
+    , "  refuseInputExactly [incus] binding{requestedChildFrame=\"\"} binary \"the admitted edge names an empty child frame\""
+    , "  refuseInputExactly [incus] binding{requestedChildFrame=\"parent\"} binary \"the admitted edge joins one frame to itself\""
+    , "  refuseInputExactly [incus] binding{requestedPhase=\"teardown\"} binary \"the admitted edge is not a execute-phase descent\""
+    , "  refuseExactly [incus,lima] binary \"a forward process route must carry exactly one lift layer\""
+    , "  refuseExactly [] binary \"a forward process route must carry exactly one lift layer\""
+    , "  refuseExactly [ViaContainer container] binary \"a container layer needs no target binary path\""
+    , "  refuseExactly [ViaContainer (container{clConfigDelivery=Just (ConfigDelivery \"/config\" \"x\")})] \"\" \"the admitted container layer delivers a configuration on standard input\""
+    , "  refuseExactly [ViaContainer (container{clExtraArgs=[\"--tty\"]})] \"\" \"the admitted container layer carries plan-authored extra arguments\""
+    , "  refuseExactly [ViaContainer (container{clRemoveAfter=False})] \"\" \"the admitted container layer outlives its own exchange\""
+    , "  refuseExactly [ViaVM (IncusVM \"\" \"image\")] binary \"the admitted Incus instance is empty\""
+    , "  refuseExactly [incus] \"\" \"the admitted target binary is empty\""
+    , "  refuseExactly [ViaLimaVM (LimaVM \"bad name\")] binary \"the admitted Lima instance carries whitespace\""
+    , "  refuseExactly [ViaWsl2VM (Wsl2VM \"--tty\")] binary \"the admitted WSL distribution reads as an option or a separator\""
+    , "  refuseInputExactly [ViaContainer container] binding{requestedChildFrame=\"bad frame\"} \"\" \"the admitted child frame carries whitespace\""
+    , "  refuseInputExactly [ViaContainer container] binding{requestedChildFrame=\"--tty\"} \"\" \"the admitted child frame reads as an option or a separator\""
+    , "  refuseExactly [ViaContainer (container{clImage=\"\"})] \"\" \"the admitted container image is empty\""
+    , "  refuseExactly [ViaContainer (container{clImage=\"--tty\"})] \"\" \"the admitted container image reads as an option or a separator\""
+    , "  refuseExactly [ViaContainer (container{clMounts=[Mount \"relative\" \"/target\" False]})] \"\" \"the admitted mount source is not absolute\""
+    , "  refuseExactly [ViaContainer (container{clMounts=[Mount \"/a/../b\" \"/target\" False]})] \"\" \"the admitted mount source reaches outside itself\""
+    , "  refuseExactly [ViaContainer (container{clMounts=[Mount \"/source\" \"relative\" False]})] \"\" \"the admitted mount target is not absolute\""
+    , "  refuseExactly [ViaContainer (container{clMounts=[Mount \"/source\" \"/a/../b\" False]})] \"\" \"the admitted mount target reaches outside itself\""
+    , "  refuseExactly [ViaContainer (container{clMounts=[Mount \"/source\" \"/a:b\" False]})] \"\" \"the admitted mount target carries the mount delimiter\""
+    , "  openingTests"
+    , "openingTests :: IO ()"
+    , "openingTests = withSystemTempDirectory \"route-opening\" $ \\directory -> do"
+    , "  signing <- expectRight (H.projectSigningKeyFromBytes (B.replicate 32 73))"
+    , "  store <- expectRight =<< P.openProtectedStore (directory </> \"authority\")"
+    , "  Fixture.withFixtureInstalledProject $ \\project -> do"
+    , "    result <- M.withProductionRoot store project ProjectUp $ \\root -> do"
+    , "      let authority = M.productionRootAuthority root; scope = H.productionHandoffScope project; payload = \"configuration\""
+    , "          edgeInput = HandoffBindingInput \"spec\" NarrowedProjectConfig \"revision\" \"parent\" \"child\" (H.childConfigDigest payload) \"execute\""
+    , "      brokered <- H.withRootBroker scope store signing authority $ \\broker -> do"
+    , "        rootRuntime <- expectRight (RT.rootRecursiveHandoffRuntimeKernel broker scope (H.rootBrokerRoute broker) authority ProjectUp)"
+    , "        (relay, token) <- expectRight =<< H.registerHandoffEdge broker edgeInput"
+    , "        offer <- expectRight (H.mkHandoffOffer relay payload token)"
+    , "        challenge <- H.freshChallenge"
+    , "        grant <- expectRight =<< H.grantHandoff broker offer challenge"
+    , "        verified <- expectRight (H.verifyHandoff (H.rootBrokerVerificationKey broker) (H.handoffOfferWire offer) (H.relayBinding relay) challenge grant)"
+    , "        nested <- expectRight (RT.nestedRecursiveHandoffRuntimeKernel (H.verifiedHandoffRoute verified) (H.relayBinding relay) ProjectUp)"
+    , "        let key = H.rootBrokerVerificationKey broker; nonce = B.replicate 32 7"
+    , "            noCarry _ = fail \"opening unexpectedly called its carrier\""
+    , "            noUse _ _ = fail \"refused opening reached its continuation\""
+    , "            signed request unsigned = H.renderRootedLifecycleResponse <$> (expectRight =<< H.signRootedLifecycleResponseKernel HI.recoverySigningKernel broker request unsigned)"
+    , "        rootRefusal <- withLifecycleChildOpeningKernel rootRuntime key nonce noCarry noUse"
+    , "        unless (rootRefusal == Left \"recursive handoff runtime: a root arm speaks for no authenticated nested frame\") (fail (show rootRefusal))"
+    , "        badNonce <- withLifecycleChildOpeningKernel nested key B.empty noCarry noUse"
+    , "        case badNonce of Left _ -> pure (); Right () -> fail \"empty opening nonce was admitted\""
+    , "        carrierRefusal <- withLifecycleChildOpeningKernel nested key nonce (\\_ -> pure (Left \"carrier refusal\")) noUse"
+    , "        unless (carrierRefusal == Left \"carrier refusal\") (fail (show carrierRefusal))"
+    , "        invalid <- withLifecycleChildOpeningKernel nested key nonce (\\_ -> pure (Right \"invalid signature\")) noUse"
+    , "        case invalid of Left _ -> pure (); Right () -> fail \"invalid response was admitted\""
+    , "        let refused request = do"
+    , "              digest <- expectRight (R.mkRequestDigest (H.childConfigDigest request))"
+    , "              session <- expectRight (R.mkLifecycleSession \"session\")"
+    , "              stage <- expectRight (R.mkLifecycleStage \"open\")"
+    , "              ordinal <- expectRight (R.mkLifecycleOrdinal 1)"
+    , "              unsigned <- expectRight (R.rootedRefusedResponseUnsignedKernel digest [\"child\"] session stage ordinal nonce \"refused\")"
+    , "              attempt <- H.signRootedLifecycleResponseKernel HI.recoverySigningKernel broker request unsigned"
+    , "              case attempt of Left _ -> pure (Left \"signer refused response family\"); Right _ -> fail \"signer accepted an unrelated response family\""
+    , "        wrongFamily <- withLifecycleChildOpeningKernel nested key nonce refused noUse"
+    , "        unless (wrongFamily == Left \"signer refused response family\") (fail (show wrongFamily))"
+    , "        let opened request = do"
+    , "              unsigned <- expectRight (R.rootedOpenedResponseUnsignedKernel (H.childConfigDigest request) [\"child\"] \"session\" \"open\" 1)"
+    , "              Right <$> signed request unsigned"
+    , "        accepted <- withLifecycleChildOpeningKernel nested key nonce opened (\\request answer -> if B.null request || B.null answer then fail \"empty opening\" else pure (Right ()))"
+    , "        unless (accepted == Right ()) (fail (show accepted))"
+    , "        pure ()"
+    , "      either (fail . show) pure brokered"
+    , "      pure (Right ())"
+    , "    either (fail . show) pure result"
+    ]
 
 data SiblingSymlinkCapability
     = SiblingSymlinkAvailable
@@ -464,7 +701,7 @@ frameCrossingTests =
                     , "else if argv == lifecycleChildArguments"
                     , "then runForwardLifecycleChild project finalizedSpec"
                     , "else case classifyFrameChild argv of"
-                    , "Just entry -> runFrameChildEntry (frameInterpreter interpretFrameTransaction) entry"
+                    , "Just entry -> runFrameChildEntry (frameInterpreter (interpretProjectFrameTransaction finalizedSpec)) entry"
                     , "Nothing -> join (customExecParser (prefs showHelpOnEmpty) opts)"
                     ])
             traverse_
@@ -507,8 +744,8 @@ frameCrossingTests =
             forM_ ["askChildGroupToStop", "awaitChildGroupExit", "killChildGroup", "waitForProcess"] $ \identifier ->
                 length (filter (== identifier) crossing) @?= 0
             assertBool
-                "shared CLI lost the frame-child classifier"
-                (significantHaskellLineCount cliSource >= 424)
+                "the CLI dispatches classified frame children to their entry"
+                (SourceGuard.haskellTokens "case classifyFrameChild argv of Just entry -> runFrameChildEntry" `isInfixOf` SourceGuard.haskellTokens cliSource)
     , testCase "the actual frame child refuses malformed streams and a decoded wrong tag" $ do
         wrongTag <- expectRight (Protocol.protocolMessage Protocol.ChallengeTag 29 [ByteString.replicate 32 7])
         wrongTagRefusal <- expectRight (Protocol.protocolMessage Protocol.RefusedTag 29
@@ -547,6 +784,18 @@ frameCrossingTests =
         Protocol.protocolMessageRequestId message @?= 41
         Protocol.protocolMessageFields message @?= ["the private protocol output"]
         afterProtocol @?= privateProtocolAfterMarker
+    , testCase "private protocol stdio restores both streams after exception and cancellation" $
+        forM_ ["exception", "cancellation"] $ \mode -> do
+            (status, output, diagnostic) <- runFrameBinary
+                ["--hostbootstrap-private-protocol-stdio-probe", mode] "restored input"
+            status @?= ExitSuccess
+            diagnostic @?= privateProtocolInsideMarker
+            (body, afterProtocol) <- expectRight (takeHandoffFrame output)
+            message <- expectRight (Protocol.decodeProtocolMessage (frameWire body))
+            Protocol.protocolMessageTag message @?= Protocol.FrameOutcomeTag
+            Protocol.protocolMessageRequestId message @?= 41
+            Protocol.protocolMessageFields message @?= ["the private protocol output"]
+            afterProtocol @?= privateProtocolAfterMarker <> "restored input"
     , testCase "private stdio acquisition and both global redirects retain cleanup" $
         withHandoffPackageRoot $ \packageRoot -> do
             (protocolSource, _) <- readFrozenSource =<< handoffModulePath packageRoot "HostBootstrap.Handoff.Protocol"
@@ -610,16 +859,41 @@ frameInterpreterFailureMarker = "the test interpreter IOException"
 frameInterpreterFailureConfirmation :: ByteString.ByteString
 frameInterpreterFailureConfirmation = "the original interpreter IOException was rethrown\n"
 
-runPrivateProtocolStdioProbe :: IO ()
-runPrivateProtocolStdioProbe = do
+runPrivateProtocolStdioProbe :: String -> IO ()
+runPrivateProtocolStdioProbe mode = do
     hSetBinaryMode stdout True
     hSetBinaryMode stderr True
-    Protocol.withPrivateProtocolStdio $ \channel -> do
+    thread <- myThreadId
+    savedChannel <- newIORef Nothing
+    result <- try @SomeException $ Protocol.withPrivateProtocolStdio $ \channel -> do
+        writeIORef savedChannel (Just channel)
         ByteString.hPut stdout privateProtocolInsideMarker
         hFlush stdout
+        when (mode /= "normal") $ hGetContents stdin >>= evaluate . length >>= (@?= 0)
         message <- expectRight (Protocol.protocolMessage Protocol.FrameOutcomeTag 41 ["the private protocol output"])
         Protocol.channelSend channel message >>= expectRight
+        case mode of
+            "exception" -> throwIO (userError "private stdio probe exception")
+            "cancellation" -> do
+                _ <- forkIO (throwTo thread ThreadKilled)
+                threadDelay 1000000
+                assertFailure "private stdio probe was not cancelled"
+            _ -> pure ()
+    case (mode, result) of
+        ("normal", Right ()) -> pure ()
+        ("exception", Left failure) -> assertBool "the original exception escaped" (isJust (fromException failure :: Maybe IOException))
+        ("cancellation", Left failure) -> (fromException failure :: Maybe AsyncException) @?= Just ThreadKilled
+        _ -> assertFailure "unexpected private stdio probe result"
+    retained <- readIORef savedChannel >>= maybe (assertFailure "the isolated channel was not recorded") pure
+    closedMessage <- expectRight (Protocol.protocolMessage Protocol.FrameOutcomeTag 42 ["closed"])
+    Protocol.channelSend retained closedMessage >>= \outcome -> case outcome of
+        Left (Protocol.ProtocolIOFailure _) -> pure ()
+        _ -> assertFailure "the private output handle remained usable"
+    Protocol.channelReceive retained >>= \outcome -> case outcome of
+        Left (Protocol.ProtocolIOFailure _) -> pure ()
+        _ -> assertFailure "the private input handle remained usable"
     ByteString.hPut stdout privateProtocolAfterMarker
+    when (mode /= "normal") $ ByteString.hGet stdin 14 >>= ByteString.hPut stdout
     hFlush stdout
 
 privateProtocolInsideMarker :: ByteString.ByteString
@@ -968,6 +1242,10 @@ protocolDataTests =
             awaitingRooted <- send running Protocol.RootedLifecycleRequestTag
             resumed <- receive awaitingRooted Protocol.RootedLifecycleResponseTag
             resumed @?= running
+            refused <- receive awaitingRooted Protocol.RefusedTag
+            retry <- messageFor Protocol.RootedLifecycleRequestTag 7
+            Protocol.childProtocolSend refused retry
+                @?= Left (Protocol.ProtocolInvalidTransition "send" refused Protocol.RootedLifecycleRequestTag)
             awaitingAcknowledgement <- send running Protocol.CompletedTag
             finished <- receive awaitingAcknowledgement Protocol.AcknowledgedTag
             Protocol.childProtocolFinished finished @?= True
@@ -2877,7 +3155,7 @@ recoveryTests =
                     case recoveryResponseFromFields binding [ByteString.replicate 63 0] of
                         Left (HandoffRecoverySignatureLength 64 63) -> pure ()
                         _ -> assertFailure "expected a truncated recovery response to refuse"
-    , testCase "an externally signed Up recovery projection cannot enter the teardown join" $
+    , testCase "an authenticated Up recovery projection enters only the teardown join" $
         withHandoff 24 ProjectUp $ \broker ->
             withRecoveryInput baseRecoveryCoordinates $ \recoveryInput ->
                 withRecoveryBinding broker recoveryInput recoveryPayload $ \projection -> do
@@ -2909,7 +3187,7 @@ recoveryTests =
                         recoveryGrant
                         handoff
                         (const ())
-                        @?= Left (HandoffRecoveryVerbInvalid "up")
+                        @?= Right ()
     , testCase "config and recovery handoffs do not substitute" $ do
         withHandoff 25 ProjectDestroy $ \broker ->
             withRecoveryInput baseRecoveryCoordinates $ \recoveryInput ->
@@ -3092,6 +3370,7 @@ lifecycleCompletionWireTests =
         withSystemTempDirectory "hostbootstrap-lifecycle-parent-rows" $ \directory -> do
             signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 53))
             store <- openProtectedStore (directory </> "authority") >>= expectRightIO
+            foreignStore <- openProtectedStore (directory </> "foreign") >>= expectRightIO
             Fixture.withFixtureInstalledProject $ \project ->
                 withRecoveryBroker signing store project ProjectUp $ \broker -> do
                     (binding, offer) <- newOffer broker childPayload
@@ -3120,8 +3399,16 @@ lifecycleCompletionWireTests =
                             image <- readProtectedRecordsImage store
                             pure [version | (key, version, _) <- image, "lifecycle-parent." `Text.isPrefixOf` key]
                         counts = (,,) <$> readIORef pendingRuns <*> readIORef freshRuns <*> readIORef replayRuns
+                    beforeRehydrate <- readProtectedRecordsImage store
+                    rehydrateAdoptedLifecycleReportKernel kernel foreignStore bindingBytes
+                        >>= (@?= Left (HandoffBindingMismatch "the adopted lifecycle binding names another protected store"))
+                    rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes >>= (@?= Right Nothing)
+                    readProtectedRecordsImage store >>= (@?= beforeRehydrate)
                     prepare >>= (@?= Right (Right ()))
                     parentVersions >>= (@?= [2])
+                    pendingImage <- readProtectedRecordsImage store
+                    rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes >>= (@?= Right Nothing)
+                    readProtectedRecordsImage store >>= (@?= pendingImage)
                     counts >>= (@?= (1, 0, 0))
                     -- A version-two row is still pending: the same exact prepare repeats.
                     prepare >>= (@?= Right (Right ()))
@@ -3130,6 +3417,15 @@ lifecycleCompletionWireTests =
                     -- Adoption advances to version three and takes the fresh continuation once.
                     adopt >>= (@?= Right (Right ()))
                     parentVersions >>= (@?= [3])
+                    adoptedImage <- readProtectedRecordsImage store
+                    rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes >>= (@?= Right (Just (bindingBytes, report)))
+                    readProtectedRecordsImage store >>= (@?= adoptedImage)
+                    rotatedToken <- freshHandoffToken
+                    rotated <- expectRight (mkHandoffBinding broker (bindingInputFor childPayload) rotatedToken)
+                    let rotatedBytes = renderHandoffBinding rotated
+                    assertBool "the rotated binding is distinct" (rotatedBytes /= bindingBytes)
+                    rehydrateAdoptedLifecycleReportKernel kernel store rotatedBytes >>= (@?= Right (Just (bindingBytes, report)))
+                    readProtectedRecordsImage store >>= (@?= adoptedImage)
                     counts >>= (@?= (2, 1, 0))
                     -- An exact version-three replay takes the replay continuation and writes nothing.
                     adopt >>= (@?= Right (Right ()))
@@ -3141,6 +3437,113 @@ lifecycleCompletionWireTests =
                     refusal <-
                         prepareLifecycleAcknowledgementKernel kernel broker offer stale report acknowledgement (const (bump pendingRuns)) (const (bump replayRuns))
                     refusal @?= Left (HandoffBindingMismatch "the lifecycle offer is not an authenticated granted edge")
+                    parentKeyText <- case [(key, bytes) | (key, _, bytes) <- adoptedImage, "lifecycle-parent." `Text.isPrefixOf` key] of
+                        [(key, bytes)] -> pure (key, bytes)
+                        _ -> assertFailure "expected one adopted parent row"
+                    let (parentName, adoptedBytes) = parentKeyText
+                    parentKey <- expectRight (mkRecordKey parentName)
+                    unrelatedToken <- freshHandoffToken
+                    unrelated <- expectRight (mkHandoffBinding broker (bindingInputFor childPayload){requestedChildFrame = "unrelated-frame"} unrelatedToken)
+                    let unrelatedBinding = renderHandoffBinding unrelated
+                        malformedOther = ByteString.concat (map frameWire ["bad-domain", "bad-version", "parent", "adopted", unrelatedBinding, "bad-report", "bad-ack"])
+                    unrelatedKey <- expectRight (mkRecordKey ("lifecycle-parent." <> recoveryWireDigest unrelatedBinding))
+                    forM_ [1 :: Int, 2, 3, 4] $ \version -> do
+                        written <- withProtectedEntry store $ \session -> do
+                            previous <- readProtectedRecord session unrelatedKey >>= either (assertFailure . show) pure
+                            let expected = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) previous
+                            compareAndSwapProtectedRecord session unrelatedKey expected malformedOther
+                        resultVersion <- expectRightIO written
+                        recordVersionWord resultVersion @?= fromIntegral version
+                        otherImage <- readProtectedRecordsImage store
+                        rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes >>= (@?= Right (Just (bindingBytes, report)))
+                        readProtectedRecordsImage store >>= (@?= otherImage)
+                    removedOther <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session unrelatedKey >>= either (assertFailure . show) (maybe (assertFailure "unrelated row disappeared") pure)
+                        compareAndDeleteProtectedRecord session unrelatedKey (ExpectVersion (protectedRecordVersion record))
+                    expectRightIO removedOther
+                    -- Opaque bytes under another edge's key name no binding at all: they cannot be
+                    -- this edge's row and no longer block its rehydration.
+                    forM_ [1 :: Int, 2, 3] $ \version -> do
+                        written <- withProtectedEntry store $ \session -> do
+                            previous <- readProtectedRecord session unrelatedKey >>= either (assertFailure . show) pure
+                            let expected = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) previous
+                            compareAndSwapProtectedRecord session unrelatedKey expected "opaque unrelated parent row"
+                        resultVersion <- expectRightIO written
+                        recordVersionWord resultVersion @?= fromIntegral version
+                    opaqueImage <- readProtectedRecordsImage store
+                    rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes >>= (@?= Right (Just (bindingBytes, report)))
+                    readProtectedRecordsImage store >>= (@?= opaqueImage)
+                    removedOpaque <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session unrelatedKey >>= either (assertFailure . show) (maybe (assertFailure "opaque row disappeared") pure)
+                        compareAndDeleteProtectedRecord session unrelatedKey (ExpectVersion (protectedRecordVersion record))
+                    expectRightIO removedOpaque
+                    wrongKey <- expectRight (mkRecordKey "lifecycle-parent.wrong-key")
+                    forM_ [1 :: Int, 2, 3] $ \version -> do
+                        written <- withProtectedEntry store $ \session -> do
+                            previous <- readProtectedRecord session wrongKey >>= either (assertFailure . show) pure
+                            let expected = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) previous
+                            compareAndSwapProtectedRecord session wrongKey expected adoptedBytes
+                        resultVersion <- expectRightIO written
+                        recordVersionWord resultVersion @?= fromIntegral version
+                    wrongImage <- readProtectedRecordsImage store
+                    wrong <- rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes
+                    case wrong of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure "parent row under the wrong key was accepted"
+                    readProtectedRecordsImage store >>= (@?= wrongImage)
+                    removed <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session wrongKey >>= either (assertFailure . show) (maybe (assertFailure "wrong-key row disappeared") pure)
+                        compareAndDeleteProtectedRecord session wrongKey (ExpectVersion (protectedRecordVersion record))
+                    expectRightIO removed
+                    (duplicateBinding, duplicateOffer) <- newOffer broker childPayload
+                    duplicateChallenge <- freshChallenge
+                    _ <- expectRightIO =<< grantHandoff broker duplicateOffer duplicateChallenge
+                    let duplicateBytes = renderHandoffBinding duplicateBinding
+                    duplicateReport <- expectRight (renderForwardRefusedLifecycleReport duplicateBytes "policy")
+                    duplicateAck <- expectRight (renderLifecycleAcknowledgement duplicateReport)
+                    let noEffect = pure (Right ()) :: IO (Either () ())
+                    prepareLifecycleAcknowledgementKernel kernel broker duplicateOffer duplicateChallenge duplicateReport duplicateAck
+                        (const noEffect) (const noEffect) >>= (@?= Right (Right ()))
+                    adoptLifecycleAcknowledgementKernel kernel broker duplicateOffer duplicateChallenge duplicateReport duplicateAck
+                        noEffect noEffect >>= (@?= Right (Right ()))
+                    duplicateImage <- readProtectedRecordsImage store
+                    duplicate <- rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes
+                    case duplicate of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure "duplicate adopted rows for one edge were accepted"
+                    readProtectedRecordsImage store >>= (@?= duplicateImage)
+                    duplicateKey <- expectRight (mkRecordKey ("lifecycle-parent." <> recoveryWireDigest duplicateBytes))
+                    removedDuplicate <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session duplicateKey >>= either (assertFailure . show) (maybe (assertFailure "duplicate row disappeared") pure)
+                        compareAndDeleteProtectedRecord session duplicateKey (ExpectVersion (protectedRecordVersion record))
+                    expectRightIO removedDuplicate
+                    removedParent <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session parentKey >>= either (assertFailure . show) (maybe (assertFailure "adopted row disappeared") pure)
+                        compareAndDeleteProtectedRecord session parentKey (ExpectVersion (protectedRecordVersion record))
+                    expectRightIO removedParent
+                    forM_ [1 :: Int, 2, 3] $ \version -> do
+                        written <- withProtectedEntry store $ \session -> do
+                            previous <- readProtectedRecord session parentKey >>= either (assertFailure . show) pure
+                            let expected = maybe ExpectAbsent (ExpectVersion . protectedRecordVersion) previous
+                            compareAndSwapProtectedRecord session parentKey expected "malformed parent row"
+                        resultVersion <- expectRightIO written
+                        recordVersionWord resultVersion @?= fromIntegral version
+                    malformedImage <- readProtectedRecordsImage store
+                    malformed <- rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes
+                    case malformed of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure "malformed adopted parent row was accepted"
+                    readProtectedRecordsImage store >>= (@?= malformedImage)
+                    changed <- withProtectedEntry store $ \session -> do
+                        record <- readProtectedRecord session parentKey >>= either (assertFailure . show) (maybe (assertFailure "adopted row disappeared") pure)
+                        compareAndSwapProtectedRecord session parentKey (ExpectVersion (protectedRecordVersion record)) adoptedBytes
+                    _ <- expectRightIO changed
+                    exhaustedImage <- readProtectedRecordsImage store
+                    exhausted <- rehydrateAdoptedLifecycleReportKernel kernel store bindingBytes
+                    case exhausted of
+                        Left _ -> pure ()
+                        Right _ -> assertFailure "version-four parent row was accepted"
+                    readProtectedRecordsImage store >>= (@?= exhaustedImage)
     , testCase "of two concurrent adopters exactly one is the fresh winner" $
         withSystemTempDirectory "hostbootstrap-lifecycle-concurrent-adopt" $ \directory -> do
             signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 54))
@@ -3212,6 +3615,8 @@ lifecycleCompletionWireTests =
                     written <- withProtectedEntry store (\session -> compareAndSwapProtectedRecord session parentKey ExpectAbsent "foreign row")
                     either (assertFailure . show) (const (pure ())) written
                     before <- readProtectedRecordsImage store
+                    rehydrateAdoptedLifecycleReportKernel kernel store (renderHandoffBinding granted) >>= (@?= Right Nothing)
+                    readProtectedRecordsImage store >>= (@?= before)
                     prepareWith grantedOffer grantedChallenge grantedReport grantedAcknowledgement >>= (@?= conflict)
                     readProtectedRecordsImage store >>= (@?= before)
     , testCase "a store that cannot write a lifecycle row reports a store failure, not a row conflict" $
@@ -3251,6 +3656,30 @@ lifecycleCompletionWireTests =
                             (const (pure (Right ()))) ::
                             IO (Either HandoffError (Either () ()))
                     assertBool ("the parent row write was not a store failure: " <> show (() <$ prepared)) (isStoreFailure (() <$ prepared))
+    , testCase "the relay's lifecycle request codec validates the exact routed request" $
+        withNamedHandoff 102 ProjectUp $ \_ broker -> do
+            (binding, offer) <- newOffer broker childPayload
+            challenge <- freshChallenge
+            report <- expectRight (renderForwardRefusedLifecycleReport (renderHandoffBinding binding) "policy")
+            acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+            canonical <- expectRight (Relay.renderLifecycleAcknowledgementRequest "prepare" offer challenge report acknowledgement)
+            fields <- framesOf canonical
+            length fields @?= 7
+            prepared <- newIORef (0 :: Int)
+            adopted <- newIORef (0 :: Int)
+            let bump counter _ _ _ _ = modifyIORef' counter (+ 1) >> pure (Right ())
+                decode wire = Relay.withLifecycleAcknowledgementRequest (rootBrokerRoute broker) wire (bump prepared) (bump adopted)
+                rewrite index replacement = ByteString.concat (map frameWire [if i == index then replacement else field | (i, field) <- zip [0 :: Int ..] fields])
+            decode canonical >>= (@?= Right ())
+            adopt <- expectRight (Relay.renderLifecycleAcknowledgementRequest "adopt" offer challenge report acknowledgement)
+            decode adopt >>= (@?= Right ())
+            (,) <$> readIORef prepared <*> readIORef adopted >>= (@?= (1, 1))
+            forM_ [rewrite 0 "other-domain", rewrite 1 "2", rewrite 2 "other", rewrite 6 "other", canonical <> "x", ByteString.init canonical] $ \wire -> do
+                result <- decode wire
+                case result of
+                    Left _ -> pure ()
+                    Right () -> assertFailure "a changed lifecycle request was accepted"
+            (,) <$> readIORef prepared <*> readIORef adopted >>= (@?= (1, 1))
     , testCase "the relay's lifecycle response codec accepts only its exact canonical wire" $
         withSystemTempDirectory "hostbootstrap-lifecycle-response-codec" $ \directory -> do
             signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 57))
@@ -3296,6 +3725,115 @@ lifecycleCompletionWireTests =
                         Left (Relay.RelayHandoffFailure _) -> pure ()
                         other -> assertFailure ("a truncated response was not refused: " <> show other)
                     (,) <$> readIORef first <*> readIORef second >>= (@?= (1, 1))
+    , testCase "recovery readback decisions preserve version, bytes, and consumed-token distinctions" $ do
+        let exact = HandoffInternal.classifyRecoveryExactReadback 1 "map"
+        exact (Just (1, "map")) @?= HandoffInternal.RecoveryExactMatch
+        exact (Just (2, "map")) @?= HandoffInternal.RecoveryExactChanged
+        exact (Just (1, "different")) @?= HandoffInternal.RecoveryExactChanged
+        exact Nothing @?= HandoffInternal.RecoveryExactChanged
+        let token = HandoffInternal.classifyRecoveryTokenReadback "planned"
+        token (Just (1, "planned")) @?= HandoffInternal.RecoveryTokenPlanned
+        token (Just (2, "planned")) @?= HandoffInternal.RecoveryTokenChanged
+        token (Just (2, "granted:transcript")) @?= HandoffInternal.RecoveryTokenConsumed
+        token Nothing @?= HandoffInternal.RecoveryTokenChanged
+    , testCase "recovery readback decisions refuse actual map drift and a consumed token" $
+        withSystemTempDirectory "hostbootstrap-recovery-readback" $ \directory -> do
+            signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 57))
+            store <- openProtectedStore (directory </> "authority") >>= expectRightIO
+            let input =
+                    (bindingInputFor recoveryPayload)
+                        { requestedPayloadKind = RecoveryAdapterWire
+                        , requestedPhase = "teardown"
+                        , requestedChildConfigDigest = childConfigDigest recoveryPayload
+                        }
+                register broker =
+                    registerRecoverableAdmittedHandoffEdgeKernel HandoffInternal.recoverySigningKernel broker
+                        (pure (Right ()) :: IO (Either () ())) input recoveryPayload
+            Fixture.withFixtureInstalledProject $ \project ->
+                withRecoveryBroker signing store project ProjectDestroy $ \broker -> do
+                    before <- readProtectedRecordsImage store
+                    registered <- register broker
+                    (relay, token) <- case registered of
+                        Right (Right edge) -> pure edge
+                        other -> assertFailure ("recovery registration failed: " <> show (() <$ other))
+                    initial <- readProtectedRecordsImage store
+                    let created = [row | row <- initial, row `notElem` before]
+                        mapRows = [row | row@(key, _, _) <- created, "recovery-open." `Text.isPrefixOf` key]
+                        tokenRows = [row | row@(key, _, _) <- created, not ("recovery-open." `Text.isPrefixOf` key)]
+                    (mapName, initialVersion, mapBytes) <- case mapRows of
+                        [row] -> pure row
+                        _ -> assertFailure "expected one recovery map row"
+                    (tokenName, _, plannedBytes) <- case tokenRows of
+                        [row] -> pure row
+                        _ -> assertFailure "expected one planned token row"
+                    HandoffInternal.classifyRecoveryExactReadback initialVersion mapBytes (Just (initialVersion, mapBytes))
+                        @?= HandoffInternal.RecoveryExactMatch
+                    offer <- expectRight (mkHandoffOffer relay recoveryPayload token)
+                    challenge <- freshChallenge
+                    _ <- expectRightIO =<< grantHandoff broker offer challenge
+                    granted <- readProtectedRecordsImage store
+                    (_, grantedVersion, grantedBytes) <- case [row | row@(key, _, _) <- granted, key == tokenName] of
+                        [row] -> pure row
+                        _ -> assertFailure "expected the granted token row"
+                    HandoffInternal.classifyRecoveryTokenReadback plannedBytes (Just (grantedVersion, grantedBytes))
+                        @?= HandoffInternal.RecoveryTokenConsumed
+                    mapKey <- either (assertFailure . show) pure (mkRecordKey mapName)
+                    let advance bytes = withProtectedEntry store $ \session -> do
+                            observed <- readProtectedRecord session mapKey >>= either (assertFailure . show) pure
+                            record <- maybe (assertFailure "the map row disappeared") pure observed
+                            compareAndSwapProtectedRecord session mapKey (ExpectVersion (protectedRecordVersion record)) bytes
+                    _ <- expectRightIO =<< advance mapBytes
+                    advanced <- readProtectedRecordsImage store
+                    (_, advancedVersion, advancedBytes) <- case [row | row@(key, _, _) <- advanced, key == mapName] of
+                        [row] -> pure row
+                        _ -> assertFailure "expected the advanced map row"
+                    HandoffInternal.classifyRecoveryExactReadback initialVersion mapBytes (Just (advancedVersion, advancedBytes))
+                        @?= HandoffInternal.RecoveryExactChanged
+                    _ <- expectRightIO =<< advance "another writer's map"
+                    changed <- readProtectedRecordsImage store
+                    (_, changedVersion, changedBytes) <- case [row | row@(key, _, _) <- changed, key == mapName] of
+                        [row] -> pure row
+                        _ -> assertFailure "expected the changed map row"
+                    HandoffInternal.classifyRecoveryExactReadback advancedVersion advancedBytes (Just (changedVersion, changedBytes))
+                        @?= HandoffInternal.RecoveryExactChanged
+                    readProtectedRecordsImage store >>= (@?= changed)
+    , testCase "the actual forward completion kernel preserves refusal, failure, and exact binding" $
+        withSystemTempDirectory "hostbootstrap-forward-completion" $ \directory -> do
+            signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 60))
+            store <- openProtectedStore (directory </> "authority") >>= expectRightIO
+            Fixture.withFixtureInstalledProject $ \project ->
+                withRecoveryBroker signing store project ProjectUp $ \broker -> do
+                    let makeCompletionOffer = do
+                            (relay, token) <- expectRightIO =<< registerHandoffEdge broker (bindingInputFor childPayload)
+                            expectRight (mkHandoffOffer relay childPayload token)
+                        persist report acknowledgement = do
+                            published <- publishLifecycleReportKernel HandoffInternal.recoverySigningKernel store report
+                            case published of
+                                Left failure -> pure (Left (Text.pack (handoffErrorMessage failure)))
+                                Right () -> do
+                                    received <- receiveLifecycleAcknowledgementKernel HandoffInternal.recoverySigningKernel store report acknowledgement
+                                    pure (either (Left . Text.pack . handoffErrorMessage) Right received)
+                        noCompletion _ = assertFailure "a refused report minted completion"
+                    forM_
+                        [ ("refused", renderForwardRefusedLifecycleReport)
+                        , ("failed", renderForwardFailedLifecycleReport)
+                        ] $ \(status, renderReport) -> do
+                            offer <- makeCompletionOffer
+                            let binding = renderHandoffBinding (handoffOfferBinding offer)
+                            report <- expectRight (renderReport binding "child detail")
+                            Completion.withAcknowledgedForwardLifecycleCompletionKernel offer report persist noCompletion
+                                >>= (@?= Left ("lifecycle completion: the forward child " <> status <> ": child detail"))
+                    offer <- makeCompletionOffer
+                    other <- makeCompletionOffer
+                    let otherBinding = renderHandoffBinding (handoffOfferBinding other)
+                    foreignReport <- expectRight (renderForwardRefusedLifecycleReport otherBinding "policy")
+                    Completion.withAcknowledgedForwardLifecycleCompletionKernel offer foreignReport persist noCompletion
+                        >>= (@?= Left "lifecycle completion: the report binding differs from the exact offer")
+                    observations <- expectRight (renderLifecycleObservations [])
+                    withReverseLifecycleFixture 62 ProjectDestroy $ \reverseBinding _ -> do
+                        reverseReport <- expectRight (renderReverseRefusedLifecycleReport reverseBinding observations "policy")
+                        Completion.withAcknowledgedForwardLifecycleCompletionKernel offer reverseReport persist noCompletion
+                            >>= (@?= Left "lifecycle completion: a forward offer refuses a reverse report")
     , testCase "a recoverable open rotates its token once the edge is granted and refuses a corrupt map" $
         withSystemTempDirectory "hostbootstrap-recoverable-rotation" $ \directory -> do
             signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 58))
@@ -3444,8 +3982,25 @@ lifecycleCompletionWireTests =
                     refused broker "payload kind" input{requestedPayloadKind = NarrowedProjectConfig} recoveryPayload (mismatch "recoverable open requires recovery-adapter-wire")
                     refused broker "empty coordinate" input{requestedPlanRevision = ""} recoveryPayload (mismatch "the recoverable-open binding input contains an empty coordinate")
                     readProtectedRecordsImage store >>= (@?= afterFirst)
-                withRecoveryBroker signing store project ProjectUp $ \broker ->
+                withRecoveryBroker signing store project ProjectUp $ \broker -> do
                     refused broker "up verb" input recoveryPayload (HandoffRecoveryVerbInvalid "up")
+                    before <- readProtectedRecordsImage store
+                    denied <- registerFailedUpRecoverableHandoffEdgeKernel kernel broker
+                        (pure (Left "not reached") :: IO (Either Text.Text ())) input recoveryPayload
+                    case denied of
+                        Right (Left detail) -> detail @?= "not reached"
+                        _ -> assertFailure "an unadmitted failed-Up edge was opened"
+                    readProtectedRecordsImage store >>= (@?= before)
+                    admitted <- registerFailedUpRecoverableHandoffEdgeKernel kernel broker admit input recoveryPayload
+                    case admitted of
+                        Right (Right _) -> pure ()
+                        _ -> assertFailure "the admitted failed-Up teardown edge was refused"
+                    afterAdmitted <- readProtectedRecordsImage store
+                    invalidPhase <- registerFailedUpRecoverableHandoffEdgeKernel kernel broker admit input{requestedPhase = "execute"} recoveryPayload
+                    case invalidPhase of
+                        Left failure -> failure @?= mismatch "recoverable open requires teardown"
+                        _ -> assertFailure "failed-Up recovery admitted the execute phase"
+                    readProtectedRecordsImage store >>= (@?= afterAdmitted)
     , testCase "ordered lifecycle observations round-trip through the exact closed table" $ do
         let rows =
                 [ ("release", "released", "none")
@@ -3790,32 +4345,33 @@ lifecycleCompletionWireTests =
             users "renderLifecycleObservations"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Teardown.hs"]
             users "lifecycleObservationsFromWire"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
+                @?= [ "internal/failed-up/HostBootstrap/Authority/FailedUp/Internal.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown.hs"
-                    , "src/HostBootstrap/Authority/FailedUp/Internal.hs"
                     ]
             users "renderForwardCompletedLifecycleReport"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
-                    , "src/HostBootstrap/Handoff/TerminalReport.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/TerminalReport.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     ]
             users "renderReverseCompletedLifecycleReport"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     ]
             users "eliminateLifecycleReport"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
+                @?= [ "internal/failed-up/HostBootstrap/Authority/FailedUp/Internal.hs"
+                    , "internal/handoff-completion/HostBootstrap/Handoff/Completion.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Authority/FailedUp/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
+                    , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     ]
             users "renderLifecycleAcknowledgement"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/Completion.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Protocol.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
                     ]
             forM_
                 [ "renderForwardRefusedLifecycleReport"
@@ -3828,9 +4384,9 @@ lifecycleCompletionWireTests =
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     ]
             users "renderForwardFailedLifecycleReportWithObservations"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/TerminalReport.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Handoff/TerminalReport.hs"
                     ]
             users "verifyLifecycleAcknowledgement"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
@@ -3839,14 +4395,12 @@ lifecycleCompletionWireTests =
             users "renderTeardownObservations"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Teardown.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Teardown/Executor/Internal.hs"
                     ]
             users "teardownObservationsFromWire"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Teardown.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/Completion.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
-                    , "src/HostBootstrap/Teardown/Executor/Internal.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     ]
             assertBool
                 "Teardown imports the public Handoff structural codec"
@@ -4062,8 +4616,8 @@ lifecycleAcknowledgementSubstrateTests =
             "adopt lifecycle capability"
             (adoptLifecycleAcknowledgementKernel (error "adopt lifecycle capability"))
         expectForced
-            "rehydrate adopted lifecycle capability"
-            (rehydrateAdoptedLifecycleAcknowledgementKernel (error "rehydrate adopted lifecycle capability"))
+            "rehydrate adopted report capability"
+            (rehydrateAdoptedLifecycleReportKernel (error "rehydrate adopted report capability"))
     , testCase "placement: the durable lifecycle row source keeps its exact, transcript-bound, convergent, callback-safe shape (behaviour: the store-backed row cases)" $
         withHandoffPackageRoot $ \packageRoot -> do
             sources <- handoffImplementationSources packageRoot
@@ -4190,7 +4744,7 @@ lifecycleAcknowledgementSubstrateTests =
                 granted = normalizeWhitespace grantValidation
                 readback = normalizeWhitespace rowReadback
             namedDeclarations @?= []
-            significantHaskellLineCount durableSource @?= 450
+            significantHaskellLineCount durableSource @?= 428
             length (filter (== "RecordKey") protectedImports) @?= 1
             traverse_
                 ( \kernel -> do
@@ -4405,11 +4959,11 @@ lifecycleAcknowledgementSubstrateTests =
                 , "Right result -> result `seq` pure result"
                 ]
                 entrySource
-            SourceGuard.countHaskellIdentifier "RecoverySigningKernel" durableSource @?= 6
-            SourceGuard.countHaskellIdentifier "consumeRecoverySigningKernel" durableSource @?= 6
+            SourceGuard.countHaskellIdentifier "RecoverySigningKernel" durableSource @?= 5
+            SourceGuard.countHaskellIdentifier "consumeRecoverySigningKernel" durableSource @?= 5
             SourceGuard.countHaskellIdentifier "withActiveRootBroker" durableSource @?= 2
             SourceGuard.countHaskellIdentifier "withProtectedEntry" durableSource @?= 1
-            SourceGuard.countHaskellIdentifier "readProtectedRecord" durableSource @?= 13
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" durableSource @?= 12
             SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" durableSource @?= 5
             SourceGuard.countHaskellIdentifier "ExpectAbsent" durableSource @?= 2
             SourceGuard.countHaskellIdentifier "ExpectVersion" durableSource @?= 3
@@ -4708,7 +5262,7 @@ lifecycleAcknowledgementSubstrateTests =
             -- Historical parent-acknowledgement landing (2026-08-11):
             -- Handoff 343, Protocol 71, total 414. The shared Protocol increment
             -- remains dated evidence, not a current whole-file size oracle.
-            handoffAttribution @?= 355
+            handoffAttribution @?= 333
             -- DEVELOPMENT_PLAN/rationale.md#handoff-freezes-cover-owned-declarations
             frozenHandoffDefinitionDigest ["requireAcknowledgement"] protocolSource
                 >>= (@?= "116088b6fbcb48a1e31e920b6c8146362c6923fed4eec178e186f3ee28587b54")
@@ -5038,8 +5592,8 @@ lifecycleAcknowledgementSubstrateTests =
                 ]
             SourceGuard.countHaskellIdentifier "prepareLifecycleAcknowledgementThroughLink" publicRouteSource @?= 2
             SourceGuard.countHaskellIdentifier "adoptLifecycleAcknowledgementThroughLink" publicRouteSource @?= 2
-            SourceGuard.countHaskellIdentifier "linkLifecycleAcknowledgementRaw" relaySource @?= 7
-            SourceGuard.countHaskellIdentifier "rootLifecycleAcknowledgement" relaySource @?= 5
+            SourceGuard.countHaskellIdentifier "linkLifecycleAcknowledgementRaw" relaySource @?= 8
+            SourceGuard.countHaskellIdentifier "rootLifecycleAcknowledgement" relaySource @?= 6
             SourceGuard.countHaskellIdentifier "relayLifecycleAcknowledgement" relaySource @?= 3
             SourceGuard.countHaskellIdentifier "exactLifecycleFrames" relaySource @?= 4
     , testCase "Relay owns terminal persistence and complete serve without a child-store receipt" $
@@ -5265,23 +5819,30 @@ lifecycleAcknowledgementSubstrateTests =
                 , "Just False -> fixedReplay"
                 ]
                 terminalSource
-            assertContains
+            assertFragmentsInOrder
                 "pending durably adopts before sending the acknowledgement and publishes its disposition only after the send"
-                "pending storedAcknowledgement = do adoptedStage <- newMVar (Nothing :: Maybe Bool) let keep fresh = modifyMVar_ adoptedStage (\\_ -> pure (Just fresh)) >> pure (Right ()) adopted <- adoptLifecycleAcknowledgementThroughLink link offer challenge report acknowledgement (keep True) (keep False) case adopted of Left _ -> pure (Left RelayLifecycleAdoptionFailure) Right () -> sendAcknowledgement storedAcknowledgement $ do kept <- readMVar adoptedStage maybe (pure (Right ())) recordDisposition kept"
-                terminal
+                [ "pendingLifecycleAcknowledgementThroughLink link channel request offer challenge report acknowledgement storedAcknowledgement markAttempt recordDisposition = do"
+                , "adoptedStage <- newMVar (Nothing :: Maybe Bool)"
+                , "adopted <- adoptLifecycleAcknowledgementThroughLink link offer challenge report acknowledgement (keep True) (keep False)"
+                , "Left _ -> pure (Left RelayLifecycleAdoptionFailure)"
+                , "sendLifecycleAcknowledgement channel request acknowledgement storedAcknowledgement markAttempt"
+                , "maybe (pure (Right ())) recordDisposition kept"
+                ]
+                relaySource
             assertContains
                 "already-Adopted records acknowledgement-only replay"
                 "alreadyAdopted storedAcknowledgement = sendAcknowledgement storedAcknowledgement (recordDisposition False)"
                 terminal
             assertFragmentsInOrder
                 "acknowledgement attempt is marked before direct child I/O"
-                [ "sendAcknowledgement storedAcknowledgement after"
+                [ "sendLifecycleAcknowledgement channel request acknowledgement storedAcknowledgement markAttempt after"
                 , "storedAcknowledgement /= acknowledgement"
-                , "modifyMVar_ gate $ \\(closed, entered, _, fresh) -> pure (closed, entered, True, fresh)"
+                , "markAttempt"
                 , "sent <- transmit channel AcknowledgedTag request [acknowledgement]"
+                , "Left _ -> pure (Left RelayLifecycleTransmissionFailure)"
                 , "Right () -> after"
                 ]
-                terminalSource
+                relaySource
             assertFragmentsInOrder
                 "Fresh alone permits terminal callback success while replay and already-Adopted are acknowledgement-only"
                 [ "recordDisposition fresh = do"
@@ -5340,6 +5901,7 @@ lifecycleAcknowledgementSubstrateTests =
                     , "type RequesterPath = [Text]"
                     , "type RootedLifecycleService ="
                     , "data BrokerLink scope brokerGeneration = BrokerLink"
+                    , "data PostOpenFamily = Descend | Settled | FrameComplete | ReceiptRecorded | Refused"
                     , "data ParentRelayState"
                     , "data RelayError"
                     ]
@@ -5396,7 +5958,6 @@ lifecycleAcknowledgementSubstrateTests =
                 [ "LifecycleCompletion"
                 , "withAcknowledgedForwardLifecycleCompletionKernel"
                 , "withAcknowledgedBoundReverseLifecycleCompletionKernel"
-                , "withRehydratedAcknowledgedReverseLifecycleCompletionKernel"
                 , "withReceivedHandoffEdge"
                 , "ReceiverExpectation"
                 , "withProtectedEntry"
@@ -5425,8 +5986,8 @@ lifecycleAcknowledgementSubstrateTests =
                 ]
             SourceGuard.countHaskellIdentifier "prepareLifecycleAcknowledgementThroughLink" relaySource @?= 4
             SourceGuard.countHaskellIdentifier "adoptLifecycleAcknowledgementThroughLink" relaySource @?= 4
-            SourceGuard.countHaskellIdentifier "publishLifecycleReportKernel" relaySource @?= 3
-            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementKernel" relaySource @?= 3
+            SourceGuard.countHaskellIdentifier "publishLifecycleReportKernel" relaySource @?= 2
+            SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementKernel" relaySource @?= 2
             SourceGuard.countHaskellIdentifier "withReceivedLifecycleAcknowledgementKernel" relaySource @?= 0
             SourceGuard.countHaskellIdentifier "withReceivedRecoveryLifecycleAcknowledgementKernel" relaySource @?= 0
             SourceGuard.countHaskellIdentifier "receiveLifecycleAcknowledgementForEdge" relaySource @?= 0
@@ -5435,14 +5996,11 @@ lifecycleAcknowledgementSubstrateTests =
             mapM_
                 (\identifier -> SourceGuard.countHaskellIdentifier identifier terminalSource @?= 1)
                 [ "RelayLifecycleInvalidReport"
-                , "RelayLifecycleAdoptionFailure"
-                , "RelayLifecycleStoredMismatch"
-                , "RelayLifecycleTransmissionFailure"
                 , "RelayLifecycleCallbackBeforeAcknowledgement"
                 , "RelayLifecycleCallbackAfterAcknowledgement"
                 ]
-            -- Measured from the live source, so the figure follows the module and cannot drift as a constant.
-            significantHaskellLineCount relaySource @?= 2728
+            -- Pin the measured source size, including the closed post-open response family.
+            significantHaskellLineCount relaySource @?= 2815
     ]
 
 -- ---------------------------------------------------------------------------
@@ -5477,9 +6035,29 @@ sealedFacadeTests =
             length (filter (== unit) (SourceGuard.fieldValues "build-depends" main)) @?= 1
             length (filter (== unit) (SourceGuard.fieldValues "build-depends" testsSource)) @?= 1
             SourceGuard.fieldValues "mixins" testsSource
-                @?= [unit, "(", "HostBootstrap.Lifecycle.Dependency.Internal", "as", "TestDependency"] <> handoffTestModules <> [")"]
+                @?= [unit, "(", "HostBootstrap.Lifecycle.Dependency.Internal", "as", "TestDependency"]
+                    <> take 3 handoffTestModules
+                    <> ["HostBootstrap.Handoff.Runtime", "as", "TestHandoffRuntime"]
+                    <> drop 3 handoffTestModules
+                    <> [ "HostBootstrap.Lifecycle.Plan", "as", "TestLifecyclePlan"
+                       , "HostBootstrap.Lifecycle.FrameExecutor", "as", "TestFrameExecutor"
+                       , "HostBootstrap.Lifecycle.Rooted", "as", "TestRootedSession"
+                       , "HostBootstrap.Lifecycle.Rooted.Node", "as", "TestRootedNode"
+                       , "HostBootstrap.Lifecycle.Rooted.Receipt", "as", "TestRootedReceipt"
+                       , "HostBootstrap.Lifecycle.Prepared.Internal", "as", "TestPreparedGate"
+                       , "HostBootstrap.Lifecycle.RootedPlan", "as", "TestRootedPlan"
+                       , "HostBootstrap.Lifecycle.RootedPlan.Testing", "as", "TestCatalogFixtures"
+                       , "HostBootstrap.ProjectPlan.Handoff.Internal", "as", "TestForwardHandoff"
+                       , "HostBootstrap.ProjectPlan.Construct.Internal", "as", "TestFinalizedSpec"
+                       , "HostBootstrap.Teardown", "as", "TestTeardown"
+                       , "HostBootstrap.Teardown.Internal", "as", "TestTeardownInternal"
+                       , ")"
+                       , "hostbootstrap-core:reverse-executor-internal"
+                       , "(", "HostBootstrap.Command.Child.Reverse.Internal", "as", "TestReversePolicy"
+                       , "HostBootstrap.Teardown.Executor.Internal", "as", "TestTeardownExecutor", ")"
+                       ]
             SourceGuard.fieldValues "hs-source-dirs" testsSource @?= ["test"]
-    , testCase "Cabal exposes only the handoff facade and selects five private test owners" $
+    , testCase "Cabal exposes only the handoff facade and selects the private test owners" $
         withHandoffPackageRoot $ \packageRoot -> do
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
             specSource <- readFile (packageRoot </> "test" </> "Spec.hs")
@@ -5522,12 +6100,13 @@ sealedFacadeTests =
                 SourceGuard.namedStanza "test-suite hostbootstrap-core-test" cabalSource
             let testModules = "Spec" : fieldModules "other-modules" testsSource
             forM_ hiddenHandoffModules $ \moduleName ->
-                if moduleName `elem` handoffTestModules
+                if moduleName `elem` ("HostBootstrap.Handoff.Completion" : handoffTestModules)
                     then forM_ (runtimeTestImporters moduleName) $ \path ->
                         assertBool (path <> " is not a registered core-test source") $
                             takeWhile (/= '.') path `elem` testModules
                     else runtimeTestImporters moduleName @?= []
-            runtimeTestImporters "HostBootstrap.Handoff.Rooted" @?= ["HandoffSpec.hs"]
+            runtimeTestImporters "HostBootstrap.Handoff.Rooted" @?= ["CLISpec.hs", "HandoffSpec.hs", "ProjectPlanSpec.hs", "RecursiveLifecycleSpec.hs", "TeardownSpec.hs"]
+            runtimeTestImporters "HostBootstrap.Handoff.Completion" @?= ["HandoffSpec.hs", "TeardownSpec.hs"]
             traverse_
                 ( \formerSpec -> do
                     assertBool
@@ -5819,6 +6398,28 @@ sealedFacadeTests =
                     , "renderRootedPayloadBindingKernel"
                     , "renderRootedPayloadUnsignedKernel"
                     , "renderRootedPayloadUnsignedPartsKernel"
+                    , "RootedProjectedObservation(..)"
+                    , "RootedNodeObservation(..)"
+                    , "renderRootedNodeObservationKernel"
+                    , "readRootedNodeObservationKernel"
+                    , "readRootedNodeObservationForPlanKernel"
+                    , "RootedReverseResource(..)"
+                    , "RootedReverseObservation(..)"
+                    , "renderRootedReverseObservationKernel"
+                    , "readRootedReverseObservationForPlanKernel"
+                    , "renderReversePreparedGateEnvelopeKernel"
+                    , "readReversePreparedGateEnvelopeKernel"
+                    , "renderRecoveryObserveEnvelopeKernel"
+                    , "readRecoveryObserveEnvelopeKernel"
+                    , "RootedRecoveryResult(..)"
+                    , "RootedRecoveryObservation(..)"
+                    , "renderRootedRecoveryObservationKernel"
+                    , "readRootedRecoveryObservationKernel"
+                    , "admitRootedRecoveryObservationKernel"
+                    , "RecoveryObservationRequest(..)"
+                    , "renderRecoveryObservationRequestKernel"
+                    , "readRecoveryObservationRequestKernel"
+                    , "isRecoveryObservationRequestKernel"
                     , "RootedLifecycleRequest"
                     , "rootedOpenFrameRequestKernel"
                     , "rootedNextNodeRequestKernel"
@@ -6055,13 +6656,15 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             users "RootedPayloadBinding"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
@@ -6090,7 +6693,7 @@ sealedFacadeTests =
                 "the rooted codec remains hidden from every exposed library surface"
                 ("HostBootstrap.Handoff.Rooted" `notElem` exposed)
             sort (filter ("HostBootstrap.Handoff." `isPrefixOf`) (SourceGuard.haskellImports handoffSpecSource))
-                @?= sort (handoffTestModules <> ["HostBootstrap.Handoff.Transaction"])
+                @?= sort (handoffTestModules <> ["HostBootstrap.Handoff.Completion", "HostBootstrap.Handoff.Transaction"])
             traverse_
                 ( \seam ->
                     assertBool
@@ -6309,36 +6912,42 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             users "RootedLifecycleRequest"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     ]
             users "rootedLifecycleRequestFromWireKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             users "withRootedLifecycleRequestKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             assertBool
                 "the request remains structurally private and absent from frozen Protocol while the facade consumes its hidden decoder"
@@ -6498,7 +7107,7 @@ sealedFacadeTests =
             SourceGuard.countHaskellTokenSequence ["newtype", "RootedLifecycleResponse"] rootedSource @?= 0
             SourceGuard.countHaskellIdentifier "RootedLifecycleResponse" rootedSource @?= 9
             mapM_
-                (\constructor -> SourceGuard.countHaskellIdentifier constructor rootedSource @?= 3)
+                (\constructor -> SourceGuard.countHaskellIdentifier constructor rootedSource @?= if constructor == "Prepared" then 4 else 3)
                 constructors
             mapM_
                 (\builder -> SourceGuard.countHaskellIdentifier builder rootedSource @?= 4)
@@ -6600,7 +7209,7 @@ sealedFacadeTests =
                 [ "withRootedPreparedResponseKernel broker session request grant use ="
                 , "withRootedFrameSessionKernel session"
                 , "if not attached"
-                , "postOpenNonce \"prepared\" request"
+                , "postOpenNonce Nothing request"
                 , "withPreparedNodeGrantKernel grant"
                 , "signAndUse broker request"
                 , "digest <- Rooted.mkRequestDigest (childConfigDigest request)"
@@ -6622,25 +7231,24 @@ sealedFacadeTests =
                 [ "withRootedPostOpenResponseKernel broker session family request body use ="
                 , "withRootedFrameSessionKernel session"
                 , "if not attached"
-                , "postOpenNonce family request"
+                , "postOpenNonce (Just family) request"
                 , "signAndUse broker request"
                 , "digest <- Rooted.mkRequestDigest (childConfigDigest request)"
                 , "checkedSession <- Rooted.mkLifecycleSession token"
-                , "checkedStage <- Rooted.mkLifecycleStage family"
+                , "checkedStage <- Rooted.mkLifecycleStage (postOpenFamilyLabel family)"
                 , "build path checkedSession ordinal nonce digest checkedStage"
                 , "use"
                 , "build path token ordinal nonce digest stage = case family of"
-                , "\"descend\" -> opaque Rooted.rootedDescendResponseUnsignedKernel path token ordinal nonce"
-                , "\"settled\" -> opaque Rooted.rootedSettledResponseUnsignedKernel path token ordinal nonce"
-                , "\"frame-complete\" -> opaque Rooted.rootedFrameCompleteResponseUnsignedKernel path token ordinal nonce"
-                , "\"receipt-recorded\" -> do"
+                , "Descend -> opaque Rooted.rootedDescendResponseUnsignedKernel path token ordinal nonce"
+                , "Settled -> opaque Rooted.rootedSettledResponseUnsignedKernel path token ordinal nonce"
+                , "FrameComplete -> opaque Rooted.rootedFrameCompleteResponseUnsignedKernel path token ordinal nonce"
+                , "ReceiptRecorded -> do"
                 , "checkedOrdinal <- Rooted.mkLifecycleOrdinal (ordinal + 1)"
                 , "checkedPredecessor <- Rooted.mkPredecessorDigest (TextEncoding.decodeUtf8Lenient body)"
                 , "Rooted.rootedReceiptRecordedResponseUnsignedKernel digest path token stage checkedOrdinal nonce checkedPredecessor"
-                , "\"refused\" -> do"
+                , "Refused -> do"
                 , "checkedOrdinal <- Rooted.mkLifecycleOrdinal (ordinal + 1)"
                 , "Rooted.rootedRefusedResponseUnsignedKernel digest path token stage checkedOrdinal"
-                , "_ -> Left (responseFailure \"the post-open response family is not closed\")"
                 , "opaque builder p s o n = do"
                 , "checkedOrdinal <- Rooted.mkLifecycleOrdinal (o + 1)"
                 , "builder digest p s stage checkedOrdinal n body"
@@ -6830,21 +7438,23 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             users "RootedLifecycleResponse"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             mapM_
                 ( \identifier ->
@@ -6868,19 +7478,19 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             users "withRootedLifecycleResponseKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
                     , "src/HostBootstrap/Command/Child.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             assertBool
                 "the frozen Protocol remains independent while the facade and existing capability owner consume the neutral response"
@@ -7749,27 +8359,28 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             importers "HostBootstrap.Handoff.Internal"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
                     ]
             users "RootedLifecycleResponse"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             users "consumeRootedLifecycleResponseSigningKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"]
@@ -7778,9 +8389,9 @@ sealedFacadeTests =
             users "withVerifiedRootedLifecycleResponse"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "src/HostBootstrap/Command/Child.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             assertBool
                 "the production DAG is Handoff to Internal to neutral Rooted, never the reverse"
@@ -8064,22 +8675,24 @@ sealedFacadeTests =
             users "withVerifiedRootedLifecycleResponse"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "src/HostBootstrap/Command/Child.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             importers "HostBootstrap.Handoff.Rooted"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             importers "HostBootstrap.Handoff.Receiver.Internal"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs"
@@ -8316,7 +8929,6 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Recovery.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Process/Route.hs"
                     ]
             users "signRecoveryChildPackageBindingKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"]
@@ -8484,7 +9096,7 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             users "signAuthenticatedRootScopeKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"]
@@ -8611,7 +9223,7 @@ sealedFacadeTests =
                     )
                 ,
                     ( "partial application strictly consumes the hidden capability"
-                    , "{-# OPAQUE registerRecoverableAdmittedHandoffEdgeKernel #-} registerRecoverableAdmittedHandoffEdgeKernel kernel = kernel `seq` consumeRecoverySigningKernel kernel recover"
+                    , "registerRecoverableHandoffEdgeWithAdmission allowFailedUp kernel = kernel `seq` consumeRecoverySigningKernel kernel recover"
                     , kernel
                     )
                 ,
@@ -8715,8 +9327,18 @@ sealedFacadeTests =
                     , verification
                     )
                 ,
+                    ( "the map readback uses the private exact-version and byte decision"
+                    , "classifyRecoveryExactReadback (recordVersionWord version) bytes (recordFacts <$> record)"
+                    , verification
+                    )
+                ,
+                    ( "the token readback classifies the actual protected record"
+                    , "classifyRecoveryTokenReadback (plannedEdgeRecord binding) (recordFacts <$> record)"
+                    , verification
+                    )
+                ,
                     ( "the final token readback retains granted-token refusal"
-                    , "\"granted:\" `ByteString.isPrefixOf` protectedRecordBytes record -> Left HandoffTokenConsumed"
+                    , "RecoveryTokenConsumed -> Left HandoffTokenConsumed"
                     , verification
                     )
                 ]
@@ -8836,7 +9458,7 @@ sealedFacadeTests =
                 @?= 0
             SourceGuard.countHaskellIdentifier "BoundReverseDescent" handoffSource @?= 0
             SourceGuard.countHaskellIdentifier "BoundReverseDescent" relaySource @?= 0
-            SourceGuard.countHaskellIdentifier "BoundReverseDescent" teardownInternalSource @?= 10
+            SourceGuard.countHaskellIdentifier "BoundReverseDescent" teardownInternalSource @?= 9
             assertBool
                 "the public Handoff facade consumes only the existing hidden capability"
                 (SourceGuard.importsModule "HostBootstrap.Handoff.Internal" handoffSource)
@@ -8899,6 +9521,9 @@ sealedFacadeTests =
                     "rootBrokerLink ::"
                     "{- | Open a keyless child route only inside the exact config-kind branch."
                     relaySource
+            forwardLinkSource <-
+                requiredSourceSection "the forward root link's direct fields"
+                    "rootForwardBrokerLink ::" "rootReverseBrokerLink ::" relaySource
             recoverableCodecSource <-
                 requiredSourceSection
                     "recoverable-open routing and codec"
@@ -8953,6 +9578,12 @@ sealedFacadeTests =
                     "{- | Rehydrate one exact durable Bound descent without opening its token map."
                     "-- | Revalidate one Bound report coordinate without minting settlement proof."
                     teardownInternalSource
+            boundRehydrationSource <-
+                requiredSourceSection "Bound rehydration" "withRehydratedBoundReverseDescentKernel ::"
+                    "withRehydratedSettledReverseDescentKernel ::" teardownInternalSource
+            settledRehydrationSource <-
+                requiredSourceSection "Settled rehydration" "withRehydratedSettledReverseDescentKernel ::"
+                    "withVerifiedBoundReverseDescentReportKernel ::" teardownInternalSource
             observationSource <-
                 requiredSourceSection
                     "the future Bound observation eliminator"
@@ -9089,7 +9720,7 @@ sealedFacadeTests =
                     )
                 ,
                     ( "rehydration accepts only canonical Bound bytes at version two or later"
-                    , "recordVersionWord (protectedRecordVersion record) >= 2 -> do binding <- parseBoundRecord expected (protectedRecordBytes record) pure (binding, protectedRecordVersion record, protectedRecordBytes record)"
+                    , "recordVersionWord (protectedRecordVersion record) >= 2 -> do binding <- parseBoundRecord expected (protectedRecordBytes record) pure (Just (binding, protectedRecordVersion record, protectedRecordBytes record))"
                     , rehydration
                     )
                 ,
@@ -9121,6 +9752,13 @@ sealedFacadeTests =
                 , "relayOpen edge"
                 ]
                 linkConstructionSource
+            assertFragmentsInOrder
+                "the forward link checks the payload kind before invoking admission or registration"
+                [ "linkOpenRaw = \\_ input -> case requireConfigOpen input of"
+                , "Left failure -> pure (Left failure)"
+                , "Right () -> registered <$> registerAdmittedHandoffEdge broker (admits input) input"
+                , "linkRecoverableOpenRaw = \\_ _ _"
+                ] forwardLinkSource
             assertFragmentsInOrder
                 "ordinary offers enforce the embedded payload bound and config kind before fresh opening"
                 [ "offerHandoffEdge link channel request input payload terminal = case requireOfferPayloadBound payload >> requireConfigOpen input of"
@@ -9195,9 +9833,9 @@ sealedFacadeTests =
                 , "checked <- withProtectedEntry store"
                 , "validateCurrentLifecycleCursor session cursor"
                 , "readProtectedRecord session key"
-                , "rehydrateRecord preparedBytes observed"
+                , "classifyRehydratedBoundRecordKernel preparedBytes observed"
                 , "case checked of"
-                , "Right (Right (bindingBytes, version, boundBytes))"
+                , "Right (Right (Just (bindingBytes, version, boundBytes)))"
                 , "use (BoundReverseDescent prepared bindingBytes version boundBytes)"
                 ]
                 rehydrationSource
@@ -9223,10 +9861,17 @@ sealedFacadeTests =
             SourceGuard.countHaskellIdentifier "HandoffOffer" familySource @?= 1
             SourceGuard.countHaskellIdentifier "withProtectedEntry" bindingSource @?= 2
             SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" bindingSource @?= 2
-            SourceGuard.countHaskellIdentifier "withProtectedEntry" rehydrationSource @?= 2
-            SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" rehydrationSource @?= 1
-            SourceGuard.countHaskellIdentifier "readProtectedRecord" rehydrationSource @?= 3
-            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" rehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "withProtectedEntry" boundRehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" boundRehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" boundRehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" boundRehydrationSource @?= 0
+            SourceGuard.countHaskellIdentifier "withProtectedEntry" settledRehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" settledRehydrationSource @?= 1
+            SourceGuard.countHaskellIdentifier "readProtectedRecord" settledRehydrationSource @?= 2
+            SourceGuard.countHaskellIdentifier "compareAndSwapProtectedRecord" settledRehydrationSource @?= 1
+            assertFragmentsInOrder "adopted rebind validates its cursor before mutation"
+                ["withProtectedEntry store", "validateCurrentLifecycleCursor session cursor", "readProtectedRecord session key", "compareAndSwapProtectedRecord"]
+                settledRehydrationSource
             SourceGuard.countHaskellIdentifier "withProtectedEntry" observationSource @?= 1
             SourceGuard.countHaskellIdentifier "validateCurrentLifecycleCursor" observationSource @?= 1
             SourceGuard.countHaskellIdentifier "readProtectedRecord" observationSource @?= 1
@@ -9269,23 +9914,20 @@ sealedFacadeTests =
                     ]
             users "withRehydratedBoundReverseDescentKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"]
-            users "withRehydratedAdoptedReverseDescentKernel"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
-                    ]
             users "withVerifiedBoundReverseDescentObservationsKernel"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/Completion.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     ]
             users "offerReverseDescentKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "src/HostBootstrap/Handoff/Process.hs"
                     ]
             importers "HostBootstrap.Teardown.Internal"
-                @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                @?= [ "internal/handoff-completion/HostBootstrap/Handoff/Completion.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
                     , "src/HostBootstrap/Handoff/Process.hs"
+                    , "src/HostBootstrap/Handoff/Process/Route.hs"
                     ]
             importers "HostBootstrap.Handoff.Relay"
                 @?= ["src/HostBootstrap/Command/Child.hs", "src/HostBootstrap/Command/LifecycleEntry.hs", "src/HostBootstrap/Handoff/Process.hs"]
@@ -9327,28 +9969,44 @@ sealedFacadeTests =
                 , "HostBootstrap.Teardown.Internal.Testing"
                 , "HostBootstrap.Teardown.ReverseDescent.Testing"
                 ]
-    , testCase "child report rendering cannot recover root-store cursor authority" $
+    , testCase "retired child-authority identifiers stay absent from production sources" $
         withHandoffPackageRoot $ \packageRoot -> do
-            -- rationale.md: the root owns durable lifecycle authority; a child
-            -- reports through the authenticated rooted terminal receipt.
-            sources <- handoffImplementationSources packageRoot
+            description <- SourceGuard.readPackageDescription
+            sources <- SourceGuard.readLibrarySources packageRoot description
             forM_
-                [ "AuthorizedChildCursor"
-                , "childCommandReservationKernel"
+                [ "AuthenticatedChildCursor"
+                , "reopenAuthenticatedRecoveryChildCursorKernel"
                 , "ChildRecoveryOrigin"
+                , "ChildRecoveryLifecycleEntry"
+                , "AuthorizedChildCursor"
+                , "childCommandReservationKernel"
                 , "ChildUpLifecycleEntry"
                 , "withForwardLifecycleReportKernel"
                 , "withReverseLifecycleReportKernel"
                 , "withReceivedLifecycleAcknowledgementKernel"
                 , "withReceivedRecoveryLifecycleAcknowledgementKernel"
-                ]
-                $ \name -> do
+                ] $ \name -> do
                     SourceGuard.countHaskellIdentifier name ("data " <> name <> " = Forbidden") @?= 1
-                    [ (sourcePath packageRoot path, name)
-                      | (path, source) <- sources
-                      , SourceGuard.countHaskellIdentifier name source > 0
-                      ]
-                        @?= []
+                    let occurrences =
+                            [ (moduleName, name)
+                            | (moduleName, _, source) <- sources
+                            , SourceGuard.countHaskellIdentifier name source > 0
+                            ]
+                    occurrences @?= []
+    , testCase "child executors do not use root cursor admission or advancement" $
+        withHandoffPackageRoot $ \packageRoot -> do
+            description <- SourceGuard.readPackageDescription
+            sources <- SourceGuard.readLibrarySources packageRoot description
+            let childOwners =
+                    [ (name, source)
+                    | (name, _, source) <- sources
+                    , name == "HostBootstrap.Command.Child"
+                        || "HostBootstrap.Command.Child." `isPrefixOf` name
+                        || name `elem` ["HostBootstrap.Lifecycle.FrameExecutor", "HostBootstrap.Teardown.Executor.Internal"]
+                    ]
+            assertBool "the checked child executor sources are present" (length childOwners >= 4)
+            forM_ ["validateCurrentLifecycleCursor", "withLifecycleCursor", "withCurrentLifecycleCursor", "withExecuteLifecycleCursor", "withTeardownLifecycleCursor", "withLifecycleCursorSuccessor", "advanceLifecycleCursorInEntry", "withReverseRootTargetLifecycleCursorKernel"] $ \name ->
+                [ owner | (owner, source) <- childOwners, SourceGuard.countHaskellIdentifier name source > 0 ] @?= []
     , testCase "the hidden handoff modules and sealed folds have exact production owners" $
         withHandoffPackageRoot $ \packageRoot -> do
             sources <- handoffImplementationSources packageRoot
@@ -9385,7 +10043,6 @@ sealedFacadeTests =
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
                     ]
             importers "HostBootstrap.Handoff.Protocol"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs"
@@ -9399,13 +10056,15 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
                     , "src/HostBootstrap/Command/Child.hs"
+                    , "src/HostBootstrap/Command/Child/Reverse.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             importers "HostBootstrap.Handoff.Recovery"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
@@ -9437,7 +10096,6 @@ sealedFacadeTests =
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Completion.hs"
                     ]
             users "consumeRecoverySigningKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff.hs"
@@ -9480,6 +10138,7 @@ sealedFacadeTests =
                     , "publishRootedLifecycleReportKernel"
                     , "rootBrokerLink"
                     , "rootForwardBrokerLink"
+                    , "rootFailedUpReverseBrokerLink"
                     , "rootReverseBrokerLink"
                     , "withConfigBrokerLink"
                     , "withRecoveryBrokerLink"
@@ -9491,8 +10150,8 @@ sealedFacadeTests =
                     , "offerReverseDescentKernel"
                     , "withRootedOpenedResponseKernel"
                     , "withRootedPreparedResponseKernel"
+                    , "PostOpenFamily(..)"
                     , "withRootedPostOpenResponseKernel"
-                    , "withRootedTerminalReceiptKernel"
                     , "withProviderDependencyReprobeServiceKernel"
                     , "withProviderDependencyReprobeEndpointKernel"
                     , "linkSignActivation"
@@ -9502,6 +10161,9 @@ sealedFacadeTests =
                     , "relayErrorMessage"
                     , "renderLifecycleAcknowledgementResponse"
                     , "withLifecycleAcknowledgementResponse"
+                    , "renderLifecycleAcknowledgementRequest"
+                    , "withLifecycleAcknowledgementRequest"
+                    , "pendingLifecycleAcknowledgementThroughLink"
                     ]
             traverse_
                 ( \identifier -> do
@@ -9545,8 +10207,7 @@ sealedFacadeTests =
                         ("HandoffSpec does not import " <> moduleName)
                         (not (SourceGuard.importsModule moduleName handoffSpecSource))
                 )
-                [ "HostBootstrap.Handoff.Completion"
-                , "HostBootstrap.Handoff.Receiver.Internal"
+                [ "HostBootstrap.Handoff.Receiver.Internal"
                 ]
     , testCase "received packages and branch-specific relay links remain closed" $
         withHandoffPackageRoot $ \packageRoot -> do
@@ -9765,9 +10426,17 @@ sealedFacadeTests =
                 )
             assertBool
                 "the process owner introduces no named type"
-                ( SourceGuard.countHaskellIdentifier "data" processSource == 0
-                    && SourceGuard.countHaskellIdentifier "newtype" processSource == 0
-                )
+                (null (SourceGuard.topLevelNamedDeclarations processSource))
+            length (SourceGuard.topLevelNamedDeclarations (unlines
+                [ "import Data.Kind (Type)"
+                , "type role Existing nominal"
+                , "type Alias = Int"
+                , "type family Family a"
+                , "class Example a where"
+                , "pattern Named = True"
+                , "data Value = Value"
+                , "newtype Wrapped = Wrapped Int"
+                ])) @?= 6
             assertContains
                 "a forward edge is completed through the fixed forward kernel and no caller callback"
                 "withLifecycleChild config route $ \\channel -> offerHandoffEdge link channel request input payload $ \\offer report persist -> withAcknowledgedForwardLifecycleCompletionKernel offer report persist $ \\_ -> pure (Right ())"
@@ -9778,7 +10447,7 @@ sealedFacadeTests =
                 owner
             assertFragmentsInOrder
                 "the route's own launch is the only thing spawned, and only at an absolute resolved path"
-                [ "withLifecycleProcessRouteLaunchKernel route $ \\tool argv _interactivity -> do"
+                [ "withLifecycleProcessRouteLaunchKernel route $ \\tool argv -> do"
                 , "resolved <- resolveInstalled config tool"
                 , "case resolved of"
                 , "\"the route's host tool resolves to no absolute path\""
@@ -9790,15 +10459,21 @@ sealedFacadeTests =
                 "childProcess executable arguments = (proc executable arguments) { std_in = CreatePipe , std_out = CreatePipe , std_err = Inherit , create_group = True , close_fds = True }"
                 owner
             assertContains
-                "the launch is bounded because a child that never speaks is indistinguishable from one that never started"
-                "opened <- timeout launchMicros (handoffChannel childStdout childStdin)"
+                "channel construction is direct and the relay bounds control frames"
+                "channel <- handoffChannel childStdout childStdin"
                 owner
             assertBool
-                "the launch bound is the owner's only deadline, so admitted work keeps its own policy"
+                "only the post-success child exit has a timeout, so admitted work keeps its own policy"
                 (SourceGuard.countHaskellIdentifier "timeout" processSource == 2)
+            assertContains
+                "a successful exchange gives the child a bounded chance to exit"
+                "result <- exchange childStdin childStdout serve case result of Right () -> do _ <- timeout terminationGraceMicros (waitForProcess child) pure result Left _ -> pure result"
+                owner
             assertFragmentsInOrder
                 "the group is terminated, graced, escalated, reaped unconditionally, and only then are the pipes closed"
-                [ "askChildGroupToStop group"
+                [ "alreadyEnded <- awaitChildGroupExit 0 group"
+                , "if alreadyEnded then pure () else do"
+                , "askChildGroupToStop group"
                 , "ended <- awaitChildGroupExit terminationGraceMicros group"
                 , "if ended then pure () else killChildGroup group"
                 , "Exception.try (waitForProcess child)"
@@ -9822,6 +10497,10 @@ sealedFacadeTests =
                         </> "ChildGroup.hs"
                     )
             let childGroup = normalizeWhitespace childGroupSource
+            SourceGuard.countHaskellIdentifier "launchMicros" childGroupSource @?= 0
+            description <- SourceGuard.readPackageDescription
+            librarySources <- SourceGuard.readLibrarySources packageRoot description
+            forM_ librarySources $ \(_, _, source) -> SourceGuard.countHaskellIdentifier "launchMicros" source @?= 0
             assertContains
                 "the whole group is signalled rather than the process alone"
                 "signalChildGroup (ChildGroup _ processGroup) signal = do signalled <- Exception.try (signalProcessGroup signal processGroup)"
@@ -9871,7 +10550,7 @@ sealedFacadeTests =
                 childGroupSource
             assertContains
                 "termination runs on every exit from the exchange"
-                "Exception.bracket_ (pure ()) (terminateChildGroup group child childStdin childStdout) (exchange childStdin childStdout serve)"
+                "Exception.bracket_ (pure ()) (terminateChildGroup group child childStdin childStdout) (do result <- exchange childStdin childStdout serve"
                 owner
             assertFragmentsInOrder
                 "authenticated provider seeding transfers ownership without claiming the parent settlement"
@@ -9907,7 +10586,7 @@ sealedFacadeTests =
                 relay
             assertContains
                 "the launch a route renders is the only thing an owner may spawn"
-                "withLifecycleProcessRouteLaunchKernel route use = case route of LifecycleProcessRoute _ _ _ tool argv interactivity -> use tool argv interactivity"
+                "withLifecycleProcessRouteLaunchKernel route use = case route of LifecycleProcessRoute _ _ _ tool argv _ -> use tool argv"
                 route
             assertBool
                 "the process owner and the route stay inside their sprint line budgets"
@@ -9956,7 +10635,6 @@ sealedFacadeTests =
                 @?= [ "ReceivedEdge"
                     , "ReceivedRecoveryDescent"
                     , "withIsolatedReceivedHandoffEdge"
-                    , "withReceivedHandoffEdge"
                     , "withProviderDependencyClientKernel"
                     , "ReceiverError(..)"
                     , "receiverErrorMessage"
@@ -10045,6 +10723,11 @@ sealedFacadeTests =
             assertBool
                 "the isolation itself is the one entry the owner publishes"
                 ("withPrivateProtocolStdio" `elem` normalizedModuleExports protocolExports)
+            assertBool
+                "the protocol owner exposes no ambient standard-I/O channel"
+                ( "stdioHandoffChannel" `notElem` normalizedModuleExports protocolExports
+                    && SourceGuard.countHaskellIdentifier "stdioHandoffChannel" protocolSource == 0
+                )
             mapM_
                 ( \identifier ->
                     assertBool
@@ -10248,7 +10931,7 @@ sealedFacadeTests =
                 , "mkReceivedEdge :: AuthenticatedRootScope scope -> VerifiedHandoff scope brokerGeneration"
                 ]
                 receivedEdge
-            SourceGuard.countHaskellIdentifier "signAuthenticatedRootScopeKernel" linkConstruction @?= 3
+            SourceGuard.countHaskellIdentifier "signAuthenticatedRootScopeKernel" linkConstruction @?= 4
             SourceGuard.countHaskellIdentifier "ProjectSigningKey" relaySource @?= 0
             SourceGuard.countHaskellIdentifier "RecoverySigningKernel" brokerLink @?= 0
     , testCase "Receiver verifies the leading scope capsule before any binding, challenge, or payload semantics" $
@@ -10364,7 +11047,7 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
-                    , "src/HostBootstrap/Lifecycle/FrameExecutor.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/FrameExecutor.hs"
                     ]
             users "signAuthenticatedRootScopeKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"]
@@ -10664,7 +11347,6 @@ sealedFacadeTests =
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Receiver/Internal.hs"
                     , "internal/handoff-implementation/HostBootstrap/Handoff/Recovery.hs"
                     , "internal/handoff-implementation/HostBootstrap/Teardown/Internal.hs"
-                    , "src/HostBootstrap/Handoff/Process/Route.hs"
                     ]
             users "signRootedPayloadBindingKernel"
                 @?= ["internal/handoff-implementation/HostBootstrap/Handoff.hs", "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"]
@@ -10689,7 +11371,7 @@ sealedFacadeTests =
                 , SourceGuard.countHaskellTokenSequence ["data"] receiverInternalSource
                 , SourceGuard.countHaskellTokenSequence ["newtype"] receiverInternalSource
                 )
-                @?= (3, 0, 1, 1, 2, 0)
+                @?= (4, 0, 1, 1, 2, 0)
             assertFragmentsInOrder
                 "both endpoints impose the same explicit 7 MiB payload limit before semantics"
                 [ "maxEmbeddedOfferPayloadBytes = 7 * 1024 * 1024"
@@ -10772,13 +11454,13 @@ sealedFacadeTests =
                 normalizedAdmission = normalizeWhitespace admission
             assertContains
                 "strict token-only partial application"
-                "signRecoveryWireKernel kernel = kernel `seq` consumeRecoverySigningKernel kernel sign"
+                "signRecoveryWireWithAdmission allowFailedUp kernel = kernel `seq` consumeRecoverySigningKernel kernel sign"
                 normalizedSigner
             SourceGuard.countHaskellIdentifier "withActiveRootBroker" signer @?= 1
             assertFragmentsInOrder
                 "validation precedes admission, exact-byte equality, and signing"
                 [ "withActiveRootBroker broker"
-                , "validateRecoverySigningEnvelopeActive broker binding wire"
+                , "validateRecoverySigningEnvelopeActive allowFailedUp broker binding wire"
                 , "admitted <- admission"
                 , "Right expectedWire"
                 , "expectedWire /= wire"
@@ -11038,17 +11720,17 @@ sealedFacadeTests =
             users "withRecursiveHandoffRuntimeKernel"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Runtime.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             importers "HostBootstrap.Handoff.Runtime"
                 @?= [ "internal/handoff-implementation/HostBootstrap/Handoff/Relay.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted.hs"
+                    , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     , "internal/handoff-implementation/HostBootstrap/Lifecycle/Rooted/Receipt.hs"
                     , "src/HostBootstrap/Command/Child.hs"
                     , "src/HostBootstrap/Command/LifecycleEntry.hs"
                     , "src/HostBootstrap/Handoff/Process/Route.hs"
-                    , "src/HostBootstrap/Lifecycle/Rooted/Node.hs"
                     ]
             assertBool
                 "the installed runtime stays inside its 400-line sprint budget"
@@ -11068,7 +11750,8 @@ sealedFacadeTests =
                     (SourceGuard.moduleExportTokens "HostBootstrap.Teardown.Executor.Internal" executorSource)
             sort (normalizedModuleExports exports)
                 @?= sort
-                    [ "runStorelessReversePreparedKernel"
+                    [ "failedUpExpectedOperations"
+                    , "runStorelessReversePreparedKernel"
                     , "withStorelessReverseDescentResultKernel"
                     , "withStorelessReverseExecutorKernel"
                     ]
@@ -11099,7 +11782,7 @@ sealedFacadeTests =
                 , "withStorelessReverseExecutorKernel"
                 , "openTeardownForest"
                 , "withNestedRecursiveHandoffRuntimeKernel"
-                , "withOpenedFrameExecutorKernel"
+                , "withOpenedReverseFrameExecutorKernel"
                 , "runCoreManagedReverse root context plan host"
                 , "withExecutedFrameNodeKernel"
                 , "runStorelessReversePreparedKernel"
@@ -11110,16 +11793,33 @@ sealedFacadeTests =
                 reverseChildSource
             assertContains
                 "callback-free reverse work is interpreted by the authenticated child rather than assumed released"
-                "Nothing -> runCoreManaged local"
+                "Nothing -> runCoreManaged gate local"
                 lower
+            assertFragmentsInOrder
+                "reverse execution validates the prepared gate before the managed action"
+                [ "preparedGateOperation gate /= operation"
+                , "preparedGateFence gate == 0"
+                , "preparedGateAttempt gate == 0"
+                , "preparedGateJournalVersion gate == 0"
+                , "Nothing -> runCoreManaged gate local"
+                ]
+                executorSource
+            assertFragmentsInOrder
+                "managed reverse work checks its own plan, operation and fence before the backend"
+                [ "preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan)"
+                , "preparedGateOperation gate /= localWorkKey local"
+                , "preparedGateFence gate == 0"
+                , "releaseRecordedClusterExposureFenced host plan gate"
+                ]
+                reverseActionSource
             assertBool
                 "the storeless executor does not mint a released observation for unexecuted core work"
                 (not ("Nothing -> pure TeardownReleased" `isInfixOf` lower))
             assertFragmentsInOrder
-                "the child derives the retained cluster from its admitted profile and releases exposure before cluster ownership"
-                [ "profileFromPlanName (projectPlanProfileName plan)"
-                , "releaseRecordedClusterExposure host clusterPlan"
-                , "releaseRetainedCluster host clusterPlan"
+                "the child binds its context to the plan and releases exposure before cluster ownership"
+                [ "Context.project context /= projectPlanProjectName plan"
+                , "releaseRecordedClusterExposureFenced host plan gate"
+                , "releaseRetainedClusterFenced host plan gate"
                 ]
                 reverseActionSource
             assertFragmentsInOrder
@@ -11129,19 +11829,22 @@ sealedFacadeTests =
                 , "withChildProjectPlanKernel profileName"
                 ]
                 reverseChildSource
+            -- The profile and policy values are asserted by value in TeardownSpec
+            -- "the recovery profile and core-managed reverse policy classify by value";
+            -- the child action delegates to those kernels.
             assertContains
-                "Harness recovery retains the run identity in the lifecycle profile"
-                "Right (\"harness:\" <> runName)"
+                "the lifecycle profile comes from the authenticated scope through the classifier"
+                "recoveryProfileName = recoveryProfileNameKernel . handoffScope"
+                reverseAction
+            assertContains
+                "the core-managed reverse action is classified by the shared kernel"
+                "coreManagedReverseKernel (localWorkPolicy local) (localWorkAction local)"
                 reverseAction
             assertBool
-                "reverse recovery does not collapse every Harness run into one invalid ambient profile"
+                "name ban: reverse recovery names no single ambient Harness profile"
                 (not ("runScopedRecovery \"harness\"" `isInfixOf` reverseChild))
-            assertContains
-                "callback-free non-core work is terminally classified as having acquired nothing"
-                "TeardownForeignRetained \"the node acquired nothing this frame must release\""
-                reverseAction
             assertBool
-                "callback-free non-core work cannot enter the teardown failure retry pass"
+                "name ban: callback-free non-core work names no failure retry pass"
                 (not ("callback-free work that is not core-managed" `isInfixOf` reverseAction))
             traverse_
                 (\name -> assertContains (name <> " is retained by the lower verifier") name lower)
@@ -11150,28 +11853,57 @@ sealedFacadeTests =
                 , "the Descend response names another child frame"
                 , "verifySubtreeSettled"
                 ]
+            -- The storeless executor imports exactly this allow-list: no command, chain,
+            -- protected-store, session, or process owner can enter it unnoticed.
+            let importedModules =
+                    sort
+                        ( nub
+                            [ if qualifier == "qualified" then moduleName else qualifier
+                            | line <- lines executorSource
+                            , "import " `isPrefixOf` line
+                            , qualifier : moduleName : _ <- [drop 1 (words line)]
+                            ]
+                        )
+            importedModules
+                @?= [ "Control.Exception.Safe"
+                    , "Data.ByteString"
+                    , "Data.ByteString.Builder"
+                    , "Data.ByteString.Lazy"
+                    , "Data.List"
+                    , "Data.List.NonEmpty"
+                    , "Data.Text"
+                    , "Data.Text.Encoding"
+                    , "Data.Word"
+                    , "HostBootstrap.Authority"
+                    , "HostBootstrap.Handoff"
+                    , "HostBootstrap.HostConfig"
+                    , "HostBootstrap.Lifecycle.Prepared"
+                    , "HostBootstrap.ProjectPlan"
+                    , "HostBootstrap.ProjectPlan.Frame"
+                    , "HostBootstrap.Teardown"
+                    , "HostBootstrap.Teardown.Preparation"
+                    ]
             traverse_
-                ( \moduleName ->
-                    assertBool
-                        ("the lower reverse executor imports no root authority owner " <> moduleName)
-                        (not (SourceGuard.importsModule moduleName executorSource))
-                )
-                [ "HostBootstrap.Command"
-                , "HostBootstrap.Chain"
-                , "HostBootstrap.Protected"
-                , "HostBootstrap.Lifecycle.Context"
-                , "HostBootstrap.Lifecycle.Session"
-                , "System.Process"
-                ]
+                (\name -> SourceGuard.countHaskellIdentifier name executorSource @?= 0)
+                ["ProtectedStore", "ProtectedSession", "compareAndSwapProtectedRecord", "withProtectedEntry"]
+            -- The reverse child decodes its config strictly before the codec sees it.
+            assertContains "the reverse child config is decoded as strict UTF-8"
+                "case TextEncoding.decodeUtf8' childConfig of" childSource
+            assertContains "a non-UTF-8 reverse child config refuses exactly"
+                "Left _ -> pure (Left \"reverse child: the child config is not UTF-8\")" childSource
+            assertBool "no lenient decode replaces invalid config bytes"
+                (not ("(TextEncoding.decodeUtf8 childConfig)" `isInfixOf` childSource))
             importers "HostBootstrap.Teardown.Executor.Internal"
                 @?= ["src/HostBootstrap/Command/Child.hs"]
             cabalSource <- readFile (packageRoot </> "hostbootstrap-core.cabal")
             exposed <- either assertFailure pure (SourceGuard.effectiveMainExposedModules cabalSource)
             private <- either assertFailure pure (SourceGuard.mainImplementationHiddenModules cabalSource)
             assertBool
-                "the reverse executor is registered exactly once and remains hidden"
+                "the reverse executor is registered exactly once, in its private library, and remains unexposed"
                 ( "HostBootstrap.Teardown.Executor.Internal" `notElem` exposed
-                    && length (filter (== "HostBootstrap.Teardown.Executor.Internal") private) == 1
+                    && "HostBootstrap.Teardown.Executor.Internal" `notElem` private
+                    && length (filter ((== "HostBootstrap.Teardown.Executor.Internal") . unwords . words) (lines cabalSource)) == 1
+                    && "library reverse-executor-internal" `isInfixOf` cabalSource
                 )
             assertBool
                 "the child reverse action is registered exactly once and remains hidden"
@@ -11184,64 +11916,34 @@ sealedFacadeTests =
             assertBool
                 "the child reverse action stays inside its 400-line sprint budget"
                 (significantHaskellLineCount reverseActionSource <= 400)
-    , testCase "cluster cleanup is bound to the sealed root reverse entry" $
+    , testCase "root cluster release checks its durable gate" $
         withHandoffPackageRoot $ \packageRoot -> do
-            clusterSource <-
-                (readFile =<< handoffModulePath packageRoot "HostBootstrap.Cluster.Reconcile")
-            entrySource <-
-                (readFile =<< handoffModulePath packageRoot "HostBootstrap.Command.LifecycleEntry")
-            clusterKernel <-
-                requiredSourceSection
-                    "exact cluster cleanup kernel"
-                    "runExactClusterCleanupKernel ::"
-                    "sameObservedResource ::"
-                    clusterSource
-            entryKernel <-
-                requiredSourceSection
-                    "sealed root cluster cleanup kernel"
-                    "runPreparedRootClusterCleanupKernel ::"
-                    "{- | Interpret exactly one admitted root @project up@ leaf."
-                    entrySource
+            source <- readFile =<< handoffModulePath packageRoot "HostBootstrap.Command"
+            failedUp <- requiredSourceSection "failed Up cleanup" "runFailedLocal gate local =" "guardedFailed effect =" source
+            reverseCleanup <- requiredSourceSection "reverse cleanup" "runCluster plan gate local =" "runCoreManagedChart ::" source
+            gateCheck <- requiredSourceSection "root gate check" "rootClusterGateFailure ::" "{- | Drive one already-rotated Harness" source
             assertFragmentsInOrder
-                "cluster cleanup checks plan, operation, action, then the closed verb"
+                "failed Up checks the plan and operation before releasing"
                 [ "preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan)"
-                , "preparedGateOperation gate /= localWorkKey local"
-                , "localWorkAction local /= DeleteCluster"
-                , "case verb of"
-                , "ProjectUp"
-                , "ProjectDown -> run runDown"
-                , "ProjectDestroy -> run runDestroy"
+                , "preparedGateOperation gate /= Teardown.localWorkKey local"
+                , "releaseRetainedClusterLifecycle"
                 ]
-                clusterKernel
+                failedUp
             assertFragmentsInOrder
-                "only sealed root reverse entries disclose their retained plan and verb"
-                [ "case entry of"
-                , "RootDownLifecycleEntry _ verb plan"
-                , "runExactClusterCleanupKernel plan verb gate local runDown runDestroy"
-                , "RootDestroyLifecycleEntry _ verb plan"
-                , "runExactClusterCleanupKernel plan verb gate local runDown runDestroy"
-                , "RootUpLifecycleEntry"
+                "reverse release refuses a mismatched gate"
+                [ "case rootClusterGateFailure plan gate local of"
+                , "Just failure -> pure (Step.TeardownFailed failure)"
+                , "Nothing -> guardedReverse"
+                , "releaseRetainedClusterLifecycle"
                 ]
-                entryKernel
-            traverse_
-                (\name -> SourceGuard.countHaskellIdentifier name clusterKernel @?= 0)
-                ["data", "newtype", "Bool", "ProtectedStore", "compareAndSwapProtectedRecord"]
-            traverse_
-                (\name -> SourceGuard.countHaskellIdentifier name entryKernel @?= 0)
-                ["data", "newtype", "Bool", "ProtectedStore", "compareAndSwapProtectedRecord"]
-            sources <- handoffImplementationSources packageRoot
-            let users identifier =
-                    sort
-                        [ sourcePath packageRoot path
-                        | (path, source) <- sources
-                        , SourceGuard.countHaskellIdentifier identifier source > 0
-                        ]
-            users "runExactClusterCleanupKernel"
-                @?= [ "src/HostBootstrap/Cluster/Reconcile.hs"
-                    , "src/HostBootstrap/Command/LifecycleEntry.hs"
-                    ]
-            users "runPreparedRootClusterCleanupKernel"
-                @?= ["src/HostBootstrap/Command/LifecycleEntry.hs"]
+                reverseCleanup
+            assertFragmentsInOrder
+                "the reverse gate check binds both plan and operation"
+                [ "preparedGatePlan gate /= stablePlanSnapshotDigest (renderSnapshot plan)"
+                , "preparedGateOperation gate /= Teardown.localWorkKey local"
+                , "otherwise = Nothing"
+                ]
+                gateCheck
     , testCase "reverse terminalization is exact, retained, and root-owned" $
         withHandoffPackageRoot $ \packageRoot -> do
             modeSource <- (readFile =<< handoffModulePath packageRoot "HostBootstrap.Lifecycle.Mode")
@@ -11267,7 +11969,7 @@ sealedFacadeTests =
                 , "validateLive session common target"
                 , "compareAndSwapProtectedRecord session intentKey"
                 , "exactTerminal session intentKey bytes"
-                , "releaseIfDestroy session"
+                , "requireText \"settled frame\" rootFrame (subtreeSettledOpeningFrame settled)"
                 ]
                 terminalKernel
             assertFragmentsInOrder
@@ -11323,19 +12025,16 @@ sealedFacadeTests =
                 inputs
             assertFragmentsInOrder
                 "route indices come from the prepared lineage"
-                [ "proxyScope scope"
-                , "proxyBroker brokerGeneration"
+                [ "ReverseDescent () scope planId parentFrame childFrame brokerGeneration verb descentId"
                 , "LifecycleProcessRoute scope rootPlanId brokerGeneration"
+                , "withReverseDescentProcessInputsKernel descent"
                 , "use (LifecycleProcessRoute verb"
                 , "derive verb \"teardown\" (withoutConfigDelivery route) input targetBinary"
                 ]
                 route
             assertFragmentsInOrder
                 "the process owner derives then launches exactly one route"
-                [ "withReverseDescentProcessInputsKernel descent"
-                , "withRecoveryLifecycleProcessRouteForKernel"
-                , "Proxy :: Proxy scope"
-                , "Proxy :: Proxy brokerGeneration"
+                [ "withRecoveryLifecycleProcessRouteForKernel descent targetBinary"
                 , "withReverseLifecycleChildProcess config link processRoute request descent"
                 ]
                 launch
@@ -11414,10 +12113,9 @@ duplexRelayTests =
                 ] senderBound
     , testCase "a nested real Relay consumer preserves the exact trailing-offer peer refusal" $
         forM_ [False, True] $ \appendTrailing ->
-            withDuplexHandoffRoot $ \project store broker link admissions ->
+            withDuplexHandoffRoot $ \_ store _broker link admissions ->
                 withHandoffChannels $ \rootChannel rootProxy closeRootOutput _ ->
-                    withHandoffChannels $ \relayProxy relayChannel _ closeRelayOutput -> do
-                        nestedCallbacks <- newIORef (0 :: Int)
+                    withDuplexReceiverProcess (if appendTrailing then "duplex-trailing" else "duplex-normal") $ \relayProxy closeRelayOutput child -> do
                         rootedReplies <- newIORef (0 :: Int)
                         peerRefusal <- newIORef Nothing
                         let upward message
@@ -11433,26 +12131,10 @@ duplexRelayTests =
                                     (writeIORef peerRefusal (Just (Protocol.protocolMessageFields message)))
                                 pure (Just message)
                             parent = Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal
-                            child = receiveConfigRelay project relayChannel (rootBrokerVerificationKey broker) $ \nestedLink -> do
-                                withHandoffChannels $ \nestedChannel leafChannel _ _ ->
-                                    withHandoffWorker
-                                        (receiveConfigRelay project leafChannel (rootBrokerVerificationKey broker) $ \_ -> do
-                                            modifyIORef' nestedCallbacks (+ 1)
-                                            pure (Left relayFinished)) $ \awaitLeaf -> do
-                                            nested <- Relay.offerHandoffEdge nestedLink nestedChannel relayRequest innerRelayInput childPayload unusedRelayTerminal
-                                            if appendTrailing
-                                                then do
-                                                    nested @?= Left (Relay.RelayRefusedByPeer "unauthenticated" (Text.pack (handoffErrorMessage (HandoffWireTrailingBytes 3))))
-                                                    awaitLeaf >>= (@?= Left (Receiver.ReceiverRefusedByParent "peer-refused" (Text.pack (Relay.relayErrorMessage (Relay.RelayRefusedByPeer "unauthenticated" (Text.pack (handoffErrorMessage (HandoffWireTrailingBytes 3))))))))
-                                                else do
-                                                    nested @?= Left (relayChildDeclined relayFinished)
-                                                    awaitLeaf >>= (@?= Left (Receiver.ReceiverDeclined relayFinished))
-                                pure (Left relayFinished)
                         withHandoffWorker (forwardHandoffMessages rootProxy relayProxy downward) $ \awaitDown ->
                             withHandoffWorker (forwardHandoffMessages relayProxy rootProxy upward) $ \awaitUp ->
                                 withHandoffWorker parent $ \awaitParent -> do
-                                    childResult <- boundedHandoff "the real nested receiver" child
-                                    childResult @?= Left (Receiver.ReceiverDeclined relayFinished)
+                                    boundedHandoff "the real nested receiver" (waitForProcess child) >>= (@?= ExitSuccess)
                                     -- A consumed parent refusal ends this route;
                                     -- the receiver must no longer echo it upstream.
                                     when appendTrailing closeRelayOutput
@@ -11462,11 +12144,9 @@ duplexRelayTests =
                                         then do
                                             parentResult @?= Left (Relay.RelayHandoffFailure (HandoffWireTrailingBytes 3))
                                             readIORef peerRefusal >>= (@?= Just ["unauthenticated", TextEncoding.encodeUtf8 (Text.pack (handoffErrorMessage (HandoffWireTrailingBytes 3)))])
-                                            readIORef nestedCallbacks >>= (@?= 0)
                                             readIORef rootedReplies >>= (@?= 0)
                                         else do
                                             parentResult @?= Left (relayChildDeclined relayFinished)
-                                            readIORef nestedCallbacks >>= (@?= 1)
                                             readIORef rootedReplies >>= (@?= 1)
                                     awaitUp >>= (@?= if appendTrailing then Left (Protocol.ProtocolTruncated 8 0) else Right ())
                                     awaitDown >>= (@?= if appendTrailing then Right () else Left (Protocol.ProtocolTruncated 8 0))
@@ -11474,14 +12154,14 @@ duplexRelayTests =
                         -- The actual store and broker remain held through every result.
                         assertBool "the real root retains its settled outer token" . not . null =<< protectedHandoffImage store
     , testCase "a severed admitted route refuses before nested admission or root mutation" $
-        withDuplexHandoffRoot $ \project store broker link admissions ->
+        withDuplexHandoffRoot $ \_ store _broker link admissions ->
             withHandoffChannels $ \rootChannel rootProxy _ cutToRoot ->
-                withHandoffChannels $ \relayProxy relayChannel cutToRelay _ -> do
+                withDuplexReceiverProcess "duplex-severed" $ \relayProxy cutToRelay child -> do
                     severed <- newIORef False
                     before <- newEmptyMVar
-                    nestedCallbacks <- newIORef (0 :: Int)
                     let upward message
                             | Protocol.protocolMessageTag message == Protocol.OfferRequestTag = do
+                                protectedHandoffImage store >>= putMVar before
                                 writeIORef severed True
                                 cutToRelay
                                 cutToRoot
@@ -11491,41 +12171,30 @@ duplexRelayTests =
                             isSevered <- readIORef severed
                             pure (if isSevered then Nothing else Just message)
                         parent = Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal
-                        child = receiveConfigRelay project relayChannel (rootBrokerVerificationKey broker) $ \nestedLink -> do
-                            protectedHandoffImage store >>= putMVar before
-                            withHandoffChannels $ \nestedChannel leafChannel _ _ ->
-                                withHandoffWorker
-                                    (receiveConfigRelay project leafChannel (rootBrokerVerificationKey broker) $ \_ -> do
-                                        modifyIORef' nestedCallbacks (+ 1)
-                                        pure (Left relayFinished)) $ \awaitLeaf -> do
-                                    nested <- Relay.offerHandoffEdge nestedLink nestedChannel relayRequest innerRelayInput childPayload unusedRelayTerminal
-                                    nested @?= Left (Relay.RelayProtocolFailure (Protocol.ProtocolTruncated 8 0))
-                                    awaitLeaf >>= (@?= Left (Receiver.ReceiverRefusedByParent "protocol" (Text.pack (Protocol.protocolErrorMessage (Protocol.ProtocolTruncated 8 0)))))
-                            pure (Left relayFinished)
                     withHandoffWorker (forwardHandoffMessages rootProxy relayProxy downward) $ \awaitDown ->
                         withHandoffWorker (forwardHandoffMessages relayProxy rootProxy upward) $ \awaitUp ->
                             withHandoffWorker parent $ \awaitParent -> do
-                                boundedHandoff "the severed child" child >>= (@?= Left (Receiver.ReceiverDeclined relayFinished))
+                                boundedHandoff "the severed child" (waitForProcess child) >>= (@?= ExitSuccess)
                                 awaitParent >>= (@?= Left (Relay.RelayProtocolFailure (Protocol.ProtocolTruncated 8 0)))
                                 awaitUp >>= (@?= Right ())
                                 awaitDown >>= (@?= Right ())
                     readIORef severed >>= (@?= True)
                     readIORef admissions >>= (@?= 1)
-                    readIORef nestedCallbacks >>= (@?= 0)
                     snapshot <- boundedHandoff "the post-admission store image" (readMVar before)
                     protectedHandoffImage store >>= (@?= snapshot)
     , testCase "a settled grant replays byte-for-byte through a fresh route to the same live root" $
-        withDuplexHandoffRoot $ \project store broker link admissions -> do
+        withDuplexHandoffRoot $ \_ store _broker link admissions -> do
             originalRequest <- newIORef Nothing
             originalResponse <- newIORef Nothing
             openedRow <- newIORef Nothing
             settledRow <- newIORef Nothing
             nestedBefore <- newEmptyMVar
-            nestedCallbacks <- newIORef (0 :: Int)
             -- Closing all first-route handles really severs that route before the next opens.
             withHandoffChannels $ \rootChannel rootProxy closeRootOutput _ ->
-                withHandoffChannels $ \relayProxy relayChannel _ _ -> do
+                withDuplexReceiverProcess "duplex-normal" $ \relayProxy _ child -> do
                     let upward message = do
+                            when (Protocol.protocolMessageTag message == Protocol.OfferRequestTag)
+                                (protectedHandoffImage store >>= putMVar nestedBefore)
                             when (Protocol.protocolMessageTag message == Protocol.GrantRequestTag)
                                 (writeIORef originalRequest (Just message))
                             pure (Just message)
@@ -11541,20 +12210,10 @@ duplexRelayTests =
                                 image <- protectedHandoffImage store
                                 requireSingleHandoffRow [entry | entry@(observed, _, _) <- image, observed == key] >>= writeIORef settledRow . Just
                             pure (Just message)
-                        child = receiveConfigRelay project relayChannel (rootBrokerVerificationKey broker) $ \nestedLink -> do
-                            protectedHandoffImage store >>= putMVar nestedBefore
-                            withHandoffChannels $ \nestedChannel leafChannel _ _ ->
-                                withHandoffWorker
-                                    (receiveConfigRelay project leafChannel (rootBrokerVerificationKey broker) $ \_ -> do
-                                        modifyIORef' nestedCallbacks (+ 1)
-                                        pure (Left relayFinished)) $ \awaitLeaf -> do
-                                            Relay.offerHandoffEdge nestedLink nestedChannel relayRequest innerRelayInput childPayload unusedRelayTerminal >>= (@?= Left (relayChildDeclined relayFinished))
-                                            awaitLeaf >>= (@?= Left (Receiver.ReceiverDeclined relayFinished))
-                            pure (Left relayFinished)
                     withHandoffWorker (forwardHandoffMessages rootProxy relayProxy downward) $ \awaitDown ->
                         withHandoffWorker (forwardHandoffMessages relayProxy rootProxy upward) $ \awaitUp ->
                             withHandoffWorker (Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal) $ \awaitParent -> do
-                                boundedHandoff "the original grant route" child >>= (@?= Left (Receiver.ReceiverDeclined relayFinished))
+                                boundedHandoff "the original grant route" (waitForProcess child) >>= (@?= ExitSuccess)
                                 awaitParent >>= (@?= Left (relayChildDeclined relayFinished))
                                 closeRootOutput
                                 awaitUp >>= (@?= Right ())
@@ -11569,19 +12228,36 @@ duplexRelayTests =
             assertBool "the original row is planned" ("planned:" `ByteString.isPrefixOf` openedBytes)
             assertBool "the successful row is granted" ("granted:" `ByteString.isPrefixOf` settledBytes)
             assertBool "granting actually changes the selected row" (opened /= settled)
-            readIORef nestedCallbacks >>= (@?= 1)
-            withHandoffChannels $ \rootChannel relayChannel _ _ ->
-                withHandoffWorker (Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal) $ \awaitParent -> do
-                    retried <- boundedHandoff "the fresh grant replay route" $ receiveConfigRelay project relayChannel (rootBrokerVerificationKey broker) $ \_ -> do
-                        before <- protectedHandoffImage store
-                        Protocol.channelSend relayChannel sent >>= (@?= Right ())
-                        replayed <- Protocol.channelReceive relayChannel >>= expectRight
-                        Protocol.encodeProtocolMessage replayed @?= Protocol.encodeProtocolMessage answered
-                        protectedHandoffImage store >>= (@?= before)
-                        requireSingleHandoffRow [entry | entry@(key, _, _) <- before, key == selectedKey] >>= (@?= settled)
-                        pure (Left relayFinished)
-                    retried @?= Left (Receiver.ReceiverDeclined relayFinished)
-                    awaitParent >>= (@?= Left (relayChildDeclined relayFinished))
+            withHandoffChannels $ \rootChannel rootProxy closeRootOutput _ ->
+                withDuplexReceiverProcess "duplex-replay" $ \relayProxy closeRelayOutput child -> do
+                    before <- newEmptyMVar
+                    let upward message
+                            | Protocol.protocolMessageTag message == Protocol.RootedLifecycleRequestTag = do
+                                image <- protectedHandoffImage store
+                                requireSingleHandoffRow [entry | entry@(key, _, _) <- image, key == selectedKey] >>= (@?= settled)
+                                putMVar before image
+                                pure (Just sent)
+                            | otherwise = pure (Just message)
+                        downward message
+                            | Protocol.protocolMessageTag message == Protocol.GrantResponseTag = do
+                                Protocol.encodeProtocolMessage message @?= Protocol.encodeProtocolMessage answered
+                                original <- readMVar before
+                                protectedHandoffImage store >>= (@?= original)
+                                pure (Just message)
+                            | otherwise = pure (Just message)
+                    withHandoffWorker (forwardHandoffMessages rootProxy relayProxy downward) $ \awaitDown ->
+                        withHandoffWorker (forwardHandoffMessages relayProxy rootProxy upward) $ \awaitUp ->
+                            withHandoffWorker (Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal) $ \awaitParent -> do
+                                boundedHandoff "the fresh grant replay route" (waitForProcess child) >>= (@?= ExitSuccess)
+                                closeRelayOutput
+                                parentResult <- awaitParent
+                                case parentResult of
+                                    Left (Relay.RelayRefusedByPeer "unexpected-message" _) -> pure ()
+                                    other -> assertFailure ("unexpected replay parent result: " <> show other)
+                                closeRootOutput
+                                _ <- awaitUp
+                                _ <- awaitDown
+                                pure ()
             readIORef admissions >>= (@?= 3)
     ]
 
@@ -11590,35 +12266,34 @@ duplexRelayTests =
 
 receiverScriptTests :: [TestTree]
 receiverScriptTests =
-    [ testCase "the genuine receiver accepts its scoped offer and exact report acknowledgement" $
-        withReceiverScriptOffer $ \project broker offer offered report ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                calls <- newIORef (0 :: Int)
-                let receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ sendReport -> do
-                        modifyIORef' calls (+ 1)
-                        sendReport report >>= (@?= Right ())
-                        pure (Right ())
-                withHandoffWorker receiver $ \awaitReceiver -> do
-                    admitScriptedReceiver broker offer offered parent
-                    acknowledgeScriptedReport parent report
-                    awaitReceiver >>= (@?= Right ())
-                    assertReceiverSilence parent closeChild
-                readIORef calls >>= (@?= 1)
+    [ testCase "the isolated receiver admits a real offer and sends its callback refusal over pipes" $
+        withReceiverScriptOffer $ \_ broker offer offered _ ->
+            withIsolatedReceiverProbe "decline" $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                assertScriptedRefusal parent (Receiver.ReceiverDeclined receiverFinished) "child-declined"
+    , testCase "the genuine receiver accepts its scoped offer and exact report acknowledgement" $
+        withReceiverScriptOffer $ \_ broker offer offered report ->
+            withIsolatedReceiverProbe (receiverReportMode "report-ok" report) $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                acknowledgeScriptedReport parent report
     , testCase "the receiver refuses a different advertised key after its valid capsule" $
-        withReceiverScriptOffer $ \project broker _ offered _ -> do
+        withReceiverScriptOffer $ \_ _ _ offered _ -> do
             otherSigning <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 109))
             changed <- changeScriptedAuthentication offered $ \capsule _ evidence ->
                 pure (frameWire capsule <> frameWire (TextEncoding.encodeUtf8 (verificationKeyDigest (projectSigningVerificationKey otherSigning))) <> evidence)
-            checkEarlyReceiverRefusal project (rootBrokerVerificationKey broker) changed
-                Receiver.ReceiverKeyMismatch "installed-key-mismatch"
+            withIsolatedReceiverProbe "key-mismatch" $ \parent -> do
+                Protocol.channelSend parent changed >>= (@?= Right ())
+                assertScriptedRefusal parent Receiver.ReceiverKeyMismatch "installed-key-mismatch"
     , testCase "the receiver refuses a valid capsule naming another installed project" $
         withReceiverScriptOffer $ \project broker _ offered _ -> do
             capsule <- authenticatedRootScopeOracleWire 108 canonicalAuthenticatedRootScopeSigningDomain
                 (rootBrokerVerificationKey broker) (installedProjectName project <> "-other") "production" ""
             changed <- changeScriptedAuthentication offered $ \_ keyDigest evidence ->
                 pure (frameWire capsule <> frameWire keyDigest <> evidence)
-            checkEarlyReceiverRefusal project (rootBrokerVerificationKey broker) changed
-                (Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the authenticated root scope names another installed project")) "unauthenticated"
+            withIsolatedReceiverProbe "other-project" $ \parent -> do
+                Protocol.channelSend parent changed >>= (@?= Right ())
+                assertScriptedRefusal parent
+                    (Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the authenticated root scope names another installed project")) "unauthenticated"
     , testCase "a valid Harness capsule cannot reclassify a Production offer binding" $
         withReceiverScriptOffer $ \project broker _ offered _ -> do
             let key = rootBrokerVerificationKey broker
@@ -11628,211 +12303,464 @@ receiverScriptTests =
                 (\_ _ -> "production" :: String) (\_ _ -> "harness") @?= Right "harness"
             changed <- changeScriptedAuthentication offered $ \_ keyDigest evidence ->
                 pure (frameWire capsule <> frameWire keyDigest <> evidence)
-            checkEarlyReceiverRefusal project key changed
-                (Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the received binding names a different scope than the fixed handoff scope")) "unauthenticated"
+            withIsolatedReceiverProbe "other-scope" $ \parent -> do
+                Protocol.channelSend parent changed >>= (@?= Right ())
+                assertScriptedRefusal parent
+                    (Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the received binding names a different scope than the fixed handoff scope")) "unauthenticated"
     , testCase "raw three and five field Offers fail before a decoded request can be answered" $
         forM_ [3, 5] $ \fieldCount ->
-            withReceiverScriptOffer $ \project broker _ offered _ ->
-                withScriptedHandoffChannels $ \parent child rawParent _ closeChild -> do
-                    calls <- newIORef (0 :: Int)
-                    let expected = if fieldCount == 3
-                            then Protocol.ProtocolWrongFieldCount Protocol.OfferTag 4 3
-                            else Protocol.ProtocolExcessFields Protocol.OfferTag 4 8
-                        receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ ->
-                            modifyIORef' calls (+ 1) >> pure (Left receiverFinished)
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        writeScriptedArity rawParent offered fieldCount
-                        awaitReceiver >>= (@?= Left (Receiver.ReceiverProtocolFailure expected))
-                        assertReceiverSilence parent closeChild
-                    readIORef calls >>= (@?= 0)
+            withReceiverScriptOffer $ \_ _ _ offered _ ->
+                withIsolatedReceiverProbeRaw ("offer-" <> show fieldCount) $ \_ rawParent ->
+                    writeScriptedArity rawParent offered fieldCount
     , testCase "raw one and three field Grants refuse through the actual protocol decoder" $
         forM_ [1, 3] $ \fieldCount ->
-            withReceiverScriptOffer $ \project broker offer offered _ ->
-                withScriptedHandoffChannels $ \parent child rawParent _ closeChild -> do
-                    calls <- newIORef (0 :: Int)
+            withReceiverScriptOffer $ \_ broker offer offered _ ->
+                withIsolatedReceiverProbeRaw ("grant-" <> show fieldCount) $ \parent rawParent -> do
                     let expected = Receiver.ReceiverProtocolFailure $ if fieldCount == 1
                             then Protocol.ProtocolWrongFieldCount Protocol.GrantTag 2 1
                             else Protocol.ProtocolExcessFields Protocol.GrantTag 2 8
-                        receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ ->
-                            modifyIORef' calls (+ 1) >> pure (Left receiverFinished)
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        Protocol.channelSend parent offered >>= (@?= Right ())
-                        granted <- scriptedGrant broker offer parent
-                        writeScriptedArity rawParent granted fieldCount
-                        assertScriptedRefusal parent expected "protocol"
-                        awaitReceiver >>= (@?= Left expected)
-                        assertReceiverSilence parent closeChild
-                    readIORef calls >>= (@?= 0)
-    , testCase "a wrong-identity parent refusal preserves the pending protocol error" $
-        withReceiverScriptOffer $ \project broker offer offered _ ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                calls <- newIORef (0 :: Int)
-                let expected = Receiver.ReceiverProtocolFailure (Protocol.ProtocolRequestMismatch relayRequest (relayRequest + 1))
-                    receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ ->
-                        modifyIORef' calls (+ 1) >> pure (Left receiverFinished)
-                withHandoffWorker receiver $ \awaitReceiver -> do
                     Protocol.channelSend parent offered >>= (@?= Right ())
-                    _ <- scriptedGrant broker offer parent
-                    refused <- expectRight (Protocol.protocolMessage Protocol.RefusedTag (relayRequest + 1) ["scripted-refusal", "wrong identity"])
-                    Protocol.channelSend parent refused >>= (@?= Right ())
+                    granted <- scriptedGrant broker offer parent
+                    writeScriptedArity rawParent granted fieldCount
                     assertScriptedRefusal parent expected "protocol"
-                    awaitReceiver >>= (@?= Left expected)
-                    assertReceiverSilence parent closeChild
-                readIORef calls >>= (@?= 0)
+    , testCase "a wrong-identity parent refusal preserves the pending protocol error" $
+        withReceiverScriptOffer $ \_ broker offer offered _ ->
+            withIsolatedReceiverProbe "wrong-request" $ \parent -> do
+                let expected = Receiver.ReceiverProtocolFailure (Protocol.ProtocolRequestMismatch relayRequest (relayRequest + 1))
+                Protocol.channelSend parent offered >>= (@?= Right ())
+                _ <- scriptedGrant broker offer parent
+                refused <- expectRight (Protocol.protocolMessage Protocol.RefusedTag (relayRequest + 1) ["scripted-refusal", "wrong identity"])
+                Protocol.channelSend parent refused >>= (@?= Right ())
+                assertScriptedRefusal parent expected "protocol"
     , testCase "an invalid acknowledgement preserves its error and leaves one refusal to announce" $
         forM_ [False, True] $ \wrongIdentity ->
-            withReceiverScriptOffer $ \project broker offer offered report ->
-                withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                    let protocolFailure = if wrongIdentity
-                            then Protocol.ProtocolRequestMismatch relayRequest (relayRequest + 1)
-                            else Protocol.ProtocolAcknowledgementMismatch
-                        expected = Receiver.ReceiverDeclined "the terminal action returned without one successful report send"
-                        receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ sendReport -> do
-                            sendReport report >>= (@?= Left (Receiver.ReceiverProtocolFailure protocolFailure))
-                            pure (Right ())
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        admitScriptedReceiver broker offer offered parent
-                        requireScriptedMessage parent Protocol.CompletedTag [report]
-                        acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
-                        changed <- expectRight (Protocol.protocolMessage Protocol.AcknowledgedTag
-                            (if wrongIdentity then relayRequest + 1 else relayRequest)
-                            [if wrongIdentity then acknowledgement else acknowledgement <> "wrong"])
-                        Protocol.channelSend parent changed >>= (@?= Right ())
-                        assertScriptedRefusal parent expected "child-declined"
-                        awaitReceiver >>= (@?= Left expected)
-                        assertReceiverSilence parent closeChild
-    , testCase "a callback Left before reporting sends one actual child refusal" $
-        withReceiverScriptOffer $ \project broker offer offered _ ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                let expected = Receiver.ReceiverDeclined receiverFinished
-                    receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ -> pure (Left receiverFinished)
-                withHandoffWorker receiver $ \awaitReceiver -> do
-                    admitScriptedReceiver broker offer offered parent
-                    assertScriptedRefusal parent expected "child-declined"
-                    awaitReceiver >>= (@?= Left expected)
-                    assertReceiverSilence parent closeChild
-    , testCase "a callback IOException before reporting is announced once and rethrown" $
-        withReceiverScriptOffer $ \project broker offer offered _ ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                let expected = Receiver.ReceiverCrashed (Text.pack (show (userError receiverCrashMarker)))
-                    receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ -> throwIO (userError receiverCrashMarker)
-                withHandoffWorker (try @IOException receiver) $ \awaitReceiver -> do
-                    admitScriptedReceiver broker offer offered parent
-                    assertScriptedRefusal parent expected "child-failed"
-                    awaitReceiver >>= assertScriptedIOException
-                    assertReceiverSilence parent closeChild
-    , testCase "a terminal callback that throws UserInterrupt escapes the receiver unwrapped" $
-        withReceiverScriptOffer $ \project broker offer offered _ ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                let receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ _ -> throwIO UserInterrupt
-                -- An asynchronous exit is not announced as a child refusal; it leaves the receiver as itself.
-                withHandoffWorker (try @SomeException receiver) $ \awaitReceiver -> do
-                    admitScriptedReceiver broker offer offered parent
-                    escaped <- awaitReceiver
-                    case escaped of
-                        Left failure -> (fromException failure :: Maybe AsyncException) @?= Just UserInterrupt
-                        Right value -> assertFailure ("the interrupted terminal callback returned: " <> show (() <$ value))
-                    assertReceiverSilence parent closeChild
-    , testCase "a consumed terminal-report refusal cannot be echoed by callback Left" $
-        withReceiverScriptOffer $ \project broker offer offered report ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                let receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ sendReport -> do
-                        sendReport report >>= (@?= Left (Receiver.ReceiverRefusedByParent "scripted-refusal" "the scripted parent refused"))
-                        pure (Left receiverFinished)
-                withHandoffWorker receiver $ \awaitReceiver -> do
+            withReceiverScriptOffer $ \_ broker offer offered report ->
+                withIsolatedReceiverProbe (receiverReportMode (if wrongIdentity then "ack-id" else "ack-bytes") report) $ \parent -> do
+                    let expected = Receiver.ReceiverDeclined "the terminal action returned without one successful report send"
                     admitScriptedReceiver broker offer offered parent
                     requireScriptedMessage parent Protocol.CompletedTag [report]
-                    sendScriptedRefusal parent
-                    awaitReceiver >>= (@?= Left (Receiver.ReceiverDeclined receiverFinished))
-                    assertReceiverSilence parent closeChild
+                    acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+                    changed <- expectRight (Protocol.protocolMessage Protocol.AcknowledgedTag
+                        (if wrongIdentity then relayRequest + 1 else relayRequest)
+                        [if wrongIdentity then acknowledgement else acknowledgement <> "wrong"])
+                    Protocol.channelSend parent changed >>= (@?= Right ())
+                    assertScriptedRefusal parent expected "child-declined"
+    , testCase "a callback Left before reporting sends one actual child refusal" $
+        withReceiverScriptOffer $ \_ broker offer offered _ ->
+            withIsolatedReceiverProbe "decline" $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                assertScriptedRefusal parent (Receiver.ReceiverDeclined receiverFinished) "child-declined"
+    , testCase "a callback IOException before reporting is announced once and rethrown" $
+        withReceiverScriptOffer $ \_ broker offer offered _ ->
+            withIsolatedReceiverProbe "io-exception" $ \parent -> do
+                let expected = Receiver.ReceiverCrashed (Text.pack (show (userError receiverCrashMarker)))
+                admitScriptedReceiver broker offer offered parent
+                assertScriptedRefusal parent expected "child-failed"
+    , testCase "a terminal callback that throws UserInterrupt escapes the receiver unwrapped" $
+        withReceiverScriptOffer $ \_ broker offer offered _ ->
+            withIsolatedReceiverProbe "interrupt" $ \parent ->
+                admitScriptedReceiver broker offer offered parent
+    , testCase "a consumed terminal-report refusal cannot be echoed by callback Left" $
+        withReceiverScriptOffer $ \_ broker offer offered report ->
+            withIsolatedReceiverProbe (receiverReportMode "report-refused" report) $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                requireScriptedMessage parent Protocol.CompletedTag [report]
+                sendScriptedRefusal parent
     , testCase "consumed relay refusals close the first report and any repeated parent operation" $
         forM_ [False, True] $ \rooted ->
-            withReceiverScriptOffer $ \project broker offer offered report ->
-                withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                    let key = rootBrokerVerificationKey broker
-                        closedReport = Left (Receiver.ReceiverDeclined "the handoff protocol is already finished")
-                        receiver = runScriptedReceiver project child key $ \edge sendReport ->
-                            Relay.withConfigBrokerLink edge $ \_ link -> do
-                                if rooted
-                                    then do
-                                        let request = rootedLifecycleOpenRequest (ByteString.replicate 32 17)
-                                        first <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                                        (() <$ first) @?= Left (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused")
-                                        sendReport report >>= (@?= closedReport)
-                                        repeated <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                                        (() <$ repeated) @?= Left Relay.RelayClosed
-                                    else do
-                                        withHandoffChannels $ \nested leaf _ _ ->
-                                            withHandoffWorker (Protocol.channelReceive leaf) $ \awaitLeaf -> do
-                                                Relay.offerHandoffEdge link nested relayRequest innerRelayInput childPayload unusedRelayTerminal
-                                                    >>= (@?= Left (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused"))
-                                                refused <- awaitLeaf >>= expectRight
-                                                Protocol.protocolMessageTag refused @?= Protocol.RefusedTag
-                                                Protocol.protocolMessageFields refused @?= ["peer-refused", TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused")))]
-                                        sendReport report >>= (@?= closedReport)
-                                        withHandoffChannels $ \nested leaf _ _ ->
-                                            withHandoffWorker (Protocol.channelReceive leaf) $ \awaitLeaf -> do
-                                                Relay.offerHandoffEdge link nested relayRequest innerRelayInput childPayload unusedRelayTerminal >>= (@?= Left Relay.RelayClosed)
-                                                refused <- awaitLeaf >>= expectRight
-                                                Protocol.protocolMessageTag refused @?= Protocol.RefusedTag
-                                                Protocol.protocolMessageFields refused @?= ["route-closed", "handoff relay: the admitted parent route is closed"]
-                                pure (Left receiverFinished)
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        admitScriptedReceiver broker offer offered parent
-                        requested <- boundedHandoff "the receiver's actual relay request" (Protocol.channelReceive parent) >>= expectRight
-                        Protocol.protocolMessageRequestId requested @?= relayRequest
-                        Protocol.protocolMessageTag requested @?= if rooted then Protocol.RootedLifecycleRequestTag else Protocol.OfferRequestTag
-                        sendScriptedRefusal parent
-                        awaitReceiver >>= (@?= Left (Receiver.ReceiverDeclined receiverFinished))
-                        assertReceiverSilence parent closeChild
+            withReceiverScriptOffer $ \_ broker offer offered report ->
+                withIsolatedReceiverProbe (receiverReportMode (if rooted then "relay-rooted" else "relay-offer") report) $ \parent -> do
+                    admitScriptedReceiver broker offer offered parent
+                    requested <- boundedHandoff "the receiver's actual relay request" (Protocol.channelReceive parent) >>= expectRight
+                    Protocol.protocolMessageRequestId requested @?= relayRequest
+                    Protocol.protocolMessageTag requested @?= if rooted then Protocol.RootedLifecycleRequestTag else Protocol.OfferRequestTag
+                    sendScriptedRefusal parent
     , testCase "a signed rooted Refused leaves the admitted report route open" $
-        withReceiverScriptOffer $ \project broker offer offered report ->
-            withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
+        withReceiverScriptOffer $ \_ broker offer offered report ->
+            withIsolatedReceiverProbe (receiverReportMode "signed-refused" report) $ \parent -> do
                 let key = rootBrokerVerificationKey broker
                     nonce = ByteString.replicate 32 19
                     predecessor = childConfigDigest "the scripted predecessor DATA"
                     request = rootedLifecyclePostRequest "next-node" ["relay-child"] "script-session" "script-stage" 1 nonce predecessor Nothing
                     unsigned = rootedLifecyclePostUnsigned "refused" request ["relay-child"] "script-session" "script-stage" 1 nonce "the signed DATA refusal"
                 signed <- rootedLifecycleResponseOracleWire 108 canonicalRootedLifecycleResponseSigningDomain key request unsigned
-                let receiver = runScriptedReceiver project child key $ \edge sendReport ->
-                        Relay.withConfigBrokerLink edge $ \_ link -> do
-                            answered <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                            fmap renderRootedLifecycleResponse answered @?= Right signed
-                            sendReport report >>= (@?= Right ())
-                            pure (Right ())
-                withHandoffWorker receiver $ \awaitReceiver -> do
-                    admitScriptedReceiver broker offer offered parent
-                    requested <- boundedHandoff "the receiver's signed-DATA request" (Protocol.channelReceive parent) >>= expectRight
-                    Protocol.protocolMessageTag requested @?= Protocol.RootedLifecycleRequestTag
-                    Protocol.protocolMessageRequestId requested @?= relayRequest
-                    response <- relayMessage Protocol.RootedLifecycleResponseTag [signed]
-                    Protocol.channelSend parent response >>= (@?= Right ())
-                    acknowledgeScriptedReport parent report
-                    awaitReceiver >>= (@?= Right ())
-                    assertReceiverSilence parent closeChild
+                admitScriptedReceiver broker offer offered parent
+                requested <- boundedHandoff "the receiver's signed-DATA request" (Protocol.channelReceive parent) >>= expectRight
+                Protocol.protocolMessageTag requested @?= Protocol.RootedLifecycleRequestTag
+                Protocol.protocolMessageRequestId requested @?= relayRequest
+                response <- relayMessage Protocol.RootedLifecycleResponseTag [signed]
+                Protocol.channelSend parent response >>= (@?= Right ())
+                acknowledgeScriptedReport parent report
     , testCase "an acknowledged report leaves no frame for a later Left or IOException" $
         forM_ [False, True] $ \crash ->
-            withReceiverScriptOffer $ \project broker offer offered report ->
-                withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                    let receiver = runScriptedReceiver project child (rootBrokerVerificationKey broker) $ \_ sendReport -> do
-                            sendReport report >>= (@?= Right ())
-                            if crash then throwIO (userError receiverCrashMarker) else pure (Left receiverFinished)
-                    withHandoffWorker (try @IOException receiver) $ \awaitReceiver -> do
-                        admitScriptedReceiver broker offer offered parent
-                        acknowledgeScriptedReport parent report
-                        outcome <- awaitReceiver
-                        if crash then assertScriptedIOException outcome else case outcome of
-                            Right returned -> returned @?= Left (Receiver.ReceiverDeclined receiverFinished)
-                            Left failure -> assertFailure (show failure)
-                        assertReceiverSilence parent closeChild
+            withReceiverScriptOffer $ \_ broker offer offered report ->
+                withIsolatedReceiverProbe (receiverReportMode (if crash then "report-crash" else "report-late") report) $ \parent -> do
+                    admitScriptedReceiver broker offer offered parent
+                    acknowledgeScriptedReport parent report
     ]
+
+receiverReportMode :: String -> ByteString.ByteString -> String
+receiverReportMode mode report = mode <> ":" <> show (ByteString.unpack report)
+
+withIsolatedReceiverProbe :: String -> (Protocol.HandoffChannel -> IO ()) -> IO ()
+withIsolatedReceiverProbe mode use = withIsolatedReceiverProbeRaw mode (\channel _ -> use channel)
+
+withIsolatedReceiverProbeRaw :: String -> (Protocol.HandoffChannel -> Handle -> IO ()) -> IO ()
+withIsolatedReceiverProbeRaw mode use = do
+    executable <- getExecutablePath
+    boundedHandoff "the isolated receiver process" $
+        withCreateProcess
+            (proc executable ["--hostbootstrap-isolated-receiver-probe", mode])
+                { std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit }
+            $ \maybeInput maybeOutput _ child -> do
+                input <- maybe (assertFailure "receiver stdin was not created") pure maybeInput
+                output <- maybe (assertFailure "receiver stdout was not created") pure maybeOutput
+                parent <- Protocol.handoffChannel output input
+                use parent input
+                waitForProcess child >>= (@?= ExitSuccess)
+                Protocol.channelReceive parent >>= (@?= Left (Protocol.ProtocolTruncated 8 0))
+
+runIsolatedReceiverProbe :: String -> IO ()
+runIsolatedReceiverProbe modeArgument = do
+    let (mode, encodedReport) = break (== ':') modeArgument
+        seed = if "carrier-" `isPrefixOf` mode then 109 else if "recovery-" `isPrefixOf` mode then 110 else if "path-" `isPrefixOf` mode then 112 else if "mutation-" `isPrefixOf` mode || "duplex-" `isPrefixOf` mode then 102 else 108
+    signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 seed))
+    report <- case encodedReport of
+        [] -> pure ByteString.empty
+        _ : bytes -> maybe (assertFailure "invalid receiver probe report") (pure . ByteString.pack) (readMaybe bytes)
+    Fixture.withFixtureInstalledProject $ \project -> do
+        outcome <- try @SomeException $ Receiver.withIsolatedReceivedHandoffEdge project (projectSigningVerificationKey signing)
+            (\edge config sendReport -> do
+                when ("recovery-" `isPrefixOf` mode) (assertFailure "the recovery carrier entered config")
+                putStrLn "isolated receiver callback diagnostic"
+                hGetContents stdin >>= evaluate . length >>= (@?= 0)
+                case mode of
+                    "io-exception" -> throwIO (userError receiverCrashMarker)
+                    "interrupt" -> throwIO UserInterrupt
+                    "report-ok" -> sendReport report >>= (@?= Right ()) >> pure (Right ())
+                    "ack-id" -> sendReport report >>= (@?= Left (Receiver.ReceiverProtocolFailure (Protocol.ProtocolRequestMismatch relayRequest (relayRequest + 1)))) >> pure (Right ())
+                    "ack-bytes" -> sendReport report >>= (@?= Left (Receiver.ReceiverProtocolFailure Protocol.ProtocolAcknowledgementMismatch)) >> pure (Right ())
+                    "report-refused" -> sendReport report >>= (@?= Left (Receiver.ReceiverRefusedByParent "scripted-refusal" "the scripted parent refused")) >> pure (Left receiverFinished)
+                    "report-late" -> sendReport report >>= (@?= Right ()) >> pure (Left receiverFinished)
+                    "report-crash" -> sendReport report >>= (@?= Right ()) >> throwIO (userError receiverCrashMarker)
+                    "carrier-exact" -> do
+                        authenticatedConfigBytes config @?= ByteString.replicate receiverCarrierLimit 120
+                        sendReport report >>= (@?= Right ())
+                        pure (Right ())
+                    "relay-rooted" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        let key = projectSigningVerificationKey signing
+                            request = rootedLifecycleOpenRequest (ByteString.replicate 32 17)
+                        first <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+                        (() <$ first) @?= Left (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused")
+                        sendReport report >>= (@?= Left (Receiver.ReceiverDeclined "the handoff protocol is already finished"))
+                        repeated <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+                        (() <$ repeated) @?= Left Relay.RelayClosed
+                        pure (Left receiverFinished)
+                    "relay-offer" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        withHandoffChannels $ \nested leaf _ _ ->
+                            withHandoffWorker (Protocol.channelReceive leaf) $ \awaitLeaf -> do
+                                Relay.offerHandoffEdge link nested relayRequest innerRelayInput childPayload unusedRelayTerminal
+                                    >>= (@?= Left (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused"))
+                                refused <- awaitLeaf >>= expectRight
+                                Protocol.protocolMessageTag refused @?= Protocol.RefusedTag
+                                Protocol.protocolMessageFields refused @?= ["peer-refused", TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage (Relay.RelayRefusedByPeer "scripted-refusal" "the scripted parent refused")))]
+                        sendReport report >>= (@?= Left (Receiver.ReceiverDeclined "the handoff protocol is already finished"))
+                        withHandoffChannels $ \nested leaf _ _ ->
+                            withHandoffWorker (Protocol.channelReceive leaf) $ \awaitLeaf -> do
+                                Relay.offerHandoffEdge link nested relayRequest innerRelayInput childPayload unusedRelayTerminal >>= (@?= Left Relay.RelayClosed)
+                                refused <- awaitLeaf >>= expectRight
+                                Protocol.protocolMessageTag refused @?= Protocol.RefusedTag
+                                Protocol.protocolMessageFields refused @?= ["route-closed", "handoff relay: the admitted parent route is closed"]
+                        pure (Left receiverFinished)
+                    "self-rooted" -> isolatedSelfSentRefusal (projectSigningVerificationKey signing) edge sendReport report True
+                    "self-offer" -> isolatedSelfSentRefusal (projectSigningVerificationKey signing) edge sendReport report False
+                    "path-oversized" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        let request = rootedLifecycleOpenRequest (ByteString.replicate 32 30)
+                            expected = Relay.RelayHandoffFailure (HandoffBindingMismatch "the relay requester path contains an oversized frame")
+                        local <- Relay.receiveRootedLifecycleResponseThroughLink (projectSigningVerificationKey signing) link request
+                        (() <$ local) @?= Left expected
+                        pure (Left receiverFinished)
+                    "mutation-open" -> isolatedRequesterMutation (projectSigningVerificationKey signing) edge report True
+                    "mutation-rooted" -> isolatedRequesterMutation (projectSigningVerificationKey signing) edge report False
+                    "duplex-normal" -> isolatedNestedDuplex edge False
+                    "duplex-trailing" -> isolatedNestedDuplex edge True
+                    "duplex-severed" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        withDuplexReceiverProcess "duplex-leaf-severed" $ \leaf _ child -> do
+                            Relay.offerHandoffEdge link leaf relayRequest innerRelayInput childPayload unusedRelayTerminal
+                                >>= (@?= Left (Relay.RelayProtocolFailure (Protocol.ProtocolTruncated 8 0)))
+                            waitForProcess child >>= (@?= ExitSuccess)
+                        pure (Left relayFinished)
+                    "duplex-replay" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        let request = rootedLifecycleOpenRequest (ByteString.replicate 32 31)
+                        answered <- Relay.receiveRootedLifecycleResponseThroughLink (projectSigningVerificationKey signing) link request
+                        (() <$ answered) @?= Left (Relay.RelayUnexpectedMessage Protocol.GrantResponseTag)
+                        pure (Left relayFinished)
+                    "duplex-leaf-normal" -> pure (Left relayFinished)
+                    "duplex-leaf-trailing" -> assertFailure "the trailing offer reached the leaf callback"
+                    "duplex-leaf-severed" -> assertFailure "the severed route reached the leaf callback"
+                    "signed-refused" -> Relay.withConfigBrokerLink edge $ \_ link -> do
+                        let key = projectSigningVerificationKey signing
+                            nonce = ByteString.replicate 32 19
+                            predecessor = childConfigDigest "the scripted predecessor DATA"
+                            request = rootedLifecyclePostRequest "next-node" ["relay-child"] "script-session" "script-stage" 1 nonce predecessor Nothing
+                            unsigned = rootedLifecyclePostUnsigned "refused" request ["relay-child"] "script-session" "script-stage" 1 nonce "the signed DATA refusal"
+                        signed <- rootedLifecycleResponseOracleWire 108 canonicalRootedLifecycleResponseSigningDomain key request unsigned
+                        answered <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+                        fmap renderRootedLifecycleResponse answered @?= Right signed
+                        sendReport report >>= (@?= Right ())
+                        pure (Right ())
+                    _ -> pure (Left receiverFinished))
+            (\descent sendReport ->
+                if mode == "recovery-ok"
+                    then Relay.withRecoveryBrokerLink descent $ \_ _ -> sendReport report >>= (@?= Right ()) >> pure (Right ())
+                    else assertFailure "the isolated receiver unexpectedly entered recovery")
+            (\_ _ _ -> assertFailure "the isolated receiver entered Harness")
+            (\_ _ -> assertFailure "the isolated receiver entered Harness recovery")
+        let expected = case mode of
+                "key-mismatch" -> Receiver.ReceiverKeyMismatch
+                "other-project" -> Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the authenticated root scope names another installed project")
+                "other-scope" -> Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the received binding names a different scope than the fixed handoff scope")
+                "offer-3" -> Receiver.ReceiverProtocolFailure (Protocol.ProtocolWrongFieldCount Protocol.OfferTag 4 3)
+                "offer-5" -> Receiver.ReceiverProtocolFailure (Protocol.ProtocolExcessFields Protocol.OfferTag 4 8)
+                "grant-1" -> Receiver.ReceiverProtocolFailure (Protocol.ProtocolWrongFieldCount Protocol.GrantTag 2 1)
+                "grant-3" -> Receiver.ReceiverProtocolFailure (Protocol.ProtocolExcessFields Protocol.GrantTag 2 8)
+                "wrong-request" -> Receiver.ReceiverProtocolFailure (Protocol.ProtocolRequestMismatch relayRequest (relayRequest + 1))
+                "ack-id" -> Receiver.ReceiverDeclined "the terminal action returned without one successful report send"
+                "ack-bytes" -> Receiver.ReceiverDeclined "the terminal action returned without one successful report send"
+                "carrier-over" -> Receiver.ReceiverWrongEdge "the embedded Offer payload exceeds its strict sub-ceiling"
+                "recovery-phase" -> Receiver.ReceiverWrongEdge "a recovery adapter must authorize teardown, received execute"
+                "recovery-proof" -> Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the rooted edge is not the verified one-use edge")
+                "recovery-verb" -> Receiver.ReceiverWrongEdge "a recovery adapter has an unsupported verb, received unsupported-scripted-verb"
+                "mutation-open" -> Receiver.ReceiverDeclined relayFinished
+                "mutation-rooted" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-normal" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-trailing" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-severed" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-replay" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-leaf-normal" -> Receiver.ReceiverDeclined relayFinished
+                "duplex-leaf-trailing" -> Receiver.ReceiverRefusedByParent "peer-refused" (Text.pack (Relay.relayErrorMessage (Relay.RelayRefusedByPeer "unauthenticated" (Text.pack (handoffErrorMessage (HandoffWireTrailingBytes 3))))))
+                "duplex-leaf-severed" -> Receiver.ReceiverRefusedByParent "protocol" (Text.pack (Protocol.protocolErrorMessage (Protocol.ProtocolTruncated 8 0)))
+                _ -> Receiver.ReceiverDeclined receiverFinished
+        case (mode, outcome) of
+            ("io-exception", Left failure) -> case fromException failure of
+                Just ioFailure -> ioeGetErrorString ioFailure @?= receiverCrashMarker
+                Nothing -> assertFailure "the original receiver IOException did not escape"
+            ("report-crash", Left failure) -> case fromException failure of
+                Just ioFailure -> ioeGetErrorString ioFailure @?= receiverCrashMarker
+                Nothing -> assertFailure "the original post-report IOException did not escape"
+            ("interrupt", Left failure) -> (fromException failure :: Maybe AsyncException) @?= Just UserInterrupt
+            ("report-ok", Right result) -> result @?= Right ()
+            ("carrier-exact", Right result) -> result @?= Right ()
+            ("recovery-ok", Right result) -> result @?= Right ()
+            ("signed-refused", Right result) -> result @?= Right ()
+            (_, Right result) -> result @?= Left expected
+            (_, Left failure) -> assertFailure ("unexpected receiver exception: " <> show failure)
+
+isolatedSelfSentRefusal ::
+    ProjectVerificationKey -> Receiver.ReceivedEdge scope generation ->
+    (ByteString.ByteString -> IO (Either Receiver.ReceiverError ())) -> ByteString.ByteString -> Bool ->
+    IO (Either Text.Text ())
+isolatedSelfSentRefusal key edge sendReport report rooted =
+    Relay.withConfigBrokerLink edge $ \_ link -> do
+        let request = rootedLifecycleOpenRequest (ByteString.replicate 32 29)
+            expected = Relay.RelayUnexpectedMessage Protocol.GrantResponseTag
+        if rooted
+            then do
+                first <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+                (() <$ first) @?= Left expected
+            else checkNestedRelayRefusal link expected
+        sendReport report >>= (@?= Left (Receiver.ReceiverDeclined "the handoff protocol is already finished"))
+        repeated <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+        (() <$ repeated) @?= Left Relay.RelayClosed
+        pure (Left receiverFinished)
+
+isolatedRequesterMutation ::
+    ProjectVerificationKey -> Receiver.ReceivedEdge scope generation -> ByteString.ByteString -> Bool ->
+    IO (Either Text.Text ())
+isolatedRequesterMutation key edge encoded opening = do
+    (code, rest) <- expectRight (takeHandoffFrame encoded)
+    (detail, trailing) <- expectRight (takeHandoffFrame rest)
+    trailing @?= ByteString.empty
+    let expected = Relay.RelayRefusedByPeer (TextEncoding.decodeUtf8 code) (TextEncoding.decodeUtf8 detail)
+        request = rootedLifecycleOpenRequest (ByteString.replicate 32 28)
+    Relay.withConfigBrokerLink edge $ \_ link -> do
+        if opening
+            then checkNestedRelayRefusal link expected
+            else do
+                answered <- Relay.receiveRootedLifecycleResponseThroughLink key link request
+                (() <$ answered) @?= Left expected
+        pure (Left relayFinished)
+
+isolatedNestedDuplex :: Receiver.ReceivedEdge scope generation -> Bool -> IO (Either Text.Text ())
+isolatedNestedDuplex edge trailing = Relay.withConfigBrokerLink edge $ \_ link -> do
+    withDuplexReceiverProcess (if trailing then "duplex-leaf-trailing" else "duplex-leaf-normal") $ \leaf _ child -> do
+        nested <- Relay.offerHandoffEdge link leaf relayRequest innerRelayInput childPayload unusedRelayTerminal
+        if trailing
+            then nested @?= Left (Relay.RelayRefusedByPeer "unauthenticated" (Text.pack (handoffErrorMessage (HandoffWireTrailingBytes 3))))
+            else nested @?= Left (relayChildDeclined relayFinished)
+        waitForProcess child >>= (@?= ExitSuccess)
+    pure (Left relayFinished)
 
 -- ---------------------------------------------------------------------------
 -- The receiver's untrusted wire boundary and embedded-payload limits
 
+reverseSettlementDecisionTests :: [TestTree]
+reverseSettlementDecisionTests =
+    [ testGroup "settlement observation refusals" $
+      [ testCase label $
+        withReverseDecisionForest False ProjectDown $ \forest -> do
+            let frame = "host-orchestrator-0"
+                node = "project:reverse-decision"
+            body <- expectRight (Teardown.renderTeardownObservations rows)
+            wire <- expectRight (Rooted.renderRootedReverseObservationKernel (Rooted.RootedReverseObservation operation body []))
+            request <- reverseDecisionSettleRequest wire
+            case TeardownInternal.decideReverseRequestKernel frame forest (Just node) Nothing Nothing False (Right request) of
+                Left actual -> actual @?= expected
+                Right _ -> assertFailure "the local settlement admitted invalid observations"
+      | (label, operation, rows, expected) <-
+          [ ("another operation", "project:other", [("project:reverse-decision", Teardown.TeardownReleased)], "the reverse observation names another operation")
+          , ("zero rows", "project:reverse-decision", [], "a local settlement must carry exactly its prepared observation")
+          , ("two rows", "project:reverse-decision", [("project:reverse-decision", Teardown.TeardownReleased), ("project:other", Teardown.TeardownReleased)], "a local settlement must carry exactly its prepared observation")
+          ]
+      ]
+    , testCase "pre-descent cannot settle as local work" $
+        withReverseDecisionForest True ProjectDestroy $ \forest ->
+            reverseDecisionSettleRequest "unused" >>= \request -> case TeardownInternal.decideReverseRequestKernel "host-orchestrator-0" forest Nothing Nothing Nothing False (Right request) of
+                Left actual -> actual @?= "a child cannot settle root-owned pre-descent work"
+                Right _ -> assertFailure "pre-descent work was settled by a child"
+    , testCase "descent cannot settle as local work" $
+        withReverseDecisionForest True ProjectDown $ \forest ->
+            reverseDecisionSettleRequest "unused" >>= \request -> case TeardownInternal.decideReverseRequestKernel "host-orchestrator-0" forest Nothing Nothing Nothing False (Right request) of
+                Left actual -> actual @?= "a local settlement cannot advance descent work"
+                Right _ -> assertFailure "descent work was settled locally"
+    , testGroup "descent, receipt, and offer refusals" $
+      [ testCase label $
+        withReverseDecisionForest False ProjectDown $ \forest -> do
+            let decide pending offered terminal input =
+                    TeardownInternal.decideReverseRequestKernel "host-orchestrator-0" forest Nothing pending offered terminal input
+                refusal expectedFailure result = case result of
+                    Left actual -> actual @?= expectedFailure
+                    Right _ -> assertFailure "the reverse decision admitted a refusal"
+                request constructor = expectRight (constructor ["host-orchestrator-0"] "session" "teardown" 1 (ByteString.replicate 32 1) (Text.replicate 64 "a"))
+            descend <- request (\path session stage ordinal nonce predecessor -> Rooted.rootedDescendResultRequestKernel path session stage ordinal nonce predecessor "child")
+            receipt <- request Rooted.rootedReceiptConfirmRequestKernel
+            let (pending, offered, selected) = case selector of
+                    0 -> (Nothing, Nothing, Right descend)
+                    1 -> (Just "other", Nothing, Right descend)
+                    2 -> (Nothing, Nothing, Right receipt)
+                    _ -> (Nothing, Just "first", Left "second")
+            refusal expected (decide pending offered False selected)
+      | (label, selector, expected) <-
+          [ ("no pending descent", 0 :: Int, "no completed descent awaits this result")
+          , ("different descent result", 1, "the descent result differs from the completed child")
+          , ("receipt before completion", 2, "no FrameComplete has been issued for this session")
+          , ("different retained offer", 3, "the reverse frame already retains another handoff offer")
+          ]
+      ]
+    , testGroup "prepared node, close, and failed re-offer" $
+      [ testCase label $
+        withReverseDecisionForest False ProjectDown $ \forest -> do
+            let node = "project:reverse-decision"
+                decide current prepared offered input =
+                    TeardownInternal.decideReverseRequestKernel "host-orchestrator-0" current prepared Nothing offered False (Right input)
+                refusal expected result = case result of
+                    Left actual -> actual @?= expected
+                    Right _ -> assertFailure "the reverse decision admitted a refusal"
+                request constructor = expectRight (constructor ["host-orchestrator-0"] "session" "teardown" 1 (ByteString.replicate 32 1) (Text.replicate 64 "a"))
+                settlement outcome = do
+                    body <- expectRight (Teardown.renderTeardownObservations [(node, outcome)])
+                    wire <- expectRight (Rooted.renderRootedReverseObservationKernel (Rooted.RootedReverseObservation node body []))
+                    reverseDecisionSettleRequest wire
+            close <- request Rooted.rootedCloseFrameRequestKernel
+            next <- request Rooted.rootedNextNodeRequestKernel
+            released <- settlement Teardown.TeardownReleased
+            failed <- settlement (Teardown.TeardownFailed "retained failure")
+            completed <- case decide forest (Just node) Nothing released of
+                Right (Just (_, _, _, successor)) -> pure successor
+                _ -> assertFailure "valid settlement did not produce a successor"
+            failedForest <- case decide forest (Just node) Nothing failed of
+                Right (Just (_, _, _, successor)) -> pure successor
+                _ -> assertFailure "failed settlement did not produce a successor"
+            case selector of
+                0 -> refusal "the settlement names another prepared node" (decide forest (Just "project:other") Nothing released)
+                1 -> refusal "the frame requested completion before its admitted offer was retained" (decide completed Nothing Nothing close)
+                _ -> refusal "retained failure" (decide failedForest Nothing Nothing next)
+      | (label, selector) <- [("another prepared node", 0 :: Int), ("close before offer", 1), ("durably failed re-offer", 2)]
+      ]
+    ]
+
+reverseDecisionSettleRequest :: ByteString.ByteString -> IO Rooted.RootedLifecycleRequest
+reverseDecisionSettleRequest body =
+    expectRight (Rooted.rootedSettleNodeRequestKernel ["host-orchestrator-0"] "session" "teardown" 1 (ByteString.replicate 32 1) (Text.replicate 64 "a") body)
+
+withReverseDecisionForest ::
+    Bool ->
+    ProjectVerb verb ->
+    ( forall projectId planId frame.
+      Teardown.TeardownForest (Production projectId) planId frame verb -> IO result
+    ) ->
+    IO result
+withReverseDecisionForest nested verb use = do
+    identity <- either fail pure (Step.projectStepId "reverse-decision")
+    let local = Step.projectStep identity Step.ProjectManagedReverse "reverse decision"
+            (Step.StepFrame (if nested then "vm-orchestrator-1" else "host-orchestrator-0") (if nested then "VM" else "Host"))
+            (const (pure Step.StepChanged))
+        provider = Step.descendsVia localContext $
+            Step.deployVMStep "provider" (Step.StepFrame "host-orchestrator-0" "Host") (const (pure Step.StepChanged))
+    steps <- either (fail . show) pure (Step.mkStepPlan (if nested then [provider, local] else [local]))
+    Fixture.withFixtureProjectPlanContext id steps $ \plan context -> do
+        action <- either (fail . show) pure $
+            withCurrentFrame plan context $ \current _ _ -> do
+                forest <- either (fail . show) pure (Teardown.openTeardownForest (Teardown.teardownPlan plan current verb))
+                use forest
+        action
+
 receiverCarrierTests :: [TestTree]
 receiverCarrierTests =
-    [ testCase "recovery projection coordinates retain read-only getters and their public Show form" $
+    [ testCase "reverse-root-link-refusals: config openings and activation signing" $
+        withSystemTempDirectory "hostbootstrap-reverse-link-refusal" $ \directory -> do
+            signing <- expectRight (projectSigningKeyFromBytes (ByteString.replicate 32 104))
+            store <- openProtectedStore (directory </> "authority") >>= expectRight
+            Fixture.withFixtureInstalledProject $ \project ->
+                withRecoveryBroker signing store project ProjectDown $ \broker -> do
+                    admissions <- newIORef (0 :: Int)
+                    let admits _ = modifyIORef' admissions (+ 1) >> pure (Right ())
+                        recovery _ = assertFailure "a closed endpoint reached recovery admission"
+                        retain _ = assertFailure "a closed endpoint retained an offer"
+                        service _ _ = assertFailure "a closed endpoint reached the rooted service"
+                    link <- Relay.rootReverseBrokerLink broker (productionHandoffScope project) admits recovery retain service >>= expectRight
+                    before <- protectedHandoffImage store
+                    boundedHandoff "the reverse config refusal" $
+                        withHandoffChannels $ \parent child _ _ -> do
+                            let expected = Relay.RelayEdgeNotPlanned "the reverse coordinator admits no config edge"
+                            outcome <- Relay.offerHandoffEdge link parent relayRequest outerRelayInput childPayload unusedRelayTerminal
+                            outcome @?= Left expected
+                            requireScriptedMessage child Protocol.RefusedTag
+                                ["edge-not-planned", TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage expected))]
+                    manifest <- expectRight $
+                        Activation.activationManifest
+                            ( Activation.ActivationManifestInput
+                                { Activation.manifestInputScope = "Production"
+                                , Activation.manifestInputPlanDigest = "reverse-plan"
+                                , Activation.manifestInputSpecDigest = "reverse-spec"
+                                , Activation.manifestInputBinaryDigest = "reverse-binary"
+                                , Activation.manifestInputFrame = "relay-child"
+                                , Activation.manifestInputRevision = "reverse-revision"
+                                , Activation.manifestInputConfigDigest = "reverse-config"
+                                , Activation.manifestInputSecretDigest = Activation.activationSecretDigestFromBytes "reverse-secret"
+                                , Activation.manifestInputService = "reverse-service"
+                                , Activation.manifestInputRolePlanDigest = "reverse-role"
+                                , Activation.manifestInputPermittedEffects = ["reverse-effect"]
+                                , Activation.manifestInputSecretChannel = "reverse-secret-channel"
+                                }
+                            )
+                    signed <- Relay.linkSignActivation link manifest
+                    case signed of
+                        Left failure -> failure @?= Relay.RelayEdgeNotPlanned "the reverse coordinator carries no activation signer"
+                        Right _ -> assertFailure "the reverse root link signed an activation"
+                    readIORef admissions >>= (@?= 0)
+                    protectedHandoffImage store >>= (@?= before)
+    , testCase "recovery projection coordinates retain read-only getters and their public Show form" $
         withRecoveryInput (RecoveryCoordinates "plan" "parent" "child") $ \input -> do
             (requestedRecoveryPlanDigest input, requestedRecoveryParentFrame input, requestedRecoveryChildFrame input)
                 @?= ("plan", "parent", "child")
@@ -11840,32 +12768,140 @@ receiverCarrierTests =
             show input @?= expected
             showsPrec 10 input "" @?= expected
             showsPrec 11 input "" @?= "(" <> expected <> ")"
+    , testCase "the forward root relay refuses recovery and non-config edge openings" $
+        forM_ [0 :: Int, 1, 2] $ \mode ->
+            withDuplexHandoffRoot $ \project store broker _ admissions ->
+                boundedHandoff "the forward root relay refusal" $
+                    withHandoffChannels $ \parent child _ _ -> do
+                        let admits _ = modifyIORef' admissions (+ 1) >> pure (Right ())
+                            service _ _ = assertFailure "an open request reached the rooted lifecycle service"
+                        link <- Relay.rootForwardBrokerLink broker (productionHandoffScope project)
+                            (\_ -> assertFailure "an open request reached activation signing") admits
+                            (\_ -> pure (Right ())) service >>= expectRight
+                        withHandoffWorker (Relay.offerHandoffEdge link parent relayRequest outerRelayInput childPayload unusedRelayTerminal) $ \awaitParent -> do
+                            _ <- Protocol.channelReceive child >>= expectRight
+                            challenge <- freshChallenge
+                            relayMessage Protocol.ChallengeTag [challengeBytes challenge] >>= Protocol.channelSend child >>= (@?= Right ())
+                            grant <- Protocol.channelReceive child >>= expectRight
+                            Protocol.protocolMessageTag grant @?= Protocol.GrantTag
+                            relayMessage Protocol.AcceptedTag [TextEncoding.encodeUtf8 (requestedChildConfigDigest outerRelayInput)] >>= Protocol.channelSend child >>= (@?= Right ())
+                            before <- protectedHandoffImage store
+                            let adapter = "forward relay recovery adapter"
+                                input = innerRelayInput{requestedPayloadKind = RecoveryAdapterWire, requestedChildConfigDigest = childConfigDigest adapter}
+                                raw = if mode == 1
+                                    then renderFrameFields ["hostbootstrap/recoverable-open", lifecycleWordBytesFor 1, renderHandoffBindingInput input, adapter]
+                                    else renderHandoffBindingInput input
+                                envelope payload = renderFrameFields ["hostbootstrap-relay-requester-path-v1", renderFrameFields ["relay-child"], payload]
+                            (tag, fields, expected, code) <- if mode == 2
+                                then withRecoveryInput (RecoveryCoordinates "plan" "relay-child" "relay-grandchild") $ \coordinates ->
+                                    withRecoveryBinding broker coordinates adapter $ \binding -> do
+                                        requestFields <- expectRight (recoveryRequestFields binding adapter)
+                                        case requestFields of
+                                            [header, wire] -> pure (Protocol.RecoveryRequestTag, [envelope header, wire],
+                                                Relay.RelayRecoveryNotPlanned "the forward coordinator carries no recovery signer", "recovery-not-planned")
+                                            _ -> assertFailure "recovery signing did not produce two fields"
+                                else pure (Protocol.OfferRequestTag, [envelope raw],
+                                    if mode == 1 then Relay.RelayRecoveryNotPlanned "the forward coordinator admits no recovery edge"
+                                        else Relay.RelayHandoffFailure (HandoffBindingMismatch "ordinary edge opening requires narrowed-project-config"),
+                                    if mode == 1 then "recovery-not-planned" else "unauthenticated")
+                            relayMessage tag fields >>= Protocol.channelSend child >>= (@?= Right ())
+                            requireScriptedMessage child Protocol.RefusedTag [code, TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage expected))]
+                            awaitParent >>= (@?= Left expected)
+                            readIORef admissions >>= (@?= 1)
+                            protectedHandoffImage store >>= (@?= before)
     , testCase "the receiver admits exactly seven MiB before a successful report and acknowledgement" $
-        withReceiverCarrierConfig (ByteString.replicate receiverCarrierLimit 120) $ \project broker offer offered report ->
-            boundedHandoff "the exact-limit receiver dialogue" $
-                withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                    calls <- newIORef (0 :: Int)
-                    let receiver = Receiver.withReceivedHandoffEdge project child (rootBrokerVerificationKey broker)
-                            (\_ config sendReport -> do
-                                modifyIORef' calls (+ 1)
-                                authenticatedConfigBytes config @?= ByteString.replicate receiverCarrierLimit 120
-                                sendReport report >>= (@?= Right ())
-                                pure (Right ()))
-                            (\_ _ -> assertFailure "the bounded config entered recovery")
-                            (\_ _ _ -> assertFailure "the bounded config entered Harness")
-                            (\_ _ -> assertFailure "the bounded config entered Harness recovery")
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        admitScriptedReceiver broker offer offered parent
-                        acknowledgeScriptedReport parent report
-                        awaitReceiver >>= (@?= Right ())
-                        assertReceiverSilence parent closeChild
-                    readIORef calls >>= (@?= 1)
+        withReceiverCarrierConfig (ByteString.replicate receiverCarrierLimit 120) $ \_ broker offer offered report ->
+            withIsolatedReceiverProbe (receiverReportMode "carrier-exact" report) $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                acknowledgeScriptedReport parent report
     , testCase "the receiver refuses one byte over seven MiB before a challenge or branch" $
-        withReceiverCarrierConfig (ByteString.replicate (receiverCarrierLimit + 1) 120) $ \project broker _ offered _ ->
-            boundedHandoff "the over-limit receiver dialogue" $
-                checkEarlyReceiverRefusal project (rootBrokerVerificationKey broker) offered
-                    (Receiver.ReceiverWrongEdge "the embedded Offer payload exceeds its strict sub-ceiling")
-                    "wrong-edge"
+        withReceiverCarrierConfig (ByteString.replicate (receiverCarrierLimit + 1) 120) $ \_ _ _ offered _ ->
+            withIsolatedReceiverProbe "carrier-over" $ \parent -> do
+                Protocol.channelSend parent offered >>= (@?= Right ())
+                assertScriptedRefusal parent
+                    (Receiver.ReceiverWrongEdge "the embedded Offer payload exceeds its strict sub-ceiling") "wrong-edge"
+    , testCase "the terminal persist continuation refuses repeated and late calls" $
+        withDuplexHandoffRoot $ \_ store _ link _ ->
+            boundedHandoff "the one-shot terminal dialogue" $
+                withHandoffChannels $ \parent child _ _ -> do
+                    retained <- newIORef Nothing
+                    let unavailable = Left "lifecycle acknowledgement unavailable"
+                        terminal _ report persist = do
+                            acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+                            persist report acknowledgement >>= (@?= Right ())
+                            persist report acknowledgement >>= (@?= unavailable)
+                            writeIORef retained (Just (persist, report, acknowledgement))
+                            pure (Right ())
+                    withHandoffWorker (Relay.offerHandoffEdge link parent relayRequest outerRelayInput childPayload terminal) $ \awaitParent -> do
+                        offered <- Protocol.channelReceive child >>= expectRight
+                        binding <- case Protocol.protocolMessageFields offered of
+                            [_, _, wire, _] -> pure wire
+                            fields -> assertFailure ("the offer had " <> show (length fields) <> " fields")
+                        challenge <- freshChallenge
+                        challengeMessage <- relayMessage Protocol.ChallengeTag [challengeBytes challenge]
+                        Protocol.channelSend child challengeMessage >>= (@?= Right ())
+                        grant <- Protocol.channelReceive child >>= expectRight
+                        Protocol.protocolMessageTag grant @?= Protocol.GrantTag
+                        accepted <- relayMessage Protocol.AcceptedTag [TextEncoding.encodeUtf8 (requestedChildConfigDigest outerRelayInput)]
+                        Protocol.channelSend child accepted >>= (@?= Right ())
+                        report <- expectRight (renderForwardCompletedLifecycleReport (forwardLifecycleOrigin binding))
+                        publishLifecycleReportKernel HandoffInternal.recoverySigningKernel store report >>= (@?= Right ())
+                        completed <- relayMessage Protocol.CompletedTag [report]
+                        Protocol.channelSend child completed >>= (@?= Right ())
+                        acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+                        requireScriptedMessage child Protocol.AcknowledgedTag [acknowledgement]
+                        awaitParent >>= (@?= Right ())
+                        (persist, savedReport, savedAcknowledgement) <- readIORef retained >>= requireObserved "the retained terminal continuation"
+                        persist savedReport savedAcknowledgement >>= (@?= unavailable)
+    , testCase "a failed pending acknowledgement does not report a fresh terminal completion" $
+        withDuplexHandoffRoot $ \_ store _ link _ ->
+            boundedHandoff "the failed pending acknowledgement dialogue" $
+                withHandoffChannels $ \parent child closeParent _ -> do
+                    called <- newIORef False
+                    let terminal _ report persist = do
+                            acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+                            persist report acknowledgement >>= (@?= Left "lifecycle acknowledgement unavailable")
+                            writeIORef called True
+                            pure (Right ())
+                    withHandoffWorker (Relay.offerHandoffEdge link parent relayRequest outerRelayInput childPayload terminal) $ \awaitParent -> do
+                        offered <- Protocol.channelReceive child >>= expectRight
+                        binding <- case Protocol.protocolMessageFields offered of
+                            [_, _, wire, _] -> pure wire
+                            fields -> assertFailure ("the offer had " <> show (length fields) <> " fields")
+                        challenge <- freshChallenge
+                        challengeMessage <- relayMessage Protocol.ChallengeTag [challengeBytes challenge]
+                        Protocol.channelSend child challengeMessage >>= (@?= Right ())
+                        grant <- Protocol.channelReceive child >>= expectRight
+                        Protocol.protocolMessageTag grant @?= Protocol.GrantTag
+                        accepted <- relayMessage Protocol.AcceptedTag [TextEncoding.encodeUtf8 (requestedChildConfigDigest outerRelayInput)]
+                        Protocol.channelSend child accepted >>= (@?= Right ())
+                        report <- expectRight (renderForwardCompletedLifecycleReport (forwardLifecycleOrigin binding))
+                        publishLifecycleReportKernel HandoffInternal.recoverySigningKernel store report >>= (@?= Right ())
+                        closeParent
+                        completed <- relayMessage Protocol.CompletedTag [report]
+                        Protocol.channelSend child completed >>= (@?= Right ())
+                        awaitParent >>= (@?= Left Relay.RelayLifecycleCallbackAfterAcknowledgement)
+                        readIORef called >>= (@?= True)
+    , testCase "the real pending acknowledgement returns its exact transmission failure" $
+        withDuplexHandoffRoot $ \_ store broker link _ ->
+            withHandoffChannels $ \parent _ closeParent _ -> do
+                (relay, token) <- registerHandoffEdge broker outerRelayInput >>= expectRight
+                offer <- expectRight (mkHandoffOffer relay childPayload token)
+                challenge <- freshChallenge
+                _ <- grantHandoff broker offer challenge >>= expectRight
+                report <- expectRight (renderForwardCompletedLifecycleReport (forwardLifecycleOrigin (renderHandoffBinding (handoffOfferBinding offer))))
+                acknowledgement <- expectRight (renderLifecycleAcknowledgement report)
+                publishLifecycleReportKernel HandoffInternal.recoverySigningKernel store report >>= (@?= Right ())
+                attempted <- newIORef False
+                dispositions <- newIORef ([] :: [Bool])
+                closeParent
+                let pending stored = Relay.pendingLifecycleAcknowledgementThroughLink link parent relayRequest offer challenge report acknowledgement stored
+                        (writeIORef attempted True) (\fresh -> modifyIORef' dispositions (fresh :) >> pure (Right ()))
+                Relay.prepareLifecycleAcknowledgementThroughLink link offer challenge report acknowledgement pending
+                    (\_ -> assertFailure "a fresh acknowledgement was already adopted")
+                    >>= (@?= Left Relay.RelayLifecycleTransmissionFailure)
+                readIORef attempted >>= (@?= True)
+                readIORef dispositions >>= (@?= [])
     , testCase "the real root Relay refuses an oversized payload before opening any edge" $
         withDuplexHandoffRoot $ \_ store _ link admissions ->
             boundedHandoff "the over-limit root Relay dialogue" $
@@ -12007,30 +13043,16 @@ completeReceiverRecoveryCarrier ::
     InstalledProjectIdentity projectId -> RootBroker (Production projectId) generation VerbDown ->
     HandoffOffer (Production projectId) generation -> Protocol.ProtocolMessage ->
     Maybe (Protocol.HandoffChannel -> IO Protocol.ProtocolMessage) -> IO ()
-completeReceiverRecoveryCarrier project broker offer offered oracle =
-    boundedHandoff "the complete recovery carrier dialogue" $
-        withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-            calls <- newIORef (0 :: Int)
-            observations <- expectRight (renderLifecycleObservations [(handoffChildFrame (handoffOfferBinding offer), "released", "none")])
-            report <- expectRight (renderReverseCompletedLifecycleReport (reverseLifecycleOrigin (handoffOfferBinding offer)) observations)
-            let receiver = Receiver.withReceivedHandoffEdge project child (rootBrokerVerificationKey broker)
-                    (\_ _ _ -> assertFailure "the recovery carrier entered config")
-                    (\descent sendReport -> Relay.withRecoveryBrokerLink descent $ \_ _ -> do
-                        modifyIORef' calls (+ 1)
-                        sendReport report >>= (@?= Right ())
-                        pure (Right ()))
-                    (\_ _ _ -> assertFailure "the recovery carrier entered Harness config")
-                    (\_ _ -> assertFailure "the recovery carrier entered Harness recovery")
-            withHandoffWorker receiver $ \awaitReceiver -> do
-                Protocol.channelSend parent offered >>= (@?= Right ())
-                granted <- maybe (scriptedGrant broker offer parent) ($ parent) oracle
-                Protocol.channelSend parent granted >>= (@?= Right ())
-                requireScriptedMessage parent Protocol.AcceptedTag
-                    [TextEncoding.encodeUtf8 (handoffChildConfigDigest (handoffOfferBinding offer))]
-                acknowledgeScriptedReport parent report
-                awaitReceiver >>= (@?= Right ())
-                assertReceiverSilence parent closeChild
-            readIORef calls >>= (@?= 1)
+completeReceiverRecoveryCarrier _project broker offer offered oracle = do
+    observations <- expectRight (renderLifecycleObservations [(handoffChildFrame (handoffOfferBinding offer), "released", "none")])
+    report <- expectRight (renderReverseCompletedLifecycleReport (reverseLifecycleOrigin (handoffOfferBinding offer)) observations)
+    withIsolatedReceiverProbe (receiverReportMode "recovery-ok" report) $ \parent -> do
+        Protocol.channelSend parent offered >>= (@?= Right ())
+        granted <- maybe (scriptedGrant broker offer parent) ($ parent) oracle
+        Protocol.channelSend parent granted >>= (@?= Right ())
+        requireScriptedMessage parent Protocol.AcceptedTag
+            [TextEncoding.encodeUtf8 (handoffChildConfigDigest (handoffOfferBinding offer))]
+        acknowledgeScriptedReport parent report
 
 refuseReceiverRecoveryCarrier ::
     InstalledProjectIdentity projectId -> RootBroker (Production projectId) generation VerbDown ->
@@ -12043,21 +13065,17 @@ refuseReceiverRecoveryCarrierWith ::
     InstalledProjectIdentity projectId -> RootBroker (Production projectId) generation VerbDown ->
     Protocol.ProtocolMessage -> (Protocol.HandoffChannel -> IO Protocol.ProtocolMessage) ->
     Receiver.ReceiverError -> ByteString.ByteString -> IO ()
-refuseReceiverRecoveryCarrierWith project broker offered grant expected code =
-    boundedHandoff "the refused recovery carrier dialogue" $
-        withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-            calls <- newIORef (0 :: Int)
-            let exposed = modifyIORef' calls (+ 1) >> pure (Right ())
-                receiver = Receiver.withReceivedHandoffEdge project child (rootBrokerVerificationKey broker)
-                    (\_ _ _ -> exposed) (\_ _ -> exposed) (\_ _ _ -> exposed) (\_ _ -> exposed)
-            withHandoffWorker receiver $ \awaitReceiver -> do
-                Protocol.channelSend parent offered >>= (@?= Right ())
-                granted <- grant parent
-                Protocol.channelSend parent granted >>= (@?= Right ())
-                assertScriptedRefusal parent expected code
-                awaitReceiver >>= (@?= Left expected)
-                assertReceiverSilence parent closeChild
-            readIORef calls >>= (@?= 0)
+refuseReceiverRecoveryCarrierWith _project _broker offered grant expected code = do
+    mode <- case expected of
+        Receiver.ReceiverWrongEdge "a recovery adapter must authorize teardown, received execute" -> pure "recovery-phase"
+        Receiver.ReceiverHandoffFailure (HandoffBindingMismatch "the rooted edge is not the verified one-use edge") -> pure "recovery-proof"
+        Receiver.ReceiverWrongEdge "a recovery adapter has an unsupported verb, received unsupported-scripted-verb" -> pure "recovery-verb"
+        _ -> assertFailure "unexpected recovery refusal fixture"
+    withIsolatedReceiverProbe mode $ \parent -> do
+        Protocol.channelSend parent offered >>= (@?= Right ())
+        granted <- grant parent
+        Protocol.channelSend parent granted >>= (@?= Right ())
+        assertScriptedRefusal parent expected code
 
 -- Ordinary hostile-wire DATA, not a RootBroker issuance function. The matching
 -- Down control exercises this exact oracle through every receiver join first.
@@ -12097,7 +13115,8 @@ rootedRequesterTransportTests =
             mismatch = Relay.RelayHandoffFailure . HandoffBindingMismatch
             serviceReached = Relay.RelayEdgeNotPlanned "the requester parser DATA service was reached"
             cases =
-                [ (pathBytes (admitted : replicate 256 "nested"), [], mismatch "the relay requester path exceeds the protocol depth limit")
+                [ (pathBytes [], [], mismatch "the relay requester path is empty")
+                , (pathBytes (admitted : replicate 256 "nested"), [], mismatch "the relay requester path exceeds the protocol depth limit")
                 , (pathBytes [admitted, ""], [], mismatch "the relay requester path contains an empty frame")
                 , (frameWire (TextEncoding.encodeUtf8 admitted) <> frameWire (ByteString.singleton 255), [],
                     mismatch "the relay requester path contains invalid UTF-8")
@@ -12120,6 +13139,20 @@ rootedRequesterTransportTests =
                                     [renderFrameFields [domain, rawPath, exactRequest]]
                             _ -> assertFailure "the real rooted envelope did not have its three fields"
                     _ -> assertFailure "the real rooted request did not have its singleton field"
+        forM_
+            [ (["foreign", "relay-child"], "the rooted lifecycle request path differs from the complete relay envelope")
+            , (["foreign"], "the relay requester envelope is not the exact rooted lifecycle path suffix")
+            ] $ \(innerPath, failure) -> checkRequesterRelayMutation False [] (mismatch failure) $ \message ->
+                case Protocol.protocolMessageFields message of
+                    [enveloped] -> do
+                        fields <- framesOf enveloped
+                        case fields of
+                            [domain, path, _] -> do
+                                let foreignRequest = rootedLifecyclePostRequest "next-node" innerPath
+                                        "session" "stage" 1 (ByteString.replicate 32 29) (Text.replicate 64 "a") Nothing
+                                relayMessage Protocol.RootedLifecycleRequestTag [renderFrameFields [domain, path, foreignRequest]]
+                            _ -> assertFailure "the real rooted envelope did not have its three fields"
+                    _ -> assertFailure "the real rooted request did not have its singleton field"
     , testCase "the actual root refuses another requested parent before edge admission" $
         checkRequesterRelayMutation True []
             (Relay.RelayHandoffFailure (HandoffBindingMismatch "the requested parent frame is not the authenticated path origin")) $ \message ->
@@ -12138,56 +13171,24 @@ rootedRequesterTransportTests =
                     _ -> assertFailure "the real open request did not have its singleton field"
     , testCase "a real self-sent Relay refusal closes the first report and repeated parent operation" $
         forM_ [False, True] $ \rooted ->
-            withReceiverScriptOffer $ \project broker offer offered report ->
-                boundedHandoff "the self-sent refusal dialogue" $
-                    withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                        let key = rootBrokerVerificationKey broker
-                            request = rootedLifecycleOpenRequest (ByteString.replicate 32 29)
-                            expected = Relay.RelayUnexpectedMessage Protocol.GrantResponseTag
-                            receiver = runScriptedReceiver project child key $ \edge sendReport ->
-                                Relay.withConfigBrokerLink edge $ \_ link -> do
-                                    if rooted
-                                        then do
-                                            first <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                                            (() <$ first) @?= Left expected
-                                        else checkNestedRelayRefusal link expected
-                                    sendReport report >>= (@?= Left (Receiver.ReceiverDeclined "the handoff protocol is already finished"))
-                                    repeated <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                                    (() <$ repeated) @?= Left Relay.RelayClosed
-                                    pure (Left receiverFinished)
-                        withHandoffWorker receiver $ \awaitReceiver -> do
-                            admitScriptedReceiver broker offer offered parent
-                            sent <- boundedHandoff "the actual upstream Relay operation" (Protocol.channelReceive parent) >>= expectRight
-                            Protocol.protocolMessageRequestId sent @?= relayRequest
-                            Protocol.protocolMessageTag sent @?= if rooted then Protocol.RootedLifecycleRequestTag else Protocol.OfferRequestTag
-                            wrong <- relayMessage Protocol.GrantResponseTag ["the wrong upstream tag"]
-                            Protocol.channelSend parent wrong >>= (@?= Right ())
-                            requireScriptedMessage parent Protocol.RefusedTag
-                                ["unexpected-message", TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage expected))]
-                            awaitReceiver >>= (@?= Left (Receiver.ReceiverDeclined receiverFinished))
-                            assertReceiverSilence parent closeChild
+            withReceiverScriptOffer $ \_ broker offer offered report ->
+                withIsolatedReceiverProbe (receiverReportMode (if rooted then "self-rooted" else "self-offer") report) $ \parent -> do
+                    let expected = Relay.RelayUnexpectedMessage Protocol.GrantResponseTag
+                    admitScriptedReceiver broker offer offered parent
+                    sent <- boundedHandoff "the actual upstream Relay operation" (Protocol.channelReceive parent) >>= expectRight
+                    Protocol.protocolMessageRequestId sent @?= relayRequest
+                    Protocol.protocolMessageTag sent @?= if rooted then Protocol.RootedLifecycleRequestTag else Protocol.OfferRequestTag
+                    wrong <- relayMessage Protocol.GrantResponseTag ["the wrong upstream tag"]
+                    Protocol.channelSend parent wrong >>= (@?= Right ())
+                    requireScriptedMessage parent Protocol.RefusedTag
+                        ["unexpected-message", TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage expected))]
     , testCase "a genuine pre-send envelope failure inside the fixed Relay wrapper leaves notification live" $
-        withReceiverPathOffer (Text.replicate 4097 "x") $ \project broker offer offered ->
-            boundedHandoff "the local pre-send failure dialogue" $
-                withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-                    calls <- newIORef (0 :: Int)
-                    let key = rootBrokerVerificationKey broker
-                        request = rootedLifecycleOpenRequest (ByteString.replicate 32 30)
-                        expected = Relay.RelayHandoffFailure (HandoffBindingMismatch "the relay requester path contains an oversized frame")
-                        receiver = runScriptedReceiver project child key $ \edge _ ->
-                            Relay.withConfigBrokerLink edge $ \_ link -> do
-                                modifyIORef' calls (+ 1)
-                                local <- Relay.receiveRootedLifecycleResponseThroughLink key link request
-                                (() <$ local) @?= Left expected
-                                pure (Left receiverFinished)
-                    withHandoffWorker receiver $ \awaitReceiver -> do
-                        admitScriptedReceiver broker offer offered parent
-                        -- No rooted request was transmitted: the first next frame
-                        -- is the Receiver's legitimate callback-failure notice.
-                        assertScriptedRefusal parent (Receiver.ReceiverDeclined receiverFinished) "child-declined"
-                        awaitReceiver >>= (@?= Left (Receiver.ReceiverDeclined receiverFinished))
-                        assertReceiverSilence parent closeChild
-                    readIORef calls >>= (@?= 1)
+        withReceiverPathOffer (Text.replicate 4097 "x") $ \_ broker offer offered ->
+            withIsolatedReceiverProbe "path-oversized" $ \parent -> do
+                admitScriptedReceiver broker offer offered parent
+                -- No rooted request was transmitted: the first next frame
+                -- is the Receiver's legitimate callback-failure notice.
+                assertScriptedRefusal parent (Receiver.ReceiverDeclined receiverFinished) "child-declined"
     ]
 
 checkRequesterRelayMutation ::
@@ -12198,18 +13199,18 @@ checkRequesterRelayMutation opening expectedPaths expected mutate = do
     let service path exactRequest = do
             modifyIORef' serviceCalls (<> [(path, exactRequest)])
             pure (Left (Relay.RelayEdgeNotPlanned "the requester parser DATA service was reached"))
-    withDuplexHandoffRootService service $ \project store broker link admissions ->
+    withDuplexHandoffRootService service $ \_ store _broker link admissions ->
         boundedHandoff "the requester-parser duplex dialogue" $
             withHandoffChannels $ \rootChannel rootProxy closeRootOutput _ ->
-                withHandoffChannels $ \relayProxy relayChannel _ closeRelayOutput -> do
+                withDuplexReceiverProcess probeMode $ \relayProxy closeRelayOutput child -> do
                     mutations <- newIORef (0 :: Int)
                     before <- newEmptyMVar
-                    let key = rootBrokerVerificationKey broker
-                        request = rootedLifecycleOpenRequest (ByteString.replicate 32 28)
+                    let request = rootedLifecycleOpenRequest (ByteString.replicate 32 28)
                         target = if opening then Protocol.OfferRequestTag else Protocol.RootedLifecycleRequestTag
                         upward message
                             | Protocol.protocolMessageTag message == target = do
                                 modifyIORef' mutations (+ 1)
+                                protectedHandoffImage store >>= putMVar before
                                 Just <$> mutate message
                             | otherwise = pure (Just message)
                         downward message
@@ -12217,22 +13218,11 @@ checkRequesterRelayMutation opening expectedPaths expected mutate = do
                                 Protocol.channelSend relayProxy message >>= (@?= Right ())
                                 pure Nothing
                             | otherwise = pure (Just message)
-                        expectedPeer = Relay.RelayRefusedByPeer
-                            (case expected of Relay.RelayEdgeNotPlanned _ -> "edge-not-planned"; _ -> "unauthenticated")
-                            (Text.pack (Relay.relayErrorMessage expected))
                         parent = Relay.offerHandoffEdge link rootChannel relayRequest outerRelayInput childPayload unusedRelayTerminal
-                        child = receiveConfigRelay project relayChannel key $ \nestedLink -> do
-                            protectedHandoffImage store >>= putMVar before
-                            if opening
-                                then checkNestedRelayRefusal nestedLink expectedPeer
-                                else do
-                                    answered <- Relay.receiveRootedLifecycleResponseThroughLink key nestedLink request
-                                    (() <$ answered) @?= Left expectedPeer
-                            pure (Left relayFinished)
                     withHandoffWorker (forwardHandoffMessages rootProxy relayProxy downward) $ \awaitDown ->
                         withHandoffWorker (forwardHandoffMessages relayProxy rootProxy upward) $ \awaitUp ->
                             withHandoffWorker parent $ \awaitParent -> do
-                                child >>= (@?= Left (Receiver.ReceiverDeclined relayFinished))
+                                waitForProcess child >>= (@?= ExitSuccess)
                                 closeRelayOutput
                                 awaitParent >>= (@?= Left expected)
                                 closeRootOutput
@@ -12243,6 +13233,22 @@ checkRequesterRelayMutation opening expectedPaths expected mutate = do
                     readIORef serviceCalls >>= (@?= [(path, request) | path <- expectedPaths])
                     original <- readMVar before
                     protectedHandoffImage store >>= (@?= original)
+  where
+    code = case expected of Relay.RelayEdgeNotPlanned _ -> "edge-not-planned"; _ -> "unauthenticated"
+    payload = renderFrameFields [code, TextEncoding.encodeUtf8 (Text.pack (Relay.relayErrorMessage expected))]
+    probeMode = receiverReportMode (if opening then "mutation-open" else "mutation-rooted") payload
+
+withDuplexReceiverProcess :: String -> (Protocol.HandoffChannel -> IO () -> ProcessHandle -> IO result) -> IO result
+withDuplexReceiverProcess mode use = do
+    executable <- getExecutablePath
+    withCreateProcess
+        (proc executable ["--hostbootstrap-isolated-receiver-probe", mode])
+            { std_in = CreatePipe, std_out = CreatePipe, std_err = Inherit }
+        $ \maybeInput maybeOutput _ child -> do
+            input <- maybe (assertFailure "receiver stdin was not created") pure maybeInput
+            output <- maybe (assertFailure "receiver stdout was not created") pure maybeOutput
+            channel <- Protocol.handoffChannel output input
+            use channel (closeHandoffHandle input) child
 
 checkNestedRelayRefusal :: Relay.BrokerLink scope generation -> Relay.RelayError -> IO ()
 checkNestedRelayRefusal link expected =
@@ -12618,17 +13624,6 @@ withDuplexHandoffRootService service use =
         _ <- expectRight outcome
         pure ()
 
-receiveConfigRelay ::
-    InstalledProjectIdentity projectId -> Protocol.HandoffChannel -> ProjectVerificationKey ->
-    (forall generation. Relay.BrokerLink (Production projectId) generation -> IO (Either Text.Text ())) ->
-    IO (Either Receiver.ReceiverError ())
-receiveConfigRelay project channel key use =
-    Receiver.withReceivedHandoffEdge project channel key
-        (\edge _ _ -> Relay.withConfigBrokerLink edge (\_ link -> use link))
-        (\_ _ -> assertFailure "a config duplex fixture entered the recovery branch")
-        (\_ _ _ -> assertFailure "a Production duplex fixture entered the Harness branch")
-        (\_ _ -> assertFailure "a Production duplex fixture entered the Harness recovery branch")
-
 withHandoffChannels ::
     (Protocol.HandoffChannel -> Protocol.HandoffChannel -> IO () -> IO () -> IO result) -> IO result
 withHandoffChannels use =
@@ -12718,19 +13713,6 @@ withReceiverScriptOffer use =
         report <- expectRight (renderForwardCompletedLifecycleReport (forwardLifecycleOrigin (renderHandoffBinding binding)))
         use project broker offer offered report
 
-runScriptedReceiver ::
-    InstalledProjectIdentity projectId -> Protocol.HandoffChannel -> ProjectVerificationKey ->
-    ( forall generation.
-      Receiver.ReceivedEdge (Production projectId) generation ->
-      (ByteString.ByteString -> IO (Either Receiver.ReceiverError ())) -> IO (Either Text.Text ())
-    ) -> IO (Either Receiver.ReceiverError ())
-runScriptedReceiver project channel key use =
-    Receiver.withReceivedHandoffEdge project channel key
-        (\edge _ sendReport -> use edge sendReport)
-        (\_ _ -> assertFailure "the scripted config receiver entered recovery")
-        (\_ _ _ -> assertFailure "the scripted Production receiver entered Harness")
-        (\_ _ -> assertFailure "the scripted Production receiver entered Harness recovery")
-
 changeScriptedAuthentication ::
     Protocol.ProtocolMessage ->
     (ByteString.ByteString -> ByteString.ByteString -> ByteString.ByteString -> IO ByteString.ByteString) ->
@@ -12743,20 +13725,6 @@ changeScriptedAuthentication offered change = case Protocol.protocolMessageField
         assertBool "the scripted authentication mutation changes its input" (altered /= authentication)
         relayMessage Protocol.OfferTag [payload, token, binding, altered]
     fields -> assertFailure ("the genuine offer had " <> show (length fields) <> " fields")
-
-checkEarlyReceiverRefusal ::
-    InstalledProjectIdentity projectId -> ProjectVerificationKey -> Protocol.ProtocolMessage ->
-    Receiver.ReceiverError -> ByteString.ByteString -> IO ()
-checkEarlyReceiverRefusal project key offered expected code =
-    withScriptedHandoffChannels $ \parent child _ _ closeChild -> do
-        calls <- newIORef (0 :: Int)
-        let receiver = runScriptedReceiver project child key $ \_ _ -> modifyIORef' calls (+ 1) >> pure (Left receiverFinished)
-        withHandoffWorker receiver $ \awaitReceiver -> do
-            Protocol.channelSend parent offered >>= (@?= Right ())
-            assertScriptedRefusal parent expected code
-            awaitReceiver >>= (@?= Left expected)
-            assertReceiverSilence parent closeChild
-        readIORef calls >>= (@?= 0)
 
 scriptedGrant ::
     RootBroker scope generation verb -> HandoffOffer scope generation ->
@@ -12808,11 +13776,6 @@ assertReceiverSilence parent closeChild = do
     closeChild
     boundedHandoff "EOF after the returned receiver closes its output" (Protocol.channelReceive parent)
         >>= (@?= Left (Protocol.ProtocolTruncated 8 0))
-
-assertScriptedIOException :: (Show value) => Either IOException value -> IO ()
-assertScriptedIOException result = case result of
-    Left failure -> ioeGetErrorString failure @?= receiverCrashMarker
-    Right value -> assertFailure ("expected the original scripted IOException, got " <> show value)
 
 writeScriptedArity :: Handle -> Protocol.ProtocolMessage -> Int -> IO ()
 writeScriptedArity output message fieldCount = do
@@ -13903,12 +14866,17 @@ handoffImplementationMainOnlyModules =
     , "HostBootstrap.Lifecycle.Context.Internal"
     , "HostBootstrap.Lifecycle.Dependency.Internal"
     , "HostBootstrap.Lifecycle.Execution.Internal"
+    , "HostBootstrap.Lifecycle.FrameExecutor"
+    , "HostBootstrap.Lifecycle.FrameRole"
     , "HostBootstrap.Lifecycle.Plan"
     , "HostBootstrap.Lifecycle.Prepared.Internal"
     , "HostBootstrap.Lifecycle.ResourceRecord"
     , "HostBootstrap.Lifecycle.Rooted"
+    , "HostBootstrap.Lifecycle.Rooted.Node"
     , "HostBootstrap.Lifecycle.Rooted.Receipt"
     , "HostBootstrap.Lifecycle.RootedPlan"
+    , "HostBootstrap.Lifecycle.RootedPlan.Testing"
+    , "HostBootstrap.ProjectPlan.Handoff.Internal"
     , "HostBootstrap.ProjectPlan.Construct.Internal"
     , "HostBootstrap.ProjectPlan.Projection.Internal"
     , "HostBootstrap.Teardown.Internal"
@@ -13919,6 +14887,7 @@ handoffImplementationOtherModules =
     [ "HostBootstrap.Config.Class.Internal"
     , "HostBootstrap.Config.Fields.Internal"
     , "HostBootstrap.Lifecycle.Recovery"
+    , "HostBootstrap.Lifecycle.RootedPlan.Internal"
     , "HostBootstrap.Lifecycle.Transaction"
     , "HostBootstrap.Service.Internal"
     ]
